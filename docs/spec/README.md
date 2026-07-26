@@ -47,6 +47,7 @@ later wave and is called out as such.
 | [00 — Overview](00-overview.md) | What Jairs is, its design values, the Jairs-0 subset boundary | Jairs-0 |
 | [01 — Lexical structure](01-lexical.md) | Encoding, trivia, comments, identifiers, keywords, literals, operators, directives, diagnostics | Jairs-0 |
 | [02 — Declarations](02-declarations.md) | The three declaration forms, procedures, structs, pointers, uninitialisation | Jairs-0 |
+| [03 — Scoping and name resolution](03-scoping-and-resolution.md) | Scopes, shadowing, declaration order, resolution kinds, `jr-hir` diagnostics, module gaps | Jairs-0 |
 
 Later chapters (statements and expressions in full, the type system, the module
 system, comptime, polymorphs, …) are written as their waves land.
