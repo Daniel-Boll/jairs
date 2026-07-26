@@ -88,8 +88,9 @@ diagnostic in the file.
 
 ## Diagnostics
 
-`jr-hir` uses codes E0200 and above. (The lexer owns E0001–E0006 and the parser
-E0100–E0199.)
+Codes E0200 and above belong to semantic analysis. (The lexer owns E0001–E0006
+and the parser E0100–E0199.) Most are emitted by `jr-hir`; E0210 comes from the
+module loader in `jr-db`.
 
 | Code | Meaning |
 |---|---|
@@ -102,6 +103,8 @@ E0100–E0199.)
 | E0207 | a declaration, or `#run`, inside a procedure body |
 | E0208 | `#import` outside file scope |
 | E0209 | a directive used where it is not valid |
+| E0210 | module not found (lists every path searched) — emitted by `jr-db` |
+| E0211 | ambiguous name provided by two or more imported modules |
 
 A duplicate declaration reports both places — the redefinition is the primary
 span and the original is a secondary label:
@@ -136,18 +139,65 @@ implement them.
 
 ## Modules
 
-`#import "Basic";` records a dependency. It is only valid at file scope (E0208).
+`#import "Basic";` brings a module's names into the importing file. It is only
+valid at file scope (E0208). The full rules are in
+[ADR-0014](../adr/0014-module-resolution.md); the summary:
 
-**Not yet implemented:** mapping a module name to a file on disk. Resolution
-takes imported scopes as a parameter and performs no filesystem access, so until
-module loading exists there is nothing to pass it.
+### Finding a module
 
-The consequence is visible today: for a file containing any `#import`, `jr check`
-**suppresses** resolution diagnostics entirely, because every name coming from
-the imported module would otherwise be reported as unresolved. So `024-hello.jr`,
-which calls `print` from `Basic`, checks clean — not because `print` resolved,
-but because we decline to guess. A file with no imports gets full resolution
-diagnostics.
+`#import` names a *module*, not a path. The importing file's own directory is
+**not** searched — relative inclusion will be a separate `#load` in a later wave.
+Search order:
 
-This is a temporary and deliberately loud gap: it is the next thing to build, and
-it is what makes the Jairs-0 slice's `print` actually mean something.
+1. each `--module-path` given on the command line, in order
+2. the compiler's bundled `modules/` directory
+
+Within each directory, two layouts are tried:
+
+| Order | Layout | Why |
+|---|---|---|
+| 1 | `<Name>/module.jr` | a module can grow from one file to many without its importers changing |
+| 2 | `<Name>.jr` | a small module needs no directory |
+
+A module that cannot be found is **E0210**, and the diagnostic lists every path
+that was probed.
+
+### What importing does
+
+Imported names merge in **flat**. After `#import "Basic";`, `print` is called
+directly — there is no `Basic.print` qualification:
+
+```jr
+#import "Basic";
+
+main :: () {
+    print("hello\n");
+}
+```
+
+**Everything at file scope is currently exported.** `#scope_file`,
+`#scope_module` and `#scope_export` are lexed but unimplemented (wave W2), so
+there is no way to mark a declaration private yet. Modules therefore have no
+encapsulation at present.
+
+### Collisions
+
+- A file-level declaration **shadows** an imported name of the same name,
+  silently (`imports/valid/004`). Adding an export to a module can therefore
+  never break an importer that already defines that name itself.
+- If two *different* modules provide the same name and it is **used**, the use is
+  **E0211**, and the diagnostic names every module providing it. The error is at
+  the use site, so importing two overlapping modules is fine as long as the
+  ambiguous name is never mentioned (`imports/valid/007`).
+- Importing the same module twice is idempotent, not an error
+  (`imports/valid/006`).
+
+### Cycles are legal
+
+Two modules may import each other (`imports/valid/005`). This follows directly
+from file-scope declaration order not mattering: a file scope is a *set*, and
+Jairs has no file-level initialisation order for a cycle to violate. Rejecting
+cycles would be inventing a restriction the semantics do not need.
+
+Note this differs from most languages with ordered module initialisation, and the
+reason is specifically that Jairs has no such ordering to protect.

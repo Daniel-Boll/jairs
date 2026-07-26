@@ -69,7 +69,7 @@ main :: () {
     i := 0;
     while i < 3 { i = i + 1; }         // while
     ptr := *sum;                       // pointer take + deref
-    print_int(ptr.*);
+    print(MESSAGE);
 }
 ```
 
@@ -93,14 +93,26 @@ This is the proof that decision #5 works. Roughly 40 lines of Jairs:
 
 ```jr
 // modules/Basic/module.jr
+libc :: #system_library "c";
+
 write :: (fd: s64, buf: *u8, count: s64) -> s64 #foreign libc "write";
 
 print :: (s: string) {
     write(1, s.data, s.count);
 }
-
-print_int :: (n: s64) { /* manual itoa into a fixed buffer */ }
 ```
+
+> [!CAUTION]
+> **Correction found while building this: `print_int` is NOT implementable in Jairs-0.**
+> Turning a digit into a byte for `write` needs an `s64` → `u8` conversion, and `cast` is reserved
+> until W1. Every alternative needs something the slice also lacks — a `[N]u8` buffer (W1), pointer
+> arithmetic (not in the subset, and no type checker yet to stop it being written by accident), or
+> libc `printf` (variadic, and the arm64 variadic ABI passes variadic arguments on the stack, so a
+> non-variadic `#foreign` declaration would silently produce garbage). Integer printing therefore
+> lands with `cast` in **W1**, and the slice's exit criterion prints strings only.
+>
+> This is exactly the kind of constraint the tracer-bullet ordering exists to expose, and it cost
+> minutes instead of being discovered during W7's stdlib push.
 
 > [!WARNING]
 > This forces `#foreign`, the string ABI, and the module loader into the **first** slice. That is the
@@ -148,7 +160,7 @@ flowchart LR
 | `jr-db` | salsa 0.28 queries: file → tokens → CST → HIR → types | **The** reason the LSP won't be a fork of the compiler |
 | `jr-lsp` | `lsp-server` loop: diagnostics, hover, goto-def | Proves the salsa boundary is real |
 | `tree-sitter-jairs` | `grammar.js` + `highlights.scm` + corpus | Establishes the drift gate |
-| `modules/Basic` | `print`, `print_int` via `#foreign` | Proves stdlib-in-Jairs |
+| `modules/Basic` | `print` / `print_line` via `#foreign` to libc `write` | Proves stdlib-in-Jairs |
 | `tests/corpus` | ~20 `.jr` files: spec examples = parser tests = tree-sitter tests | One corpus, two parsers, CI-enforced |
 
 ### 1.4 Slice exit criteria

@@ -1216,7 +1216,7 @@ fn parse_int_literal_impl(raw: &str, span: Span, diags: &mut Diagnostics) -> Lit
 ///
 /// The returned [`FileHir`] contains the item tree and all arenas. Name
 /// resolution (filling in `Res` fields on `Expr::Name` nodes) is a separate
-/// step; call [`crate::resolve`] afterwards.
+/// step; call [`resolve`](fn@crate::resolve) afterwards.
 ///
 /// # Panics
 ///

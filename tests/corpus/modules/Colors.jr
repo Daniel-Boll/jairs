@@ -1,0 +1,7 @@
+// A test module in the single-file layout: `Colors.jr`.
+BLACK :: 0;
+WHITE :: 255;
+
+blend :: (a: s64, b: s64) -> s64 {
+    return (a + b) / 2;
+}

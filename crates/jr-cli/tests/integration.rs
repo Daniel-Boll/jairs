@@ -31,7 +31,10 @@ fn corpus_path(rel: &str) -> PathBuf {
 /// Run `jr check` and return the exit code.
 fn run_check(paths: Vec<PathBuf>) -> i32 {
     let global = quiet_global();
-    let args = jr_cli::cli::CheckArgs { paths };
+    let args = jr_cli::cli::CheckArgs {
+        paths,
+        module_paths: Vec::new(),
+    };
     jr_cli::commands::check::run(args, &global).unwrap()
 }
 
@@ -78,6 +81,7 @@ fn check_nonexistent_path_returns_io_error() {
     let global = quiet_global();
     let args = jr_cli::cli::CheckArgs {
         paths: vec![PathBuf::from("/nonexistent/path/that/does/not/exist.jr")],
+        module_paths: Vec::new(),
     };
     let result = jr_cli::commands::check::run(args, &global);
     assert!(result.is_err(), "expected Err for nonexistent path");
@@ -239,4 +243,74 @@ fn parse_invalid_file_exits_one() {
     };
     let code = jr_cli::commands::parse::run(args, &global).unwrap();
     assert_eq!(code, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Module loading through the CLI
+// ---------------------------------------------------------------------------
+
+fn check_with_modules(paths: Vec<std::path::PathBuf>, module_dir: Option<&str>) -> i32 {
+    let args = jr_cli::cli::CheckArgs {
+        paths,
+        module_paths: module_dir.map(|d| vec![corpus_path(d)]).unwrap_or_default(),
+    };
+    jr_cli::commands::check::run(args, &quiet_global()).expect("check must not fail with I/O")
+}
+
+/// Every well-formed multi-module program must check cleanly once modules can be
+/// found. This is the property the whole wave exists to deliver.
+#[test]
+fn imports_valid_corpus_checks_cleanly() {
+    let code = check_with_modules(vec![corpus_path("imports/valid")], Some("modules"));
+    assert_eq!(code, 0, "all imports/valid files must check cleanly");
+}
+
+/// A cycle between two modules must be accepted, not rejected (ADR-0014 §4).
+#[test]
+fn import_cycle_checks_cleanly_through_the_cli() {
+    let code = check_with_modules(
+        vec![corpus_path("imports/valid/005-import-cycle-is-legal.jr")],
+        Some("modules"),
+    );
+    assert_eq!(code, 0, "import cycles are legal and must not error");
+}
+
+/// Without the module path, the same file must fail — otherwise the previous
+/// test proves nothing about module loading actually happening.
+#[test]
+fn imports_fail_when_the_module_path_is_absent() {
+    let code = check_with_modules(
+        vec![corpus_path("imports/valid/001-import-directory-module.jr")],
+        None,
+    );
+    assert_eq!(
+        code, 1,
+        "with no --module-path the module cannot be found, so this must fail; \
+         if it passes, module resolution is not being exercised at all"
+    );
+}
+
+/// The semantic failure cases must fail.
+#[test]
+fn imports_invalid_corpus_fails() {
+    for file in [
+        "imports/invalid/001-module-not-found.jr",
+        "imports/invalid/002-ambiguous-imported-name.jr",
+        "imports/invalid/003-unresolved-after-import.jr",
+    ] {
+        let code = check_with_modules(vec![corpus_path(file)], Some("modules"));
+        assert_eq!(code, 1, "{file} must report an error");
+    }
+}
+
+/// `024-hello.jr` imports the real bundled `Basic` module, with no
+/// `--module-path` at all. This is the end-to-end check that the compiler's own
+/// standard library is reachable by default.
+#[test]
+fn the_slice_program_resolves_against_the_bundled_stdlib() {
+    let code = check_with_modules(vec![corpus_path("valid/024-hello.jr")], None);
+    assert_eq!(
+        code, 0,
+        "the slice program must resolve `print` from the bundled Basic module"
+    );
 }

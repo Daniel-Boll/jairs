@@ -1,0 +1,11 @@
+// EXPECT: E0211 at the USE of `blend`, naming both modules that provide it.
+// RECOVER: `BLACK` and `PALETTE_SIZE` must still resolve; one ambiguous name
+// must not poison the rest of the file.
+#import "Colors";
+#import "Palette";
+
+main :: () {
+    bad := blend(1, 2);
+    ok_a := BLACK;
+    ok_b := PALETTE_SIZE;
+}

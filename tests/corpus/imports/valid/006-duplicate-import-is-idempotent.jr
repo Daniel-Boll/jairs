@@ -1,0 +1,7 @@
+// Importing the same module twice is not an error (ADR-0014 §6).
+#import "Colors";
+#import "Colors";
+
+main :: () {
+    x := blend(BLACK, WHITE);
+}

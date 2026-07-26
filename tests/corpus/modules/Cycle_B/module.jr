@@ -1,0 +1,5 @@
+#import "Cycle_A";
+
+b_value :: () -> s64 {
+    return A_VALUE;
+}

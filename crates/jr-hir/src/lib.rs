@@ -47,6 +47,11 @@
 //! | E0204 | integer literal overflows `s64` |
 //! | E0205 | unknown string escape `\<c>` |
 //! | E0206 | invalid unicode escape |
+//! | E0207 | declaration or `#run` inside a procedure body |
+//! | E0208 | `#import` outside file scope |
+//! | E0209 | directive used where it is not valid |
+//! | E0210 | module not found (owned by `jr-db`, not this crate) |
+//! | E0211 | ambiguous name provided by multiple imported modules |
 
 pub mod dump;
 pub mod hir;

@@ -1,0 +1,11 @@
+// Imported names merge in FLAT: `Rect` and `area` are used unqualified, with no
+// `Shapes.` prefix (ADR-0014 §2).
+#import "Shapes";
+
+main :: () {
+    r: Rect;
+    r.w = 3;
+    r.h = 4;
+    a := area(r);
+    v := SHAPES_VERSION;
+}

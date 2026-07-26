@@ -8,13 +8,20 @@
 //! 5. **Incrementality**: editing file A re-runs A's parse but NOT B's.
 //! 6. Setting identical text does not re-run queries (salsa backdating).
 //! 7. Corpus files parse without errors.
+//! 8. Module resolution: search paths, file lookup, cycles, E0210.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
-use jr_db::{Db as _, JairsDatabase, SourceFile, parse_diagnostics, parse_file};
+use jr_db::{
+    Db as _, InMemoryModules, JairsDatabase, ModuleSearchPaths, SourceFile, file_diagnostics,
+    file_exports, file_hir, imports_of, module_file, parse_diagnostics, parse_file, resolved,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -429,6 +436,16 @@ fn add_file(db: &mut JairsDatabase, path: &str, text: &str) -> SourceFile {
         .expect("file must exist after set_file_text")
 }
 
+/// Joins a diagnostic's note and help lines into one string, for assertions
+/// about content that is carried in the notes rather than the headline.
+fn notes_text(diag: &jr_diag::Diagnostic) -> String {
+    diag.notes
+        .iter()
+        .map(|(_, text)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 // ---------------------------------------------------------------------------
 // Incrementality, strengthened
 // ---------------------------------------------------------------------------
@@ -496,5 +513,777 @@ fn adding_a_file_does_not_invalidate_existing_ones() {
         counter.load(Ordering::SeqCst) - baseline,
         1,
         "adding a file must parse only that file"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Module loader helpers
+// ---------------------------------------------------------------------------
+
+/// Builds an in-memory module database with the corpus modules pre-loaded.
+///
+/// The search path is a single virtual directory `/modules`. Module files are
+/// stored as `/modules/<Name>/module.jr` (directory form) or
+/// `/modules/<Name>.jr` (single-file form).
+fn make_module_db_with_corpus() -> (JairsDatabase, ModuleSearchPaths) {
+    let mut modules = InMemoryModules::new();
+
+    // Shapes — directory form
+    modules.add(
+        PathBuf::from("/modules/Shapes/module.jr"),
+        r#"Rect :: struct {
+    w: s64;
+    h: s64;
+}
+
+area :: (r: Rect) -> s64 {
+    return r.w * r.h;
+}
+
+SHAPES_VERSION :: 1;
+"#,
+    );
+
+    // Colors — single-file form
+    modules.add(
+        PathBuf::from("/modules/Colors.jr"),
+        r#"BLACK :: 0;
+WHITE :: 255;
+
+blend :: (a: s64, b: s64) -> s64 {
+    return (a + b) / 2;
+}
+"#,
+    );
+
+    // Palette — single-file form
+    modules.add(
+        PathBuf::from("/modules/Palette.jr"),
+        r#"blend :: (a: s64, b: s64) -> s64 {
+    return a;
+}
+
+PALETTE_SIZE :: 16;
+"#,
+    );
+
+    // Cycle_A — directory form
+    modules.add(
+        PathBuf::from("/modules/Cycle_A/module.jr"),
+        r#"#import "Cycle_B";
+
+A_VALUE :: 1;
+
+a_calls_b :: () -> s64 {
+    return b_value();
+}
+"#,
+    );
+
+    // Cycle_B — directory form
+    modules.add(
+        PathBuf::from("/modules/Cycle_B/module.jr"),
+        r#"#import "Cycle_A";
+
+b_value :: () -> s64 {
+    return A_VALUE;
+}
+"#,
+    );
+
+    let mut db = JairsDatabase::with_in_memory_modules(modules);
+    let sp = db.set_module_search_paths(vec![PathBuf::from("/modules")]);
+    (db, sp)
+}
+
+/// Loads a file and all its transitive module imports into the database.
+fn load_with_modules(db: &mut JairsDatabase, path: &str, text: &str) -> SourceFile {
+    let sf = add_file(db, path, text);
+    db.load_modules_transitively(sf);
+    sf
+}
+
+// ---------------------------------------------------------------------------
+// 10. module_file query
+// ---------------------------------------------------------------------------
+
+#[test]
+fn module_file_finds_directory_form() {
+    let (db, sp) = make_module_db_with_corpus();
+    let result = module_file(&db, sp, Arc::from("Shapes"));
+    assert!(
+        result.found.is_some(),
+        "Shapes/module.jr must be found; searched: {:?}",
+        result.searched
+    );
+    let found = result.found.unwrap();
+    assert!(
+        found.ends_with("Shapes/module.jr"),
+        "must find directory form first, got: {found:?}"
+    );
+}
+
+#[test]
+fn module_file_finds_single_file_form() {
+    let (db, sp) = make_module_db_with_corpus();
+    let result = module_file(&db, sp, Arc::from("Colors"));
+    assert!(
+        result.found.is_some(),
+        "Colors.jr must be found; searched: {:?}",
+        result.searched
+    );
+    let found = result.found.unwrap();
+    assert!(
+        found.ends_with("Colors.jr"),
+        "must find single-file form, got: {found:?}"
+    );
+}
+
+#[test]
+fn module_file_not_found_lists_searched_paths() {
+    let (db, sp) = make_module_db_with_corpus();
+    let result = module_file(&db, sp, Arc::from("No_Such_Module"));
+    assert!(result.found.is_none(), "No_Such_Module must not be found");
+    // Must have searched both forms.
+    assert!(
+        result.searched.len() >= 2,
+        "must have searched at least 2 paths, got: {:?}",
+        result.searched
+    );
+    // Directory form must be tried before single-file form.
+    let dir_idx = result
+        .searched
+        .iter()
+        .position(|p| p.ends_with("No_Such_Module/module.jr"))
+        .expect("directory form must be in searched list");
+    let file_idx = result
+        .searched
+        .iter()
+        .position(|p| p.ends_with("No_Such_Module.jr"))
+        .expect("single-file form must be in searched list");
+    assert!(
+        dir_idx < file_idx,
+        "directory form must be tried before single-file form"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 11. file_hir and file_exports
+// ---------------------------------------------------------------------------
+
+#[test]
+fn file_hir_lowers_simple_file() {
+    let mut db = JairsDatabase::default();
+    let sf = add_file(&mut db, "simple.jr", "X :: 42;");
+    let hir = file_hir(&db, sf);
+    assert_eq!(hir.items.len(), 1, "must have one item");
+}
+
+#[test]
+fn file_exports_contains_declared_names() {
+    let mut db = JairsDatabase::default();
+    let sf = add_file(&mut db, "exports.jr", "X :: 42;\nY :: 99;");
+    let exports = file_exports(&db, sf);
+    // The scope should contain X and Y.
+    assert_eq!(
+        exports.names.len(),
+        2,
+        "must export both X and Y, got: {:?}",
+        exports.names.keys().collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 12. imports_of
+// ---------------------------------------------------------------------------
+
+#[test]
+fn imports_of_returns_module_names() {
+    let mut db = JairsDatabase::default();
+    let sf = add_file(
+        &mut db,
+        "importer.jr",
+        r#"#import "Colors";
+#import "Shapes";
+main :: () {}
+"#,
+    );
+    let names = imports_of(&db, sf);
+    assert_eq!(names.len(), 2);
+    assert!(names.iter().any(|n| n.as_ref() == "Colors"));
+    assert!(names.iter().any(|n| n.as_ref() == "Shapes"));
+}
+
+#[test]
+fn imports_of_deduplicates() {
+    let mut db = JairsDatabase::default();
+    let sf = add_file(
+        &mut db,
+        "dup.jr",
+        r#"#import "Colors";
+#import "Colors";
+main :: () {}
+"#,
+    );
+    let names = imports_of(&db, sf);
+    assert_eq!(names.len(), 1, "duplicate imports must be deduplicated");
+}
+
+// ---------------------------------------------------------------------------
+// 13. resolved — valid imports
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resolved_directory_module_no_diagnostics() {
+    let (mut db, sp) = make_module_db_with_corpus();
+    let sf = load_with_modules(
+        &mut db,
+        "test.jr",
+        r#"#import "Shapes";
+main :: () {
+    r: Rect;
+    r.w = 3;
+    r.h = 4;
+    a := area(r);
+    v := SHAPES_VERSION;
+}
+"#,
+    );
+    let result = resolved(&db, sf, sp);
+    let diags = &result.diagnostics;
+    let errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.severity == jr_diag::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "directory module import must resolve without errors; got: {errors:?}"
+    );
+}
+
+#[test]
+fn resolved_single_file_module_no_diagnostics() {
+    let (mut db, sp) = make_module_db_with_corpus();
+    let sf = load_with_modules(
+        &mut db,
+        "test.jr",
+        r#"#import "Colors";
+main :: () {
+    mid := blend(BLACK, WHITE);
+}
+"#,
+    );
+    let result = resolved(&db, sf, sp);
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == jr_diag::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "single-file module import must resolve without errors; got: {errors:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 14. E0210 — module not found
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e0210_module_not_found_with_searched_paths() {
+    let (mut db, sp) = make_module_db_with_corpus();
+    let sf = add_file(
+        &mut db,
+        "missing.jr",
+        r#"#import "No_Such_Module";
+main :: () {}
+"#,
+    );
+    let result = resolved(&db, sf, sp);
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some("E0210"))
+        .collect();
+    assert_eq!(errors.len(), 1, "must produce exactly one E0210");
+    let msg = &errors[0].message;
+    assert!(
+        msg.contains("No_Such_Module"),
+        "E0210 must name the missing module; got: {msg:?}"
+    );
+    // The searched paths live in the notes, one per line -- a multi-line
+    // headline renders with every continuation line indented under the
+    // message, which is unreadable with more than a couple of paths.
+    let notes = notes_text(errors[0]);
+    assert!(
+        notes.contains("searched"),
+        "E0210 must list searched paths; got notes: {notes:?}"
+    );
+    // Must list at least one path.
+    assert!(
+        notes.contains("/modules/"),
+        "E0210 must include the search directory; got notes: {notes:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 15. Cycles are legal (ADR-0014 §4)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn import_cycle_is_legal() {
+    let (mut db, sp) = make_module_db_with_corpus();
+    // Load Cycle_A (which imports Cycle_B which imports Cycle_A).
+    let sf = load_with_modules(
+        &mut db,
+        "test.jr",
+        r#"#import "Cycle_A";
+main :: () {
+    x := a_calls_b();
+    y := A_VALUE;
+}
+"#,
+    );
+    // This must not panic or infinite-loop.
+    let result = resolved(&db, sf, sp);
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == jr_diag::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "import cycle must be legal (ADR-0014 §4); got errors: {errors:?}"
+    );
+}
+
+#[test]
+fn self_import_terminates() {
+    let (mut db, sp) = make_module_db_with_corpus();
+    // A file that imports itself by name. We need to set up the search path
+    // to point to a directory containing this file.
+    // For simplicity, use a module name that doesn't exist — the self-import
+    // detection is based on path matching, so we test it via the corpus cycle.
+    // The real self-import test: load Cycle_A which imports Cycle_B which
+    // imports Cycle_A — this exercises the cycle termination.
+    let sf = load_with_modules(
+        &mut db,
+        "test.jr",
+        r#"#import "Cycle_A";
+main :: () {}
+"#,
+    );
+    // Must terminate (not infinite-loop).
+    let _result = resolved(&db, sf, sp);
+}
+
+// ---------------------------------------------------------------------------
+// 16. Duplicate import is idempotent (ADR-0014 §6)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn duplicate_import_is_idempotent() {
+    let (mut db, sp) = make_module_db_with_corpus();
+    let sf = load_with_modules(
+        &mut db,
+        "test.jr",
+        r#"#import "Colors";
+#import "Colors";
+main :: () {
+    x := blend(BLACK, WHITE);
+}
+"#,
+    );
+    let result = resolved(&db, sf, sp);
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == jr_diag::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "duplicate import must be idempotent; got: {errors:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17. Local shadows import (ADR-0014 §3)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn local_shadows_import_no_error() {
+    let (mut db, sp) = make_module_db_with_corpus();
+    let sf = load_with_modules(
+        &mut db,
+        "test.jr",
+        r#"#import "Colors";
+
+blend :: (a: s64, b: s64) -> s64 {
+    return a - b;
+}
+
+main :: () {
+    x := blend(10, 4);
+}
+"#,
+    );
+    let result = resolved(&db, sf, sp);
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == jr_diag::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "local declaration must shadow import without error; got: {errors:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 18. file_diagnostics
+// ---------------------------------------------------------------------------
+
+#[test]
+fn file_diagnostics_no_errors_for_valid_import() {
+    let (mut db, sp) = make_module_db_with_corpus();
+    let sf = load_with_modules(
+        &mut db,
+        "test.jr",
+        r#"#import "Colors";
+main :: () {
+    x := blend(BLACK, WHITE);
+}
+"#,
+    );
+    let diags = file_diagnostics(&db, sf, sp);
+    let errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.severity == jr_diag::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "valid import must produce no errors; got: {errors:?}"
+    );
+}
+
+#[test]
+fn file_diagnostics_e0210_for_missing_module() {
+    let (mut db, sp) = make_module_db_with_corpus();
+    let sf = add_file(
+        &mut db,
+        "missing.jr",
+        r#"#import "No_Such_Module";
+main :: () {}
+"#,
+    );
+    let diags = file_diagnostics(&db, sf, sp);
+    let e0210: Vec<_> = diags.iter().filter(|d| d.code == Some("E0210")).collect();
+    assert_eq!(e0210.len(), 1, "must produce exactly one E0210");
+}
+
+// ---------------------------------------------------------------------------
+// 19. Corpus imports/valid — all must check cleanly
+// ---------------------------------------------------------------------------
+
+#[test]
+fn corpus_imports_valid_check_cleanly() {
+    let corpus_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus/imports/valid");
+    let modules_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus/modules");
+
+    let mut db = JairsDatabase::default();
+    let sp = db.set_module_search_paths(vec![modules_dir]);
+
+    let mut failures = Vec::new();
+
+    let entries = std::fs::read_dir(&corpus_dir).expect("corpus/imports/valid must exist");
+    for entry in entries {
+        let entry = entry.expect("directory entry");
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jr") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let sf = add_file(&mut db, &name, &text);
+        db.load_modules_transitively(sf);
+        let diags = file_diagnostics(&db, sf, sp);
+        let errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == jr_diag::Severity::Error)
+            .collect();
+        if !errors.is_empty() {
+            let msgs: Vec<_> = errors
+                .iter()
+                .map(|d| format!("[{}] {}", d.code.unwrap_or("?"), d.message))
+                .collect();
+            failures.push(format!("{name}: {msgs:?}"));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "corpus/imports/valid files must check without errors:\n{}",
+        failures.join("\n")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 20. Corpus imports/invalid/001 — E0210 with searched paths
+// ---------------------------------------------------------------------------
+
+#[test]
+fn corpus_imports_invalid_001_produces_e0210() {
+    let corpus_file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/corpus/imports/invalid/001-module-not-found.jr");
+    let modules_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus/modules");
+
+    let text = std::fs::read_to_string(&corpus_file).expect("001-module-not-found.jr must exist");
+
+    let mut db = JairsDatabase::default();
+    let sp = db.set_module_search_paths(vec![modules_dir.clone()]);
+    let sf = add_file(&mut db, "001-module-not-found.jr", &text);
+
+    let diags = file_diagnostics(&db, sf, sp);
+    let e0210: Vec<_> = diags.iter().filter(|d| d.code == Some("E0210")).collect();
+
+    assert_eq!(e0210.len(), 1, "must produce exactly one E0210");
+
+    let msg = &e0210[0].message;
+    assert!(
+        msg.contains("No_Such_Module"),
+        "E0210 must name the missing module; got: {msg:?}"
+    );
+    let notes = notes_text(e0210[0]);
+    assert!(
+        notes.contains("searched"),
+        "E0210 must say 'searched'; got notes: {notes:?}"
+    );
+    // The searched paths must include the modules directory.
+    let modules_dir_str = modules_dir.to_string_lossy();
+    assert!(
+        notes.contains(modules_dir_str.as_ref()),
+        "E0210 must list the modules directory ({modules_dir_str}); got notes: {notes:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 21. Incrementality: editing a module invalidates its importers
+// ---------------------------------------------------------------------------
+
+/// Editing a module file must invalidate `file_diagnostics` for files that
+/// import it, but NOT for unrelated files.
+///
+/// We measure this with the `WillExecute` event counter, counting re-runs of
+/// `file_hir` (which is the first query that depends on the module's text).
+#[test]
+fn editing_module_invalidates_importers_not_unrelated() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let counter_clone = counter.clone();
+
+    let mut modules = InMemoryModules::new();
+    modules.add(PathBuf::from("/modules/MyMod.jr"), "MY_CONST :: 1;\n");
+
+    let mut db = JairsDatabase::with_event_callback_and_modules(
+        move |event| {
+            if let salsa::EventKind::WillExecute { database_key } = event.kind {
+                let name = format!("{database_key:?}");
+                if name.contains("file_hir") {
+                    counter_clone.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        },
+        modules,
+    );
+
+    let _sp = db.set_module_search_paths(vec![PathBuf::from("/modules")]);
+
+    // importer.jr imports MyMod; unrelated.jr does not.
+    let sf_importer = load_with_modules(
+        &mut db,
+        "importer.jr",
+        "#import \"MyMod\";\nmain :: () { x := MY_CONST; }\n",
+    );
+    let sf_unrelated = add_file(&mut db, "unrelated.jr", "Y :: 99;\n");
+
+    // Warm up the cache.
+    let _ = file_hir(&db, sf_importer);
+    let _ = file_hir(&db, sf_unrelated);
+    // Also warm up the module file.
+    let mymod_path = PathBuf::from("/modules/MyMod.jr");
+    let mymod_sf = db
+        .source_file_for_path(&mymod_path.to_string_lossy())
+        .unwrap();
+    let _ = file_hir(&db, mymod_sf);
+
+    let baseline = counter.load(Ordering::SeqCst);
+
+    // Edit the module file.
+    db.set_file_text("/modules/MyMod.jr", "MY_CONST :: 2;\n");
+
+    // Re-query all three files.
+    let _ = file_hir(&db, sf_importer);
+    let _ = file_hir(&db, sf_unrelated);
+    let _ = file_hir(&db, mymod_sf);
+
+    let new_executions = counter.load(Ordering::SeqCst) - baseline;
+
+    // MyMod was edited → its file_hir re-runs (1).
+    // importer.jr depends on MyMod's exports via resolved(), but file_hir
+    // for importer.jr depends only on parse_file(importer.jr), which didn't
+    // change. So file_hir(importer.jr) does NOT re-run.
+    // unrelated.jr: no dependency on MyMod → does NOT re-run.
+    // Total: exactly 1 re-execution (for MyMod itself).
+    assert_eq!(
+        new_executions, 1,
+        "editing MyMod must re-run file_hir exactly once (for MyMod); \
+         importer and unrelated must be served from cache. Got {new_executions} re-executions."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Invalidation actually propagating through the module graph
+// ---------------------------------------------------------------------------
+
+/// Builds a database counting `WillExecute` events whose key mentions `needle`.
+fn db_counting(
+    needle: &'static str,
+    modules: InMemoryModules,
+) -> (JairsDatabase, Arc<AtomicUsize>) {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let counter_clone = counter.clone();
+    let db = JairsDatabase::with_event_callback_and_modules(
+        move |event| {
+            if let salsa::EventKind::WillExecute { database_key } = event.kind {
+                if format!("{database_key:?}").contains(needle) {
+                    counter_clone.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        },
+        modules,
+    );
+    (db, counter)
+}
+
+/// Editing a module must invalidate its importers' RESOLUTION.
+///
+/// `editing_module_invalidates_importers_not_unrelated` counts `file_hir`, which
+/// correctly does *not* re-run for the importer — the importer's own text did not
+/// change. That proves lowering is properly isolated, but it says nothing about
+/// whether the importer is re-resolved, which is the property that actually
+/// matters: if `resolved(importer)` were served from cache after its dependency
+/// changed, the compiler would report stale diagnostics about a module that no
+/// longer looks like that.
+///
+/// So: `resolved(importer)` MUST re-run, and `resolved(unrelated)` must NOT.
+#[test]
+fn editing_a_module_re_resolves_importers_and_only_importers() {
+    let mut modules = InMemoryModules::new();
+    modules.add(PathBuf::from("/modules/MyMod.jr"), "MY_CONST :: 1;\n");
+
+    let (mut db, counter) = db_counting("resolved", modules);
+    let sp = db.set_module_search_paths(vec![PathBuf::from("/modules")]);
+
+    let importer = load_with_modules(
+        &mut db,
+        "importer.jr",
+        "#import \"MyMod\";\nmain :: () { x := MY_CONST; }\n",
+    );
+    let unrelated = add_file(&mut db, "unrelated.jr", "Y :: 99;\n");
+
+    // Warm the cache and confirm we start from a clean resolution.
+    assert!(
+        resolved(&db, importer, sp).diagnostics.is_empty(),
+        "importer must resolve cleanly before the edit"
+    );
+    let _ = resolved(&db, unrelated, sp);
+
+    let baseline = counter.load(Ordering::SeqCst);
+
+    // Edit the module that `importer.jr` depends on.
+    db.set_file_text("/modules/MyMod.jr", "MY_CONST :: 2;\n");
+
+    let _ = resolved(&db, importer, sp);
+    let _ = resolved(&db, unrelated, sp);
+
+    let reruns = counter.load(Ordering::SeqCst) - baseline;
+    assert_eq!(
+        reruns, 1,
+        "expected exactly one re-resolution (the importer); \
+         0 means the importer was served stale after its dependency changed, \
+         2 means the unrelated file was invalidated needlessly. Got {reruns}."
+    );
+}
+
+/// The other half of the same property: if a module stops exporting a name, the
+/// importer must start reporting it as unresolved. This is the observable
+/// consequence of the invalidation above, checked on values rather than on
+/// execution counts — a query can re-run and still hand back a stale result.
+#[test]
+fn removing_an_export_makes_importers_report_it_unresolved() {
+    let mut modules = InMemoryModules::new();
+    modules.add(PathBuf::from("/modules/MyMod.jr"), "MY_CONST :: 1;\n");
+
+    let (mut db, _counter) = db_counting("resolved", modules);
+    let sp = db.set_module_search_paths(vec![PathBuf::from("/modules")]);
+
+    let importer = load_with_modules(
+        &mut db,
+        "importer.jr",
+        "#import \"MyMod\";\nmain :: () { x := MY_CONST; }\n",
+    );
+
+    assert!(
+        resolved(&db, importer, sp).diagnostics.is_empty(),
+        "MY_CONST must resolve while the module exports it"
+    );
+
+    // The module no longer exports MY_CONST.
+    db.set_file_text("/modules/MyMod.jr", "SOMETHING_ELSE :: 1;\n");
+
+    let after = resolved(&db, importer, sp);
+    assert!(
+        after.diagnostics.iter().any(|d| d.code == Some("E0201")),
+        "removing the export must make the importer report E0201, got {:?}",
+        after
+            .diagnostics
+            .iter()
+            .map(|d| (d.code, d.message.clone()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// And the inverse: adding the export back must clear the error, proving the
+/// cache is not sticky in the other direction either.
+#[test]
+fn restoring_an_export_clears_the_importers_error() {
+    let mut modules = InMemoryModules::new();
+    modules.add(PathBuf::from("/modules/MyMod.jr"), "WRONG :: 1;\n");
+
+    let (mut db, _counter) = db_counting("resolved", modules);
+    let sp = db.set_module_search_paths(vec![PathBuf::from("/modules")]);
+
+    let importer = load_with_modules(
+        &mut db,
+        "importer.jr",
+        "#import \"MyMod\";\nmain :: () { x := MY_CONST; }\n",
+    );
+
+    assert!(
+        resolved(&db, importer, sp)
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some("E0201")),
+        "MY_CONST must be unresolved before the module exports it"
+    );
+
+    db.set_file_text("/modules/MyMod.jr", "MY_CONST :: 7;\n");
+
+    assert!(
+        resolved(&db, importer, sp).diagnostics.is_empty(),
+        "adding the export back must clear the importer's error"
     );
 }

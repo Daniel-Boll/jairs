@@ -74,3 +74,11 @@ pub fn unified_diff(path: &std::path::Path, original: &str, formatted: &str) -> 
     }
     out
 }
+
+/// Print a warning to stderr that is not attached to a source span.
+///
+/// Used for configuration problems (a bad `--module-path`, say) which have no
+/// location in any `.jr` file and so cannot be a [`jr_diag::Diagnostic`].
+pub fn warn(message: &str) {
+    eprintln!("warning: {message}");
+}
