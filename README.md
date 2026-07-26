@@ -6,16 +6,20 @@ error-recovering compiler written in Rust.
 
 > **Status: pre-alpha. Jairs source does not compile or run yet.**
 >
-> What works today is the **syntax layer**: `jr check` parses a file and reports
-> rustc-quality diagnostics, `jr fmt` formats it, and `jr parse` dumps its tokens
-> or tree. Implemented crates: `jr-base` (spans, interning, source map),
-> `jr-diag` (diagnostics + renderer), `jr-syntax` (lexer, error-recovering
-> parser, lossless CST, typed AST), `jr-fmt`, `jr-cli`.
+> What works today is the **front end up to name resolution**. `jr check` parses
+> a file, lowers it to HIR, loads the modules it imports, resolves names across
+> the import boundary, and reports rustc-quality diagnostics; `jr fmt` formats
+> it; `jr parse` dumps its tokens or tree. Implemented crates: `jr-base` (spans,
+> interning, source map), `jr-diag` (diagnostics + renderer), `jr-syntax` (lexer,
+> error-recovering parser, lossless CST, typed AST), `jr-fmt`, `jr-hir` (lowering,
+> scopes, `#import` resolution), `jr-pool` (the InternPool), `jr-db` (salsa
+> queries + the module loader), `jr-cli`.
 >
-> Not started: name resolution, type checking, the compile-time bytecode VM, the
-> Cranelift backend, the language server, and the standard library. There is no
-> code generation of any kind — you cannot build or run a Jairs program. See
-> [`PLAN.md`](PLAN.md) for the sequencing.
+> Not started: **type checking** (`jr-sema` is next, and is specified by ADR-0015
+> and ADR-0016), the compile-time bytecode VM, the Cranelift backend, the language
+> server, and the standard library. There is no code generation of any kind — you
+> cannot build or run a Jairs program, and `#run` is not evaluated. See
+> [`PLAN.md`](PLAN.md) §1.5 for per-crate status and §7 for what happens next.
 
 ---
 
