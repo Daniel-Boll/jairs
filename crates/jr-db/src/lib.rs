@@ -33,9 +33,17 @@
 //! Module files are pre-loaded via [`JairsDatabase::load_module`] before
 //! running resolution queries. The queries in [`module_loader`] implement
 //! ADR-0014.
+//!
+//! # Semantic analysis
+//!
+//! The [`sema`] queries wrap `jr-sema`. They carry one extra piece of state that
+//! salsa does not own: the interned type [`Pool`], reached through [`Db::pool`].
+//! Its module docs argue why that is sound and what the alternative would have
+//! cost.
 
 pub mod module_loader;
 mod queries;
+pub mod sema;
 
 // The salsa macro generates undocumented associated functions (new, field
 // getters, field setters). We allow missing_docs for the module that contains
@@ -72,7 +80,10 @@ pub use module_loader::{
     file_diagnostics, file_exports, file_hir, imports_of, module_file, resolved,
 };
 
+pub use sema::{CheckResult, SignatureResult, checked, file_signatures};
+
 use jr_base::{FileId, Interner, SourceMap};
+use jr_pool::Pool;
 use jr_syntax::LexOutput;
 use salsa::Setter as _;
 use std::{
@@ -119,6 +130,17 @@ pub trait Db: salsa::Database {
     /// Module files must be pre-loaded (via [`JairsDatabase::load_module`] or
     /// [`JairsDatabase::set_file_text`]) before running resolution queries.
     fn source_file_for_path(&self, path: &str) -> Option<SourceFile>;
+
+    /// Returns the shared type and value pool.
+    ///
+    /// Held outside salsa's tracking, like the source map, and for a related
+    /// reason: a `PoolId` is only meaningful relative to one pool, so every file
+    /// analysed by one database must share one. Interning is append-only and
+    /// idempotent, which is what makes mutating it inside a tracked query
+    /// harmless — see the `sema` module docs for the full argument.
+    ///
+    /// The lock must never be held across a call into another query.
+    fn pool(&self) -> &std::sync::Mutex<Pool>;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +170,13 @@ pub struct JairsDatabase {
     in_memory_modules: Option<Arc<InMemoryModules>>,
     /// The current module search paths salsa input, if set.
     module_search_paths: Arc<Mutex<Option<ModuleSearchPaths>>>,
+    /// The shared interned types and compile-time values.
+    ///
+    /// Outside salsa for the same reason as `source_map`: it is an identity
+    /// table, not an input. Every file analysed by this database interns into it,
+    /// which is what makes a type from one file comparable with a type from
+    /// another by id alone.
+    pool: Arc<Mutex<Pool>>,
 }
 
 impl Default for JairsDatabase {
@@ -159,6 +188,7 @@ impl Default for JairsDatabase {
             file_inputs: Arc::new(Mutex::new(rustc_hash::FxHashMap::default())),
             in_memory_modules: None,
             module_search_paths: Arc::new(Mutex::new(None)),
+            pool: Arc::new(Mutex::new(Pool::new())),
         }
     }
 }
@@ -177,6 +207,7 @@ impl JairsDatabase {
             file_inputs: Arc::new(Mutex::new(rustc_hash::FxHashMap::default())),
             in_memory_modules: None,
             module_search_paths: Arc::new(Mutex::new(None)),
+            pool: Arc::new(Mutex::new(Pool::new())),
         }
     }
 
@@ -193,6 +224,7 @@ impl JairsDatabase {
             file_inputs: Arc::new(Mutex::new(rustc_hash::FxHashMap::default())),
             in_memory_modules: Some(Arc::new(modules)),
             module_search_paths: Arc::new(Mutex::new(None)),
+            pool: Arc::new(Mutex::new(Pool::new())),
         }
     }
 
@@ -211,6 +243,7 @@ impl JairsDatabase {
             file_inputs: Arc::new(Mutex::new(rustc_hash::FxHashMap::default())),
             in_memory_modules: Some(Arc::new(modules)),
             module_search_paths: Arc::new(Mutex::new(None)),
+            pool: Arc::new(Mutex::new(Pool::new())),
         }
     }
 
@@ -418,6 +451,10 @@ impl Db for JairsDatabase {
     fn source_file_for_path(&self, path: &str) -> Option<SourceFile> {
         let inputs = self.file_inputs.lock().expect("file_inputs lock poisoned");
         inputs.get(path).copied()
+    }
+
+    fn pool(&self) -> &Mutex<Pool> {
+        &self.pool
     }
 }
 

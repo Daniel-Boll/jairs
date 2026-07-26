@@ -23,5 +23,8 @@ main :: () {
     // In expression position there is no ambiguity, because the right-hand
     // side of `:=` is always an expression.
     local := (1 + 2) * 3;
-    called := no_args();
+
+    // `no_args()` returns nothing, so its result cannot be bound
+    // (ADR-0016 §2). Calling it as a statement is the way to write this.
+    no_args();
 }

@@ -1,0 +1,8 @@
+// EXPECT: E0216 — one argument too many
+one :: (a: s64) -> s64 {
+    return a;
+}
+
+main :: () {
+    x := one(1, 2);
+}

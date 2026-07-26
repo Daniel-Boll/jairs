@@ -314,3 +314,50 @@ fn the_slice_program_resolves_against_the_bundled_stdlib() {
         "the slice program must resolve `print` from the bundled Basic module"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Type checking through the CLI
+// ---------------------------------------------------------------------------
+
+/// The whole `valid/` corpus must check cleanly with no `--module-path` at all:
+/// the two files that import `Basic` resolve it in the bundled module directory.
+///
+/// This is the acceptance test for the type checker. The corpus constrains sema
+/// only negatively — no file in `valid/` expects a diagnostic — so "silence" is
+/// the property, and it is asserted over the whole directory because a single
+/// stray error anywhere is a regression.
+#[test]
+fn valid_corpus_checks_cleanly() {
+    let code = check_with_modules(vec![corpus_path("valid")], None);
+    assert_eq!(code, 0, "every file in valid/ must type-check silently");
+}
+
+/// The fixture modules are libraries, not test cases: they must check cleanly on
+/// their own terms (`tests/corpus/README.md`).
+#[test]
+fn fixture_modules_check_cleanly() {
+    let code = check_with_modules(vec![corpus_path("modules")], Some("modules"));
+    assert_eq!(code, 0, "the fixture modules must type-check silently");
+}
+
+/// And the positive half: every file in `type-errors/` must be rejected.
+///
+/// Rejected *by sema*, not by the parser — `jr-sema`'s corpus test asserts these
+/// files parse cleanly, so a parser-caused failure would show up there first.
+#[test]
+fn type_error_corpus_is_rejected() {
+    let dir = corpus_path("type-errors");
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .expect("the type-errors corpus must exist")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jr"))
+        .collect();
+    files.sort();
+    assert!(files.len() >= 12, "the type-errors corpus has shrunk");
+
+    for file in files {
+        let code = check_with_modules(vec![file.clone()], None);
+        assert_eq!(code, 1, "{} must be rejected", file.display());
+    }
+}

@@ -1,0 +1,5 @@
+// EXPECT: E0215 — a local of type `s64` is not a procedure
+main :: () {
+    n := 1;
+    x := n();
+}

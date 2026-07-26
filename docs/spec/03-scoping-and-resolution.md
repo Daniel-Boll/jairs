@@ -89,22 +89,30 @@ diagnostic in the file.
 ## Diagnostics
 
 Codes E0200 and above belong to semantic analysis. (The lexer owns E0001–E0006
-and the parser E0100–E0199.) Most are emitted by `jr-hir`; E0210 comes from the
-module loader in `jr-db`.
+and the parser E0100–E0199.) The codes in this chapter are emitted by `jr-hir`,
+except E0210, which comes from the module loader in `jr-db`. Type checking owns
+E0212 and up, and is documented in `jr-sema`'s crate docs until the type-system
+chapter exists.
 
 | Code | Meaning |
 |---|---|
 | E0200 | duplicate declaration of a name at file scope |
 | E0201 | unresolved name |
 | E0203 | a procedure has neither a body nor `#foreign` |
-| E0204 | integer literal does not fit in `s64` |
+| E0204 | an integer literal does not fit its *contextual* type — emitted by `jr-sema` |
 | E0205 | unknown string escape |
 | E0206 | invalid unicode escape |
 | E0207 | a declaration, or `#run`, inside a procedure body |
 | E0208 | `#import` outside file scope |
 | E0209 | a directive used where it is not valid |
 | E0210 | module not found (lists every path searched) — emitted by `jr-db` |
-| E0211 | ambiguous name provided by two or more imported modules |
+| E0211 | ambiguous name provided by two or more imported modules; in type position, emitted by `jr-sema` |
+
+E0204 is the one code that moved phase. An integer literal has no intrinsic type
+(ADR-0016 §1), so what it must fit is decided by its context — and lowering, which
+used to raise this, cannot see the context. `x: u8 = 300;` was accepted as a
+result. The check now lives in `jr-sema` under the same code, because it is the
+same error about the same source text.
 
 A duplicate declaration reports both places — the redefinition is the primary
 span and the original is a secondary label:

@@ -154,11 +154,18 @@ fn max_s64_integer_literal() {
 }
 
 #[test]
-fn overflow_s64_integer_literal_emits_diagnostic() {
-    // 9223372036854775808 = i64::MAX + 1
+fn overflow_s64_integer_literal_is_flagged_but_not_reported_here() {
+    // 9223372036854775808 = i64::MAX + 1.
+    //
+    // Lowering records that the value does not fit `s64` and says nothing:
+    // under ADR-0016 §1 the literal's type comes from its *context*, which
+    // lowering cannot see, so the diagnostic (still E0204) belongs to `jr-sema`.
     let (hir, diags, _) = lower("X :: 9223372036854775808;");
-    assert_eq!(diags.len(), 1, "expected exactly one overflow diagnostic");
-    assert!(diags.iter().any(|d| d.code == Some("E0204")));
+    assert!(
+        diags.is_empty(),
+        "lowering must not judge a literal it cannot type: {:?}",
+        diags.iter().map(|d| d.code).collect::<Vec<_>>()
+    );
     let item = &hir.items[0];
     let ItemKind::Const {
         value: ConstValue::Expr(eid),

@@ -1,0 +1,4 @@
+// EXPECT: E0224 — the procedure omits the arrow, so it returns nothing
+nothing :: () {
+    return 1;
+}

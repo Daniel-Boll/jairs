@@ -178,8 +178,9 @@ flowchart LR
       *types* today, does not fold. Folding waits for `jr-vm` so that there is
       only ever one evaluator (ADR-0016 §4, and §3.1's invariant below).
 - [ ] `print` comes from `modules/Basic` written in Jairs, via `#foreign` to libc
-      `write` — the module exists and its names resolve across the import
-      boundary; nothing executes yet.
+      `write` — the module exists, its names resolve across the import boundary,
+      and it type-checks (including that `libc` really is a library, ADR-0016 §3);
+      nothing executes yet.
 - [ ] Integer overflow traps, in both the VM and native, with a source location
 - [ ] VS Code: diagnostics + hover + goto-def
 - [ ] Neovim: tree-sitter highlighting — `grammar.js` and `queries/*.scm` exist
@@ -206,20 +207,21 @@ Status of each slice component, so this is answerable without reading the tree.
 | `jr-fmt` | **Done** | Formatter; corpus is canonical under it, CI-enforced |
 | `jr-hir` | **Done** | Lowering, name resolution, flat import merge (ADR-0014) |
 | `jr-pool` | **Done** | Types + comptime values in one pool (ADR-0015, ADR-0016 §3) |
-| `jr-db` | **Done** | salsa queries incl. the module loader (ADR-0007, ADR-0014) |
+| `jr-sema` | **Done** | Signatures + checking (ADR-0016). No const-eval: that is `jr-vm` |
+| `jr-db` | **Done** | salsa queries incl. the module loader and sema (ADR-0007, ADR-0014) |
 | `jr-cli` | **Done** | `jr check` (with `--module-path`), `jr fmt`, `jr parse` |
 | `tree-sitter-jairs` | **Done** | Grammar + queries; drift gate green |
-| `tests/corpus` | **Done** | 50 files. **No file expects a type error** — see ADR-0016 |
-| `modules/Basic` | **Partial** | Written and resolving; cannot execute |
-| `jr-sema` | **Not started** | Next. Spec'd by ADR-0015 and ADR-0016 |
-| `jr-mir` | **Not started** | |
+| `tests/corpus` | **Done** | 66 files, incl. `type-errors/` — one file per sema diagnostic |
+| `modules/Basic` | **Partial** | Written, resolving and type-checking; cannot execute |
+| `jr-mir` | **Not started** | Next |
 | `jr-vm` | **Not started** | Gates `#run` folding |
 | `jr-codegen`, `-clif`, `jr-link` | **Not started** | |
 | `jr-driver`, `jr-lsp` | **Not started** | |
 
 Accepted ADRs: 0001–0016. See [`docs/adr/README.md`](docs/adr/README.md).
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
-03 (scoping and resolution). A type-system chapter is owed once `jr-sema` lands.
+03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
+plus `jr-sema`'s crate docs are the only record of the typing rules today.
 
 ---
 
@@ -427,63 +429,93 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 ## 7. Immediate next actions
 
-Everything originally listed here — workspace scaffolding, the ADRs, spec
-chapters 00–02, the corpus, CI plus the drift gate, and the
-lexer→parser→CST→`jr fmt` inch — is **done**. See §1.5 for component status.
+Everything through **type checking** is done: workspace scaffolding, the ADRs,
+spec chapters 00–03, the corpus plus the drift gate, the
+lexer→parser→CST→`jr fmt` inch, HIR and name resolution, the module loader, the
+InternPool, and `jr-sema`. See §1.5 for component status.
 
-### Next: implement `jr-sema`
+### What `jr-sema` landed
 
-It is fully specified before a line is written: ADR-0015 fixes type *identity*
-and ADR-0016 fixes the typing *rules*. Read both first. The unusual constraint is
-that **no corpus file expects a type error**, so the corpus constrains sema only
-negatively — every file in `valid/`, `imports/valid/`, `tests/corpus/modules/`
-and `modules/` must check **silently**. That is the acceptance test.
+All six work items from the previous handoff, in one wave:
 
-Work items, in dependency order:
+- [x] **Type resolution.** `TypeRef` → `PoolId`, with builtins (`s64`, `u8`,
+      `bool`, `string`) matched by name because they are ordinary identifiers, user
+      types via `hir.scope`, and imported types via the import scopes. Every
+      accessor takes an `ExprScope` saying which arena an id belongs to, so the
+      arena trap is closed by construction rather than by remembering.
+- [x] **`file_signatures`.** Signature-only typing that depends on `file_hir` and
+      the *imported files’ HIR*, never on another file’s signatures or check
+      (ADR-0016 §5). This is what keeps the `Cycle_A`/`Cycle_B` import cycle
+      terminating, and `jr-db`’s `sema` module docs draw the resulting graph.
+- [x] **Expression and statement checking**, `:=` inference, and poison
+      propagation. `PoolId::ERROR` flows silently, so the invalid corpus produces
+      **zero** sema diagnostics — asserted, not assumed.
+- [x] **Wired into `jr-db`** as `file_signatures` and `checked`, joined into
+      `file_diagnostics`. The interned `Pool` lives behind `Db::pool`, outside
+      salsa, for the reasons argued in `crates/jr-db/src/sema.rs`.
+- [x] **Corpus.** `valid/025-paren-constant.jr` lost its void binding, and
+      `tests/corpus/type-errors/` is new: 16 files, one per code this crate owns,
+      each declaring the code it expects.
+- [x] **E0204 moved** out of lowering into sema, against the *contextual* type. So
+      `x: u8 = 300;` is now an error; it was silently accepted before.
 
-- [ ] **Type resolution.** `TypeRef` → `PoolId`. Builtins `s64`/`u8`/`bool`/
-      `string` resolved *by name* (they are ordinary identifiers, not keywords —
-      `docs/spec/01-lexical.md:111`), user types via `hir.scope`, imported types
-      via the import scopes. Needs a new diagnostic for an unknown type name.
-      Mind the arena trap: only `FileHir::type_refs` and `Body::type_refs` are
-      real, and which one a `TypeRefId` indexes depends on where it came from,
-      not on the ID. `Proc::type_refs` and `Struct::type_refs` are always empty
-      (and `Proc::type_refs`' doc comment is wrong — fix it).
-- [ ] **`file_signatures`.** Signature-only typing that depends on `file_hir`
-      alone and never on another file's full check (ADR-0016 §5). This is what
-      keeps `imports/valid/005-import-cycle-is-legal.jr` working, and it mirrors
-      the `file_exports` invariant documented in `jr-db/src/module_loader.rs:27`.
-- [ ] **Expression and statement checking**, `:=` inference, and poison
-      propagation. Sema must stay silent on `TypeRef::Error`, `Expr::Error` and
-      `Res::Error`, because `file_diagnostics` does not gate later phases on
-      earlier ones — without poison propagation every parse error cascades into
-      type errors.
-- [ ] **Wire into `jr-db`** as a `checked` query, joined into `file_diagnostics`
-      alongside the parse/lower/resolve blocks.
-- [ ] **Corpus.** Edit `valid/025-paren-constant.jr` to drop `called :=
-      no_args();`, which ADR-0016 §2 makes an error. Add the first type-error
-      files to `invalid/`; there are none today.
-- [ ] **Move the E0204 literal-fit check** out of lowering. It currently tests
-      against `s64` during lowering, which cannot implement context typing
-      because lowering does not know the target type — so `x: u8 = 300;` is
-      silently accepted today (ADR-0016, Negative).
+Two decisions were taken while doing it that the plan had not anticipated:
 
-Diagnostic codes: **E0212 is the first free code.** E02xx is semantic analysis as
-a whole. Beware that `jr-syntax`' parser illegally emits E0200/E0201/E0202 for
-"arrives in wave Wn" errors, colliding with `jr-hir`'s codes — do not filter
-tests by those.
+- **Type-error files went in a new `tests/corpus/type-errors/`, not `invalid/`.**
+  `invalid/` is the parser’s recovery corpus and three separate gates enforce
+  that its files fail to *parse*. A type error parses fine, so filing one there
+  would have meant weakening all three. `tests/corpus/README.md` records the
+  contract, and the new directory joins the formatter and tree-sitter gates
+  instead of being excluded from them.
+- **No new ADR.** ADR-0015 and ADR-0016 already fix identity and rules; the
+  diagnostic-code table and the two rules they left open (what counts as a place,
+  and `string`’s `.data`/`.count` pseudo-fields) are argued in `jr-sema`’s crate
+  docs, where the code that implements them can be read alongside.
+
+Diagnostic codes: **E0227 is the first free code.** E0212–E0226 are sema; E0204
+and E0211 are shared, and `jr-sema`’s crate docs say who raises what. Beware that
+`jr-syntax`’ parser still illegally emits E0200/E0201/E0202 for “arrives in wave
+Wn” errors, colliding with `jr-hir` — do not filter tests by those.
+
+### Next: implement `jr-mir`
+
+`jr-sema` produces a `TypeMap` that nothing consumes yet; MIR is its first
+consumer, and PLAN.md §3.1’s invariant is the constraint that matters — the VM
+and every backend lower the *same* MIR, or `#run` and runtime silently disagree.
+Read Zig’s `Sema.zig` and `InternPool.zig` before W4; `jr-pool`’s notes record
+what was taken from `InternPool.zig` and what was rejected.
+
+Things `jr-mir` will need that do not exist yet:
+
+- A back-pointer from `Body` to its `Proc`. Sema recovers it by scanning
+  `FileHir::procs`; MIR will want the same mapping and should not scan again.
+- Definite-assignment analysis (`c: s64 = ---;`) and missing-`return` detection.
+  Both are control-flow questions that need MIR’s CFG, which is why sema does not
+  answer them.
 
 ### Known latent issues, none blocking
 
 - `file_diagnostics` calls `lower_file` itself instead of reusing `file_hir`,
   because `file_hir` discards lowering diagnostics. Every file is lowered twice.
-- The parser's E0200/E0201/E0202 collision described above.
+- The parser’s E0200/E0201/E0202 collision described above.
 - `Stmt::Item` and `FieldId` are declared but never constructed.
-- `ForeignInfo::library` is never resolved to its `#system_library` constant.
-  ADR-0016 §3 gives that a type, which is what would make resolving it useful.
+- An imported module’s signatures are recomputed once per importer inside the
+  signature phase. ADR-0016 §5 forbids the obvious fix (calling
+  `file_signatures` on the import), and interning is idempotent, so the cost is
+  time rather than correctness.
+- A name that an *imported* module itself imported is invisible to the importer’s
+  signature phase and resolves to poison. It only bites a constant whose value is
+  such a name; nothing in the corpus does that.
+- The most negative value of a signed type cannot be written as a literal: the
+  HIR stores a magnitude and `-1` is negation applied to `1`, so
+  `-9223372036854775808` overflows the positive bound.
+- `Pool` never shrinks. Fine for a batch run; an editing session that runs long
+  enough would grow it without bound, and `jr-pool`’s docs record the remap-pass
+  escape hatch.
+- The `TypeMap` is produced and stored but read by nothing except tests.
 
-### After sema
+### After MIR
 
-`jr-mir` → `jr-vm` (which unblocks `#run` folding and `jr run`) → `jr-codegen-clif`
-→ `jr-link`. Read Zig's `Sema.zig` and `InternPool.zig` before W4; the `jr-pool`
-notes already record what was taken from `InternPool.zig` and what was rejected.
+`jr-vm` (which unblocks `#run` folding and `jr run`) → `jr-codegen-clif` →
+`jr-link`. The VM is the only evaluator that will ever exist, so `#run` gets its
+value there and nowhere else (ADR-0016 §4).

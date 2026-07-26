@@ -80,10 +80,13 @@ jobs:
       # Only the trees that are meant to be well-formed. `invalid/` files
       # deliberately do not parse, and `jr fmt` correctly refuses to format
       # input it could not parse, so including them would always fail.
+      # `type-errors/` DOES belong here: those files parse cleanly and are
+      # rejected later, by the type checker.
       - run: >
           cargo run -p jr-cli -- fmt --check
           tests/corpus/valid
           tests/corpus/imports/valid
+          tests/corpus/type-errors
           tests/corpus/modules
           modules
 
@@ -142,10 +145,12 @@ jobs:
           #
           # Every corpus file that is meant to be well-formed must parse with no
           # ERROR nodes: the single-file programs, the multi-module import cases,
-          # and the fixture modules they import.
+          # the fixture modules they import, and the type-error programs — those
+          # are well-formed source that only the type checker rejects.
           ( cd tree-sitter-jairs && tree-sitter parse --quiet \
               ../tests/corpus/valid/*.jr \
               ../tests/corpus/imports/valid/*.jr \
+              ../tests/corpus/type-errors/*.jr \
               ../tests/corpus/modules/*.jr \
               ../tests/corpus/modules/*/*.jr \
               ../modules/*/*.jr )
