@@ -1,0 +1,428 @@
+//! The [`Pool`] itself: interning, the well-known prefix, and lookup.
+
+use rustc_hash::FxHashMap;
+
+use crate::item::{ContextKind, DeclId, EffectRow, Field, Item, PoolId, StrId};
+
+// ---------------------------------------------------------------------------
+// The well-known prefix
+// ---------------------------------------------------------------------------
+
+impl PoolId {
+    /// `void`.
+    pub const VOID: Self = Self::from_usize(0);
+    /// `bool`.
+    pub const BOOL: Self = Self::from_usize(1);
+    /// `s64`.
+    pub const S64: Self = Self::from_usize(2);
+    /// `u8`.
+    pub const U8: Self = Self::from_usize(3);
+    /// `string`.
+    pub const STRING: Self = Self::from_usize(4);
+    /// The type of types.
+    pub const TYPE: Self = Self::from_usize(5);
+    /// The poison type used to keep analysis going after an error.
+    pub const ERROR: Self = Self::from_usize(6);
+    /// `*u8`.
+    ///
+    /// Pre-interned because both the `string` layout and the libc `write`
+    /// signature are spelled in it (ADR-0004, `019-foreign.jr`), so it is
+    /// reached before any user code mentions a pointer.
+    pub const PTR_U8: Self = Self::from_usize(7);
+    /// The single value of type `void`.
+    pub const VOID_VALUE: Self = Self::from_usize(8);
+    /// `true`.
+    pub const TRUE: Self = Self::from_usize(9);
+    /// `false`.
+    pub const FALSE: Self = Self::from_usize(10);
+
+    /// The number of well-known entries seeded by [`Pool::new`].
+    pub const WELL_KNOWN_COUNT: usize = 11;
+}
+
+// ---------------------------------------------------------------------------
+// Pool
+// ---------------------------------------------------------------------------
+
+/// Canonical identities for every type and every compile-time value.
+///
+/// Interning is idempotent: interning equal [`Item`]s always yields the same
+/// [`PoolId`], so downstream code compares types by comparing 32-bit integers.
+///
+/// # Single-threaded, on purpose
+///
+/// The pool is used behind `&mut Pool`. It is not sharded and takes no locks.
+/// Zig's `InternPool` was made thread-safe (per-thread append-only item lists
+/// plus a sharded, lock-free-read map, with the owning thread ID packed into the
+/// high bits of every index) and *measured a slowdown* before anything used it.
+/// If wave W8's parallel analysis needs it, that is the proven shape to adopt;
+/// until something needs it, it is complexity with no payer.
+///
+/// # No removal, and no garbage collection
+///
+/// There is deliberately no `remove`. `PoolId`s are indices into a `Vec`, so
+/// removal cannot compact without invalidating every ID already handed out —
+/// which is why Zig's pool marks removed entries and leaks the slot, and why
+/// "garbage collection is currently vaporware" is the most-cited regret in its
+/// own source. Because our IDs are opaque, the escape hatch if the pool ever
+/// grows without bound across an editing session is a remap pass at an update
+/// boundary: rebuild the pool and rewrite live IDs through an
+/// old-ID-to-new-ID table. Nothing needs that yet.
+#[derive(Debug, Clone)]
+pub struct Pool {
+    /// Every interned entry, indexed by [`PoolId`].
+    items: Vec<Item>,
+    /// Reverse map for de-duplication.
+    dedupe: FxHashMap<Item, PoolId>,
+    /// Interned string-value contents, indexed by [`StrId`].
+    strings: Vec<String>,
+    /// Reverse map for string de-duplication.
+    string_dedupe: FxHashMap<String, StrId>,
+    /// Resolved struct bodies, keyed by declaration rather than by [`PoolId`]
+    /// because the body is not part of the type's identity (ADR-0015 §1).
+    struct_fields: FxHashMap<DeclId, Vec<Field>>,
+}
+
+impl Default for Pool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Pool {
+    /// Creates a pool seeded with the well-known types and values.
+    ///
+    /// The seeding order is load-bearing: it is what makes the associated
+    /// constants on [`PoolId`] correct. Do not reorder without updating them.
+    #[must_use]
+    pub fn new() -> Self {
+        let mut pool = Self {
+            items: Vec::new(),
+            dedupe: FxHashMap::default(),
+            strings: Vec::new(),
+            string_dedupe: FxHashMap::default(),
+            struct_fields: FxHashMap::default(),
+        };
+
+        let void = pool.intern(Item::VoidType);
+        let bool_ty = pool.intern(Item::BoolType);
+        let s64 = pool.intern(Item::IntType {
+            signed: true,
+            bits: 64,
+        });
+        let u8_ty = pool.intern(Item::IntType {
+            signed: false,
+            bits: 8,
+        });
+        let string = pool.intern(Item::StringType);
+        let type_ty = pool.intern(Item::TypeType);
+        let error = pool.intern(Item::ErrorType);
+        let ptr_u8 = pool.intern(Item::PointerType(u8_ty));
+        let void_value = pool.intern(Item::VoidValue);
+        let t = pool.intern(Item::BoolValue(true));
+        let f = pool.intern(Item::BoolValue(false));
+
+        debug_assert_eq!(void, PoolId::VOID);
+        debug_assert_eq!(bool_ty, PoolId::BOOL);
+        debug_assert_eq!(s64, PoolId::S64);
+        debug_assert_eq!(u8_ty, PoolId::U8);
+        debug_assert_eq!(string, PoolId::STRING);
+        debug_assert_eq!(type_ty, PoolId::TYPE);
+        debug_assert_eq!(error, PoolId::ERROR);
+        debug_assert_eq!(ptr_u8, PoolId::PTR_U8);
+        debug_assert_eq!(void_value, PoolId::VOID_VALUE);
+        debug_assert_eq!(t, PoolId::TRUE);
+        debug_assert_eq!(f, PoolId::FALSE);
+        debug_assert_eq!(pool.len(), PoolId::WELL_KNOWN_COUNT);
+
+        pool
+    }
+
+    /// Interns an item, returning its canonical [`PoolId`].
+    ///
+    /// Idempotent: interning an equal item again returns the same ID without
+    /// growing the pool.
+    ///
+    /// # Panics
+    /// Panics if the pool exceeds `PoolId::MAX` entries.
+    pub fn intern(&mut self, item: Item) -> PoolId {
+        if let Some(&existing) = self.dedupe.get(&item) {
+            return existing;
+        }
+        let id = PoolId::from_usize(self.items.len());
+        self.items.push(item.clone());
+        self.dedupe.insert(item, id);
+        id
+    }
+
+    /// Returns the item an ID names.
+    ///
+    /// # Panics
+    /// Panics if `id` did not come from this pool.
+    #[must_use]
+    pub fn item(&self, id: PoolId) -> &Item {
+        self.items
+            .get(id.index())
+            .expect("PoolId came from a different pool")
+    }
+
+    /// Returns the number of interned items.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    /// Returns `true` if the pool holds nothing.
+    ///
+    /// Never true for a pool from [`Pool::new`], which seeds the well-known
+    /// prefix; present because clippy requires it alongside `len`.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// Returns `true` if `id` names a type rather than a value.
+    #[must_use]
+    pub fn is_type(&self, id: PoolId) -> bool {
+        self.item(id).is_type()
+    }
+
+    /// Returns the type of anything in the pool.
+    ///
+    /// Total: every entry has a type, including the types themselves — a type's
+    /// type is [`PoolId::TYPE`]. This totality is why `void` is a real type
+    /// rather than an absence (ADR-0015 §3).
+    ///
+    /// The match is exhaustive by variant rather than falling back on
+    /// [`Item::is_type`], so that adding an item kind is a compile error here
+    /// instead of an `unreachable!` reached halfway through type checking.
+    ///
+    /// # Panics
+    /// Panics if `id` did not come from this pool.
+    #[must_use]
+    pub fn type_of(&self, id: PoolId) -> PoolId {
+        match self.item(id) {
+            // Every type is a value of type `type`.
+            Item::VoidType
+            | Item::BoolType
+            | Item::IntType { .. }
+            | Item::StringType
+            | Item::TypeType
+            | Item::ErrorType
+            | Item::PointerType(_)
+            | Item::StructType { .. }
+            | Item::ProcType { .. } => PoolId::TYPE,
+
+            Item::VoidValue => PoolId::VOID,
+            Item::BoolValue(_) => PoolId::BOOL,
+            Item::StrValue(_) => PoolId::STRING,
+            Item::TypeValue(_) => PoolId::TYPE,
+            // These two carry their own type, because one shape can have many.
+            Item::IntValue { ty, .. } | Item::ProcValue { ty, .. } => *ty,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Type constructors
+    // -----------------------------------------------------------------------
+
+    /// Interns `*pointee`.
+    pub fn pointer_to(&mut self, pointee: PoolId) -> PoolId {
+        self.intern(Item::PointerType(pointee))
+    }
+
+    /// Interns the nominal struct type declared at `decl`.
+    ///
+    /// The field list is not required, and not part of the key. Calling this
+    /// twice for the same `decl` yields the same ID; calling it for two
+    /// different `decl`s yields two different IDs even if their fields match
+    /// (ADR-0015 §1).
+    ///
+    /// Splitting identity from the body is what lets a struct refer to itself
+    /// through a pointer — `Node :: struct { next: *Node; }` needs `Node` to
+    /// already have an ID while its own fields are still being lowered.
+    pub fn struct_type(&mut self, decl: DeclId) -> PoolId {
+        self.intern(Item::StructType { decl })
+    }
+
+    /// Records the resolved fields of the struct declared at `decl`.
+    ///
+    /// Replaces any fields already recorded, so re-analysing a file is safe.
+    pub fn set_struct_fields(&mut self, decl: DeclId, fields: Vec<Field>) {
+        self.struct_fields.insert(decl, fields);
+    }
+
+    /// Returns the resolved fields of the struct declared at `decl`, if they
+    /// have been recorded yet.
+    #[must_use]
+    pub fn struct_fields(&self, decl: DeclId) -> Option<&[Field]> {
+        self.struct_fields.get(&decl).map(Vec::as_slice)
+    }
+
+    /// Interns a procedure type.
+    ///
+    /// `ret` is always a real type; pass [`PoolId::VOID`] when the source
+    /// omitted the return arrow.
+    pub fn proc_type(&mut self, params: Vec<PoolId>, ret: PoolId, context: ContextKind) -> PoolId {
+        self.intern(Item::ProcType {
+            params,
+            ret,
+            context,
+            effects: EffectRow,
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Value constructors
+    // -----------------------------------------------------------------------
+
+    /// Interns an integer value of type `ty`.
+    ///
+    /// `bits` is the raw value as the HIR produced it. Overflow is *not*
+    /// represented here: a literal too large for its type is a lowering
+    /// diagnostic (E0204) that has already been reported by the time a value
+    /// reaches the pool, so the pool interns what the program means and does not
+    /// carry an error flag around forever.
+    pub fn int_value(&mut self, ty: PoolId, bits: u64) -> PoolId {
+        self.intern(Item::IntValue { ty, bits })
+    }
+
+    /// Interns a boolean value.
+    ///
+    /// Both booleans are in the well-known prefix, so this never grows the pool.
+    pub fn bool_value(&mut self, value: bool) -> PoolId {
+        self.intern(Item::BoolValue(value))
+    }
+
+    /// Interns a string value from its already-escape-decoded contents.
+    pub fn str_value(&mut self, contents: &str) -> PoolId {
+        let str_id = self.intern_str(contents);
+        self.intern(Item::StrValue(str_id))
+    }
+
+    /// Interns a type as a compile-time value (ADR-0012, wave W4).
+    ///
+    /// # Panics
+    /// Panics if `ty` names a value rather than a type.
+    pub fn type_value(&mut self, ty: PoolId) -> PoolId {
+        assert!(
+            self.is_type(ty),
+            "type_value requires a type, got {:?}",
+            self.item(ty)
+        );
+        self.intern(Item::TypeValue(ty))
+    }
+
+    /// Interns a procedure as a compile-time value (ADR-0012).
+    pub fn proc_value(&mut self, ty: PoolId, decl: DeclId) -> PoolId {
+        self.intern(Item::ProcValue { ty, decl })
+    }
+
+    // -----------------------------------------------------------------------
+    // String values
+    // -----------------------------------------------------------------------
+
+    /// Interns string-value contents, returning a [`StrId`].
+    ///
+    /// # Panics
+    /// Panics if the string table exceeds `StrId::MAX` entries.
+    pub fn intern_str(&mut self, contents: &str) -> StrId {
+        if let Some(&existing) = self.string_dedupe.get(contents) {
+            return existing;
+        }
+        let id = StrId::from_usize(self.strings.len());
+        self.strings.push(contents.to_owned());
+        self.string_dedupe.insert(contents.to_owned(), id);
+        id
+    }
+
+    /// Resolves an interned string value back to its contents.
+    ///
+    /// # Panics
+    /// Panics if `id` did not come from this pool.
+    #[must_use]
+    pub fn resolve_str(&self, id: StrId) -> &str {
+        self.strings
+            .get(id.index())
+            .expect("StrId came from a different pool")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn well_known_prefix_is_seeded_at_the_expected_indices() {
+        let pool = Pool::new();
+        assert_eq!(pool.len(), PoolId::WELL_KNOWN_COUNT);
+        assert_eq!(*pool.item(PoolId::VOID), Item::VoidType);
+        assert_eq!(*pool.item(PoolId::BOOL), Item::BoolType);
+        assert_eq!(
+            *pool.item(PoolId::S64),
+            Item::IntType {
+                signed: true,
+                bits: 64
+            }
+        );
+        assert_eq!(
+            *pool.item(PoolId::U8),
+            Item::IntType {
+                signed: false,
+                bits: 8
+            }
+        );
+        assert_eq!(*pool.item(PoolId::STRING), Item::StringType);
+        assert_eq!(*pool.item(PoolId::TYPE), Item::TypeType);
+        assert_eq!(*pool.item(PoolId::ERROR), Item::ErrorType);
+        assert_eq!(*pool.item(PoolId::PTR_U8), Item::PointerType(PoolId::U8));
+        assert_eq!(*pool.item(PoolId::VOID_VALUE), Item::VoidValue);
+        assert_eq!(*pool.item(PoolId::TRUE), Item::BoolValue(true));
+        assert_eq!(*pool.item(PoolId::FALSE), Item::BoolValue(false));
+    }
+
+    #[test]
+    fn interning_a_well_known_item_reuses_its_id() {
+        let mut pool = Pool::new();
+        let before = pool.len();
+        assert_eq!(pool.intern(Item::BoolType), PoolId::BOOL);
+        assert_eq!(pool.pointer_to(PoolId::U8), PoolId::PTR_U8);
+        assert_eq!(pool.bool_value(true), PoolId::TRUE);
+        assert_eq!(pool.len(), before, "well-known items must not be re-added");
+    }
+
+    #[test]
+    fn interning_is_idempotent() {
+        let mut pool = Pool::new();
+        let a = pool.pointer_to(PoolId::S64);
+        let b = pool.pointer_to(PoolId::S64);
+        assert_eq!(a, b);
+        assert_eq!(pool.len(), PoolId::WELL_KNOWN_COUNT + 1);
+    }
+
+    #[test]
+    fn string_values_dedupe() {
+        let mut pool = Pool::new();
+        let a = pool.str_value("hello");
+        let b = pool.str_value("hello");
+        let c = pool.str_value("goodbye");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        let Item::StrValue(sid) = *pool.item(a) else {
+            panic!("expected a string value");
+        };
+        assert_eq!(pool.resolve_str(sid), "hello");
+    }
+
+    #[test]
+    #[should_panic(expected = "type_value requires a type")]
+    fn type_value_rejects_a_value() {
+        let mut pool = Pool::new();
+        let _ = pool.type_value(PoolId::TRUE);
+    }
+
+    #[test]
+    fn is_empty_is_false_for_a_seeded_pool() {
+        assert!(!Pool::new().is_empty());
+    }
+}

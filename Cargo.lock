@@ -503,6 +503,10 @@ version = "0.0.0"
 [[package]]
 name = "jr-pool"
 version = "0.0.0"
+dependencies = [
+ "jr-base",
+ "rustc-hash 2.1.3",
+]
 
 [[package]]
 name = "jr-sema"

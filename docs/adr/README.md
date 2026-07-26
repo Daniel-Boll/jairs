@@ -35,3 +35,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0012](0012-procs-and-structs-are-constants.md) | Procedures and structs are constants | Accepted |
 | [0013](0013-hir-spans-defer-astidmap.md) | HIR nodes carry spans; `AstIdMap` is deferred | Accepted |
 | [0014](0014-module-resolution.md) | Module resolution: search paths, flat imports, cycles are legal | Accepted |
+| [0015](0015-type-identity.md) | Type identity: nominal structs, distinct `string`, interned `void` | Accepted |
