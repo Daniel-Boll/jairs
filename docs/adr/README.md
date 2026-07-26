@@ -33,3 +33,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0010](0010-handwritten-parser-separate-treesitter.md) | Hand-written compiler parser; tree-sitter is editor-only | Accepted |
 | [0011](0011-postfix-deref-prefix-address-of.md) | Dereference is postfix `.*`; address-of is prefix `*` | Accepted |
 | [0012](0012-procs-and-structs-are-constants.md) | Procedures and structs are constants | Accepted |
+| [0013](0013-hir-spans-defer-astidmap.md) | HIR nodes carry spans; `AstIdMap` is deferred | Accepted |

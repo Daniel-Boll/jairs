@@ -21,6 +21,7 @@ workspace = true
 [dependencies]
 jr-base.workspace = true
 jr-diag.workspace = true
+jr-hir.workspace = true
 jr-syntax.workspace = true
 jr-fmt.workspace = true
 clap.workspace = true

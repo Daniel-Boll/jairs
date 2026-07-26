@@ -145,7 +145,16 @@ impl DiagData {
 
         let primary_start = (u32::from(diag.primary.span.start()) as usize).min(primary_len);
         let primary_end = (u32::from(diag.primary.span.end()) as usize).min(primary_len);
-        let primary_line = primary_file.line_col(diag.primary.span.start()).line as usize;
+        // `annotate-snippets` interprets `line_start` as the line number of the
+        // FIRST line of the source it is handed. We hand it the whole file, so
+        // that is line 1. Passing the primary span's line here instead shifts
+        // every rendered line number by (line - 1), which silently breaks both
+        // human reading and editor jump-to-error.
+        let primary_line = 1usize;
+        debug_assert!(
+            primary_file.line_col(diag.primary.span.start()).line >= 1,
+            "line numbers are 1-based"
+        );
 
         let mut primary_annotations: Vec<(usize, usize, Option<String>)> =
             vec![(primary_start, primary_end, diag.primary.message.clone())];
@@ -184,7 +193,9 @@ impl DiagData {
                 {
                     cross_file_map[pos].1.annotations.push(ann);
                 } else {
-                    let line_start = file.line_col(sec.span.start()).line as usize;
+                    // Whole-file source, so the first line is line 1. See the
+                    // comment on `primary_line` above.
+                    let line_start = 1usize;
                     cross_file_map.push((
                         sec.span.file,
                         FileData {
