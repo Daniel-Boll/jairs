@@ -13,10 +13,18 @@ pub fn make_renderer(colour: bool) -> Renderer {
 }
 
 /// Render all diagnostics to stderr.
+///
+/// `render_all` does not guarantee a trailing newline, so one is added when
+/// missing; otherwise the next line of output (typically the summary) collides
+/// with the final caret line.
 pub fn emit_diagnostics(renderer: &Renderer, map: &SourceMap, diags: &Diagnostics) {
     if !diags.is_empty() {
         let text = renderer.render_all(map, diags);
-        eprint!("{text}");
+        if text.ends_with('\n') {
+            eprint!("{text}");
+        } else {
+            eprintln!("{text}");
+        }
     }
 }
 
