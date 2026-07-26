@@ -77,7 +77,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      - run: cargo run -p jr-cli -- fmt --check tests/corpus modules
+      # Only the trees that are meant to be well-formed. `invalid/` files
+      # deliberately do not parse, and `jr fmt` correctly refuses to format
+      # input it could not parse, so including them would always fail.
+      - run: >
+          cargo run -p jr-cli -- fmt --check
+          tests/corpus/valid
+          tests/corpus/imports/valid
+          tests/corpus/modules
+          modules
 
   # ---------------------------------------------------------------------------
   # corpus-drift — THE GATE (PLAN.md §2.0 and §5)
