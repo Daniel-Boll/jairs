@@ -140,3 +140,66 @@ fn all_diagnostics_carry_a_code() {
         }
     }
 }
+
+/// `ExprId`s are not unique across a file: `FileHir::exprs` and every
+/// `Body::exprs` are independent arenas that all start at index 0. `ResolveMap`
+/// was originally keyed on a bare `ExprId`, so the two arenas collided and the
+/// last writer won — a top-level constant's name reference came back resolved to
+/// whatever local happened to share its index.
+///
+/// This is the shape that caught it: `LIMIT :: GREETING` is top-level expression
+/// 1, and `z := y` makes `y` body expression 1. Before the fix, looking up the
+/// top-level one returned `Res::Local`.
+///
+/// Nothing consumed the map at the time, so this was latent rather than visibly
+/// broken; `jr-sema` is the first pass that would have depended on it.
+#[test]
+fn resolve_map_does_not_collide_top_level_and_body_expression_ids() {
+    let src = "GREETING :: \"x\";\nLIMIT :: GREETING;\nmain :: () {\n    y := 1;\n    z := y;\n}\n";
+    let (hir, diags, interner) = lower(src);
+    assert!(!diags.has_errors(), "probe source must lower cleanly");
+
+    let (map, resolve_diags) = jr_hir::resolve(&hir, &[], &interner);
+    assert!(
+        !resolve_diags.has_errors(),
+        "probe source must resolve cleanly"
+    );
+
+    // The top-level `GREETING` reference, in FileHir::exprs.
+    let top_idx = hir
+        .exprs
+        .iter()
+        .position(|e| matches!(e, Expr::Name { .. }))
+        .expect("`LIMIT :: GREETING` lowers to a top-level Name expression");
+
+    // The `y` reference inside main's body, which shares that index.
+    let body_id = hir
+        .bodies
+        .iter()
+        .enumerate()
+        .map(|(i, _)| jr_hir::BodyId::from_usize(i))
+        .next()
+        .expect("main has a body");
+    let body_idx = hir
+        .body(body_id)
+        .exprs
+        .iter()
+        .position(|e| matches!(e, Expr::Name { .. }))
+        .expect("`z := y` lowers to a Name expression in the body");
+    assert_eq!(
+        top_idx, body_idx,
+        "this test is only meaningful while the two arenas collide at one index"
+    );
+
+    let top = map.get_top(jr_hir::ExprId::from_usize(top_idx));
+    let in_body = map.get_in_body(body_id, jr_hir::ExprId::from_usize(body_idx));
+
+    assert!(
+        matches!(top, Some(jr_hir::Res::Item(_))),
+        "the top-level `GREETING` must resolve to a file-scope item, got {top:?}"
+    );
+    assert!(
+        matches!(in_body, Some(jr_hir::Res::Local(_))),
+        "the body's `y` must resolve to a local, got {in_body:?}"
+    );
+}
