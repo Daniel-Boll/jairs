@@ -73,19 +73,37 @@ const E0211: &str = "E0211";
 // ResolveMap
 // ---------------------------------------------------------------------------
 
-/// The result of name resolution: a map from `ExprId` to `Res`.
+/// Which expression arena an [`ExprId`] indexes.
+///
+/// This exists because `ExprId`s are **not** unique across a file.
+/// [`FileHir::exprs`](crate::FileHir::exprs) and every [`Body::exprs`](crate::Body::exprs) are independent arenas that all
+/// start at index 0, so an `ExprId` alone does not say what it refers to. A map
+/// keyed on `ExprId` alone silently collides: the last writer wins, and a
+/// top-level constant's name reference ends up resolved to whatever local
+/// happened to share its index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ExprScope {
+    /// [`FileHir::exprs`](crate::FileHir::exprs) — constant values, variable initialisers, top-level
+    /// `#run`.
+    TopLevel,
+    /// The [`Body::exprs`](crate::Body::exprs) arena of one procedure body.
+    Body(BodyId),
+}
+
+/// The result of name resolution: a map from expression to [`Res`].
 ///
 /// This is separate from the HIR so that resolution can be re-run without
 /// mutating the HIR (important for incremental compilation via salsa).
 ///
-/// For now, resolution results are stored here rather than mutated into the
-/// HIR. Downstream passes look up resolution results via this map.
+/// Keys are `(ExprScope, ExprId)` rather than a bare `ExprId`; see
+/// [`ExprScope`] for why a bare `ExprId` is not a unique key.
 #[derive(Debug, Default)]
 pub struct ResolveMap {
-    /// Maps expression IDs (for `Expr::Name` nodes) to their resolution.
+    /// Maps `(arena, expression ID)` for `Expr::Name` nodes to their
+    /// resolution.
     ///
     /// Only `Expr::Name` nodes appear here; other expression kinds are absent.
-    pub resolutions: FxHashMap<ExprId, Res>,
+    pub resolutions: FxHashMap<(ExprScope, ExprId), Res>,
 }
 
 impl ResolveMap {
@@ -94,14 +112,28 @@ impl ResolveMap {
         Self::default()
     }
 
-    /// Returns the resolution for an expression, if any.
-    pub fn get(&self, id: ExprId) -> Option<Res> {
-        self.resolutions.get(&id).copied()
+    /// Returns the resolution for an expression in a given arena, if any.
+    pub fn get(&self, scope: ExprScope, id: ExprId) -> Option<Res> {
+        self.resolutions.get(&(scope, id)).copied()
+    }
+
+    /// Returns the resolution for a top-level expression, if any.
+    ///
+    /// Convenience for [`ExprScope::TopLevel`].
+    pub fn get_top(&self, id: ExprId) -> Option<Res> {
+        self.get(ExprScope::TopLevel, id)
+    }
+
+    /// Returns the resolution for an expression inside a body, if any.
+    ///
+    /// Convenience for [`ExprScope::Body`].
+    pub fn get_in_body(&self, body: BodyId, id: ExprId) -> Option<Res> {
+        self.get(ExprScope::Body(body), id)
     }
 
     /// Inserts a resolution.
-    pub fn insert(&mut self, id: ExprId, res: Res) {
-        self.resolutions.insert(id, res);
+    pub fn insert(&mut self, scope: ExprScope, id: ExprId, res: Res) {
+        self.resolutions.insert((scope, id), res);
     }
 }
 
@@ -338,9 +370,9 @@ impl<'a> ResolveCtx<'a> {
                 if matches!(res, Res::Error) {
                     let (name, span) = (*name, *span);
                     let resolved = self.resolve_name(name, span);
-                    self.map.insert(id, resolved);
+                    self.map.insert(ExprScope::TopLevel, id, resolved);
                 } else {
-                    self.map.insert(id, *res);
+                    self.map.insert(ExprScope::TopLevel, id, *res);
                 }
             }
             Expr::Binary { lhs, rhs, .. } => {
@@ -437,7 +469,8 @@ impl<'a> ResolveCtx<'a> {
                 } else {
                     self.resolve_name(name, span)
                 };
-                self.map.insert(expr_id, final_res);
+                self.map
+                    .insert(ExprScope::Body(body_id), expr_id, final_res);
             }
             Expr::Binary { lhs, rhs, .. } => {
                 self.resolve_body_expr(body_id, lhs);

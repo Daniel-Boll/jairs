@@ -36,6 +36,7 @@ fn type_of_is_total_over_every_item_kind() {
         PoolId::STRING,
         PoolId::TYPE,
         PoolId::ERROR,
+        PoolId::FOREIGN_LIBRARY,
         ptr,
         struct_ty,
         proc_ty,
@@ -55,6 +56,7 @@ fn type_of_is_total_over_every_item_kind() {
     let string = pool.str_value("hello from Jairs\n");
     let type_value = pool.type_value(struct_ty);
     let proc_value = pool.proc_value(proc_ty, decl(1));
+    let libc = pool.foreign_library_value("c");
 
     let values = [
         (PoolId::VOID_VALUE, PoolId::VOID),
@@ -64,6 +66,7 @@ fn type_of_is_total_over_every_item_kind() {
         (string, PoolId::STRING),
         (type_value, PoolId::TYPE),
         (proc_value, proc_ty),
+        (libc, PoolId::FOREIGN_LIBRARY),
     ];
     for (value, expected) in values {
         assert!(

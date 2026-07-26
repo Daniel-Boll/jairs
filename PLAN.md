@@ -165,20 +165,61 @@ flowchart LR
 
 ### 1.4 Slice exit criteria
 
-- [ ] `jr fmt` byte-identically round-trips every corpus file
-- [ ] `jr check broken.jr` recovers and reports multiple errors with rustc-grade rendering
+- [x] `jr fmt` byte-identically round-trips every corpus file — enforced by the
+      `jairs-fmt` CI gate over `valid/`, `imports/valid/`, `tests/corpus/modules/`
+      and `modules/`. `invalid/` is excluded on purpose: those files do not parse,
+      and `jr fmt` correctly refuses to format input it could not parse.
+- [x] `jr check broken.jr` recovers and reports multiple errors with rustc-grade
+      rendering — `invalid/009-multiple-independent-errors.jr` asserts at least
+      four independent errors from one file.
 - [ ] `jr run hello.jr` executes in the VM
 - [ ] `jr build hello.jr && ./hello` — native arm64, launches, correct output
-- [ ] `COMPUTED :: #run add(2,3)` folds at compile time; VM and native agree
-- [ ] `print` comes from `modules/Basic` written in Jairs, via `#foreign` to libc `write`
+- [ ] `COMPUTED :: #run add(2,3)` folds at compile time; VM and native agree —
+      *types* today, does not fold. Folding waits for `jr-vm` so that there is
+      only ever one evaluator (ADR-0016 §4, and §3.1's invariant below).
+- [ ] `print` comes from `modules/Basic` written in Jairs, via `#foreign` to libc
+      `write` — the module exists and its names resolve across the import
+      boundary; nothing executes yet.
 - [ ] Integer overflow traps, in both the VM and native, with a source location
 - [ ] VS Code: diagnostics + hover + goto-def
-- [ ] Neovim: tree-sitter highlighting
-- [ ] CI green on macOS arm64 **and** Linux x86-64
-- [ ] CI drift gate: every corpus file parses cleanly in *both* the compiler and tree-sitter
-- [ ] Differential test harness exists: every corpus program's output must match under VM and native
+- [ ] Neovim: tree-sitter highlighting — `grammar.js` and `queries/*.scm` exist
+      and the drift gate is green; editor packaging is not done.
+- [ ] CI green on macOS arm64 **and** Linux x86-64 — the matrix is configured for
+      both; only macOS arm64 has been verified locally.
+- [x] CI drift gate: every corpus file parses cleanly in *both* the compiler and
+      tree-sitter
+- [ ] Differential test harness exists: every corpus program's output must match
+      under VM and native
 
 **Estimated: 10–14 weeks solo.** This is the milestone that decides whether the project is real.
+
+### 1.5 Where the slice actually is
+
+Status of each slice component, so this is answerable without reading the tree.
+"Done" means implemented, tested, and green under every CI gate — not polished.
+
+| Component | Status | Notes |
+|---|---|---|
+| `jr-base` | **Done** | Spans, `FileId`, `lasso` interning, `newtype_index!`, source map |
+| `jr-diag` | **Done** | Diagnostic model + `annotate-snippets` renderer |
+| `jr-syntax` | **Done** | Lexer, error-recovering parser, rowan CST, typed AST |
+| `jr-fmt` | **Done** | Formatter; corpus is canonical under it, CI-enforced |
+| `jr-hir` | **Done** | Lowering, name resolution, flat import merge (ADR-0014) |
+| `jr-pool` | **Done** | Types + comptime values in one pool (ADR-0015, ADR-0016 §3) |
+| `jr-db` | **Done** | salsa queries incl. the module loader (ADR-0007, ADR-0014) |
+| `jr-cli` | **Done** | `jr check` (with `--module-path`), `jr fmt`, `jr parse` |
+| `tree-sitter-jairs` | **Done** | Grammar + queries; drift gate green |
+| `tests/corpus` | **Done** | 50 files. **No file expects a type error** — see ADR-0016 |
+| `modules/Basic` | **Partial** | Written and resolving; cannot execute |
+| `jr-sema` | **Not started** | Next. Spec'd by ADR-0015 and ADR-0016 |
+| `jr-mir` | **Not started** | |
+| `jr-vm` | **Not started** | Gates `#run` folding |
+| `jr-codegen`, `-clif`, `jr-link` | **Not started** | |
+| `jr-driver`, `jr-lsp` | **Not started** | |
+
+Accepted ADRs: 0001–0016. See [`docs/adr/README.md`](docs/adr/README.md).
+Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
+03 (scoping and resolution). A type-system chapter is owed once `jr-sema` lands.
 
 ---
 
@@ -386,10 +427,63 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 ## 7. Immediate next actions
 
-- [ ] Scaffold the Cargo workspace and all 17 crates — each with a real (if tiny) responsibility, no architectural `todo!()`
-- [ ] `docs/adr/` — record the eight resolved decisions from §0.1
-- [ ] `docs/spec/00-overview.md`, `01-lexical.md`, `02-declarations.md` — covering exactly the Jairs-0 subset
-- [ ] Write the ~20 Jairs-0 corpus files by hand: spec examples ≡ parser tests ≡ tree-sitter tests
-- [ ] CI: macOS arm64 + Linux x86-64, plus the corpus drift gate skeleton
-- [ ] Lexer → parser → CST → `jr fmt` round-trip, as the first vertical inch
-- [ ] Read Zig's `Sema.zig` and `InternPool.zig` before writing `jr-pool`
+Everything originally listed here — workspace scaffolding, the ADRs, spec
+chapters 00–02, the corpus, CI plus the drift gate, and the
+lexer→parser→CST→`jr fmt` inch — is **done**. See §1.5 for component status.
+
+### Next: implement `jr-sema`
+
+It is fully specified before a line is written: ADR-0015 fixes type *identity*
+and ADR-0016 fixes the typing *rules*. Read both first. The unusual constraint is
+that **no corpus file expects a type error**, so the corpus constrains sema only
+negatively — every file in `valid/`, `imports/valid/`, `tests/corpus/modules/`
+and `modules/` must check **silently**. That is the acceptance test.
+
+Work items, in dependency order:
+
+- [ ] **Type resolution.** `TypeRef` → `PoolId`. Builtins `s64`/`u8`/`bool`/
+      `string` resolved *by name* (they are ordinary identifiers, not keywords —
+      `docs/spec/01-lexical.md:111`), user types via `hir.scope`, imported types
+      via the import scopes. Needs a new diagnostic for an unknown type name.
+      Mind the arena trap: only `FileHir::type_refs` and `Body::type_refs` are
+      real, and which one a `TypeRefId` indexes depends on where it came from,
+      not on the ID. `Proc::type_refs` and `Struct::type_refs` are always empty
+      (and `Proc::type_refs`' doc comment is wrong — fix it).
+- [ ] **`file_signatures`.** Signature-only typing that depends on `file_hir`
+      alone and never on another file's full check (ADR-0016 §5). This is what
+      keeps `imports/valid/005-import-cycle-is-legal.jr` working, and it mirrors
+      the `file_exports` invariant documented in `jr-db/src/module_loader.rs:27`.
+- [ ] **Expression and statement checking**, `:=` inference, and poison
+      propagation. Sema must stay silent on `TypeRef::Error`, `Expr::Error` and
+      `Res::Error`, because `file_diagnostics` does not gate later phases on
+      earlier ones — without poison propagation every parse error cascades into
+      type errors.
+- [ ] **Wire into `jr-db`** as a `checked` query, joined into `file_diagnostics`
+      alongside the parse/lower/resolve blocks.
+- [ ] **Corpus.** Edit `valid/025-paren-constant.jr` to drop `called :=
+      no_args();`, which ADR-0016 §2 makes an error. Add the first type-error
+      files to `invalid/`; there are none today.
+- [ ] **Move the E0204 literal-fit check** out of lowering. It currently tests
+      against `s64` during lowering, which cannot implement context typing
+      because lowering does not know the target type — so `x: u8 = 300;` is
+      silently accepted today (ADR-0016, Negative).
+
+Diagnostic codes: **E0212 is the first free code.** E02xx is semantic analysis as
+a whole. Beware that `jr-syntax`' parser illegally emits E0200/E0201/E0202 for
+"arrives in wave Wn" errors, colliding with `jr-hir`'s codes — do not filter
+tests by those.
+
+### Known latent issues, none blocking
+
+- `file_diagnostics` calls `lower_file` itself instead of reusing `file_hir`,
+  because `file_hir` discards lowering diagnostics. Every file is lowered twice.
+- The parser's E0200/E0201/E0202 collision described above.
+- `Stmt::Item` and `FieldId` are declared but never constructed.
+- `ForeignInfo::library` is never resolved to its `#system_library` constant.
+  ADR-0016 §3 gives that a type, which is what would make resolving it useful.
+
+### After sema
+
+`jr-mir` → `jr-vm` (which unblocks `#run` folding and `jr run`) → `jr-codegen-clif`
+→ `jr-link`. Read Zig's `Sema.zig` and `InternPool.zig` before W4; the `jr-pool`
+notes already record what was taken from `InternPool.zig` and what was rejected.

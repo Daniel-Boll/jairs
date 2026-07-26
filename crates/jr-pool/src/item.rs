@@ -200,6 +200,14 @@ pub enum Item {
     /// the pool needs a poison type to map them onto. It is equal only to
     /// itself, and never coerces.
     ErrorType,
+    /// The type of a `#system_library` constant (ADR-0016 §3).
+    ///
+    /// An opaque handle: there is exactly one such type, and each distinct
+    /// library is a [`Item::ForeignLibraryValue`] of it. Giving these a real
+    /// type is what lets `#foreign libc "write"` check that its library operand
+    /// actually is a library instead of leaving the whole FFI boundary untyped
+    /// (ADR-0006).
+    ForeignLibraryType,
     /// `*T`.
     ///
     /// Pointers are **structural** (ADR-0015 §4): `*T` interns to one ID for a
@@ -272,6 +280,14 @@ pub enum Item {
         /// Where the procedure was declared.
         decl: DeclId,
     },
+    /// A specific foreign library, e.g. `#system_library "c"` (ADR-0016 §3).
+    ///
+    /// Keyed on the library name, so two constants naming the same library are
+    /// the same value.
+    ForeignLibraryValue(
+        /// The library name, as written.
+        StrId,
+    ),
 }
 
 impl Item {
@@ -292,6 +308,7 @@ impl Item {
             | Self::StringType
             | Self::TypeType
             | Self::ErrorType
+            | Self::ForeignLibraryType
             | Self::PointerType(_)
             | Self::StructType { .. }
             | Self::ProcType { .. } => true,
@@ -301,7 +318,8 @@ impl Item {
             | Self::IntValue { .. }
             | Self::StrValue(_)
             | Self::TypeValue(_)
-            | Self::ProcValue { .. } => false,
+            | Self::ProcValue { .. }
+            | Self::ForeignLibraryValue(_) => false,
         }
     }
 }

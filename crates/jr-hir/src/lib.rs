@@ -64,4 +64,4 @@ pub use hir::{
     Stmt, StmtId, Struct, StructId, TypeRef, TypeRefId, UnOp,
 };
 pub use lower::lower_file;
-pub use resolve::{ResolveMap, resolve};
+pub use resolve::{ExprScope, ResolveMap, resolve};

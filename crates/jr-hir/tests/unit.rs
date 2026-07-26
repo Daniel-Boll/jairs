@@ -448,7 +448,7 @@ fn file_level_name_resolves_to_item() {
     else {
         panic!("expected const expr");
     };
-    let res = resolve_map.get(*eid);
+    let res = resolve_map.get_top(*eid);
     assert!(
         matches!(res, Some(Res::Item(_))),
         "MAX should resolve to an item, got: {res:?}"
@@ -492,7 +492,7 @@ fn local_variable_resolves_to_local() {
         panic!("could not find `x` name expr");
     };
     let eid = jr_hir::ExprId::from_usize(idx);
-    let res = resolve_map.get(eid);
+    let res = resolve_map.get_in_body(body_id, eid);
     assert!(
         matches!(res, Some(Res::Local(_))),
         "`x` should resolve to a local, got: {res:?}"
@@ -534,7 +534,7 @@ fn param_resolves_to_param() {
         panic!("could not find `a` name expr");
     };
     let eid = jr_hir::ExprId::from_usize(idx);
-    let res = resolve_map.get(eid);
+    let res = resolve_map.get_in_body(body_id, eid);
     assert!(
         matches!(res, Some(Res::Param(_))),
         "`a` should resolve to a param, got: {res:?}"
@@ -692,7 +692,7 @@ main :: () {
         panic!("could not find `print` name expr");
     };
     let eid = jr_hir::ExprId::from_usize(idx);
-    let res = resolve_map.get(eid);
+    let res = resolve_map.get_in_body(body_id, eid);
     assert!(
         matches!(res, Some(Res::Imported(_, _))),
         "`print` should resolve to Imported, got: {res:?}"
@@ -747,7 +747,7 @@ main :: () {
         panic!("could not find `area` name expr");
     };
     let eid = jr_hir::ExprId::from_usize(idx);
-    let res = resolve_map.get(eid);
+    let res = resolve_map.get_in_body(body_id, eid);
     assert!(
         matches!(res, Some(Res::Imported(_, _))),
         "`area` should resolve to Imported, got: {res:?}"
@@ -809,7 +809,7 @@ main :: () {
         panic!("could not find `blend` name expr");
     };
     let eid = jr_hir::ExprId::from_usize(idx);
-    let res = resolve_map.get(eid);
+    let res = resolve_map.get_in_body(body_id, eid);
     // Must resolve to Item (the local file-level `blend`), not Imported.
     assert!(
         matches!(res, Some(Res::Item(_))),
@@ -865,7 +865,7 @@ main :: () {
         panic!("could not find `blend` name expr");
     };
     let eid = jr_hir::ExprId::from_usize(idx);
-    let res = resolve_map.get(eid);
+    let res = resolve_map.get_in_body(body_id, eid);
     assert!(
         matches!(res, Some(Res::Imported(_, _))),
         "`blend` should resolve to Imported, got: {res:?}"
@@ -983,9 +983,9 @@ main :: () {
             let text = interner.resolve(*name);
             let eid = jr_hir::ExprId::from_usize(idx);
             match text {
-                "blend" => blend_res = resolve_map.get(eid),
-                "BLACK" => black_res = resolve_map.get(eid),
-                "PALETTE_SIZE" => palette_size_res = resolve_map.get(eid),
+                "blend" => blend_res = resolve_map.get_in_body(body_id, eid),
+                "BLACK" => black_res = resolve_map.get_in_body(body_id, eid),
+                "PALETTE_SIZE" => palette_size_res = resolve_map.get_in_body(body_id, eid),
                 _ => {}
             }
         }
