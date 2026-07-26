@@ -1,0 +1,10 @@
+// A line comment.
+
+/* A block comment. */
+
+/*
+    Block comments /* nest */, unlike C. The lexer tracks depth so that
+    commenting out a region containing a comment does the obvious thing.
+*/
+
+// Trailing comment with no newline after it.

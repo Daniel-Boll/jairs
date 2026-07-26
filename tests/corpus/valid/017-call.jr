@@ -1,0 +1,23 @@
+zero :: () -> s64 {
+    return 0;
+}
+
+one :: (a: s64) -> s64 {
+    return a;
+}
+
+three :: (a: s64, b: s64, c: s64) -> s64 {
+    return a + b + c;
+}
+
+main :: () {
+    x := zero();
+    y := one(1);
+    z := three(1, 2, 3);
+
+    // Nested calls.
+    w := three(one(1), zero(), one(y));
+
+    // A call whose result is discarded is a statement on its own.
+    zero();
+}

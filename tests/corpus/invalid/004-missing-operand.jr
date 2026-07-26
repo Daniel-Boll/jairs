@@ -1,0 +1,8 @@
+// EXPECT: errors for the absent right-hand operands
+// RECOVER: each statement is independent; all four must be reported
+main :: () {
+    a := 1 +;
+    b := * ;
+    c := 2 * ;
+    d := ;
+}

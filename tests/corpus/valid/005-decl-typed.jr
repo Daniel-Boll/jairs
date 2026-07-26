@@ -1,0 +1,18 @@
+main :: () {
+    // Explicit type, explicit value.
+    a: s64 = 7;
+
+    // Explicit type, default-initialised to the type's zero value.
+    b: s64;
+
+    // Explicitly uninitialised: the compiler will not zero this, and reading
+    // it before assignment is an error caught in wave W3.
+    c: s64 = ---;
+
+    d: bool = true;
+    e: string = "text";
+    f: *s64 = *a;
+    g: u8 = 255;
+
+    b = a;
+}

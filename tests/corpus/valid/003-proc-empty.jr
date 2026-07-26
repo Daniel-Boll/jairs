@@ -1,0 +1,3 @@
+// A procedure with no parameters and no return value.
+noop :: () {
+}

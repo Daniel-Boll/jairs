@@ -1,0 +1,20 @@
+// `#run` evaluates an arbitrary expression at compile time in the bytecode
+// VM. The result is interned as a compile-time value, indistinguishable
+// from a literal.
+COMPUTED :: #run add(2, 3);
+
+add :: (a: s64, b: s64) -> s64 {
+    return a + b;
+}
+
+// `#run` may also appear as a top-level statement, in which case it is
+// executed for its side effects during compilation.
+#run report();
+
+report :: () {
+}
+
+main :: () {
+    // Constant-folded before codegen ever sees it.
+    total := COMPUTED + 1;
+}

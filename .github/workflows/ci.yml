@@ -67,20 +67,18 @@ jobs:
   # ---------------------------------------------------------------------------
   # corpus-drift — THE GATE (PLAN.md §2.0 and §5)
   #
-  # Every file in tests/corpus/*.jr must parse cleanly in BOTH the Rust
+  # Every file in tests/corpus/valid/ must parse cleanly in BOTH the Rust
   # compiler and the tree-sitter grammar so the two grammars cannot silently
-  # diverge.
+  # diverge. tests/corpus/invalid/ is deliberately excluded from the
+  # tree-sitter side: tree-sitter is not the authority on diagnostics, only on
+  # whether well-formed source is recognised.
   #
   # TODAY (skeleton phase):
-  #   - tests/corpus/ is empty  → nothing to check, exits 0.
   #   - tree-sitter-jairs/grammar.js is absent → nothing to generate, exits 0.
+  #   - the jr-syntax corpus test target does not exist yet → exits 0.
   #
-  # AUTOMATICALLY BECOMES A REAL GATE when:
-  #   - tree-sitter-jairs/grammar.js exists  (tree-sitter side activates)
-  #   - tests/corpus/*.jr files exist        (compiler side activates)
-  #
-  # To graduate from skeleton to gate: delete the two guard blocks below
-  # (marked DELETE-WHEN-READY) and ensure the corpus test binary exists.
+  # AUTOMATICALLY BECOMES A REAL GATE when those appear.
+  # To graduate: delete the two guard blocks marked DELETE-WHEN-READY.
   # ---------------------------------------------------------------------------
   corpus-drift:
     name: corpus-drift
@@ -98,39 +96,40 @@ jobs:
       - name: tree-sitter grammar check
         shell: bash
         run: |
+          set -euo pipefail
           GRAMMAR="tree-sitter-jairs/grammar.js"
 
           # ── DELETE-WHEN-READY: guard block (tree-sitter side) ──────────────
           if [ ! -f "$GRAMMAR" ]; then
             echo "::notice::corpus-drift (tree-sitter): $GRAMMAR not found — nothing to check yet."
-            echo "SKIP_TS=1" >> "$GITHUB_ENV"
+            exit 0
           fi
           # ── END DELETE-WHEN-READY ──────────────────────────────────────────
 
-          if [ "${SKIP_TS:-0}" = "0" ]; then
-            npm install -g tree-sitter-cli@0.26.11
-            cd tree-sitter-jairs
-            tree-sitter generate
-            tree-sitter test
+          npm install -g tree-sitter-cli@0.26.11
+          ( cd tree-sitter-jairs && tree-sitter generate )
+
+          # `tree-sitter test` covers the grammar's own S-expression corpus.
+          if [ -d tree-sitter-jairs/test/corpus ]; then
+            ( cd tree-sitter-jairs && tree-sitter test )
           fi
+
+          # The actual drift gate: every valid corpus file must parse with no
+          # ERROR nodes. `tree-sitter parse` exits non-zero if any appear.
+          ( cd tree-sitter-jairs && tree-sitter parse --quiet ../tests/corpus/valid/*.jr )
+          echo "::notice::corpus-drift (tree-sitter): all valid corpus files parsed cleanly."
 
       # ---- compiler side ---------------------------------------------------
       - name: compiler corpus test
         shell: bash
         run: |
-          CORPUS_DIR="tests/corpus"
+          set -euo pipefail
 
           # ── DELETE-WHEN-READY: guard block (compiler side) ─────────────────
-          # Use `ls` rather than a glob so the check works even when the shell
-          # has nullglob/failglob disabled (bash on Ubuntu has neither by default,
-          # but this is more explicit and portable).
-          if [ -z "$(ls "$CORPUS_DIR"/*.jr 2>/dev/null)" ]; then
-            echo "::notice::corpus-drift (compiler): $CORPUS_DIR is empty — nothing to check yet."
+          if [ ! -f crates/jr-syntax/tests/corpus.rs ]; then
+            echo "::notice::corpus-drift (compiler): jr-syntax corpus test target does not exist yet — nothing to check."
             exit 0
           fi
           # ── END DELETE-WHEN-READY ──────────────────────────────────────────
 
-          # When corpus files exist, run the dedicated corpus test binary.
-          # The binary is expected to be registered in the workspace as a
-          # [[test]] target (e.g. in jr-syntax or a top-level tests/ crate).
-          cargo test --test corpus -- --nocapture
+          cargo test -p jr-syntax --test corpus

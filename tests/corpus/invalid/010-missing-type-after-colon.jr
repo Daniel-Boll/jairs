@@ -1,0 +1,6 @@
+// EXPECT: error for the absent type annotation
+// RECOVER: subsequent declarations parse
+main :: () {
+    a: = 1;
+    b: s64 = 2;
+}

@@ -1,0 +1,14 @@
+main :: () {
+    plain  := "simple";
+    empty  := "";
+    escapes := "tab:\there\nnewline above\r\n";
+    quoted := "she said \"hello\"";
+    slash  := "back\\slash";
+    zero   := "embedded\0nul";
+    unicode := "caf\u00e9 \u4e2d\u6587";
+
+    // Strings are `{data: *u8, count: s64}` and are NOT NUL-terminated
+    // (ADR-0004). Interop with C goes through `to_c_string`.
+    n := plain.count;
+    d := plain.data;
+}

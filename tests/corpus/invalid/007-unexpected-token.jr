@@ -1,0 +1,9 @@
+// EXPECT: error for the stray token at top level
+// RECOVER: both procedures must be parsed
+before :: () {
+}
+
+$ @ `
+
+after :: () {
+}

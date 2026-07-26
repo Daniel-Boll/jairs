@@ -1,0 +1,6 @@
+// EXPECT: error on the missing `;` after `a := 1`
+// RECOVER: `b := 2;` must still parse as a declaration
+main :: () {
+    a := 1
+    b := 2;
+}

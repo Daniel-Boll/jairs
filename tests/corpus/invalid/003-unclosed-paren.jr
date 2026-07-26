@@ -1,0 +1,6 @@
+// EXPECT: error for the unclosed `(` in the call
+// RECOVER: the following statement must still parse
+main :: () {
+    x := add(1, 2;
+    y := 3;
+}

@@ -1,0 +1,37 @@
+// The Jairs-0 slice exit criterion (PLAN.md 1.4): this file must run in
+// the bytecode VM via `jr run`, compile to a native arm64 binary via
+// `jr build`, produce identical output either way, and receive hover,
+// goto-definition and diagnostics in the language server.
+#import "Basic";
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+MESSAGE  :: "hello from Jairs\n";
+COMPUTED :: #run add(2, 3);
+
+add :: (a: s64, b: s64) -> s64 {
+    return a + b;
+}
+
+main :: () {
+    p: Point;
+    p.x = 4;
+    p.y = COMPUTED;
+
+    sum := add(p.x, p.y);
+    if sum > 5 {
+        print(MESSAGE);
+    }
+
+    i := 0;
+    while i < 3 {
+        i = i + 1;
+    }
+
+    ptr := *sum;
+    print_int(ptr.*);
+    print("\n");
+}

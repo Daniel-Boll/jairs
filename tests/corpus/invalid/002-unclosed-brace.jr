@@ -1,0 +1,12 @@
+// EXPECT: one error for the unclosed `{` of `main`, with the span pointing at
+// the OPENING brace rather than at end of file
+// RECOVER: exactly one error, and no cascade. Note that `after` will be parsed
+// as a procedure NESTED inside `main`, not as a top-level one: nested
+// procedures are legal in Jairs, so the parser genuinely cannot tell that a
+// brace is missing until it reaches end of file. Pretending otherwise would
+// require an indentation heuristic, which we deliberately do not use.
+main :: () {
+    a := 1;
+
+after :: () {
+}

@@ -1,0 +1,25 @@
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+main :: () {
+    value := 42;
+
+    // Prefix `*` takes an address. `*T` is the pointer type.
+    p: *s64 = *value;
+
+    // Postfix `.*` dereferences. Postfix avoids C's ambiguity between
+    // dereference and multiplication.
+    copied := p.*;
+    p.* = 43;
+
+    // Pointers to aggregates: field access auto-dereferences.
+    origin: Point;
+    pp := *origin;
+    pp.x = 1;
+
+    // Pointer to pointer.
+    ppp: **s64 = *p;
+    round_trip := ppp.*.*;
+}

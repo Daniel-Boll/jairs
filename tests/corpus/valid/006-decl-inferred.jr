@@ -1,0 +1,13 @@
+main :: () {
+    // `:=` infers the type from the initialiser.
+    count := 10;
+    flag := false;
+    label := "inferred";
+
+    // Inference propagates through calls.
+    doubled := twice(count);
+}
+
+twice :: (n: s64) -> s64 {
+    return n + n;
+}

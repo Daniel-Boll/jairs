@@ -1,0 +1,17 @@
+add :: (a: s64, b: s64) -> s64 {
+    return a + b;
+}
+
+// Parameters of the same type still each need their own annotation in
+// Jairs-0; parameter grouping arrives with wave W2.
+clamp_low :: (value: s64, floor: s64) -> s64 {
+    if value < floor {
+        return floor;
+    }
+    return value;
+}
+
+// A procedure returning nothing omits the arrow entirely.
+discard :: (unused: s64) {
+    return;
+}

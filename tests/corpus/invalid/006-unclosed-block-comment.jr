@@ -1,0 +1,5 @@
+// EXPECT: unterminated block comment, with the span pointing at the
+// OUTERMOST `/*` so the user knows where the region began
+main :: () {
+}
+/* outer /* inner */

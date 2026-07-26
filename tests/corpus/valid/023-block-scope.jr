@@ -1,0 +1,13 @@
+main :: () {
+    outer := 1;
+    {
+        inner := 2;
+        outer = outer + inner;
+        {
+            // Shadowing an outer name is permitted; wave W2 decides
+            // whether to warn.
+            inner := 3;
+            outer = outer + inner;
+        }
+    }
+}

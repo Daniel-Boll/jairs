@@ -1,0 +1,10 @@
+// Because plain arithmetic traps, Jairs provides explicit wrapping
+// operators. Hash functions, PRNGs and checksums need them; without these
+// the standard library could not be written in Jairs at all.
+mix :: (state: s64, input: s64) -> s64 {
+    h := state;
+    h = h +% input;
+    h = h *% 6364136223846793005;
+    h = h -% 1;
+    return h;
+}

@@ -1,0 +1,15 @@
+main :: () {
+    decimal := 1234567890;
+    zero    := 0;
+
+    hex     := 0xdead_beef;
+    binary  := 0b1010_1010;
+    octal   := 0o755;
+
+    // Underscores are permitted as digit separators anywhere after the
+    // first digit.
+    grouped := 1_000_000;
+
+    // The largest s64.
+    max := 9223372036854775807;
+}

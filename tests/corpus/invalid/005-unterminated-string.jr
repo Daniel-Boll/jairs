@@ -1,0 +1,7 @@
+// EXPECT: unterminated string literal, reported at end of line rather than
+// swallowing the remainder of the file
+// RECOVER: `b` must still parse
+main :: () {
+    a := "no closing quote
+    b := 1;
+}

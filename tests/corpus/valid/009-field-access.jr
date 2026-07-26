@@ -1,0 +1,19 @@
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+Line :: struct {
+    from: Point;
+    to: Point;
+}
+
+main :: () {
+    line: Line;
+    line.from.x = 1;
+    line.from.y = 2;
+    line.to.x = 3;
+    line.to.y = 4;
+
+    dx := line.to.x - line.from.x;
+}

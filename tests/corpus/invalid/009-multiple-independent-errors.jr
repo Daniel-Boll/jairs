@@ -1,0 +1,18 @@
+// EXPECT: at least four distinct errors. This is the headline recovery
+// test: a single bad declaration must not cascade into a wall of
+// meaningless follow-on errors, and must not suppress later real ones.
+first :: () {
+    a := ;
+}
+
+Broken :: struct {
+    x: ;
+    y: s64
+}
+
+second :: (: s64) {
+}
+
+third :: () {
+    b := 1;
+}

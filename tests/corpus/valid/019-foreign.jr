@@ -1,0 +1,11 @@
+// A foreign library binding. `#system_library` resolves through the
+// platform's dynamic loader rather than a bundled archive.
+libc :: #system_library "c";
+
+// A foreign procedure has no body; it is declared and terminated with a
+// semicolon. `#c_call` opts out of the implicit context parameter
+// (ADR-0001) -- foreign procedures are always `#c_call` implicitly.
+write :: (fd: s64, buf: *u8, count: s64) -> s64 #foreign libc "write";
+
+// The Jairs name and the symbol name may differ.
+os_exit :: (status: s64) #foreign libc "exit";

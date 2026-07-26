@@ -1,0 +1,6 @@
+// EXPECT: a non-foreign procedure requires either a body or `#foreign`
+// RECOVER: the next declaration must still parse
+no_body :: (a: s64) -> s64
+
+next :: () {
+}
