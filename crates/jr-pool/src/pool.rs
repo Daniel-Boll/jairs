@@ -35,9 +35,11 @@ impl PoolId {
     pub const TRUE: Self = Self::from_usize(9);
     /// `false`.
     pub const FALSE: Self = Self::from_usize(10);
+    /// The type of a `#system_library` constant (ADR-0016 §3).
+    pub const FOREIGN_LIBRARY: Self = Self::from_usize(11);
 
     /// The number of well-known entries seeded by [`Pool::new`].
-    pub const WELL_KNOWN_COUNT: usize = 11;
+    pub const WELL_KNOWN_COUNT: usize = 12;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +123,7 @@ impl Pool {
         let void_value = pool.intern(Item::VoidValue);
         let t = pool.intern(Item::BoolValue(true));
         let f = pool.intern(Item::BoolValue(false));
+        let foreign_lib = pool.intern(Item::ForeignLibraryType);
 
         debug_assert_eq!(void, PoolId::VOID);
         debug_assert_eq!(bool_ty, PoolId::BOOL);
@@ -133,6 +136,7 @@ impl Pool {
         debug_assert_eq!(void_value, PoolId::VOID_VALUE);
         debug_assert_eq!(t, PoolId::TRUE);
         debug_assert_eq!(f, PoolId::FALSE);
+        debug_assert_eq!(foreign_lib, PoolId::FOREIGN_LIBRARY);
         debug_assert_eq!(pool.len(), PoolId::WELL_KNOWN_COUNT);
 
         pool
@@ -209,6 +213,7 @@ impl Pool {
             | Item::StringType
             | Item::TypeType
             | Item::ErrorType
+            | Item::ForeignLibraryType
             | Item::PointerType(_)
             | Item::StructType { .. }
             | Item::ProcType { .. } => PoolId::TYPE,
@@ -217,6 +222,7 @@ impl Pool {
             Item::BoolValue(_) => PoolId::BOOL,
             Item::StrValue(_) => PoolId::STRING,
             Item::TypeValue(_) => PoolId::TYPE,
+            Item::ForeignLibraryValue(_) => PoolId::FOREIGN_LIBRARY,
             // These two carry their own type, because one shape can have many.
             Item::IntValue { ty, .. } | Item::ProcValue { ty, .. } => *ty,
         }
@@ -278,11 +284,11 @@ impl Pool {
 
     /// Interns an integer value of type `ty`.
     ///
-    /// `bits` is the raw value as the HIR produced it. Overflow is *not*
-    /// represented here: a literal too large for its type is a lowering
-    /// diagnostic (E0204) that has already been reported by the time a value
-    /// reaches the pool, so the pool interns what the program means and does not
-    /// carry an error flag around forever.
+    /// `bits` is the value as the HIR produced it. The pool does not check that
+    /// it fits `ty` and does not record that it did not: whether a literal fits
+    /// its *contextual* type is a `jr-sema` question (ADR-0016 §1), because the
+    /// literal has no type of its own until a context gives it one. By the time
+    /// a value is interned that question has been answered.
     pub fn int_value(&mut self, ty: PoolId, bits: u64) -> PoolId {
         self.intern(Item::IntValue { ty, bits })
     }
@@ -316,6 +322,14 @@ impl Pool {
     /// Interns a procedure as a compile-time value (ADR-0012).
     pub fn proc_value(&mut self, ty: PoolId, decl: DeclId) -> PoolId {
         self.intern(Item::ProcValue { ty, decl })
+    }
+
+    /// Interns a foreign library value, e.g. the `"c"` of `#system_library "c"`.
+    ///
+    /// Its type is always [`PoolId::FOREIGN_LIBRARY`] (ADR-0016 §3).
+    pub fn foreign_library_value(&mut self, name: &str) -> PoolId {
+        let str_id = self.intern_str(name);
+        self.intern(Item::ForeignLibraryValue(str_id))
     }
 
     // -----------------------------------------------------------------------
@@ -379,6 +393,21 @@ mod tests {
         assert_eq!(*pool.item(PoolId::VOID_VALUE), Item::VoidValue);
         assert_eq!(*pool.item(PoolId::TRUE), Item::BoolValue(true));
         assert_eq!(*pool.item(PoolId::FALSE), Item::BoolValue(false));
+        assert_eq!(
+            *pool.item(PoolId::FOREIGN_LIBRARY),
+            Item::ForeignLibraryType
+        );
+    }
+
+    #[test]
+    fn foreign_libraries_dedupe_by_name() {
+        let mut pool = Pool::new();
+        let libc = pool.foreign_library_value("c");
+        assert_eq!(libc, pool.foreign_library_value("c"));
+        assert_ne!(libc, pool.foreign_library_value("m"));
+        assert_eq!(pool.type_of(libc), PoolId::FOREIGN_LIBRARY);
+        assert!(!pool.is_type(libc));
+        assert!(pool.is_type(PoolId::FOREIGN_LIBRARY));
     }
 
     #[test]
