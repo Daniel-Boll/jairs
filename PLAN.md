@@ -479,19 +479,95 @@ Wn” errors, colliding with `jr-hir` — do not filter tests by those.
 
 ### Next: implement `jr-mir`
 
-`jr-sema` produces a `TypeMap` that nothing consumes yet; MIR is its first
-consumer, and PLAN.md §3.1’s invariant is the constraint that matters — the VM
-and every backend lower the *same* MIR, or `#run` and runtime silently disagree.
-Read Zig’s `Sema.zig` and `InternPool.zig` before W4; `jr-pool`’s notes record
-what was taken from `InternPool.zig` and what was rejected.
+#### Read first, in this order
 
-Things `jr-mir` will need that do not exist yet:
+1. This section, then §1.5 for component status and §3.1 for the same-MIR invariant.
+2. `crates/jr-sema/src/lib.rs` — the crate docs are the only written record of the
+   typing rules beyond ADR-0015 and ADR-0016, and they list what sema deliberately
+   does **not** check.
+3. `crates/jr-db/src/sema.rs` — the query graph MIR has to hang off, and the
+   argument for why the `Pool` sits outside salsa.
+4. Zig's `Sema.zig` and `InternPool.zig` before wave W4; `jr-pool`'s notes already
+   record what was taken from `InternPool.zig` and what was rejected.
 
-- A back-pointer from `Body` to its `Proc`. Sema recovers it by scanning
-  `FileHir::procs`; MIR will want the same mapping and should not scan again.
-- Definite-assignment analysis (`c: s64 = ---;`) and missing-`return` detection.
-  Both are control-flow questions that need MIR’s CFG, which is why sema does not
-  answer them.
+**`jr-mir` has no ADR.** ADR-0017 is the next free number, and the first two
+decisions below are the kind that earns one — they shape a data representation and
+are expensive to undo.
+
+#### What sema hands you
+
+- `jr_sema::TypeMap` — `expr_type(ExprScope, ExprId)` and `local_type(BodyId,
+  LocalId)`. Reached from `jr_db::checked(db, file, search_paths).types`, which
+  already folds the signature phase's file-level types into the check phase's map.
+- `jr_sema::FileSignatures` — `proc_sig(ProcId) -> &ProcSig { params, ret, ty }`
+  and `lookup(Symbol) -> Option<SigEntry>`; `SigEntry::kind` classifies a name as
+  const/var/proc/struct, which `Res::Item` on its own does not.
+- `jr_pool::Pool` via `Db::pool()` — struct layouts through
+  `struct_fields(DeclId)`, and `PoolId::VOID`/`BOOL`/`S64`/`U8`/`STRING`/`PTR_U8`
+  pre-interned.
+
+#### Work items, in dependency order
+
+- [ ] **Decide the IR shape and record it in ADR-0017.** Typed SSA per §3.1, but
+      the open parts are: basic-block representation, whether locals are promoted
+      at construction or by a later `mem2reg`, and whether one `Mir` covers a file
+      or a procedure. The last one decides the salsa query's granularity, so it is
+      not deferrable.
+- [ ] **Decide how errors gate MIR.** `file_diagnostics` gates no phase on any
+      earlier one, which is right for an editor and wrong for lowering: a body
+      containing `Expr::Error`, or a local of `PoolId::ERROR`, cannot be lowered to
+      anything meaningful. Options are to skip a poisoned body, to lower it to a
+      trap, or to require the caller to check for errors first. Whichever it is
+      must be stated, because silently producing MIR from poison is a miscompile.
+- [ ] **Lower one procedure body.** `Stmt`/`Expr` → blocks and instructions,
+      reading types from the `TypeMap` rather than recomputing them.
+- [ ] **Wire into `jr-db`** as a tracked query beside `checked`, keeping the
+      "gather from other queries first, then lock the pool" rule.
+- [ ] **The mid-end.** Inliner, `mem2reg`, DCE, const-prop. §5 puts the inliner in
+      MIR deliberately: Cranelift has none, and `#expand` assumes one.
+- [ ] **Definite assignment and missing `return`.** Both need the CFG, which is why
+      sema does not answer them. `c: s64 = ---;` is the definite-assignment case
+      the corpus already contains, and W3 is where it was promised.
+- [ ] **Corpus.** A MIR dump per `valid/` file, snapshot-tested with `insta`, is the
+      cheapest proof lowering is total — the same role `jr fmt` plays for the CST.
+
+#### Traps
+
+- **The arena trap, again.** `FileHir::exprs` and every `Body::exprs` are separate
+  arenas that both start at 0, and so are `FileHir::type_refs` and
+  `Body::type_refs`. Ask the `TypeMap` with the right `ExprScope` or you will get
+  another node's type. `Proc::type_refs` and `Struct::type_refs` are always empty.
+- **`Body` still has no back-pointer to its `Proc`.** Sema rebuilds the map by
+  scanning `FileHir::procs` for `proc.body == Some(body_id)`
+  (`crates/jr-sema/src/check.rs`). Do not scan a second time — add the mapping to
+  `jr-hir`, or expose sema's.
+- **`ForeignInfo::library` is still an unresolved `Option<Symbol>`.** Sema resolves
+  it at check time to verify it is a library (E0225) but records nothing, so codegen
+  will have to resolve it again.
+- **`Stmt::Item` and `FieldId` are constructed by nothing.** Match them
+  exhaustively anyway; the day lowering starts producing them, a `_` arm would hide
+  it.
+- **The `#run` value does not exist.** ADR-0016 §4: `#run e` has the type of `e`
+  and no value until `jr-vm` folds it through MIR. Nothing may assume otherwise.
+- **`lower_bin_op`/`lower_un_op`/`lower_assign_op` fall back silently** to
+  `Add`/`Neg`/`Assign` on an unrecognised token, so MIR cannot tell a real operator
+  from a recovered one either.
+
+#### Gates — all six must pass
+
+`cargo fmt --all --check`; `cargo clippy --workspace --all-targets -- -D warnings`;
+`cargo test --workspace`; `RUSTDOCFLAGS="-D warnings" cargo doc --workspace
+--no-deps`; `cargo run -q -p jr-cli -- fmt --check tests/corpus/valid
+tests/corpus/imports/valid tests/corpus/type-errors tests/corpus/modules modules`;
+corpus-drift via `npx --yes tree-sitter-cli@0.26.11` (tree-sitter is not installed
+locally).
+
+House style is enforced by the first four: `[lints] workspace = true` and no
+crate-level `#![warn]`, `missing_docs` is a warning workspace-wide so every public
+item including enum variants and struct fields needs a `///`, private `mod` plus a
+curated `pub use` in `lib.rs`, module `//!` docs that argue *why* and name the
+rejected alternative, and exhaustive matches rather than `matches!` or guards so
+that a new variant is a compile error.
 
 ### Known latent issues, none blocking
 
