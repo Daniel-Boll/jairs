@@ -203,3 +203,67 @@ fn resolve_map_does_not_collide_top_level_and_body_expression_ids() {
         "the body's `y` must resolve to a local, got {in_body:?}"
     );
 }
+
+/// `Parser::parse_body` accepts either a braced block or a single unbraced
+/// statement, but the typed-AST accessors were declared `Option<Block>`, so a
+/// braceless body was invisible to them. Lowering then fell through to its error
+/// branch and produced `Stmt::Error` — with **no diagnostic** from the lexer, the
+/// parser or lowering — silently discarding the body.
+///
+/// `tests/corpus/valid/010-if-else.jr` documents `if n > 0 return n;` as legal and
+/// contains it, so `jr check` reported that file clean while the `return` was
+/// gone. `jr-mir`'s poison gate (ADR-0017 §4) is what surfaced it: MIR refused the
+/// body rather than emitting one that ignored the `return`.
+///
+/// One test per shape the grammar allows, because the three accessors were three
+/// separate instances of the same mistake.
+#[test]
+fn a_braceless_control_flow_body_is_not_silently_discarded() {
+    for (label, src) in [
+        (
+            "if",
+            "f :: (n: s64) -> s64 {\n    if n > 0 return n;\n    return 0;\n}\n",
+        ),
+        (
+            "else",
+            "f :: (n: s64) -> s64 {\n    if n > 0 { return n; } else return 0;\n}\n",
+        ),
+        (
+            "while",
+            "f :: () {\n    i := 0;\n    while i < 3 i = i + 1;\n}\n",
+        ),
+    ] {
+        let (hir, diags, _interner) = lower(src);
+        assert!(
+            diags.is_empty(),
+            "a braceless `{label}` body is legal, so lowering must not complain: {diags:?}"
+        );
+        let body = hir.bodies.first().expect("the procedure has a body");
+        assert!(
+            !body.stmts.iter().any(|stmt| matches!(stmt, Stmt::Error(_))),
+            "a braceless `{label}` body must survive lowering, not become Stmt::Error"
+        );
+    }
+}
+
+/// A braceless body gets its own scope, exactly as a braced one does.
+///
+/// Lowering wraps the single statement in a synthetic one-statement block, which
+/// is what keeps `Stmt::If::then` always a `Stmt::Block` for every consumer
+/// downstream. If it leaked the declaration into the enclosing scope instead,
+/// `if c x := 1;` would make `x` visible afterwards.
+#[test]
+fn a_braceless_body_scopes_its_declaration_like_a_braced_one() {
+    let (hir, _diags, _interner) = lower("f :: (c: bool) {\n    if c x := 1;\n    y := 2;\n}\n");
+    let body = hir.bodies.first().expect("the procedure has a body");
+    let then_is_a_block = body.stmts.iter().any(|stmt| match stmt {
+        Stmt::If { then, .. } => {
+            matches!(body.stmt(*then), Stmt::Block(inner, _) if inner.len() == 1)
+        }
+        _ => false,
+    });
+    assert!(
+        then_is_a_block,
+        "the braceless body must be wrapped in a one-statement block"
+    );
+}
