@@ -1,0 +1,419 @@
+---
+source: crates/jr-db/tests/mir_corpus.rs
+expression: out
+---
+========================================
+001-empty.jr
+========================================
+
+========================================
+002-comments.jr
+========================================
+
+========================================
+003-proc-empty.jr
+========================================
+proc noop -> void {
+  bb0():
+    return
+}
+
+========================================
+004-proc-params-return.jr
+========================================
+proc add -> s64 {
+  params: v0: s64, v1: s64
+  bb0(v0: s64, v1: s64):
+    v2: s64 = v0 + v1
+    return v2
+}
+proc clamp_low -> s64 {
+  params: v0: s64, v1: s64
+  bb0(v0: s64, v1: s64):
+    v2: bool = v0 < v1
+    branch v2 ? bb1() : bb2()
+  bb1():
+    return v1
+  bb2():
+    goto bb3()
+  bb3():
+    return v0
+}
+proc discard -> void {
+  params: v0: s64
+  bb0(v0: s64):
+    return
+}
+
+========================================
+005-decl-typed.jr
+========================================
+proc main -> void {
+  slots:
+    s0: s64  // local 0
+    s1: string  // local 4
+  bb0():
+    store s0 <- 7_s64
+    store s1 <- "text"
+    v0: *s64 = addr s0
+    v1: s64 = load s0
+    return
+}
+
+========================================
+006-decl-inferred.jr
+========================================
+proc main -> void {
+  slots:
+    s0: string  // local 2
+  bb0():
+    store s0 <- "inferred"
+    v0: s64 = call proc1(10_s64)
+    return
+}
+proc twice -> s64 {
+  params: v0: s64
+  bb0(v0: s64):
+    v1: s64 = v0 + v0
+    return v1
+}
+
+========================================
+007-constants.jr
+========================================
+
+========================================
+008-struct.jr
+========================================
+
+========================================
+009-field-access.jr
+========================================
+proc main -> void {
+  slots:
+    s0: Line  // local 0
+  bb0():
+    store s0.0.0 <- 1_s64
+    store s0.0.1 <- 2_s64
+    store s0.1.0 <- 3_s64
+    store s0.1.1 <- 4_s64
+    v0: s64 = load s0.1.0
+    v1: s64 = load s0.0.0
+    v2: s64 = v0 - v1
+    return
+}
+
+========================================
+010-if-else.jr
+========================================
+proc classify -> s64 {
+  params: v0: s64
+  bb0(v0: s64):
+    v1: bool = v0 < 0_s64
+    branch v1 ? bb1() : bb2()
+  bb1():
+    v2: s64 = 0_s64 - 1_s64
+    return v2
+  bb2():
+    v3: bool = v0 == 0_s64
+    branch v3 ? bb4() : bb5()
+  bb4():
+    return 0_s64
+  bb5():
+    return 1_s64
+  bb3():  // unreachable
+    unreachable // trap
+  bb6():  // unreachable
+    unreachable // trap
+}
+proc single_statement -> s64 {
+  params: v0: s64
+  bb0(v0: s64):
+    v1: bool = v0 > 0_s64
+    branch v1 ? bb1() : bb2()
+  bb1():
+    return v0
+  bb2():
+    goto bb3()
+  bb3():
+    return 0_s64
+}
+
+========================================
+011-while.jr
+========================================
+proc sum_to -> s64 {
+  params: v0: s64
+  bb0(v0: s64):
+    goto bb1(1_s64, 0_s64)
+  bb1(v1: s64, v3: s64):
+    v2: bool = v1 <= v0
+    branch v2 ? bb2() : bb3()
+  bb2():
+    v4: s64 = v3 + v1
+    v5: s64 = v1 + 1_s64
+    goto bb1(v5, v4)
+  bb3():
+    goto bb4()
+  bb4():
+    return v3
+}
+proc with_break -> s64 {
+  bb0():
+    goto bb1(0_s64)
+  bb1(v0: s64):
+    branch true ? bb2() : bb3()
+  bb2():
+    v1: s64 = v0 + 1_s64
+    v2: bool = v1 == 10_s64
+    branch v2 ? bb5() : bb6()
+  bb5():
+    goto bb4(v1)
+  bb6():
+    goto bb7()
+  bb7():
+    v3: bool = v1 == 3_s64
+    branch v3 ? bb8() : bb9()
+  bb8():
+    goto bb1(v1)
+  bb9():
+    goto bb10()
+  bb10():
+    goto bb1(v1)
+  bb3():
+    goto bb4(v0)
+  bb4(v4: s64):
+    return v4
+}
+
+========================================
+012-arithmetic.jr
+========================================
+proc main -> void {
+  bb0():
+    v0: s64 = 6_s64 + 7_s64
+    v1: s64 = 6_s64 - 7_s64
+    v2: s64 = 6_s64 * 7_s64
+    v3: s64 = 6_s64 / 7_s64
+    v4: s64 = 6_s64 % 7_s64
+    v5: s64 = -6_s64
+    v6: s64 = 7_s64 * 2_s64
+    v7: s64 = 6_s64 + v6
+    v8: s64 = 6_s64 + 7_s64
+    v9: s64 = v8 * 2_s64
+    return
+}
+
+========================================
+013-wrapping-ops.jr
+========================================
+proc mix -> s64 {
+  params: v0: s64, v1: s64
+  bb0(v0: s64, v1: s64):
+    v2: s64 = v0 +% v1
+    v3: s64 = v2 *% 6364136223846793005_s64
+    v4: s64 = v3 -% 1_s64
+    return v4
+}
+
+========================================
+014-comparison-logical.jr
+========================================
+proc main -> void {
+  bb0():
+    v0: bool = 1_s64 < 2_s64
+    v1: bool = 1_s64 <= 2_s64
+    v2: bool = 1_s64 > 2_s64
+    v3: bool = 1_s64 >= 2_s64
+    v4: bool = 1_s64 == 2_s64
+    v5: bool = 1_s64 != 2_s64
+    branch v0 ? bb1() : bb2()
+  bb1():
+    goto bb3(v2)
+  bb2():
+    goto bb3(false)
+  bb3(v6: bool):
+    branch v0 ? bb5() : bb4()
+  bb5():
+    goto bb6(true)
+  bb4():
+    goto bb6(v2)
+  bb6(v8: bool):
+    v11: bool = !v0
+    return
+}
+
+========================================
+015-pointers.jr
+========================================
+proc main -> void {
+  slots:
+    s0: s64  // local 0
+    s1: *s64  // local 1
+    s2: Point  // local 3
+  bb0():
+    store s0 <- 42_s64
+    v0: *s64 = addr s0
+    store s1 <- v0
+    v1: *s64 = load s1
+    v2: s64 = load (v1).*
+    v3: *s64 = load s1
+    store (v3).* <- 43_s64
+    v4: *Point = addr s2
+    store (v4).*.0 <- 1_s64
+    v5: **s64 = addr s1
+    v6: *s64 = load (v5).*
+    v7: s64 = load (v6).*
+    return
+}
+
+========================================
+016-assignment.jr
+========================================
+proc main -> void {
+  bb0():
+    v0: s64 = 1_s64 + 2_s64
+    v1: s64 = v0 - 3_s64
+    v2: s64 = v1 * 4_s64
+    v3: s64 = v2 / 5_s64
+    v4: s64 = v3 % 6_s64
+    v5: s64 = v4 +% 7_s64
+    v6: s64 = v5 -% 8_s64
+    v7: s64 = v6 *% 9_s64
+    return
+}
+
+========================================
+017-call.jr
+========================================
+proc zero -> s64 {
+  bb0():
+    return 0_s64
+}
+proc one -> s64 {
+  params: v0: s64
+  bb0(v0: s64):
+    return v0
+}
+proc three -> s64 {
+  params: v0: s64, v1: s64, v2: s64
+  bb0(v0: s64, v1: s64, v2: s64):
+    v3: s64 = v0 + v1
+    v4: s64 = v3 + v2
+    return v4
+}
+proc main -> void {
+  bb0():
+    v0: s64 = call proc0()
+    v1: s64 = call proc1(1_s64)
+    v2: s64 = call proc2(1_s64, 2_s64, 3_s64)
+    v3: s64 = call proc1(1_s64)
+    v4: s64 = call proc0()
+    v5: s64 = call proc1(v1)
+    v6: s64 = call proc2(v3, v4, v5)
+    discard call proc0()
+    return
+}
+
+========================================
+018-import.jr
+========================================
+proc main {
+  poisoned: a cross-file call needs the callee's signatures
+}
+
+========================================
+019-foreign.jr
+========================================
+
+========================================
+020-run-directive.jr
+========================================
+proc add -> s64 {
+  params: v0: s64, v1: s64
+  bb0(v0: s64, v1: s64):
+    v2: s64 = v0 + v1
+    return v2
+}
+proc report -> void {
+  bb0():
+    return
+}
+proc main {
+  poisoned: a file-level item has no value until jr-vm
+}
+
+========================================
+021-string-literals.jr
+========================================
+proc main -> void {
+  slots:
+    s0: string  // local 0
+    s1: string  // local 1
+    s2: string  // local 2
+    s3: string  // local 3
+    s4: string  // local 4
+    s5: string  // local 5
+    s6: string  // local 6
+  bb0():
+    store s0 <- "simple"
+    store s1 <- ""
+    store s2 <- "tab:\there\nnewline above\r\n"
+    store s3 <- "she said \"hello\""
+    store s4 <- "back\\slash"
+    store s5 <- "embedded\0nul"
+    store s6 <- "café 中文"
+    v0: s64 = load s0.count
+    v1: *u8 = load s0.data
+    return
+}
+
+========================================
+022-integer-literals.jr
+========================================
+proc main -> void {
+  bb0():
+    return
+}
+
+========================================
+023-block-scope.jr
+========================================
+proc main -> void {
+  bb0():
+    v0: s64 = 1_s64 + 2_s64
+    v1: s64 = v0 + 3_s64
+    return
+}
+
+========================================
+024-hello.jr
+========================================
+proc add -> s64 {
+  params: v0: s64, v1: s64
+  bb0(v0: s64, v1: s64):
+    v2: s64 = v0 + v1
+    return v2
+}
+proc main {
+  poisoned: a file-level item has no value until jr-vm
+}
+
+========================================
+025-paren-constant.jr
+========================================
+proc no_args -> void {
+  bb0():
+    return
+}
+proc with_ret -> s64 {
+  bb0():
+    return 1_s64
+}
+proc main -> void {
+  bb0():
+    v0: s64 = 1_s64 + 2_s64
+    v1: s64 = v0 * 3_s64
+    discard call proc0()
+    return
+}

@@ -1,0 +1,10 @@
+// EXPECT: E0227 for `c`, which is read on a path that never assigns it
+// `= ---` is the one way to declare a local the compiler will not zero
+// (`valid/005-decl-typed.jr` documents the distinction: `b: s64;` *is*
+// default-initialised, and reading that is legal). Whether a read is reachable
+// from an assignment is a question about paths, which is why `jr-sema` deferred it
+// to MIR's CFG rather than answering it with a syntax walk.
+main :: () -> s64 {
+    c: s64 = ---;
+    return c;
+}

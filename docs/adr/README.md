@@ -37,3 +37,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0014](0014-module-resolution.md) | Module resolution: search paths, flat imports, cycles are legal | Accepted |
 | [0015](0015-type-identity.md) | Type identity: nominal structs, distinct `string`, interned `void` | Accepted |
 | [0016](0016-jairs-0-typing-rules.md) | Jairs-0 typing rules: context-typed literals, deferred `#run` | Accepted |
+| [0017](0017-mir-shape.md) | MIR shape: block parameters, SSA at construction, poison refused | Accepted |

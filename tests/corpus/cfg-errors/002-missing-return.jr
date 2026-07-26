@@ -1,0 +1,10 @@
+// EXPECT: E0228 because the `else`-less `if` leaves a path with no `return`
+// A syntax walk would get this wrong in both directions: it would accept this
+// because the body's last statement *is* a `return`, and it would reject
+// `if c { return 1; } else { return 0; }` because that one's last statement is an
+// `if`. Only the CFG distinguishes them, which is why `jr-sema` deferred it.
+sometimes :: (n: s64) -> s64 {
+    if n > 0 {
+        return 1;
+    }
+}
