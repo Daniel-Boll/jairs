@@ -363,13 +363,10 @@ pub fn resolved(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
 }
 
 // ---------------------------------------------------------------------------
-// file_diagnostics — all diagnostics for one file
+// frontend_diagnostics — everything before MIR
 // ---------------------------------------------------------------------------
 
-/// Collects all diagnostics for a single file: parse, lower, resolve, and check.
-///
-/// Diagnostics are returned in source order (the [`Diagnostics`] sink sorts
-/// them by span).
+/// Collects the diagnostics of every phase up to and including type checking.
 ///
 /// **No phase gates any later one.** A file that does not parse is still lowered,
 /// resolved, and type-checked, because an editor wants whatever information is
@@ -377,9 +374,19 @@ pub fn resolved(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
 /// propagation `jr-sema`'s obligation: without it every parse error would arrive
 /// as an invented type error too.
 ///
+/// # Why this is separate from [`file_diagnostics`]
+///
+/// It exists so that [`crate::file_mir`] has something to gate on. ADR-0017 §4
+/// requires that nothing ask for the MIR of a file with errors, and MIR also
+/// *produces* diagnostics of its own (E0227–E0229) that belong in
+/// `file_diagnostics`. If MIR gated on `file_diagnostics` and `file_diagnostics`
+/// included MIR's, the two queries would form a cycle. Splitting the frontend out
+/// breaks it, and the split is the honest one anyway: the gate's question is "did
+/// anything before MIR fail", not "did anything at all fail".
+///
 /// Uses `no_eq` because [`Diagnostics`] is not `Eq`.
 #[salsa::tracked(returns(clone), no_eq)]
-pub fn file_diagnostics(
+pub fn frontend_diagnostics(
     db: &dyn Db,
     file: SourceFile,
     search_paths: ModuleSearchPaths,
@@ -408,6 +415,41 @@ pub fn file_diagnostics(
     all.extend(signatures.diagnostics.iter().cloned());
     let checked = crate::sema::checked(db, file, search_paths);
     all.extend(checked.diagnostics.iter().cloned());
+
+    Arc::new(all)
+}
+
+// ---------------------------------------------------------------------------
+// file_diagnostics — all diagnostics for one file
+// ---------------------------------------------------------------------------
+
+/// Collects all diagnostics for a single file: the frontend's, plus MIR's.
+///
+/// Diagnostics are returned in source order (the [`Diagnostics`] sink sorts
+/// them by span).
+///
+/// MIR contributes the three that need a control-flow graph — definite assignment,
+/// missing `return`, and a `break` outside a loop (E0227–E0229). They are absent
+/// when [`crate::file_mir`] gated the file, which is correct: a file with a real
+/// error should not also be told that a body it could not analyse might not return.
+///
+/// Uses `no_eq` because [`Diagnostics`] is not `Eq`.
+#[salsa::tracked(returns(clone), no_eq)]
+pub fn file_diagnostics(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+) -> Arc<Diagnostics> {
+    let mut all = Diagnostics::new();
+    all.extend(frontend_diagnostics(db, file, search_paths).iter().cloned());
+
+    let mir = crate::mir::file_mir(db, file, search_paths);
+    if !mir.gated {
+        let hir = file_hir(db, file);
+        let interner = db.interner();
+        let cfg = jr_mir::file_diagnostics(hir.as_ref(), mir.mir.as_ref(), interner);
+        all.extend(cfg.into_vec());
+    }
 
     Arc::new(all)
 }

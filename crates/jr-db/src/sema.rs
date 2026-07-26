@@ -241,7 +241,7 @@ pub fn checked(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) -
 /// append-only and every entry is fully written before its id is handed out, so
 /// the worst a panic can leave behind is a value nobody references — recovering
 /// is sound, and refusing to would turn one panic into a dead database.
-fn lock_pool(db: &dyn Db) -> std::sync::MutexGuard<'_, Pool> {
+pub(crate) fn lock_pool(db: &dyn Db) -> std::sync::MutexGuard<'_, Pool> {
     match db.pool().lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),

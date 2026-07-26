@@ -22,9 +22,9 @@ use jr_syntax::{
     SyntaxKind::*,
     SyntaxNode, SyntaxToken,
     ast::{
-        AssignStmt, AstNode, BinaryExpr, Block, ConstDecl, DeclStmt, ElseBranch, Expr as AstExpr,
-        IfStmt, ImportDecl, Item as AstItem, LiteralExpr, Proc as AstProc, RunDecl, SourceFile,
-        Stmt as AstStmt, StructType, TypeExpr, UnaryExpr, VarDecl, WhileStmt,
+        AssignStmt, AstNode, BinaryExpr, Block, ConstDecl, ControlBody, DeclStmt, ElseBranch,
+        Expr as AstExpr, IfStmt, ImportDecl, Item as AstItem, LiteralExpr, Proc as AstProc,
+        RunDecl, SourceFile, Stmt as AstStmt, StructType, TypeExpr, UnaryExpr, VarDecl, WhileStmt,
     },
 };
 
@@ -835,6 +835,27 @@ impl<'a> BodyLowerCtx<'a> {
         self.alloc_stmt(Stmt::Assign { lhs, op, rhs, span })
     }
 
+    /// Lowers an `if`/`else`/`while` body, braced or not.
+    ///
+    /// An unbraced single statement is wrapped in a synthetic one-statement block.
+    /// Two reasons: it keeps the invariant that `Stmt::If::then` and
+    /// `Stmt::While::body` are always a `Stmt::Block`, which every consumer
+    /// downstream already relies on; and it gives the statement its own scope, so
+    /// `if c x := 1;` scopes `x` exactly as `if c { x := 1; }` does rather than
+    /// leaking it into the enclosing block.
+    fn lower_control_body(&mut self, body: &ControlBody) -> StmtId {
+        match body {
+            ControlBody::Block(block) => self.lower_block(block),
+            ControlBody::Stmt(stmt) => {
+                let span = self.span_of_node(stmt.syntax());
+                self.push_scope();
+                let inner = self.lower_stmt(stmt);
+                self.pop_scope();
+                self.alloc_stmt(Stmt::Block(vec![inner], span))
+            }
+        }
+    }
+
     fn lower_if_stmt(&mut self, i: &IfStmt, span: Span) -> StmtId {
         let cond = i
             .condition()
@@ -842,7 +863,7 @@ impl<'a> BodyLowerCtx<'a> {
             .unwrap_or_else(|| self.alloc_expr(Expr::Error(span), span));
         let then = i
             .then_body()
-            .map(|b| self.lower_block(&b))
+            .map(|b| self.lower_control_body(&b))
             .unwrap_or_else(|| self.alloc_stmt(Stmt::Error(span)));
         let else_ = i.else_branch().map(|eb| self.lower_else_branch(&eb, span));
         self.alloc_stmt(Stmt::If {
@@ -857,8 +878,8 @@ impl<'a> BodyLowerCtx<'a> {
         if let Some(else_if) = eb.else_if() {
             let else_span = self.span_of_node(eb.syntax());
             self.lower_if_stmt(&else_if, else_span)
-        } else if let Some(else_block) = eb.else_block() {
-            self.lower_block(&else_block)
+        } else if let Some(else_body) = eb.else_body() {
+            self.lower_control_body(&else_body)
         } else {
             self.alloc_stmt(Stmt::Error(span))
         }
@@ -871,7 +892,7 @@ impl<'a> BodyLowerCtx<'a> {
             .unwrap_or_else(|| self.alloc_expr(Expr::Error(span), span));
         let body = w
             .body()
-            .map(|b| self.lower_block(&b))
+            .map(|b| self.lower_control_body(&b))
             .unwrap_or_else(|| self.alloc_stmt(Stmt::Error(span)));
         self.alloc_stmt(Stmt::While { cond, body, span })
     }

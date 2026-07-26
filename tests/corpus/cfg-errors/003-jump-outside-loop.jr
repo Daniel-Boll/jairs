@@ -1,0 +1,8 @@
+// EXPECT: E0229 for a `break` with no enclosing loop
+// Nothing before MIR rejected this: `jr-hir` lowers `break` unconditionally
+// without checking for an enclosing loop, and `jr-sema` ignores the statement
+// entirely. So this is not a deferred check but a missing one, and MIR is the first
+// pass that keeps a loop stack and can therefore see it.
+main :: () {
+    break;
+}

@@ -18,6 +18,7 @@ both parsers are held to it.
 | `valid/` | Single-file programs. Must parse with **zero** errors in the compiler, produce **zero** `ERROR` nodes in tree-sitter, type-check with **zero** diagnostics, and round-trip byte-identically through `jr fmt`. |
 | `invalid/` | Must parse **with** errors in the compiler and still produce a usable tree. Excluded from the tree-sitter gate, since tree-sitter is not the authority on diagnostics. |
 | `type-errors/` | Single-file programs that **parse** cleanly and must be rejected by semantic analysis. Each names the code it expects; the harness asserts that exact set, so an accidentally *different* error fails. |
+| `cfg-errors/` | Single-file programs that parse **and type-check** cleanly, and are rejected only by MIR's control-flow analysis (E0227–E0229: definite assignment, missing `return`, a jump outside a loop). Same `// EXPECT:` contract as `type-errors/`. |
 | `imports/valid/` | Multi-module programs that must check cleanly. Resolved against `modules/` below. |
 | `imports/invalid/` | Multi-module programs that must produce a specific *semantic* diagnostic (missing module, ambiguous name, unresolved name). These parse fine — the error is in resolution. |
 | `modules/` | Importable fixture modules used by `imports/`. Passed to the compiler as a module search path. These are **libraries, not test cases**: they must parse and check cleanly, but they are never expected to produce diagnostics of their own. |
@@ -37,6 +38,22 @@ files do not parse. A type error parses perfectly well, so filing one under
 they *join* the formatter and tree-sitter gates rather than being excluded from
 them, and what they assert is narrower and stronger: exactly the diagnostic codes
 their `// EXPECT:` header names.
+
+## Why control-flow errors are not in `type-errors/`
+
+The same reasoning, one phase later. `type-errors/`' harness asserts that each of
+its files reports exactly the codes it declares **as reported by `jr-sema`**. A
+file whose only fault is control flow — reading a `= ---` local, or a procedure
+that does not return on every path — type-checks silently, so it would report
+nothing in that harness and weaken the contract for every other file in the
+directory.
+
+`cfg-errors/` is therefore its own directory with its own harness
+(`crates/jr-mir/tests/cfg.rs`), and its files are held to a *stronger* standard
+than `type-errors/`': they must be well-formed **and** type-correct, so that the
+only thing wrong with them is a path. If one of them ever acquires a type error,
+MIR refuses the body (ADR-0017 §4) and reports nothing — which its harness
+catches.
 
 ## Rules
 

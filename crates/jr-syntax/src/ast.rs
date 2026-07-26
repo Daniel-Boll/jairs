@@ -617,15 +617,58 @@ impl AssignStmt {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Control-flow bodies
+// ---------------------------------------------------------------------------
+
+/// The body of an `if`, `else`, or `while`.
+///
+/// The grammar accepts two shapes here, and `Parser::parse_body` is written for
+/// both: a braced [`Block`], or a single unbraced [`Stmt`]. Accessors typed
+/// `Option<Block>` could only see the first, so the second was invisible to every
+/// consumer of the typed AST — and `jr-hir` then lowered it to `Stmt::Error` with
+/// no diagnostic, silently discarding the body of
+/// `tests/corpus/valid/010-if-else.jr`'s `if n > 0 return n;`. Making the two
+/// shapes an enum is what stops a consumer from being able to forget one.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ControlBody {
+    /// A braced block: `if c { ... }`.
+    Block(Block),
+    /// A single statement without braces: `if c return n;`.
+    Stmt(Stmt),
+}
+
+impl ControlBody {
+    /// The underlying syntax node.
+    #[must_use]
+    pub fn syntax(&self) -> &SyntaxNode {
+        match self {
+            Self::Block(block) => block.syntax(),
+            Self::Stmt(stmt) => stmt.syntax(),
+        }
+    }
+}
+
+/// The control-flow body of `parent`, whichever shape it took.
+///
+/// A [`Block`] is itself a [`Stmt`], so the braced case must be tried first or
+/// every braced body would come back as the single-statement case.
+fn control_body(parent: &SyntaxNode) -> Option<ControlBody> {
+    if let Some(block) = child_node::<Block>(parent) {
+        return Some(ControlBody::Block(block));
+    }
+    child_node::<Stmt>(parent).map(ControlBody::Stmt)
+}
+
 impl IfStmt {
     /// The condition expression.
     pub fn condition(&self) -> Option<Expr> {
         child_node(&self.0)
     }
 
-    /// The then-body (block or single statement).
-    pub fn then_body(&self) -> Option<Block> {
-        child_node(&self.0)
+    /// The then-body: a braced block, or a single unbraced statement.
+    pub fn then_body(&self) -> Option<ControlBody> {
+        control_body(&self.0)
     }
 
     /// The else branch, if present.
@@ -640,9 +683,16 @@ impl ElseBranch {
         child_node(&self.0)
     }
 
-    /// The else block, if this is a plain `else { ... }`.
-    pub fn else_block(&self) -> Option<Block> {
-        child_node(&self.0)
+    /// The else-body, if this is a plain `else`: a block, or one statement.
+    ///
+    /// Returns `None` for an `else if`, so that this and [`Self::else_if`] are
+    /// disjoint. Without that guard they would overlap, because an `IF_STMT` is
+    /// itself a [`Stmt`] and so would satisfy the single-statement case.
+    pub fn else_body(&self) -> Option<ControlBody> {
+        if self.else_if().is_some() {
+            return None;
+        }
+        control_body(&self.0)
     }
 }
 
@@ -652,9 +702,9 @@ impl WhileStmt {
         child_node(&self.0)
     }
 
-    /// The loop body.
-    pub fn body(&self) -> Option<Block> {
-        child_node(&self.0)
+    /// The loop body: a braced block, or a single unbraced statement.
+    pub fn body(&self) -> Option<ControlBody> {
+        control_body(&self.0)
     }
 }
 

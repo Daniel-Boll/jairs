@@ -41,6 +41,7 @@
 //! Its module docs argue why that is sound and what the alternative would have
 //! cost.
 
+pub mod mir;
 pub mod module_loader;
 mod queries;
 pub mod sema;
@@ -77,8 +78,11 @@ pub use queries::{
 
 pub use module_loader::{
     InMemoryModules, ModuleLookupResult, ModuleName, ModuleSearchPaths, ResolveResult,
-    file_diagnostics, file_exports, file_hir, imports_of, module_file, resolved,
+    file_diagnostics, file_exports, file_hir, frontend_diagnostics, imports_of, module_file,
+    resolved,
 };
+
+pub use mir::{MirResult, dump_mir, file_mir};
 
 pub use sema::{CheckResult, SignatureResult, checked, file_signatures};
 

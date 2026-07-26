@@ -208,20 +208,24 @@ Status of each slice component, so this is answerable without reading the tree.
 | `jr-hir` | **Done** | Lowering, name resolution, flat import merge (ADR-0014) |
 | `jr-pool` | **Done** | Types + comptime values in one pool (ADR-0015, ADR-0016 §3) |
 | `jr-sema` | **Done** | Signatures + checking (ADR-0016). No const-eval: that is `jr-vm` |
-| `jr-db` | **Done** | salsa queries incl. the module loader and sema (ADR-0007, ADR-0014) |
+| `jr-db` | **Done** | salsa queries incl. the module loader, sema and MIR (ADR-0007, ADR-0014) |
 | `jr-cli` | **Done** | `jr check` (with `--module-path`), `jr fmt`, `jr parse` |
 | `tree-sitter-jairs` | **Done** | Grammar + queries; drift gate green |
-| `tests/corpus` | **Done** | 66 files, incl. `type-errors/` — one file per sema diagnostic |
+| `tests/corpus` | **Done** | 69 files, incl. `type-errors/` and `cfg-errors/` — one file per diagnostic |
 | `modules/Basic` | **Partial** | Written, resolving and type-checking; cannot execute |
-| `jr-mir` | **Not started** | Next |
-| `jr-vm` | **Not started** | Gates `#run` folding |
+| `jr-mir` | **Done** | Typed SSA, Braun construction, CFG diagnostics (ADR-0017). No mid-end |
+| `jr-vm` | **Not started** | **Next.** Gates `#run` folding, and three MIR refusals |
 | `jr-codegen`, `-clif`, `jr-link` | **Not started** | |
 | `jr-driver`, `jr-lsp` | **Not started** | |
 
-Accepted ADRs: 0001–0016. See [`docs/adr/README.md`](docs/adr/README.md).
+Accepted ADRs: 0001–0017. See [`docs/adr/README.md`](docs/adr/README.md).
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
 plus `jr-sema`'s crate docs are the only record of the typing rules today.
+
+`jr-mir` has **no mid-end**: no inliner, no DCE, no const-prop, and no `mem2reg`
+(ADR-0017 §2 makes the last one unnecessary rather than deferred). The wave that
+adds one is §2.1's, and §5 puts the inliner in MIR deliberately.
 
 ---
 
@@ -429,138 +433,150 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 ## 7. Immediate next actions
 
-Everything through **type checking** is done: workspace scaffolding, the ADRs,
-spec chapters 00–03, the corpus plus the drift gate, the
-lexer→parser→CST→`jr fmt` inch, HIR and name resolution, the module loader, the
-InternPool, and `jr-sema`. See §1.5 for component status.
+Everything through **MIR** is done: workspace scaffolding, the ADRs, spec chapters
+00–03, the corpus plus the drift gate, the lexer→parser→CST→`jr fmt` inch, HIR and
+name resolution, the module loader, the InternPool, `jr-sema`, and `jr-mir`. See
+§1.5 for component status.
 
-### What `jr-sema` landed
+### What `jr-mir` landed
 
-All six work items from the previous handoff, in one wave:
+All the items the previous handoff listed except the mid-end, which was
+deliberately deferred:
 
-- [x] **Type resolution.** `TypeRef` → `PoolId`, with builtins (`s64`, `u8`,
-      `bool`, `string`) matched by name because they are ordinary identifiers, user
-      types via `hir.scope`, and imported types via the import scopes. Every
-      accessor takes an `ExprScope` saying which arena an id belongs to, so the
-      arena trap is closed by construction rather than by remembering.
-- [x] **`file_signatures`.** Signature-only typing that depends on `file_hir` and
-      the *imported files’ HIR*, never on another file’s signatures or check
-      (ADR-0016 §5). This is what keeps the `Cycle_A`/`Cycle_B` import cycle
-      terminating, and `jr-db`’s `sema` module docs draw the resulting graph.
-- [x] **Expression and statement checking**, `:=` inference, and poison
-      propagation. `PoolId::ERROR` flows silently, so the invalid corpus produces
-      **zero** sema diagnostics — asserted, not assumed.
-- [x] **Wired into `jr-db`** as `file_signatures` and `checked`, joined into
-      `file_diagnostics`. The interned `Pool` lives behind `Db::pool`, outside
-      salsa, for the reasons argued in `crates/jr-db/src/sema.rs`.
-- [x] **Corpus.** `valid/025-paren-constant.jr` lost its void binding, and
-      `tests/corpus/type-errors/` is new: 16 files, one per code this crate owns,
-      each declaring the code it expects.
-- [x] **E0204 moved** out of lowering into sema, against the *contextual* type. So
-      `x: u8 = 300;` is now an error; it was silently accepted before.
+- [x] **ADR-0017**, recording four decisions with their rejected alternatives:
+      blocks are a `Vec` with **block parameters** rather than phi statements; SSA is
+      built during lowering by Braun et al. rather than recovered by a `mem2reg`;
+      one MIR body is one procedure; and a body that failed to type-check is
+      **refused** rather than lowered.
+- [x] **Braun SSA construction** (`ssa.rs`), with incomplete parameters for unsealed
+      blocks and trivial-parameter collapse. No dominator tree and no dominance
+      frontiers: the HIR has no `for`, no `defer`, no labelled break and no `goto`,
+      so every CFG is reducible *by construction* and the algorithm's minimality
+      result holds without the irreducible-graph path.
+- [x] **Lowering** (`build.rs`) for the whole Jairs-0 subset. `&&` and `||` become
+      control flow because MIR's `BinOp` has no `And`/`Or` variant at all — the type
+      system enforces short-circuiting rather than a comment asking for it.
+- [x] **A verifier** (`verify.rs`) asserting no `PoolId::ERROR`, edge arity, and
+      ADR-0017 §1's no-critical-edges invariant, called from lowering under
+      `debug_assertions`.
+- [x] **`dump_mir`** (`dump.rs`), and one combined `insta` snapshot over every
+      `valid/` corpus file in `crates/jr-db/tests/mir_corpus.rs`.
+- [x] **Wired into `jr-db`** as `file_mir`, plus `frontend_diagnostics` split out of
+      `file_diagnostics` so the gate and the diagnostics do not form a query cycle.
+- [x] **The three CFG diagnostics** (`cfg.rs`): E0227 definite assignment, E0228
+      missing `return`, E0229 a jump outside a loop, with `tests/corpus/cfg-errors/`
+      as their positive half.
 
-Two decisions were taken while doing it that the plan had not anticipated:
+Three things were decided or discovered that the plan had not anticipated:
 
-- **Type-error files went in a new `tests/corpus/type-errors/`, not `invalid/`.**
-  `invalid/` is the parser’s recovery corpus and three separate gates enforce
-  that its files fail to *parse*. A type error parses fine, so filing one there
-  would have meant weakening all three. `tests/corpus/README.md` records the
-  contract, and the new directory joins the formatter and tree-sitter gates
-  instead of being excluded from them.
-- **No new ADR.** ADR-0015 and ADR-0016 already fix identity and rules; the
-  diagnostic-code table and the two rules they left open (what counts as a place,
-  and `string`’s `.data`/`.count` pseudo-fields) are argued in `jr-sema`’s crate
-  docs, where the code that implements them can be read alongside.
+- **A real, pre-existing silent miscompile was found and fixed.**
+  `if n > 0 return n;` — a braceless single-statement body, which
+  `tests/corpus/valid/010-if-else.jr` documents as legal and contains — parsed with
+  zero diagnostics, and `jr-hir` then discarded the whole body as `Stmt::Error`,
+  also with zero diagnostics. `jr check` reported that file clean while the `return`
+  was gone. The parser's `parse_body` deliberately builds either a `Block` or a bare
+  `Stmt`, but the typed-AST accessors were `Option<Block>`, so half the grammar was
+  invisible to them. Fixed with `ast::ControlBody`, and the same bug existed in
+  braceless `else` and braceless `while`. **ADR-0017 §4's poison gate is what
+  surfaced it** — MIR refused the body instead of emitting one that ignored the
+  `return`.
+- **ADR-0017 §4 gained a caller obligation.** Not every reported error poisons a
+  type: `x: u8 = 300;` is E0204 and then type-checks as `u8`, so `jr-mir` — a pure
+  function over HIR plus types, handed no diagnostics — cannot see it. So nothing may
+  request the MIR of a file whose `frontend_diagnostics` reports errors, discharged
+  once in `file_mir`. This is the one respect in which the "caller checks first"
+  option the ADR otherwise rejected is still load-bearing.
+- **`b: s64;` and `c: s64 = ---;` are different**, which `valid/005-decl-typed.jr`
+  states and lowering initially conflated. The first is default-initialised to the
+  type's zero value and is never a definite-assignment error; only the second opts
+  out. Collapsing them would have been a false positive on legal code.
 
-Diagnostic codes: **E0227 is the first free code.** E0212–E0226 are sema; E0204
-and E0211 are shared, and `jr-sema`’s crate docs say who raises what. Beware that
-`jr-syntax`’ parser still illegally emits E0200/E0201/E0202 for “arrives in wave
-Wn” errors, colliding with `jr-hir` — do not filter tests by those.
+Diagnostic codes: **E0230 is the first free code.** E0227–E0229 are `jr-mir`;
+`jr-mir`'s `code.rs` says what raises each. Beware that `jr-syntax`' parser still
+illegally emits E0200/E0201/E0202 for "arrives in wave Wn" errors, colliding with
+`jr-hir` — do not filter tests by those.
 
-### Next: implement `jr-mir`
+### Next: implement `jr-vm`
+
+The VM is the load-bearing piece of §3.1's invariant: it consumes bytecode lowered
+from *the same* MIR Cranelift will consume. It is also the only evaluator that will
+ever exist, so it is what unblocks three things at once.
 
 #### Read first, in this order
 
-1. This section, then §1.5 for component status and §3.1 for the same-MIR invariant.
-2. `crates/jr-sema/src/lib.rs` — the crate docs are the only written record of the
-   typing rules beyond ADR-0015 and ADR-0016, and they list what sema deliberately
-   does **not** check.
-3. `crates/jr-db/src/sema.rs` — the query graph MIR has to hang off, and the
-   argument for why the `Pool` sits outside salsa.
-4. Zig's `Sema.zig` and `InternPool.zig` before wave W4; `jr-pool`'s notes already
-   record what was taken from `InternPool.zig` and what was rejected.
+1. This section, then §1.5 for status and §3.1 for the same-MIR invariant.
+2. **ADR-0017**, all of it. It is `jr-mir`'s specification and the VM is `jr-mir`'s
+   first consumer.
+3. `crates/jr-mir/src/mir.rs` — the IR. Then `build.rs`'s crate docs for what
+   lowering refuses and why.
+4. `crates/jr-db/src/mir.rs` — the query the VM hangs off, and the error gate.
+5. ADR-0006 (comptime FFI) and ADR-0016 §4 (`#run` has a type and no value).
 
-**`jr-mir` has no ADR.** ADR-0017 is the next free number, and the first two
-decisions below are the kind that earns one — they shape a data representation and
-are expensive to undo.
+#### What `jr-mir` hands you
 
-#### What sema hands you
-
-- `jr_sema::TypeMap` — `expr_type(ExprScope, ExprId)` and `local_type(BodyId,
-  LocalId)`. Reached from `jr_db::checked(db, file, search_paths).types`, which
-  already folds the signature phase's file-level types into the check phase's map.
-- `jr_sema::FileSignatures` — `proc_sig(ProcId) -> &ProcSig { params, ret, ty }`
-  and `lookup(Symbol) -> Option<SigEntry>`; `SigEntry::kind` classifies a name as
-  const/var/proc/struct, which `Res::Item` on its own does not.
-- `jr_pool::Pool` via `Db::pool()` — struct layouts through
-  `struct_fields(DeclId)`, and `PoolId::VOID`/`BOOL`/`S64`/`U8`/`STRING`/`PTR_U8`
-  pre-interned.
+- `jr_mir::MirBody` — private arenas with accessors; `blocks()`, `block(BlockId)`,
+  `value(ValueId)`, `slot(SlotId)`, `params()`, `ret()`, `entry()`, plus cached
+  `predecessors()` and `reverse_postorder()`. The last is the block order to
+  linearise in.
+- `Statement::{Assign, Store, Discard, Nop}`, `Rvalue::{Use, Binary, Unary, Call,
+  Load, Address, Undef}`, `Terminator::{Goto, Branch, Return, Unreachable}`.
+- `jr_db::file_mir(db, file, search_paths) -> MirResult { mir, gated }`, and
+  `jr_db::dump_mir` for eyeballing.
+- Every constant is a `PoolId` naming an interned value, so the VM's value
+  representation should agree with `jr-pool`'s rather than paralleling it.
 
 #### Work items, in dependency order
 
-- [ ] **Decide the IR shape and record it in ADR-0017.** Typed SSA per §3.1, but
-      the open parts are: basic-block representation, whether locals are promoted
-      at construction or by a later `mem2reg`, and whether one `Mir` covers a file
-      or a procedure. The last one decides the salsa query's granularity, so it is
-      not deferrable.
-- [ ] **Decide how errors gate MIR.** `file_diagnostics` gates no phase on any
-      earlier one, which is right for an editor and wrong for lowering: a body
-      containing `Expr::Error`, or a local of `PoolId::ERROR`, cannot be lowered to
-      anything meaningful. Options are to skip a poisoned body, to lower it to a
-      trap, or to require the caller to check for errors first. Whichever it is
-      must be stated, because silently producing MIR from poison is a miscompile.
-- [ ] **Lower one procedure body.** `Stmt`/`Expr` → blocks and instructions,
-      reading types from the `TypeMap` rather than recomputing them.
-- [ ] **Wire into `jr-db`** as a tracked query beside `checked`, keeping the
-      "gather from other queries first, then lock the pool" rule.
-- [ ] **The mid-end.** Inliner, `mem2reg`, DCE, const-prop. §5 puts the inliner in
-      MIR deliberately: Cranelift has none, and `#expand` assumes one.
-- [ ] **Definite assignment and missing `return`.** Both need the CFG, which is why
-      sema does not answer them. `c: s64 = ---;` is the definite-assignment case
-      the corpus already contains, and W3 is where it was promised.
-- [ ] **Corpus.** A MIR dump per `valid/` file, snapshot-tested with `insta`, is the
-      cheapest proof lowering is total — the same role `jr fmt` plays for the CST.
+- [ ] **Decide the bytecode's shape, and whether it needs an ADR.** The one
+      structural obligation is already fixed: block parameters must become parallel
+      copies on edges, and ADR-0017 §1's no-critical-edges invariant is what makes
+      that placement unambiguous. `reverse_postorder()` gives the linearisation.
+- [ ] **Layout.** Nothing in the workspace computes a size, an alignment or a field
+      offset — ADR-0017 §5 defers it to codegen precisely so the VM and Cranelift
+      cannot disagree, which means the VM is the *first* consumer that forces the
+      question. `Projection::Field` carries an index, `Projection::StringData`/
+      `StringCount` are symbolic, and ADR-0004's `string = {data: *u8, count: s64}`
+      is still prose. Decide where the one shared computation lives before writing
+      two.
+- [ ] **Evaluate a body**, then `#run`. ADR-0016 §4 is what this closes.
+- [ ] **Fold `#run` in `jr-sema`**, which is what lets `jr-mir` stop refusing it.
+- [ ] **A value for file-level constants**, which is the second MIR refusal — sema
+      records a constant's type but never its value.
+- [ ] **`jr run`** in `jr-cli`, and the slice exit criterion in §1.4.
+- [ ] **libffi** for comptime FFI (ADR-0006). `ForeignInfo::library` is *still* an
+      unresolved `Option<Symbol>`: sema checks it names a library (E0225) and records
+      nothing, so this has to resolve it again.
 
 #### Traps
 
-- **The arena trap, again.** `FileHir::exprs` and every `Body::exprs` are separate
-  arenas that both start at 0, and so are `FileHir::type_refs` and
-  `Body::type_refs`. Ask the `TypeMap` with the right `ExprScope` or you will get
-  another node's type. `Proc::type_refs` and `Struct::type_refs` are always empty.
-- **`Body` still has no back-pointer to its `Proc`.** Sema rebuilds the map by
-  scanning `FileHir::procs` for `proc.body == Some(body_id)`
-  (`crates/jr-sema/src/check.rs`). Do not scan a second time — add the mapping to
-  `jr-hir`, or expose sema's.
-- **`ForeignInfo::library` is still an unresolved `Option<Symbol>`.** Sema resolves
-  it at check time to verify it is a library (E0225) but records nothing, so codegen
-  will have to resolve it again.
-- **`Stmt::Item` and `FieldId` are constructed by nothing.** Match them
-  exhaustively anyway; the day lowering starts producing them, a `_` arm would hide
-  it.
-- **The `#run` value does not exist.** ADR-0016 §4: `#run e` has the type of `e`
-  and no value until `jr-vm` folds it through MIR. Nothing may assume otherwise.
-- **`lower_bin_op`/`lower_un_op`/`lower_assign_op` fall back silently** to
-  `Add`/`Neg`/`Assign` on an unrecognised token, so MIR cannot tell a real operator
-  from a recovered one either.
+- **The three MIR refusals are not bugs, and two of them are yours to remove.**
+  `crates/jr-db/tests/mir_corpus.rs` enumerates them: `#run has no value until
+  jr-vm`, `a file-level item has no value until jr-vm`, and `a cross-file call needs
+  the callee's signatures`. Deleting the first two from that list *is* the proof the
+  VM works. The third belongs to the inliner: `Callee::Direct` names a `ProcId`,
+  which indexes one file's procedures.
+- **`Rvalue::Undef` is not poison.** It is a well-typed value that was never
+  assigned, and E0227 reports reading one. The VM must not treat it as an error.
+- **An operand from `SsaBuilder::read_variable` must never be held across a
+  `seal_block`** — see `ssa.rs`'s module docs. Irrelevant to the VM, but it is the
+  trap for anyone extending lowering.
+- **`Terminator::Unreachable` has three reasons** and only `Trap` is a program the
+  compiler believes is well-formed.
+- **`Pool::is_type(PoolId::ERROR)` is `true`.** Never use `is_type` as an error gate.
+- **The arena trap, still.** `FileHir::exprs` and every `Body::exprs` start at 0;
+  `MirSpan::Expr` carries an `ExprScope` for exactly that reason.
+- **A dead `ValueId` is normal.** Collapsing a trivial block parameter leaves its id
+  behind, so `verify` checks that every *used* value is defined, not every declared
+  one.
 
 #### Gates — all six must pass
 
 `cargo fmt --all --check`; `cargo clippy --workspace --all-targets -- -D warnings`;
-`cargo test --workspace`; `RUSTDOCFLAGS="-D warnings" cargo doc --workspace
---no-deps`; `cargo run -q -p jr-cli -- fmt --check tests/corpus/valid
-tests/corpus/imports/valid tests/corpus/type-errors tests/corpus/modules modules`;
-corpus-drift via `npx --yes tree-sitter-cli@0.26.11` (tree-sitter is not installed
-locally).
+`cargo test --workspace` (511 tests as of this handoff); `RUSTDOCFLAGS="-D warnings"
+cargo doc --workspace --no-deps`; `cargo run -q -p jr-cli -- fmt --check
+tests/corpus/valid tests/corpus/imports/valid tests/corpus/type-errors
+tests/corpus/cfg-errors tests/corpus/modules modules`; corpus-drift via
+`npx --yes tree-sitter-cli@0.26.11` (tree-sitter is not installed locally).
 
 House style is enforced by the first four: `[lints] workspace = true` and no
 crate-level `#![warn]`, `missing_docs` is a warning workspace-wide so every public
@@ -569,29 +585,34 @@ curated `pub use` in `lib.rs`, module `//!` docs that argue *why* and name the
 rejected alternative, and exhaustive matches rather than `matches!` or guards so
 that a new variant is a compile error.
 
+One process note, because it cost real time: **subagents were unreliable on this
+wave.** Three of four stalled, and the one that succeeded had a single target file
+and a short reading list. Write the modules that define an API yourself; delegate
+only single-file work with the consumed signatures stated verbatim.
+
 ### Known latent issues, none blocking
 
-- `file_diagnostics` calls `lower_file` itself instead of reusing `file_hir`,
-  because `file_hir` discards lowering diagnostics. Every file is lowered twice.
-- The parser’s E0200/E0201/E0202 collision described above.
-- `Stmt::Item` and `FieldId` are declared but never constructed.
-- An imported module’s signatures are recomputed once per importer inside the
-  signature phase. ADR-0016 §5 forbids the obvious fix (calling
-  `file_signatures` on the import), and interning is idempotent, so the cost is
-  time rather than correctness.
-- A name that an *imported* module itself imported is invisible to the importer’s
+- The parser's E0200/E0201/E0202 collision described above.
+- `Stmt::Item` and `FieldId` are declared but never constructed. Both are matched
+  exhaustively anyway, in `jr-sema` and `jr-mir`, so the day one is constructed the
+  arm is the thing to change.
+- An imported module's signatures are recomputed once per importer inside the
+  signature phase. ADR-0016 §5 forbids the obvious fix, and interning is idempotent,
+  so the cost is time rather than correctness.
+- A name that an *imported* module itself imported is invisible to the importer's
   signature phase and resolves to poison. It only bites a constant whose value is
   such a name; nothing in the corpus does that.
-- The most negative value of a signed type cannot be written as a literal: the
-  HIR stores a magnitude and `-1` is negation applied to `1`, so
-  `-9223372036854775808` overflows the positive bound.
-- `Pool` never shrinks. Fine for a batch run; an editing session that runs long
-  enough would grow it without bound, and `jr-pool`’s docs record the remap-pass
-  escape hatch.
-- The `TypeMap` is produced and stored but read by nothing except tests.
+- The most negative value of a signed type cannot be written as a literal: the HIR
+  stores a magnitude and `-1` is negation applied to `1`.
+- `Pool` never shrinks. Fine for a batch run; a long editing session would grow it
+  without bound, and `jr-pool`'s docs record the remap-pass escape hatch.
+- A default-initialised local of *pointer* type is treated as uninitialised rather
+  than null, because the pool interns no null pointer. Nothing in the corpus does
+  it, and `build.rs`'s `zero_value` records the gap.
+- `jr-mir` has no mid-end at all, so nothing folds constants or removes dead blocks;
+  a MIR dump shows unreachable blocks that a DCE pass would delete.
 
-### After MIR
+### After the VM
 
-`jr-vm` (which unblocks `#run` folding and `jr run`) → `jr-codegen-clif` →
-`jr-link`. The VM is the only evaluator that will ever exist, so `#run` gets its
-value there and nowhere else (ADR-0016 §4).
+`jr-codegen-clif` → `jr-link`, then §1.4's exit criteria: `024-hello.jr` running in
+the VM and as a native binary, producing identical output.

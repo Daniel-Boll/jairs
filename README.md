@@ -6,21 +6,25 @@ error-recovering compiler written in Rust.
 
 > **Status: pre-alpha. Jairs source does not compile or run yet.**
 >
-> What works today is the **front end, through type checking**. `jr check` parses
-> a file, lowers it to HIR, loads the modules it imports, resolves names across
-> the import boundary, type-checks it against those modules' signatures, and
-> reports rustc-quality diagnostics; `jr fmt` formats it; `jr parse` dumps its
+> What works today is the **front end, through the mid-level IR**. `jr check`
+> parses a file, lowers it to HIR, loads the modules it imports, resolves names
+> across the import boundary, type-checks it against those modules' signatures,
+> lowers each procedure body to typed SSA, and reports rustc-quality diagnostics —
+> including the three that need a control-flow graph: definite assignment, missing
+> `return`, and a jump outside a loop. `jr fmt` formats it; `jr parse` dumps its
 > tokens or tree. Implemented crates: `jr-base` (spans, interning, source map),
 > `jr-diag` (diagnostics + renderer), `jr-syntax` (lexer, error-recovering parser,
 > lossless CST, typed AST), `jr-fmt`, `jr-hir` (lowering, scopes, `#import`
 > resolution), `jr-pool` (the InternPool), `jr-sema` (signatures, types,
-> inference), `jr-db` (salsa queries + the module loader), `jr-cli`.
+> inference), `jr-mir` (typed SSA, ADR-0017), `jr-db` (salsa queries + the module
+> loader), `jr-cli`.
 >
-> Not started: **MIR** (`jr-mir` is next), the compile-time bytecode VM, the
-> Cranelift backend, the language server, and most of the standard library. There
-> is no code generation of any kind — you cannot build or run a Jairs program, and
-> `#run` has a type but not yet a value (ADR-0016 §4). See [`PLAN.md`](PLAN.md)
-> §1.5 for per-crate status and §7 for what happens next.
+> Not started: the compile-time bytecode VM (`jr-vm` is next), the Cranelift
+> backend, the language server, and most of the standard library. `jr-mir` has no
+> mid-end — no inliner, no DCE, no const-prop. There is no code generation of any
+> kind: you cannot build or run a Jairs program, and `#run` has a type but not yet
+> a value (ADR-0016 §4), which is why MIR refuses to lower a body that uses one.
+> See [`PLAN.md`](PLAN.md) §1.5 for per-crate status and §7 for what happens next.
 
 ---
 

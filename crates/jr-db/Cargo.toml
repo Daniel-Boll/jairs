@@ -17,8 +17,10 @@ jr-syntax.workspace = true
 jr-hir.workspace = true
 jr-pool.workspace = true
 jr-sema.workspace = true
+jr-mir.workspace = true
 salsa.workspace = true
 rustc-hash.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+jr-mir.workspace = true
