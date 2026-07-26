@@ -1,9 +1,26 @@
-//! The `jr` command-line driver.
-//!
-//! Currently a placeholder: the subcommands described in `PLAN.md` §1.4
-//! (`jr fmt`, `jr check`, `jr run`, `jr build`) are wired up as the Jairs-0
-//! vertical slice lands.
+//! Entry point for the `jr` binary.
+
+use std::process;
+
+use anyhow::Result;
+use clap::Parser as _;
+use jr_cli::cli::{Cli, Command};
 
 fn main() {
-    println!("jr: pre-alpha; no subcommands are implemented yet (see PLAN.md)");
+    let cli = Cli::parse();
+    match run(cli) {
+        Ok(code) => process::exit(code),
+        Err(e) => {
+            eprintln!("jr: error: {e:#}");
+            process::exit(3);
+        }
+    }
+}
+
+fn run(cli: Cli) -> Result<i32> {
+    match cli.command {
+        Command::Check(args) => jr_cli::commands::check::run(args, &cli.global),
+        Command::Fmt(args) => jr_cli::commands::fmt::run(args, &cli.global),
+        Command::Parse(args) => jr_cli::commands::parse::run(args, &cli.global),
+    }
 }

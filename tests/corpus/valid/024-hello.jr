@@ -9,7 +9,7 @@ Point :: struct {
     y: s64;
 }
 
-MESSAGE  :: "hello from Jairs\n";
+MESSAGE :: "hello from Jairs\n";
 COMPUTED :: #run add(2, 3);
 
 add :: (a: s64, b: s64) -> s64 {

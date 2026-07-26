@@ -65,6 +65,21 @@ jobs:
       - run: cargo doc --workspace --no-deps
 
   # ---------------------------------------------------------------------------
+  # jairs-fmt — the corpus must stay canonical under `jr fmt`
+  #
+  # The corpus files are the specification's worked examples. Enforcing that
+  # they are already formatted keeps the spec and the formatter from drifting
+  # apart, and doubles as an end-to-end test of the `jr` binary.
+  # ---------------------------------------------------------------------------
+  jairs-fmt:
+    name: jairs-fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run -p jr-cli -- fmt --check tests/corpus/valid
+
+  # ---------------------------------------------------------------------------
   # corpus-drift — THE GATE (PLAN.md §2.0 and §5)
   #
   # Every file in tests/corpus/valid/ must parse cleanly in BOTH the Rust

@@ -1,8 +1,8 @@
 // `::` binds a compile-time constant. The right-hand side must be
 // evaluable at compile time.
 MAX_ENTITIES :: 4096;
-GREETING     :: "hello";
-DEBUG        :: false;
+GREETING :: "hello";
+DEBUG :: false;
 
 // Constants may refer to earlier constants; declaration order does not
 // matter, because semantic analysis is lazy and on-demand.

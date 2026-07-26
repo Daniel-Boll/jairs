@@ -4,11 +4,18 @@ Jairs is a Jai-inspired systems language with compile-time execution, explicit
 allocators, and no GC, RAII, or exceptions — compiled by a hand-written,
 error-recovering compiler written in Rust.
 
-> **Status: pre-alpha. Nothing works yet.**
+> **Status: pre-alpha. Jairs source does not compile or run yet.**
 >
-> Only `jr-base` (spans, interning, source map) is implemented.
-> `jr-diag` is in progress. Every other crate is a stub that compiles but does
-> nothing. Do not use this for anything.
+> What works today is the **syntax layer**: `jr check` parses a file and reports
+> rustc-quality diagnostics, `jr fmt` formats it, and `jr parse` dumps its tokens
+> or tree. Implemented crates: `jr-base` (spans, interning, source map),
+> `jr-diag` (diagnostics + renderer), `jr-syntax` (lexer, error-recovering
+> parser, lossless CST, typed AST), `jr-fmt`, `jr-cli`.
+>
+> Not started: name resolution, type checking, the compile-time bytecode VM, the
+> Cranelift backend, the language server, and the standard library. There is no
+> code generation of any kind — you cannot build or run a Jairs program. See
+> [`PLAN.md`](PLAN.md) for the sequencing.
 
 ---
 

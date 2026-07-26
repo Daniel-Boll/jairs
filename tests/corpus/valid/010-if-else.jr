@@ -11,6 +11,6 @@ classify :: (n: s64) -> s64 {
 
 single_statement :: (n: s64) -> s64 {
     // A single statement may follow the condition without braces.
-    if n > 0  return n;
+    if n > 0 return n;
     return 0;
 }

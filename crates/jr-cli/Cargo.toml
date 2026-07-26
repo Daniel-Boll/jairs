@@ -11,7 +11,21 @@ authors.workspace = true
 name = "jr"
 path = "src/main.rs"
 
+[lib]
+name = "jr_cli"
+path = "src/lib.rs"
+
 [lints]
 workspace = true
 
 [dependencies]
+jr-base.workspace = true
+jr-diag.workspace = true
+jr-syntax.workspace = true
+jr-fmt.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tempfile = "3"
+
+[dev-dependencies]
+tempfile = "3"

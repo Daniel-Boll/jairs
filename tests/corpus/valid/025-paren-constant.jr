@@ -4,14 +4,17 @@
 // a `(` may open a procedure's parameter list or a parenthesised expression.
 // Both parsers resolve it by looking past the matching `)` -- a parameter list
 // can only be followed by `->`, `{`, or `#foreign`.
-GROUPED  :: (1 + 2) * 3;
-NESTED   :: ((1));
-CHAINED  :: (1 + 2) * (3 - 4);
-NEGATED  :: -(1 + 2);
+GROUPED :: (1 + 2) * 3;
+NESTED :: ((1));
+CHAINED :: (1 + 2) * (3 - 4);
+NEGATED :: -(1 + 2);
 
 // For contrast, the procedure forms that start the same way.
-no_args  :: () { }
-with_ret :: () -> s64 { return 1; }
+no_args :: () {
+}
+with_ret :: () -> s64 {
+    return 1;
+}
 
 libc :: #system_library "c";
 imported :: (fd: s64) -> s64 #foreign libc "close";

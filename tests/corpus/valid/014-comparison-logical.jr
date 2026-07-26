@@ -10,7 +10,7 @@ main :: () {
     ne := a != b;
 
     // `&&` and `||` short-circuit; `!` negates.
-    both   := lt && gt;
+    both := lt && gt;
     either := lt || gt;
     negated := !lt;
 }
