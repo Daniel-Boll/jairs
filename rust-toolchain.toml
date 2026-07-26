@@ -1,0 +1,6 @@
+# The Jairs compiler is a tool other people build; it stays on stable for
+# reproducibility. Nightly-only features are not permitted in this workspace.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+targets = ["aarch64-apple-darwin"]

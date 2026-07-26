@@ -1,0 +1,22 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# insta pending snapshots
+**/*.snap.new
+**/*.pending-snap
+
+# Compiled Jairs output
+/examples/**/*.o
+/examples/**/*.dSYM
+/tests/**/*.o
+/out
+/*.o
+
+# tree-sitter generated artefacts
+/tree-sitter-jairs/src/parser.c
+/tree-sitter-jairs/src/tree_sitter/
+/tree-sitter-jairs/build/
+/tree-sitter-jairs/node_modules/
+
+.DS_Store

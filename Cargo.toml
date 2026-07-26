@@ -1,0 +1,117 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dboll/jairs"
+authors = ["Jairs contributors"]
+
+# ---------------------------------------------------------------------------
+# Pinned dependency versions.
+#
+# ADR-0009: `cranelift-*` and `salsa` are pinned with `=` because their APIs are
+# explicitly NOT semver-stable; a minor bump breaks compilation. Everything else
+# uses caret ranges.
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
+# --- internal crates -------------------------------------------------------
+jr-base = { path = "crates/jr-base" }
+jr-diag = { path = "crates/jr-diag" }
+jr-syntax = { path = "crates/jr-syntax" }
+jr-fmt = { path = "crates/jr-fmt" }
+jr-hir = { path = "crates/jr-hir" }
+jr-pool = { path = "crates/jr-pool" }
+jr-sema = { path = "crates/jr-sema" }
+jr-mir = { path = "crates/jr-mir" }
+jr-vm = { path = "crates/jr-vm" }
+jr-codegen = { path = "crates/jr-codegen" }
+jr-codegen-clif = { path = "crates/jr-codegen-clif" }
+jr-codegen-llvm = { path = "crates/jr-codegen-llvm" }
+jr-link = { path = "crates/jr-link" }
+jr-db = { path = "crates/jr-db" }
+jr-driver = { path = "crates/jr-driver" }
+jr-lsp = { path = "crates/jr-lsp" }
+
+# --- syntax / frontend -----------------------------------------------------
+rowan = "0.16.1"
+text-size = "1.1"
+
+# --- diagnostics -----------------------------------------------------------
+annotate-snippets = "0.12.16"
+
+# --- data structures -------------------------------------------------------
+lasso = { version = "0.7.3", features = ["multi-threaded"] }
+slotmap = "1.1.1"
+bumpalo = "3.20"
+indexmap = "2"
+rustc-hash = "2"
+smallvec = { version = "1", features = ["union"] }
+smol_str = "0.3"
+
+# --- incrementality (see ADR-0007) -----------------------------------------
+salsa = "=0.28.1"
+
+# --- codegen (see ADR-0009) ------------------------------------------------
+cranelift-codegen = "=0.134.2"
+cranelift-frontend = "=0.134.2"
+cranelift-module = "=0.134.2"
+cranelift-native = "=0.134.2"
+cranelift-object = "=0.134.2"
+cranelift-jit = "=0.134.2"
+inkwell = "0.9.0"
+
+# --- objects / debug info / linking ----------------------------------------
+object = "0.39"
+gimli = "0.34"
+target-lexicon = "0.13"
+
+# --- comptime FFI (see ADR-0006) -------------------------------------------
+libffi = "4"
+
+# --- LSP (see ADR-0008) ----------------------------------------------------
+lsp-server = "0.10.0"
+lsp-types = "0.97.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+crossbeam-channel = "0.5"
+
+# --- CLI / misc ------------------------------------------------------------
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# --- test infrastructure ---------------------------------------------------
+insta = { version = "1.48", features = ["glob"] }
+expect-test = "1"
+libtest-mimic = "0.8"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+# Compiler code is full of wide matches and long lowering functions; the noisy
+# pedantic lints cost more than they give us here.
+too_many_arguments = "allow"
+enum_glob_use = "allow"
+module_name_repetitions = "allow"
+
+[profile.dev]
+# The compiler is used interactively; debug builds of the *host* compiler still
+# need to run the corpus in reasonable time.
+opt-level = 1
+debug = true
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"

@@ -1,0 +1,41 @@
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+charset = utf-8
+
+# Rust source
+[*.rs]
+indent_style = space
+indent_size = 4
+
+# Jairs source
+[*.jr]
+indent_style = space
+indent_size = 4
+
+# tree-sitter grammar and queries
+[*.{js,scm}]
+indent_style = space
+indent_size = 2
+
+# JSON (package.json, tsconfig, etc.)
+[*.json]
+indent_style = space
+indent_size = 2
+
+# YAML (CI workflows, configs)
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+# TOML (Cargo.toml, rust-toolchain.toml, etc.)
+[*.toml]
+indent_style = space
+indent_size = 4
+
+# Markdown
+[*.md]
+trim_trailing_whitespace = false

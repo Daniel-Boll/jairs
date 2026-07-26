@@ -1,0 +1,8 @@
+# rustfmt.toml — stable-channel only; no nightly options.
+#
+# Nightly-only options (e.g. imports_granularity, group_imports, wrap_comments)
+# cause `cargo fmt --check` to fail or emit warnings on stable.  Keep this file
+# minimal: only options that are stable and ship with the pinned toolchain.
+
+edition = "2024"
+max_width = 100
