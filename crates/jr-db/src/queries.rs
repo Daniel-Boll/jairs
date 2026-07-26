@@ -124,7 +124,7 @@ pub fn line_index(db: &dyn Db, file: SourceFile) -> LineIndex {
 /// use, since `set_file_text` always updates the map before creating the
 /// salsa input), we fall back to `FileId::from_usize(0)` rather than
 /// panicking, because panicking inside a tracked query would poison the memo.
-fn resolve_file_id(db: &dyn Db, file: SourceFile) -> FileId {
+pub(crate) fn resolve_file_id(db: &dyn Db, file: SourceFile) -> FileId {
     let path = file.path(db);
     let sm = db.source_map();
     sm.file_id(path.as_ref())

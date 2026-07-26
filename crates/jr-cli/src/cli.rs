@@ -99,6 +99,11 @@ pub struct CheckArgs {
     /// Files or directories to check (directories expand to `**/*.jr`).
     #[arg(required = true, value_name = "PATH")]
     pub paths: Vec<std::path::PathBuf>,
+
+    /// Directory to search for imported modules. May be repeated; searched in
+    /// the order given, before the bundled module directory (ADR-0014).
+    #[arg(short = 'I', long = "module-path", value_name = "DIR")]
+    pub module_paths: Vec<std::path::PathBuf>,
 }
 
 /// Arguments for `jr fmt`.

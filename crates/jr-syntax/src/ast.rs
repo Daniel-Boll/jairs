@@ -11,7 +11,7 @@
 //! *tolerant*: an incomplete tree from a failed parse returns `None` rather
 //! than panicking.
 //!
-//! The [`ast_node!`] macro generates the boilerplate for each node type.
+//! The private `ast_node!` macro generates the boilerplate for each node type.
 //! Accessors are written by hand because they encode grammar knowledge that
 //! cannot be derived from the kind alone.
 

@@ -10,8 +10,8 @@
 //! shared corpus in `tests/corpus/` and the `corpus-drift` CI job.
 
 pub mod ast;
-mod kind;
-mod lexer;
+pub mod kind;
+pub mod lexer;
 pub mod parser;
 
 pub use kind::{JairsLanguage, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};

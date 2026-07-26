@@ -228,7 +228,7 @@ pub enum Expr {
         name: Symbol,
         /// The span of the name token.
         span: Span,
-        /// Resolution result (filled by [`crate::resolve`]).
+        /// Resolution result (filled by [`resolve`](fn@crate::resolve)).
         res: Res,
     },
     /// `lhs op rhs`
@@ -573,7 +573,7 @@ pub struct Item {
 
 /// A flat name→item mapping for one file, used during name resolution.
 ///
-/// Callers pass slices of `(&str, &ItemScope)` to [`crate::resolve`] to
+/// Callers pass slices of `(&str, &ItemScope)` to [`resolve`](fn@crate::resolve) to
 /// provide the scopes of imported modules.
 #[derive(Debug, Clone, Default)]
 pub struct ItemScope {
@@ -604,7 +604,7 @@ impl ItemScope {
 
 /// The complete HIR for one source file.
 ///
-/// Owns all arenas. After lowering, call [`crate::resolve`] to fill in name
+/// Owns all arenas. After lowering, call [`resolve`](fn@crate::resolve) to fill in name
 /// resolution results.
 #[derive(Debug)]
 pub struct FileHir {
@@ -671,5 +671,20 @@ impl FileHir {
     /// Returns the interner-resolved text of a symbol, for diagnostics.
     pub fn symbol_text<'a>(&self, sym: Symbol, interner: &'a Interner) -> &'a str {
         interner.resolve(sym)
+    }
+
+    /// Returns the export scope for this file.
+    ///
+    /// The export scope is the set of names this file makes available to
+    /// importers. Pass this to [`resolve`](fn@crate::resolve) as part of the `imports`
+    /// slice when resolving a file that imports this one.
+    ///
+    /// **Wave W1 temporary over-share:** everything at file scope is currently
+    /// exported. `#scope_file`, `#scope_module`, and `#scope_export` are lexed
+    /// but not yet implemented (wave W2). Until W2 lands, this method returns
+    /// the full file scope, which means modules have no encapsulation. This is
+    /// a known and deliberate temporary state, recorded in ADR-0014 §2.
+    pub fn export_scope(&self) -> &ItemScope {
+        &self.scope
     }
 }

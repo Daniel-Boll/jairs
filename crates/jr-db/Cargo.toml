@@ -14,6 +14,7 @@ workspace = true
 jr-base.workspace = true
 jr-diag.workspace = true
 jr-syntax.workspace = true
+jr-hir.workspace = true
 salsa.workspace = true
 rustc-hash.workspace = true
 
