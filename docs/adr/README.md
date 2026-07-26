@@ -34,3 +34,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0011](0011-postfix-deref-prefix-address-of.md) | Dereference is postfix `.*`; address-of is prefix `*` | Accepted |
 | [0012](0012-procs-and-structs-are-constants.md) | Procedures and structs are constants | Accepted |
 | [0013](0013-hir-spans-defer-astidmap.md) | HIR nodes carry spans; `AstIdMap` is deferred | Accepted |
+| [0014](0014-module-resolution.md) | Module resolution: search paths, flat imports, cycles are legal | Accepted |

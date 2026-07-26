@@ -1,0 +1,57 @@
+// The Basic module: the bottom of the Jairs standard library.
+//
+// This is written in Jairs, not in the compiler (PLAN.md decision #5). That is
+// what forces `#foreign` into the first slice: the bottom of a standard library
+// is a syscall, and there is no way to express it otherwise.
+//
+// Everything here must be writable in the Jairs-0 subset. That constraint is
+// real and it bites -- see the note on integer printing at the end of this file.
+
+libc :: #system_library "c";
+
+// POSIX write(2). Jairs strings are {data: *u8, count: s64} and are NOT
+// NUL-terminated (ADR-0004), which is exactly the shape `write` wants: a pointer
+// and a length. No conversion, no temporary storage, no `to_c_string`.
+write :: (fd: s64, buf: *u8, count: s64) -> s64 #foreign libc "write";
+
+// Terminate the process. Declared here so programs have a way out that does not
+// depend on `main` returning, which the slice does not model yet.
+exit :: (status: s64) #foreign libc "exit";
+
+STDOUT :: 1;
+STDERR :: 2;
+
+// Write a string to standard output.
+print :: (s: string) {
+    write(STDOUT, s.data, s.count);
+}
+
+// Write a string to standard error.
+print_error :: (s: string) {
+    write(STDERR, s.data, s.count);
+}
+
+// Write a string followed by a newline.
+print_line :: (s: string) {
+    print(s);
+    print("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Not yet implementable: integer printing
+// ---------------------------------------------------------------------------
+//
+// `print_int` needs to turn a digit value into a byte to hand to `write`, i.e. a
+// conversion from `s64` to `u8`. That requires `cast`, which is lexed but
+// reserved until wave W1 (see docs/spec/01-lexical.md). The alternatives all
+// depend on features the slice also lacks:
+//
+//   * a fixed-size buffer `[N]u8` to format into -- arrays arrive in W1
+//   * pointer arithmetic into a digit table -- not in the subset, and there is
+//     no type checker yet to stop it being written by accident
+//   * libc `printf` -- variadic, and the arm64 variadic ABI passes variadic
+//     arguments on the stack, so a non-variadic `#foreign` declaration would
+//     pass them in registers and quietly produce garbage
+//
+// Faking it would be worse than its absence, so `print_int` lands with `cast` in
+// wave W1.

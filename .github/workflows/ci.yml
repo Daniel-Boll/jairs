@@ -77,7 +77,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      - run: cargo run -p jr-cli -- fmt --check tests/corpus/valid
+      - run: cargo run -p jr-cli -- fmt --check tests/corpus modules
 
   # ---------------------------------------------------------------------------
   # corpus-drift — THE GATE (PLAN.md §2.0 and §5)
@@ -131,8 +131,17 @@ jobs:
 
           # The actual drift gate: every valid corpus file must parse with no
           # ERROR nodes. `tree-sitter parse` exits non-zero if any appear.
-          ( cd tree-sitter-jairs && tree-sitter parse --quiet ../tests/corpus/valid/*.jr )
-          echo "::notice::corpus-drift (tree-sitter): all valid corpus files parsed cleanly."
+          #
+          # Every corpus file that is meant to be well-formed must parse with no
+          # ERROR nodes: the single-file programs, the multi-module import cases,
+          # and the fixture modules they import.
+          ( cd tree-sitter-jairs && tree-sitter parse --quiet \
+              ../tests/corpus/valid/*.jr \
+              ../tests/corpus/imports/valid/*.jr \
+              ../tests/corpus/modules/*.jr \
+              ../tests/corpus/modules/*/*.jr \
+              ../modules/*/*.jr )
+          echo "::notice::corpus-drift (tree-sitter): all well-formed corpus files parsed cleanly."
 
       # ---- compiler side ---------------------------------------------------
       - name: compiler corpus test

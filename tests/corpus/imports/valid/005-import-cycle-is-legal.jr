@@ -1,0 +1,9 @@
+// Cycle_A and Cycle_B import each other. ADR-0014 §4: this is legal, because a
+// file scope is a set and Jairs has no file-level initialisation order for a
+// cycle to violate. The loader must memoise, not reject.
+#import "Cycle_A";
+
+main :: () {
+    x := a_calls_b();
+    y := A_VALUE;
+}

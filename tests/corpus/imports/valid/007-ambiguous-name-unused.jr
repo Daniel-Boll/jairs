@@ -1,0 +1,9 @@
+// `Colors` and `Palette` both export `blend`. Importing both is harmless as long
+// as `blend` is never named (ADR-0014 §3: the error is at the USE site).
+#import "Colors";
+#import "Palette";
+
+main :: () {
+    x := BLACK;
+    y := PALETTE_SIZE;
+}

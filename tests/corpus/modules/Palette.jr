@@ -1,0 +1,7 @@
+// Deliberately exports `blend`, which `Colors` also exports. Importing both is
+// fine; naming `blend` is ambiguous (E0211).
+blend :: (a: s64, b: s64) -> s64 {
+    return a;
+}
+
+PALETTE_SIZE :: 16;

@@ -1,0 +1,6 @@
+// The `Colors.jr` layout, tried after `Colors/module.jr`.
+#import "Colors";
+
+main :: () {
+    mid := blend(BLACK, WHITE);
+}

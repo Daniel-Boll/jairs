@@ -1,0 +1,7 @@
+// EXPECT: E0210, and the diagnostic must LIST every path that was searched.
+// "module not found" without the search paths is the most annoying diagnostic
+// class in any build system (ADR-0014 §5).
+#import "No_Such_Module";
+
+main :: () {
+}

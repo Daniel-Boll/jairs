@@ -1,0 +1,13 @@
+// A file-level declaration shadows an imported name of the same name, silently
+// (ADR-0014 §3). This means adding an export to a module can never break an
+// importer that already defines that name itself.
+#import "Colors";
+
+blend :: (a: s64, b: s64) -> s64 {
+    return a - b;
+}
+
+main :: () {
+    // Resolves to the LOCAL `blend`, not the one from `Colors`.
+    x := blend(10, 4);
+}

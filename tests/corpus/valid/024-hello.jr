@@ -2,6 +2,11 @@
 // the bytecode VM via `jr run`, compile to a native arm64 binary via
 // `jr build`, produce identical output either way, and receive hover,
 // goto-definition and diagnostics in the language server.
+//
+// Note there is no integer printing here. `print_int` cannot be written in the
+// Jairs-0 subset -- turning a digit into a byte needs a `s64` to `u8`
+// conversion, and `cast` is reserved until wave W1. See modules/Basic/module.jr
+// for why the alternatives are all worse than waiting.
 #import "Basic";
 
 Point :: struct {
@@ -32,6 +37,7 @@ main :: () {
     }
 
     ptr := *sum;
-    print_int(ptr.*);
-    print("\n");
+    if ptr.* == 9 {
+        print_line("arithmetic and pointers agree");
+    }
 }

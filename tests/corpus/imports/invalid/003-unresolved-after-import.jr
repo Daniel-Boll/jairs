@@ -1,0 +1,9 @@
+// EXPECT: E0201 for `not_exported`. Now that module loading exists, an unknown
+// name in a file WITH imports must be a real error -- previously all resolution
+// diagnostics were suppressed for such files, which is the gap this wave closes.
+#import "Colors";
+
+main :: () {
+    x := blend(BLACK, WHITE);
+    y := not_exported;
+}
