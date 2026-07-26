@@ -11,3 +11,13 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+jr-base.workspace = true
+jr-diag.workspace = true
+jr-syntax.workspace = true
+rustc-hash.workspace = true
+
+[dev-dependencies]
+jr-base.workspace = true
+jr-syntax.workspace = true
+jr-diag.workspace = true
+insta.workspace = true
