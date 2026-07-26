@@ -1,0 +1,24 @@
+// A constant whose value is a parenthesised expression.
+//
+// This is the one genuinely ambiguous point in the Jairs-0 grammar: after `::`,
+// a `(` may open a procedure's parameter list or a parenthesised expression.
+// Both parsers resolve it by looking past the matching `)` -- a parameter list
+// can only be followed by `->`, `{`, or `#foreign`.
+GROUPED  :: (1 + 2) * 3;
+NESTED   :: ((1));
+CHAINED  :: (1 + 2) * (3 - 4);
+NEGATED  :: -(1 + 2);
+
+// For contrast, the procedure forms that start the same way.
+no_args  :: () { }
+with_ret :: () -> s64 { return 1; }
+
+libc :: #system_library "c";
+imported :: (fd: s64) -> s64 #foreign libc "close";
+
+main :: () {
+    // In expression position there is no ambiguity, because the right-hand
+    // side of `:=` is always an expression.
+    local := (1 + 2) * 3;
+    called := no_args();
+}

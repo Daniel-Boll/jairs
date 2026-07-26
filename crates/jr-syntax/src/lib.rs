@@ -9,8 +9,11 @@
 //! editor highlighting only. It is held in agreement with this parser by the
 //! shared corpus in `tests/corpus/` and the `corpus-drift` CI job.
 
+pub mod ast;
 mod kind;
 mod lexer;
+pub mod parser;
 
 pub use kind::{JairsLanguage, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 pub use lexer::{LexOutput, Token, lex};
+pub use parser::{Parse, dump_tree, parse};

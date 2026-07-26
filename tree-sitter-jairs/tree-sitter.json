@@ -1,0 +1,30 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "jairs",
+      "camelcase": "Jairs",
+      "scope": "source.jairs",
+      "path": ".",
+      "file-types": ["jr"],
+      "highlights": ["queries/highlights.scm"],
+      "locals": ["queries/locals.scm"],
+      "folds": ["queries/folds.scm"],
+      "indents": ["queries/indents.scm"],
+      "injection-regex": "^jairs?$"
+    }
+  ],
+  "metadata": {
+    "version": "0.0.0",
+    "license": "MIT OR Apache-2.0",
+    "description": "Jairs grammar for tree-sitter. Editor tooling only: the compiler has its own hand-written parser (see ADR-0010).",
+    "authors": [
+      {
+        "name": "Jairs contributors"
+      }
+    ],
+    "links": {
+      "repository": "https://github.com/dboll/jairs"
+    }
+  }
+}

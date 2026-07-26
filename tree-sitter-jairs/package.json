@@ -1,0 +1,36 @@
+{
+  "name": "tree-sitter-jairs",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Jairs programming language (editor use only)",
+  "main": "bindings/node",
+  "keywords": [
+    "parser",
+    "tree-sitter",
+    "jairs"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "nan": "^2.22.0"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "0.26.11"
+  },
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "parse-corpus": "tree-sitter parse --quiet ../tests/corpus/valid/*.jr"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.jairs",
+      "file-types": [
+        "jr"
+      ],
+      "highlights": "queries/highlights.scm",
+      "locals": "queries/locals.scm",
+      "folds": "queries/folds.scm",
+      "indents": "queries/indents.scm"
+    }
+  ]
+}

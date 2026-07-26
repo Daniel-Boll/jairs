@@ -1,0 +1,658 @@
+================================================================================
+Empty file
+================================================================================
+
+================================================================================
+(source_file)
+
+================================================================================
+Line comment
+================================================================================
+
+// A line comment.
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (line_comment))
+
+================================================================================
+Block comment
+================================================================================
+
+/* A block comment. */
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (block_comment))
+
+================================================================================
+Nested block comment
+================================================================================
+
+/* outer /* inner */ still outer */
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (block_comment))
+
+================================================================================
+Import declaration
+================================================================================
+
+#import "Basic";
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_decl
+    directive: (directive)
+    path: (string_literal)))
+
+================================================================================
+Empty procedure
+================================================================================
+
+noop :: () {
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      body: (block))))
+
+================================================================================
+Procedure with parameters and return type
+================================================================================
+
+add :: (a: s64, b: s64) -> s64 {
+    return a + b;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list
+        (param (identifier) type: (name_type (identifier)))
+        (param (identifier) type: (name_type (identifier))))
+      ret_type: (ret_type type: (name_type (identifier)))
+      body: (block
+        (return_stmt
+          value: (binary_expr
+            lhs: (name_expr (identifier))
+            rhs: (name_expr (identifier))))))))
+
+================================================================================
+Typed variable declaration
+================================================================================
+
+main :: () {
+    a: s64 = 7;
+    b: s64;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      body: (block
+        (decl_stmt
+          (var_decl
+            name: (name (identifier))
+            type: (name_type (identifier))
+            value: (literal_expr (integer_literal))))
+        (decl_stmt
+          (var_decl
+            name: (name (identifier))
+            type: (name_type (identifier))))))))
+
+================================================================================
+Inferred variable declaration
+================================================================================
+
+main :: () {
+    count := 10;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      body: (block
+        (decl_stmt
+          (var_decl
+            name: (name (identifier))
+            value: (literal_expr (integer_literal))))))))
+
+================================================================================
+Constant declaration
+================================================================================
+
+MAX :: 4096;
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (literal_expr (integer_literal))))
+
+================================================================================
+Struct type
+================================================================================
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (struct_type
+      fields: (field_list
+        (field (identifier) type: (name_type (identifier)))
+        (field (identifier) type: (name_type (identifier)))))))
+
+================================================================================
+If statement with braces
+================================================================================
+
+f :: (n: s64) -> s64 {
+    if n < 0 {
+        return 0;
+    }
+    return n;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list
+        (param (identifier) type: (name_type (identifier))))
+      ret_type: (ret_type type: (name_type (identifier)))
+      body: (block
+        (if_stmt
+          condition: (binary_expr
+            lhs: (name_expr (identifier))
+            rhs: (literal_expr (integer_literal)))
+          body: (block
+            (return_stmt value: (literal_expr (integer_literal)))))
+        (return_stmt value: (name_expr (identifier)))))))
+
+================================================================================
+If-else statement
+================================================================================
+
+f :: (n: s64) -> s64 {
+    if n < 0 {
+        return 0;
+    } else {
+        return 1;
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list
+        (param (identifier) type: (name_type (identifier))))
+      ret_type: (ret_type type: (name_type (identifier)))
+      body: (block
+        (if_stmt
+          condition: (binary_expr
+            lhs: (name_expr (identifier))
+            rhs: (literal_expr (integer_literal)))
+          body: (block
+            (return_stmt value: (literal_expr (integer_literal))))
+          else_branch: (block
+            (return_stmt value: (literal_expr (integer_literal)))))))))
+
+================================================================================
+If without braces (single statement body)
+================================================================================
+
+f :: (n: s64) -> s64 {
+    if n > 0  return n;
+    return 0;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list
+        (param (identifier) type: (name_type (identifier))))
+      ret_type: (ret_type type: (name_type (identifier)))
+      body: (block
+        (if_stmt
+          condition: (binary_expr
+            lhs: (name_expr (identifier))
+            rhs: (literal_expr (integer_literal)))
+          body: (return_stmt value: (name_expr (identifier))))
+        (return_stmt value: (literal_expr (integer_literal)))))))
+
+================================================================================
+While statement
+================================================================================
+
+f :: () {
+    i := 0;
+    while i < 10 {
+        i = i + 1;
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      body: (block
+        (decl_stmt
+          (var_decl
+            name: (name (identifier))
+            value: (literal_expr (integer_literal))))
+        (while_stmt
+          condition: (binary_expr
+            lhs: (name_expr (identifier))
+            rhs: (literal_expr (integer_literal)))
+          body: (block
+            (assign_stmt
+              lhs: (name_expr (identifier))
+              rhs: (binary_expr
+                lhs: (name_expr (identifier))
+                rhs: (literal_expr (integer_literal))))))))))
+
+================================================================================
+Return statement
+================================================================================
+
+f :: () -> s64 {
+    return 42;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      ret_type: (ret_type type: (name_type (identifier)))
+      body: (block
+        (return_stmt value: (literal_expr (integer_literal)))))))
+
+================================================================================
+Break and continue
+================================================================================
+
+f :: () {
+    while true {
+        break;
+        continue;
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      body: (block
+        (while_stmt
+          condition: (literal_expr (true))
+          body: (block
+            (break_stmt)
+            (continue_stmt)))))))
+
+================================================================================
+Assignment operators
+================================================================================
+
+f :: () {
+    a := 0;
+    a = 1;
+    a += 2;
+    a -= 3;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      body: (block
+        (decl_stmt (var_decl name: (name (identifier)) value: (literal_expr (integer_literal))))
+        (assign_stmt lhs: (name_expr (identifier)) rhs: (literal_expr (integer_literal)))
+        (assign_stmt lhs: (name_expr (identifier)) rhs: (literal_expr (integer_literal)))
+        (assign_stmt lhs: (name_expr (identifier)) rhs: (literal_expr (integer_literal)))))))
+
+================================================================================
+Arithmetic binary expressions
+================================================================================
+
+f :: () {
+    a := 1 + 2;
+    b := 3 - 4;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      body: (block
+        (decl_stmt (var_decl name: (name (identifier)) value: (binary_expr lhs: (literal_expr (integer_literal)) rhs: (literal_expr (integer_literal)))))
+        (decl_stmt (var_decl name: (name (identifier)) value: (binary_expr lhs: (literal_expr (integer_literal)) rhs: (literal_expr (integer_literal)))))))))
+
+================================================================================
+Wrapping operators
+================================================================================
+
+f :: () {
+    a := 1 +% 2;
+    b := 3 -% 4;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      body: (block
+        (decl_stmt (var_decl name: (name (identifier)) value: (binary_expr lhs: (literal_expr (integer_literal)) rhs: (literal_expr (integer_literal)))))
+        (decl_stmt (var_decl name: (name (identifier)) value: (binary_expr lhs: (literal_expr (integer_literal)) rhs: (literal_expr (integer_literal)))))))))
+
+================================================================================
+Unary expressions
+================================================================================
+
+f :: () {
+    a := 1;
+    b := -a;
+    c := !true;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      body: (block
+        (decl_stmt (var_decl name: (name (identifier)) value: (literal_expr (integer_literal))))
+        (decl_stmt (var_decl name: (name (identifier)) value: (unary_expr operand: (name_expr (identifier)))))
+        (decl_stmt (var_decl name: (name (identifier)) value: (unary_expr operand: (literal_expr (true)))))))))
+
+================================================================================
+Pointer operations
+================================================================================
+
+f :: () {
+    a := 42;
+    p: *s64 = *a;
+    v := p.*;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      body: (block
+        (decl_stmt (var_decl name: (name (identifier)) value: (literal_expr (integer_literal))))
+        (decl_stmt (var_decl name: (name (identifier)) type: (pointer_type inner: (name_type (identifier))) value: (unary_expr operand: (name_expr (identifier)))))
+        (decl_stmt (var_decl name: (name (identifier)) value: (deref_expr operand: (name_expr (identifier)))))))))
+
+================================================================================
+Field access
+================================================================================
+
+f :: () {
+    p: Point;
+    x := p.x;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      body: (block
+        (decl_stmt (var_decl name: (name (identifier)) type: (name_type (identifier))))
+        (decl_stmt (var_decl name: (name (identifier)) value: (field_expr operand: (name_expr (identifier)) field: (identifier))))))))
+
+================================================================================
+Function call
+================================================================================
+
+f :: () {
+    x := zero();
+    y := add(1, 2);
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      body: (block
+        (decl_stmt (var_decl name: (name (identifier)) value: (call_expr function: (name_expr (identifier)) args: (arg_list))))
+        (decl_stmt (var_decl name: (name (identifier)) value: (call_expr function: (name_expr (identifier)) args: (arg_list (literal_expr (integer_literal)) (literal_expr (integer_literal))))))))))
+
+================================================================================
+Run directive as expression
+================================================================================
+
+COMPUTED :: #run add(2, 3);
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (run_expr
+      directive: (directive)
+      expr: (call_expr
+        function: (name_expr (identifier))
+        args: (arg_list
+          (literal_expr (integer_literal))
+          (literal_expr (integer_literal)))))))
+
+================================================================================
+Run directive as top-level statement
+================================================================================
+
+#run report();
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (run_decl
+    directive: (directive)
+    expr: (call_expr
+      function: (name_expr (identifier))
+      args: (arg_list))))
+
+================================================================================
+Foreign attribute
+================================================================================
+
+write :: (fd: s64) -> s64 #foreign libc "write";
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list
+        (param (identifier) type: (name_type (identifier))))
+      ret_type: (ret_type type: (name_type (identifier)))
+      foreign: (foreign_attr
+        directive: (directive)
+        lib: (identifier)
+        symbol: (string_literal)))))
+
+================================================================================
+Integer literals
+================================================================================
+
+f :: () {
+    a := 42;
+    b := 0xdead;
+    c := 0b1010;
+    d := 0o755;
+    e := 1_000;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      body: (block
+        (decl_stmt (var_decl name: (name (identifier)) value: (literal_expr (integer_literal))))
+        (decl_stmt (var_decl name: (name (identifier)) value: (literal_expr (integer_literal))))
+        (decl_stmt (var_decl name: (name (identifier)) value: (literal_expr (integer_literal))))
+        (decl_stmt (var_decl name: (name (identifier)) value: (literal_expr (integer_literal))))
+        (decl_stmt (var_decl name: (name (identifier)) value: (literal_expr (integer_literal))))))))
+
+================================================================================
+String literal
+================================================================================
+
+f :: () {
+    s := "hello\nworld";
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      body: (block
+        (decl_stmt (var_decl name: (name (identifier)) value: (literal_expr (string_literal))))))))
+
+================================================================================
+Boolean literals
+================================================================================
+
+f :: () {
+    t := true;
+    ff := false;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      body: (block
+        (decl_stmt (var_decl name: (name (identifier)) value: (literal_expr (true))))
+        (decl_stmt (var_decl name: (name (identifier)) value: (literal_expr (false))))))))
+
+================================================================================
+Uninit expression
+================================================================================
+
+f :: () {
+    a: s64 = ---;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      body: (block
+        (decl_stmt (var_decl name: (name (identifier)) type: (name_type (identifier)) value: (uninit_expr)))))))
+
+================================================================================
+Block scope
+================================================================================
+
+f :: () {
+    a := 1;
+    {
+        b := 2;
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list)
+      body: (block
+        (decl_stmt (var_decl name: (name (identifier)) value: (literal_expr (integer_literal))))
+        (block
+          (decl_stmt (var_decl name: (name (identifier)) value: (literal_expr (integer_literal)))))))))
+
+================================================================================
+Directive expression (system library)
+================================================================================
+
+libc :: #system_library "c";
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (run_expr
+      directive: (directive)
+      expr: (literal_expr (string_literal)))))

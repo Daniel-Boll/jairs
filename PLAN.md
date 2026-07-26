@@ -73,12 +73,19 @@ main :: () {
 }
 ```
 
-Included: `s64`, `bool`, `string`, `*T`, `struct`, procs, `:=` / `: T` / `::`, `if`, `while`, `return`,
+Included: `s64`, `u8`, `bool`, `string`, `*T`, `struct`, procs, `:=` / `: T` / `::`, `if`, `while`, `return`,
 arithmetic (**trapping**), comparison, assignment, field access, pointer take/deref, `#import`, `#foreign`,
 one `#run`.
 
+> [!NOTE]
+> `u8` is in the slice, not deferred to W1, because the string representation
+> (`{data: *u8, count: s64}`, ADR-0004) and the libc `write` signature are both spelled in `*u8`. Choosing
+> "stdlib in Jairs" forced this: you cannot express the bottom of the standard library without it. `u8`
+> arithmetic and the rest of the numeric tower still wait for W1.
+
 Excluded from the slice: arrays, `for`, `defer`, `using`, enums, unions, polymorphs, macros, `#insert`,
-overloading, multiple returns, `context`, RTTI, all other numeric types. Each arrives as a wave.
+overloading, multiple returns, `context`, RTTI, floats, and the remaining numeric types. Each arrives as a
+wave.
 
 ### 1.2 The slice's stdlib — `modules/Basic/`, in Jairs
 
