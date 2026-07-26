@@ -1,0 +1,5 @@
+// EXPECT: E0223 — negation applies to integers, not to `bool`
+main :: () {
+    flag := false;
+    n := -flag;
+}

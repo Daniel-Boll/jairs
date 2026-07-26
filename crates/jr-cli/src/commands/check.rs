@@ -30,8 +30,8 @@ fn bundled_module_dir() -> std::path::PathBuf {
 /// Run `jr check`.
 ///
 /// Runs the front end as far as it currently goes: parse, lower to HIR, load
-/// imported modules, then resolve names. Later waves extend this with type
-/// checking and compile-time evaluation.
+/// imported modules, resolve names, then type-check. Later waves extend this with
+/// compile-time evaluation, which is what `#run` still waits for.
 ///
 /// Returns exit code 0 if no errors, 1 if any errors were found, 3 on I/O
 /// failure (propagated as `Err`).
@@ -89,7 +89,8 @@ pub fn run(args: CheckArgs, global: &GlobalArgs) -> Result<i32> {
     let map: SourceMap = db.source_map();
 
     for source_file in &roots {
-        // `file_diagnostics` covers parse, lower and resolve in source order.
+        // `file_diagnostics` covers parse, lower, resolve and type-check in
+        // source order.
         //
         // Note there is no longer any suppression here: before module loading
         // existed, resolution diagnostics were discarded for any file containing

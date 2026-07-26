@@ -1,0 +1,5 @@
+// EXPECT: E0219 — `.*` applies to a pointer, and `s64` is not one
+main :: () {
+    n := 1;
+    m := n.*;
+}

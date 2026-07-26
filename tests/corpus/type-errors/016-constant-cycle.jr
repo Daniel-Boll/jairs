@@ -1,0 +1,4 @@
+// EXPECT: E0226 — each constant's type comes from the other's
+// A `::` declaration has no annotation, so a cycle has nowhere to get a type.
+FIRST :: SECOND;
+SECOND :: FIRST;

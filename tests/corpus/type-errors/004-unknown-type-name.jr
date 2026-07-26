@@ -1,0 +1,6 @@
+// EXPECT: E0212 — there is no type named `int`
+// Type names are ordinary identifiers resolved by name, so a misspelling is a
+// resolution failure rather than a syntax error.
+main :: () {
+    n: int = 0;
+}

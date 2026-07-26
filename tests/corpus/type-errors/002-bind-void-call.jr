@@ -1,0 +1,7 @@
+// EXPECT: E0217 for binding a call that has no value (ADR-0016 §2)
+nothing :: () {
+}
+
+main :: () {
+    x := nothing();
+}

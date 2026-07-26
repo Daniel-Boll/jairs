@@ -1,0 +1,7 @@
+// EXPECT: E0213 — `helper` resolves, but to a procedure rather than a type
+helper :: () {
+}
+
+main :: () {
+    x: helper;
+}

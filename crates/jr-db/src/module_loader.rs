@@ -366,10 +366,16 @@ pub fn resolved(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
 // file_diagnostics — all diagnostics for one file
 // ---------------------------------------------------------------------------
 
-/// Collects all diagnostics for a single file: parse, lower, and resolve.
+/// Collects all diagnostics for a single file: parse, lower, resolve, and check.
 ///
 /// Diagnostics are returned in source order (the [`Diagnostics`] sink sorts
 /// them by span).
+///
+/// **No phase gates any later one.** A file that does not parse is still lowered,
+/// resolved, and type-checked, because an editor wants whatever information is
+/// available rather than the first error alone. That is what makes poison
+/// propagation `jr-sema`'s obligation: without it every parse error would arrive
+/// as an invented type error too.
 ///
 /// Uses `no_eq` because [`Diagnostics`] is not `Eq`.
 #[salsa::tracked(returns(clone), no_eq)]
@@ -394,6 +400,14 @@ pub fn file_diagnostics(
     // Resolution diagnostics (E0200, E0201, E0210, E0211).
     let resolve_result = resolved(db, file, search_paths);
     all.extend(resolve_result.diagnostics.iter().cloned());
+
+    // Declaration typing (E0204, E0212–E0214, E0226) and body checking
+    // (E0214–E0225). Both phases run: signatures own the file's declarations and
+    // the check owns its bodies, so neither subsumes the other.
+    let signatures = crate::sema::file_signatures(db, file, search_paths);
+    all.extend(signatures.diagnostics.iter().cloned());
+    let checked = crate::sema::checked(db, file, search_paths);
+    all.extend(checked.diagnostics.iter().cloned());
 
     Arc::new(all)
 }

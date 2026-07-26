@@ -1,0 +1,4 @@
+// EXPECT: E0221 — a computed value has no address to take
+main :: () {
+    p := *(1 + 2);
+}

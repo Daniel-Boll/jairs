@@ -9,6 +9,7 @@
 //! 6. Setting identical text does not re-run queries (salsa backdating).
 //! 7. Corpus files parse without errors.
 //! 8. Module resolution: search paths, file lookup, cycles, E0210.
+//! 9. Semantic analysis: signatures, checking, and invalidation across imports.
 
 use std::{
     path::PathBuf,
@@ -19,8 +20,9 @@ use std::{
 };
 
 use jr_db::{
-    Db as _, InMemoryModules, JairsDatabase, ModuleSearchPaths, SourceFile, file_diagnostics,
-    file_exports, file_hir, imports_of, module_file, parse_diagnostics, parse_file, resolved,
+    Db as _, InMemoryModules, JairsDatabase, ModuleSearchPaths, SourceFile, checked,
+    file_diagnostics, file_exports, file_hir, file_signatures, imports_of, module_file,
+    parse_diagnostics, parse_file, resolved,
 };
 
 // ---------------------------------------------------------------------------
@@ -1286,4 +1288,184 @@ fn restoring_an_export_clears_the_importers_error() {
         resolved(&db, importer, sp).diagnostics.is_empty(),
         "adding the export back must clear the importer's error"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 15. Semantic analysis
+// ---------------------------------------------------------------------------
+
+/// Type errors must reach `file_diagnostics`, or `jr check` never sees them.
+#[test]
+fn file_diagnostics_reports_type_errors() {
+    let (db, sp) = make_module_db_with_corpus();
+    let mut db = db;
+    let file = add_file(&mut db, "a.jr", "main :: () {\n    g: u8 = 300;\n}\n");
+    let diags = file_diagnostics(&db, file, sp);
+    assert!(
+        diags.iter().any(|d| d.code == Some("E0204")),
+        "expected E0204, got {:?}",
+        diags.iter().map(|d| d.code).collect::<Vec<_>>()
+    );
+}
+
+/// A well-formed program that uses an imported struct and procedure must check
+/// cleanly — which requires the importer and the module to agree on one `PoolId`
+/// for `Rect`, and therefore requires them to share a pool.
+#[test]
+fn checking_a_call_into_an_imported_module_succeeds() {
+    let (mut db, sp) = make_module_db_with_corpus();
+    let importer = load_with_modules(
+        &mut db,
+        "importer.jr",
+        "#import \"Shapes\";\n\nmain :: () {\n    r: Rect;\n    r.w = 3;\n    r.h = 4;\n    a := area(r);\n}\n",
+    );
+    let diags = file_diagnostics(&db, importer, sp);
+    assert!(
+        diags.is_empty(),
+        "the importer must check cleanly, got {:?}",
+        diags
+            .iter()
+            .map(|d| (d.code, d.message.clone()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The same call with the wrong argument type must fail, so that the previous
+/// test cannot pass by having poisoned everything.
+#[test]
+fn checking_catches_a_bad_argument_to_an_imported_procedure() {
+    let (mut db, sp) = make_module_db_with_corpus();
+    let importer = load_with_modules(
+        &mut db,
+        "importer.jr",
+        "#import \"Shapes\";\n\nmain :: () {\n    a := area(1);\n}\n",
+    );
+    let diags = file_diagnostics(&db, importer, sp);
+    assert!(
+        diags.iter().any(|d| d.code == Some("E0214")),
+        "expected a type mismatch, got {:?}",
+        diags.iter().map(|d| d.code).collect::<Vec<_>>()
+    );
+}
+
+/// Two modules that import each other must type-check. If signatures depended on
+/// another file's *check*, this would be a salsa cycle rather than a test.
+#[test]
+fn a_module_cycle_type_checks_through_the_database() {
+    let (mut db, sp) = make_module_db_with_corpus();
+    let importer = load_with_modules(
+        &mut db,
+        "importer.jr",
+        "#import \"Cycle_A\";\n\nmain :: () {\n    x := a_calls_b();\n    y := A_VALUE;\n}\n",
+    );
+    let diags = file_diagnostics(&db, importer, sp);
+    assert!(
+        diags.is_empty(),
+        "an import cycle is legal and must type-check, got {:?}",
+        diags
+            .iter()
+            .map(|d| (d.code, d.message.clone()))
+            .collect::<Vec<_>>()
+    );
+
+    // And each module in the cycle must check on its own terms too.
+    for path in ["/modules/Cycle_A/module.jr", "/modules/Cycle_B/module.jr"] {
+        let module = db.source_file(path).expect("module must be loaded");
+        assert!(
+            checked(&db, module, sp).diagnostics.is_empty(),
+            "{path} must type-check"
+        );
+    }
+}
+
+/// Editing a module's declaration must change what its importer thinks the name
+/// means. Signatures are cached, so this is the test that the cache invalidates.
+#[test]
+fn changing_a_modules_declaration_retypes_the_importer() {
+    let mut modules = InMemoryModules::new();
+    modules.add(PathBuf::from("/modules/MyMod.jr"), "MY_CONST :: 1;\n");
+
+    let mut db = JairsDatabase::with_in_memory_modules(modules);
+    let sp = db.set_module_search_paths(vec![PathBuf::from("/modules")]);
+
+    let importer = load_with_modules(
+        &mut db,
+        "importer.jr",
+        "#import \"MyMod\";\n\nmain :: () {\n    flag: bool = MY_CONST;\n}\n",
+    );
+
+    assert!(
+        file_diagnostics(&db, importer, sp)
+            .iter()
+            .any(|d| d.code == Some("E0214")),
+        "an `s64` constant must not satisfy a `bool` annotation"
+    );
+
+    db.set_file_text("/modules/MyMod.jr", "MY_CONST :: false;\n");
+
+    let after = file_diagnostics(&db, importer, sp);
+    assert!(
+        after.is_empty(),
+        "changing the constant's type must clear the importer's error, got {:?}",
+        after
+            .iter()
+            .map(|d| (d.code, d.message.clone()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Editing an importer must not recompute the module's signatures. Otherwise
+/// typing in one file re-analyses every module it imports, which is the cost
+/// salsa exists to avoid.
+#[test]
+fn editing_an_importer_does_not_recompute_a_modules_signatures() {
+    let mut modules = InMemoryModules::new();
+    modules.add(PathBuf::from("/modules/MyMod.jr"), "MY_CONST :: 1;\n");
+
+    let (mut db, counter) = db_counting("file_signatures", modules);
+    let sp = db.set_module_search_paths(vec![PathBuf::from("/modules")]);
+
+    let importer = load_with_modules(
+        &mut db,
+        "importer.jr",
+        "#import \"MyMod\";\n\nmain :: () {\n    x := MY_CONST;\n}\n",
+    );
+    let _ = file_diagnostics(&db, importer, sp);
+    let module = db
+        .source_file("/modules/MyMod.jr")
+        .expect("module must be loaded");
+    let _ = file_signatures(&db, module, sp);
+
+    let baseline = counter.load(Ordering::SeqCst);
+
+    db.set_file_text(
+        "importer.jr",
+        "#import \"MyMod\";\n\nmain :: () {\n    x := MY_CONST;\n    y := MY_CONST;\n}\n",
+    );
+    let _ = file_diagnostics(&db, importer, sp);
+    let after_importer_edit = counter.load(Ordering::SeqCst) - baseline;
+
+    // The importer's own signatures must be recomputed; the module's must not.
+    assert_eq!(
+        after_importer_edit, 1,
+        "expected exactly one signature recomputation (the importer's)"
+    );
+}
+
+/// The type map must survive the query boundary: a checked file knows the types
+/// of its expressions, not merely whether it had errors.
+#[test]
+fn checking_records_the_types_it_learned() {
+    let (mut db, sp) = make_module_db_with_corpus();
+    let file = add_file(
+        &mut db,
+        "a.jr",
+        "main :: () {\n    n := 1;\n    flag := true;\n}\n",
+    );
+    let result = checked(&db, file, sp);
+    assert!(
+        result.types.expr_count() >= 2,
+        "the checker must record the types it computed"
+    );
+    assert!(result.types.local_count() >= 2);
 }

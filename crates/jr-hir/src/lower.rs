@@ -39,7 +39,6 @@ use crate::hir::{
 // ---------------------------------------------------------------------------
 
 const E0203: &str = "E0203";
-const E0204: &str = "E0204";
 const E0205: &str = "E0205";
 const E0206: &str = "E0206";
 /// A declaration inside a procedure body.
@@ -1064,7 +1063,7 @@ fn lower_literal_impl(
         }
         INT_LITERAL => {
             let raw = tok.text();
-            parse_int_literal_impl(raw, span, diags)
+            parse_int_literal_impl(raw)
         }
         _ => Literal::Bool(false),
     }
@@ -1147,8 +1146,18 @@ fn decode_string_impl(raw: &str, span: Span, diags: &mut Diagnostics) -> String 
     result
 }
 
-/// Parse an integer literal, emitting a diagnostic if it overflows `s64`.
-fn parse_int_literal_impl(raw: &str, span: Span, diags: &mut Diagnostics) -> Literal {
+/// Parse an integer literal into its magnitude and radix.
+///
+/// # No diagnostic here
+///
+/// Whether a literal *fits* is not a lowering question. Under ADR-0016 §1 an
+/// integer literal has no intrinsic type — it takes the type of its context — and
+/// lowering does not know the context. This function used to test every literal
+/// against `s64` and report E0204, which silently accepted `x: u8 = 300;` and
+/// worded the error after a type the literal may not have. The check lives in
+/// `jr-sema`, which knows the contextual type; `overflowed` is recorded here only
+/// as a note that the value did not fit `s64`, for consumers that want it.
+fn parse_int_literal_impl(raw: &str) -> Literal {
     // Remove underscores (digit separators)
     let cleaned: String = raw.chars().filter(|&c| c != '_').collect();
 
@@ -1171,37 +1180,18 @@ fn parse_int_literal_impl(raw: &str, span: Span, diags: &mut Diagnostics) -> Lit
     }
 
     match u64::from_str_radix(digits, radix) {
-        Ok(value) => {
-            let overflowed = value > i64::MAX as u64;
-            if overflowed {
-                diags.push(
-                    Diagnostic::error(
-                        span,
-                        format!(
-                            "integer literal `{raw}` overflows `s64` (max {MAX})",
-                            MAX = i64::MAX
-                        ),
-                    )
-                    .with_code(E0204),
-                );
-            }
-            Literal::Int {
-                value,
-                radix,
-                overflowed,
-            }
-        }
-        Err(_) => {
-            diags.push(
-                Diagnostic::error(span, format!("integer literal `{raw}` overflows `s64`"))
-                    .with_code(E0204),
-            );
-            Literal::Int {
-                value: u64::MAX,
-                radix,
-                overflowed: true,
-            }
-        }
+        Ok(value) => Literal::Int {
+            value,
+            radix,
+            overflowed: value > i64::MAX as u64,
+        },
+        // Too large for even `u64`. Clamping keeps the value monotone, so the
+        // fit check in sema rejects it for every integer type there is.
+        Err(_) => Literal::Int {
+            value: u64::MAX,
+            radix,
+            overflowed: true,
+        },
     }
 }
 

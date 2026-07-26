@@ -1,0 +1,10 @@
+// EXPECT: E0218 — `Point` has no field `z`
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+main :: () {
+    p: Point;
+    n := p.z;
+}

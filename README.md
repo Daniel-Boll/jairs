@@ -6,20 +6,21 @@ error-recovering compiler written in Rust.
 
 > **Status: pre-alpha. Jairs source does not compile or run yet.**
 >
-> What works today is the **front end up to name resolution**. `jr check` parses
+> What works today is the **front end, through type checking**. `jr check` parses
 > a file, lowers it to HIR, loads the modules it imports, resolves names across
-> the import boundary, and reports rustc-quality diagnostics; `jr fmt` formats
-> it; `jr parse` dumps its tokens or tree. Implemented crates: `jr-base` (spans,
-> interning, source map), `jr-diag` (diagnostics + renderer), `jr-syntax` (lexer,
-> error-recovering parser, lossless CST, typed AST), `jr-fmt`, `jr-hir` (lowering,
-> scopes, `#import` resolution), `jr-pool` (the InternPool), `jr-db` (salsa
-> queries + the module loader), `jr-cli`.
+> the import boundary, type-checks it against those modules' signatures, and
+> reports rustc-quality diagnostics; `jr fmt` formats it; `jr parse` dumps its
+> tokens or tree. Implemented crates: `jr-base` (spans, interning, source map),
+> `jr-diag` (diagnostics + renderer), `jr-syntax` (lexer, error-recovering parser,
+> lossless CST, typed AST), `jr-fmt`, `jr-hir` (lowering, scopes, `#import`
+> resolution), `jr-pool` (the InternPool), `jr-sema` (signatures, types,
+> inference), `jr-db` (salsa queries + the module loader), `jr-cli`.
 >
-> Not started: **type checking** (`jr-sema` is next, and is specified by ADR-0015
-> and ADR-0016), the compile-time bytecode VM, the Cranelift backend, the language
-> server, and the standard library. There is no code generation of any kind — you
-> cannot build or run a Jairs program, and `#run` is not evaluated. See
-> [`PLAN.md`](PLAN.md) §1.5 for per-crate status and §7 for what happens next.
+> Not started: **MIR** (`jr-mir` is next), the compile-time bytecode VM, the
+> Cranelift backend, the language server, and most of the standard library. There
+> is no code generation of any kind — you cannot build or run a Jairs program, and
+> `#run` has a type but not yet a value (ADR-0016 §4). See [`PLAN.md`](PLAN.md)
+> §1.5 for per-crate status and §7 for what happens next.
 
 ---
 
@@ -45,7 +46,7 @@ main :: () {
     i := 0;
     while i < 3 { i = i + 1; }        // while
     ptr := *sum;                      // pointer take + deref
-    print_int(ptr.*);
+    if ptr.* == 9  print_line("ok");  // `print_int` needs `cast`, which is W1
 }
 ```
 

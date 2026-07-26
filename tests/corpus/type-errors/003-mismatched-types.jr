@@ -1,0 +1,6 @@
+// EXPECT: E0214 — an integer literal is not a `bool`
+// Context typing bends the literal's type, not the annotation's: there is no
+// integer that is also a `bool`.
+main :: () {
+    flag: bool = 1;
+}

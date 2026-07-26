@@ -402,6 +402,11 @@ pub struct Body {
     /// All local variables in this body.
     pub locals: Vec<Local>,
     /// All type references in this body.
+    ///
+    /// Only a local's annotation lives here. Parameter, return and field types
+    /// are in [`FileHir::type_refs`](crate::FileHir::type_refs), and the two
+    /// arenas both start at index 0 — so a `TypeRefId` says nothing about which
+    /// one it belongs to. Which arena to use follows from where the id came from.
     pub type_refs: Vec<TypeRef>,
     /// The root statement (always a `Stmt::Block`).
     pub root: StmtId,
@@ -455,8 +460,14 @@ pub struct Proc {
     pub foreign: Option<ForeignInfo>,
     /// Span of the whole procedure.
     pub span: Span,
-    /// Type references used in the signature (shared with the body's arena
-    /// when a body exists, or stored here for foreign procs).
+    /// **Always empty.** Kept for a future lowering that gives a procedure its
+    /// own type-reference arena.
+    ///
+    /// Parameter and return types live in
+    /// [`FileHir::type_refs`](crate::FileHir::type_refs), because lowering
+    /// allocates them there. A `TypeRefId` taken from `Param::ty` or `Proc::ret`
+    /// must be resolved against that arena, never against this one — indexing the
+    /// wrong arena reads an unrelated node rather than failing.
     pub type_refs: Vec<TypeRef>,
 }
 
@@ -493,7 +504,9 @@ pub struct Struct {
     pub fields: Vec<Field>,
     /// Span of the whole struct.
     pub span: Span,
-    /// Type references used in field types.
+    /// **Always empty**, for the same reason as
+    /// [`Proc::type_refs`](crate::Proc::type_refs): field types are allocated in
+    /// [`FileHir::type_refs`](crate::FileHir::type_refs).
     pub type_refs: Vec<TypeRef>,
 }
 

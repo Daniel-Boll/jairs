@@ -1,0 +1,6 @@
+// EXPECT: E0225 — the library operand is a constant, not a library
+// ADR-0016 §3 gives `#system_library` a type precisely so this is checkable;
+// before it, the whole FFI boundary was untyped.
+not_a_library :: 1;
+
+write :: (fd: s64) -> s64 #foreign not_a_library "write";

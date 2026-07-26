@@ -1,0 +1,7 @@
+// EXPECT: E0204 for `300`, which does not fit `u8`
+// The check has to be contextual (ADR-0016 §1): the literal has no type of its
+// own, so only the annotation says what it must fit. Lowering cannot make this
+// check, because lowering does not know the target type.
+main :: () {
+    g: u8 = 300;
+}

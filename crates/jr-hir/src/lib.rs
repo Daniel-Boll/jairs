@@ -44,7 +44,7 @@
 //! | E0201 | unresolved name `<name>` |
 //! | E0202 | use of local `<name>` before its declaration |
 //! | E0203 | procedure has neither a body nor a `#foreign` attribute |
-//! | E0204 | integer literal overflows `s64` |
+//! | E0204 | *(moved to `jr-sema`: a literal's fit depends on its contextual type)* |
 //! | E0205 | unknown string escape `\<c>` |
 //! | E0206 | invalid unicode escape |
 //! | E0207 | declaration or `#run` inside a procedure body |

@@ -1,0 +1,6 @@
+// EXPECT: E0220 — `::` declares a constant, which has no location to assign to
+LIMIT :: 10;
+
+main :: () {
+    LIMIT = 11;
+}

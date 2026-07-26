@@ -1,0 +1,7 @@
+// EXPECT: E0222 — Jairs has no implicit conversion to `bool`
+main :: () {
+    n := 1;
+    if n {
+        n = 2;
+    }
+}
