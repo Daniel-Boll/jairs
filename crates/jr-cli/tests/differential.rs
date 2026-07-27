@@ -354,3 +354,66 @@ fn both_engines_trap_on_division_by_zero() {
     );
     assert_eq!(vm, native);
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0020 — a trap names where it happened, identically in both engines
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_trap_names_its_source_location_identically_in_both_engines() {
+    // The criterion §1.4 asks for, and the reason ADR-0020 §2 put the formatter in
+    // `jr-base`: the native message is chosen when the object is emitted and the VM's
+    // is built while the program runs, so nothing but a shared formatter keeps them
+    // equal. This asserts the whole rendered message rather than just that the two
+    // agree — two engines that both lost the location would agree perfectly.
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("overflow.jr");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  MAX :: 9223372036854775807;\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   exit(MAX + 1);\n\
+                  }\n";
+    std::fs::write(&path, source).expect("a writable temporary directory");
+
+    let vm = run_in_vm(&path);
+    let native = run_natively(&path, dir.path());
+
+    let expected = format!(
+        "error: addition overflowed\n  --> {}:6:10\n",
+        path.display()
+    );
+    assert_eq!(vm.stderr, expected, "the VM's located trap message changed");
+    assert_eq!(
+        native.stderr, expected,
+        "the native located trap message changed"
+    );
+    assert_eq!(vm.status, 4);
+    assert_eq!(native.status, 4);
+}
+
+#[test]
+fn a_division_by_zero_names_its_own_line() {
+    // A second operation and a second line, so that the location is demonstrably
+    // computed rather than a constant that happens to match one case.
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("divzero.jr");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  ZERO :: 0;\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   n := 10;\n\
+                  \x20   exit(n / ZERO);\n\
+                  }\n";
+    std::fs::write(&path, source).expect("a writable temporary directory");
+
+    let vm = run_in_vm(&path);
+    let native = run_natively(&path, dir.path());
+
+    let expected = format!("error: division by zero\n  --> {}:7:10\n", path.display());
+    assert_eq!(vm.stderr, expected);
+    assert_eq!(native.stderr, expected);
+    assert_eq!(vm, native);
+}

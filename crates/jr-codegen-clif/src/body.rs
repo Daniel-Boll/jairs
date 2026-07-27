@@ -43,11 +43,11 @@ use cranelift_codegen::ir::{
     Type, Value as ClifValue,
 };
 use cranelift_frontend::FunctionBuilder;
-use cranelift_module::{DataId, Module};
-use jr_codegen::CodegenError;
+use cranelift_module::{DataDescription, DataId, Linkage, Module};
+use jr_codegen::{CodegenError, TrapLocations};
 use jr_mir::{
-    BinOp, BlockId, Callee, MirBody, Operand, Place, PlaceBase, ProcRef, Projection, Rvalue,
-    Statement, Target, Terminator, UnOp, Unreachable, ValueId,
+    BinOp, BlockId, Callee, MirBody, MirSpan, Operand, Place, PlaceBase, ProcRef, Projection,
+    Rvalue, Statement, Target, Terminator, UnOp, Unreachable, ValueId,
 };
 use jr_pool::{
     Item, Pool, PoolId, TargetLayout, field_offset, layout_of, string_count, string_data,
@@ -76,8 +76,8 @@ pub struct Context<'a> {
     pub strings: &'a FxHashMap<jr_pool::StrId, DataId>,
     /// The runtime helper a trap calls, `jr_trap(message, length)`.
     pub trap_helper: FuncRef,
-    /// The data object holding each trap kind's message.
-    pub trap_messages: &'a FxHashMap<TrapKind, DataId>,
+    /// How to render a trap's source location (ADR-0020 §3).
+    pub locations: &'a dyn TrapLocations,
 }
 
 /// Translates one body into the function `builder` is building.
@@ -102,6 +102,8 @@ pub fn translate(
         values: FxHashMap::default(),
         undef: FxHashSet::default(),
         slots: Vec::new(),
+        current: MirSpan::Synthetic,
+        messages: FxHashMap::default(),
     };
     translator.run()
 }
@@ -117,6 +119,14 @@ struct Translator<'a, 'b> {
     values: FxHashMap<ValueId, Slot>,
     undef: FxHashSet<ValueId>,
     slots: Vec<cranelift_codegen::ir::StackSlot>,
+    /// The span instructions being emitted right now belong to.
+    ///
+    /// Set once per statement and per terminator, mirroring `jr-vm`'s lowering, so
+    /// that a trap emitted anywhere beneath reports the construct that caused it
+    /// without every helper having to thread a span through.
+    current: MirSpan,
+    /// Data objects for messages already emitted, keyed by their bytes.
+    messages: FxHashMap<String, DataId>,
 }
 
 impl Translator<'_, '_> {
@@ -165,8 +175,10 @@ impl Translator<'_, '_> {
             self.builder.switch_to_block(block);
             let data = self.body.block(*id);
             for stmt in &data.stmts {
+                self.current = statement_span(stmt);
                 self.statement(stmt)?;
             }
+            self.current = self.terminator_span(&data.term);
             self.terminator(&data.term)?;
         }
 
@@ -870,24 +882,57 @@ impl Translator<'_, '_> {
     /// Calls the runtime helper that reports a trap and aborts.
     ///
     /// ADR-0019 §2 chose a call over a bare machine trap because it is the only
-    /// lowering that can carry a *message* — which is what lets a native trap say
-    /// what the VM's says, and what lets the differential harness compare failing
-    /// programs rather than only succeeding ones.
+    /// lowering that can carry a *message*. ADR-0020 makes that message carry a
+    /// source location too, which is why it is rendered here, per site, rather than
+    /// once per [`TrapKind`]: two overflows on different lines say different things.
+    ///
+    /// The bytes are produced by `jr_base::trap_message`, the same function the VM
+    /// calls — the two engines render at different *times* and must still agree
+    /// exactly, and `differential.rs` compares them (ADR-0020 §2).
     fn report(&mut self, kind: TrapKind) -> Result<(), CodegenError> {
-        let data = *self.ctx.trap_messages.get(&kind).ok_or_else(|| {
-            CodegenError::Internal(format!("no message was emitted for {kind:?}"))
-        })?;
+        let location = self.ctx.locations.location(self.current);
+        let message = jr_base::trap_message(kind.reason(), location.as_deref());
+        let data = self.message_data(&message)?;
+
         let pointer = pointer_type(self.ctx.target);
         let global = self.module.declare_data_in_func(data, self.builder.func);
-        let message = self.builder.ins().symbol_value(pointer, global);
+        let text = self.builder.ins().symbol_value(pointer, global);
         let length = self
             .builder
             .ins()
-            .iconst(pointer, kind.message().len() as i64);
+            .iconst(pointer, i64::try_from(message.len()).unwrap_or(i64::MAX));
         self.builder
             .ins()
-            .call(self.ctx.trap_helper, &[message, length]);
+            .call(self.ctx.trap_helper, &[text, length]);
         Ok(())
+    }
+
+    /// The data object holding `message`, created on first use.
+    ///
+    /// Keyed by content, so two sites that genuinely render the same text — the same
+    /// line reached twice, or two traps with no location — share one object. The
+    /// symbol carries the procedure's identity so that two bodies cannot collide.
+    fn message_data(&mut self, message: &str) -> Result<DataId, CodegenError> {
+        if let Some(id) = self.messages.get(message) {
+            return Ok(*id);
+        }
+        let symbol = format!(
+            "jr$trap${}${}${}",
+            self.proc.file.index(),
+            self.proc.proc.index(),
+            self.messages.len()
+        );
+        let id = self
+            .module
+            .declare_data(&symbol, Linkage::Local, false, false)
+            .map_err(|e| CodegenError::Internal(format!("trap message: {e}")))?;
+        let mut description = DataDescription::new();
+        description.define(message.as_bytes().to_vec().into_boxed_slice());
+        self.module
+            .define_data(id, &description)
+            .map_err(|e| CodegenError::Internal(format!("trap message: {e}")))?;
+        self.messages.insert(message.to_owned(), id);
+        Ok(id)
     }
 
     // -----------------------------------------------------------------------
@@ -1001,5 +1046,41 @@ fn int_of_size(size: u64, fallback: Type) -> Type {
         4 => cranelift_codegen::ir::types::I32,
         8 => cranelift_codegen::ir::types::I64,
         _ => fallback,
+    }
+}
+
+/// The span a statement's instructions belong to.
+fn statement_span(stmt: &Statement) -> MirSpan {
+    match stmt {
+        Statement::Assign { span, .. }
+        | Statement::Store { span, .. }
+        | Statement::Discard { span, .. } => *span,
+        Statement::Nop => MirSpan::Synthetic,
+    }
+}
+
+impl Translator<'_, '_> {
+    /// The span a terminator's instructions belong to.
+    ///
+    /// A [`Terminator`] carries no span, but its operand is a value and every value
+    /// does — so a branch reports the condition tested and a return reports the
+    /// expression that produced the result. Mirrors `jr-vm`'s lowering, because the two
+    /// engines must attribute a trap to the same construct or their messages differ.
+    fn terminator_span(&self, term: &Terminator) -> MirSpan {
+        match term {
+            Terminator::Branch { cond, .. } => self.span_of(*cond),
+            Terminator::Return(Some(operand)) => self.span_of(*operand),
+            Terminator::Goto(_) | Terminator::Return(None) | Terminator::Unreachable(_) => {
+                MirSpan::Synthetic
+            }
+        }
+    }
+
+    /// The span of the value an operand names, if it names one.
+    fn span_of(&self, operand: Operand) -> MirSpan {
+        match operand {
+            Operand::Value(value) => self.body.value(value).span,
+            Operand::Constant(_) => MirSpan::Synthetic,
+        }
     }
 }

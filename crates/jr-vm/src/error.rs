@@ -27,7 +27,27 @@
 
 use core::fmt;
 
-use jr_mir::{BlockId, ProcRef};
+use jr_mir::{BlockId, MirSpan, ProcRef};
+
+/// Where a trap happened.
+///
+/// Reported separately from [`VmError::Trap`] rather than inside it, so that the
+/// twenty-odd sites which construct a trap — and the tests that pattern-match one —
+/// are unchanged. A trap's *identity* is what went wrong; where it happened is
+/// context the interpreter adds, and only the interpreter knows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrapSite {
+    /// The procedure that was executing.
+    pub proc: ProcRef,
+    /// The MIR provenance of the instruction it trapped on.
+    ///
+    /// Resolve it with `jr_mir::resolve_span`, which needs the file's HIR — which is
+    /// why the VM reports the identity and leaves the rendering to a caller that has
+    /// a `SourceMap`. [`MirSpan::Synthetic`] is a real answer: a compiler-invented
+    /// value has no source text, and ADR-0020 §4 argues that reporting no location is
+    /// better than reporting a neighbouring one.
+    pub span: MirSpan,
+}
 
 /// Why execution stopped.
 #[derive(Debug, Clone, PartialEq, Eq)]

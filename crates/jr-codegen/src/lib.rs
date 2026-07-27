@@ -110,6 +110,7 @@ pub trait Backend {
         body: &MirBody,
         pool: &Pool,
         layout: TargetLayout,
+        locations: &dyn TrapLocations,
     ) -> Result<(), CodegenError>;
 
     /// Produces the artifact, consuming the back end.
@@ -123,6 +124,41 @@ pub trait Backend {
     /// [`CodegenError`] when the module cannot be emitted, which at this point is a
     /// back end or target configuration fault rather than a program one.
     fn finalise(self: Box<Self>) -> Result<Vec<u8>, CodegenError>;
+}
+
+/// How a back end learns where a trap is, without seeing the front end.
+///
+/// A back end holds a [`jr_mir::MirSpan`] at every trap site and can do nothing with
+/// it: resolving one needs the file's `FileHir`, and rendering it needs a `SourceMap`.
+/// Neither is available here, and ADR-0009 confines the back end so that neither
+/// *should* be — a back end whose signature mentions `FileHir` has the front end in
+/// it, which is what the confinement exists to prevent.
+///
+/// So the driver, which has both, implements this and the back end asks. ADR-0020 §3
+/// made it a parameter of [`Backend::define`] rather than a setter on the back end,
+/// because a setter is order-dependent hidden state: forget the call and every trap
+/// silently loses its location, which is the class of quiet degradation this project
+/// keeps being bitten by.
+pub trait TrapLocations {
+    /// The location of `span`, rendered as `path:line:col`.
+    ///
+    /// `None` when there is nothing to point at — a compiler-invented value, where
+    /// [`jr_mir::MirSpan::Synthetic`] is the honest answer. A back end must then
+    /// report without a location rather than substituting a nearby one.
+    fn location(&self, span: jr_mir::MirSpan) -> Option<String>;
+}
+
+/// A [`TrapLocations`] that never knows a location.
+///
+/// For a caller with no source map — a test that only wants to check that a body
+/// generates — so that "no locations available" is stated rather than achieved by
+/// passing something misleading.
+pub struct NoLocations;
+
+impl TrapLocations for NoLocations {
+    fn location(&self, _span: jr_mir::MirSpan) -> Option<String> {
+        None
+    }
 }
 
 /// Everything a back end needs about one file, without a database.

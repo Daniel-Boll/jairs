@@ -43,7 +43,7 @@
 //! `PlacePlan` are the same numbers Cranelift will emit, because they come from the
 //! same function.
 
-use jr_mir::{BinOp, BlockId, Callee, ProcRef, UnOp, Unreachable, ValueId};
+use jr_mir::{BinOp, BlockId, Callee, MirSpan, ProcRef, UnOp, Unreachable, ValueId};
 use jr_pool::PoolId;
 
 /// A register index. Identical to a MIR [`ValueId`], deliberately (ADR-0018 §1).
@@ -246,6 +246,17 @@ pub struct Code {
     pub params: Vec<Reg>,
     /// The instruction index execution starts at.
     pub entry: usize,
+    /// The MIR provenance of every instruction, indexed like [`Self::instrs`].
+    ///
+    /// ADR-0020 §4. Without this the interpreter can say *what* went wrong and not
+    /// *where*: MIR remembers, but a `Code` compiled from it did not, so a trap had no
+    /// location however well the front end had tracked one.
+    ///
+    /// A span for every instruction rather than only for those that can trap, because
+    /// the set of trapping instructions grows every wave and the narrow version would
+    /// give a new one no location silently. A [`MirSpan`] is a small `Copy` enum and
+    /// this structure already carries a [`PoolId`] per register.
+    pub spans: Vec<MirSpan>,
 }
 
 impl Code {
