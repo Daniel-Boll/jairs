@@ -507,18 +507,21 @@ impl Ctx<'_> {
             }
         };
 
-        if let Some((signed, bits)) = self.int_info(target) {
-            if !literal_fits(signed, bits, value) {
-                let text = self.describe(target);
-                self.diags.push(
-                    Diagnostic::error(span, format!("integer literal does not fit `{text}`"))
-                        .with_code(E0204)
-                        .with_note(format!(
-                            "an integer literal takes its type from its context, which here is `{text}`"
-                        ))
-                        .with_note(format!("the range of `{text}` is {}", int_range(signed, bits))),
-                );
-            }
+        if let Some((signed, bits)) = self.int_info(target)
+            && !literal_fits(signed, bits, value)
+        {
+            let text = self.describe(target);
+            self.diags.push(
+                Diagnostic::error(span, format!("integer literal does not fit `{text}`"))
+                    .with_code(E0204)
+                    .with_note(format!(
+                        "an integer literal takes its type from its context, which here is `{text}`"
+                    ))
+                    .with_note(format!(
+                        "the range of `{text}` is {}",
+                        int_range(signed, bits)
+                    )),
+            );
         }
         target
     }

@@ -1159,10 +1159,10 @@ fn db_counting(
     let counter_clone = counter.clone();
     let db = JairsDatabase::with_event_callback_and_modules(
         move |event| {
-            if let salsa::EventKind::WillExecute { database_key } = event.kind {
-                if format!("{database_key:?}").contains(needle) {
-                    counter_clone.fetch_add(1, Ordering::SeqCst);
-                }
+            if let salsa::EventKind::WillExecute { database_key } = event.kind
+                && format!("{database_key:?}").contains(needle)
+            {
+                counter_clone.fetch_add(1, Ordering::SeqCst);
             }
         },
         modules,

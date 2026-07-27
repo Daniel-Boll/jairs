@@ -85,10 +85,13 @@ pub fn warn(message: &str) {
 
 /// Print an error to stderr that is not attached to a source span.
 ///
-/// Used for a runtime failure: a program that traps has no source location the VM
-/// can name, because MIR carries HIR ids rather than spans (ADR-0013) and nothing
-/// resolves one back yet. Giving the trap a span is what `MirSpan` exists to make
-/// possible later.
+/// Used for a runtime failure: a program that traps is reported without a source
+/// location, because neither execution engine threads one through to the trap yet.
+/// The resolution itself is not missing — `jr_mir::resolve_span` turns a `MirSpan`
+/// into a `Span` and has since the MIR wave — so this is a wiring gap rather than a
+/// design one. ADR-0019 §3 records that an earlier version of this note blamed
+/// ADR-0013's deferred `AstIdMap`, which was wrong: ADR-0013 stores spans on HIR
+/// nodes directly.
 pub fn error(message: &str) {
     eprintln!("error: {message}");
 }

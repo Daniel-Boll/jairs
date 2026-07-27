@@ -1,0 +1,236 @@
+//! How a Jairs type becomes machine data, and where every byte count comes from.
+//!
+//! # The rule this module exists to enforce
+//!
+//! **Nothing here computes a size, an alignment or an offset.** Every one is asked
+//! of [`jr_pool`], which is the single layout ADR-0018 §2 put in the pool so that
+//! the comptime VM and the native back end cannot disagree. ADR-0019 restates the
+//! prohibition and explains why it is a prohibition and not a preference: a struct
+//! whose field sits at offset 8 during a `#run` and at offset 12 at runtime is two
+//! different programs from one source, with no diagnostic, no verifier complaint,
+//! and a failure that surfaces arbitrarily far from its cause. No test catches that
+//! in general, so the only defence is that the arithmetic exists once.
+//!
+//! What this module *does* decide is the machine **representation** of a value —
+//! which register class it lives in, and whether it lives in a register at all.
+//! That is a back end's own business, and it is derived from `jr-pool`'s numbers
+//! rather than invented alongside them.
+//!
+//! # Why an aggregate is a pointer
+//!
+//! The VM holds an aggregate as `Value::Aggregate(Vec<u8>)` — by value, with no
+//! calling convention at all, because an interpreter needs none. Machine code does.
+//! So a [`Repr::Aggregate`] is represented as a **pointer to its bytes**, and the
+//! internal Jairs calling convention passes aggregates by that pointer.
+//!
+//! This is legal precisely because it is *internal*. Every procedure Jairs declares
+//! is `ContextKind::Jairs` (ADR-0001), so the compiler owns both sides of the call
+//! and may choose. The one boundary it does not own is `#foreign`, which is C, and
+//! there an aggregate would need the platform's real struct-passing rules — so an
+//! aggregate crossing a `#foreign` boundary is refused rather than guessed at. The
+//! slice never needs it: `write` and `exit` take scalars only.
+//!
+//! # Why the integer width is the type's own
+//!
+//! `jr-vm` normalises every scalar to its type's width, "bits above `bits` are
+//! zero, for signed and unsigned alike", and range-checks arithmetic against that
+//! type's `min`/`max` — which is why `execute.rs` asserts that a narrow type traps
+//! at *its own* boundary and not at `s64`'s. Using the exact Cranelift type for
+//! each width (`I8` for `u8`, `I64` for `s64`) reproduces that for free: Cranelift's
+//! overflow instructions are defined on the operand width, so an `I8` add overflows
+//! where an 8-bit add overflows. Widening everything to `I64` would have silently
+//! moved every narrow boundary.
+
+use cranelift_codegen::ir::{AbiParam, Signature, Type, types};
+use cranelift_codegen::isa::CallConv;
+use jr_codegen::CodegenError;
+use jr_pool::{Item, Pool, PoolId, TargetLayout, layout_of};
+
+/// How a value of some Jairs type is carried by machine code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Repr {
+    /// Zero bytes: the single value of type `void`.
+    ///
+    /// Carried by *no* Cranelift value at all, which is why this is a case rather
+    /// than a zero-width scalar. `jr-vm`'s [`Shape`](jr_vm) draws the same
+    /// distinction for the same reason: `void` is a real, storable type (ADR-0015
+    /// §3), and collapsing it into `Scalar(0)` would make a `void`-returning call's
+    /// result compare equal to `false`.
+    Void,
+    /// Fits one register: `bool`, an integer, a pointer, a procedure.
+    Scalar {
+        /// The Cranelift type, whose width is the Jairs type's own width.
+        ty: Type,
+        /// `true` for a signed integer, which decides `sdiv` versus `udiv` and
+        /// which overflow instruction applies.
+        signed: bool,
+    },
+    /// Lives in memory: `string`, a struct. Carried as a pointer to its bytes.
+    Aggregate {
+        /// Size in bytes, from [`jr_pool::layout_of`] — never computed here.
+        size: u64,
+        /// Alignment in bytes, from [`jr_pool::layout_of`].
+        align: u32,
+    },
+}
+
+impl Repr {
+    /// The representation of `ty`.
+    ///
+    /// Classified from the pool item, then sized by [`jr_pool::layout_of`]. The
+    /// match is exhaustive so that a new [`Item`] is a compile error here rather
+    /// than being silently classified as an aggregate — which would move the wrong
+    /// number of bytes instead of failing.
+    ///
+    /// # Errors
+    /// [`CodegenError::NoLayout`] for a type with no runtime layout: poison, which
+    /// ADR-0017 §4 should have refused upstream, or a comptime-only type such as a
+    /// `#system_library` handle.
+    pub fn of(pool: &Pool, target: TargetLayout, ty: PoolId) -> Result<Self, CodegenError> {
+        match pool.item(ty) {
+            Item::VoidType => Ok(Self::Void),
+            Item::BoolType => Ok(Self::Scalar {
+                // `bool` is one byte, and `jr-vm` stores it as 0 or 1. `I8` keeps
+                // the storage width and the register width the same, so a `bool`
+                // loaded out of a struct needs no conversion.
+                ty: types::I8,
+                signed: false,
+            }),
+            Item::IntType { signed, bits } => Ok(Self::Scalar {
+                ty: int_type(*bits)?,
+                signed: *signed,
+            }),
+            Item::PointerType(_) | Item::ProcType { .. } => Ok(Self::Scalar {
+                ty: pointer_type(target),
+                signed: false,
+            }),
+            Item::StringType | Item::StructType { .. } => {
+                let layout = layout_of(pool, target, ty)
+                    .map_err(|reason| CodegenError::NoLayout { ty, reason })?;
+                Ok(Self::Aggregate {
+                    size: layout.size,
+                    align: layout.align,
+                })
+            }
+            // Every remaining item is either a comptime-only type or a *value*
+            // rather than a type. `layout_of` already has the right words for both,
+            // so it is asked rather than second-guessed.
+            Item::TypeType
+            | Item::ErrorType
+            | Item::ForeignLibraryType
+            | Item::VoidValue
+            | Item::BoolValue(_)
+            | Item::IntValue { .. }
+            | Item::StrValue(_)
+            | Item::TypeValue(_)
+            | Item::ProcValue { .. }
+            | Item::ForeignLibraryValue(_) => Err(CodegenError::NoLayout {
+                ty,
+                reason: layout_of(pool, target, ty)
+                    .err()
+                    .unwrap_or(jr_pool::LayoutError::Poison),
+            }),
+        }
+    }
+
+    /// The Cranelift type a value of this representation occupies, if any.
+    ///
+    /// `None` only for [`Repr::Void`], which occupies no register.
+    #[must_use]
+    pub fn clif_type(self, target: TargetLayout) -> Option<Type> {
+        match self {
+            Self::Void => None,
+            Self::Scalar { ty, .. } => Some(ty),
+            // An aggregate travels as a pointer to its bytes; see the module docs.
+            Self::Aggregate { .. } => Some(pointer_type(target)),
+        }
+    }
+
+    /// Whether this is an aggregate, which decides copy-versus-move at every
+    /// assignment.
+    #[must_use]
+    pub const fn is_aggregate(self) -> bool {
+        matches!(self, Self::Aggregate { .. })
+    }
+}
+
+/// The Cranelift type for an integer of `bits` bits.
+///
+/// # Errors
+/// [`CodegenError::Internal`] for a width no machine register has. `jr-sema` only
+/// ever produces 8, 16, 32 and 64, so reaching this means the pool and this
+/// function disagree about what an integer type is.
+pub fn int_type(bits: u16) -> Result<Type, CodegenError> {
+    match bits {
+        8 => Ok(types::I8),
+        16 => Ok(types::I16),
+        32 => Ok(types::I32),
+        64 => Ok(types::I64),
+        other => Err(CodegenError::Internal(format!(
+            "no machine type for a {other}-bit integer"
+        ))),
+    }
+}
+
+/// The Cranelift type of a pointer on this target.
+///
+/// Derived from [`TargetLayout::pointer_size`] rather than from the host, because
+/// comptime and runtime layouts are distinct even where they are numerically equal
+/// today (ADR-0018 §2). A width the machine has no register for falls back to `I64`,
+/// which is the only width the slice's targets have.
+#[must_use]
+pub fn pointer_type(target: TargetLayout) -> Type {
+    match target.pointer_size {
+        4 => types::I32,
+        _ => types::I64,
+    }
+}
+
+/// Builds the Cranelift signature for a procedure.
+///
+/// `void` contributes no parameter and no result, which is what makes
+/// [`Repr::Void`] a case rather than a zero-width scalar.
+///
+/// # Errors
+/// [`CodegenError::NoLayout`] when a parameter or return type has none.
+/// [`CodegenError::Unsupported`] when an aggregate would cross a `#foreign`
+/// boundary, or would be returned: see the module docs, and [`ProcKind`] for why
+/// guessing a C struct convention is worse than refusing.
+pub fn signature(
+    pool: &Pool,
+    target: TargetLayout,
+    params: &[PoolId],
+    ret: PoolId,
+    call_conv: CallConv,
+    foreign: bool,
+    describe: &dyn Fn(&str) -> CodegenError,
+) -> Result<Signature, CodegenError> {
+    let mut sig = Signature::new(call_conv);
+    for ty in params {
+        let repr = Repr::of(pool, target, *ty)?;
+        if foreign && repr.is_aggregate() {
+            return Err(describe(
+                "an aggregate parameter on a `#foreign` procedure, whose C struct \
+                 convention this back end does not implement",
+            ));
+        }
+        if let Some(clif) = repr.clif_type(target) {
+            sig.params.push(AbiParam::new(clif));
+        }
+    }
+
+    let repr = Repr::of(pool, target, ret)?;
+    if repr.is_aggregate() {
+        // Returning a pointer to the callee's own frame would dangle, and the
+        // caller-allocated `sret` convention is real work with no consumer: nothing
+        // in Jairs-0 returns a struct or a string, and a `#run` producing one is
+        // already refused because ADR-0015's `Item` has no aggregate-value variant.
+        return Err(describe(
+            "returning an aggregate, which needs a caller-allocated result slot",
+        ));
+    }
+    if let Some(clif) = repr.clif_type(target) {
+        sig.returns.push(AbiParam::new(clif));
+    }
+    Ok(sig)
+}

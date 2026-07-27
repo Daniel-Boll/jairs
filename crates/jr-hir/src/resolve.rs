@@ -188,10 +188,10 @@ impl<'a> ImportIndex<'a> {
             // Find the first `#import` item in the file whose path matches
             // this module name.
             let import_item_id = hir.items.iter().enumerate().find_map(|(i, item)| {
-                if let ItemKind::Import { path, .. } = &item.kind {
-                    if path == mod_name {
-                        return Some(ItemId::from_usize(i));
-                    }
+                if let ItemKind::Import { path, .. } = &item.kind
+                    && path == mod_name
+                {
+                    return Some(ItemId::from_usize(i));
                 }
                 None
             });

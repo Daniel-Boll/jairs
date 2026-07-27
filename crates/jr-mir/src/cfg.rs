@@ -36,12 +36,13 @@
 //! Refusals contribute nothing here, which is why a poisoned file gets exactly the
 //! diagnostics its real error deserves.
 
-use jr_base::{Interner, Span};
+use jr_base::Interner;
 use jr_diag::{Diagnostic, Diagnostics};
-use jr_hir::{Body, FileHir, ProcId};
+use jr_hir::{FileHir, ProcId};
 
 use crate::code;
-use crate::mir::{FileMir, MirBody, MirSpan, Terminator, Unreachable};
+use crate::mir::{FileMir, MirBody, Terminator, Unreachable};
+use crate::span::resolve_span;
 
 // ---------------------------------------------------------------------------
 // Entry points
@@ -143,56 +144,4 @@ fn missing_return(hir: &FileHir, proc: ProcId, mir: &MirBody) -> Diagnostics {
             .with_note("this procedure declares a return type, so every path must `return`"),
     );
     out
-}
-
-// ---------------------------------------------------------------------------
-// Spans
-// ---------------------------------------------------------------------------
-
-/// Turns MIR's HIR-identity provenance back into a source span.
-///
-/// MIR stores no byte ranges — ADR-0017's follow-on work explains why — so a
-/// diagnostic resolves one on demand, here, and only for the handful of facts that
-/// become diagnostics. `None` when the identity cannot be resolved, in which case
-/// the finding is dropped rather than reported at a made-up location: a diagnostic
-/// pointing at the wrong line is worse than one that is missing.
-fn resolve_span(hir: &FileHir, body: Option<&Body>, span: MirSpan) -> Option<Span> {
-    match span {
-        MirSpan::Expr(_, expr) => {
-            let body = body?;
-            (expr.index() < body.exprs.len()).then(|| body.expr_span(expr))
-        }
-        MirSpan::Local(_, local) => body?.locals.get(local.index()).map(|local| local.span),
-        MirSpan::Stmt(_, stmt) => {
-            let body = body?;
-            (stmt.index() < body.stmts.len()).then(|| stmt_span(body.stmt(stmt)))
-        }
-        MirSpan::Param(proc, index) => hir
-            .procs
-            .get(proc.index())?
-            .params
-            .get(index as usize)
-            .map(|param| param.name_span),
-        MirSpan::Synthetic => None,
-    }
-}
-
-/// The span of a statement.
-///
-/// `jr-hir` gives `Expr` a `span()` accessor but not `Stmt`, so the match lives
-/// here. It is exhaustive so that a new statement kind is a compile error rather
-/// than a silently unspanned diagnostic.
-fn stmt_span(stmt: &jr_hir::Stmt) -> Span {
-    use jr_hir::Stmt;
-    match stmt {
-        Stmt::Block(_, span)
-        | Stmt::Local(_, span)
-        | Stmt::Item(_, span)
-        | Stmt::Expr(_, span)
-        | Stmt::Return(_, span)
-        | Stmt::Break(span)
-        | Stmt::Continue(span)
-        | Stmt::Error(span) => *span,
-        Stmt::Assign { span, .. } | Stmt::If { span, .. } | Stmt::While { span, .. } => *span,
-    }
 }

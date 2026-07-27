@@ -337,3 +337,63 @@ fn a_return_type_mismatch_is_reported_against_the_signature() {
     let analysis = program.analyse("flag :: () -> bool {\n    return 1;\n}\n");
     assert_eq!(analysis.codes(), vec!["E0214"]);
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0019 §4 — the resolved `#foreign` library
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_foreign_procedures_library_is_resolved_and_interned() {
+    // The single resolution ADR-0019 §4 consolidated. `#foreign libc "write"`
+    // names the *constant* `libc`; the recorded answer must be the library `"c"`
+    // that constant declares.
+    //
+    // Asserted on the string rather than merely on `Some(_)`, because the VM's
+    // FFI bridge falls back to a process-wide `dlsym` when the library is unknown
+    // — so `libc` resolving to nothing would still run `024-hello.jr` correctly
+    // and hide the regression. The native back end has no such fallback.
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "libc :: #system_library \"c\";\n\
+         write :: (fd: s64, buf: *u8, count: s64) -> s64 #foreign libc \"write\";\n",
+    );
+    analysis.assert_silent();
+
+    let library = analysis
+        .signatures
+        .foreign_library(jr_hir::ProcId::from_usize(0))
+        .expect("a `#foreign` procedure naming a `#system_library` must record its library");
+    assert_eq!(program.pool.foreign_library_name(library), Some("c"));
+}
+
+#[test]
+fn a_procedure_that_is_not_foreign_records_no_library() {
+    let mut program = Program::new();
+    let analysis = program.analyse("add :: (a: s64) -> s64 {\n    return a;\n}\n");
+    analysis.assert_silent();
+    assert_eq!(
+        analysis
+            .signatures
+            .foreign_library(jr_hir::ProcId::from_usize(0)),
+        None
+    );
+}
+
+#[test]
+fn a_foreign_library_that_is_not_a_system_library_records_nothing() {
+    // E0225's own case, from the recording side. Sema already refuses this; the
+    // point here is that nothing is recorded either, so a back end refuses to
+    // guess a library name rather than emitting a link against `"NOT_A_LIBRARY"`.
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "NOT_A_LIBRARY :: 42;\n\
+         write :: (fd: s64) -> s64 #foreign NOT_A_LIBRARY \"write\";\n",
+    );
+    assert_eq!(analysis.codes(), vec!["E0225"]);
+    assert_eq!(
+        analysis
+            .signatures
+            .foreign_library(jr_hir::ProcId::from_usize(0)),
+        None
+    );
+}

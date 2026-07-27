@@ -134,16 +134,16 @@ fn dispatch(vm: &mut Vm<'_>, foreign: &ForeignProc, args: &[u64]) -> Result<Valu
 
     // Capture what a write would produce before making the call, so a test can assert
     // on a program's output without capturing the process's own stdout.
-    if foreign.symbol == "write" {
-        if let [_, buf, count] = *args {
-            let count = usize::try_from(count).unwrap_or(0);
-            if buf != 0 && count != 0 {
-                // SAFETY: `marshal` produced `buf` from `Memory::host_pointer`, which
-                // bounds-checked the address inside the VM's non-moving region, and
-                // nothing has allocated or released since.
-                let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, count) };
-                vm.capture(bytes);
-            }
+    if foreign.symbol == "write"
+        && let [_, buf, count] = *args
+    {
+        let count = usize::try_from(count).unwrap_or(0);
+        if buf != 0 && count != 0 {
+            // SAFETY: `marshal` produced `buf` from `Memory::host_pointer`, which
+            // bounds-checked the address inside the VM's non-moving region, and
+            // nothing has allocated or released since.
+            let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, count) };
+            vm.capture(bytes);
         }
     }
 
@@ -208,12 +208,12 @@ fn return_type(vm: &Vm<'_>, foreign: &ForeignProc) -> Result<Type, VmError> {
 /// second independent resolution of the same declaration. ADR-0018 §4 records that a
 /// third is the signal to intern the answer beside `Item::ForeignLibraryValue`.
 fn symbol(foreign: &ForeignProc) -> Result<CodePtr, VmError> {
-    if let Some(library) = &foreign.library {
-        if library != "c" {
-            return Err(VmError::unsupported(format!(
-                "`#system_library \"{library}\"` cannot be loaded yet; only \"c\" is available"
-            )));
-        }
+    if let Some(library) = &foreign.library
+        && library != "c"
+    {
+        return Err(VmError::unsupported(format!(
+            "`#system_library \"{library}\"` cannot be loaded yet; only \"c\" is available"
+        )));
     }
 
     // SAFETY: `Library::this` takes a handle to the already-loaded process image and

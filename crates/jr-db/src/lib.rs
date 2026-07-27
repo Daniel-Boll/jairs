@@ -41,6 +41,7 @@
 //! Its module docs argue why that is sound and what the alternative would have
 //! cost.
 
+pub mod build;
 pub mod consts;
 pub mod mir;
 pub mod module_loader;
@@ -84,6 +85,7 @@ pub use module_loader::{
     resolved,
 };
 
+pub use build::{BuildOutput, build_object, entry_of};
 pub use consts::{ConstResult, file_consts};
 pub use mir::{MirResult, dump_mir, file_mir, imported_procs};
 pub use run::{RunOutcome, main_of, run_main};
@@ -422,11 +424,11 @@ impl JairsDatabase {
                 }
 
                 let lookup = module_file(self, search_paths, name.clone());
-                if let Some(found_path) = lookup.found {
-                    if let Some(module_sf) = self.load_module(&found_path) {
-                        loaded.push(found_path);
-                        queue.push(module_sf);
-                    }
+                if let Some(found_path) = lookup.found
+                    && let Some(module_sf) = self.load_module(&found_path)
+                {
+                    loaded.push(found_path);
+                    queue.push(module_sf);
                 }
             }
         }

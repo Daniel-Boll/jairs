@@ -11,3 +11,15 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+jr-base.workspace = true
+jr-codegen.workspace = true
+jr-hir.workspace = true
+jr-mir.workspace = true
+jr-pool.workspace = true
+jr-sema.workspace = true
+cranelift-codegen.workspace = true
+cranelift-frontend.workspace = true
+cranelift-module.workspace = true
+cranelift-native.workspace = true
+cranelift-object.workspace = true
+rustc-hash.workspace = true

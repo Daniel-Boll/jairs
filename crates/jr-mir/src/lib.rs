@@ -49,6 +49,7 @@ mod dump;
 mod escape;
 mod inputs;
 mod mir;
+mod span;
 mod ssa;
 mod thunk;
 mod verify;
@@ -62,4 +63,5 @@ pub use mir::{
     Poisoned, ProcRef, Projection, Rvalue, SlotData, SlotId, Statement, Target, Terminator, UnOp,
     UndefinedRead, Unreachable, ValueData, ValueId,
 };
+pub use span::resolve_span;
 pub use thunk::{lower_const, thunk_ref};

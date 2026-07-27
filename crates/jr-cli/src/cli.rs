@@ -92,6 +92,14 @@ pub enum Command {
     /// program trapped, or with the program's own status if it called `exit`.
     Run(RunArgs),
 
+    /// Compile a `.jr` program to a native executable.
+    ///
+    /// Checks the file first and refuses to build one with errors (ADR-0017 §4), then
+    /// compiles every reachable file through Cranelift and links the result. Exits 0
+    /// on success, 1 if the file has errors, and 2 if code generation or linking
+    /// failed.
+    Build(BuildArgs),
+
     /// Debug aid: parse a single file and display its structure.
     ///
     /// Without flags, prints a summary (token count, node count, diagnostic
@@ -119,6 +127,31 @@ pub struct RunArgs {
     /// The program to run. Must declare `main`.
     #[arg(value_name = "PATH")]
     pub path: std::path::PathBuf,
+
+    /// Directory to search for imported modules. May be repeated; searched in
+    /// the order given, before the bundled module directory (ADR-0014).
+    #[arg(short = 'I', long = "module-path", value_name = "DIR")]
+    pub module_paths: Vec<std::path::PathBuf>,
+}
+
+/// Arguments for `jr build`.
+#[derive(Debug, Args)]
+pub struct BuildArgs {
+    /// The program to compile. Must declare `main`.
+    #[arg(value_name = "PATH")]
+    pub path: std::path::PathBuf,
+
+    /// Where to write the executable. Defaults to the input's name without its
+    /// extension.
+    #[arg(short = 'o', long = "output", value_name = "FILE")]
+    pub output: Option<std::path::PathBuf>,
+
+    /// Write the object file and skip linking.
+    ///
+    /// Useful when the failure is in code generation rather than in the link, and
+    /// when there is no C driver to link with.
+    #[arg(long = "emit-object")]
+    pub emit_object: bool,
 
     /// Directory to search for imported modules. May be repeated; searched in
     /// the order given, before the bundled module directory (ADR-0014).

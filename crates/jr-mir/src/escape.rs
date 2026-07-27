@@ -233,10 +233,8 @@ fn addr_taken_locals(body: &Body) -> FxHashSet<LocalId> {
     while let Some((expr_id, under_addr_of)) = expr_worklist.pop() {
         match body.expr(expr_id) {
             Expr::Name { res, .. } => {
-                if under_addr_of {
-                    if let Res::Local(local) = res {
-                        escaped.insert(*local);
-                    }
+                if under_addr_of && let Res::Local(local) = res {
+                    escaped.insert(*local);
                 }
             }
             Expr::Binary { lhs, rhs, .. } => {
