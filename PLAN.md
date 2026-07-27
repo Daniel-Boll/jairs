@@ -203,7 +203,7 @@ flowchart LR
 - [x] Neovim: tree-sitter highlighting — and diagnostics, hover and goto-definition
       besides. `editors/nvim/` is a runtimepath directory needing no plugin manager
       (ADR-0025); two lines in `init.lua` and one build script. Verified by
-      `nvim --headless -u NONE -l editors/nvim/verify.lua`, 23 checks against the real
+      `nvim --headless -u NONE -l editors/nvim/verify.lua`, 39 checks against the real
       editor and the real server. Verified rather than gated: Neovim is not a build
       dependency of this workspace.
 - [ ] CI green on macOS arm64 **and** Linux x86-64 — the matrix is configured for
@@ -231,12 +231,12 @@ Status of each slice component, so this is answerable without reading the tree.
 |---|---|---|
 | `jr-base` | **Done** | Spans, `FileId`, `lasso` interning, `newtype_index!`, source map, the one trap-message formatter (ADR-0020 §2) |
 | `jr-diag` | **Done** | Diagnostic model + `annotate-snippets` renderer |
-| `jr-syntax` | **Done** | Lexer, error-recovering parser, rowan CST, typed AST |
-| `jr-fmt` | **Done** | Formatter; corpus is canonical under it, CI-enforced |
+| `jr-syntax` | **Done** | Lexer, error-recovering parser, rowan CST, typed AST. `///` and `//!` are distinct trivia kinds (ADR-0027) |
+| `jr-fmt` | **Done** | Formatter; corpus is canonical under it, CI-enforced. Comments inside a struct body used to be deleted outright — fixed in the doc-comment wave |
 | `jr-hir` | **Done** | Lowering, name resolution, flat import merge (ADR-0014) |
 | `jr-pool` | **Done** | Types + comptime values in one pool (ADR-0015, ADR-0016 §3); layout (ADR-0018 §2); ADR-0002's integer arithmetic, shared by both evaluators (ADR-0022 §2) |
 | `jr-sema` | **Done** | Signatures + checking (ADR-0016). No const-eval: that is `jr-vm` |
-| `jr-db` | **Done** | salsa queries: module loader, sema, MIR built *and* optimized, const-eval, run (ADR-0007, ADR-0014, ADR-0018 §3, ADR-0021 §1) |
+| `jr-db` | **Done** | salsa queries: module loader, sema, MIR built *and* optimized, const-eval, run, doc comments (ADR-0007, ADR-0014, ADR-0018 §3, ADR-0021 §1, ADR-0027 §2) |
 | `jr-cli` | **Done** | `jr check` (with `--module-path`), `jr fmt`, `jr parse`, `jr run`, `jr build`, `jr lsp` |
 | `tree-sitter-jairs` | **Done** | Grammar + queries; drift gate green, and every query file is now compiled against the grammar (ADR-0025 §4) |
 | `tests/corpus` | **Done** | 69 files, incl. `type-errors/` and `cfg-errors/` — one file per diagnostic |
@@ -247,12 +247,12 @@ Status of each slice component, so this is answerable without reading the tree.
 | `jr-codegen-clif` | **Done** | MIR → Cranelift IR, layout via `jr-pool`, traps through a generated helper (ADR-0019). Aggregate params only; aggregate returns and indirect calls refused |
 | `jr-link` | **Done** | `cranelift-object` bytes, then `cc`; ad-hoc codesign is a fallback because `ld64` already signs |
 | `jr-codegen-llvm` | **Not started** | Wave W8 owns it (ADR-0019 §5) |
-| `jr-lsp` | **Done** | `lsp-server` loop over `jr-db` queries: diagnostics, hover, goto-definition, run as `jr lsp` (ADR-0024). No completion, rename or inlay hints — W9 owns those |
+| `jr-lsp` | **Done** | `lsp-server` loop over `jr-db` queries: diagnostics, hover, goto-definition, completion + `completionItem/resolve`, run as `jr lsp` (ADR-0024, ADR-0028). Hover renders a container/signature/docs card; completion does fields, directives and call snippets. No rename, references, inlay hints or `signatureHelp` |
 | `jr-driver` | **Not started** | |
-| `editors/nvim` | **Done** | Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 23 checks, needs an editor CI does not have |
+| `editors/nvim` | **Done** | Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 39 checks, needs an editor CI does not have |
 | VS Code extension | **Not started** | The remaining half of §1.4's first box |
 
-Accepted ADRs: 0001–0026. See [`docs/adr/README.md`](docs/adr/README.md).
+Accepted ADRs: 0001–0028. See [`docs/adr/README.md`](docs/adr/README.md).
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
 plus `jr-sema`'s crate docs are the only record of the typing rules today.
@@ -502,103 +502,106 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 ## 7. Immediate next actions
 
-Everything through **editor integration** is done: workspace scaffolding, the ADRs, spec
-chapters 00–03, the corpus plus the drift gate, the lexer→parser→CST→`jr fmt` inch, HIR
-and name resolution, the module loader, the InternPool, `jr-sema`, `jr-mir`, `jr-vm`,
-`jr-codegen`, `jr-codegen-clif`, `jr-link`, a four-pass mid-end, `jr-lsp`, and a Neovim
-integration that has been run against a real editor. See §1.5 for component status.
-**696 workspace tests**, all six gates green, plus 23 Neovim checks that are verified
-rather than gated.
+Everything through **hover, completion and doc comments** is done: workspace scaffolding,
+the ADRs, spec chapters 00–03, the corpus plus the drift gate, the
+lexer→parser→CST→`jr fmt` inch, HIR and name resolution, the module loader, the
+InternPool, `jr-sema`, `jr-mir`, `jr-vm`, `jr-codegen`, `jr-codegen-clif`, `jr-link`, a
+four-pass mid-end, `jr-lsp` with five capabilities, and a Neovim integration that has been
+run against a real editor. See §1.5 for component status. **759 workspace tests**, all six
+gates green, plus 39 Neovim checks that are verified rather than gated.
 
-**§1.4's first box is half closed.** Neovim is ticked; VS Code is not. The server is
-ready and nothing launches it.
+**§1.4's first box is still half closed.** Neovim has more than the box asks for; VS Code
+has nothing. The server is ready and nothing launches it.
 
-### The correction this wave had to make first
+### What the hover-and-completion wave landed
 
-**§7 was still the language-server wave's handoff.** It claimed 695 tests, opened with
-"everything through the language server", and listed **"Neovim packaging — an `lspconfig`
-entry and the tree-sitter parser registration"** as open work — a wave after ADR-0025
-shipped exactly that, and shipped it *without* `lspconfig`, as a runtimepath directory.
-Step 4 of `AGENTS.md`'s rhythm was skipped. The section's own final trap line reads *"Do
-not believe a handoff about what is left. Open the file."*
+Triggered by a plain report: hovering a procedure rendered `(s64, s64) -> s64` — no name,
+no parameter names, no origin, no prose — against rust-analyzer's container, signature,
+rule and description. Three of those four were reconstructible from data the compiler
+already had. The fourth was not, because Jairs had no doc comments.
 
-That is now four consecutive waves in which a claim in this document, or in an ADR
-Context, was false until someone checked it. The pattern is stable enough to name: **the
-handoff rots in the direction of "what remains is small".** Every one of these
-corrections has been in that direction, never the reverse.
+- [x] **ADR-0027**: `///` and `//!` as distinct **trivia** kinds, so the parser is
+      untouched and adding them cannot change what parses; `////` stays an ordinary
+      comment; attached text lives in a `file_docs` side query rather than on a HIR item,
+      so `jr-sema` has no way to read prose; a stray `///` is silently ignored.
+- [x] **ADR-0028**: one renderer (`jr-lsp`'s `render.rs`) behind hover, a completion item
+      and `completionItem/resolve`, so the three cannot disagree; the card is *Jairs*
+      syntax (`print :: (s: string)`, never `pub fn`); the container line is the module or
+      the file stem; completion ships fields after `.`, directives after `#`, call snippets
+      and lazy resolve.
+- [x] **`locate_declaration`**, which ADR-0028 did not anticipate needing. A declaration's
+      own name is an `Item::name_span`, not an `Expr::Name`, so the expression scan answers
+      nothing there — and `verify.lua` had asserted that nothing as correct.
+- [x] **`modules/Basic` is documented**, so hovering `print` in `024-hello.jr` shows
+      "Writes a string to standard output." from the file that declares it.
+- [x] **`026-doc-comments.jr`**, executed by the differential harness, because a construct
+      the grammar allows and nothing executes is how two silent miscompiles reached `main`.
+- [x] **A pre-existing formatter bug fixed**: `jr fmt` deleted *every* comment inside a
+      struct body, ordinary or doc. See below.
+- [x] **`@comment.documentation`** in the highlights query, and 16 more Neovim checks.
 
-### What the editor-integration wave landed
+Four things about this wave are worth carrying forward.
 
-- [x] **ADR-0025**, six decisions: a runtimepath directory rather than a plugin; the
-      queries as *symlinks* into `tree-sitter-jairs/` so the editor and the drift gate
-      cannot diverge; `vim.lsp.enable` rather than `nvim-lspconfig`; a committed
-      `parser/jairs.so` build script; verified-not-gated as an explicit status; and a
-      `tree-sitter query` gate.
-- [x] **`editors/nvim/`**: `lsp/jairs.lua`, `parser/`, `queries/jairs/` (symlinked),
-      `ftdetect/`, `ftplugin/`, `build.sh`, `verify.lua`, `README.md`.
-- [x] **Gate 6 grew query validation.** A query naming a node the grammar has not got was
-      previously *undetectable*, and the failure is silent: highlighting simply stops.
-      `tree-sitter query` exits 1 with `Invalid node type`. Confirmed to have teeth by
-      appending a bogus node and watching it fail.
-- [x] **A relative `--module-path` silently broke cross-file goto-definition.**
-      `uri::from_path` correctly refuses a relative path, so the handler returned "nothing
-      here" rather than an error. `jr lsp` now absolutises its search paths once, because a
-      server's working directory is whatever the editor happened to have. Pinned by a test.
-- [x] **ADR-0026**: `root_markers` order is **priority, not proximity** (`:h vim.fs.root`).
-      ADR-0025 §1 shipped `{ "modules", ".git" }`, which rooted this repository's own
-      corpus files at `tests/corpus` — because `tests/corpus/modules/` is a *fixture*
-      directory. Now `{ ".git", "modules" }`, and `verify.lua` asserts the resolved root.
-- [x] **`verify.lua` was measuring the wrong root.** `nvim -l` reports a script's source
-      as the *relative* path it was invoked with, so `here .. "/../.."` normalised to `.`.
-      Every path built from it still worked, which is why it went unnoticed; it simply
-      could never equal the absolute `root_dir` a client reports. `vim.uv.fs_realpath` now.
+- **The formatter was destroying input, and had been for a long time.**
+  `format_struct_type` walked only `FIELD` children, so any comment between fields was
+  dropped. Gate 5 passed throughout because no corpus struct contained a comment — the
+  same hole `modules/Basic` had when it hid a lowering bug for a whole wave. A formatter
+  that silently deletes what you wrote is the worst class of bug this project can ship,
+  because the input is gone before anyone looks. It is fixed, it has five tests, and the
+  corpus now contains the case.
+- **A new kind plus a `_ => {}` arm is the same trap as a well-typed placeholder.** Six
+  `jr-fmt` sites matched `LINE_COMMENT | BLOCK_COMMENT` and fell through otherwise, so
+  `DOC_COMMENT` would have compiled cleanly and deleted every doc comment. `is_comment()`
+  and `is_line_comment()` exist so the question is asked once. Proven by reverting one
+  site and watching the test fail.
+- **Holding the pool lock across a query call is a self-deadlock.** `jr-lsp` reads the
+  type pool behind a `Mutex` and a query locks the same pool; the first `completion`
+  implementation locked first and hung the whole test run with *no output*, which is far
+  less legible than a panic. Every query call now happens before the lock.
+- **Two of this wave's ADR claims were false when written.** §4 of ADR-0028 said hovering a
+  declaration "works" as though resolution covered it, and nothing in either ADR
+  anticipated the deadlock. Both are recorded in ADR-0028's postscript rather than quietly
+  fixed. That is five consecutive waves.
 
-Three things about this wave are worth carrying forward.
-
-- **Two of its four bugs were found by running the integration, not by reviewing it** —
-  and one of them was in the verification script itself. ADR-0025 §6 argued that
-  instructions nobody has executed have the same shape as the claims this plan keeps
-  having to retract. ADR-0026 is that argument collecting on its own decision.
-- **A test can assert a bug.** `verify.lua`'s first draft hovered `sum` in
-  `sum := add(…)` — a *declaration*, where the correct answer is no hover. It asserted the
-  wrong answer confidently. Hovers are now asserted by exact text.
-- **`-u NONE` starts with filetype detection off**, which looks identical to a broken
-  integration. A harness artefact, but it cost real time.
-
-Diagnostic codes: **E0231 is still the first free code.** `jr-lsp` defines none: it
-reports what the queries produced and adds no analysis. E0230 is `jr-db`'s const-eval
-failure; E0227–E0229 are `jr-mir`'s. Beware that `jr-syntax`' parser still illegally
-emits E0200/E0201/E0202 for "arrives in wave Wn" errors, colliding with `jr-hir` — do
-not filter tests by those.
+Diagnostic codes: **E0231 is still the first free code.** ADR-0027 §3 deliberately adds
+none — a doc comment that documents nothing is not a diagnostic. E0230 is `jr-db`'s
+const-eval failure; E0227–E0229 are `jr-mir`'s. Beware that `jr-syntax`' parser still
+illegally emits E0200/E0201/E0202 for "arrives in wave Wn" errors, colliding with
+`jr-hir` — do not filter tests by those.
 
 ### Next: close the slice
 
-Two boxes. Both are platform and packaging work, and this time the claim is cheap to
-check: §1.4 lists them and §1.5 marks each **Not started**.
+Two boxes, both platform and packaging work.
 
 #### Work items, in dependency order
 
 - [ ] **A VS Code extension** that launches `jr lsp`, contributes the `jairs` language id
-      and the `.jr` extension, and ships the tree-sitter grammar for highlighting. It needs
-      the same root-marker logic as ADR-0026, and it should read it from one place rather
-      than re-derive it — there is no shared editor configuration yet, and this is one of
-      the two things that would go in it.
+      and the `.jr` extension, and ships the tree-sitter grammar for highlighting. It
+      inherits five capabilities now rather than three, and it must **not** reimplement the
+      card renderer — ADR-0028 §1 exists because a second renderer drifts. It also needs
+      ADR-0026's root logic, which argues for one shared editor configuration rather than
+      two derivations.
 - [ ] **A verified Linux x86-64 CI run.** The matrix is configured and has never run.
       Expect real work rather than a green tick: `cranelift_native` asks the host,
       `jr-pool` supplies layout, `cc` is invoked differently, and there is no codesigning
       step — so "should work" and "has been run" are different claims and only the second
       belongs in a status table.
 - [ ] **Then wave W8's compile-throughput number**, where §2.1 puts it. ADR-0019 §6's
-      trigger — an inliner must exist first — is satisfied, so nothing blocks it but the
-      workload: Jairs-0 has no arrays, no `for`, no floats and no way to print an integer,
-      so the only expressible program is arithmetic in a `while` loop. A generator that
-      emits large type-checkable programs is probably the honest path.
+      trigger is satisfied. The workload is the obstacle: Jairs-0 has no arrays, no `for`,
+      no floats and no way to print an integer, so a generator emitting large
+      type-checkable programs is probably the honest path.
 
 #### Also open, and smaller
 
-- **Keystroke-to-diagnostic latency**, which ADR-0013 named as its own trigger for
-  deciding whether `AstIdMap` earns its keep. The offset-to-node scan is O(nodes) per
-  request.
+- **Keystroke latency, now with two reasons to measure it.** ADR-0013's trigger, and
+  completion runs the same O(nodes) scan per keystroke.
+- **`jr_hir::TypeRef` has no span**, so hover and goto-definition can never work on a type
+  annotation. Pinned by `hovering_a_type_annotation_returns_nothing_today`. Note
+  `Proc::type_refs` and `Struct::type_refs` are documented as *always empty* pending the
+  same refactor, so this is one change rather than two.
+- **`signatureHelp`**, which a call snippet makes the obvious next thing: the cursor lands
+  inside `add(|)` and the parameter list is what you want.
+- **Block-accurate completion scope.** Today it is "declared earlier in this body".
 - **Cross-block store-to-load forwarding, or SROA.** ADR-0023 §1's rejected alternatives.
 - **Compact the SSA value arena**, so a dead definition stops costing a register.
 - **A finer optimized-MIR key.** ADR-0021 §1's rejected alternative.
@@ -608,18 +611,24 @@ check: §1.4 lists them and §1.5 marks each **Not started**.
   `a_cross_file_run_is_still_refused` is the tripwire.
 - **Aggregate returns and calls through a procedure pointer**, `Unsupported` in both
   engines.
+- **`jr doc`**, or the decision that Jairs has no documentation generator. ADR-0027 leaves
+  it open; nothing but the LSP reads a doc comment today.
 
 #### Traps
 
+- **Do not hold the pool lock across a query call.** It is a self-deadlock, and it
+  presents as a test run that produces nothing at all.
 - **Do not hold a database snapshot across requests.** ADR-0024 §2. salsa blocks a writer
   until the count returns to one, so a cached snapshot stalls the next keystroke.
+- **Do not add a `SyntaxKind` without auditing every `_ => {}` that matches kinds.**
+  ADR-0027 §4. Use `is_comment()`/`is_line_comment()` rather than naming kinds.
+- **Do not render a declaration anywhere but `jr-lsp`'s `render.rs`.** ADR-0028 §1. A
+  second renderer disagrees silently, and per-handler tests cannot see it.
 - **Do not print to stdout from `jr lsp`.** It is the protocol channel; one stray byte
   desynchronises the framing for the whole session.
-- **`root_markers` order is priority, not proximity.** ADR-0026. The first pattern that
-  matches *anywhere* up the tree wins, even when a later one matches closer.
-- **A path handed to an editor integration must be absolute**, and both directions have
-  now bitten: `jr lsp`'s `--module-path`, and `verify.lua`'s own notion of the repository
-  root. `nvim -l` reports a relative script source.
+- **`root_markers` order is priority, not proximity.** ADR-0026.
+- **A path handed to an editor integration must be absolute.** Both directions have bitten:
+  `jr lsp`'s `--module-path`, and `verify.lua`'s own notion of the repository root.
 - **Rebuild the tree-sitter parser after a `grammar.js` change.** `ftplugin` starts
   tree-sitter under `pcall`, so forgetting is silent.
 - **Do not compute a value outside `jr-pool`.** ADR-0022 §2. A second evaluator produces
@@ -630,9 +639,10 @@ check: §1.4 lists them and §1.5 marks each **Not started**.
 - **Do not delete a statement without proving its rvalue pure**, and do not forward a
   load whose place is not *identical* to the store's.
 - **Do not format a trap message anywhere but `jr_base::trap_message`.**
-- **Do not add a corpus file without checking it is executed.**
+- **Do not add a corpus file without checking it is executed**, and do not trust a
+  formatter gate over a corpus that lacks the construct.
 - **Do not believe a handoff about what is left.** Open the file. This section was wrong
-  about it one wave ago.
+  about it two waves ago.
 
 ### After the slice
 

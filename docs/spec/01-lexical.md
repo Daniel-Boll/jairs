@@ -32,9 +32,12 @@ by whitespace).
 
 ## Comments
 
-Jairs has two comment forms, both trivia (`002-comments.jr`):
+Jairs has two comment forms plus two documentation forms, all four trivia
+(`002-comments.jr`, `026-doc-comments.jr`):
 
 ```jr
+//! Documentation for the enclosing module.
+
 // A line comment.
 
 /* A block comment. */
@@ -43,6 +46,11 @@ Jairs has two comment forms, both trivia (`002-comments.jr`):
     Block comments /* nest */, unlike C. The lexer tracks depth so that
     commenting out a region containing a comment does the obvious thing.
 */
+
+/// Documentation for the declaration that follows.
+answer :: 42;
+
+//// Four or more slashes are a rule, not documentation.
 
 // Trailing comment with no newline after it.
 ```
@@ -57,6 +65,31 @@ Jairs has two comment forms, both trivia (`002-comments.jr`):
   reported at the **outermost** `/*` (diagnostic **E0002**), because that is the
   one the user needs to find, and the diagnostic notes how many `/*` are still
   open.
+- **Doc comment** — `///` to the end of the line, documenting the declaration
+  that follows it.
+- **Module doc comment** — `//!` to the end of the line, documenting the file.
+
+### Documentation comments
+
+Added by [ADR-0027](../adr/0027-doc-comments.md). Three rules, and the first is the
+one that keeps this a lexical matter rather than a grammatical one:
+
+1. **A doc comment is trivia.** The parser never sees one, so no grammar rule can
+   require or forbid one, and adding these forms cannot change what parses. `///`
+   before a declaration and `///` in the middle of a procedure body are the same
+   token to the parser.
+2. **`////` is not documentation.** Four or more slashes lex as an ordinary line
+   comment, following Rust, because a row of slashes is a visual rule. `//!!` *is*
+   module documentation, whose text happens to begin with `!` — also as in Rust,
+   because there is no corresponding convention of writing a rule out of `!`.
+3. **A doc comment that precedes no declaration is silently ignored.** No
+   diagnostic. Attachment happens above the lexer, in `jr_db::file_docs`, which
+   also decides that a blank line or an intervening `//` comment breaks a doc
+   block — so what a reader sees as separated is separated.
+
+Attachment is therefore *not* a lexical property, and nothing in this chapter
+promises a `///` will document anything. The lexer's whole contribution is to say
+which comments are documentation and which are asides.
 
 ## Identifiers
 

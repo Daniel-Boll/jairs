@@ -47,3 +47,5 @@ The ADR numbers are stable and are referenced from code comments and
 | [0024](0024-language-server.md) | The language server: a worker snapshot, a span scan, negotiated positions | Accepted |
 | [0025](0025-editor-integration.md) | Editor integration as a runtimepath directory, verified rather than gated | Accepted |
 | [0026](0026-root-marker-order.md) | `.git` before `modules` as the workspace root marker (amends ADR-0025 §1) | Accepted |
+| [0027](0027-doc-comments.md) | `///` and `//!` doc comments: trivia kinds plus a side-table query | Accepted |
+| [0028](0028-hover-and-completion.md) | The hover card, and completion pulled forward from W9 | Accepted |

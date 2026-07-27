@@ -1,0 +1,48 @@
+//! Doc comments, from the file's own downwards (ADR-0027).
+//!
+//! This file exists because a construct the grammar allows and nothing executes is how
+//! two silent miscompiles reached `main` (AGENTS.md). `///` is trivia, so it cannot
+//! change what this program does — and *that* is the property worth executing: the
+//! output below must be identical to the same program with every doc comment deleted.
+
+#import "Basic";
+
+/// A point in the plane.
+///
+/// Documented across several lines, so that the blank `///` in the middle is exercised
+/// rather than assumed to work.
+Point :: struct {
+    /// A field's doc comment attaches to no *item*, so `file_docs` does not record it —
+    /// but `jr fmt` must still keep it, and did not until this file existed.
+    x: s64;
+    y: s64;  // An ordinary trailing comment, on the same line.
+}
+
+/// The message this program prints.
+MESSAGE :: "doc comments are trivia\n";
+
+//// ------------------------------------------------------------------
+//// Four slashes are a rule, not documentation, and this line proves it
+//// parses as an ordinary comment.
+//// ------------------------------------------------------------------
+
+/// Adds two numbers.
+///
+/// Returns their sum, which is the only thing it could reasonably do.
+add :: (a: s64, b: s64) -> s64 {
+    /// A doc comment inside a body attaches to nothing and is silently dropped
+    /// (ADR-0027 §3). It must not be a diagnostic and must not be deleted by `jr fmt`.
+    sum := a + b;
+    return sum;
+}
+
+/// The entry point.
+main :: () {
+    p: Point;
+    p.x = 3;
+    p.y = 4;
+
+    if add(p.x, p.y) == 7 {
+        print(MESSAGE);
+    }
+}

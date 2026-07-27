@@ -460,3 +460,32 @@ proc main -> void {
     discard call proc0()
     return
 }
+
+========================================
+026-doc-comments.jr
+========================================
+proc add -> s64 {
+  params: v0: s64, v1: s64
+  bb0(v0: s64, v1: s64):
+    v2: s64 = v0 + v1
+    return v2
+}
+proc main -> void {
+  slots:
+    s0: Point  // local 0
+  bb0():
+    store s0.0 <- 3_s64
+    store s0.1 <- 4_s64
+    v0: s64 = load s0.0
+    v1: s64 = load s0.1
+    v2: s64 = call proc0(v0, v1)
+    v3: bool = v2 == 7_s64
+    branch v3 ? bb1() : bb2()
+  bb1():
+    discard call extern proc2("doc comments are trivia\n")
+    goto bb3()
+  bb2():
+    goto bb3()
+  bb3():
+    return
+}

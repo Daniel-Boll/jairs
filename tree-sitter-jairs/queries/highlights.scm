@@ -4,8 +4,16 @@
 
 ; ---- Comments ---------------------------------------------------------------
 
+; Documentation reads differently from an aside (ADR-0027 §5). The grammar is
+; unchanged: `///` and `//!` are still `line_comment` to tree-sitter, so this is a
+; text predicate rather than a new node. Order matters -- the later capture wins in
+; Neovim, so the specific patterns come after the general one.
 (line_comment) @comment
 (block_comment) @comment
+((line_comment) @comment.documentation
+  (#lua-match? @comment.documentation "^///[^/]"))
+((line_comment) @comment.documentation
+  (#lua-match? @comment.documentation "^//!"))
 
 ; ---- Directives (a defining feature of Jairs) --------------------------------
 

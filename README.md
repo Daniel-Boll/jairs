@@ -17,8 +17,9 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after the **editor integration** wave. 696 workspace tests; six CI gates
-green on macOS arm64, plus 23 Neovim checks that are verified rather than gated.
+Last updated after the **hover, completion and doc comments** wave. 759 workspace tests;
+six CI gates green on macOS arm64, plus 39 Neovim checks that are verified rather than
+gated.
 
 ### What you can actually do
 
@@ -32,7 +33,7 @@ green on macOS arm64, plus 23 Neovim checks that are verified rather than gated.
 | Call libc from Jairs | `#foreign` / `#system_library` | Through libffi at comptime, a real call natively |
 | Fold a compile-time call | `COMPUTED :: #run add(2, 3)` | One *trivial* `#run`: a call or a constant expression, same file only |
 | Import a module | `#import "Basic";` | One module = one file, flat imports, cycles legal |
-| Edit in Neovim, with highlighting, diagnostics, hover and goto-definition | `editors/nvim/` | Two lines in `init.lua` and one build script; no plugin manager. Neovim **0.11+**. See [`editors/nvim/README.md`](editors/nvim/README.md) |
+| Edit in Neovim, with highlighting, diagnostics, hover, goto-definition and completion | `editors/nvim/` | Two lines in `init.lua` and one build script; no plugin manager. Neovim **0.11+**. See [`editors/nvim/README.md`](editors/nvim/README.md) |
 | Get the same in another editor | `jr lsp` | Speaks LSP 3.17 over stdio; **no VS Code extension ships yet**, so you wire it up yourself |
 
 ### The language today
@@ -58,7 +59,7 @@ The authoritative version of this list is
 | `a.b.c` field access, auto-deref through pointers | arrays `[N]T`, views `[]T`, dynamic `[..]T` (**W1**) |
 | calls, nested; a discarded call is a statement | |
 | integer literals (dec/hex/bin/oct, `_`), string literals + escapes | usable float literals — they lex, the parser rejects them (**W1**) |
-| nesting block comments | |
+| nesting block comments; `///` and `//!` doc comments, shown on hover | doc generation (`jr doc`) — nothing consumes docs but the language server |
 | one trivial `#run` | arbitrary `#run`, RTTI, `#insert`, `#code` (**W4**) |
 | `#import`, `#foreign`, `#system_library` | polymorphs `$T`, `#expand` macros (**W5**) |
 | overflow traps with a source location (ADR-0002, ADR-0020) | `context`, allocators, temp storage, backtraces (**W3**) |
@@ -70,7 +71,7 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
 
 | Stage | Status | Honest note |
 |---|---|---|
-| Lexer, parser, CST, typed AST | **Works** | Hand-written, error-recovering, trivia-preserving |
+| Lexer, parser, CST, typed AST | **Works** | Hand-written, error-recovering, trivia-preserving. Doc comments are trivia, so they cannot change what parses (ADR-0027) |
 | Formatter | **Works** | Pure function over the CST |
 | HIR, name resolution, module loader | **Works** | Flat import merge (ADR-0014) |
 | InternPool (types, comptime values, layout, arithmetic) | **Works** | One layout computation and one integer evaluator, shared (ADR-0018 §2, ADR-0022 §2) |
@@ -82,8 +83,8 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
 | salsa incremental database | **Works** | Built *and* optimized MIR staged (ADR-0021 §1); invalidation is at file grain |
 | Differential harness | **Works** | Compares stdout, stderr and exit status of both engines as subprocesses |
 | LLVM back end | **Not started** | Wave W8 |
-| Language server | **Works** | `jr lsp`: diagnostics, hover, goto-definition (incl. across an `#import`), on a worker thread with salsa cancellation (ADR-0024). No completion, rename or inlay hints — W9 owns those |
-| Neovim integration | **Works** | `editors/nvim/` (ADR-0025), verified against the real editor by a 23-check script — **not** by CI, which has no Neovim |
+| Language server | **Works** | `jr lsp`: diagnostics, hover, goto-definition (incl. across an `#import`), completion with call snippets and `completionItem/resolve`, on a worker thread with salsa cancellation (ADR-0024, ADR-0028). No rename, references, inlay hints or `signatureHelp` |
+| Neovim integration | **Works** | `editors/nvim/` (ADR-0025), verified against the real editor by a 39-check script — **not** by CI, which has no Neovim |
 | VS Code integration | **Not started** | The server is ready; nothing launches it |
 | Compilation driver / workspaces | **Not started** | `jr-driver` is a one-line stub |
 | Debug info | **Not started** | No DWARF at all; a native binary is not debuggable |
@@ -115,13 +116,25 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
 - **ADR-0002's arithmetic has two implementations, not one.** `jr-pool` owns the one
   both *evaluators* share; `jr-codegen-clif` keeps its own because it emits code rather
   than evaluating. The pair is held equal by `differential.rs` and nothing else.
-- **Neovim integration is verified on one machine, not gated.** The 23 checks need an
+- **Neovim integration is verified on one machine, not gated.** The 39 checks need an
   editor, and Neovim is not a build dependency of this workspace, so `cargo test` cannot
   run them. VS Code has nothing at all.
 - **The tree-sitter parser must be rebuilt after a grammar change**, and highlighting
   fails *silently* if you forget — `ftplugin` starts tree-sitter under `pcall`, because a
   missing parser is an ordinary state rather than an error.
-- **Hover shows a type and nothing else.** No documentation, no signature rendering.
+- **Hover does not work on a type annotation.** The `Point` in `p: Point` gets nothing,
+  and no care in the language server can fix it: `jr_hir::TypeRef::Name` carries a symbol
+  and no span, so there is no position to match a cursor against. A test pins the
+  limitation and fails the day it stops being one (ADR-0028 §4).
+- **Completion's idea of scope is "declared earlier in this body"**, not block scope. It
+  over-offers — a local from a sibling block that has already closed — and never
+  under-offers, which is the direction that would make the list feel broken.
+- **Neither hover nor completion has a latency number.** Both run an O(nodes) scan per
+  request to turn an offset into a node, and completion runs it far more often than hover
+  ever did. ADR-0013 named exactly this measurement as the trigger for deciding whether
+  `AstIdMap` earns its keep; it has still not been taken.
+- **Nothing checks that a doc comment is true**, and nothing but the language server reads
+  one. There are no doc tests and no `jr doc`.
 - **Nothing here is self-hosted.** The compiler is Rust; only `modules/Basic` is Jairs.
 
 ---

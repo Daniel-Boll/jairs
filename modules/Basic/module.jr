@@ -1,37 +1,43 @@
-// The Basic module: the bottom of the Jairs standard library.
-//
-// This is written in Jairs, not in the compiler (PLAN.md decision #5). That is
-// what forces `#foreign` into the first slice: the bottom of a standard library
-// is a syscall, and there is no way to express it otherwise.
-//
-// Everything here must be writable in the Jairs-0 subset. That constraint is
-// real and it bites -- see the note on integer printing at the end of this file.
+//! The Basic module: the bottom of the Jairs standard library.
+//!
+//! This is written in Jairs, not in the compiler (PLAN.md decision #5). That is
+//! what forces `#foreign` into the first slice: the bottom of a standard library
+//! is a syscall, and there is no way to express it otherwise.
+//!
+//! Everything here must be writable in the Jairs-0 subset. That constraint is
+//! real and it bites -- see the note on integer printing at the end of this file.
 
 libc :: #system_library "c";
 
-// POSIX write(2). Jairs strings are {data: *u8, count: s64} and are NOT
-// NUL-terminated (ADR-0004), which is exactly the shape `write` wants: a pointer
-// and a length. No conversion, no temporary storage, no `to_c_string`.
+/// POSIX write(2): writes `count` bytes from `buf` to the file descriptor `fd`.
+///
+/// Jairs strings are `{data: *u8, count: s64}` and are NOT NUL-terminated (ADR-0004),
+/// which is exactly the shape `write` wants: a pointer and a length. No conversion, no
+/// temporary storage, no `to_c_string`.
 write :: (fd: s64, buf: *u8, count: s64) -> s64 #foreign libc "write";
 
-// Terminate the process. Declared here so programs have a way out that does not
-// depend on `main` returning, which the slice does not model yet.
+/// Terminates the process with `status`.
+///
+/// Declared here so programs have a way out that does not depend on `main` returning,
+/// which the slice does not model yet.
 exit :: (status: s64) #foreign libc "exit";
 
+/// The standard output file descriptor.
 STDOUT :: 1;
+/// The standard error file descriptor.
 STDERR :: 2;
 
-// Write a string to standard output.
+/// Writes a string to standard output.
 print :: (s: string) {
     write(STDOUT, s.data, s.count);
 }
 
-// Write a string to standard error.
+/// Writes a string to standard error.
 print_error :: (s: string) {
     write(STDERR, s.data, s.count);
 }
 
-// Write a string followed by a newline.
+/// Writes a string followed by a newline.
 print_line :: (s: string) {
     print(s);
     print("\n");
