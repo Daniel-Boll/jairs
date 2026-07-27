@@ -18,13 +18,18 @@
 //!
 //! - **Layout.** Nothing here knows a size, an alignment or a byte offset. A
 //!   field access is a [`Projection::Field`] carrying an *index*. ADR-0017 §5
-//!   puts layout in `jr-codegen-clif`, where the target ABI lives, because the VM
-//!   and Cranelift must agree on it exactly and the way to guarantee that is one
-//!   shared computation rather than two.
+//!   deferred layout so that the VM and Cranelift could not disagree about it, and
+//!   ADR-0018 §2 settles it in `jr-pool`, where its inputs already live.
 //! - **Diagnostics.** This crate raises none, and defines no diagnostic code;
 //!   E0227 is the first free code and belongs to whichever pass claims it.
 //!   Lowering *records* the two findings `jr-sema` deferred — see [`Facts`] — and
 //!   leaves the reporting to the pass that owns the wording.
+//! - **Evaluate anything.** A constant's value and a `#run`'s result are handed in
+//!   as [`ConstValues`], computed by `jr-db` from the VM (ADR-0018 §3), because a
+//!   second evaluator is exactly what §3.1's invariant forbids.
+//! - **Resolve an imported name.** A cross-file callee is handed in as
+//!   [`ImportedProcs`] (ADR-0018 §5), so that resolving one never makes this file's
+//!   analysis depend on another file's.
 //! - **The mid-end.** The inliner, DCE and const-prop are a later wave. There is
 //!   no `mem2reg` and there never will be: Braun's construction means there is
 //!   nothing for it to do.
@@ -42,15 +47,19 @@ mod cfg;
 mod code;
 mod dump;
 mod escape;
+mod inputs;
 mod mir;
 mod ssa;
+mod thunk;
 mod verify;
 
 pub use build::{lower_body, lower_file};
 pub use cfg::{body_diagnostics, file_diagnostics};
 pub use dump::{dump_body, dump_body_spans, dump_file};
+pub use inputs::{ConstValues, ImportedProcs};
 pub use mir::{
     BinOp, BlockData, BlockId, Callee, Facts, FileMir, MirBody, MirSpan, Operand, Place, PlaceBase,
-    Poisoned, Projection, Rvalue, SlotData, SlotId, Statement, Target, Terminator, UnOp,
+    Poisoned, ProcRef, Projection, Rvalue, SlotData, SlotId, Statement, Target, Terminator, UnOp,
     UndefinedRead, Unreachable, ValueData, ValueId,
 };
+pub use thunk::{lower_const, thunk_ref};

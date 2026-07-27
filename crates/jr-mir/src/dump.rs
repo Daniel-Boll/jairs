@@ -37,14 +37,14 @@
 //! it on demand; it is not part of what a dump is asserting. [`dump_body_spans`]
 //! exists for the debugging case where it is exactly what you want.
 
-use jr_base::Interner;
+use jr_base::{FileId, Interner};
 use jr_hir::{ConstValue, FileHir, ItemKind, ProcId};
 use jr_pool::{Item, Pool, PoolId};
 use jr_sema::FileSignatures;
 
 use crate::mir::{
     BinOp, BlockId, Callee, FileMir, MirBody, MirSpan, Operand, Place, PlaceBase, Poisoned,
-    Projection, Rvalue, SlotId, Statement, Target, Terminator, UnOp, Unreachable, ValueId,
+    ProcRef, Projection, Rvalue, SlotId, Statement, Target, Terminator, UnOp, Unreachable, ValueId,
 };
 
 // ---------------------------------------------------------------------------
@@ -61,6 +61,7 @@ pub fn dump_body(body: &MirBody, pool: &Pool, signatures: &FileSignatures) -> St
         out: &mut out,
         indent: 0,
         spans: false,
+        home: None,
     }
     .body(body, None);
     out
@@ -79,6 +80,7 @@ pub fn dump_body_spans(body: &MirBody, pool: &Pool, signatures: &FileSignatures)
         out: &mut out,
         indent: 0,
         spans: true,
+        home: None,
     }
     .body(body, None);
     out
@@ -104,6 +106,7 @@ pub fn dump_file(
         out: &mut out,
         indent: 0,
         spans: false,
+        home: None,
     };
     for (proc, outcome) in file.iter() {
         let name = proc_name(hir, interner, proc);
@@ -149,6 +152,9 @@ struct Dumper<'a> {
     out: &'a mut String,
     indent: usize,
     spans: bool,
+    /// The file the body being dumped belongs to, so that [`Dumper::proc_ref`] can
+    /// tell a local call from a cross-file one. `None` until a body starts.
+    home: Option<FileId>,
 }
 
 impl Dumper<'_> {
@@ -177,11 +183,12 @@ impl Dumper<'_> {
     }
 
     fn body(&mut self, body: &MirBody, name: Option<&str>) {
+        self.home = Some(body.file());
         let header = match name {
             Some(name) => format!("proc {name} -> {} {{", self.ty(body.ret())),
             None => format!(
                 "proc <{}> -> {} {{",
-                body.proc().index(),
+                body.proc().proc.index(),
                 self.ty(body.ret())
             ),
         };
@@ -365,7 +372,7 @@ impl Dumper<'_> {
             Rvalue::Call { callee, args } => {
                 let args: Vec<String> = args.iter().map(|arg| self.operand(*arg)).collect();
                 let callee = match callee {
-                    Callee::Direct(proc) => format!("proc{}", proc.index()),
+                    Callee::Direct(target) => self.proc_ref(*target),
                     Callee::Indirect(operand) => format!("({})", self.operand(*operand)),
                 };
                 format!("call {callee}({})", args.join(", "))
@@ -396,6 +403,26 @@ impl Dumper<'_> {
         match operand {
             Operand::Value(value) => format!("v{}", value.index()),
             Operand::Constant(id) => self.constant(id),
+        }
+    }
+
+    /// Renders a callee, marking it when it lives in another file.
+    ///
+    /// A same-file call stays `proc3`, which keeps the common case terse and keeps
+    /// every pre-ADR-0018 dump line unchanged. A cross-file call is `extern proc3`.
+    ///
+    /// The callee's [`FileId`] is deliberately **not** printed, even though
+    /// [`ProcRef`] carries it. A `FileId` is an index assigned in database load
+    /// order, so printing one would make an unrelated new corpus file renumber
+    /// every cross-file call in the snapshot — and a snapshot whose diff is mostly
+    /// churn is a snapshot nobody reads, which is the only thing it is for. The id
+    /// is still in the IR for whoever needs it; the VM's own errors name files by
+    /// path.
+    fn proc_ref(&self, target: ProcRef) -> String {
+        if Some(target.file) == self.home {
+            format!("proc{}", target.proc.index())
+        } else {
+            format!("extern proc{}", target.proc.index())
         }
     }
 
@@ -528,7 +555,10 @@ mod tests {
     /// A diamond: `bb0` branches, both arms jump to a join block that takes the
     /// merged value as a parameter. This is the shape a phi becomes.
     fn diamond(pool: &mut Pool) -> MirBody {
-        let mut mir = MirBody::new(ProcId::from_usize(0), PoolId::S64);
+        let mut mir = MirBody::new(
+            ProcRef::new(FileId::from_usize(0), ProcId::from_usize(0)),
+            PoolId::S64,
+        );
         let one = Operand::Constant(pool.int_value(PoolId::S64, 1));
         let two = Operand::Constant(pool.int_value(PoolId::S64, 2));
 
@@ -607,7 +637,10 @@ proc <0> -> s64 {
     #[test]
     fn an_unreachable_block_is_shown_and_marked() {
         let pool = Pool::new();
-        let mut mir = MirBody::new(ProcId::from_usize(0), PoolId::VOID);
+        let mut mir = MirBody::new(
+            ProcRef::new(FileId::from_usize(0), ProcId::from_usize(0)),
+            PoolId::VOID,
+        );
         mir.set_terminator(mir.entry(), Terminator::Return(None));
         let orphan = mir.push_block();
         mir.set_terminator(orphan, Terminator::Unreachable(Unreachable::Trap));
@@ -619,7 +652,10 @@ proc <0> -> s64 {
     #[test]
     fn slots_render_with_the_local_they_stand_for() {
         let pool = Pool::new();
-        let mut mir = MirBody::new(ProcId::from_usize(0), PoolId::VOID);
+        let mut mir = MirBody::new(
+            ProcRef::new(FileId::from_usize(0), ProcId::from_usize(0)),
+            PoolId::VOID,
+        );
         mir.set_terminator(mir.entry(), Terminator::Return(None));
         let slot = mir.push_slot(
             PoolId::S64,
@@ -640,7 +676,10 @@ proc <0> -> s64 {
     fn a_place_renders_its_projections_in_order() {
         let mut pool = Pool::new();
         let ptr = pool.pointer_to(PoolId::S64);
-        let mut mir = MirBody::new(ProcId::from_usize(0), PoolId::VOID);
+        let mut mir = MirBody::new(
+            ProcRef::new(FileId::from_usize(0), ProcId::from_usize(0)),
+            PoolId::VOID,
+        );
         mir.set_terminator(mir.entry(), Terminator::Return(None));
         let value = mir.push_value(ptr, MirSpan::Synthetic);
         let place = Place::deref(Operand::Value(value))
@@ -665,7 +704,10 @@ proc <0> -> s64 {
     #[test]
     fn recorded_facts_render_so_a_snapshot_pins_them() {
         let pool = Pool::new();
-        let mut mir = MirBody::new(ProcId::from_usize(0), PoolId::VOID);
+        let mut mir = MirBody::new(
+            ProcRef::new(FileId::from_usize(0), ProcId::from_usize(0)),
+            PoolId::VOID,
+        );
         mir.set_terminator(mir.entry(), Terminator::Return(None));
         mir.set_facts(Facts {
             undefined_reads: vec![UndefinedRead {

@@ -11,3 +11,15 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+jr-base.workspace = true
+jr-hir.workspace = true
+jr-mir.workspace = true
+jr-pool.workspace = true
+jr-sema.workspace = true
+rustc-hash.workspace = true
+libffi.workspace = true
+libloading.workspace = true
+
+[dev-dependencies]
+jr-diag.workspace = true
+jr-syntax.workspace = true

@@ -16,21 +16,27 @@
 //! reads the change. Sorting is what makes it deterministic; `FileMir` is already
 //! a `Vec` in `ProcId` order for the same reason.
 //!
-//! # Why some bodies are refused, and why that is the point
+//! # Why nothing in the valid corpus is refused any more
 //!
-//! ADR-0017 §4 makes refusing a body a *feature*, so the snapshot records
-//! refusals as `poisoned: <reason>` lines. Two reasons appear legitimately in the
-//! valid corpus and neither is a defect:
+//! ADR-0017 §4 makes refusing a body a *feature*, and for one wave three refusals
+//! stood in the valid corpus, each waiting on something that had not landed:
 //!
-//! - `#run has no value until jr-vm` — ADR-0016 §4 gives `#run e` a type and no
-//!   value. `024-hello.jr` and `020-run-directive.jr` use it.
+//! - `#run has no value until jr-vm` — ADR-0016 §4 gave `#run e` a type and no value.
 //! - `a file-level item has no value until jr-vm` — `jr-sema` records a constant's
-//!   type but never its value, because computing one needs an evaluator and the VM
-//!   is the only evaluator there will be.
+//!   type but never its value.
+//! - `a cross-file call needs the callee's signatures` — `Callee::Direct` named a
+//!   bare `ProcId`, which indexes one file's procedures.
 //!
-//! Both disappear when `jr-vm` lands, at which point this snapshot changes and the
-//! diff *is* the proof that it worked. That is a better test than asserting the
-//! refusals do not happen.
+//! All three are gone. ADR-0018 §3 evaluates constants in `file_consts`, and §5
+//! widened the callee to a `ProcRef`. So the assertion here is now the strong one —
+//! **no body in the valid corpus is refused at all** — and the snapshot diff that
+//! deleted the three `poisoned:` lines is the evidence the VM works. That is a better
+//! test than enumerating reasons, because a new refusal is now a failure rather than
+//! an entry to add to a list.
+//!
+//! A refusal is still expected in general, and the machinery for one still exists;
+//! `crates/jr-mir/tests/lowering.rs` is where the refusals are asserted positively,
+//! on programs written to provoke them.
 
 use std::path::{Path, PathBuf};
 
@@ -132,25 +138,14 @@ fn no_valid_corpus_file_is_gated_by_its_own_diagnostics() {
 }
 
 #[test]
-fn every_refusal_in_the_valid_corpus_has_a_known_reason() {
-    // Refusing is a feature (ADR-0017 §4), but refusing for a *new* reason is a
-    // regression worth noticing, so the reasons are enumerated rather than merely
-    // snapshotted. All three are features that have not landed yet — none is a
-    // defect, and each disappears when its feature does.
-    const EXPECTED: [&str; 3] = [
-        // ADR-0016 §4: `#run e` has the type of `e` and no value until `jr-vm`.
-        "#run has no value until jr-vm (ADR-0016 §4)",
-        // `jr-sema` records a constant's type but never its value, because
-        // computing one needs an evaluator and the VM is the only one there will be.
-        "a file-level item has no value until jr-vm",
-        // `Callee::Direct` names a `ProcId`, which indexes *this* file's procs.
-        // Resolving an imported one needs the callee's signatures, which this
-        // query is not given; cross-file reads arrive with the inliner (ADR-0017 §3).
-        "a cross-file call needs the callee's signatures",
-    ];
-
+fn no_body_in_the_valid_corpus_is_refused() {
+    // The proof `jr-vm` works. Until ADR-0018 landed, three bodies here were refused
+    // — a `#run` with no value, a constant with no value, and a cross-file call with
+    // no representable callee. Const evaluation and the widened `Callee::Direct`
+    // removed all three, so this asserts the absence rather than enumerating reasons:
+    // a new refusal is now a test failure, not a list to extend.
     let (mut db, search) = database();
-    let mut unexpected = Vec::new();
+    let mut refused = Vec::new();
     let mut lowered = 0usize;
 
     for (name, text) in sorted_files(&corpus("corpus/valid")) {
@@ -161,23 +156,56 @@ fn every_refusal_in_the_valid_corpus_has_a_known_reason() {
             match outcome {
                 Ok(_) => lowered += 1,
                 Err(jr_mir::Poisoned::Here(reason)) => {
-                    if !EXPECTED.contains(reason) {
-                        unexpected.push(format!("{name}: proc {}: {reason}", proc.index()));
-                    }
+                    refused.push(format!("{name}: proc {}: {reason}", proc.index()));
                 }
                 Err(jr_mir::Poisoned::Transitive(_)) => {
-                    unexpected.push(format!("{name}: proc {}: transitive", proc.index()));
+                    refused.push(format!("{name}: proc {}: transitive", proc.index()));
                 }
             }
         }
     }
 
     assert!(
-        unexpected.is_empty(),
-        "unexpected refusals:\n{}",
-        unexpected.join("\n")
+        refused.is_empty(),
+        "every body in the valid corpus must lower:\n{}",
+        refused.join("\n")
     );
     assert!(lowered > 0, "the valid corpus must lower at least one body");
+}
+
+#[test]
+fn the_slice_exit_criterion_lowers_completely() {
+    // `024-hello.jr` is `PLAN.md` §1.4's exit criterion, and it is the one file that
+    // exercises everything at once: a folded `#run`, a folded string constant, a
+    // struct through a slot, a cross-file call into `modules/Basic`, a loop with a
+    // block parameter, and a pointer. Naming it separately means a regression says
+    // which file rather than which procedure index.
+    let (mut db, search) = database();
+    let text = std::fs::read_to_string(corpus("corpus/valid/024-hello.jr"))
+        .expect("the exit criterion must exist");
+    let file = add_file(&mut db, "024-hello.jr", &text);
+    db.load_modules_transitively(file);
+
+    let result = file_mir(&db, file, search);
+    assert!(!result.gated, "024-hello.jr must check cleanly");
+    for (proc, outcome) in result.mir.iter() {
+        assert!(
+            outcome.is_ok(),
+            "proc {} was refused: {outcome:?}",
+            proc.index()
+        );
+    }
+
+    // The two constants must have folded, or `main` would not have lowered at all.
+    let dump = dump_mir(&db, file, search);
+    assert!(
+        dump.contains("hello from Jairs"),
+        "MESSAGE must fold to its string:\n{dump}"
+    );
+    assert!(
+        dump.contains("extern proc"),
+        "print must resolve to a cross-file callee:\n{dump}"
+    );
 }
 
 #[test]
@@ -200,4 +228,32 @@ fn the_imports_corpus_lowers_too() {
         gated.is_empty(),
         "these import corpus files have errors: {gated:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The standard library
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_basic_module_lowers_to_stable_mir() {
+    // `modules/Basic` is not in `tests/corpus/valid/`, and `file_mir` is per file, so
+    // until now the stdlib's own bodies never appeared in any snapshot — they were only
+    // ever *called* from a file that was under analysis.
+    //
+    // That gap hid a real silent miscompile for a wave: `print :: (s: string) { write(
+    // STDOUT, s.data, s.count); }` lowered both fields to `Rvalue::Undef`, because a
+    // field of an aggregate *parameter* had no place, and the verifier had no objection
+    // because `Undef` is a well-typed value. `write` would have been handed a garbage
+    // pointer. Snapshotting the module is what makes that visible next time.
+    let (mut db, search) = database();
+    let path = corpus("../modules/Basic/module.jr");
+    let text = std::fs::read_to_string(&path).expect("the Basic module must exist");
+    let file = add_file(&mut db, "modules/Basic/module.jr", &text);
+    db.load_modules_transitively(file);
+
+    assert!(
+        !file_mir(&db, file, search).gated,
+        "the standard library must check cleanly"
+    );
+    insta::assert_snapshot!("basic_module_mir", dump_mir(&db, file, search));
 }

@@ -85,6 +85,13 @@ pub enum Command {
     /// Use `--stdin` for editor integration (reads stdin, writes stdout).
     Fmt(FmtArgs),
 
+    /// Run a `.jr` program in the bytecode VM.
+    ///
+    /// Checks the file first and refuses to run one with errors (ADR-0017 §4), then
+    /// calls its `main`. Exits 0 on completion, 1 if the file has errors, 4 if the
+    /// program trapped, or with the program's own status if it called `exit`.
+    Run(RunArgs),
+
     /// Debug aid: parse a single file and display its structure.
     ///
     /// Without flags, prints a summary (token count, node count, diagnostic
@@ -99,6 +106,19 @@ pub struct CheckArgs {
     /// Files or directories to check (directories expand to `**/*.jr`).
     #[arg(required = true, value_name = "PATH")]
     pub paths: Vec<std::path::PathBuf>,
+
+    /// Directory to search for imported modules. May be repeated; searched in
+    /// the order given, before the bundled module directory (ADR-0014).
+    #[arg(short = 'I', long = "module-path", value_name = "DIR")]
+    pub module_paths: Vec<std::path::PathBuf>,
+}
+
+/// Arguments for `jr run`.
+#[derive(Debug, Args)]
+pub struct RunArgs {
+    /// The program to run. Must declare `main`.
+    #[arg(value_name = "PATH")]
+    pub path: std::path::PathBuf,
 
     /// Directory to search for imported modules. May be repeated; searched in
     /// the order given, before the bundled module directory (ADR-0014).

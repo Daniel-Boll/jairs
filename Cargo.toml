@@ -71,6 +71,11 @@ target-lexicon = "0.13"
 
 # --- comptime FFI (see ADR-0006) -------------------------------------------
 libffi = "4"
+# Portable `dlopen`/`dlsym`. libffi performs dynamic *calls*; it does not do symbol
+# *lookup*, and `RTLD_DEFAULT` is a null handle on glibc but `-2` on Darwin, so
+# hand-transcribing the platform constants into a compiler is a footgun with no
+# upside (ADR-0018 §4).
+libloading = "0.8"
 
 # --- LSP (see ADR-0008) ----------------------------------------------------
 lsp-server = "0.10.0"

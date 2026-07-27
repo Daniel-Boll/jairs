@@ -11,25 +11,31 @@
 //! # Refusing rather than guessing
 //!
 //! [`lower_body`] returns `Err` before it builds anything, for a body it cannot
-//! lower *honestly*. The list is in [`scan`], and three of its entries are worth
-//! arguing here because they refuse programs that are perfectly legal Jairs:
+//! lower *honestly*. The list is in [`scan`], and three of its entries used to
+//! refuse programs that are perfectly legal Jairs. ADR-0018 supplied what each was
+//! missing, so each is now a *fallback* — taken only when the corresponding input
+//! map is empty — rather than an unconditional refusal:
 //!
-//! - **`#run`.** ADR-0016 §4 gives `#run e` the type of `e` and **no value** until
-//!   `jr-vm` exists. The tempting lowering — treat it as an ordinary runtime `e` —
-//!   is precisely the failure `PLAN.md` §3.1's invariant exists to prevent: it
-//!   would make compile-time and runtime evaluation silently disagree. Refusing
-//!   says "not yet"; lowering it would say something false.
+//! - **`#run`.** ADR-0016 §4 gave `#run e` the type of `e` and no value, because
+//!   the tempting lowering — treat it as an ordinary runtime `e` — is precisely the
+//!   failure `PLAN.md` §3.1's invariant exists to prevent: it would make
+//!   compile-time and runtime evaluation silently disagree. ADR-0018 §3 evaluates
+//!   it in a `jr-db` query instead and passes the answer in, so a `#run` with a
+//!   value lowers to that value and one without is still refused.
 //! - **A reference to a file-level constant.** `jr-sema` records a constant's
-//!   *type* but never its *value*, because computing one needs an evaluator and
-//!   the VM is the only evaluator there will ever be (ADR-0016 §4). So
-//!   `MESSAGE :: "hi";` followed by `print(MESSAGE)` has nothing for MIR to emit.
-//! - **A call to an imported procedure.** [`Callee::Direct`] names a [`ProcId`],
-//!   which is an index into *this file's* `FileHir::procs`. Resolving
-//!   `Res::Imported` to a procedure needs the imported file's signatures, which
-//!   this function is not given — deliberately, because ADR-0016 §5 keeps one
-//!   file's analysis off another file's analysis to stop import cycles
-//!   diverging. Cross-file calls arrive with the inliner, which is the first pass
-//!   that has a reason to read another body at all.
+//!   *type* but never its *value*. Same fix, same map: `MESSAGE :: "hi";` followed
+//!   by `print(MESSAGE)` now emits the interned string.
+//! - **A call to an imported procedure.** [`Callee::Direct`] used to name a bare
+//!   [`ProcId`], an index into *this file's* `FileHir::procs`, so `Res::Imported`
+//!   had nothing to lower to. ADR-0018 §5 widens it to a [`ProcRef`] and has
+//!   `jr-db` resolve the name from the other file's *signatures* — never its body,
+//!   which is what keeps ADR-0017 §3's rule that the built-MIR query has no
+//!   cross-body dependencies intact, and ADR-0016 §5's rule that one file's
+//!   analysis never triggers another's full check.
+//!
+//! What remains unconditionally refused is an imported *constant*: its value would
+//! have to come from another file's const evaluation, which is the cross-body read
+//! ADR-0017 §3 keeps out. Nothing in the corpus needs one.
 //!
 //! Every refusal is silent. The body is refused because an earlier phase already
 //! reported the cause, or because the feature has not landed; either way a second
@@ -83,9 +89,10 @@ use jr_sema::{FileSignatures, TypeMap};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::escape::{self, Promotable};
+use crate::inputs::{ConstValues, ImportedProcs};
 use crate::mir::{
-    BinOp, BlockId, Callee, Facts, FileMir, MirBody, MirSpan, Operand, Place, Poisoned, Projection,
-    Rvalue, SlotId, Statement, Target, Terminator, UnOp, Unreachable,
+    BinOp, BlockId, Callee, Facts, FileMir, MirBody, MirSpan, Operand, Place, Poisoned, ProcRef,
+    Projection, Rvalue, SlotId, Statement, Target, Terminator, UnOp, Unreachable,
 };
 use crate::ssa::SsaBuilder;
 use crate::verify;
@@ -98,12 +105,19 @@ use crate::verify;
 ///
 /// Bodies are pushed in ascending [`ProcId`] order, so the result — and therefore
 /// a dump of it — is deterministic without anything having to sort.
+///
+/// `consts` and `imports` are what ADR-0018 §3 and §5 added: the values `jr-sema`
+/// could not compute and the cross-file callees it deliberately did not resolve.
+/// Both may be empty, in which case lowering behaves exactly as ADR-0017 shipped
+/// and refuses whatever needed them.
 #[must_use]
 pub fn lower_file(
     hir: &FileHir,
     resolve: &ResolveMap,
     types: &TypeMap,
     signatures: &FileSignatures,
+    consts: &ConstValues,
+    imports: &ImportedProcs,
     interner: &Interner,
     pool: &mut Pool,
 ) -> FileMir {
@@ -114,7 +128,9 @@ pub fn lower_file(
             // A `#foreign` procedure has no body to lower, and is not a failure.
             continue;
         }
-        let lowered = lower_body(hir, proc, resolve, types, signatures, interner, pool);
+        let lowered = lower_body(
+            hir, proc, resolve, types, signatures, consts, imports, interner, pool,
+        );
         out.push(proc, lowered);
     }
     out
@@ -131,6 +147,8 @@ pub fn lower_body(
     resolve: &ResolveMap,
     types: &TypeMap,
     signatures: &FileSignatures,
+    consts: &ConstValues,
+    imports: &ImportedProcs,
     interner: &Interner,
     pool: &mut Pool,
 ) -> Result<MirBody, Poisoned> {
@@ -157,7 +175,9 @@ pub fn lower_body(
     }
 
     let reach = Reach::of(body);
-    if let Some(reason) = scan(hir, body, body_id, &reach, resolve, types, signatures) {
+    if let Some(reason) = scan(
+        hir, body, body_id, &reach, resolve, types, signatures, consts, imports,
+    ) {
         return Err(Poisoned::Here(reason));
     }
 
@@ -173,16 +193,20 @@ pub fn lower_body(
         file,
         resolve,
         types,
+        consts,
+        imports,
         interner,
         pool,
-        mir: MirBody::new(proc, ret),
+        mir: MirBody::new(ProcRef::new(file, proc), ret),
         ssa: SsaBuilder::new(),
         promotable,
         slots: FxHashMap::default(),
         params: FxHashMap::default(),
+        param_slots: FxHashMap::default(),
         current: None,
         loops: Vec::new(),
         stray: Vec::new(),
+        failed: None,
         ret,
     };
     lower.run(proc, &params, body.root);
@@ -347,6 +371,8 @@ fn scan(
     resolve: &ResolveMap,
     types: &TypeMap,
     signatures: &FileSignatures,
+    consts: &ConstValues,
+    imports: &ImportedProcs,
 ) -> Option<&'static str> {
     let scope = ExprScope::Body(body_id);
 
@@ -382,7 +408,14 @@ fn scan(
         }
         match body.expr(*id) {
             Expr::Error(_) => return Some("the body contains recovered syntax"),
-            Expr::Run(_, _) => return Some("#run has no value until jr-vm (ADR-0016 §4)"),
+            // ADR-0018 §3: a `#run` lowers exactly when the const query has
+            // already evaluated it. Without a value there is still nothing
+            // honest to emit, so the ADR-0017 refusal survives as the fallback.
+            Expr::Run(_, _) => {
+                if consts.run(scope, *id).is_none() {
+                    return Some("#run has no value until jr-vm (ADR-0016 §4)");
+                }
+            }
             Expr::Directive { .. } => return Some("a directive has no runtime value"),
             Expr::Name {
                 name: _,
@@ -390,7 +423,7 @@ fn scan(
                 res,
             } => {
                 let res = resolve.get(scope, *id).unwrap_or(*res);
-                if let Some(reason) = scan_name(hir, signatures, reach, *id, res) {
+                if let Some(reason) = scan_name(hir, signatures, reach, consts, imports, *id, res) {
                     return Some(reason);
                 }
             }
@@ -412,16 +445,29 @@ fn scan_name(
     hir: &FileHir,
     signatures: &FileSignatures,
     reach: &Reach,
+    consts: &ConstValues,
+    imports: &ImportedProcs,
     id: ExprId,
     res: Res,
 ) -> Option<&'static str> {
     match res {
         Res::Local(_) | Res::Param(_) => None,
         Res::Error => Some("a name failed to resolve"),
-        Res::Imported(_, _) => {
+        Res::Imported(import, name) => {
             if reach.callees.contains(&id) {
-                Some("a cross-file call needs the callee's signatures")
+                // ADR-0018 §5 made this representable: `Callee::Direct` carries a
+                // `ProcRef`, and `jr-db` resolved the name to one from the other
+                // file's signatures. Without that resolution the ADR-0017 refusal
+                // still stands.
+                if imports.get(import, name).is_some() {
+                    None
+                } else {
+                    Some("a cross-file call needs the callee's signatures")
+                }
             } else {
+                // An imported *constant*'s value would have to come from the other
+                // file's const evaluation, which is the cross-body read ADR-0017 §3
+                // keeps out of this query. Nothing in the corpus needs it.
                 Some("an imported name has no value until jr-vm")
             }
         }
@@ -443,6 +489,10 @@ fn scan_name(
                 } else {
                     Some("a call to something that is not a procedure")
                 }
+            } else if consts.item(item).is_some() {
+                // ADR-0018 §3: the const query evaluated it, so there is a value
+                // to emit.
+                None
             } else {
                 let _ = signatures;
                 Some("a file-level item has no value until jr-vm")
@@ -470,6 +520,8 @@ struct Lower<'a> {
     file: FileId,
     resolve: &'a ResolveMap,
     types: &'a TypeMap,
+    consts: &'a ConstValues,
+    imports: &'a ImportedProcs,
     interner: &'a Interner,
     pool: &'a mut Pool,
     mir: MirBody,
@@ -477,6 +529,12 @@ struct Lower<'a> {
     promotable: Promotable,
     slots: FxHashMap<LocalId, SlotId>,
     params: FxHashMap<ParamId, Operand>,
+    /// The spill slot of each aggregate parameter, so a field of one has a place.
+    ///
+    /// Only parameters whose type is not register-representable appear here; a
+    /// scalar parameter stays purely in a register, and asking for its address is
+    /// not expressible in Jairs-0 anyway.
+    param_slots: FxHashMap<ParamId, SlotId>,
     /// The block being filled, or `None` once control cannot reach further.
     ///
     /// `None` rather than a "terminated" flag on a block, because a statement
@@ -488,6 +546,21 @@ struct Lower<'a> {
     current: Option<BlockId>,
     loops: Vec<LoopFrame>,
     stray: Vec<MirSpan>,
+    /// Why lowering gave up partway through, if it did.
+    ///
+    /// [`scan`] refuses what it can see *before* lowering starts, but some failures
+    /// are only discoverable while building — a memory reference whose place cannot
+    /// be formed is the one that exists. Recording it here and failing in
+    /// [`Lower::finish`] is what turns such a case into a refusal instead of an
+    /// `Rvalue::Undef` that reads as a legitimate uninitialised value.
+    ///
+    /// This exists because the alternative already shipped a bug: a field of an
+    /// aggregate *parameter* had no place, lowering emitted `Undef`, the verifier
+    /// had no objection because `Undef` is well-typed, and `modules/Basic`'s `print`
+    /// quietly passed a garbage pointer to `write`. ADR-0017 §4's discipline is that
+    /// a body that cannot be lowered honestly is refused; this is the channel that
+    /// makes it true for failures found mid-build.
+    failed: Option<&'static str>,
     ret: PoolId,
 }
 
@@ -562,6 +635,27 @@ impl Lower<'_> {
             param_values.push(value);
             self.params
                 .insert(ParamId::from_usize(index), Operand::Value(value));
+
+            // An aggregate parameter needs an address, because the only way to read
+            // a field is to project a `Place` and a block parameter is a register.
+            // `print :: (s: string) { write(STDOUT, s.data, s.count); }` is the case
+            // that matters: without this, `s.data` had no place, and lowering
+            // silently produced `Rvalue::Undef` — a `write` from a garbage pointer,
+            // with no diagnostic anywhere. So spill it once at entry and project the
+            // slot thereafter.
+            //
+            // This is `escape.rs`'s memory-first default applied to parameters,
+            // which it does not classify: `MirBody::params` documents that
+            // parameters are *not* locals, so `Promotable` has no entry for one.
+            if !escape::is_register_representable(self.pool, *ty) {
+                let slot = self.mir.push_slot(*ty, None, span);
+                self.param_slots.insert(ParamId::from_usize(index), slot);
+                self.emit(Statement::Store {
+                    place: Place::slot(slot),
+                    value: Operand::Value(value),
+                    span,
+                });
+            }
         }
         self.mir.set_params(param_values);
 
@@ -588,15 +682,29 @@ impl Lower<'_> {
             mut mir,
             ssa,
             stray,
+            failed,
             pool,
             ..
         } = self;
+        if let Some(reason) = failed {
+            return Err(Poisoned::Here(reason));
+        }
         mir.set_facts(Facts {
             undefined_reads: ssa.into_undefined_reads(),
             stray_jumps: stray,
         });
         verify::assert_valid(&mir, pool);
         Ok(mir)
+    }
+
+    /// Records that lowering cannot continue honestly.
+    ///
+    /// Keeps the first reason: the later ones are usually consequences of it, and a
+    /// refusal reason is a snapshot key that should be stable.
+    fn give_up(&mut self, reason: &'static str) {
+        if self.failed.is_none() {
+            self.failed = Some(reason);
+        }
     }
 
     fn emit(&mut self, stmt: Statement) {
@@ -1008,20 +1116,35 @@ impl Lower<'_> {
                 span: _,
             } => match self.call_rvalue(callee, &args) {
                 Some(rvalue) => self.define(ty, rvalue, span),
-                None => self.define(ty, Rvalue::Undef, span),
+                None => {
+                    self.give_up("a call has no resolvable callee");
+                    self.define(ty, Rvalue::Undef, span)
+                }
             },
             Expr::Field { .. } | Expr::Deref(_, _) => match self.place(id) {
                 Some((place, _)) => self.define(ty, Rvalue::Load(place), span),
-                None => self.define(ty, Rvalue::Undef, span),
+                None => {
+                    // Never `Undef`: that would read as a legitimate uninitialised
+                    // value and pass the verifier, which is how a field of an
+                    // aggregate parameter once became a garbage pointer handed to
+                    // `write`. Refuse instead.
+                    self.give_up("a memory reference has no place");
+                    self.define(ty, Rvalue::Undef, span)
+                }
             },
             // `---` names no value at all. The `Undef` definition exists so the IR
             // stays well-formed; reading it is what the definite-assignment
             // diagnostic reports.
             Expr::Uninit(_) => self.define(ty, Rvalue::Undef, span),
-            // All three are refused by `scan` before lowering starts.
-            Expr::Run(_, _) | Expr::Directive { .. } | Expr::Error(_) => {
-                self.define(ty, Rvalue::Undef, span)
-            }
+            // A `#run` the const query evaluated is indistinguishable from a
+            // literal, which is exactly what ADR-0016 §4 promised folding would
+            // buy. Without a value `scan` already refused the body.
+            Expr::Run(_, _) => match self.consts.run(self.scope(), id) {
+                Some(value) => Operand::Constant(value),
+                None => self.define(ty, Rvalue::Undef, span),
+            },
+            // Both are refused by `scan` before lowering starts.
+            Expr::Directive { .. } | Expr::Error(_) => self.define(ty, Rvalue::Undef, span),
         }
     }
 
@@ -1061,8 +1184,13 @@ impl Lower<'_> {
                 .get(&param)
                 .copied()
                 .unwrap_or(Operand::Constant(PoolId::VOID_VALUE)),
-            // `scan` refuses every one of these before lowering begins.
-            Res::Item(_) | Res::Imported(_, _) | Res::Error => self.define(ty, Rvalue::Undef, span),
+            // A file-level constant the const query evaluated is a constant
+            // operand (ADR-0018 §3). Everything else here `scan` already refused.
+            Res::Item(item) => match self.consts.item(item) {
+                Some(value) => Operand::Constant(value),
+                None => self.define(ty, Rvalue::Undef, span),
+            },
+            Res::Imported(_, _) | Res::Error => self.define(ty, Rvalue::Undef, span),
         }
     }
 
@@ -1213,16 +1341,21 @@ impl Lower<'_> {
 
     /// Builds a call rvalue, or `None` if the callee is not one this wave lowers.
     fn call_rvalue(&mut self, callee: ExprId, args: &[ExprId]) -> Option<Rvalue> {
-        let proc = self.direct_callee(callee)?;
+        let target = self.direct_callee(callee)?;
         let operands: Vec<Operand> = args.iter().map(|arg| self.expr(*arg)).collect();
         Some(Rvalue::Call {
-            callee: Callee::Direct(proc),
+            callee: Callee::Direct(target),
             args: operands,
         })
     }
 
-    /// The procedure a callee expression names, when it names one in this file.
-    fn direct_callee(&self, callee: ExprId) -> Option<ProcId> {
+    /// The procedure a callee expression names.
+    ///
+    /// Handles both a procedure declared in this file and, since ADR-0018 §5, one
+    /// reached through an `#import` — the latter resolved by `jr-db` from the other
+    /// file's signatures rather than looked up here, because ADR-0016 §5 keeps one
+    /// file's analysis off another's.
+    fn direct_callee(&self, callee: ExprId) -> Option<ProcRef> {
         if callee.index() >= self.body.exprs.len() {
             return None;
         }
@@ -1235,16 +1368,19 @@ impl Lower<'_> {
             return None;
         };
         let res = self.resolve.get(self.scope(), callee).unwrap_or(*res);
-        let Res::Item(item) = res else {
-            return None;
-        };
-        let ItemKind::Const {
-            value: ConstValue::Proc(proc),
-        } = &self.hir.items.get(item.index())?.kind
-        else {
-            return None;
-        };
-        Some(*proc)
+        match res {
+            Res::Item(item) => {
+                let ItemKind::Const {
+                    value: ConstValue::Proc(proc),
+                } = &self.hir.items.get(item.index())?.kind
+                else {
+                    return None;
+                };
+                Some(ProcRef::new(self.file, *proc))
+            }
+            Res::Imported(import, name) => self.imports.get(import, name),
+            Res::Local(_) | Res::Param(_) | Res::Error => None,
+        }
     }
 
     // -------------------------------------------------------------------
@@ -1283,20 +1419,29 @@ impl Lower<'_> {
                 res,
             } => {
                 let res = self.resolve.get(self.scope(), expr).unwrap_or(res);
-                let Res::Local(local) = res else {
-                    return None;
-                };
-                if self.promotable.is_promotable(local) {
-                    // A register-held local has no address. That is exactly what
-                    // `escape.rs` guarantees by refusing to promote anything whose
-                    // address is taken, so reaching here means the caller wanted a
-                    // value and should have asked for one.
-                    return None;
+                match res {
+                    Res::Local(local) => {
+                        if self.promotable.is_promotable(local) {
+                            // A register-held local has no address. That is exactly
+                            // what `escape.rs` guarantees by refusing to promote
+                            // anything whose address is taken, so reaching here means
+                            // the caller wanted a value and should have asked for one.
+                            return None;
+                        }
+                        let ty = self.local_ty(local);
+                        let span = MirSpan::Local(self.body_id, local);
+                        let slot = self.slot_for(local, ty, span);
+                        Some((Place::slot(slot), ty))
+                    }
+                    // An aggregate parameter was spilled at entry precisely so that
+                    // it has one. A scalar parameter has no place, and nothing in
+                    // Jairs-0 can ask for its address.
+                    Res::Param(param) => {
+                        let slot = self.param_slots.get(&param).copied()?;
+                        Some((Place::slot(slot), self.mir.slot(slot).ty))
+                    }
+                    Res::Item(_) | Res::Imported(_, _) | Res::Error => None,
                 }
-                let ty = self.local_ty(local);
-                let span = MirSpan::Local(self.body_id, local);
-                let slot = self.slot_for(local, ty, span);
-                Some((Place::slot(slot), ty))
             }
             Expr::Deref(inner, _) => {
                 let inner_ty = self.ty(inner);

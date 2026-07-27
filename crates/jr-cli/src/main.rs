@@ -21,6 +21,7 @@ fn run(cli: Cli) -> Result<i32> {
     match cli.command {
         Command::Check(args) => jr_cli::commands::check::run(args, &cli.global),
         Command::Fmt(args) => jr_cli::commands::fmt::run(args, &cli.global),
+        Command::Run(args) => jr_cli::commands::run::run(args, &cli.global),
         Command::Parse(args) => jr_cli::commands::parse::run(args, &cli.global),
     }
 }

@@ -3,9 +3,10 @@
 //! # Where this sits in the query graph
 //!
 //! ```text
-//! file_hir(file) ─┬──► file_signatures(file) ──► checked(file) ──┐
-//! resolved(file) ─┘                                             ├──► file_mir(file)
-//! frontend_diagnostics(file) ──────────────────────────────────┘
+//! file_hir(file) ─┬──► file_signatures(file) ──► checked(file) ──┬──► file_consts(file) ──┐
+//! resolved(file) ─┘                                             │                        ├──► file_mir(file)
+//! frontend_diagnostics(file) ───────────────────────────────────┴────────────────────────┘
+//! imported_procs(file) ────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! # Why the gate is here and not in `jr-mir`
@@ -43,13 +44,121 @@
 
 use std::sync::Arc;
 
-use jr_mir::FileMir;
+use jr_base::{FileId, Symbol};
+use jr_hir::{ConstValue, FileHir, ItemId, ItemKind, Res};
+use jr_mir::{FileMir, ImportedProcs};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
     Db, SourceFile,
-    module_loader::{ModuleSearchPaths, file_hir, frontend_diagnostics, resolved},
+    module_loader::{ModuleSearchPaths, file_hir, frontend_diagnostics, module_file, resolved},
     sema::checked,
 };
+
+// ---------------------------------------------------------------------------
+// imported_procs — tracked query
+// ---------------------------------------------------------------------------
+
+/// Which procedure each imported name in a file refers to (ADR-0018 §5).
+///
+/// # Why this is a query and not something `jr-mir` works out
+///
+/// `jr_mir::Callee::Direct` names a `ProcRef` — a `(FileId, ProcId)` pair — and
+/// producing one for `Res::Imported` needs the *other* file's declarations.
+/// ADR-0016 §5 keeps one file's analysis off another file's analysis, so `jr-mir`
+/// is deliberately never handed the means to look one up. This query is, because
+/// `jr-db` is where cross-file lookup already lives.
+///
+/// # Why it depends only on the other file's HIR
+///
+/// It reads `file_hir` of the imported module and nothing else — not its
+/// signatures, not its type check, and *not* its MIR. That is what keeps ADR-0017
+/// §3's rule intact: the built-MIR query has no cross-body dependencies, so
+/// editing a widely called leaf does not invalidate its callers' MIR. It is also
+/// the same shape as `file_exports`, whose docs make the argument for why reading
+/// only the other file's HIR is what stops an import cycle from diverging
+/// (ADR-0014 §4).
+///
+/// A name that resolves to something other than a procedure is simply absent from
+/// the result, and lowering refuses such a call. Distinguishing "not a procedure"
+/// from "not found" would have no consumer.
+#[salsa::tracked(returns(clone), no_eq)]
+pub fn imported_procs(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+) -> Arc<ImportedProcs> {
+    let hir = file_hir(db, file);
+    let resolve = resolved(db, file, search_paths).map;
+
+    // Every distinct imported name actually referred to, sorted so that the walk
+    // is deterministic. The map itself is order-insensitive, but a deterministic
+    // walk means a deterministic set of nested query calls.
+    let mut pairs: Vec<(ItemId, Symbol)> = resolve
+        .resolutions
+        .values()
+        .filter_map(|res| match res {
+            Res::Imported(import, name) => Some((*import, *name)),
+            Res::Local(_) | Res::Param(_) | Res::Item(_) | Res::Error => None,
+        })
+        .collect::<FxHashSet<_>>()
+        .into_iter()
+        .collect();
+    pairs.sort_unstable();
+
+    // One module lookup per `#import`, not per name: `modules/Basic` is consulted
+    // once however many of its procedures a file calls.
+    let mut modules: FxHashMap<ItemId, Option<(FileId, Arc<FileHir>)>> = FxHashMap::default();
+    let mut out = ImportedProcs::new();
+
+    for (import, name) in pairs {
+        let target = modules
+            .entry(import)
+            .or_insert_with(|| import_target(db, &hir, search_paths, import))
+            .clone();
+        let Some((other_file, other_hir)) = target else {
+            continue;
+        };
+        let Some(item) = other_hir.scope.get(name) else {
+            continue;
+        };
+        let Some(item_data) = other_hir.items.get(item.index()) else {
+            continue;
+        };
+        let ItemKind::Const {
+            value: ConstValue::Proc(proc),
+        } = &item_data.kind
+        else {
+            continue;
+        };
+        out.set_parts(import, name, other_file, *proc);
+    }
+
+    Arc::new(out)
+}
+
+/// The file an `#import` item resolves to, and its [`FileId`].
+///
+/// `None` when the module was not found, was not pre-loaded, or the item is not an
+/// import at all. Every one of those is already reported elsewhere — E0210 by
+/// `resolved` for a missing module — so this stays silent.
+fn import_target(
+    db: &dyn Db,
+    hir: &FileHir,
+    search_paths: ModuleSearchPaths,
+    import: ItemId,
+) -> Option<(FileId, Arc<FileHir>)> {
+    let ItemKind::Import { path, .. } = &hir.items.get(import.index())?.kind else {
+        return None;
+    };
+    let lookup = module_file(db, search_paths, Arc::from(path.as_str()));
+    let found = lookup.found?;
+    let module = db.source_file_for_path(found.to_string_lossy().as_ref())?;
+    Some((
+        crate::queries::resolve_file_id(db, module),
+        file_hir(db, module),
+    ))
+}
 
 // ---------------------------------------------------------------------------
 // Query output
@@ -90,6 +199,8 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
     let own_resolve = resolved(db, file, search_paths).map;
     let own = crate::sema::file_signatures(db, file, search_paths);
     let types = checked(db, file, search_paths).types;
+    let imports = imported_procs(db, file, search_paths);
+    let consts = crate::consts::file_consts(db, file, search_paths).values;
     let interner = db.interner();
 
     // Gather everything from other queries *before* locking the pool: the lock
@@ -100,6 +211,8 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
         own_resolve.as_ref(),
         types.as_ref(),
         own.signatures.as_ref(),
+        consts.as_ref(),
+        imports.as_ref(),
         interner,
         &mut pool,
     );

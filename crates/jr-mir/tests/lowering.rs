@@ -15,7 +15,11 @@
 mod harness;
 
 use harness::Program;
-use jr_mir::{Poisoned, Rvalue, Statement, Terminator};
+use jr_hir::{Expr, ExprId, ExprScope};
+use jr_mir::{
+    ConstValues, ImportedProcs, Operand, Poisoned, Rvalue, SlotId, Statement, Terminator,
+};
+use jr_pool::PoolId;
 
 // ---------------------------------------------------------------------------
 // Well-formedness
@@ -370,6 +374,212 @@ fn a_body_referring_to_a_file_level_constant_is_refused() {
     assert_eq!(
         lowered.refusal(&program.interner, "main"),
         Poisoned::Here("a file-level item has no value until jr-vm")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Aggregate parameters — the silent-miscompile regression
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_field_of_a_string_parameter_reads_through_a_spill_slot() {
+    // This is `modules/Basic`'s `print`, and it used to lower `s.data` and
+    // `s.count` to `Rvalue::Undef` with no diagnostic and no refusal: a block
+    // parameter is a register, `field_place` needs a `Place`, and a parameter had
+    // none. The verifier had no objection either, because `Undef` is a well-typed
+    // value. The result was `write` called with a garbage pointer.
+    //
+    // An aggregate parameter is now spilled to a slot at entry, so a field of one
+    // projects that slot.
+    let mut program = Program::new();
+    let lowered = program.lower_clean(
+        "sink :: (fd: s64, buf: *u8, count: s64) -> s64 { return fd; }\n\
+         print :: (s: string) { sink(1, s.data, s.count); }",
+    );
+    let body = lowered.body(&program.interner, "print");
+
+    assert_eq!(
+        body.slot_count(),
+        1,
+        "the string parameter must get exactly one spill slot"
+    );
+    assert_eq!(
+        body.slot(SlotId::from_usize(0)).local,
+        None,
+        "the spill slot stands for a parameter, not a local"
+    );
+
+    let entry = body.block(body.entry());
+    assert!(
+        matches!(
+            entry.stmts.first(),
+            Some(Statement::Store { value, .. }) if *value == Operand::Value(body.params()[0])
+        ),
+        "the parameter must be stored into its slot before anything reads it, got {:?}",
+        entry.stmts.first()
+    );
+
+    let loads: Vec<&Statement> = entry
+        .stmts
+        .iter()
+        .filter(|stmt| {
+            matches!(
+                stmt,
+                Statement::Assign {
+                    rvalue: Rvalue::Load(_),
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(
+        loads.len(),
+        2,
+        ".data and .count must each be a load from the slot, got {:?}",
+        entry.stmts
+    );
+    assert!(
+        !entry.stmts.iter().any(|stmt| matches!(
+            stmt,
+            Statement::Assign {
+                rvalue: Rvalue::Undef,
+                ..
+            }
+        )),
+        "no field read may lower to undef: {:?}",
+        entry.stmts
+    );
+}
+
+#[test]
+fn a_scalar_parameter_gets_no_spill_slot() {
+    // The spill is for aggregates only. A scalar parameter stays purely in a
+    // register, and nothing in Jairs-0 can ask for its address.
+    let mut program = Program::new();
+    let lowered = program.lower_clean("id :: (n: s64) -> s64 { return n; }");
+    let body = lowered.body(&program.interner, "id");
+    assert_eq!(body.slot_count(), 0);
+}
+
+#[test]
+fn a_memory_reference_with_no_place_is_refused_rather_than_lowered_to_undef() {
+    // The hardening that would have caught the bug above. A field of something that
+    // has no place must refuse the body, because `Undef` passes the verifier and
+    // reads as a legitimate uninitialised value.
+    let mut program = Program::new();
+    let lowered = program.lower_clean("get :: (p: *s64) -> s64 { return p.*; }\nmain :: () { }");
+    // `p.*` on a pointer parameter *does* have a place — `Place::deref` of the
+    // register — so this one lowers. The assertion that matters is that it is a
+    // load, not an undef.
+    let body = lowered.body(&program.interner, "get");
+    assert!(
+        body.blocks()
+            .iter()
+            .any(|block| block.stmts.iter().any(|stmt| matches!(
+                stmt,
+                Statement::Assign {
+                    rvalue: Rvalue::Load(_),
+                    ..
+                }
+            ))),
+        "dereferencing a pointer parameter must be a load"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The refusals ADR-0018 turned into lookups
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_file_level_constant_with_a_value_lowers_to_that_constant() {
+    // ADR-0018 §3: the value comes from `jr-db`'s const query, so a test states it
+    // rather than computing one. The point being pinned is that lowering *uses* the
+    // supplied value instead of refusing, and uses it as an `Operand::Constant` —
+    // indistinguishable from a literal, which is what ADR-0016 §4 promised.
+    let mut program = Program::new();
+    let source = "LIMIT :: 4096;\nmain :: () -> s64 { return LIMIT; }";
+
+    // Two passes over the same source: the first only to learn the `ItemId`, since
+    // the harness has no separate parse step to ask.
+    let probe = program.lower(source);
+    let item = probe
+        .item_id(&program.interner, "LIMIT")
+        .expect("LIMIT is a file-level item");
+
+    let value = program.pool.int_value(PoolId::S64, 4096);
+    let mut consts = ConstValues::new();
+    consts.set_item(item, value);
+
+    let lowered = program.lower_with(source, &consts, &ImportedProcs::new());
+    let body = lowered.body(&program.interner, "main");
+    let entry = body.block(body.entry());
+    assert_eq!(
+        entry.term,
+        Terminator::Return(Some(Operand::Constant(value))),
+        "the constant must be returned directly, not loaded or recomputed"
+    );
+    assert!(
+        entry.stmts.is_empty(),
+        "a constant needs no statement at all, got {:?}",
+        entry.stmts
+    );
+}
+
+#[test]
+fn a_run_with_a_value_lowers_to_that_constant() {
+    let mut program = Program::new();
+    let source = "add :: (a: s64, b: s64) -> s64 { return a + b; }\nmain :: () -> s64 { return #run add(1, 2); }";
+
+    // The `#run` lives in `main`'s body arena, so the key needs that scope — a bare
+    // `ExprId` would collide with the file-level arena, which starts at 0 too.
+    let probe = program.lower(source);
+    let main = probe
+        .proc_id(&program.interner, "main")
+        .expect("main exists");
+    let body_id = probe.hir.proc(main).body.expect("main has a body");
+    let scope = ExprScope::Body(body_id);
+    let run = probe
+        .hir
+        .body(body_id)
+        .exprs
+        .iter()
+        .position(|expr| matches!(expr, Expr::Run(_, _)))
+        .map(ExprId::from_usize)
+        .expect("main contains a #run");
+
+    let value = program.pool.int_value(PoolId::S64, 3);
+    let mut consts = ConstValues::new();
+    consts.set_run(scope, run, value);
+
+    let lowered = program.lower_with(source, &consts, &ImportedProcs::new());
+    let body = lowered.body(&program.interner, "main");
+    assert_eq!(
+        body.block(body.entry()).term,
+        Terminator::Return(Some(Operand::Constant(value))),
+        "a folded #run must be indistinguishable from a literal"
+    );
+}
+
+#[test]
+fn a_value_for_one_constant_does_not_excuse_another() {
+    // The map is consulted per item, so a partially-populated map must still refuse
+    // the parts it cannot answer. Otherwise a bug in the const query would surface
+    // as a body lowered from a missing value.
+    let mut program = Program::new();
+    let source = "A :: 1;\nB :: 2;\nmain :: () -> s64 { return A + B; }";
+
+    let probe = program.lower(source);
+    let a = probe.item_id(&program.interner, "A").expect("A exists");
+
+    let value = program.pool.int_value(PoolId::S64, 1);
+    let mut consts = ConstValues::new();
+    consts.set_item(a, value);
+
+    let lowered = program.lower_with(source, &consts, &ImportedProcs::new());
+    assert_eq!(
+        lowered.refusal(&program.interner, "main"),
+        Poisoned::Here("a file-level item has no value until jr-vm"),
+        "B still has no value, so the body is still refused"
     );
 }
 

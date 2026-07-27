@@ -428,7 +428,8 @@ pub fn frontend_diagnostics(
 /// Diagnostics are returned in source order (the [`Diagnostics`] sink sorts
 /// them by span).
 ///
-/// MIR contributes the three that need a control-flow graph — definite assignment,
+/// Compile-time evaluation contributes E0230, and MIR the three that need a
+/// control-flow graph — definite assignment,
 /// missing `return`, and a `break` outside a loop (E0227–E0229). They are absent
 /// when [`crate::file_mir`] gated the file, which is correct: a file with a real
 /// error should not also be told that a body it could not analyse might not return.
@@ -442,6 +443,13 @@ pub fn file_diagnostics(
 ) -> Arc<Diagnostics> {
     let mut all = Diagnostics::new();
     all.extend(frontend_diagnostics(db, file, search_paths).iter().cloned());
+
+    // E0230: a `#run` or a constant that could not be evaluated. Reported here rather
+    // than in `frontend_diagnostics` because MIR's gate reads that query, and a
+    // constant with no value is precisely a thing MIR must still be asked to lower —
+    // it refuses the bodies that needed the value, which is the correct outcome.
+    let consts = crate::consts::file_consts(db, file, search_paths);
+    all.extend(consts.diagnostics.iter().cloned());
 
     let mir = crate::mir::file_mir(db, file, search_paths);
     if !mir.gated {

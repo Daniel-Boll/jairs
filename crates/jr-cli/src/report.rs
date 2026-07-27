@@ -82,3 +82,13 @@ pub fn unified_diff(path: &std::path::Path, original: &str, formatted: &str) -> 
 pub fn warn(message: &str) {
     eprintln!("warning: {message}");
 }
+
+/// Print an error to stderr that is not attached to a source span.
+///
+/// Used for a runtime failure: a program that traps has no source location the VM
+/// can name, because MIR carries HIR ids rather than spans (ADR-0013) and nothing
+/// resolves one back yet. Giving the trap a span is what `MirSpan` exists to make
+/// possible later.
+pub fn error(message: &str) {
+    eprintln!("error: {message}");
+}

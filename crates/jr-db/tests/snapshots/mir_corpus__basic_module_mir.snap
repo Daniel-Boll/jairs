@@ -1,0 +1,36 @@
+---
+source: crates/jr-db/tests/mir_corpus.rs
+expression: "dump_mir(&db, file, search)"
+---
+proc print -> void {
+  params: v0: string
+  slots:
+    s0: string  // temporary
+  bb0(v0: string):
+    store s0 <- v0
+    v1: *u8 = load s0.data
+    v2: s64 = load s0.count
+    discard call proc0(1_s64, v1, v2)
+    return
+}
+proc print_error -> void {
+  params: v0: string
+  slots:
+    s0: string  // temporary
+  bb0(v0: string):
+    store s0 <- v0
+    v1: *u8 = load s0.data
+    v2: s64 = load s0.count
+    discard call proc0(2_s64, v1, v2)
+    return
+}
+proc print_line -> void {
+  params: v0: string
+  slots:
+    s0: string  // temporary
+  bb0(v0: string):
+    store s0 <- v0
+    discard call proc2(v0)
+    discard call proc2("\n")
+    return
+}

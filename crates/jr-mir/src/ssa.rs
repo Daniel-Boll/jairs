@@ -525,11 +525,12 @@ fn replace_in_rvalue(rvalue: &mut Rvalue, old: Operand, new: Operand) {
 
 #[cfg(test)]
 mod tests {
+    use jr_base::FileId;
     use jr_hir::ProcId;
     use jr_pool::Pool;
 
     use super::*;
-    use crate::mir::Target;
+    use crate::mir::{ProcRef, Target};
     use crate::verify;
 
     fn local(index: usize) -> LocalId {
@@ -543,7 +544,10 @@ mod tests {
     }
 
     fn body() -> MirBody {
-        MirBody::new(ProcId::from_usize(0), PoolId::VOID)
+        MirBody::new(
+            ProcRef::new(FileId::from_usize(0), ProcId::from_usize(0)),
+            PoolId::VOID,
+        )
     }
 
     fn int(pool: &mut Pool, value: u64) -> Operand {

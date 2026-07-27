@@ -118,7 +118,7 @@ impl Promotable {
 ///
 /// # Panics
 /// Panics if `ty` did not come from `pool` — see [`Pool::item`].
-fn is_register_representable(pool: &Pool, ty: PoolId) -> bool {
+pub(crate) fn is_register_representable(pool: &Pool, ty: PoolId) -> bool {
     match pool.item(ty) {
         // Register-representable: a bit pattern of fixed, small width.
         Item::BoolType | Item::IntType { .. } | Item::PointerType(_) => true,

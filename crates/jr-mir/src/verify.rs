@@ -785,13 +785,17 @@ fn mark_rvalue(rvalue: &Rvalue, used: &mut [bool]) {
 
 #[cfg(test)]
 mod tests {
+    use jr_base::FileId;
     use jr_hir::ProcId;
 
     use super::*;
-    use crate::mir::{MirSpan, Target, ValueId};
+    use crate::mir::{MirSpan, ProcRef, Target, ValueId};
 
     fn void_body() -> MirBody {
-        let mut mir = MirBody::new(ProcId::from_usize(0), PoolId::VOID);
+        let mut mir = MirBody::new(
+            ProcRef::new(FileId::from_usize(0), ProcId::from_usize(0)),
+            PoolId::VOID,
+        );
         mir.set_terminator(mir.entry(), Terminator::Return(None));
         mir
     }
@@ -809,7 +813,10 @@ mod tests {
     #[test]
     fn a_diamond_with_matching_edge_arity_is_valid() {
         let pool = Pool::new();
-        let mut mir = MirBody::new(ProcId::from_usize(0), PoolId::S64);
+        let mut mir = MirBody::new(
+            ProcRef::new(FileId::from_usize(0), ProcId::from_usize(0)),
+            PoolId::S64,
+        );
         let then_ = mir.push_block();
         let else_ = mir.push_block();
         let join = mir.push_block();
