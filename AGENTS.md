@@ -133,7 +133,7 @@ picking a side quietly.
   `Invalid node type`, which is why gate 6 now runs it over all four query files
   (ADR-0025 §4).
 - Editor integration is **verified, not gated**:
-  `nvim --headless -u NONE -l editors/nvim/verify.lua` (22 checks, non-zero on failure).
+  `nvim --headless -u NONE -l editors/nvim/verify.lua` (23 checks, non-zero on failure).
   Neovim is not a build dependency, so it is not one of the six — but run it after
   touching `jr-lsp`, `grammar.js` or the queries.
 - `insta` snapshots: review the `.snap.new` diff, then move it over the `.snap` and
