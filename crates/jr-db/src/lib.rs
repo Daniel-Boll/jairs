@@ -87,7 +87,9 @@ pub use module_loader::{
 
 pub use build::{BuildOutput, build_object, entry_of};
 pub use consts::{ConstResult, file_consts};
-pub use mir::{MirResult, dump_mir, file_mir, imported_procs};
+pub use mir::{
+    MirResult, dump_mir, dump_optimized_mir, file_mir, imported_procs, optimized_file_mir,
+};
 pub use run::{RunOutcome, main_of, run_main};
 
 pub use sema::{CheckResult, SignatureResult, checked, file_signatures};

@@ -417,3 +417,85 @@ fn a_division_by_zero_names_its_own_line() {
     assert_eq!(native.stderr, expected);
     assert_eq!(vm, native);
 }
+
+// ---------------------------------------------------------------------------
+// Inlining (ADR-0021)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_trap_inside_an_inlined_leaf_names_the_call_in_both_engines() {
+    // ADR-0021 §3, and the reason it is asserted here rather than only in `jr-mir`:
+    // the two engines resolve a span through different code at different times, so
+    // "the inliner rewrote the spans" and "both engines print the same rewritten
+    // span" are separate claims. `bump` is a leaf, so it is inlined into `main`, and
+    // the overflow must be reported at the *call* on line 10 rather than at `a + 1`
+    // on line 6 — a trap naming `bump`'s line would be naming code the caller did not
+    // write, and after a cross-file inline it would name a file the program never
+    // mentions.
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("inlinetrap.jr");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  MAX :: 9223372036854775807;\n\
+                  \n\
+                  bump :: (a: s64) -> s64 {\n\
+                  \x20   return a + 1;\n\
+                  }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   exit(bump(MAX));\n\
+                  }\n";
+    std::fs::write(&path, source).expect("a writable temporary directory");
+
+    let vm = run_in_vm(&path);
+    let native = run_natively(&path, dir.path());
+
+    let expected = format!(
+        "error: addition overflowed\n  --> {}:10:10\n",
+        path.display()
+    );
+    assert_eq!(
+        vm.stderr, expected,
+        "the VM must name the call, not the inlined callee's line"
+    );
+    assert_eq!(
+        native.stderr, expected,
+        "and native must agree byte for byte"
+    );
+    assert_eq!(vm.status, 4);
+    assert_eq!(native.status, 4);
+}
+
+#[test]
+fn a_trap_inside_a_callee_that_was_not_inlined_names_its_own_line() {
+    // The negative control for the test above, and the thing that makes it mean
+    // something: the same program with a callee that calls `print` is not a leaf, so
+    // ADR-0021 §4 refuses to inline it, and the trap names line 7 inside `bump`. If
+    // the two tests ever agree on a line, one of them has stopped testing inlining.
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("nolinline.jr");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  MAX :: 9223372036854775807;\n\
+                  \n\
+                  bump :: (a: s64) -> s64 {\n\
+                  \x20   print(\"\");\n\
+                  \x20   return a + 1;\n\
+                  }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   exit(bump(MAX));\n\
+                  }\n";
+    std::fs::write(&path, source).expect("a writable temporary directory");
+
+    let vm = run_in_vm(&path);
+    let native = run_natively(&path, dir.path());
+
+    let expected = format!(
+        "error: addition overflowed\n  --> {}:7:12\n",
+        path.display()
+    );
+    assert_eq!(vm.stderr, expected);
+    assert_eq!(native.stderr, expected);
+    assert_eq!(vm, native);
+}
