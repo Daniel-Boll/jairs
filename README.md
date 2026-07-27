@@ -4,8 +4,8 @@ Jairs is a Jai-inspired systems language with compile-time execution, explicit
 allocators, and no GC, RAII, or exceptions — compiled by a hand-written,
 error-recovering compiler written in Rust.
 
-> **Status: pre-alpha. Jairs source runs in the compile-time VM, but does not
-> compile to a native binary yet.**
+> **Status: pre-alpha. Jairs source runs in the compile-time VM *and* compiles to
+> a native binary, and the two agree.**
 >
 > What works today is the **front end, the mid-level IR, and the bytecode VM**.
 > `jr check` parses a file, lowers it to HIR, loads the modules it imports, resolves
@@ -14,20 +14,26 @@ error-recovering compiler written in Rust.
 > diagnostics — including the three that need a control-flow graph: definite
 > assignment, missing `return`, and a jump outside a loop. `jr run` then *executes*
 > it: `jr run tests/corpus/valid/024-hello.jr` prints its output through libc
-> `write`, having folded `#run add(2, 3)` at compile time. `jr fmt` formats it;
-> `jr parse` dumps its tokens or tree. Implemented crates: `jr-base` (spans,
+> `write`, having folded `#run add(2, 3)` at compile time. `jr build` compiles the
+> same file through Cranelift, links it with `cc`, and the binary prints the same
+> bytes and exits with the same status — including when it traps. `jr fmt` formats
+> it; `jr parse` dumps its tokens or tree. Implemented crates: `jr-base` (spans,
 > interning, source map), `jr-diag` (diagnostics + renderer), `jr-syntax` (lexer,
 > error-recovering parser, lossless CST, typed AST), `jr-fmt`, `jr-hir` (lowering,
 > scopes, `#import` resolution), `jr-pool` (the InternPool and layout), `jr-sema`
 > (signatures, types, inference), `jr-mir` (typed SSA, ADR-0017), `jr-vm` (register
-> bytecode, interpreter, libffi bridge, ADR-0018), `jr-db` (salsa queries, the
-> module loader, const evaluation), `jr-cli`.
+> bytecode, interpreter, libffi bridge, ADR-0018), `jr-codegen` (the `Backend`
+> trait), `jr-codegen-clif` (MIR → Cranelift, ADR-0019), `jr-link` (object emission
+> and the `cc` driver), `jr-db` (salsa queries, the module loader, const
+> evaluation), `jr-cli`.
 >
-> Not started: the Cranelift backend (next), the linker, the language server, and
-> most of the standard library. `jr-mir` has no mid-end — no inliner, no DCE, no
-> const-prop. **There is no native code generation**, so `jr build` does not exist
-> and a trap reports no source location: MIR carries HIR ids rather than spans
-> (ADR-0013) and nothing resolves one back yet.
+> Not started: the LLVM backend (wave W8), the language server, and most of the
+> standard library. `jr-mir` has no mid-end — no inliner, no DCE, no const-prop —
+> so native code is correct but unoptimised, and ADR-0019 §6 records the deliberate
+> deferral and what ends it. A trap still reports **no source location**, in either
+> engine: `jr_mir::resolve_span` resolves one, but neither trap path calls it.
+> A native build refuses an aggregate return and a call through a procedure
+> pointer, both of which the VM also refuses.
 > See [`PLAN.md`](PLAN.md) §1.5 for per-crate status and §7 for what happens next.
 
 ---

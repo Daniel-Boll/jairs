@@ -653,6 +653,7 @@ dependencies = [
  "jr-diag",
  "jr-fmt",
  "jr-hir",
+ "jr-link",
  "jr-syntax",
  "tempfile",
 ]
@@ -696,6 +697,8 @@ version = "0.0.0"
 dependencies = [
  "insta",
  "jr-base",
+ "jr-codegen",
+ "jr-codegen-clif",
  "jr-diag",
  "jr-hir",
  "jr-mir",

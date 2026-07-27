@@ -34,7 +34,7 @@ mod trap;
 pub use trap::{TRAP_HELPER, TrapKind};
 
 use cranelift_codegen::Context;
-use cranelift_codegen::ir::{Function, UserFuncName};
+use cranelift_codegen::ir::{AbiParam, Function, InstBuilder as _, TrapCode, UserFuncName, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings::{self, Configurable as _};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -61,6 +61,8 @@ pub struct ClifBackend {
     trap_helper: FuncId,
     /// Every library a `#foreign` declaration named, for the link line.
     libraries: Vec<String>,
+    /// The Jairs procedure the `main` shim calls, and its return type.
+    entry: Option<(ProcRef, PoolId)>,
 }
 
 impl ClifBackend {
@@ -81,6 +83,13 @@ impl ClifBackend {
         flags
             .set("unwind_info", "false")
             .map_err(|e| CodegenError::Internal(format!("cranelift flag: {e}")))?;
+        // Position-independent code is not optional on Apple platforms: a direct call
+        // to a dynamically imported symbol needs a text relocation, and `ld64`
+        // rejects those outright ("Found illegal text-relocations"). PIC routes the
+        // call through a stub instead. Every modern target wants this anyway.
+        flags
+            .set("is_pic", "true")
+            .map_err(|e| CodegenError::Internal(format!("cranelift flag: {e}")))?;
         let isa = cranelift_native::builder()
             .map_err(|e| CodegenError::Internal(format!("no host backend: {e}")))?
             .finish(settings::Flags::new(flags))
@@ -90,17 +99,8 @@ impl ClifBackend {
             .map_err(|e| CodegenError::Internal(format!("cannot build an object: {e}")))?;
         let mut module = ObjectModule::new(builder);
 
-        let mut signature = module.make_signature();
-        let pointer = module.target_config().pointer_type();
-        signature
-            .params
-            .push(cranelift_codegen::ir::AbiParam::new(pointer));
-        signature
-            .params
-            .push(cranelift_codegen::ir::AbiParam::new(pointer));
-        signature.call_conv = CallConv::SystemV;
         let trap_helper = module
-            .declare_function(TRAP_HELPER, Linkage::Import, &signature)
+            .declare_function(TRAP_HELPER, Linkage::Local, &trap_signature(&module))
             .map_err(|e| CodegenError::Internal(format!("cannot declare {TRAP_HELPER}: {e}")))?;
 
         let mut backend = Self {
@@ -111,9 +111,11 @@ impl ClifBackend {
             trap_messages: FxHashMap::default(),
             trap_helper,
             libraries: Vec::new(),
+            entry: None,
         };
         backend.emit_trap_messages()?;
         backend.emit_strings(pool)?;
+        backend.define_trap_helper()?;
         Ok(backend)
     }
 
@@ -125,6 +127,151 @@ impl ClifBackend {
     #[must_use]
     pub fn libraries(&self) -> &[String] {
         &self.libraries
+    }
+
+    /// Generates the body of the trap helper.
+    ///
+    /// ADR-0019 §2 chose "a call into a runtime helper that reports and aborts", and
+    /// said the helper would live in a small runtime that `jr-link` links in. It is
+    /// **generated into the object instead**, which is the same decision with less
+    /// machinery: the helper only needs libc `write` and `exit`, both of which the
+    /// program is already linked against, so a separate runtime object would add a
+    /// build artifact, a C toolchain dependency and a second thing to keep working
+    /// per platform — for a function that is nine instructions long.
+    ///
+    /// It writes the message to file descriptor 2 and exits with
+    /// [`TrapKind::EXIT_STATUS`], which is `jr run`'s status for a trap. Matching it
+    /// is what lets a script driving the compiler treat the two execution engines
+    /// alike, and what lets the differential harness compare a *failing* program's
+    /// behaviour and not merely a succeeding one's.
+    fn define_trap_helper(&mut self) -> Result<(), CodegenError> {
+        let pointer = self.module.target_config().pointer_type();
+
+        // `write` and `exit` are the same two symbols `modules/Basic` declares
+        // `#foreign`, with the same signatures, so `cranelift-module` resolves both
+        // declarations to one import rather than to a duplicate.
+        let mut write_sig = self.module.make_signature();
+        write_sig.call_conv = CallConv::SystemV;
+        for _ in 0..3 {
+            write_sig.params.push(AbiParam::new(pointer));
+        }
+        write_sig.returns.push(AbiParam::new(pointer));
+        let write = self
+            .module
+            .declare_function("write", Linkage::Import, &write_sig)
+            .map_err(|e| CodegenError::Internal(format!("cannot declare write: {e}")))?;
+
+        let mut exit_sig = self.module.make_signature();
+        exit_sig.call_conv = CallConv::SystemV;
+        exit_sig.params.push(AbiParam::new(pointer));
+        let exit = self
+            .module
+            .declare_function("exit", Linkage::Import, &exit_sig)
+            .map_err(|e| CodegenError::Internal(format!("cannot declare exit: {e}")))?;
+
+        let mut function =
+            Function::with_name_signature(UserFuncName::default(), trap_signature(&self.module));
+        let mut builder_context = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut function, &mut builder_context);
+        let block = builder.create_block();
+        builder.append_block_params_for_function_params(block);
+        builder.switch_to_block(block);
+
+        let params = builder.block_params(block).to_vec();
+        let message = params[0];
+        let length = params[1];
+        let write_ref = self.module.declare_func_in_func(write, builder.func);
+        let exit_ref = self.module.declare_func_in_func(exit, builder.func);
+
+        let stderr = builder.ins().iconst(pointer, 2);
+        builder.ins().call(write_ref, &[stderr, message, length]);
+        let status = builder
+            .ins()
+            .iconst(pointer, i64::from(TrapKind::EXIT_STATUS));
+        builder.ins().call(exit_ref, &[status]);
+        // `exit` does not return, but Cranelift needs a terminator and cannot know
+        // that; the trap is unreachable and costs one instruction.
+        builder.ins().trap(TrapCode::user(1).ok_or_else(|| {
+            CodegenError::Internal("trap code 1 is not a valid user code".to_owned())
+        })?);
+        builder.seal_all_blocks();
+        builder.finalize(self.module.target_config());
+
+        let mut context = Context::for_function(function);
+        self.module
+            .define_function(self.trap_helper, &mut context)
+            .map_err(|e| CodegenError::Internal(format!("cannot define {TRAP_HELPER}: {e}")))?;
+        Ok(())
+    }
+
+    /// Emits the `main` the system linker expects.
+    ///
+    /// A Jairs `main` is an ordinary procedure with a mangled symbol; this is a
+    /// separate C `main` that calls it and returns a real process status. The reason
+    /// is worth recording because the first native run of `024-hello.jr` demonstrated
+    /// it: with the Jairs procedure named `main` directly, the program printed both
+    /// its lines correctly and then exited **1**, because a `void`-returning procedure
+    /// leaves the return register holding whatever it last held and the C runtime
+    /// hands that to `exit`.
+    ///
+    /// So the shim decides the status explicitly. A `void` `main` gives 0, which is
+    /// what the VM's `RunOutcome::Completed` means. An integer-returning `main` gives
+    /// its value, narrowed to the `int` the C runtime expects.
+    fn define_entry_shim(&mut self) -> Result<(), CodegenError> {
+        let Some((entry, ret)) = self.entry else {
+            // No entry point is not an error here: a library or a test may want an
+            // object with no `main` in it. The driver refuses earlier when a *program*
+            // declares none.
+            return Ok(());
+        };
+        let callee = *self
+            .ids
+            .get(&entry)
+            .ok_or(CodegenError::Undeclared(entry))?;
+
+        let mut signature = self.module.make_signature();
+        signature.call_conv = CallConv::SystemV;
+        signature.returns.push(AbiParam::new(types::I32));
+        let id = self
+            .module
+            .declare_function("main", Linkage::Export, &signature)
+            .map_err(|e| CodegenError::Internal(format!("cannot declare main: {e}")))?;
+
+        let mut function = Function::with_name_signature(UserFuncName::default(), signature);
+        let mut builder_context = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut function, &mut builder_context);
+        let block = builder.create_block();
+        builder.switch_to_block(block);
+
+        let callee_ref = self.module.declare_func_in_func(callee, builder.func);
+        let call = builder.ins().call(callee_ref, &[]);
+        let results = builder.inst_results(call).to_vec();
+
+        let status = match results.first() {
+            // An integer `main` returns its own value, narrowed to a C `int`. `void`
+            // produces no result at all, which is why this is a `match` on presence
+            // rather than on the type.
+            Some(value) if ret != PoolId::VOID => {
+                let width = builder.func.dfg.value_type(*value);
+                if width == types::I32 {
+                    *value
+                } else if width.bits() > 32 {
+                    builder.ins().ireduce(types::I32, *value)
+                } else {
+                    builder.ins().sextend(types::I32, *value)
+                }
+            }
+            _ => builder.ins().iconst(types::I32, 0),
+        };
+        builder.ins().return_(&[status]);
+        builder.seal_all_blocks();
+        builder.finalize(self.module.target_config());
+
+        let mut context = Context::for_function(function);
+        self.module
+            .define_function(id, &mut context)
+            .map_err(|e| CodegenError::Internal(format!("cannot define main: {e}")))?;
+        Ok(())
     }
 
     /// Emits one read-only data object per trap message.
@@ -235,6 +382,9 @@ impl Backend for ClifBackend {
             .map_err(|e| CodegenError::Internal(format!("cannot declare {name}: {e}")))?;
         self.ids.insert(decl.proc, id);
         self.foreign.insert(decl.proc, foreign);
+        if matches!(decl.kind, ProcKind::Local { entry: true, .. }) {
+            self.entry = Some((decl.proc, decl.ret));
+        }
         Ok(())
     }
 
@@ -294,12 +444,23 @@ impl Backend for ClifBackend {
         Ok(())
     }
 
-    fn finalise(self: Box<Self>) -> Result<Vec<u8>, CodegenError> {
+    fn finalise(mut self: Box<Self>) -> Result<Vec<u8>, CodegenError> {
+        self.define_entry_shim()?;
         self.module
             .finish()
             .emit()
             .map_err(|e| CodegenError::Internal(format!("cannot emit an object: {e}")))
     }
+}
+
+/// The signature of the trap helper: a message pointer and a length, no result.
+fn trap_signature(module: &ObjectModule) -> cranelift_codegen::ir::Signature {
+    let pointer = module.target_config().pointer_type();
+    let mut signature = module.make_signature();
+    signature.call_conv = CallConv::SystemV;
+    signature.params.push(AbiParam::new(pointer));
+    signature.params.push(AbiParam::new(pointer));
+    signature
 }
 
 /// The libcall naming Cranelift uses for its own helpers.

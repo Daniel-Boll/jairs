@@ -40,14 +40,19 @@ pub enum ProcKind {
         /// The symbol to emit.
         ///
         /// A procedure carries no name of its own — ADR-0012 makes procedures
-        /// constants — so this comes from the item that declares it, and is
-        /// `"jr$<file>$<proc>"` for anything the linker does not need to find by a
-        /// fixed name.
+        /// constants — so this is `"jr$<file>$<proc>"`, built from the identity
+        /// instead. *Every* Jairs procedure gets a mangled name, the entry point
+        /// included: see the `entry` field.
         symbol: String,
         /// Whether this is the program's entry point.
         ///
-        /// The entry point needs the name the system linker looks for, and it is the
-        /// one procedure whose symbol is not ours to choose.
+        /// The entry point does **not** take the linker's name for itself. A Jairs
+        /// `main` returns `void`, and a C `main` that returns nothing leaves the
+        /// process status to whatever happened to be in the return register — the
+        /// first native run of `024-hello.jr` printed both its lines correctly and
+        /// then exited 1. So a back end emits a small `main` shim that calls this
+        /// procedure and returns a real status, and this flag is how it learns which
+        /// procedure the shim should call.
         entry: bool,
     },
     /// Imported through `#foreign`; no body will be defined.
@@ -80,14 +85,9 @@ pub struct ForeignSymbol {
 /// type-check, so ADR-0017 §4 refused its body and there is nothing to define.
 ///
 /// `entry` names the procedure that is the program's entry point, if it is in this
-/// file, and `entry_symbol` is the name the system linker expects for it.
+/// file. It is flagged rather than renamed; see [`ProcKind::Local`].
 #[must_use]
-pub fn declarations(
-    input: &FileInput<'_>,
-    pool: &Pool,
-    entry: Option<ProcId>,
-    entry_symbol: &str,
-) -> Vec<ProcDecl> {
+pub fn declarations(input: &FileInput<'_>, pool: &Pool, entry: Option<ProcId>) -> Vec<ProcDecl> {
     let mut out = Vec::new();
     for index in 0..input.hir.procs.len() {
         let proc = ProcId::from_usize(index);
@@ -113,17 +113,10 @@ pub fn declarations(
                         .map(str::to_owned),
                 })
             }
-            None => {
-                let is_entry = entry == Some(proc);
-                ProcKind::Local {
-                    symbol: if is_entry {
-                        entry_symbol.to_owned()
-                    } else {
-                        symbol_for(input.file, proc)
-                    },
-                    entry: is_entry,
-                }
-            }
+            None => ProcKind::Local {
+                symbol: symbol_for(input.file, proc),
+                entry: entry == Some(proc),
+            },
         };
 
         out.push(ProcDecl {
@@ -136,11 +129,12 @@ pub fn declarations(
     out
 }
 
-/// The symbol name for a procedure the linker need not find by a fixed name.
+/// The symbol name for a Jairs procedure.
 ///
 /// Built from the [`ProcRef`] rather than from the source name because a procedure
 /// has no name of its own (ADR-0012) and two files may declare the same one. The
-/// `jr$` prefix keeps it out of the way of any C symbol.
+/// `jr$` prefix keeps it out of the way of any C symbol — including `main`, which a
+/// back end emits as a shim rather than as a Jairs procedure.
 #[must_use]
 pub fn symbol_for(file: jr_base::FileId, proc: ProcId) -> String {
     format!("jr${}${}", file.index(), proc.index())

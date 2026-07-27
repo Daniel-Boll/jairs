@@ -41,6 +41,7 @@
 //! Its module docs argue why that is sound and what the alternative would have
 //! cost.
 
+pub mod build;
 pub mod consts;
 pub mod mir;
 pub mod module_loader;
@@ -84,6 +85,7 @@ pub use module_loader::{
     resolved,
 };
 
+pub use build::{BuildOutput, build_object, entry_of};
 pub use consts::{ConstResult, file_consts};
 pub use mir::{MirResult, dump_mir, file_mir, imported_procs};
 pub use run::{RunOutcome, main_of, run_main};

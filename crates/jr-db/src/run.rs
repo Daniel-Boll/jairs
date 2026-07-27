@@ -66,7 +66,7 @@ pub fn run_main(
 ) -> Result<RunOutcome, String> {
     let entry = main_of(db, root).ok_or_else(|| "the file declares no `main`".to_owned())?;
 
-    let files = reachable(db, root, search_paths);
+    let files = reachable_files(db, root, search_paths);
 
     // Gather every query result before locking the pool: the lock must never be held
     // across a nested query call, which is the rule the rest of this crate follows.
@@ -134,7 +134,14 @@ pub fn main_of(db: &dyn Db, file: SourceFile) -> Option<ProcRef> {
 }
 
 /// Every already-loaded file reachable from `root` through `#import`, including it.
-fn reachable(db: &dyn Db, root: SourceFile, search_paths: ModuleSearchPaths) -> Vec<SourceFile> {
+///
+/// Shared with `build`, which needs the same walk for the same reason: a cross-file
+/// call is only resolvable if the callee's file is in the program.
+pub(crate) fn reachable_files(
+    db: &dyn Db,
+    root: SourceFile,
+    search_paths: ModuleSearchPaths,
+) -> Vec<SourceFile> {
     let mut seen = vec![root];
     let mut queue = vec![root];
     while let Some(file) = queue.pop() {

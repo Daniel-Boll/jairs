@@ -499,7 +499,12 @@ impl Translator<'_, '_> {
             let is_min = self.builder.ins().icmp_imm_s(IntCC::Equal, left, min);
             let is_minus_one = self.builder.ins().icmp_imm_s(IntCC::Equal, right, -1);
             let both = self.builder.ins().band(is_min, is_minus_one);
-            self.trap_if(both, TrapKind::Overflow)?;
+            let kind = if matches!(op, BinOp::Rem) {
+                TrapKind::OverflowRem
+            } else {
+                TrapKind::OverflowDiv
+            };
+            self.trap_if(both, kind)?;
         }
 
         Ok(match (op, signed) {
@@ -532,7 +537,7 @@ impl Translator<'_, '_> {
                         .builder
                         .ins()
                         .icmp_imm_s(IntCC::Equal, value, min_of(clif));
-                    self.trap_if(is_min, TrapKind::Overflow)?;
+                    self.trap_if(is_min, TrapKind::OverflowNeg)?;
                 }
                 self.builder.ins().ineg(value)
             }
@@ -941,9 +946,14 @@ enum Arith {
 
 impl Arith {
     /// The trap this operation raises on overflow.
+    ///
+    /// One kind per operation, because `jr-vm` names the operation in its message and
+    /// the differential harness compares those messages.
     const fn trap_kind(self) -> TrapKind {
         match self {
-            Self::Add | Self::Sub | Self::Mul => TrapKind::Overflow,
+            Self::Add => TrapKind::OverflowAdd,
+            Self::Sub => TrapKind::OverflowSub,
+            Self::Mul => TrapKind::OverflowMul,
         }
     }
 }

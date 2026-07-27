@@ -19,6 +19,8 @@ jr-pool.workspace = true
 jr-sema.workspace = true
 jr-mir.workspace = true
 jr-vm.workspace = true
+jr-codegen.workspace = true
+jr-codegen-clif.workspace = true
 salsa.workspace = true
 rustc-hash.workspace = true
 

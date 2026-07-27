@@ -26,9 +26,25 @@
 /// for the one that it cannot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TrapKind {
-    /// Arithmetic overflowed. ADR-0002: `+`, `-`, `*` and unary `-` trap rather
+    /// An addition overflowed. ADR-0002: `+`, `-`, `*` and unary `-` trap rather
     /// than wrap, and `+%`, `-%`, `*%` are the opt-out.
-    Overflow,
+    ///
+    /// There is a variant per operation, rather than one `Overflow`, because
+    /// `jr-vm`'s trap names the operation — `"addition overflowed"` — and a
+    /// differential that compares a failing program's output compares that
+    /// sentence. One shared message would have made every overflow trap
+    /// *look* like a disagreement.
+    OverflowAdd,
+    /// A subtraction overflowed.
+    OverflowSub,
+    /// A multiplication overflowed.
+    OverflowMul,
+    /// A division overflowed, which is `MIN / -1` and nothing else.
+    OverflowDiv,
+    /// A remainder overflowed, which is `MIN % -1` and nothing else.
+    OverflowRem,
+    /// A negation overflowed, which is `-MIN` and nothing else.
+    OverflowNeg,
     /// A divisor was zero.
     DivideByZero,
     /// `Terminator::Unreachable(Unreachable::Trap)` was reached.
@@ -55,8 +71,13 @@ impl TrapKind {
     ///
     /// Listed rather than derived, and the array's length is checked by a test, so
     /// that adding a variant without emitting its message is caught.
-    pub const ALL: [Self; 6] = [
-        Self::Overflow,
+    pub const ALL: [Self; 11] = [
+        Self::OverflowAdd,
+        Self::OverflowSub,
+        Self::OverflowMul,
+        Self::OverflowDiv,
+        Self::OverflowRem,
+        Self::OverflowNeg,
         Self::DivideByZero,
         Self::Deliberate,
         Self::StrayJump,
@@ -72,21 +93,29 @@ impl TrapKind {
     /// engines apart.
     pub const EXIT_STATUS: i32 = 4;
 
-    /// The message this trap reports, in `jr-vm`'s words.
+    /// The message this trap reports, byte for byte as `jr run` reports it.
     ///
-    /// `Overflow`'s VM message is `"{what} overflowed"`, where `what` names the
-    /// operation. Native does not carry the operation name yet, so it reports the
-    /// general form; that is a known difference and the differential harness has to
-    /// account for it until a trap carries its operation.
+    /// That includes the `error: ` prefix and the trailing newline, because the
+    /// comparison the differential harness makes is between two processes'
+    /// **stderr**, not between two Rust strings. `jr-cli`'s `report::error` produces
+    /// exactly this shape, and the wording after the prefix is `jr-vm`'s `Trap`
+    /// rendering.
     #[must_use]
     pub const fn message(self) -> &'static str {
         match self {
-            Self::Overflow => "arithmetic overflowed",
-            Self::DivideByZero => "division by zero",
-            Self::Deliberate => "reached a deliberate trap",
-            Self::StrayJump => "a `break` or `continue` outside a loop was reached",
-            Self::FellOffEnd => "control reached the end of a procedure that must return a value",
-            Self::UninitialisedRead => "read a value that was never assigned",
+            Self::OverflowAdd => "error: addition overflowed\n",
+            Self::OverflowSub => "error: subtraction overflowed\n",
+            Self::OverflowMul => "error: multiplication overflowed\n",
+            Self::OverflowDiv => "error: division overflowed\n",
+            Self::OverflowRem => "error: remainder overflowed\n",
+            Self::OverflowNeg => "error: negation overflowed\n",
+            Self::DivideByZero => "error: division by zero\n",
+            Self::Deliberate => "error: reached a deliberate trap\n",
+            Self::StrayJump => "error: a `break` or `continue` outside a loop was reached\n",
+            Self::FellOffEnd => {
+                "error: control reached the end of a procedure that must return a value\n"
+            }
+            Self::UninitialisedRead => "error: read a value that was never assigned\n",
         }
     }
 
@@ -94,7 +123,12 @@ impl TrapKind {
     #[must_use]
     pub const fn symbol(self) -> &'static str {
         match self {
-            Self::Overflow => "jr$trap$overflow",
+            Self::OverflowAdd => "jr$trap$overflow_add",
+            Self::OverflowSub => "jr$trap$overflow_sub",
+            Self::OverflowMul => "jr$trap$overflow_mul",
+            Self::OverflowDiv => "jr$trap$overflow_div",
+            Self::OverflowRem => "jr$trap$overflow_rem",
+            Self::OverflowNeg => "jr$trap$overflow_neg",
             Self::DivideByZero => "jr$trap$divide_by_zero",
             Self::Deliberate => "jr$trap$deliberate",
             Self::StrayJump => "jr$trap$stray_jump",
@@ -119,7 +153,7 @@ mod tests {
         // `ALL` is what the driver iterates to emit message objects, so a variant
         // missing from it would produce a `CodegenError::Internal` at the first trap
         // site instead of a compile error here.
-        assert_eq!(TrapKind::ALL.len(), 6);
+        assert_eq!(TrapKind::ALL.len(), 11);
         let mut sorted = TrapKind::ALL;
         sorted.sort_unstable();
         sorted.windows(2).for_each(|pair| {
