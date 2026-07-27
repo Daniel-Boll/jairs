@@ -36,6 +36,7 @@ use jr_pool::Pool;
 
 use crate::constprop::const_prop;
 use crate::dce::dce;
+use crate::forward::forward_stores;
 use crate::inline::{Callees, inline_body};
 use crate::mir::MirBody;
 
@@ -87,6 +88,11 @@ pub fn optimize(body: &mut MirBody, callees: &Callees<'_>, pool: &mut Pool) -> O
         stats.inlined += inlined;
 
         let mut changed = inlined > 0;
+        // Forwarding before const-prop, because it is what turns a value that lives in
+        // memory into an operand const-prop can see. ADR-0023's whole point is that
+        // without it `024-hello.jr` folds nothing: its `Point` is a slot, and a slot is
+        // opaque to every other pass here.
+        changed |= forward_stores(body, pool);
         // Const-prop before DCE, because it is the one that *creates* dead code —
         // a folded branch is what makes a block unreachable.
         changed |= const_prop(body, pool);

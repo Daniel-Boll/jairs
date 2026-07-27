@@ -10,47 +10,37 @@ proc add -> s64 {
 }
 proc main -> void {
   slots:
-    s0: Point  // local 0
-    s1: s64  // local 1
+    s0: s64  // local 1
   bb0():
-    store s0.0 <- 4_s64
-    store s0.1 <- 5_s64
-    v0: s64 = load s0.0
-    v1: s64 = load s0.1
-    goto bb12(v0, v1)
-  bb12(v11: s64, v12: s64):
-    v13: s64 = v11 + v12
-    goto bb11(v13)
-  bb11(v2: s64):
-    store s1 <- v2
-    v3: s64 = load s1
-    v4: bool = v3 > 5_s64
-    branch v4 ? bb1() : bb2()
-  bb1():
-    discard call extern proc2("hello from Jairs\n")
-    goto bb3()
-  bb2():
-    goto bb3()
-  bb3():
-    goto bb4(0_s64)
-  bb4(v5: s64):
-    v6: bool = v5 < 3_s64
-    branch v6 ? bb5() : bb6()
-  bb5():
-    v7: s64 = v5 + 1_s64
-    goto bb4(v7)
-  bb6():
-    goto bb7()
-  bb7():
-    v8: *s64 = addr s1
-    v9: s64 = load (v8).*
-    v10: bool = v9 == 9_s64
-    branch v10 ? bb8() : bb9()
-  bb8():
-    discard call extern proc4("arithmetic and pointers agree")
-    goto bb10()
-  bb9():
+    goto bb11()
+  bb11():
     goto bb10()
   bb10():
+    store s0 <- 9_s64
+    goto bb1()
+  bb1():
+    discard call extern proc2("hello from Jairs\n")
+    goto bb2()
+  bb2():
+    goto bb3(0_s64)
+  bb3(v5: s64):
+    v6: bool = v5 < 3_s64
+    branch v6 ? bb4() : bb5()
+  bb4():
+    v7: s64 = v5 + 1_s64
+    goto bb3(v7)
+  bb5():
+    goto bb6()
+  bb6():
+    v8: *s64 = addr s0
+    v9: s64 = load (v8).*
+    v10: bool = v9 == 9_s64
+    branch v10 ? bb7() : bb8()
+  bb7():
+    discard call extern proc4("arithmetic and pointers agree")
+    goto bb9()
+  bb8():
+    goto bb9()
+  bb9():
     return
 }

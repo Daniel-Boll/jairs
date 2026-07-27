@@ -232,7 +232,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `tree-sitter-jairs` | **Done** | Grammar + queries; drift gate green |
 | `tests/corpus` | **Done** | 69 files, incl. `type-errors/` and `cfg-errors/` — one file per diagnostic |
 | `modules/Basic` | **Done** | Written, resolving, type-checking and **executing**; MIR snapshotted |
-| `jr-mir` | **Done** | Typed SSA, Braun construction, CFG diagnostics (ADR-0017); a mid-end of three passes — inliner, const-prop, DCE — behind `optimize` (ADR-0021, ADR-0022). No store-to-load forwarding |
+| `jr-mir` | **Done** | Typed SSA, Braun construction, CFG diagnostics (ADR-0017); a mid-end of four passes — inliner, store-to-load forwarding, const-prop, DCE — behind `optimize` (ADR-0021, ADR-0022, ADR-0023). Forwarding is block-local; no SROA |
 | `jr-vm` | **Done** | Register bytecode, interpreter, libffi bridge (ADR-0018); per-instruction spans, so a trap names its line (ADR-0020 §4); arithmetic via `jr-pool` (ADR-0022 §2). No JIT tier |
 | `jr-codegen` | **Done** | Three-phase `Backend` trait, no `cranelift-*` type in it (ADR-0009, ADR-0019 §1) |
 | `jr-codegen-clif` | **Done** | MIR → Cranelift IR, layout via `jr-pool`, traps through a generated helper (ADR-0019). Aggregate params only; aggregate returns and indirect calls refused |
@@ -240,22 +240,28 @@ Status of each slice component, so this is answerable without reading the tree.
 | `jr-codegen-llvm` | **Not started** | Wave W8 owns it (ADR-0019 §5) |
 | `jr-driver`, `jr-lsp` | **Not started** | |
 
-Accepted ADRs: 0001–0022. See [`docs/adr/README.md`](docs/adr/README.md).
+Accepted ADRs: 0001–0023. See [`docs/adr/README.md`](docs/adr/README.md).
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
 plus `jr-sema`'s crate docs are the only record of the typing rules today.
 
-`jr-mir`'s mid-end is **three passes** behind `jr_mir::optimize` (ADR-0022 §3): the
-inliner (ADR-0021), constant propagation, and dead-code elimination, run to a
-bounded fixed point because they feed each other. `jr run` and `jr build` both
-consume the result through `optimized_file_mir`. There will never be a `mem2reg`
-(ADR-0017 §2 makes it unnecessary rather than deferred).
+`jr-mir`'s mid-end is **four passes** behind `jr_mir::optimize` (ADR-0022 §3): the
+inliner (ADR-0021), store-to-load forwarding (ADR-0023), constant propagation, and
+dead-code elimination, run to a bounded fixed point because they feed each other.
+`jr run` and `jr build` both consume the result through `optimized_file_mir`. There
+will never be a `mem2reg` (ADR-0017 §2 makes it unnecessary rather than deferred).
 
-What is still missing is **store-to-load forwarding**, and it is why `024-hello.jr`
-folds nothing: `p` is a `struct`, so it lives in a slot, and const-prop does not see
-through memory. A slot whose address is never taken cannot be aliased, so forwarding
-is sound and is the next pass worth having. The SSA value arena is also never
-compacted, so a dead definition keeps its register (ADR-0022's follow-on work).
+**`024-hello.jr` now optimises.** Forwarding is what unlocked it: the `Point` slot
+disappears entirely, `4 + 5` folds to `9`, `9 > 5` folds to `true`, the `if`
+collapses, and DCE removes the arm that cannot run. The `ptr.* == 9` branch survives,
+correctly — it reads through a real pointer, which forwarding refuses.
+
+What is still missing is **cross-block forwarding** and **SROA**. Forwarding is one
+walk per block, so a value written before a loop and read inside it stays in memory;
+and a whole-slot store never feeds a field load, because MIR cannot extract a field
+from a value — which is why `modules/Basic`'s `print` keeps its slot. The SSA value
+arena is also never compacted, so a dead definition keeps its register (ADR-0022's
+follow-on work).
 
 No pass touches a body compile-time evaluation can reach (ADR-0021 §2), and the
 check is the query's rather than each pass's. That is what keeps §3.1's invariant
@@ -484,132 +490,129 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 ## 7. Immediate next actions
 
-Everything through the **mid-end** is done: workspace scaffolding, the ADRs, spec
-chapters 00–03, the corpus plus the drift gate, the lexer→parser→CST→`jr fmt` inch,
-HIR and name resolution, the module loader, the InternPool, `jr-sema`, `jr-mir`,
-`jr-vm`, `jr-codegen`, `jr-codegen-clif`, `jr-link`, and a three-pass mid-end behind
-`jr_mir::optimize`. See §1.5 for component status. **658 workspace tests**, all six
-gates green.
+Everything through **store-to-load forwarding** is done: workspace scaffolding, the
+ADRs, spec chapters 00–03, the corpus plus the drift gate, the
+lexer→parser→CST→`jr fmt` inch, HIR and name resolution, the module loader, the
+InternPool, `jr-sema`, `jr-mir`, `jr-vm`, `jr-codegen`, `jr-codegen-clif`, `jr-link`,
+and a four-pass mid-end behind `jr_mir::optimize`. See §1.5 for component status.
+**668 workspace tests**, all six gates green.
 
-**A call with literal arguments now folds all the way to a constant.** Inlining turns
-`add(2, 3)` into an edge carrying two constants, the block-parameter collapse turns the
-callee's parameters into them, the fold turns `2 + 3` into `5`, and DCE removes what is
-left over. No single transformation gets there;
-`inlining_a_literal_call_folds_all_the_way_to_a_constant` asserts the whole chain.
+**§1.4's exit criterion finally optimises.** Its `main` loses the `Point` slot
+entirely, `4 + 5` becomes `9`, `9 > 5` becomes `true`, the `if` collapses, and DCE
+deletes the arm that cannot run — and both engines still print both lines and exit 0.
+The `ptr.* == 9` branch survives, which is correct: it reads through a real pointer,
+and forwarding refuses those.
 
-### What the mid-end wave landed
+### What the forwarding wave landed
 
-- [x] **ADR-0022**, seven decisions: both passes in one wave; ADR-0002's arithmetic
-      extracted into `jr-pool`; a `jr_mir::optimize` façade; what DCE may delete; what
-      const-prop reaches; a bounded fixed point; and a differential case per dangerous
-      shape.
-- [x] **`jr_pool::arith`** — `IntKind`, `IntOp`, `IntCmp`, `IntTrap` and the checked
-      operations, moved out of `jr-vm`'s interpreter. `jr-mir` supplies the one
-      translation from its own `BinOp`, so both callers share it.
-- [x] **`jr-mir`'s `dce.rs`** — unreachable blocks, `Nop`s, dead *pure* assignments,
-      dead stores to a never-read slot, and then the slot itself.
-- [x] **`jr-mir`'s `constprop.rs`** — fold, substitute, collapse a block parameter every
-      predecessor agrees on, fold a branch on a constant.
-- [x] **`jr-mir`'s `optimize.rs`** — the order, the bounded loop, and `OptStats` so that
-      "ran out of rounds" is distinguishable from "converged".
-- [x] **`MirBody::retain_blocks` / `retain_slots`** — arena compaction, in `mir.rs`
-      because the arenas are private precisely so nothing edits the CFG behind the
-      cache.
-- [x] **21 new tests**, including three differential cases for the shapes DCE must not
-      touch.
+- [x] **ADR-0023**, three decisions: block-local and flow-sensitive rather than a
+      dataflow analysis; only slot-local places participate, with an explicit kill set;
+      and two distinct projection steps are disjoint storage, which is a claim about
+      fields and not about layout.
+- [x] **`jr-mir`'s `forward.rs`** — one backward search per load, so the nearest
+      preceding store wins and the first kill ends the search.
+- [x] **One shared escaping-slots predicate**, used by forwarding and by `dce`'s
+      dead-store elimination, so the two cannot disagree about what escaping means.
+- [x] **10 new tests**, including the two refusals that make the pass sound and two
+      differential cases that assert a *value* rather than an agreement.
 
-Four things about this wave are worth carrying forward.
+Three things about this wave are worth carrying forward.
 
-- **The plan's stated blocker was the smaller one again.** §7 listed DCE and const-prop
-  as two optimisations. Writing the fold is the easy part; the hard part was that
-  ADR-0002's arithmetic existed twice and a third copy in `jr-mir` would have been
-  *invisible* to the differential — a fold bakes its answer into a `PoolId` both engines
-  consume, so a wrong fold makes them agree on the wrong number rather than disagree.
-- **This ADR's own draft was wrong twice, and both were caught by reading the code.**
-  §4 first said "remove slots nothing mentions", which would have left the exact slot
-  §7 named, because a dead *store* keeps it alive. And the Context claimed
-  `024-hello.jr`'s inlined edge carried two constants; it carries two *loads*, because
-  `p` is a struct in a slot. Both corrections are recorded in ADR-0022 rather than
-  quietly folded in. **A decision that sounds sufficient is not one until it has been
-  checked against a dump.**
-- **DCE is the first pass that can delete behaviour, and the corpus cannot police it.**
-  No corpus program contains a dead trapping expression, so the corpus differential
-  would have passed a DCE that removed traps. The three targeted cases are what actually
-  guard it.
-- **`Statement::Nop`'s debt is paid.** ADR-0017 §1 kept the variant so a pass could
-  delete a statement without shifting later indices; the inliner produces them and DCE
-  now removes them, so the round-trip both engines were already written for is exercised.
+- **The obvious rule would have been wrong, and reading `print`'s MIR is what showed
+  it.** `store s0 <- v0` followed by `load s0.data` shares storage, so a rule phrased as
+  "forward when the places overlap" would forward a whole aggregate into a field load.
+  MIR has no rvalue that extracts a field from a *value* — `Projection::Field` applies
+  to a `Place` — so a prefix relation has to be a **kill**, not a match. Overlap has
+  three cases and only one of them forwards.
+- **A coarse guard was rejected for a reason the previous wave supplied.** Refusing any
+  slot whose address is ever taken is simpler and obviously sound, and it would have
+  declined `sum` in `024-hello.jr` — whose address is taken four blocks *after* the pair
+  being forwarded — so the fold and the branch collapse would not have happened. That is
+  the exact failure mode ADR-0022 §4's first draft had, one ADR earlier, so the guard is
+  about the *interval* rather than the body.
+- **Disjointness is decided from indices, never from offsets.** `s0.0` and `s0.1` do not
+  overlap because a struct has distinct fields, not because of where they sit. Nothing in
+  `jr-mir` asks for a size or an offset, so ADR-0017 §5 holds and §7's first Trap is
+  avoided.
 
-Diagnostic codes: **E0231 is still the first free code.** Neither new pass defines one:
-every way a pass can decline is a policy decision rather than an error, and a malformed
-result is a verifier assertion. E0230 is `jr-db`'s const-eval failure; E0227–E0229 are
-`jr-mir`'s. Beware that `jr-syntax`' parser still illegally emits E0200/E0201/E0202 for
-"arrives in wave Wn" errors, colliding with `jr-hir` — do not filter tests by those.
+Diagnostic codes: **E0231 is still the first free code.** Forwarding defines none: a
+refusal is a policy decision and a malformed result is a verifier assertion. E0230 is
+`jr-db`'s const-eval failure; E0227–E0229 are `jr-mir`'s. Beware that `jr-syntax`'
+parser still illegally emits E0200/E0201/E0202 for "arrives in wave Wn" errors,
+colliding with `jr-hir` — do not filter tests by those.
 
-### Next: store-to-load forwarding, then the first honest number
+### Next: the performance number, which now has no excuses left
 
-Every compiler criterion in §1.4 is met. The three boxes still open are editor
-packaging and a Linux CI run, neither of which is compiler work.
+Every compiler criterion in §1.4 is met and the mid-end has four passes. The three
+boxes still open are editor packaging and a Linux CI run, neither of which is compiler
+work.
+
+**ADR-0019 §6's expiry condition is satisfied and has been for three waves.** The
+number has not been taken, and this is the wave that should take it. One honest problem
+has to be faced rather than worked around, and it is a *language* gap:
+
+> **Jairs-0 cannot express a benchmark.** No arrays, no `for`, no floats, and no way to
+> print an integer. The only expressible workload is integer arithmetic in a `while`
+> loop ending in `exit`, which measures Cranelift's register allocator more than
+> anything the mid-end does.
+
+So the number that is honestly obtainable today is **compile throughput** on generated
+source, and it mostly describes the front end. Say so when publishing it, and defer a
+runtime number to wave W1, where arrays and `for` make a real workload writable.
 
 #### Read first, in this order
 
-1. This section, then §1.5 for status and §3.1 for the same-MIR invariant.
-2. **ADR-0022 §2**, because every future pass that computes a value inherits its rule:
-   the arithmetic is `jr-pool`'s, and a second copy is invisible to the differential.
-3. **ADR-0021 §2 and ADR-0022 §3** together — the frozen set is checked once, by the
-   query, and a new pass added inside `optimize` inherits that protection *only*
-   because `optimize` is called from the right side of the check.
-4. `crates/jr-mir/tests/optimising.rs` and the three ADR-0022 cases at the end of
-   `crates/jr-cli/tests/differential.rs`. The second set is the only thing standing
-   between a purity mistake and a deleted trap.
+1. This section, then §1.3 for the estimate the number answers, and §1.5 for status.
+2. **ADR-0019 §6**, which is where the expiry condition and the reason for it are
+   written down.
+3. **ADR-0023's follow-on work**, which names the W1 benchmark gap as a language
+   problem rather than a tooling one.
 
 #### Work items, in dependency order
 
-- [ ] **Store-to-load forwarding.** The reason `024-hello.jr` still folds nothing. A
-      slot whose address is never taken cannot be aliased, so a load of a place a
-      preceding store wrote in the same block can be replaced by the stored operand.
-      That connects const-prop to aggregate code, which is most of the corpus. Watch the
-      interaction with ADR-0017 §5: a place is a field *index*, so "the same place"
-      means the same base and the same projection list, and nothing here may start
-      computing an offset.
-- [ ] **Then the first published performance number.** ADR-0019 §6's expiry condition is
-      now genuinely satisfiable, and §1.3's estimate has been waiting on it. It needs a
-      benchmark harness, programs larger than the corpus's 43-line maximum, and a place
-      in §1.3 to report it — none of which is MIR work, which is why it is its own wave
-      rather than a rider on this one.
-- [ ] **Compact the SSA value arena**, so that a dead definition stops costing a
-      register. ADR-0022's follow-on work; wider than a slot because a value is named by
-      block parameters too.
+- [ ] **A benchmark harness.** Generated Jairs source well past the corpus's 43-line
+      maximum, a way to run it repeatedly without machine noise swamping the signal, and
+      a committed place in §1.3 to report the answer. Note that "generated" needs a
+      generator that produces *checkable* programs — a thousand procedures that each
+      call the previous one is easy; a thousand that type-check and do something is not.
+- [ ] **The published compile-throughput number**, with its scope stated: what was
+      measured, on what machine, and that it describes the front end.
+- [ ] **Cross-block forwarding, or SROA.** ADR-0023 §1's rejected alternatives, with
+      their arguments answered. SROA is the one that would fix `print` — and it needs
+      ADR-0017 §2's "there will never be a `mem2reg`" re-argued rather than quietly
+      contradicted, because that claim is about *locals* and an aggregate slot is a
+      different case.
+- [ ] **Compact the SSA value arena**, so a dead definition stops costing a register.
 
 #### Also open, and smaller
 
 - **A finer optimized-MIR key.** ADR-0021 §1's rejected alternative; editing
   `modules/Basic` still invalidates every importer's optimized MIR wholesale.
 - **An inline stack per span.** ADR-0021 §3's rejected alternative, which `#expand`
-  turns from a diagnostic improvement into a semantic requirement.
+  turns into a semantic requirement.
 - **A cross-file `#run`.** Still open, and ADR-0021 §2's soundness depends on its
   absence. `a_cross_file_run_is_still_refused` is the tripwire.
+- **Alias analysis**, without which an intervening call kills forwarding for any
+  address-taken slot whether or not the call could reach it.
 - **Whether a provably-trapping operation in dead code is a compile-time error.**
-  ADR-0022 §5 declines to decide it and leaves the operation to trap at run time.
-- **Verifying `jr-codegen-clif` against `jr_pool`'s evaluator on constant operands**,
-  which would close the last gap in ADR-0002 having one meaning. A testing decision
-  rather than a design one.
+  ADR-0022 §5 declines to decide it.
 - **Aggregate returns and calls through a procedure pointer**, both `Unsupported` in
-  both engines. An indirect call is also the one call shape the inliner refuses.
+  both engines.
 - **Linux x86-64.** Configured in CI, never run.
 
 #### Traps
 
+- **Do not compute layout.** Now doubly relevant: ADR-0023 decides disjointness from
+  projection *indices*, and the tempting improvement — comparing byte ranges — is
+  exactly the mistake. `jr-codegen-clif`'s `repr.rs` is the only place layout enters.
 - **Do not compute a value outside `jr-pool`.** ADR-0022 §2. A second evaluator does not
   produce a disagreement the differential can see; it produces agreement on a wrong
   answer.
 - **Do not optimise a frozen body.** ADR-0021 §2. The one mid-end rule whose violation
   is a silent comptime/runtime divergence.
-- **Do not delete a statement without proving its rvalue pure.** `jr_mir::is_pure` is an
-  exhaustive match for that reason; a new `Rvalue` variant must be classified there
-  deliberately.
-- **Do not compute layout.** `jr-codegen-clif`'s `repr.rs` is the only place layout
-  enters the back end.
+- **Do not delete a statement without proving its rvalue pure**, and do not forward a
+  load whose place is not *identical* to the store's. Both refusals are exhaustive
+  matches so that a new variant has to be classified deliberately.
 - **Do not format a trap message anywhere but `jr_base::trap_message`.**
 - **Do not add a corpus file without checking it is executed.** `modules/Basic` hid a
   miscompile for a whole wave because it is not in `tests/corpus/valid/`.

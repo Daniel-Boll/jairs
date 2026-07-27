@@ -300,3 +300,186 @@ fn optimising_a_body_with_nothing_to_do_changes_nothing() {
     );
     assert_eq!(body, before);
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0023: store-to-load forwarding
+// ---------------------------------------------------------------------------
+
+fn loads(body: &MirBody) -> usize {
+    body.blocks()
+        .iter()
+        .flat_map(|block| &block.stmts)
+        .filter(|stmt| {
+            matches!(
+                stmt,
+                Statement::Assign {
+                    rvalue: Rvalue::Load(_),
+                    ..
+                }
+            )
+        })
+        .count()
+}
+
+#[test]
+fn a_load_takes_the_value_the_preceding_store_put_there() {
+    let mut program = Program::new();
+    let lowered = program.lower_clean(
+        "Point :: struct { x: s64; y: s64; }\n\
+         f :: () -> s64 { p: Point; p.x = 4; return p.x; }\n",
+    );
+    let mut body = lowered.body(&program.interner, "f").clone();
+    assert_eq!(
+        loads(&body),
+        1,
+        "the field read is a load before forwarding"
+    );
+    assert!(jr_mir::forward_stores(&mut body, &program.pool));
+    assert_eq!(loads(&body), 0);
+}
+
+#[test]
+fn a_store_to_a_different_field_does_not_block_forwarding() {
+    // ADR-0023 §3: `p.x` and `p.y` are disjoint because a struct's fields are distinct,
+    // which is a language fact. Nothing here asks how big a field is or where it starts,
+    // so ADR-0017 §5 still holds.
+    let mut program = Program::new();
+    let lowered = program.lower_clean(
+        "Point :: struct { x: s64; y: s64; }\n\
+         f :: () -> s64 { p: Point; p.x = 4; p.y = 5; return p.x; }\n",
+    );
+    let mut body = lowered.body(&program.interner, "f").clone();
+    assert!(jr_mir::forward_stores(&mut body, &program.pool));
+    assert_eq!(loads(&body), 0, "an intervening store to `y` is not a kill");
+}
+
+#[test]
+fn a_later_store_to_the_same_field_wins() {
+    let mut program = Program::new();
+    let lowered = program.lower_clean(
+        "Point :: struct { x: s64; y: s64; }\n\
+         f :: () -> s64 { p: Point; p.x = 4; p.x = 7; return p.x; }\n",
+    );
+    let mut body = lowered.body(&program.interner, "f").clone();
+    jr_mir::forward_stores(&mut body, &program.pool);
+    jr_mir::const_prop(&mut body, &mut program.pool);
+    // The search runs backwards from the load, so the nearest store is the one found.
+    // Asserting the *value* rather than merely that a load disappeared is the point:
+    // forwarding the wrong store is a miscompile that "no loads left" would pass.
+    let returned = body.blocks().iter().find_map(|block| match &block.term {
+        Terminator::Return(Some(Operand::Constant(id))) => Some(*id),
+        _ => None,
+    });
+    let seven = program.pool.int_value(jr_pool::PoolId::S64, 7);
+    assert_eq!(
+        returned,
+        Some(seven),
+        "the nearest preceding store must win"
+    );
+}
+
+#[test]
+fn a_whole_slot_store_does_not_feed_a_field_load() {
+    // ADR-0023 §3's load-bearing refusal, and the shape `modules/Basic`'s `print` has:
+    // `store s0 <- v0` then `load s0.data`. The store supplies the whole aggregate and
+    // the load wants one field, and MIR has no rvalue that extracts a field from a
+    // *value* — so there is nothing to forward, and treating the paths as unrelated
+    // would forward a stale value instead.
+    let mut program = Program::new();
+    let lowered = program.lower_clean("f :: (s: string) -> *u8 { return s.data; }");
+    let mut body = lowered.body(&program.interner, "f").clone();
+    assert_eq!(
+        loads(&body),
+        1,
+        "the spilled parameter is read through a load"
+    );
+    assert!(
+        !jr_mir::forward_stores(&mut body, &program.pool),
+        "a prefix relation must be refused, not treated as disjoint"
+    );
+    assert_eq!(loads(&body), 1);
+}
+
+#[test]
+fn a_load_through_a_pointer_is_never_forwarded() {
+    let mut program = Program::new();
+    let lowered = program.lower_clean("f :: (p: *s64) -> s64 { p.* = 1; return p.*; }");
+    let mut body = lowered.body(&program.interner, "f").clone();
+    let before = loads(&body);
+    assert!(!jr_mir::forward_stores(&mut body, &program.pool));
+    assert_eq!(
+        loads(&body),
+        before,
+        "a place reached through a `Deref` names memory this pass cannot reason about"
+    );
+}
+
+#[test]
+fn a_call_between_the_store_and_the_load_kills_an_address_taken_slot() {
+    // The coarse guard ADR-0023 §2 accepts: `n`'s address is taken, so a call could
+    // have been handed a pointer to it, and no alias analysis exists to prove
+    // otherwise. `g` does not in fact receive one, and the pass declines anyway.
+    let mut program = Program::new();
+    let lowered = program.lower_clean(
+        "g :: () { }\n\
+         f :: () -> s64 { n := 0; q := *n; n = 1; g(); return n; }\n",
+    );
+    let mut body = lowered.body(&program.interner, "f").clone();
+    let before = loads(&body);
+    jr_mir::forward_stores(&mut body, &program.pool);
+    assert_eq!(
+        loads(&body),
+        before,
+        "an intervening call must kill forwarding for a slot that has a pointer"
+    );
+}
+
+#[test]
+fn a_call_does_not_kill_a_slot_no_pointer_names() {
+    // The other half, and the reason the guard is worth having at all: a slot whose
+    // address is never taken cannot be reached indirectly, so a call cannot touch it.
+    // `jr_mir::dce`'s dead-store elimination relies on the same predicate, through the
+    // same function.
+    let mut program = Program::new();
+    let lowered = program.lower_clean(
+        "Point :: struct { x: s64; y: s64; }\n\
+         g :: () { }\n\
+         f :: () -> s64 { p: Point; p.x = 4; g(); return p.x; }\n",
+    );
+    let mut body = lowered.body(&program.interner, "f").clone();
+    assert!(jr_mir::forward_stores(&mut body, &program.pool));
+    assert_eq!(loads(&body), 0);
+}
+
+#[test]
+fn forwarding_is_what_makes_the_exit_criterions_shape_fold() {
+    // The whole reason this pass exists, in miniature: without forwarding, `p.x` and
+    // `p.y` are opaque loads and nothing downstream can do anything. With it, the
+    // constants reach the addition, the addition folds, the comparison folds, the
+    // branch collapses, and DCE removes the arm and the slot. This is `024-hello.jr`'s
+    // structure with the parts that need `modules/Basic` removed.
+    let mut program = Program::new();
+    let lowered = program.lower_clean(
+        "Point :: struct { x: s64; y: s64; }\n\
+         f :: () -> s64 {\n\
+         \x20   p: Point;\n\
+         \x20   p.x = 4;\n\
+         \x20   p.y = 5;\n\
+         \x20   sum := p.x + p.y;\n\
+         \x20   if sum > 5 { return 1; }\n\
+         \x20   return 0;\n\
+         }\n",
+    );
+    let mut body = lowered.body(&program.interner, "f").clone();
+    let stats = optimize(&mut body, &Callees::new(), &mut program.pool);
+    assert!(!stats.exhausted, "stats: {stats:?}");
+    assert_eq!(body.slot_count(), 0, "the struct must not survive at all");
+    assert!(!has_arithmetic(&body), "`4 + 5` and `9 > 5` must both fold");
+    assert!(
+        !body
+            .blocks()
+            .iter()
+            .any(|block| matches!(block.term, Terminator::Branch { .. })),
+        "the branch must collapse once its condition is constant"
+    );
+}

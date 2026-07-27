@@ -17,8 +17,8 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after the **mid-end** wave. 658 workspace tests; six CI gates green on
-macOS arm64.
+Last updated after the **store-to-load forwarding** wave. 668 workspace tests; six CI
+gates green on macOS arm64.
 
 ### What you can actually do
 
@@ -75,7 +75,7 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
 | InternPool (types, comptime values, layout, arithmetic) | **Works** | One layout computation and one integer evaluator, shared (ADR-0018 §2, ADR-0022 §2) |
 | Sema (signatures, checking, inference) | **Works** | E0212–E0226; no const-eval here — ADR-0018 §3 puts it in the VM |
 | MIR (typed SSA, Braun construction) | **Works** | Block parameters, not phis (ADR-0017); CFG diagnostics E0227–E0229 |
-| Mid-end | **Three passes** | Inliner, const-prop, DCE, to a bounded fixed point (ADR-0021, ADR-0022). No store-to-load forwarding, so a struct in a slot defeats folding; the SSA value arena is never compacted |
+| Mid-end | **Four passes** | Inliner, store-to-load forwarding, const-prop, DCE, to a bounded fixed point (ADR-0021 – ADR-0023). Forwarding is block-local, so a value read across a loop stays in memory; no SROA; the SSA value arena is never compacted |
 | Bytecode VM + libffi | **Works** | Per-instruction spans, so a trap names its line. No JIT |
 | Cranelift back end + linker | **Works** | Refuses an aggregate return and a call through a procedure pointer — so does the VM |
 | salsa incremental database | **Works** | Built *and* optimized MIR staged (ADR-0021 §1); invalidation is at file grain |
@@ -104,10 +104,11 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
   it requires more than removing the refusal.
 - **`u8` is not a supported integer type.** It exists so `*u8` and byte-sized FFI
   arguments can be spelled.
-- **Optimisation is real but shallow.** Three passes run, and `add(2, 3)` folds to `5`
-  through an inline. But nothing sees through memory, so a `struct` field written from a
-  literal and read back does not fold — which is most real code, and is exactly what
-  `024-hello.jr` does.
+- **Optimisation is real but shallow.** Four passes run, and `024-hello.jr` now folds
+  its struct away entirely, collapses an `if` and deletes the dead arm. But forwarding is
+  one walk per basic block, so anything read across a loop boundary stays in memory, and
+  a whole-struct store never feeds a field read — which is why `modules/Basic`'s `print`
+  still keeps its slot.
 - **ADR-0002's arithmetic has two implementations, not one.** `jr-pool` owns the one
   both *evaluators* share; `jr-codegen-clif` keeps its own because it emits code rather
   than evaluating. The pair is held equal by `differential.rs` and nothing else.
