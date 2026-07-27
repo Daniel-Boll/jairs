@@ -585,6 +585,70 @@ whose output matches the VM's byte for byte.
   query is per file; evaluating a `#run` that calls into another module needs the
   cross-body read ADR-0017 §3 keeps out of the built-MIR query.
 
+#### Decisions to put to the decider before writing code
+
+Every wave so far has settled its design forks *first*, via an ADR, and every one of
+them was expensive to undo. These are the forks this wave has, stated with the options
+so the conversation can start from them rather than from a blank page. **ADR-0019 is
+the next free number.**
+
+1. **What shape is the `Backend` trait?** One `compile_body(&MirBody) -> ()` call with
+   the backend owning module state, or a finer interface (declare, define, finalise)
+   that the driver sequences. The finer one is what incremental recompilation
+   eventually wants and what `cranelift-module`'s `Module` trait already looks like;
+   the coarse one is smaller today. Whichever is chosen, ADR-0009 and CONTRIBUTING
+   require that *no* `cranelift-*` type appear in the trait.
+2. **How does an ADR-0002 trap become Cranelift IR?** Three real options: `trapif`-style
+   flag checks after each arithmetic op; an explicit compare-and-branch to one shared
+   trap block per procedure; or a call into a runtime helper that reports and aborts.
+   The third is the only one that can carry a *message*, which matters because §1.4
+   wants a source location on a trap — and the VM currently produces one and native
+   would produce none. The first two are faster and mute.
+3. **Where does `AstIdMap` land?** ADR-0013 deferred it, and both back ends now need it
+   for the same reason: `MirSpan` names an HIR node and nothing resolves one back to a
+   span. Options: build it in `jr-hir` as ADR-0013 anticipated; make it a `jr-db` query
+   over the CST; or give MIR real spans after all and accept the invalidation cost
+   ADR-0013 rejected. This is the last unmet §1.4 criterion that is not "there is no
+   native", so it is not deferrable much further.
+4. **How is `#foreign` resolved for a native build?** The VM uses a process-local
+   `dlsym`, which a linked binary cannot. This is the *third* independent resolution of
+   `ForeignInfo::library`, and ADR-0018 §4 already names a third as the signal to intern
+   the answer in the pool beside `Item::ForeignLibraryValue`. So the fork is really
+   "intern it now, or resolve it a third time and intern it on the fourth".
+5. **Does `jr-codegen-llvm` stay a stub?** It is a declared crate with no contents and
+   wave W8 owns it. Worth confirming it is out of scope rather than assuming.
+
+#### Where things are, as of this handoff
+
+New since the MIR wave, so a reader knows which file answers which question:
+
+| Path | What it owns |
+|---|---|
+| `crates/jr-pool/src/layout.rs` | Size, align, field offsets, `TargetLayout`. **The one layout.** |
+| `crates/jr-mir/src/inputs.rs` | `ConstValues`, `ImportedProcs` — the two maps lowering is handed |
+| `crates/jr-mir/src/thunk.rs` | A file-level expression → a runnable `MirBody` |
+| `crates/jr-vm/src/code.rs` | The bytecode ISA, `PlacePlan`, `Routine`, `ForeignProc` |
+| `crates/jr-vm/src/lower.rs` | MIR → bytecode: linearise, resolve offsets, kill block params |
+| `crates/jr-vm/src/interp.rs` | `Program`, `Vm`, `Mode`, the instruction loop, ADR-0002 arithmetic |
+| `crates/jr-vm/src/memory.rs` | One non-moving linear region; frames as a stack mark |
+| `crates/jr-vm/src/value.rs` | `Value`, `IntKind`, the `i128` range checks |
+| `crates/jr-vm/src/ffi.rs` | libffi bridge, `dlsym`, the comptime refusal |
+| `crates/jr-vm/src/assemble.rs` | HIR + MIR + signatures → a `Program` |
+| `crates/jr-vm/src/error.rs` | `VmError` (trap / unsupported / internal / exhausted / exited) |
+| `crates/jr-db/src/consts.rs` | `file_consts`: the const-eval fixpoint, E0230 |
+| `crates/jr-db/src/run.rs` | `run_main`, `main_of`, the reachable-file walk |
+| `crates/jr-db/src/mir.rs` | `file_mir`, `imported_procs`, the ADR-0017 §4 gate |
+| `crates/jr-cli/src/commands/run.rs` | `jr run` and its exit codes |
+
+Tests worth knowing about before changing anything:
+
+| Path | What it pins |
+|---|---|
+| `crates/jr-vm/tests/execute.rs` | 34 assertions about what each construct *means*. The differential oracle. |
+| `crates/jr-db/tests/mir_corpus.rs` | No body in `valid/` is refused; the exit criterion lowers; `modules/Basic` is snapshotted |
+| `crates/jr-mir/tests/lowering.rs` | ADR-0017's decisions, and the two silent-miscompile regressions |
+| `crates/jr-cli/tests/integration.rs` | `jr run` exit codes, including that a file with errors is not executed |
+
 #### Gates — all six must pass
 
 `cargo fmt --all --check`; `cargo clippy --workspace --all-targets -- -D warnings`;
