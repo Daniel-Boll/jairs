@@ -45,13 +45,23 @@
 //! This crate answers *equality*, not conversion. Assignability and coercion are
 //! `jr-sema`'s business and are deliberately unspecified for now (ADR-0015).
 //!
-//! It also depends only on `jr-base`. It knows nothing about the HIR: callers
+//! It also answers *layout* — size, alignment and field offsets — because ADR-0018
+//! §2 puts the one computation both backends share here, where its inputs already
+//! live. See [`layout_of`] and [`TargetLayout`] for why, and for why the target is
+//! a parameter rather than something this crate looks up.
+//!
+//! It depends only on `jr-base`. It knows nothing about the HIR: callers
 //! hand it a [`DeclId`] they built themselves, which keeps the pool a pure,
 //! independently testable data structure rather than a second pass over
 //! `jr-hir`.
 
 mod item;
+mod layout;
 mod pool;
 
 pub use item::{ContextKind, DeclId, EffectRow, Field, Item, PoolId, StrId};
+pub use layout::{
+    Layout, LayoutError, TargetLayout, align_up, field_offset, layout_of, string_count,
+    string_data, string_layout,
+};
 pub use pool::Pool;

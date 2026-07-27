@@ -15,7 +15,7 @@ use crate::report::{emit_diagnostics, make_renderer, print_check_summary};
 /// Resolved relative to the workspace at build time, which is adequate while the
 /// compiler runs from its own source tree; installing `jr` will need a real
 /// installation-relative lookup.
-fn bundled_module_dir() -> std::path::PathBuf {
+pub fn bundled_module_dir() -> std::path::PathBuf {
     // Walk up from `crates/jr-cli` rather than joining `../../`, so the path
     // that appears in an E0210 diagnostic reads as `<repo>/modules` instead of
     // `<repo>/crates/jr-cli/../../modules`.

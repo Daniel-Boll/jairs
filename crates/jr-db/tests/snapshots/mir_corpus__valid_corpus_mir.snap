@@ -318,8 +318,10 @@ proc main -> void {
 ========================================
 018-import.jr
 ========================================
-proc main {
-  poisoned: a cross-file call needs the callee's signatures
+proc main -> void {
+  bb0():
+    discard call extern proc2("imported\n")
+    return
 }
 
 ========================================
@@ -339,8 +341,10 @@ proc report -> void {
   bb0():
     return
 }
-proc main {
-  poisoned: a file-level item has no value until jr-vm
+proc main -> void {
+  bb0():
+    v0: s64 = 5_s64 + 1_s64
+    return
 }
 
 ========================================
@@ -395,8 +399,47 @@ proc add -> s64 {
     v2: s64 = v0 + v1
     return v2
 }
-proc main {
-  poisoned: a file-level item has no value until jr-vm
+proc main -> void {
+  slots:
+    s0: Point  // local 0
+    s1: s64  // local 1
+  bb0():
+    store s0.0 <- 4_s64
+    store s0.1 <- 5_s64
+    v0: s64 = load s0.0
+    v1: s64 = load s0.1
+    v2: s64 = call proc0(v0, v1)
+    store s1 <- v2
+    v3: s64 = load s1
+    v4: bool = v3 > 5_s64
+    branch v4 ? bb1() : bb2()
+  bb1():
+    discard call extern proc2("hello from Jairs\n")
+    goto bb3()
+  bb2():
+    goto bb3()
+  bb3():
+    goto bb4(0_s64)
+  bb4(v5: s64):
+    v6: bool = v5 < 3_s64
+    branch v6 ? bb5() : bb6()
+  bb5():
+    v7: s64 = v5 + 1_s64
+    goto bb4(v7)
+  bb6():
+    goto bb7()
+  bb7():
+    v8: *s64 = addr s1
+    v9: s64 = load (v8).*
+    v10: bool = v9 == 9_s64
+    branch v10 ? bb8() : bb9()
+  bb8():
+    discard call extern proc4("arithmetic and pointers agree")
+    goto bb10()
+  bb9():
+    goto bb10()
+  bb10():
+    return
 }
 
 ========================================

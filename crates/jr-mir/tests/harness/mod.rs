@@ -14,10 +14,13 @@
 
 use jr_base::{FileId, Interner};
 use jr_diag::Diagnostics;
-use jr_hir::{ConstValue, FileHir, ItemKind, ProcId, ResolveMap};
-use jr_mir::{FileMir, MirBody, Poisoned};
+use jr_hir::{ConstValue, FileHir, ItemId, ItemKind, ProcId, ResolveMap};
+use jr_mir::{ConstValues, FileMir, ImportedProcs, MirBody, Poisoned};
 use jr_pool::Pool;
 use jr_sema::{FileSignatures, TypeMap};
+
+/// The [`FileId`] every single-file test program uses.
+pub const FILE: FileId = FileId::from_usize(0);
 
 /// One file, lowered all the way to MIR.
 pub struct Lowered {
@@ -56,6 +59,20 @@ impl Lowered {
             };
             (item.name == Some(symbol)).then_some(*proc)
         })
+    }
+
+    /// The [`ItemId`] of a named file-level item.
+    ///
+    /// Tests need this to build a [`ConstValues`] by hand: without a VM there is
+    /// nothing to compute a constant's value, so a test that exercises ADR-0018
+    /// §3's lowering path supplies the value itself.
+    pub fn item_id(&self, interner: &Interner, name: &str) -> Option<ItemId> {
+        let symbol = interner.get(name)?;
+        self.hir
+            .items
+            .iter()
+            .position(|item| item.name == Some(symbol))
+            .map(ItemId::from_usize)
     }
 
     /// The outcome for a named procedure.
@@ -99,8 +116,26 @@ impl Program {
     }
 
     /// Runs the whole front end over one self-contained file.
+    ///
+    /// Supplies empty [`ConstValues`] and [`ImportedProcs`], which is the pre-VM
+    /// behaviour: anything that needs a constant's value or a cross-file callee is
+    /// refused. Use [`Self::lower_with`] to exercise the paths ADR-0018 opened.
     pub fn lower(&mut self, source: &str) -> Lowered {
-        let file = FileId::from_usize(0);
+        self.lower_with(source, &ConstValues::new(), &ImportedProcs::new())
+    }
+
+    /// Runs the whole front end, supplying the two maps `jr-db` normally computes.
+    ///
+    /// `jr-mir`'s tests deliberately have no VM and no module loader, so a test
+    /// that needs a constant to have a value states the value. That keeps this
+    /// crate's tests a test of *lowering* rather than of evaluation.
+    pub fn lower_with(
+        &mut self,
+        source: &str,
+        consts: &ConstValues,
+        imports: &ImportedProcs,
+    ) -> Lowered {
+        let file = FILE;
         let parsed = jr_syntax::parse(source, file);
         let mut earlier = Diagnostics::new();
         earlier.extend(parsed.diagnostics().iter().cloned());
@@ -134,6 +169,8 @@ impl Program {
             &resolve,
             &types,
             &signatures.signatures,
+            consts,
+            imports,
             &self.interner,
             &mut self.pool,
         );

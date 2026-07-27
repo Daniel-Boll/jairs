@@ -361,3 +361,67 @@ fn type_error_corpus_is_rejected() {
         assert_eq!(code, 1, "{} must be rejected", file.display());
     }
 }
+
+// ---------------------------------------------------------------------------
+// jr run — PLAN.md §1.4's exit criterion, VM half
+// ---------------------------------------------------------------------------
+
+/// Run `jr run` on a corpus file and return the exit code.
+fn run_program(path: PathBuf) -> i32 {
+    let global = quiet_global();
+    let args = jr_cli::cli::RunArgs {
+        path,
+        module_paths: Vec::new(),
+    };
+    jr_cli::commands::run::run(args, &global).unwrap()
+}
+
+#[test]
+fn run_executes_the_slice_exit_criterion() {
+    // `024-hello.jr` is the program `PLAN.md` §1.4 names. Running it exercises a
+    // folded `#run`, a folded string constant, a struct through a slot, a cross-file
+    // call into `modules/Basic`, a `while` loop with a block parameter, a pointer, and
+    // a foreign call to libc `write` — all at once.
+    //
+    // The output itself is asserted in `jr-vm`'s own tests, which can capture it; here
+    // the exit code is what matters, because it is what a build script sees.
+    let dir = TempDir::new().unwrap();
+    let path = copy_corpus("valid/024-hello.jr", dir.path());
+    assert_eq!(run_program(path), 0, "the exit criterion must run cleanly");
+}
+
+#[test]
+fn run_executes_a_program_with_no_imports() {
+    let dir = TempDir::new().unwrap();
+    let path = copy_corpus("valid/020-run-directive.jr", dir.path());
+    assert_eq!(run_program(path), 0);
+}
+
+#[test]
+fn run_refuses_a_file_with_errors_and_does_not_execute_it() {
+    // ADR-0017 §4: no MIR from a file with errors, so no bytecode either. Exit 1 is
+    // `jr check`'s code for the same condition, deliberately — the two commands must
+    // never disagree about whether a program is valid.
+    let dir = TempDir::new().unwrap();
+    let path = copy_corpus("type-errors/005-call-arity.jr", dir.path());
+    assert_eq!(run_program(path), 1);
+}
+
+#[test]
+fn run_reports_a_program_with_no_main() {
+    // Jairs-0 has no entry-point attribute, so a file with no `main` is a usage error
+    // rather than something to guess at.
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("nomain.jr");
+    fs::write(&path, "helper :: () -> s64 { return 1; }\n").unwrap();
+    let global = quiet_global();
+    let args = jr_cli::cli::RunArgs {
+        path,
+        module_paths: Vec::new(),
+    };
+    let error = jr_cli::commands::run::run(args, &global).expect_err("must not run");
+    assert!(
+        error.to_string().contains("main"),
+        "the error must say what is missing: {error}"
+    );
+}

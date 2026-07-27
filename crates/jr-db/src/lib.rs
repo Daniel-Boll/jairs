@@ -41,9 +41,11 @@
 //! Its module docs argue why that is sound and what the alternative would have
 //! cost.
 
+pub mod consts;
 pub mod mir;
 pub mod module_loader;
 mod queries;
+pub mod run;
 pub mod sema;
 
 // The salsa macro generates undocumented associated functions (new, field
@@ -82,7 +84,9 @@ pub use module_loader::{
     resolved,
 };
 
-pub use mir::{MirResult, dump_mir, file_mir};
+pub use consts::{ConstResult, file_consts};
+pub use mir::{MirResult, dump_mir, file_mir, imported_procs};
+pub use run::{RunOutcome, main_of, run_main};
 
 pub use sema::{CheckResult, SignatureResult, checked, file_signatures};
 

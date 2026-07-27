@@ -52,12 +52,43 @@
 
 use std::sync::{Arc, OnceLock};
 
+use jr_base::FileId;
 use jr_hir::{BodyId, ExprId, ExprScope, LocalId, ProcId, StmtId};
 use jr_pool::PoolId;
 
 // ---------------------------------------------------------------------------
 // Identities
 // ---------------------------------------------------------------------------
+
+/// A procedure named across file boundaries.
+///
+/// A bare [`ProcId`] indexes *one* file's `FileHir::procs`, so it cannot name a
+/// procedure in an imported module. ADR-0017 left [`Callee::Direct`] carrying one
+/// and consequently refused every cross-file call; ADR-0018 §5 amends that,
+/// because `PLAN.md` §1.4's exit criterion — `024-hello.jr` calling `print` from
+/// `modules/Basic` — cannot be met otherwise.
+///
+/// This does **not** reintroduce the cross-body dependency ADR-0017 §3 keeps out
+/// of the built-MIR query. Resolving a callee needs the callee's *signature*, to
+/// know it is a procedure and to type its arguments — both already done by
+/// `jr-sema`, whose signature phase ADR-0016 §5 established depends only on the
+/// other file's HIR. The callee's *body* is fetched later, by whoever executes the
+/// call, through that file's own query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProcRef {
+    /// The file the procedure is declared in.
+    pub file: FileId,
+    /// Its index within that file's procedures.
+    pub proc: ProcId,
+}
+
+impl ProcRef {
+    /// Names a procedure.
+    #[must_use]
+    pub const fn new(file: FileId, proc: ProcId) -> Self {
+        Self { file, proc }
+    }
+}
 
 jr_base::newtype_index! {
     /// A basic block within one [`MirBody`].
@@ -281,12 +312,13 @@ impl Place {
 /// What is being called.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Callee {
-    /// A procedure named directly, including a `#foreign` one.
+    /// A procedure named directly, including a `#foreign` one, and including one
+    /// in an imported module (ADR-0018 §5).
     ///
     /// `ForeignInfo::library` is still an unresolved `Option<Symbol>` in the HIR;
     /// `jr-sema` resolves it only far enough to verify it names a library and
-    /// records nothing, so codegen will have to resolve it again.
-    Direct(ProcId),
+    /// records nothing, so whoever performs the call resolves it again.
+    Direct(ProcRef),
     /// A procedure reached through a value of procedure-pointer type.
     Indirect(Operand),
 }
@@ -617,8 +649,9 @@ struct CfgCache {
 /// IR is per body.
 #[derive(Debug, Clone)]
 pub struct MirBody {
-    /// The procedure this body belongs to.
-    proc: ProcId,
+    /// The procedure this body belongs to, file included so that a body knows
+    /// which arena its own [`ProcId`]s and [`ProcRef`]s are relative to.
+    proc: ProcRef,
     blocks: Vec<BlockData>,
     values: Vec<ValueData>,
     slots: Vec<SlotData>,
@@ -648,7 +681,7 @@ impl Eq for MirBody {}
 impl MirBody {
     /// Creates a body with a single empty entry block.
     #[must_use]
-    pub fn new(proc: ProcId, ret: PoolId) -> Self {
+    pub fn new(proc: ProcRef, ret: PoolId) -> Self {
         Self {
             proc,
             blocks: vec![BlockData::new()],
@@ -668,8 +701,17 @@ impl MirBody {
 
     /// The procedure this body belongs to.
     #[must_use]
-    pub const fn proc(&self) -> ProcId {
+    pub const fn proc(&self) -> ProcRef {
         self.proc
+    }
+
+    /// The file this body was lowered from.
+    ///
+    /// A [`Callee::Direct`] whose [`ProcRef::file`] equals this is a call within
+    /// the same file, which is the only kind ADR-0017 could represent.
+    #[must_use]
+    pub const fn file(&self) -> FileId {
+        self.proc.file
     }
 
     /// The entry block.
@@ -952,7 +994,10 @@ mod tests {
     use super::*;
 
     fn body() -> MirBody {
-        MirBody::new(ProcId::from_usize(0), PoolId::VOID)
+        MirBody::new(
+            ProcRef::new(FileId::from_usize(0), ProcId::from_usize(0)),
+            PoolId::VOID,
+        )
     }
 
     #[test]
