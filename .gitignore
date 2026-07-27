@@ -29,3 +29,7 @@
 /tree-sitter-jairs/*.wasm
 
 .DS_Store
+
+# The tree-sitter parser Neovim loads, built by editors/nvim/build.sh from the
+# git-ignored generated parser.c. Regenerate rather than commit a binary.
+/editors/nvim/parser/*.so

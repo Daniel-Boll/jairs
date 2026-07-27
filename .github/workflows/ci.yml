@@ -160,6 +160,20 @@ jobs:
               ../modules/*/*.jr )
           echo "::notice::corpus-drift (tree-sitter): all well-formed corpus files parsed cleanly."
 
+          # Every query file must compile against the grammar. This is not
+          # thoroughness: a query naming a node `grammar.js` does not have was
+          # previously undetectable, and the failure is *silent* — highlighting
+          # simply stops. `tree-sitter query` exits 1 with `Invalid node type`,
+          # which is the only thing that catches it (ADR-0025 §4).
+          #
+          # The queries `editors/nvim/queries/jairs/` ships are symlinks to these
+          # files, so validating them here validates what an editor loads.
+          for q in highlights folds indents locals; do
+            ( cd tree-sitter-jairs && tree-sitter query "queries/$q.scm" \
+                ../tests/corpus/valid/024-hello.jr > /dev/null )
+          done
+          echo "::notice::corpus-drift (tree-sitter): all four query files compile against the grammar."
+
       # ---- compiler side ---------------------------------------------------
       - name: compiler corpus test
         shell: bash
