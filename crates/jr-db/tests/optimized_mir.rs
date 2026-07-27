@@ -277,3 +277,44 @@ fn the_optimized_dump_is_stable() {
     db.load_modules_transitively(file);
     insta::assert_snapshot!("hello_optimized_mir", dump_optimized_mir(&db, file, search));
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0022: the passes, through the query
+// ---------------------------------------------------------------------------
+
+#[test]
+fn print_line_loses_the_spill_slot_it_never_reads() {
+    // The symptom `PLAN.md` §7 named for two waves, asserted on the real module rather
+    // than a miniature: `modules/Basic`'s `print_line` spills its `string` parameter to
+    // a slot and then passes the value on, so the slot is written once and never read.
+    // Both halves are asserted, because "the optimized body has no slot" alone would
+    // also pass if lowering had stopped creating one.
+    // Loaded directly, the way `mir_corpus.rs` does: `modules/Basic` is not in
+    // `tests/corpus/valid/`, so nothing brings it into a database unless a test does.
+    let (mut db, search) = database();
+    let text = std::fs::read_to_string(corpus("../modules/Basic/module.jr"))
+        .expect("the Basic module must exist");
+    let module = add_file(&mut db, "modules/Basic/module.jr", &text);
+    db.load_modules_transitively(module);
+
+    let built = file_mir(&db, module, search).mir;
+    let optimized = optimized_file_mir(&db, module, search).mir;
+    let proc = proc_named(&db, module, "print_line");
+
+    let Some(Ok(before)) = built.get(proc) else {
+        panic!("`print_line` has no built body");
+    };
+    let Some(Ok(after)) = optimized.get(proc) else {
+        panic!("`print_line` has no optimized body");
+    };
+    assert_eq!(
+        before.slot_count(),
+        1,
+        "lowering still spills the parameter; if this changes, the test below proves nothing"
+    );
+    assert_eq!(
+        after.slot_count(),
+        0,
+        "a slot that is only ever written must not reach either engine"
+    );
+}

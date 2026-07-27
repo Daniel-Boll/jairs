@@ -334,8 +334,10 @@ pub fn optimized_file_mir(
         .collect();
 
     // Every query result gathered before the pool is locked: the lock must never be
-    // held across a nested query call.
-    let pool = crate::sema::lock_pool(db);
+    // held across a nested query call. Mutable because const-prop interns the values
+    // it folds — ADR-0015 keys an integer value on its type, so `4 + 5` at `s64` is a
+    // pool entry that may not exist yet.
+    let mut pool = crate::sema::lock_pool(db);
 
     let mut callees = Callees::new();
     for module in &modules {
@@ -360,7 +362,11 @@ pub fn optimized_file_mir(
         match body {
             Ok(body) if !frozen.contains(&proc) => {
                 let mut body = body.clone();
-                jr_mir::inline_body(&mut body, &callees, &pool);
+                // One call, because ADR-0022 §3 gives `jr-mir` the pass order and
+                // leaves this query only the decision above: *which* bodies may be
+                // rewritten. A future pass is a change in one crate, and it cannot
+                // accidentally be appended on the wrong side of the frozen check.
+                jr_mir::optimize(&mut body, &callees, &mut pool);
                 out.push(proc, Ok(body));
             }
             // A frozen body and a refused one are both passed through unchanged, for
