@@ -26,13 +26,17 @@
 //! reason. §1.4's box names exactly three capabilities, and a server that quietly
 //! grew a fourth would be a wave that did not finish the one it was scoped to.
 
+pub mod completion;
 pub mod handlers;
 pub mod locate;
 pub mod position;
+pub mod render;
 pub mod server;
 pub mod uri;
 
+pub use completion::{completion, resolve_completion};
 pub use handlers::{diagnostics, goto_definition, hover};
-pub use locate::{Located, locate};
+pub use locate::{DeclSite, Located, locate, locate_declaration};
 pub use position::{Encoding, Positions};
+pub use render::{Card, Decl, binding_card, container_of, type_name};
 pub use server::{ServerOptions, capabilities, run_stdio};
