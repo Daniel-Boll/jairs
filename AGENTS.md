@@ -23,7 +23,12 @@ same five steps every time:
    Add the index row in `docs/adr/README.md`.
 3. **Implement on a branch named `feat/<component>`.**
 4. **All six gates green** (below), then update `PLAN.md` §1.5 and rewrite §7 as the
-   *next* wave's handoff, and refresh the README status block.
+   *next* wave's handoff, and refresh the README's **"Status, honestly"** section — the
+   wave name and test count in its first line, plus any row of its four tables the wave
+   changed. That section is the project's only outward-facing honest inventory, and it
+   has rotted before: it went a whole wave claiming "a trap still reports no source
+   location" after both engines had learned to report one. A capability table is easier
+   to keep true than a paragraph, which is why it replaced one.
 5. **Commit and merge to `main` with `--no-ff`**, one logical change per commit — but
    only when the decider explicitly says so.
 

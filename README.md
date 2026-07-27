@@ -4,38 +4,106 @@ Jairs is a Jai-inspired systems language with compile-time execution, explicit
 allocators, and no GC, RAII, or exceptions — compiled by a hand-written,
 error-recovering compiler written in Rust.
 
-> **Status: pre-alpha. Jairs source runs in the compile-time VM *and* compiles to
-> a native binary, and the two agree.**
+> **Status: pre-alpha.** Jairs source runs in the compile-time VM *and* compiles to
+> a native binary, and the two agree byte for byte — including where a trap
+> happened. The language it agrees about is deliberately tiny. The tables below say
+> exactly how tiny, and are updated at the end of every wave; if they and the code
+> disagree, the code is right and the tables are a bug.
 >
-> What works today is the **front end, the mid-level IR, and the bytecode VM**.
-> `jr check` parses a file, lowers it to HIR, loads the modules it imports, resolves
-> names across the import boundary, type-checks it against those modules'
-> signatures, lowers each procedure body to typed SSA, and reports rustc-quality
-> diagnostics — including the three that need a control-flow graph: definite
-> assignment, missing `return`, and a jump outside a loop. `jr run` then *executes*
-> it: `jr run tests/corpus/valid/024-hello.jr` prints its output through libc
-> `write`, having folded `#run add(2, 3)` at compile time. `jr build` compiles the
-> same file through Cranelift, links it with `cc`, and the binary prints the same
-> bytes and exits with the same status — including when it traps, down to the
-> `  --> path:line:col` naming where. `jr fmt` formats
-> it; `jr parse` dumps its tokens or tree. Implemented crates: `jr-base` (spans,
-> interning, source map), `jr-diag` (diagnostics + renderer), `jr-syntax` (lexer,
-> error-recovering parser, lossless CST, typed AST), `jr-fmt`, `jr-hir` (lowering,
-> scopes, `#import` resolution), `jr-pool` (the InternPool and layout), `jr-sema`
-> (signatures, types, inference), `jr-mir` (typed SSA, ADR-0017), `jr-vm` (register
-> bytecode, interpreter, libffi bridge, ADR-0018), `jr-codegen` (the `Backend`
-> trait), `jr-codegen-clif` (MIR → Cranelift, ADR-0019), `jr-link` (object emission
-> and the `cc` driver), `jr-db` (salsa queries, the module loader, const
-> evaluation), `jr-cli`.
->
-> Not started: the LLVM backend (wave W8), the language server, and most of the
-> standard library. `jr-mir` has no mid-end — no inliner, no DCE, no const-prop —
-> so native code is correct but unoptimised, and ADR-0019 §6 records the deliberate
-> deferral and what ends it. A trap still reports **no source location**, in either
-> engine: `jr_mir::resolve_span` resolves one, but neither trap path calls it.
-> A native build refuses an aggregate return and a call through a procedure
-> pointer, both of which the VM also refuses.
-> See [`PLAN.md`](PLAN.md) §1.5 for per-crate status and §7 for what happens next.
+> See [`PLAN.md`](PLAN.md) §1.5 for per-crate status, §2.1 for the wave order, and §7
+> for what happens next.
+
+---
+
+## Status, honestly
+
+Last updated after the **inliner** wave. 637 workspace tests; six CI gates green on
+macOS arm64.
+
+### What you can actually do
+
+| You can | How | Caveat |
+|---|---|---|
+| Compile and run a program in the comptime VM | `jr run file.jr` | Register bytecode interpreter, no JIT tier |
+| Compile to a native executable | `jr build file.jr -o out` | arm64 macOS verified; x86-64 Linux configured in CI but **never run** |
+| Get rustc-grade diagnostics | `jr check file.jr` | 59 codes across lexer, parser, HIR, sema, MIR and const-eval |
+| Format source canonically | `jr fmt [--check] paths…` | The corpus is canonical under it, CI-enforced |
+| Inspect tokens or the CST | `jr parse file.jr` | Debug aid |
+| Call libc from Jairs | `#foreign` / `#system_library` | Through libffi at comptime, a real call natively |
+| Fold a compile-time call | `COMPUTED :: #run add(2, 3)` | One *trivial* `#run`: a call or a constant expression, same file only |
+| Import a module | `#import "Basic";` | One module = one file, flat imports, cycles legal |
+| Edit with tree-sitter highlighting | `tree-sitter-jairs/` | Grammar + queries exist; **editor packaging does not** |
+
+### The language today
+
+Everything in the left column is implemented end to end — parsed, formatted,
+type-checked, lowered, executed in the VM, compiled natively, and asserted equal in
+both engines. Everything in the right column is absent, with the wave that adds it.
+The authoritative version of this list is
+[`docs/spec/00-overview.md`](docs/spec/00-overview.md).
+
+| Works | Absent (wave) |
+|---|---|
+| `s64`, `bool`, `string`, `*T` | rest of the numeric tower, `float32/64` (**W1**) |
+| `u8` in type position only, for `*u8` and FFI | general `u8` arithmetic, `cast()`, `xx` (**W1**) |
+| `struct { … }`, one level, nominal | `enum`, `enum_flags`, `union` (**W1**) |
+| procedures, single return value | multiple returns, named/default args (**W2**) |
+| `::` constant, `:=` inferred, `: T = v` typed, `---` uninit | |
+| `if` / `else if` / `else`, `while`, `break`, `continue`, `return` | `for`, labelled break, `defer`, `using` (**W2**) |
+| blocks and block scope, shadowing | `#scope_*` visibility (**W2**) |
+| `+ - * / %` trapping, `+% -% *%` wrapping, unary `-` | bitwise `& \| ^ ~ << >>` (**W1**) |
+| `== != < <= > >=`, `&& \|\| !` short-circuiting | operator overloading (**W1**) |
+| `=` and compound `+= -= *= /= %= +%= -%= *%=` | |
+| `a.b.c` field access, auto-deref through pointers | arrays `[N]T`, views `[]T`, dynamic `[..]T` (**W1**) |
+| calls, nested; a discarded call is a statement | |
+| integer literals (dec/hex/bin/oct, `_`), string literals + escapes | usable float literals — they lex, the parser rejects them (**W1**) |
+| nesting block comments | |
+| one trivial `#run` | arbitrary `#run`, RTTI, `#insert`, `#code` (**W4**) |
+| `#import`, `#foreign`, `#system_library` | polymorphs `$T`, `#expand` macros (**W5**) |
+| overflow traps with a source location (ADR-0002, ADR-0020) | `context`, allocators, temp storage, backtraces (**W3**) |
+
+There is **no error-handling model yet** — ADR-0008 reserves the slot, nothing fills
+it. There is no GC and no RAII, which is a design value rather than a missing feature.
+
+### Compiler internals
+
+| Stage | Status | Honest note |
+|---|---|---|
+| Lexer, parser, CST, typed AST | **Works** | Hand-written, error-recovering, trivia-preserving |
+| Formatter | **Works** | Pure function over the CST |
+| HIR, name resolution, module loader | **Works** | Flat import merge (ADR-0014) |
+| InternPool (types + comptime values + layout) | **Works** | One layout computation, shared by both engines (ADR-0018 §2) |
+| Sema (signatures, checking, inference) | **Works** | E0212–E0226; no const-eval here — ADR-0018 §3 puts it in the VM |
+| MIR (typed SSA, Braun construction) | **Works** | Block parameters, not phis (ADR-0017); CFG diagnostics E0227–E0229 |
+| Mid-end | **One pass** | The inliner (ADR-0021). No DCE, no const-prop; `nop`s and unreachable blocks survive a dump |
+| Bytecode VM + libffi | **Works** | Per-instruction spans, so a trap names its line. No JIT |
+| Cranelift back end + linker | **Works** | Refuses an aggregate return and a call through a procedure pointer — so does the VM |
+| salsa incremental database | **Works** | Built *and* optimized MIR staged (ADR-0021 §1); invalidation is at file grain |
+| Differential harness | **Works** | Compares stdout, stderr and exit status of both engines as subprocesses |
+| LLVM back end | **Not started** | Wave W8 |
+| Language server | **Not started** | `jr-lsp` is a one-line stub. Nothing in this repo gives an editor hover or goto-def |
+| Compilation driver / workspaces | **Not started** | `jr-driver` is a one-line stub |
+| Debug info | **Not started** | No DWARF at all; a native binary is not debuggable |
+| Optimisation levels | **Not started** | No `--release`, no `opt_level`; one code path |
+
+### Things it is easy to over-read
+
+- **No published performance number, and that is deliberate.** ADR-0019 §6 says a
+  number taken without a mid-end measures the missing mid-end. The inliner now exists,
+  so a number is finally honest to take — it has not been taken.
+- **The two engines agreeing is *tested*, not assumed.** They share MIR, which makes
+  agreement likely; `crates/jr-cli/tests/differential.rs` is what makes it checked.
+  Both of this project's silent miscompiles were places where a plausible argument
+  stood in for a check.
+- **Only two of fifteen executable corpus programs print anything**, so the corpus
+  differential largely compares silence with silence. That is why it also drives
+  computations out through `exit` — arithmetic, precedence, loops, block parameters,
+  pointers, struct offsets and both traps.
+- **A cross-file `#run` does not work**, and ADR-0021 §2 now depends on that. Enabling
+  it requires more than removing the refusal.
+- **`u8` is not a supported integer type.** It exists so `*u8` and byte-sized FFI
+  arguments can be spelled.
+- **Nothing here is self-hosted.** The compiler is Rust; only `modules/Basic` is Jairs.
 
 ---
 
@@ -104,7 +172,10 @@ tree-sitter-jairs  — separate editor grammar, CI-gated against drift
 
 The LSP is a **consumer of the same salsa queries** as the batch compiler, not
 a second frontend. The VM and Cranelift both consume the same MIR so `#run` and
-runtime cannot silently disagree.
+runtime cannot silently disagree — and the mid-end is required to keep that literally
+true, not merely approximately: the inliner refuses to rewrite any body compile-time
+evaluation can reach (ADR-0021 §2), so every body both engines might execute is
+bit-identical in each.
 
 ---
 
