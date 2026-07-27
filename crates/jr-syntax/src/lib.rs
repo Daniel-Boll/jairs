@@ -10,6 +10,7 @@
 //! shared corpus in `tests/corpus/` and the `corpus-drift` CI job.
 
 pub mod ast;
+mod code;
 pub mod kind;
 pub mod lexer;
 pub mod parser;

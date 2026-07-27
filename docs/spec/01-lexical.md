@@ -114,6 +114,11 @@ arrives in wave W*n*" diagnostic rather than a confusing error — and so that a
 later wave adding the feature is not a breaking change for code that used the
 word as a name.
 
+That refusal is the parser's **E0121**, and a reserved *literal* form is **E0120**
+(floating-point) or **E0122** (a bitwise operator). All three sit inside the parser's
+E0100–E0199 block. They previously used E0200–E0202, which belong to name resolution —
+so a tool filtering on "unresolved name" saw a `for` loop.
+
 ### Accepted keywords (Jairs-0)
 
 | Keyword | Token |

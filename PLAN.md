@@ -563,11 +563,10 @@ Four things about this wave are worth carrying forward.
   anticipated the deadlock. Both are recorded in ADR-0028's postscript rather than quietly
   fixed. That is five consecutive waves.
 
-Diagnostic codes: **E0231 is still the first free code.** ADR-0027 §3 deliberately adds
-none — a doc comment that documents nothing is not a diagnostic. E0230 is `jr-db`'s
-const-eval failure; E0227–E0229 are `jr-mir`'s. Beware that `jr-syntax`' parser still
-illegally emits E0200/E0201/E0202 for "arrives in wave Wn" errors, colliding with
-`jr-hir` — do not filter tests by those.
+Diagnostic codes: **E0231 is still the first free code**, and E0123 the first free
+*parser* code. E0230 is `jr-db`'s const-eval failure; E0227–E0229 are `jr-mir`'s. The
+long-standing collision is gone: `jr-syntax` now has a `code.rs`, and its three "arrives
+in wave Wn" refusals moved from E0200/E0201/E0202 — `jr-hir`'s codes — to E0120–E0122.
 
 ### Next: close the slice
 
@@ -641,6 +640,9 @@ Two boxes, both platform and packaging work.
 - **Do not format a trap message anywhere but `jr_base::trap_message`.**
 - **Do not add a corpus file without checking it is executed**, and do not trust a
   formatter gate over a corpus that lacks the construct.
+- **Do not put a diagnostic code in a `&str` literal at its emission site.** It cannot
+  collide at compile time, which is how the parser spent several waves emitting `jr-hir`'s
+  codes. Every crate has a `code.rs`; add the constant there.
 - **Do not believe a handoff about what is left.** Open the file. This section was wrong
   about it two waves ago.
 
