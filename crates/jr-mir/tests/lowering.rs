@@ -638,3 +638,61 @@ fn a_foreign_procedure_has_no_body_and_so_no_entry_at_all() {
     );
     assert!(lowered.mir.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0019 §3 — MirSpan resolves back to a source span
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_expressions_provenance_resolves_to_the_text_that_produced_it() {
+    // The resolution the native trap path needs, on the case that actually traps:
+    // ADR-0002 makes `+` a checked add, so the value it defines is what a trap
+    // report has to name.
+    //
+    // Asserted on the source text rather than on `Some(_)`, because an off-by-one
+    // arena index still yields a perfectly plausible span belonging to a
+    // neighbouring node — the failure `resolve_span`'s docs call worse than having
+    // no span at all.
+    let source = "main :: () {\n    total := 2 + 3;\n}\n";
+    let mut program = Program::new();
+    let lowered = program.lower_clean(source);
+    let proc = lowered
+        .proc_id(&program.interner, "main")
+        .expect("main is declared");
+    let body = lowered.body(&program.interner, "main");
+    let hir_body = lowered
+        .hir
+        .procs
+        .get(proc.index())
+        .and_then(|data| data.body)
+        .and_then(|id| lowered.hir.bodies.get(id.index()));
+
+    let texts: Vec<String> = (0..body.value_count())
+        .filter_map(|index| {
+            let span = jr_mir::resolve_span(
+                &lowered.hir,
+                hir_body,
+                body.value(jr_mir::ValueId::from_usize(index)).span,
+            )?;
+            Some(source[usize::from(span.start())..usize::from(span.end())].to_owned())
+        })
+        .collect();
+
+    assert!(
+        texts.iter().any(|text| text == "2 + 3"),
+        "the checked add's value must point at the expression that produced it, got {texts:?}"
+    );
+}
+
+#[test]
+fn a_synthetic_provenance_resolves_to_nothing() {
+    // `None` is a real answer, not a failure: a compiler-invented value has no
+    // source text. A caller that substituted a nearby span would point a trap at a
+    // line the programmer did not write.
+    let mut program = Program::new();
+    let lowered = program.lower_clean("main :: () { }");
+    assert_eq!(
+        jr_mir::resolve_span(&lowered.hir, None, jr_mir::MirSpan::Synthetic),
+        None
+    );
+}
