@@ -57,6 +57,7 @@ mod constprop;
 mod dce;
 mod dump;
 mod escape;
+mod forward;
 mod inline;
 mod inputs;
 mod mir;
@@ -71,6 +72,7 @@ pub use cfg::{body_diagnostics, file_diagnostics};
 pub use constprop::const_prop;
 pub use dce::{dce, is_pure};
 pub use dump::{dump_body, dump_body_spans, dump_file};
+pub use forward::forward_stores;
 pub use inline::{Callees, MAX_INLINE_STATEMENTS, inline_body, is_inlinable};
 pub use inputs::{ConstValues, ImportedProcs};
 pub use mir::{

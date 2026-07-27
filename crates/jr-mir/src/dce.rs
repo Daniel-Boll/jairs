@@ -243,12 +243,17 @@ fn note_rvalue(rvalue: &Rvalue, used: &mut FxHashSet<ValueId>) {
 /// [`drop_dead_assignments`] is not re-run inside this function, because
 /// [`crate::optimize`]'s bounded loop will call `dce` again and pick it up.
 fn drop_dead_stores(body: &mut MirBody) -> bool {
-    let mut observed: FxHashSet<SlotId> = FxHashSet::default();
+    // A slot is observable if a pointer to it exists — the shared predicate, so that
+    // this pass and `forward.rs` cannot disagree about what escaping means — or if
+    // something loads from it.
+    let mut observed: FxHashSet<SlotId> = crate::forward::escaping_slots(body);
     for block in body.blocks() {
         for stmt in &block.stmts {
             match stmt {
                 Statement::Assign { rvalue, .. } | Statement::Discard { rvalue, .. } => {
-                    note_rvalue_slots(rvalue, &mut observed);
+                    if let Rvalue::Load(place) = rvalue {
+                        note_place_slots(place, &mut observed);
+                    }
                 }
                 // Deliberately *not* the store's own destination: a write nobody can
                 // read is what this function exists to find.
