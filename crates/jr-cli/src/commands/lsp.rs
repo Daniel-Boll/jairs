@@ -25,8 +25,25 @@ pub fn run(args: LspArgs, global: &GlobalArgs) -> Result<i32> {
         // there desynchronises the framing for the whole session.
         eprintln!("jr lsp: listening on stdio");
     }
+    // Absolutised here, once. A server's working directory is whatever the editor
+    // happened to have, so a relative search path means nothing to it — and the failure
+    // is *silent*: a `Location` needs a `file:` URI, `jr_lsp::uri::from_path` correctly
+    // refuses a relative path, and goto-definition into a module then answers "nothing
+    // here" instead of erroring. Found by running the real server from a relative
+    // `--module-path`, which is what a person types first.
+    let cwd = std::env::current_dir().context("the working directory must be readable")?;
     let options = jr_lsp::ServerOptions {
-        module_search_paths: args.module_path,
+        module_search_paths: args
+            .module_path
+            .into_iter()
+            .map(|path| {
+                if path.is_absolute() {
+                    path
+                } else {
+                    cwd.join(path)
+                }
+            })
+            .collect(),
     };
     jr_lsp::run_stdio(&options)
         .map_err(|e| anyhow::anyhow!("{e}"))

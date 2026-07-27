@@ -200,8 +200,12 @@ flowchart LR
       What is missing is the VS Code *extension* that launches it, which is genuinely
       packaging. Until this wave §7 called the whole box packaging, which was wrong: it
       needed a crate that did not exist.
-- [ ] Neovim: tree-sitter highlighting — `grammar.js` and `queries/*.scm` exist
-      and the drift gate is green; editor packaging is not done.
+- [x] Neovim: tree-sitter highlighting — and diagnostics, hover and goto-definition
+      besides. `editors/nvim/` is a runtimepath directory needing no plugin manager
+      (ADR-0025); two lines in `init.lua` and one build script. Verified by
+      `nvim --headless -u NONE -l editors/nvim/verify.lua`, 22 checks against the real
+      editor and the real server. Verified rather than gated: Neovim is not a build
+      dependency of this workspace.
 - [ ] CI green on macOS arm64 **and** Linux x86-64 — the matrix is configured for
       both; only macOS arm64 has been verified locally.
 - [x] CI drift gate: every corpus file parses cleanly in *both* the compiler and
@@ -234,7 +238,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `jr-sema` | **Done** | Signatures + checking (ADR-0016). No const-eval: that is `jr-vm` |
 | `jr-db` | **Done** | salsa queries: module loader, sema, MIR built *and* optimized, const-eval, run (ADR-0007, ADR-0014, ADR-0018 §3, ADR-0021 §1) |
 | `jr-cli` | **Done** | `jr check` (with `--module-path`), `jr fmt`, `jr parse`, `jr run`, `jr build`, `jr lsp` |
-| `tree-sitter-jairs` | **Done** | Grammar + queries; drift gate green |
+| `tree-sitter-jairs` | **Done** | Grammar + queries; drift gate green, and every query file is now compiled against the grammar (ADR-0025 §4) |
 | `tests/corpus` | **Done** | 69 files, incl. `type-errors/` and `cfg-errors/` — one file per diagnostic |
 | `modules/Basic` | **Done** | Written, resolving, type-checking and **executing**; MIR snapshotted |
 | `jr-mir` | **Done** | Typed SSA, Braun construction, CFG diagnostics (ADR-0017); a mid-end of four passes — inliner, store-to-load forwarding, const-prop, DCE — behind `optimize` (ADR-0021, ADR-0022, ADR-0023). Forwarding is block-local; no SROA |
@@ -245,8 +249,10 @@ Status of each slice component, so this is answerable without reading the tree.
 | `jr-codegen-llvm` | **Not started** | Wave W8 owns it (ADR-0019 §5) |
 | `jr-lsp` | **Done** | `lsp-server` loop over `jr-db` queries: diagnostics, hover, goto-definition, run as `jr lsp` (ADR-0024). No completion, rename or inlay hints — W9 owns those |
 | `jr-driver` | **Not started** | |
+| `editors/nvim` | **Done** | Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 22 checks, needs an editor CI does not have |
+| VS Code extension | **Not started** | The remaining half of §1.4's first box |
 
-Accepted ADRs: 0001–0024. See [`docs/adr/README.md`](docs/adr/README.md).
+Accepted ADRs: 0001–0025. See [`docs/adr/README.md`](docs/adr/README.md).
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
 plus `jr-sema`'s crate docs are the only record of the typing rules today.

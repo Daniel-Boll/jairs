@@ -1,0 +1,1 @@
+../../../../tree-sitter-jairs/queries/indents.scm

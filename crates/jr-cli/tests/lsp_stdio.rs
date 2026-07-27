@@ -231,6 +231,65 @@ fn the_negotiated_encoding_is_utf16_when_utf8_is_not_offered() {
 }
 
 #[test]
+fn a_relative_module_path_still_resolves_across_an_import() {
+    // A regression test for a *silent* failure. A `Location` needs a `file:` URI and
+    // `jr_lsp::uri::from_path` correctly refuses a relative path, so a server started
+    // with `--module-path modules` — which is what a person types first — answered
+    // goto-definition into a module with "nothing here" rather than an error. The fix
+    // absolutises the search path once, in `jr lsp`, because a server's working
+    // directory is whatever the editor happened to have.
+    //
+    // Run from the workspace root so that `modules` is a meaningful relative path, which
+    // is the whole point of the case.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_jr"))
+        .arg("lsp")
+        .arg("--quiet")
+        .arg("--module-path")
+        .arg("modules")
+        .current_dir(workspace_root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("the `jr` binary is built before its own integration tests");
+    let stdin = child.stdin.take().expect("piped");
+    let stdout = BufReader::new(child.stdout.take().expect("piped"));
+    let mut server = Server {
+        child,
+        stdin,
+        stdout,
+    };
+
+    let path = workspace_root()
+        .join("tests/corpus/valid/024-hello.jr")
+        .canonicalize()
+        .expect("the exit criterion's file must exist");
+    let source = std::fs::read_to_string(&path).expect("readable");
+    let uri = format!("file://{}", path.display());
+
+    let _ = server.initialize(serde_json::json!(["utf-8"]));
+    server.did_open(&uri, &source);
+
+    // Line 30 is `        print(MESSAGE);`; character 8 is the `p` of `print`, which
+    // resolves through the `#import` into `modules/Basic`.
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/definition",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 30, "character": 8 }
+        }
+    }));
+    let found = server.response(2);
+    let target = found["result"]["uri"].as_str().unwrap_or_default();
+    assert!(
+        target.ends_with("modules/Basic/module.jr"),
+        "expected a location in the Basic module, got {target:?}"
+    );
+}
+
+#[test]
 fn opening_a_broken_file_publishes_diagnostics() {
     // The other half of the transport: a *notification* the server sends unprompted. A
     // handler test cannot see this at all, because nothing calls it — the server decides

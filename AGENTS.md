@@ -41,12 +41,16 @@ cargo test --workspace
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo run -q -p jr-cli -- fmt --check tests/corpus/valid tests/corpus/imports/valid \
     tests/corpus/type-errors tests/corpus/cfg-errors tests/corpus/modules modules
-# corpus drift (tree-sitter is not installed locally):
+# corpus drift + query validation (tree-sitter is not installed locally):
 cd tree-sitter-jairs && npx --yes tree-sitter-cli@0.26.11 generate \
   && npx --yes tree-sitter-cli@0.26.11 parse --quiet ../tests/corpus/valid/*.jr \
      ../tests/corpus/imports/valid/*.jr ../tests/corpus/type-errors/*.jr \
      ../tests/corpus/cfg-errors/*.jr ../tests/corpus/modules/*.jr \
-     ../tests/corpus/modules/*/*.jr ../modules/*/*.jr
+     ../tests/corpus/modules/*/*.jr ../modules/*/*.jr \
+  && for q in highlights folds indents locals; do \
+       npx --yes tree-sitter-cli@0.26.11 query "queries/$q.scm" \
+         ../tests/corpus/valid/024-hello.jr > /dev/null || exit 1; \
+     done
 ```
 
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
@@ -124,6 +128,14 @@ picking a side quietly.
   it rejects the *whole* command, so a `python3` heredoc chained after a `grep` silently
   never runs. If an edit appears not to have applied, check whether its command was
   refused. Use the dedicated search tools instead.
+- A query naming a node the grammar has not got used to be **undetectable**, and the
+  failure is silent: highlighting simply stops. `tree-sitter query` exits 1 with
+  `Invalid node type`, which is why gate 6 now runs it over all four query files
+  (ADR-0025 §4).
+- Editor integration is **verified, not gated**:
+  `nvim --headless -u NONE -l editors/nvim/verify.lua` (22 checks, non-zero on failure).
+  Neovim is not a build dependency, so it is not one of the six — but run it after
+  touching `jr-lsp`, `grammar.js` or the queries.
 - `insta` snapshots: review the `.snap.new` diff, then move it over the `.snap` and
   delete the `assertion_line:` header line, which is noise that changes whenever a test
   moves.
