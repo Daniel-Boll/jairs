@@ -297,7 +297,51 @@ impl Ctx<'_> {
         let ty = self.pool.proc_type(params.clone(), ret, context);
         let sig = ProcSig { params, ret, ty };
         self.sigs.insert_proc(proc, sig.clone());
+        if let Some(library) = self.foreign_library_of(&declaration) {
+            self.sigs.insert_foreign_library(proc, library);
+        }
         sig
+    }
+
+    /// Resolves a `#foreign` procedure's library operand to an interned library.
+    ///
+    /// `write :: (...) #foreign libc "write"` names the *constant* `libc`, not the
+    /// library `"c"`. Getting from one to the other means finding the item that
+    /// constant declares and reading the `#system_library` directive out of it.
+    ///
+    /// `None` for a procedure that is not `#foreign`, that named no library, or
+    /// whose operand does not resolve to a `#system_library` declaration. The last
+    /// case is already an E0225 from the check phase, and returning `None` here
+    /// means a consumer refuses to guess rather than inventing a library name.
+    ///
+    /// ADR-0019 §4 put this here. It used to be done twice — once in this crate to
+    /// check the operand denotes a library, and once in `jr-vm` to make the call —
+    /// and the native back end would have been a third. The answer is interned in
+    /// the pool so that all three read one resolution.
+    fn foreign_library_of(&mut self, declaration: &jr_hir::Proc) -> Option<PoolId> {
+        let name = declaration.foreign.as_ref()?.library?;
+        let hir = self.hir;
+        let item = hir.scope.get(name)?;
+        let ItemKind::Const {
+            value: ConstValue::Expr(expr),
+        } = &hir.items.get(item.index())?.kind
+        else {
+            return None;
+        };
+        let jr_hir::Expr::Directive {
+            name: directive,
+            arg,
+            span: _,
+        } = hir.exprs.get(expr.index())?
+        else {
+            return None;
+        };
+        let interner = self.interner;
+        if interner.resolve(*directive) != "system_library" {
+            return None;
+        }
+        let arg = arg.clone()?;
+        Some(self.pool.foreign_library_value(&arg))
     }
 
     /// Reports a constant whose type depends on itself.

@@ -8,22 +8,24 @@
 //! in `jr-db` would make the VM only testable through salsa, which is the same
 //! argument `jr-mir`'s test harness makes for keeping lowering a pure function.
 //!
-//! # Why a `#foreign` procedure needs its library resolved *again*
+//! # Where a `#foreign` procedure's library comes from
 //!
-//! `ForeignInfo::library` is a [`Symbol`] naming the *constant* — `libc` — not the
-//! library. Getting from there to `"c"` means finding the item that constant declares
-//! and reading the `#system_library "c"` directive out of it. `jr-sema` already did
-//! this walk once, to check that the name denotes a library (E0225), and recorded
-//! nothing: ADR-0016 §3 gives such a constant an opaque type, and a constant's
-//! *value* is not something sema records at all.
+//! From [`FileSignatures::foreign_library`], and nowhere else.
 //!
-//! So this is the second independent implementation of one lookup, which ADR-0018 §4
-//! records as accepted debt with a clear trigger: a third is the signal to intern the
-//! resolved library beside [`jr_pool::Item::ForeignLibraryValue`], where both callers
-//! could read it.
+//! `ForeignInfo::library` is a [`jr_base::Symbol`] naming the *constant* — `libc` —
+//! not the library, and getting from there to `"c"` means finding the item that
+//! constant declares and reading its `#system_library` directive. This crate used to
+//! perform that walk itself, which made it the second independent implementation of
+//! one lookup; ADR-0018 §4 recorded that as accepted debt with a trigger, namely a
+//! third consumer.
+//!
+//! The native back end is that third consumer, so ADR-0019 §4 fired the trigger: the
+//! walk now happens once, in `jr-sema`'s signature phase, and the answer is interned
+//! in the pool. Read the string with [`Pool::foreign_library_name`]. `None` still
+//! means *refuse to guess* rather than "assume libc".
 
-use jr_base::{FileId, Interner, Symbol};
-use jr_hir::{ConstValue, Expr, FileHir, ItemKind, ProcId};
+use jr_base::FileId;
+use jr_hir::{FileHir, ProcId};
 use jr_mir::{FileMir, ProcRef};
 use jr_pool::{Pool, TargetLayout};
 use jr_sema::FileSignatures;
@@ -51,7 +53,6 @@ pub fn add_file(
     mir: &FileMir,
     signatures: &FileSignatures,
     pool: &Pool,
-    interner: &Interner,
 ) -> Result<(), VmError> {
     for (_proc, outcome) in mir.iter() {
         if let Ok(body) = outcome {
@@ -76,42 +77,16 @@ pub fn add_file(
         program.insert(Routine::Foreign(ForeignProc {
             proc: ProcRef::new(file, proc),
             symbol,
-            library: info
-                .library
-                .and_then(|name| library_name(hir, interner, name)),
+            library: signatures
+                .foreign_library(proc)
+                .and_then(|id| pool.foreign_library_name(id))
+                .map(str::to_owned),
             params: sig.params.clone(),
             ret: sig.ret,
         }));
     }
 
     Ok(())
-}
-
-/// Resolves the constant `name` to the library string it declares.
-///
-/// `libc :: #system_library "c";` becomes `Some("c")`. Anything else — a name that
-/// denotes no item, or an item that is not a `#system_library` directive — becomes
-/// `None`, and the bridge then refuses to guess which library was meant.
-fn library_name(hir: &FileHir, interner: &Interner, name: Symbol) -> Option<String> {
-    let item = hir.scope.get(name)?;
-    let ItemKind::Const {
-        value: ConstValue::Expr(expr),
-    } = &hir.items.get(item.index())?.kind
-    else {
-        return None;
-    };
-    let Expr::Directive {
-        name: directive,
-        arg,
-        span: _,
-    } = hir.exprs.get(expr.index())?
-    else {
-        return None;
-    };
-    if interner.resolve(*directive) != "system_library" {
-        return None;
-    }
-    arg.clone()
 }
 
 /// An empty program for the host's own layout.

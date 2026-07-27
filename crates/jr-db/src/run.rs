@@ -67,7 +67,6 @@ pub fn run_main(
     let entry = main_of(db, root).ok_or_else(|| "the file declares no `main`".to_owned())?;
 
     let files = reachable(db, root, search_paths);
-    let interner = db.interner();
 
     // Gather every query result before locking the pool: the lock must never be held
     // across a nested query call, which is the rule the rest of this crate follows.
@@ -95,7 +94,6 @@ pub fn run_main(
             mir.as_ref(),
             signatures.as_ref(),
             &pool,
-            interner,
         )
         .map_err(|e: VmError| e.to_string())?;
     }

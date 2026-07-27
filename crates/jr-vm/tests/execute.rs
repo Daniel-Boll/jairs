@@ -94,7 +94,6 @@ impl Fixture {
             &mir,
             &signatures.signatures,
             &pool,
-            &interner,
         )
         .expect("every body in a clean program must compile");
 

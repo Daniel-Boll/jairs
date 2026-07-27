@@ -174,6 +174,37 @@ pub enum LayoutError {
     ComptimeOnly(PoolId),
 }
 
+impl std::fmt::Display for LayoutError {
+    /// Renders the culprit, not just the category.
+    ///
+    /// Every consumer of this type reports a *compiler* fault — `jr-vm`'s
+    /// `VmError::Internal` and `jr-codegen`'s `CodegenError::NoLayout` — so the
+    /// message is read by whoever has to fix the compiler. Naming the offending
+    /// [`PoolId`] or [`DeclId`] is the whole reason these variants carry one, and a
+    /// `Debug` rendering at the call site would have thrown that away.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Poison => write!(f, "a poisoned type has no layout"),
+            Self::NotAType(id) => {
+                write!(f, "pool item {} is a value, not a type", id.index())
+            }
+            Self::UnresolvedStruct(decl) => {
+                write!(f, "struct {decl:?} has no recorded fields yet")
+            }
+            Self::Recursive(decl) => {
+                write!(f, "struct {decl:?} contains itself without a pointer")
+            }
+            Self::ComptimeOnly(id) => write!(
+                f,
+                "pool item {} exists only at compile time and has no runtime size",
+                id.index()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LayoutError {}
+
 // ---------------------------------------------------------------------------
 // Alignment arithmetic
 // ---------------------------------------------------------------------------

@@ -124,6 +124,23 @@ pub struct FileSignatures {
     /// file and an index — it cannot render `Rect`. Diagnostics need to, so the
     /// name is recorded on the side.
     type_names: FxHashMap<PoolId, String>,
+    /// The resolved library of each `#foreign` procedure declared in this file.
+    ///
+    /// The [`PoolId`] names an [`jr_pool::Item::ForeignLibraryValue`]; read the string back
+    /// with [`Pool::foreign_library_name`]. Absent for a procedure that is not
+    /// `#foreign`, that named no library, or whose library operand did not resolve
+    /// to a `#system_library` declaration — a consumer then knows the answer is
+    /// unavailable rather than guessing which library was meant.
+    ///
+    /// ADR-0019 §4 is why this exists. `ForeignInfo::library` names the *constant*
+    /// (`libc`), not the library (`"c"`), and getting from one to the other used to
+    /// be done independently by this crate for E0225 and by `jr-vm` to make a call.
+    /// The native back end is the third consumer, which is the trigger ADR-0018 §4
+    /// set for interning the answer once. Recorded here, alongside `struct_bodies`
+    /// and for the same reason: the resolution happens in the phase that already
+    /// walks these declarations, and every later consumer reads it instead of
+    /// repeating it.
+    foreign_libraries: FxHashMap<ProcId, PoolId>,
 }
 
 impl FileSignatures {
@@ -149,6 +166,21 @@ impl FileSignatures {
     #[must_use]
     pub fn type_name(&self, ty: PoolId) -> Option<&str> {
         self.type_names.get(&ty).map(String::as_str)
+    }
+
+    /// Returns the interned library of a `#foreign` procedure.
+    ///
+    /// The result names an [`jr_pool::Item::ForeignLibraryValue`]; pass it to
+    /// [`Pool::foreign_library_name`] for the string.
+    ///
+    /// `None` when the procedure is not `#foreign`, declared no library, or named
+    /// something that is not a `#system_library` declaration — the last case being
+    /// an E0225 the check phase reports. A consumer must treat `None` as *the
+    /// library is unknown* and refuse, rather than defaulting to a likely one:
+    /// guessing produces a link against a library the source never named.
+    #[must_use]
+    pub fn foreign_library(&self, proc: ProcId) -> Option<PoolId> {
+        self.foreign_libraries.get(&proc).copied()
     }
 
     /// The number of named declarations. Non-zero for any file that declares
@@ -199,5 +231,10 @@ impl FileSignatures {
     /// Records the display name of a nominal type.
     pub(crate) fn insert_type_name(&mut self, ty: PoolId, name: String) {
         self.type_names.insert(ty, name);
+    }
+
+    /// Records a `#foreign` procedure's resolved library.
+    pub(crate) fn insert_foreign_library(&mut self, proc: ProcId, library: PoolId) {
+        self.foreign_libraries.insert(proc, library);
     }
 }

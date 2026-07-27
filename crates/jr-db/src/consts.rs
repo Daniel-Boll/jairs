@@ -225,7 +225,6 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
                 signatures.signatures.as_ref(),
                 imports.as_ref(),
                 &values,
-                interner,
                 &mut pool,
             ) {
                 Ok(value) => {
@@ -304,7 +303,6 @@ fn evaluate(
     signatures: &jr_sema::FileSignatures,
     imports: &ImportedProcs,
     values: &ConstValues,
-    interner: &jr_base::Interner,
     pool: &mut Pool,
 ) -> Result<PoolId, String> {
     let thunk_proc = jr_mir::thunk_ref(hir, file_id, target.expr().index());
@@ -329,7 +327,7 @@ fn evaluate(
         .ok_or_else(|| "the expression was never typed".to_owned())?;
 
     let mut program = jr_vm::comptime_program();
-    jr_vm::add_file(&mut program, file_id, hir, mir, signatures, pool, interner)
+    jr_vm::add_file(&mut program, file_id, hir, mir, signatures, pool)
         .map_err(|e: VmError| e.to_string())?;
     program.insert(Routine::Bytecode(
         jr_vm::compile(&body, pool, program.target()).map_err(|e: VmError| e.to_string())?,

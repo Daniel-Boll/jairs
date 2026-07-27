@@ -332,6 +332,42 @@ impl Pool {
         self.intern(Item::ForeignLibraryValue(str_id))
     }
 
+    /// Reads a foreign library value back out, e.g. `"c"`.
+    ///
+    /// `None` when `id` names anything else, so a caller that was handed the wrong
+    /// [`PoolId`] gets nothing rather than a plausible-looking string.
+    ///
+    /// This exists so that no consumer matches on
+    /// [`Item::ForeignLibraryValue`] itself. ADR-0019 §4 makes the pool the *one*
+    /// place a `#foreign` library is resolved — sema records the answer here and
+    /// the VM and the native back end read it — and three call sites each
+    /// destructuring the item would reintroduce, in a smaller way, exactly the
+    /// divergence that consolidating the resolution was meant to end.
+    #[must_use]
+    pub fn foreign_library_name(&self, id: PoolId) -> Option<&str> {
+        // Matched exhaustively, like `type_of` above, so that adding an item kind
+        // is a compile error here rather than silently falling into `None`.
+        match self.item(id) {
+            Item::ForeignLibraryValue(str_id) => Some(self.resolve_str(*str_id)),
+            Item::VoidType
+            | Item::BoolType
+            | Item::IntType { .. }
+            | Item::StringType
+            | Item::TypeType
+            | Item::ErrorType
+            | Item::ForeignLibraryType
+            | Item::PointerType(_)
+            | Item::StructType { .. }
+            | Item::ProcType { .. }
+            | Item::VoidValue
+            | Item::BoolValue(_)
+            | Item::IntValue { .. }
+            | Item::StrValue(_)
+            | Item::TypeValue(_)
+            | Item::ProcValue { .. } => None,
+        }
+    }
+
     // -----------------------------------------------------------------------
     // String values
     // -----------------------------------------------------------------------
