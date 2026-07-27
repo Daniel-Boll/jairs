@@ -194,7 +194,12 @@ flowchart LR
       `a_trap_names_its_source_location_identically_in_both_engines` compares the
       finished bytes. A trap on a compiler-invented value still reports without a
       location, which is `MirSpan::Synthetic` being honest rather than a gap.
-- [ ] VS Code: diagnostics + hover + goto-def
+- [ ] VS Code: diagnostics + hover + goto-def — **the server exists** (`jr lsp`,
+      ADR-0024) and answers all three over LSP 3.17, asserted by
+      `crates/jr-cli/tests/lsp_stdio.rs` speaking the real protocol to the real binary.
+      What is missing is the VS Code *extension* that launches it, which is genuinely
+      packaging. Until this wave §7 called the whole box packaging, which was wrong: it
+      needed a crate that did not exist.
 - [ ] Neovim: tree-sitter highlighting — `grammar.js` and `queries/*.scm` exist
       and the drift gate is green; editor packaging is not done.
 - [ ] CI green on macOS arm64 **and** Linux x86-64 — the matrix is configured for
@@ -228,7 +233,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `jr-pool` | **Done** | Types + comptime values in one pool (ADR-0015, ADR-0016 §3); layout (ADR-0018 §2); ADR-0002's integer arithmetic, shared by both evaluators (ADR-0022 §2) |
 | `jr-sema` | **Done** | Signatures + checking (ADR-0016). No const-eval: that is `jr-vm` |
 | `jr-db` | **Done** | salsa queries: module loader, sema, MIR built *and* optimized, const-eval, run (ADR-0007, ADR-0014, ADR-0018 §3, ADR-0021 §1) |
-| `jr-cli` | **Done** | `jr check` (with `--module-path`), `jr fmt`, `jr parse`, `jr run`, `jr build` |
+| `jr-cli` | **Done** | `jr check` (with `--module-path`), `jr fmt`, `jr parse`, `jr run`, `jr build`, `jr lsp` |
 | `tree-sitter-jairs` | **Done** | Grammar + queries; drift gate green |
 | `tests/corpus` | **Done** | 69 files, incl. `type-errors/` and `cfg-errors/` — one file per diagnostic |
 | `modules/Basic` | **Done** | Written, resolving, type-checking and **executing**; MIR snapshotted |
@@ -238,9 +243,10 @@ Status of each slice component, so this is answerable without reading the tree.
 | `jr-codegen-clif` | **Done** | MIR → Cranelift IR, layout via `jr-pool`, traps through a generated helper (ADR-0019). Aggregate params only; aggregate returns and indirect calls refused |
 | `jr-link` | **Done** | `cranelift-object` bytes, then `cc`; ad-hoc codesign is a fallback because `ld64` already signs |
 | `jr-codegen-llvm` | **Not started** | Wave W8 owns it (ADR-0019 §5) |
-| `jr-driver`, `jr-lsp` | **Not started** | |
+| `jr-lsp` | **Done** | `lsp-server` loop over `jr-db` queries: diagnostics, hover, goto-definition, run as `jr lsp` (ADR-0024). No completion, rename or inlay hints — W9 owns those |
+| `jr-driver` | **Not started** | |
 
-Accepted ADRs: 0001–0023. See [`docs/adr/README.md`](docs/adr/README.md).
+Accepted ADRs: 0001–0024. See [`docs/adr/README.md`](docs/adr/README.md).
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
 plus `jr-sema`'s crate docs are the only record of the typing rules today.
@@ -490,134 +496,139 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 ## 7. Immediate next actions
 
-Everything through **store-to-load forwarding** is done: workspace scaffolding, the
-ADRs, spec chapters 00–03, the corpus plus the drift gate, the
-lexer→parser→CST→`jr fmt` inch, HIR and name resolution, the module loader, the
-InternPool, `jr-sema`, `jr-mir`, `jr-vm`, `jr-codegen`, `jr-codegen-clif`, `jr-link`,
-and a four-pass mid-end behind `jr_mir::optimize`. See §1.5 for component status.
-**668 workspace tests**, all six gates green.
+Everything through the **language server** is done: workspace scaffolding, the ADRs,
+spec chapters 00–03, the corpus plus the drift gate, the lexer→parser→CST→`jr fmt` inch,
+HIR and name resolution, the module loader, the InternPool, `jr-sema`, `jr-mir`,
+`jr-vm`, `jr-codegen`, `jr-codegen-clif`, `jr-link`, a four-pass mid-end, and `jr-lsp`.
+See §1.5 for component status. **695 workspace tests**, all six gates green.
 
-**§1.4's exit criterion finally optimises.** Its `main` loses the `Point` slot
-entirely, `4 + 5` becomes `9`, `9 > 5` becomes `true`, the `if` collapses, and DCE
-deletes the arm that cannot run — and both engines still print both lines and exit 0.
-The `ptr.* == 9` branch survives, which is correct: it reads through a real pointer,
-and forwarding refuses those.
+**ADR-0007's central claim is no longer an assertion.** The LSP is a consumer of the
+same salsa queries as the batch compiler: `diagnostics` is `file_diagnostics` reshaped,
+`hover` is `checked`'s `TypeMap` looked up, `goto_definition` is `resolved`'s
+`ResolveMap` followed. The only thing in `jr-lsp` that is not a query is the offset-to-
+node scan, and that is because ADR-0013 deferred `AstIdMap`.
 
-### What the forwarding wave landed
+### Two corrections this wave had to make first
 
-- [x] **ADR-0023**, three decisions: block-local and flow-sensitive rather than a
-      dataflow analysis; only slot-local places participate, with an explicit kill set;
-      and two distinct projection steps are disjoint storage, which is a claim about
-      fields and not about layout.
-- [x] **`jr-mir`'s `forward.rs`** — one backward search per load, so the nearest
-      preceding store wins and the first kill ends the search.
-- [x] **One shared escaping-slots predicate**, used by forwarding and by `dce`'s
-      dead-store elimination, so the two cannot disagree about what escaping means.
-- [x] **10 new tests**, including the two refusals that make the pass sound and two
-      differential cases that assert a *value* rather than an agreement.
+Both were claims **this document** made, and both were wrong.
 
-Three things about this wave are worth carrying forward.
+- **§7 said the slice's remaining boxes were "editor packaging and a Linux CI run,
+  neither of which is compiler work", for three waves.** §1.4's first open box is *"VS
+  Code: diagnostics + hover + goto-def"*, which needed a crate that was one line of doc
+  comment with no dependencies — while §1.3 scoped `jr-lsp` into the slice in as many
+  words, justified as "proves the salsa boundary is real", and `lsp-server` and
+  `lsp-types` sat pinned and unused in §5's table from the beginning. The box is now
+  rewritten to separate the server (done) from the extension (packaging).
+- **§7 and ADR-0022 §1 said "§1.3's estimate has been waiting for" a performance
+  number.** §1.3 contains no performance estimate; its only figure is §1.4's "Estimated:
+  10–14 weeks solo", which is a schedule. §2.1 assigns the published compile-throughput
+  number to **wave W8**, and ADR-0019 §6's wording is a *trigger* — the inliner must
+  exist before any number is published — not a debt. The inliner exists, so nothing is
+  owed. ADR-0022 stays as written, because an ADR is immutable; ADR-0024's Context is
+  the record that one of its sentences was false.
 
-- **The obvious rule would have been wrong, and reading `print`'s MIR is what showed
-  it.** `store s0 <- v0` followed by `load s0.data` shares storage, so a rule phrased as
-  "forward when the places overlap" would forward a whole aggregate into a field load.
-  MIR has no rvalue that extracts a field from a *value* — `Projection::Field` applies
-  to a `Place` — so a prefix relation has to be a **kill**, not a match. Overlap has
-  three cases and only one of them forwards.
-- **A coarse guard was rejected for a reason the previous wave supplied.** Refusing any
-  slot whose address is ever taken is simpler and obviously sound, and it would have
-  declined `sum` in `024-hello.jr` — whose address is taken four blocks *after* the pair
-  being forwarded — so the fold and the branch collapse would not have happened. That is
-  the exact failure mode ADR-0022 §4's first draft had, one ADR earlier, so the guard is
-  about the *interval* rather than the body.
-- **Disjointness is decided from indices, never from offsets.** `s0.0` and `s0.1` do not
-  overlap because a struct has distinct fields, not because of where they sit. Nothing in
-  `jr-mir` asks for a size or an offset, so ADR-0017 §5 holds and §7's first Trap is
-  avoided.
+The lesson is the one this project keeps relearning: **a claim in a plan is not evidence.**
+Three waves of handoff repeated "the rest is packaging" without anyone opening
+`crates/jr-lsp/src/lib.rs`.
 
-Diagnostic codes: **E0231 is still the first free code.** Forwarding defines none: a
-refusal is a policy decision and a malformed result is a verifier assertion. E0230 is
-`jr-db`'s const-eval failure; E0227–E0229 are `jr-mir`'s. Beware that `jr-syntax`'
-parser still illegally emits E0200/E0201/E0202 for "arrives in wave Wn" errors,
-colliding with `jr-hir` — do not filter tests by those.
+### What the language-server wave landed
 
-### Next: the performance number, which now has no excuses left
+- [x] **ADR-0024**, five decisions: a span scan rather than `AstIdMap`; a worker thread
+      reading a snapshot with salsa's own cancellation; negotiated position encoding with
+      a UTF-16 fallback; pure handlers plus one stdio smoke test; and `jr lsp` rather
+      than a second binary.
+- [x] **`JairsDatabase::snapshot`** — a field-wise clone, because `Interner` was already
+      an `Arc<ThreadedRodeo>` and every other field was already behind a mutex.
+- [x] **`jr-lsp`**: `position` (encoding conversion), `uri` (`file:` paths, hand-written
+      because `lsp-types` 0.97 dropped `Url`), `locate` (offset → HIR node), `handlers`
+      (the three capabilities), `server` (the stdio loop).
+- [x] **`jr lsp`**, and no new workspace dependency: `lsp-server`, `lsp-types`, `salsa`,
+      `serde_json` and `crossbeam-channel` were all already pinned.
+- [x] **27 new tests**, of which three speak the real protocol to the real binary.
 
-Every compiler criterion in §1.4 is met and the mid-end has four passes. The three
-boxes still open are editor packaging and a Linux CI run, neither of which is compiler
-work.
+Four things about this wave are worth carrying forward.
 
-**ADR-0019 §6's expiry condition is satisfied and has been for three waves.** The
-number has not been taken, and this is the wave that should take it. One honest problem
-has to be faced rather than worked around, and it is a *language* gap:
+- **The stdio test earned its place on the first run.** `io.join()` waits for the writer
+  thread, which runs until every `Sender` into it is dropped — and `connection.sender` is
+  one of them. Joining while `connection` was still in scope deadlocked: every request
+  was answered correctly and the process simply never exited. No handler test could see
+  that, which is exactly why ADR-0024 §4 required a transport test and why the
+  `jr-codegen` lesson (both lines printed, exit status 1) was the argument for it.
+- **The worker held its snapshot between jobs, and that is a stall by construction.**
+  salsa blocks a writer until the snapshot count returns to one, so a cached snapshot
+  makes every edit wait for the last request. Each job now *owns* its snapshot, so the
+  borrow ends when the job does — including when it unwinds. ADR-0024 §2 predicted this
+  footgun in prose and the first implementation walked into it anyway.
+- **`jr_db::LineIndex::line_col` is 1-based and LSP is 0-based.** Converted once, in
+  `position.rs`, because the same off-by-one applied at four call sites is how a server
+  ends up highlighting the line below the error.
+- **`lsp-types` 0.97 replaced `Url` with a newtype over `fluent_uri::Uri`**, which knows
+  nothing about filesystem paths. Rather than add the `url` crate, `jr-lsp` owns ~40
+  lines of path↔URI conversion — and refuses Windows paths with a `compile_error!`
+  instead of half-handling them.
 
-> **Jairs-0 cannot express a benchmark.** No arrays, no `for`, no floats, and no way to
-> print an integer. The only expressible workload is integer arithmetic in a `while`
-> loop ending in `exit`, which measures Cranelift's register allocator more than
-> anything the mid-end does.
+Diagnostic codes: **E0231 is still the first free code.** `jr-lsp` defines none: it
+reports what the queries produced and adds no analysis. E0230 is `jr-db`'s const-eval
+failure; E0227–E0229 are `jr-mir`'s. Beware that `jr-syntax`' parser still illegally
+emits E0200/E0201/E0202 for "arrives in wave Wn" errors, colliding with `jr-hir` — do
+not filter tests by those.
 
-So the number that is honestly obtainable today is **compile throughput** on generated
-source, and it mostly describes the front end. Say so when publishing it, and defer a
-runtime number to wave W1, where arrays and `for` make a real workload writable.
+### Next: close the slice, for real this time
 
-#### Read first, in this order
-
-1. This section, then §1.3 for the estimate the number answers, and §1.5 for status.
-2. **ADR-0019 §6**, which is where the expiry condition and the reason for it are
-   written down.
-3. **ADR-0023's follow-on work**, which names the W1 benchmark gap as a language
-   problem rather than a tooling one.
+What remains of §1.4 is now genuinely packaging and platform work, and it is worth
+saying that only because the previous claim to that effect was checked and found false.
 
 #### Work items, in dependency order
 
-- [ ] **A benchmark harness.** Generated Jairs source well past the corpus's 43-line
-      maximum, a way to run it repeatedly without machine noise swamping the signal, and
-      a committed place in §1.3 to report the answer. Note that "generated" needs a
-      generator that produces *checkable* programs — a thousand procedures that each
-      call the previous one is easy; a thousand that type-check and do something is not.
-- [ ] **The published compile-throughput number**, with its scope stated: what was
-      measured, on what machine, and that it describes the front end.
-- [ ] **Cross-block forwarding, or SROA.** ADR-0023 §1's rejected alternatives, with
-      their arguments answered. SROA is the one that would fix `print` — and it needs
-      ADR-0017 §2's "there will never be a `mem2reg`" re-argued rather than quietly
-      contradicted, because that claim is about *locals* and an aggregate slot is a
-      different case.
-- [ ] **Compact the SSA value arena**, so a dead definition stops costing a register.
+- [ ] **A VS Code extension** that launches `jr lsp`, contributes the `jairs` language id
+      and the `.jr` extension, and ships the tree-sitter grammar for highlighting. Small,
+      and it is what makes §1.4's first box tickable.
+- [ ] **Neovim packaging** — an `lspconfig` entry and the tree-sitter parser registration.
+      The grammar and queries already exist and the drift gate is green.
+- [ ] **A verified Linux x86-64 CI run.** The matrix is configured and has never run.
+      Expect real work rather than a green tick: `cranelift_native` asks the host,
+      `jr-pool` supplies layout, `cc` is invoked differently, and there is no codesigning
+      step — so "should work" and "has been run" are different claims and only the second
+      belongs in a status table.
+- [ ] **Then wave W8's compile-throughput number**, where §2.1 puts it. ADR-0023's
+      follow-on records why a *runtime* number waits for W1: Jairs-0 has no arrays, no
+      `for`, no floats and no way to print an integer, so the only expressible workload
+      is arithmetic in a `while` loop.
 
 #### Also open, and smaller
 
-- **A finer optimized-MIR key.** ADR-0021 §1's rejected alternative; editing
-  `modules/Basic` still invalidates every importer's optimized MIR wholesale.
-- **An inline stack per span.** ADR-0021 §3's rejected alternative, which `#expand`
-  turns into a semantic requirement.
-- **A cross-file `#run`.** Still open, and ADR-0021 §2's soundness depends on its
-  absence. `a_cross_file_run_is_still_refused` is the tripwire.
-- **Alias analysis**, without which an intervening call kills forwarding for any
-  address-taken slot whether or not the call could reach it.
-- **Whether a provably-trapping operation in dead code is a compile-time error.**
-  ADR-0022 §5 declines to decide it.
-- **Aggregate returns and calls through a procedure pointer**, both `Unsupported` in
-  both engines.
-- **Linux x86-64.** Configured in CI, never run.
+- **Keystroke-to-diagnostic latency**, which ADR-0013 named as its own trigger for
+  deciding whether `AstIdMap` earns its keep. This wave is what makes it measurable: the
+  offset-to-node scan is O(nodes) per request.
+- **Cross-block store-to-load forwarding, or SROA.** ADR-0023 §1's rejected alternatives.
+- **Compact the SSA value arena**, so a dead definition stops costing a register.
+- **A finer optimized-MIR key.** ADR-0021 §1's rejected alternative.
+- **An inline stack per span.** ADR-0021 §3's, which `#expand` makes a semantic
+  requirement.
+- **A cross-file `#run`.** ADR-0021 §2's soundness depends on its absence;
+  `a_cross_file_run_is_still_refused` is the tripwire.
+- **Aggregate returns and calls through a procedure pointer**, `Unsupported` in both
+  engines.
 
 #### Traps
 
-- **Do not compute layout.** Now doubly relevant: ADR-0023 decides disjointness from
-  projection *indices*, and the tempting improvement — comparing byte ranges — is
-  exactly the mistake. `jr-codegen-clif`'s `repr.rs` is the only place layout enters.
-- **Do not compute a value outside `jr-pool`.** ADR-0022 §2. A second evaluator does not
-  produce a disagreement the differential can see; it produces agreement on a wrong
-  answer.
-- **Do not optimise a frozen body.** ADR-0021 §2. The one mid-end rule whose violation
-  is a silent comptime/runtime divergence.
+- **Do not hold a database snapshot across requests.** ADR-0024 §2. salsa blocks a writer
+  until the count returns to one, so a cached snapshot stalls the next keystroke — and
+  this wave's first implementation did exactly that.
+- **Do not print to stdout from `jr lsp`.** It is the protocol channel; one stray byte
+  desynchronises the framing for the whole session.
+- **Do not compute a value outside `jr-pool`.** ADR-0022 §2. A second evaluator produces
+  agreement on a wrong answer, not a visible disagreement.
+- **Do not compute layout.** ADR-0017 §5, and ADR-0023 §3's disjointness comes from
+  projection indices for the same reason.
+- **Do not optimise a frozen body.** ADR-0021 §2.
 - **Do not delete a statement without proving its rvalue pure**, and do not forward a
-  load whose place is not *identical* to the store's. Both refusals are exhaustive
-  matches so that a new variant has to be classified deliberately.
+  load whose place is not *identical* to the store's.
 - **Do not format a trap message anywhere but `jr_base::trap_message`.**
-- **Do not add a corpus file without checking it is executed.** `modules/Basic` hid a
-  miscompile for a whole wave because it is not in `tests/corpus/valid/`.
+- **Do not add a corpus file without checking it is executed.**
+- **Do not believe a handoff about what is left.** Open the file.
 
-### After the mid-end
+### After the slice
 
-§1.4's remaining criteria: the LSP (diagnostics, hover, goto-def), editor packaging,
-and CI verified on Linux x86-64 as well as macOS arm64.
+Wave W1 (§2.1): the numeric tower, `cast`, arrays, `enum`. That is where a benchmark
+becomes writable and where `print_int` finally exists.

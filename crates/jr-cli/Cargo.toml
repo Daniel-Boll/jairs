@@ -26,9 +26,11 @@ jr-link.workspace = true
 jr-hir.workspace = true
 jr-syntax.workspace = true
 jr-fmt.workspace = true
+jr-lsp.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 tempfile = "3"
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile = "3"
