@@ -36,6 +36,13 @@ pub enum SyntaxKind {
     LINE_COMMENT,
     /// `/* ... */`, which nests.
     BLOCK_COMMENT,
+    /// `/// ...` — documentation for the declaration that follows (ADR-0027).
+    ///
+    /// Four or more slashes are a [`LINE_COMMENT`](Self::LINE_COMMENT), following
+    /// Rust: a row of slashes is a visual rule, not documentation.
+    DOC_COMMENT,
+    /// `//! ...` — documentation for the enclosing module (ADR-0027).
+    MODULE_DOC_COMMENT,
 
     // ---- literals --------------------------------------------------------
     /// `42`, `0xdead_beef`, `0b1010`, `0o755`.
@@ -330,7 +337,40 @@ impl SyntaxKind {
     pub const fn is_trivia(self) -> bool {
         matches!(
             self,
-            Self::WHITESPACE | Self::LINE_COMMENT | Self::BLOCK_COMMENT
+            Self::WHITESPACE
+                | Self::LINE_COMMENT
+                | Self::BLOCK_COMMENT
+                | Self::DOC_COMMENT
+                | Self::MODULE_DOC_COMMENT
+        )
+    }
+
+    /// Returns `true` for any comment, documentation or not.
+    ///
+    /// This exists so that a consumer which treats all comments alike — the
+    /// formatter has six such sites — cannot silently drop a doc comment by
+    /// matching only the two kinds that predate ADR-0027. Every one of those
+    /// sites ended in a `_ => {}` arm, which is a legitimate branch for the
+    /// tokens it was written for and so would not have failed to compile.
+    #[must_use]
+    pub const fn is_comment(self) -> bool {
+        matches!(
+            self,
+            Self::LINE_COMMENT | Self::BLOCK_COMMENT | Self::DOC_COMMENT | Self::MODULE_DOC_COMMENT
+        )
+    }
+
+    /// Returns `true` for a comment that runs to end of line.
+    ///
+    /// The distinction that matters to the formatter: anything emitted after one of
+    /// these must start on a new line, or it is swallowed by the comment. A
+    /// [`BLOCK_COMMENT`](Self::BLOCK_COMMENT) has a terminator and so does not
+    /// force a break.
+    #[must_use]
+    pub const fn is_line_comment(self) -> bool {
+        matches!(
+            self,
+            Self::LINE_COMMENT | Self::DOC_COMMENT | Self::MODULE_DOC_COMMENT
         )
     }
 
@@ -525,8 +565,22 @@ mod tests {
         assert!(SyntaxKind::WHITESPACE.is_trivia());
         assert!(SyntaxKind::LINE_COMMENT.is_trivia());
         assert!(SyntaxKind::BLOCK_COMMENT.is_trivia());
+        // A doc comment is trivia, which is what keeps the parser out of this
+        // change entirely (ADR-0027 §1).
+        assert!(SyntaxKind::DOC_COMMENT.is_trivia());
+        assert!(SyntaxKind::MODULE_DOC_COMMENT.is_trivia());
         assert!(!SyntaxKind::IDENT.is_trivia());
         assert!(!SyntaxKind::SEMICOLON.is_trivia());
+    }
+
+    #[test]
+    fn every_comment_kind_is_a_comment() {
+        assert!(SyntaxKind::LINE_COMMENT.is_comment());
+        assert!(SyntaxKind::BLOCK_COMMENT.is_comment());
+        assert!(SyntaxKind::DOC_COMMENT.is_comment());
+        assert!(SyntaxKind::MODULE_DOC_COMMENT.is_comment());
+        assert!(!SyntaxKind::WHITESPACE.is_comment());
+        assert!(!SyntaxKind::IDENT.is_comment());
     }
 
     #[test]

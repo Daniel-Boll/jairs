@@ -163,12 +163,26 @@ impl<'a> Lexer<'a> {
     }
 
     fn line_comment(&mut self) -> SyntaxKind {
+        // Classified before consuming, because after the loop the prefix is behind
+        // `self.pos`. Order matters: `////` must be tested before `///`, or a row of
+        // slashes used as a section rule becomes documentation (ADR-0027 §1).
+        let rest = self.rest();
+        let kind = if rest.starts_with("////") {
+            LINE_COMMENT
+        } else if rest.starts_with("///") {
+            DOC_COMMENT
+        } else if rest.starts_with("//!") {
+            MODULE_DOC_COMMENT
+        } else {
+            LINE_COMMENT
+        };
+
         // Consumes to end of line but NOT the newline itself, which stays
         // whitespace. This keeps the formatter's line handling uniform.
         while self.peek().is_some_and(|c| c != '\n') {
             self.bump();
         }
-        LINE_COMMENT
+        kind
     }
 
     fn block_comment(&mut self) -> SyntaxKind {
@@ -742,6 +756,47 @@ mod tests {
     fn line_comment_at_eof_without_newline() {
         assert_eq!(kinds("// trailing"), [LINE_COMMENT]);
         assert!(errors("// trailing").is_empty());
+    }
+
+    #[test]
+    fn slash_counts_select_the_comment_kind() {
+        assert_eq!(kinds("// aside"), [LINE_COMMENT]);
+        assert_eq!(kinds("/// documentation"), [DOC_COMMENT]);
+        assert_eq!(kinds("//! module documentation"), [MODULE_DOC_COMMENT]);
+        // Four or more slashes are a rule, not documentation (ADR-0027 §1). This
+        // file's own section dividers are written that way.
+        assert_eq!(kinds("//// -----"), [LINE_COMMENT]);
+        assert_eq!(kinds("///// -----"), [LINE_COMMENT]);
+        // But `//!!` is module documentation whose text starts with `!`, as in Rust:
+        // nobody draws a rule out of exclamation marks. Asserted because
+        // `docs/spec/01-lexical.md` says so, and the first draft of that sentence said
+        // the opposite.
+        assert_eq!(kinds("//!! still module docs"), [MODULE_DOC_COMMENT]);
+    }
+
+    #[test]
+    fn a_doc_comment_keeps_its_whole_text_and_excludes_the_newline() {
+        let text = "/// Writes a string.\nprint";
+        let out = lex(text, file());
+        assert_eq!(out.tokens[0].kind, DOC_COMMENT);
+        assert_eq!(&text[out.tokens[0].range], "/// Writes a string.");
+        assert_eq!(out.tokens[1].kind, WHITESPACE);
+        assert!(out.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_doc_comment_is_trivia_so_the_parser_never_sees_it() {
+        // The point of ADR-0027 §1: adding these kinds cannot change what parses.
+        assert_eq!(
+            kinds("/// doc\nx :: 1;")
+                .into_iter()
+                .filter(|k| !k.is_trivia())
+                .collect::<Vec<_>>(),
+            kinds("x :: 1;")
+                .into_iter()
+                .filter(|k| !k.is_trivia())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

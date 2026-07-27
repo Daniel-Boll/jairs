@@ -101,6 +101,16 @@ pub fn parse(text: &str, file: FileId) -> Parse {
 #[derive(Clone, Copy)]
 struct TokenSet(u128);
 
+// A `TokenSet` is a bitmask indexed by `SyntaxKind`'s discriminant, so it can only
+// hold token kinds whose discriminant fits in a `u128`. Adding a token kind shifts
+// every later discriminant, and overflowing this would be a shift-overflow panic in
+// a `const` — a confusing failure a long way from its cause. ADR-0027 added two
+// token kinds and this is the guard that makes the next one a build error instead.
+const _: () = assert!(
+    (SyntaxKind::SOURCE_FILE as u16) <= 128,
+    "TokenSet is a u128 bitmask over token kinds; there are now too many to fit"
+);
+
 impl TokenSet {
     const fn new(kinds: &[SyntaxKind]) -> Self {
         let mut bits = 0u128;
