@@ -602,3 +602,64 @@ fn folding_never_changes_an_answer_either_engine_computes() {
         );
     }
 }
+
+#[test]
+fn forwarding_a_struct_field_changes_no_answer_in_either_engine() {
+    // ADR-0023, as running programs. Forwarding replaces a load with an operand, so a
+    // mistake about *which* store was available produces a wrong number rather than a
+    // crash — and both engines would produce the same wrong number, because they
+    // consume the same forwarded MIR. So these assert the value, not the agreement.
+    let dir = TempDir::new().expect("a temporary directory");
+    let cases = [
+        // The plain case: write two fields, read them back.
+        ("p.x = 4;\n    p.y = 5;", "p.x + p.y", 9),
+        // A later store to the same field must win over an earlier one.
+        ("p.x = 4;\n    p.x = 7;\n    p.y = 1;", "p.x + p.y", 8),
+        // Interleaved, so a pass that confused the two fields gets a different answer.
+        ("p.x = 10;\n    p.y = 3;\n    p.x = 20;", "p.x - p.y", 17),
+    ];
+    for (index, (writes, expr, expected)) in cases.iter().enumerate() {
+        let source = format!(
+            "#import \"Basic\";\n\n\
+             Point :: struct {{ x: s64; y: s64; }}\n\n\
+             main :: () {{\n    p: Point;\n    {writes}\n    exit({expr});\n}}\n"
+        );
+        let (vm, native) = both_engines(&source, dir.path(), &format!("fwd{index}"));
+        assert_eq!(
+            vm.status, *expected,
+            "the VM computed `{expr}` as {}",
+            vm.status
+        );
+        assert_eq!(
+            native.status, *expected,
+            "native computed `{expr}` as {}",
+            native.status
+        );
+    }
+}
+
+#[test]
+fn a_store_through_a_pointer_is_still_observed_after_forwarding() {
+    // The aliasing case, made observable. `n`'s address is taken and written through,
+    // so a pass that forwarded the *original* store into the later read would produce 1
+    // instead of 9 — and both engines would agree on it.
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("aliased.jr");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   n := 1;\n\
+                  \x20   q := *n;\n\
+                  \x20   q.* = 9;\n\
+                  \x20   exit(n);\n\
+                  }\n";
+    std::fs::write(&path, source).expect("a writable temporary directory");
+
+    let vm = run_in_vm(&path);
+    let native = run_natively(&path, dir.path());
+    assert_eq!(vm.status, 9, "the VM forwarded across an indirect store");
+    assert_eq!(
+        native.status, 9,
+        "native forwarded across an indirect store"
+    );
+}
