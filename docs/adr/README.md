@@ -49,3 +49,5 @@ The ADR numbers are stable and are referenced from code comments and
 | [0026](0026-root-marker-order.md) | `.git` before `modules` as the workspace root marker (amends ADR-0025 §1) | Accepted |
 | [0027](0027-doc-comments.md) | `///` and `//!` doc comments: trivia kinds plus a side-table query | Accepted |
 | [0028](0028-hover-and-completion.md) | The hover card, and completion pulled forward from W9 | Accepted |
+| [0029](0029-workspace-discovery.md) | The workspace is the search paths plus the root tree, walked and watched | Accepted |
+| [0030](0030-references-and-rename.md) | References, rename that refuses rather than half-renames, and symbols | Accepted |
