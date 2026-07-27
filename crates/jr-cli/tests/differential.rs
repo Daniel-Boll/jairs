@@ -499,3 +499,106 @@ fn a_trap_inside_a_callee_that_was_not_inlined_names_its_own_line() {
     assert_eq!(native.stderr, expected);
     assert_eq!(vm, native);
 }
+
+// ---------------------------------------------------------------------------
+// DCE and const-prop (ADR-0022)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_dead_expression_that_overflows_still_traps_in_both_engines() {
+    // ADR-0022 §4's first refusal, as a running program. `dead` is assigned and never
+    // read, so a DCE that deleted "assignments nobody reads" would delete the trap and
+    // this program would print nothing and exit 0. The corpus cannot catch that: no
+    // corpus program contains a dead trapping expression, which is why §7 asked for
+    // targeted cases rather than trusting the enumeration.
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("deadtrap.jr");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  MAX :: 9223372036854775807;\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   n := MAX;\n\
+                  \x20   dead := n + 1;\n\
+                  \x20   exit(0);\n\
+                  }\n";
+    std::fs::write(&path, source).expect("a writable temporary directory");
+
+    let vm = run_in_vm(&path);
+    let native = run_natively(&path, dir.path());
+
+    let expected = format!(
+        "error: addition overflowed\n  --> {}:7:13\n",
+        path.display()
+    );
+    assert_eq!(vm.stderr, expected, "the VM lost a dead expression's trap");
+    assert_eq!(
+        native.stderr, expected,
+        "native lost a dead expression's trap"
+    );
+    assert_eq!(vm.status, 4);
+    assert_eq!(native.status, 4);
+}
+
+#[test]
+fn a_dead_call_still_runs_in_both_engines() {
+    // ADR-0022 §4's second refusal. `shout`'s result is discarded, but it prints and
+    // then exits, so deleting the call is observable twice over — and `exit` is why
+    // "a call can do anything" is not an abstract worry in a language whose only way
+    // out of `main` is a foreign call.
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("deadcall.jr");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  shout :: () -> s64 {\n\
+                  \x20   print(\"ran\\n\");\n\
+                  \x20   return 7;\n\
+                  }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   dead := shout();\n\
+                  \x20   exit(3);\n\
+                  }\n";
+    std::fs::write(&path, source).expect("a writable temporary directory");
+
+    let vm = run_in_vm(&path);
+    let native = run_natively(&path, dir.path());
+
+    assert_eq!(vm.stdout, "ran\n", "the VM dropped a dead call");
+    assert_eq!(native.stdout, "ran\n", "native dropped a dead call");
+    assert_eq!(vm.status, 3);
+    assert_eq!(native, vm);
+}
+
+#[test]
+fn folding_never_changes_an_answer_either_engine_computes() {
+    // Const-prop bakes its answer into a `PoolId` that *both* engines then consume, so
+    // a fold that disagrees with the interpreter does not show up as the two engines
+    // disagreeing — it shows up as both agreeing on the wrong number. This is the case
+    // ADR-0022 §2 moved the arithmetic into `jr-pool` for, and the only way to test it
+    // is to assert the *value*, not the agreement.
+    let dir = TempDir::new().expect("a temporary directory");
+    let cases = [
+        ("add(2, 3)", 5),
+        ("add(100, 0 - 60)", 40),
+        ("add(add(1, 2), add(3, 4))", 10),
+    ];
+    for (index, (expr, expected)) in cases.iter().enumerate() {
+        let source = format!(
+            "#import \"Basic\";\n\n\
+             add :: (a: s64, b: s64) -> s64 {{ return a + b; }}\n\n\
+             main :: () {{\n    exit({expr});\n}}\n"
+        );
+        let (vm, native) = both_engines(&source, dir.path(), &format!("fold{index}"));
+        assert_eq!(
+            vm.status, *expected,
+            "the VM computed `{expr}` as {}",
+            vm.status
+        );
+        assert_eq!(
+            native.status, *expected,
+            "native computed `{expr}` as {}",
+            native.status
+        );
+    }
+}

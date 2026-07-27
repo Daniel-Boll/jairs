@@ -17,7 +17,7 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after the **inliner** wave. 637 workspace tests; six CI gates green on
+Last updated after the **mid-end** wave. 658 workspace tests; six CI gates green on
 macOS arm64.
 
 ### What you can actually do
@@ -72,10 +72,10 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
 | Lexer, parser, CST, typed AST | **Works** | Hand-written, error-recovering, trivia-preserving |
 | Formatter | **Works** | Pure function over the CST |
 | HIR, name resolution, module loader | **Works** | Flat import merge (ADR-0014) |
-| InternPool (types + comptime values + layout) | **Works** | One layout computation, shared by both engines (ADR-0018 §2) |
+| InternPool (types, comptime values, layout, arithmetic) | **Works** | One layout computation and one integer evaluator, shared (ADR-0018 §2, ADR-0022 §2) |
 | Sema (signatures, checking, inference) | **Works** | E0212–E0226; no const-eval here — ADR-0018 §3 puts it in the VM |
 | MIR (typed SSA, Braun construction) | **Works** | Block parameters, not phis (ADR-0017); CFG diagnostics E0227–E0229 |
-| Mid-end | **One pass** | The inliner (ADR-0021). No DCE, no const-prop; `nop`s and unreachable blocks survive a dump |
+| Mid-end | **Three passes** | Inliner, const-prop, DCE, to a bounded fixed point (ADR-0021, ADR-0022). No store-to-load forwarding, so a struct in a slot defeats folding; the SSA value arena is never compacted |
 | Bytecode VM + libffi | **Works** | Per-instruction spans, so a trap names its line. No JIT |
 | Cranelift back end + linker | **Works** | Refuses an aggregate return and a call through a procedure pointer — so does the VM |
 | salsa incremental database | **Works** | Built *and* optimized MIR staged (ADR-0021 §1); invalidation is at file grain |
@@ -88,9 +88,10 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
 
 ### Things it is easy to over-read
 
-- **No published performance number, and that is deliberate.** ADR-0019 §6 says a
-  number taken without a mid-end measures the missing mid-end. The inliner now exists,
-  so a number is finally honest to take — it has not been taken.
+- **No published performance number.** ADR-0019 §6 says a number taken without a
+  mid-end measures the missing mid-end. The mid-end now exists, so a number is finally
+  honest to take — and it has not been taken. Nothing in this repo has been benchmarked
+  against anything.
 - **The two engines agreeing is *tested*, not assumed.** They share MIR, which makes
   agreement likely; `crates/jr-cli/tests/differential.rs` is what makes it checked.
   Both of this project's silent miscompiles were places where a plausible argument
@@ -103,6 +104,13 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
   it requires more than removing the refusal.
 - **`u8` is not a supported integer type.** It exists so `*u8` and byte-sized FFI
   arguments can be spelled.
+- **Optimisation is real but shallow.** Three passes run, and `add(2, 3)` folds to `5`
+  through an inline. But nothing sees through memory, so a `struct` field written from a
+  literal and read back does not fold — which is most real code, and is exactly what
+  `024-hello.jr` does.
+- **ADR-0002's arithmetic has two implementations, not one.** `jr-pool` owns the one
+  both *evaluators* share; `jr-codegen-clif` keeps its own because it emits code rather
+  than evaluating. The pair is held equal by `differential.rs` and nothing else.
 - **Nothing here is self-hosted.** The compiler is Rust; only `modules/Basic` is Jairs.
 
 ---

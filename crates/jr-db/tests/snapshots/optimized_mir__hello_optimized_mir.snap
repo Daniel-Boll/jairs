@@ -17,7 +17,6 @@ proc main -> void {
     store s0.1 <- 5_s64
     v0: s64 = load s0.0
     v1: s64 = load s0.1
-    nop
     goto bb12(v0, v1)
   bb12(v11: s64, v12: s64):
     v13: s64 = v11 + v12

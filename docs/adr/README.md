@@ -42,3 +42,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0019](0019-native-backend-shape.md) | Native back end: three-phase `Backend`, traps via a runtime helper, interned foreign library | Accepted |
 | [0020](0020-trap-source-locations.md) | A trap names its source location; one formatter in `jr-base` decides how | Accepted |
 | [0021](0021-inliner-and-optimized-mir.md) | The inliner, a staged `optimized_file_mir`, and the `#run` closure it must not touch | Accepted |
+| [0022](0022-dce-constprop-shared-arithmetic.md) | DCE and const-prop, ADR-0002's arithmetic shared in `jr-pool`, and a bounded fixed point | Accepted |

@@ -35,9 +35,12 @@
 //!   byte-identical to its built form, and that is `jr-db`'s decision because the
 //!   closure is a query's business — [`const_callees`] is the fact this crate
 //!   contributes to it.
-//! - **DCE and const-prop.** Still a later wave. A splice leaves [`Statement::Nop`]s
-//!   behind and there is nothing yet that removes them. There is no `mem2reg` and
-//!   there never will be: Braun's construction means there is nothing for it to do.
+//! - **`mem2reg`.** There is none and there never will be: Braun's construction
+//!   (ADR-0017 §2) means there is nothing for it to do.
+//! - **Compact the SSA value arena.** [`dce`] removes a dead definition but keeps its
+//!   `ValueData`, so `value_count()` never shrinks and the VM still sizes a frame for
+//!   it. ADR-0022 leaves this undone deliberately: unlike a slot, a value is named by
+//!   block parameters too, so compaction is a wider rewrite than it looks.
 //!
 //! # What it does not know
 //!
@@ -50,11 +53,14 @@
 mod build;
 mod cfg;
 mod code;
+mod constprop;
+mod dce;
 mod dump;
 mod escape;
 mod inline;
 mod inputs;
 mod mir;
+mod optimize;
 mod span;
 mod ssa;
 mod thunk;
@@ -62,6 +68,8 @@ mod verify;
 
 pub use build::{lower_body, lower_file};
 pub use cfg::{body_diagnostics, file_diagnostics};
+pub use constprop::const_prop;
+pub use dce::{dce, is_pure};
 pub use dump::{dump_body, dump_body_spans, dump_file};
 pub use inline::{Callees, MAX_INLINE_STATEMENTS, inline_body, is_inlinable};
 pub use inputs::{ConstValues, ImportedProcs};
@@ -70,5 +78,6 @@ pub use mir::{
     Poisoned, ProcRef, Projection, Rvalue, SlotData, SlotId, Statement, Target, Terminator, UnOp,
     UndefinedRead, Unreachable, ValueData, ValueId,
 };
+pub use optimize::{MAX_OPT_ROUNDS, OptStats, optimize};
 pub use span::resolve_span;
 pub use thunk::{const_callees, lower_const, thunk_ref};

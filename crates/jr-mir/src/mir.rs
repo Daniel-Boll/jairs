@@ -54,7 +54,7 @@ use std::sync::{Arc, OnceLock};
 
 use jr_base::FileId;
 use jr_hir::{BodyId, ExprId, ExprScope, LocalId, ProcId, StmtId};
-use jr_pool::PoolId;
+use jr_pool::{IntCmp, IntOp, PoolId};
 
 // ---------------------------------------------------------------------------
 // Identities
@@ -197,6 +197,77 @@ pub enum BinOp {
     Ge,
 }
 
+impl BinOp {
+    /// The arithmetic operation this is, if it is one.
+    ///
+    /// `None` for a comparison, which [`Self::as_int_cmp`] answers instead. The two
+    /// are separate because a comparison's result is a `bool` and so must not be
+    /// normalised through the destination's integer width — a distinction
+    /// `jr_pool::IntOp` and `jr_pool::IntCmp` make unrepresentable.
+    ///
+    /// This translation is the whole reason ADR-0022 §2 could leave [`BinOp`] here
+    /// rather than moving it into `jr-pool`: it is exhaustive, so a new MIR operator
+    /// is a compile error at this point, which is the protection ADR-0017 wanted
+    /// from MIR owning its own operator set.
+    #[must_use]
+    pub const fn as_int_op(self) -> Option<IntOp> {
+        match self {
+            Self::Add => Some(IntOp::Add),
+            Self::Sub => Some(IntOp::Sub),
+            Self::Mul => Some(IntOp::Mul),
+            Self::Div => Some(IntOp::Div),
+            Self::Rem => Some(IntOp::Rem),
+            Self::WrapAdd => Some(IntOp::WrapAdd),
+            Self::WrapSub => Some(IntOp::WrapSub),
+            Self::WrapMul => Some(IntOp::WrapMul),
+            Self::Eq | Self::Ne | Self::Lt | Self::Le | Self::Gt | Self::Ge => None,
+        }
+    }
+
+    /// The comparison this is, if it is one. See [`Self::as_int_op`].
+    #[must_use]
+    pub const fn as_int_cmp(self) -> Option<IntCmp> {
+        match self {
+            Self::Eq => Some(IntCmp::Eq),
+            Self::Ne => Some(IntCmp::Ne),
+            Self::Lt => Some(IntCmp::Lt),
+            Self::Le => Some(IntCmp::Le),
+            Self::Gt => Some(IntCmp::Gt),
+            Self::Ge => Some(IntCmp::Ge),
+            Self::Add
+            | Self::Sub
+            | Self::Mul
+            | Self::Div
+            | Self::Rem
+            | Self::WrapAdd
+            | Self::WrapSub
+            | Self::WrapMul => None,
+        }
+    }
+
+    /// Whether this operation can trap, per ADR-0002.
+    ///
+    /// Read by DCE, which may not delete a dead assignment whose rvalue can trap:
+    /// `jr-codegen-clif` already commits, at `body.rs:266`, to a discarded rvalue
+    /// still being evaluated so that an overflow nobody wanted the result of still
+    /// fires. ADR-0022 §4 makes that a rule rather than a comment.
+    #[must_use]
+    pub const fn can_trap(self) -> bool {
+        match self {
+            Self::Add | Self::Sub | Self::Mul | Self::Div | Self::Rem => true,
+            Self::WrapAdd
+            | Self::WrapSub
+            | Self::WrapMul
+            | Self::Eq
+            | Self::Ne
+            | Self::Lt
+            | Self::Le
+            | Self::Gt
+            | Self::Ge => false,
+        }
+    }
+}
+
 /// A unary operator that MIR can express.
 ///
 /// [`jr_hir::UnOp`] has a third variant, `AddrOf` — prefix `*` per ADR-0011.
@@ -210,6 +281,19 @@ pub enum UnOp {
     Neg,
     /// Logical negation of a `bool`.
     Not,
+}
+
+impl UnOp {
+    /// Whether this operation can trap, per ADR-0002.
+    ///
+    /// Negation can: `-MIN` is one past the maximum. See [`BinOp::can_trap`].
+    #[must_use]
+    pub const fn can_trap(self) -> bool {
+        match self {
+            Self::Neg => true,
+            Self::Not => false,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -873,6 +957,114 @@ impl MirBody {
         self.cache = Arc::new(CfgCache::default());
     }
 
+    // -----------------------------------------------------------------
+    // Arena compaction
+    // -----------------------------------------------------------------
+
+    /// Drops the blocks `keep` marks false, renumbering every survivor.
+    ///
+    /// # Why this is here rather than in the pass that wants it
+    ///
+    /// [`Self::blocks`] and [`Self::entry`] are private (see the module docs) so
+    /// that no caller can edit the CFG behind the cached predecessors and block
+    /// order. Renumbering has to rewrite the entry and every [`Target::block`] in
+    /// step, and doing that from outside would need both of them public — which is
+    /// the invariant this type exists to hold. ADR-0022 §4 wants unreachable blocks
+    /// gone, so the compaction is a method.
+    ///
+    /// # Panics
+    /// If `keep` is not one entry per block, or if it would drop the entry block.
+    /// The second is a pass bug rather than a program property: the entry is
+    /// reachable from itself by definition, so anything computing reachability that
+    /// excludes it has computed something else.
+    pub fn retain_blocks(&mut self, keep: &[bool]) {
+        assert_eq!(
+            keep.len(),
+            self.blocks.len(),
+            "retain_blocks needs one flag per block"
+        );
+        assert!(
+            keep[self.entry.index()],
+            "the entry block is always reachable"
+        );
+
+        let mut remap = vec![None; self.blocks.len()];
+        let mut next = 0usize;
+        for (index, keep_it) in keep.iter().enumerate() {
+            if *keep_it {
+                remap[index] = Some(BlockId::from_usize(next));
+                next += 1;
+            }
+        }
+
+        self.invalidate_cfg();
+        let mut index = 0usize;
+        self.blocks.retain(|_| {
+            let keep_it = keep[index];
+            index += 1;
+            keep_it
+        });
+        self.entry = remap[self.entry.index()].expect("the entry is kept");
+
+        for block in &mut self.blocks {
+            for target in targets_mut(&mut block.term) {
+                target.block = remap[target.block.index()]
+                    .expect("a kept block cannot branch to a dropped one");
+            }
+        }
+    }
+
+    /// Drops the slots `keep` marks false, renumbering every survivor.
+    ///
+    /// Here for the same reason as [`Self::retain_blocks`]: the slot arena is
+    /// private, and every [`PlaceBase::Slot`] in the body has to move with it.
+    ///
+    /// # Panics
+    /// If `keep` is not one entry per slot, or if a kept statement still names a
+    /// dropped slot — which means the pass computed liveness wrongly.
+    pub fn retain_slots(&mut self, keep: &[bool]) {
+        assert_eq!(
+            keep.len(),
+            self.slots.len(),
+            "retain_slots needs one flag per slot"
+        );
+
+        let mut remap = vec![None; self.slots.len()];
+        let mut next = 0usize;
+        for (index, keep_it) in keep.iter().enumerate() {
+            if *keep_it {
+                remap[index] = Some(SlotId::from_usize(next));
+                next += 1;
+            }
+        }
+
+        let mut index = 0usize;
+        self.slots.retain(|_| {
+            let keep_it = keep[index];
+            index += 1;
+            keep_it
+        });
+
+        for block in &mut self.blocks {
+            for stmt in &mut block.stmts {
+                match stmt {
+                    Statement::Assign { rvalue, .. } | Statement::Discard { rvalue, .. } => {
+                        remap_rvalue_slots(rvalue, &remap);
+                    }
+                    Statement::Store { place, value, .. } => {
+                        remap_place_slots(place, &remap);
+                        remap_operand_slots(value, &remap);
+                    }
+                    Statement::Nop => {}
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Derived CFG facts
+    // -----------------------------------------------------------------
+
     /// The predecessors of every block, indexed by [`BlockId`].
     ///
     /// Computed once and cached. rustc uses a `SmallVec<[_; 4]>` per block with
@@ -927,6 +1119,67 @@ impl MirBody {
             order.reverse();
             order
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Renumbering helpers
+// ---------------------------------------------------------------------------
+
+/// The edges leaving a terminator, mutably.
+///
+/// The mirror of [`Terminator::targets`], private because the only caller is
+/// [`MirBody::retain_blocks`] and handing out `&mut Target` generally would let a
+/// caller rewrite an edge without invalidating the CFG cache.
+fn targets_mut(term: &mut Terminator) -> Vec<&mut Target> {
+    match term {
+        Terminator::Goto(target) => vec![target],
+        Terminator::Branch {
+            cond: _,
+            then_,
+            else_,
+        } => vec![then_, else_],
+        Terminator::Return(_) | Terminator::Unreachable(_) => Vec::new(),
+    }
+}
+
+fn remap_operand_slots(operand: &mut Operand, _remap: &[Option<SlotId>]) {
+    match operand {
+        // An operand names no slot: a value is an SSA definition and a constant is a
+        // pool entry. The arm exists so that a future operand kind that *does* name
+        // one is a compile error here.
+        Operand::Value(_) | Operand::Constant(_) => {}
+    }
+}
+
+fn remap_place_slots(place: &mut Place, remap: &[Option<SlotId>]) {
+    match &mut place.base {
+        PlaceBase::Slot(slot) => {
+            *slot = remap[slot.index()].expect("a live place named a dropped slot");
+        }
+        PlaceBase::Deref(operand) => remap_operand_slots(operand, remap),
+    }
+}
+
+fn remap_rvalue_slots(rvalue: &mut Rvalue, remap: &[Option<SlotId>]) {
+    match rvalue {
+        Rvalue::Use(operand) => remap_operand_slots(operand, remap),
+        Rvalue::Binary { op: _, lhs, rhs } => {
+            remap_operand_slots(lhs, remap);
+            remap_operand_slots(rhs, remap);
+        }
+        Rvalue::Unary { op: _, operand } => remap_operand_slots(operand, remap),
+        Rvalue::Call { callee, args } => {
+            match callee {
+                Callee::Direct(_) => {}
+                Callee::Indirect(operand) => remap_operand_slots(operand, remap),
+            }
+            for arg in args {
+                remap_operand_slots(arg, remap);
+            }
+        }
+        Rvalue::Load(place) | Rvalue::Address(place) => remap_place_slots(place, remap),
+        Rvalue::Undef => {}
     }
 }
 

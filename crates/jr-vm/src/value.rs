@@ -22,19 +22,21 @@
 //! disagree — the same argument `jr_mir::Operand::Constant` makes for not storing a
 //! type beside a `PoolId`.
 //!
-//! # Why the arithmetic goes through `i128`
+//! # Where the arithmetic went
 //!
-//! ADR-0002 makes `+`, `-`, `*`, `/`, `%` and unary `-` **trap** on overflow, with
-//! `+%`, `-%`, `*%` as the explicit opt-out. Detecting that for an arbitrary
-//! `(signed, bits)` pair is fiddly in the target width and trivial one width up, so
-//! every operation widens to `i128`, computes exactly, and then asks whether the
-//! result fits. `i128` holds every value of every Jairs integer type — including
-//! `u64::MAX` and the product of two `s64`s' worth of magnitude for the range check
-//! — so the check is exact rather than approximate. The alternative,
-//! `checked_add` per concrete Rust type, needs one match arm per `(signed, bits)`
-//! combination and gets `u1`-style widths wrong.
+//! ADR-0002's integer arithmetic used to live here, because the interpreter was the
+//! only thing that evaluated it. `jr-mir`'s constant folder is a second, and
+//! `jr-mir` cannot depend on this crate, so ADR-0022 §2 moved [`IntKind`] and the
+//! checked operations into `jr-pool` — where `IntKind::of` was already reading
+//! `Item::IntType`. [`IntKind`] is re-exported here so no consumer of `jr_vm` broke.
+//!
+//! What stayed is the mapping from `jr-pool`'s vocabulary to this crate's:
+//! `interp.rs` turns a `jr_pool::IntTrap` into a [`Trap`], and
+//! `IntTrap::Overflow` carries the same `&'static str` the message is built from, so
+//! the move cannot have changed a single byte of a trap message — which
+//! `differential.rs` compares.
 
-use jr_pool::{Item, Pool, PoolId};
+pub use jr_pool::IntKind;
 
 use crate::error::{Trap, VmError};
 
@@ -125,211 +127,41 @@ impl Value {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Integer kinds
-// ---------------------------------------------------------------------------
-
-/// The signedness and width of an integer type.
-///
-/// Read from the pool rather than inferred: ADR-0015 spells the width in
-/// `Item::IntType { signed, bits }`, so there is nothing here to decide.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct IntKind {
-    /// `true` for `sN`, `false` for `uN`.
-    pub signed: bool,
-    /// The width in bits, 1..=64.
-    pub bits: u16,
-}
-
-impl IntKind {
-    /// `s64`, the type an untyped integer literal defaults to (ADR-0016 §1).
-    pub const S64: Self = Self {
-        signed: true,
-        bits: 64,
-    };
-
-    /// The integer kind of `ty`, if it is an integer type.
-    ///
-    /// A pointer is deliberately *not* an integer kind: pointer arithmetic is not
-    /// expressible in Jairs-0, and treating an address as an `s64` would make the
-    /// first attempt silently succeed.
-    #[must_use]
-    pub fn of(pool: &Pool, ty: PoolId) -> Option<Self> {
-        match pool.item(ty) {
-            Item::IntType { signed, bits } => Some(Self {
-                signed: *signed,
-                bits: *bits,
-            }),
-            _ => None,
-        }
-    }
-
-    /// The mask of the bits this type occupies.
-    #[must_use]
-    pub const fn mask(self) -> u64 {
-        if self.bits >= 64 {
-            u64::MAX
-        } else {
-            (1u64 << self.bits) - 1
-        }
-    }
-
-    /// The lowest value this type can hold.
-    #[must_use]
-    pub const fn min(self) -> i128 {
-        if self.signed {
-            -(1i128 << (self.bits - 1))
-        } else {
-            0
-        }
-    }
-
-    /// The highest value this type can hold.
-    #[must_use]
-    pub const fn max(self) -> i128 {
-        if self.signed {
-            (1i128 << (self.bits - 1)) - 1
-        } else {
-            (1i128 << self.bits) - 1
-        }
-    }
-
-    /// Recovers the mathematical value from normalised bits.
-    #[must_use]
-    pub const fn decode(self, bits: u64) -> i128 {
-        let raw = bits & self.mask();
-        if self.signed && self.bits < 128 && (raw >> (self.bits - 1)) & 1 == 1 {
-            // Sign-extend: the value is `raw - 2^bits`.
-            raw as i128 - (1i128 << self.bits)
-        } else {
-            raw as i128
-        }
-    }
-
-    /// Normalises a mathematical value into this type's bits, wrapping.
-    ///
-    /// Used by the `+%`, `-%`, `*%` family, and to store the result of a checked
-    /// operation once its range has been verified.
-    #[must_use]
-    pub const fn wrap(self, value: i128) -> u64 {
-        (value as u64) & self.mask()
-    }
-
-    /// Normalises a value, or traps if it does not fit.
-    ///
-    /// # Errors
-    /// [`Trap::Overflow`] when `value` is outside the type's range.
-    pub const fn check(self, value: i128, what: &'static str) -> Result<u64, VmError> {
-        if value < self.min() || value > self.max() {
-            return Err(VmError::Trap(Trap::Overflow { what }));
-        }
-        Ok(self.wrap(value))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const U8: IntKind = IntKind {
-        signed: false,
-        bits: 8,
-    };
-    const S8: IntKind = IntKind {
-        signed: true,
-        bits: 8,
-    };
-    const U64: IntKind = IntKind {
-        signed: false,
-        bits: 64,
-    };
-
     #[test]
-    fn ranges_match_the_width_and_signedness() {
-        assert_eq!((U8.min(), U8.max()), (0, 255));
-        assert_eq!((S8.min(), S8.max()), (-128, 127));
-        assert_eq!((U64.min(), U64.max()), (0, u64::MAX as i128));
-        assert_eq!(
-            (IntKind::S64.min(), IntKind::S64.max()),
-            (i64::MIN as i128, i64::MAX as i128)
-        );
-    }
-
-    #[test]
-    fn decode_sign_extends_only_for_signed_types() {
-        assert_eq!(S8.decode(0xff), -1);
-        assert_eq!(U8.decode(0xff), 255);
-        assert_eq!(IntKind::S64.decode(u64::MAX), -1);
-        assert_eq!(U64.decode(u64::MAX), u64::MAX as i128);
-    }
-
-    #[test]
-    fn wrap_and_decode_round_trip() {
-        for value in [-128i128, -1, 0, 1, 127] {
-            assert_eq!(S8.decode(S8.wrap(value)), value);
-        }
-        for value in [0i128, 1, 255] {
-            assert_eq!(U8.decode(U8.wrap(value)), value);
-        }
-    }
-
-    #[test]
-    fn check_traps_outside_the_range_and_wrap_does_not() {
-        assert_eq!(
-            U8.check(256, "addition"),
-            Err(VmError::Trap(Trap::Overflow { what: "addition" })),
-            "ADR-0002: `+` traps rather than wrapping"
-        );
-        assert_eq!(U8.wrap(256), 0, "`+%` is the documented opt-out");
-        assert!(S8.check(-129, "subtraction").is_err());
-        assert_eq!(S8.check(127, "addition"), Ok(127));
-    }
-
-    #[test]
-    fn bits_are_normalised_so_the_high_bits_never_leak() {
-        // The invariant `Value::Scalar` documents: everything above `bits` is zero,
-        // signed or not, so `decode` is a function of the type alone.
-        assert_eq!(S8.wrap(-1), 0xff);
-        assert_eq!(S8.wrap(-1) >> 8, 0);
+    fn a_bool_is_a_normalised_scalar() {
+        assert_eq!(Value::bool(true), Value::Scalar(1));
+        assert_eq!(Value::bool(false), Value::Scalar(0));
+        assert!(Value::bool(true).boolean().expect("a scalar is a bool"));
     }
 
     #[test]
     fn an_undefined_value_traps_rather_than_reading_as_zero() {
-        assert_eq!(
+        // `Rvalue::Undef` is a well-typed value with no bits, not poison and not a
+        // zero. Reading one must trap, or the bug E0227 reports statically becomes a
+        // plausible wrong answer when the check is skipped.
+        assert!(matches!(
             Value::Undefined.scalar(),
-            Err(VmError::Trap(Trap::UninitialisedRead)),
-            "inventing a zero would hide the bug E0227 exists to report"
-        );
-    }
-
-    #[test]
-    fn a_scalar_is_not_an_aggregate_and_the_mismatch_is_a_compiler_bug() {
-        assert!(matches!(
-            Value::Scalar(1).aggregate(),
-            Err(VmError::Internal(_))
+            Err(VmError::Trap(Trap::UninitialisedRead))
         ));
         assert!(matches!(
-            Value::Aggregate(vec![0; 16]).scalar(),
-            Err(VmError::Internal(_))
+            Value::Undefined.aggregate(),
+            Err(VmError::Trap(Trap::UninitialisedRead))
         ));
     }
 
     #[test]
-    fn int_kind_of_reads_the_pool_and_rejects_a_pointer() {
-        let pool = Pool::new();
-        assert_eq!(IntKind::of(&pool, PoolId::S64), Some(IntKind::S64));
+    fn as_int_decodes_through_the_shared_kind() {
+        // The arithmetic itself is `jr-pool`'s and tested there (ADR-0022 §2); what
+        // is this crate's is that a register's bits go through the right kind.
         assert_eq!(
-            IntKind::of(&pool, PoolId::U8),
-            Some(IntKind {
-                signed: false,
-                bits: 8
-            })
+            Value::Scalar(u64::MAX)
+                .as_int(IntKind::S64)
+                .expect("a scalar"),
+            -1
         );
-        assert_eq!(
-            IntKind::of(&pool, PoolId::PTR_U8),
-            None,
-            "pointer arithmetic is not expressible in Jairs-0, so a pointer must not look like an integer"
-        );
-        assert_eq!(IntKind::of(&pool, PoolId::BOOL), None);
     }
 }
