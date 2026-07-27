@@ -44,3 +44,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0021](0021-inliner-and-optimized-mir.md) | The inliner, a staged `optimized_file_mir`, and the `#run` closure it must not touch | Accepted |
 | [0022](0022-dce-constprop-shared-arithmetic.md) | DCE and const-prop, ADR-0002's arithmetic shared in `jr-pool`, and a bounded fixed point | Accepted |
 | [0023](0023-store-to-load-forwarding.md) | Store-to-load forwarding: block-local, identical paths, and no layout | Accepted |
+| [0024](0024-language-server.md) | The language server: a worker snapshot, a span scan, negotiated positions | Accepted |
