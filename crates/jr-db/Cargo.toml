@@ -26,5 +26,8 @@ rustc-hash.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+# Version pinned inline rather than via `[workspace.dependencies]`, matching how `jr-cli`
+# already depends on it; it is a test-only dependency of two crates.
+tempfile = "3"
 jr-hir.workspace = true
 jr-mir.workspace = true
