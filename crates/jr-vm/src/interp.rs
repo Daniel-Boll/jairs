@@ -501,47 +501,22 @@ impl<'a> Vm<'a> {
         let b = right.as_int(kind)?;
 
         // Comparisons first: their result is a `bool`, not the operand type, so they
-        // must not go through the destination's integer kind.
-        match op {
-            BinOp::Eq => return Ok(Value::bool(a == b)),
-            BinOp::Ne => return Ok(Value::bool(a != b)),
-            BinOp::Lt => return Ok(Value::bool(a < b)),
-            BinOp::Le => return Ok(Value::bool(a <= b)),
-            BinOp::Gt => return Ok(Value::bool(a > b)),
-            BinOp::Ge => return Ok(Value::bool(a >= b)),
-            _ => {}
+        // must not go through the destination's integer kind. `BinOp::as_int_cmp` and
+        // `as_int_op` are what keep that split honest — a MIR operator is one or the
+        // other, never both (ADR-0022 §2).
+        if let Some(cmp) = op.as_int_cmp() {
+            return Ok(Value::bool(jr_pool::int_compare(cmp, a, b)));
         }
+        let Some(arith) = op.as_int_op() else {
+            return Err(VmError::internal(
+                "an operator was neither arithmetic nor a comparison",
+            ));
+        };
 
         let out = IntKind::of(self.pool, dest_ty).unwrap_or(kind);
-        let bits = match op {
-            BinOp::Add => out.check(a + b, "addition")?,
-            BinOp::Sub => out.check(a - b, "subtraction")?,
-            BinOp::Mul => out.check(a * b, "multiplication")?,
-            BinOp::Div => {
-                if b == 0 {
-                    return Err(VmError::Trap(Trap::DivideByZero));
-                }
-                // `MIN / -1` overflows rather than dividing: its true quotient is one
-                // past the type's maximum. The range check catches it, which is why
-                // the division is done in `i128` and checked like everything else.
-                out.check(a / b, "division")?
-            }
-            BinOp::Rem => {
-                if b == 0 {
-                    return Err(VmError::Trap(Trap::DivideByZero));
-                }
-                out.check(a % b, "remainder")?
-            }
-            BinOp::WrapAdd => out.wrap(a + b),
-            BinOp::WrapSub => out.wrap(a - b),
-            BinOp::WrapMul => out.wrap(a * b),
-            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                return Err(VmError::internal(
-                    "a comparison reached the arithmetic path",
-                ));
-            }
-        };
-        Ok(Value::Scalar(bits))
+        Ok(Value::Scalar(
+            jr_pool::int_binary(arith, out, a, b).map_err(trap_of)?,
+        ))
     }
 
     fn unary(
@@ -565,7 +540,9 @@ impl<'a> Vm<'a> {
                     .ok_or_else(|| VmError::unsupported("negation of a non-integer"))?;
                 // Traps on the most negative value (ADR-0002): its negation is one
                 // past the maximum, so the ordinary range check covers it.
-                Ok(Value::Scalar(kind.check(-value.as_int(kind)?, "negation")?))
+                Ok(Value::Scalar(
+                    jr_pool::int_negate(kind, value.as_int(kind)?).map_err(trap_of)?,
+                ))
             }
         }
     }
@@ -688,5 +665,18 @@ fn write_le(bytes: &mut [u8], offset: u64, size: u64, value: u64) {
     let encoded = value.to_le_bytes();
     if let Some(target) = bytes.get_mut(start..start + size) {
         target.copy_from_slice(&encoded[..size]);
+    }
+}
+
+/// Turns `jr-pool`'s arithmetic failure into this crate's trap.
+///
+/// The whole cost of ADR-0022 §2's extraction, and it is one function. `IntTrap`
+/// carries the same `&'static str` `Trap::Overflow` does, so no trap message can
+/// have changed — which matters because `differential.rs` compares the finished
+/// sentence and the native back end builds its copy at compile time.
+const fn trap_of(trap: jr_pool::IntTrap) -> VmError {
+    match trap {
+        jr_pool::IntTrap::Overflow { what } => VmError::Trap(Trap::Overflow { what }),
+        jr_pool::IntTrap::DivideByZero => VmError::Trap(Trap::DivideByZero),
     }
 }

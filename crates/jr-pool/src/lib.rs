@@ -50,15 +50,24 @@
 //! live. See [`layout_of`] and [`TargetLayout`] for why, and for why the target is
 //! a parameter rather than something this crate looks up.
 //!
+//! It also owns ADR-0002's integer arithmetic ([`int_binary`], [`int_compare`],
+//! [`int_negate`], [`IntKind`]), because two crates now evaluate it — `jr-vm`'s
+//! interpreter and `jr-mir`'s constant folder — and `jr-mir` cannot depend on
+//! `jr-vm`. [`IntKind::of`] already read this crate's `Item::IntType`, so the
+//! signedness and width were here and only the arithmetic over them moved
+//! (ADR-0022 §2).
+//!
 //! It depends only on `jr-base`. It knows nothing about the HIR: callers
 //! hand it a [`DeclId`] they built themselves, which keeps the pool a pure,
 //! independently testable data structure rather than a second pass over
 //! `jr-hir`.
 
+mod arith;
 mod item;
 mod layout;
 mod pool;
 
+pub use arith::{IntCmp, IntKind, IntOp, IntTrap, int_binary, int_compare, int_negate};
 pub use item::{ContextKind, DeclId, EffectRow, Field, Item, PoolId, StrId};
 pub use layout::{
     Layout, LayoutError, TargetLayout, align_up, field_offset, layout_of, string_count,
