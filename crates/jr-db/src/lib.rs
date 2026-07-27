@@ -206,6 +206,33 @@ impl Default for JairsDatabase {
 }
 
 impl JairsDatabase {
+    /// A second handle on the same database, for a reader on another thread.
+    ///
+    /// Every field is either an `Arc` or salsa's own `Storage`, which is `Clone`, so
+    /// this is a field-wise clone and costs nothing. That is not luck: the `Interner`
+    /// has been an `Arc<ThreadedRodeo>` since `jr-base` was written "because parsing
+    /// and semantic analysis are intended to run in parallel", and `source_map`,
+    /// `file_inputs` and `pool` are behind mutexes for identity reasons of their own.
+    ///
+    /// # The obligation this carries (ADR-0024 §2)
+    ///
+    /// salsa cancels readers when a writer wants the next revision, and a writer
+    /// **blocks until the snapshot count drops back to one**. So a snapshot held
+    /// across requests does not merely waste work — it stalls the next edit. Take one
+    /// per request and drop it when the request finishes or unwinds.
+    #[must_use]
+    pub fn snapshot(&self) -> Self {
+        Self {
+            storage: self.storage.clone(),
+            interner: self.interner.clone(),
+            source_map: Arc::clone(&self.source_map),
+            file_inputs: Arc::clone(&self.file_inputs),
+            in_memory_modules: self.in_memory_modules.clone(),
+            module_search_paths: Arc::clone(&self.module_search_paths),
+            pool: Arc::clone(&self.pool),
+        }
+    }
+
     /// Creates a database that calls `callback` for every salsa event.
     ///
     /// The most useful event for testing is [`salsa::EventKind::WillExecute`],

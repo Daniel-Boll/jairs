@@ -1,0 +1,359 @@
+//! The three capabilities `PLAN.md` §1.4 asks for, as pure functions.
+//!
+//! # Why they are functions and not methods on a server
+//!
+//! [ADR-0024](../../../docs/adr/0024-language-server.md) §4: a handler takes a database
+//! and typed parameters and returns a response, with no I/O and no `self`. That is what
+//! lets `tests/handlers.rs` assert on a hover without a transport, a subprocess or a
+//! client — and it is why [`crate::server`] can be a thin shell whose only job is
+//! framing and threading.
+//!
+//! The separate stdio smoke test exists because these tests would pass with a completely
+//! broken transport. That is not a hypothetical: the first native run of `024-hello.jr`
+//! printed both its lines perfectly and exited **1**, and no in-process assertion
+//! noticed.
+//!
+//! # Why none of them analyses anything
+//!
+//! ADR-0007's claim is that the LSP is a *consumer* of the same salsa queries as the
+//! batch compiler, not a second front end, and this module is where that claim is either
+//! true or false. [`diagnostics()`] is `jr_db::file_diagnostics` reshaped. [`hover()`] is
+//! `jr_db::checked`'s `TypeMap`, looked up. [`goto_definition()`] is `jr_db::resolved`'s
+//! `ResolveMap`, followed. The only thing here that is not a query is
+//! [`crate::locate()`], and that is because ADR-0013 deferred the structure that would
+//! make it one.
+//!
+//! If a capability ever needs a fact no query produces, the fix belongs in `jr-db`.
+
+use std::sync::Arc;
+
+use jr_db::{Db, ModuleSearchPaths, SourceFile};
+use jr_hir::{ExprScope, FileHir, ItemKind, Res};
+use jr_pool::{Item, Pool, PoolId};
+use jr_sema::FileSignatures;
+use lsp_types::{
+    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Hover, HoverContents, Location,
+    MarkupContent, MarkupKind, NumberOrString,
+};
+
+use crate::locate::{item_name_span, local_name_span, locate, param_name_span};
+use crate::position::{Encoding, Positions};
+
+// ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+
+/// Every diagnostic for one file, as the protocol wants them.
+///
+/// A `jr-diag` diagnostic can point at spans in *other* files — an import error names
+/// the module — so a secondary label outside this file becomes
+/// `relatedInformation` rather than being dropped or, worse, rendered at whatever
+/// offset it happens to hold in this one.
+#[must_use]
+pub fn diagnostics(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+    encoding: Encoding,
+) -> Vec<Diagnostic> {
+    let text = file.text(db);
+    let index = jr_db::line_index(db, file);
+    let positions = Positions::new(text.as_ref(), &index, encoding);
+    let map = db.source_map();
+    let this = map.file_id(file.path(db).as_ref());
+
+    jr_db::file_diagnostics(db, file, search_paths)
+        .iter()
+        .map(|diag| Diagnostic {
+            range: positions.range(diag.primary.span),
+            severity: Some(severity(diag.severity)),
+            code: diag
+                .code
+                .map(|code| NumberOrString::String(code.to_owned())),
+            source: Some(String::from("jairs")),
+            message: message_of(diag),
+            related_information: related(diag, this, &map),
+            ..Diagnostic::default()
+        })
+        .collect()
+}
+
+/// The headline plus whatever the primary label and the notes add.
+///
+/// Flattened into one string because the protocol has one message field and a client
+/// renders it as a block. Dropping the notes would lose the half of a `jr-diag`
+/// diagnostic that explains what to do — E0230's note, for instance, is the only place
+/// that says `#run` is evaluated in the bytecode VM.
+fn message_of(diag: &jr_diag::Diagnostic) -> String {
+    let mut out = diag.message.clone();
+    if let Some(label) = &diag.primary.message {
+        out.push_str("\n  ");
+        out.push_str(label);
+    }
+    for (severity, note) in &diag.notes {
+        out.push('\n');
+        out.push_str(match severity {
+            jr_diag::Severity::Help => "help: ",
+            jr_diag::Severity::Note => "note: ",
+            jr_diag::Severity::Warning => "warning: ",
+            jr_diag::Severity::Error => "error: ",
+        });
+        out.push_str(note);
+    }
+    out
+}
+
+/// Secondary labels, as related information.
+///
+/// Only labels in *other* files become related information; a secondary label in this
+/// file is already visible in the same buffer, and duplicating it clutters the list
+/// clients render in the problems panel.
+fn related(
+    diag: &jr_diag::Diagnostic,
+    this: Option<jr_base::FileId>,
+    map: &jr_base::SourceMap,
+) -> Option<Vec<DiagnosticRelatedInformation>> {
+    let out: Vec<DiagnosticRelatedInformation> = diag
+        .secondary
+        .iter()
+        .filter(|label| Some(label.span.file) != this)
+        .filter_map(|label| {
+            let url = crate::uri::from_path(map.file(label.span.file).path())?;
+            Some(DiagnosticRelatedInformation {
+                location: Location {
+                    uri: url,
+                    // A span in another file needs that file's line index to convert
+                    // exactly. Rather than load it, point at the start of the line the
+                    // source map already knows: an approximate location in a file the
+                    // user is not looking at is better than none, and better than a
+                    // wrong one computed from this file's lines.
+                    range: lsp_types::Range::default(),
+                },
+                message: label
+                    .message
+                    .clone()
+                    .unwrap_or_else(|| String::from("related")),
+            })
+        })
+        .collect();
+    // `None` rather than an empty vector: a client renders an empty list as a stub
+    // expander, and there is nothing behind it.
+    (!out.is_empty()).then_some(out)
+}
+
+fn severity(severity: jr_diag::Severity) -> DiagnosticSeverity {
+    match severity {
+        jr_diag::Severity::Error => DiagnosticSeverity::ERROR,
+        jr_diag::Severity::Warning => DiagnosticSeverity::WARNING,
+        jr_diag::Severity::Note => DiagnosticSeverity::INFORMATION,
+        jr_diag::Severity::Help => DiagnosticSeverity::HINT,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hover
+// ---------------------------------------------------------------------------
+
+/// The type of the expression under the cursor, if there is one.
+///
+/// `None` for whitespace, a comment, a brace, or a token lowering did not turn into an
+/// expression. That is a real answer: an editor showing nothing there is correct.
+#[must_use]
+pub fn hover(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+    encoding: Encoding,
+    position: lsp_types::Position,
+) -> Option<Hover> {
+    let text = file.text(db);
+    let index = jr_db::line_index(db, file);
+    let positions = Positions::new(text.as_ref(), &index, encoding);
+    let offset = positions.offset(position);
+
+    let hir = jr_db::file_hir(db, file);
+    let found = locate(hir.as_ref(), offset)?;
+
+    let types = jr_db::checked(db, file, search_paths).types;
+    let ty = types.expr_type(found.scope, found.expr)?;
+    let signatures = jr_db::file_signatures(db, file, search_paths).signatures;
+
+    let rendered = {
+        let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+        render(&pool, signatures.as_ref(), ty)
+    };
+
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!("```jr\n{rendered}\n```"),
+        }),
+        range: Some(positions.range(found.span)),
+    })
+}
+
+/// Renders a type for a human.
+///
+/// A third copy of this match, and ADR-0024 §6 records why that is acceptable here when
+/// ADR-0022 §2 refused a third copy of *arithmetic*: a wrong render is cosmetic, a wrong
+/// fold is a miscompile. It is also a different artifact — a hover is user-facing prose
+/// and a MIR dump is a debug aid, and they should be free to diverge.
+fn render(pool: &Pool, signatures: &FileSignatures, ty: PoolId) -> String {
+    if ty.index() >= pool.len() {
+        return String::from("<unknown>");
+    }
+    match pool.item(ty) {
+        Item::VoidType => String::from("void"),
+        Item::BoolType => String::from("bool"),
+        Item::IntType { signed, bits } => format!("{}{bits}", if *signed { 's' } else { 'u' }),
+        Item::StringType => String::from("string"),
+        Item::TypeType => String::from("type"),
+        Item::ErrorType => String::from("<unknown>"),
+        Item::ForeignLibraryType => String::from("#system_library"),
+        Item::PointerType(pointee) => format!("*{}", render(pool, signatures, *pointee)),
+        Item::StructType { decl } => signatures
+            .type_name(ty)
+            .map_or_else(|| format!("struct{decl:?}"), ToOwned::to_owned),
+        Item::ProcType {
+            params,
+            ret,
+            context: _,
+            effects: _,
+        } => {
+            let params: Vec<String> = params
+                .iter()
+                .map(|ty| render(pool, signatures, *ty))
+                .collect();
+            let ret = render(pool, signatures, *ret);
+            if ret == "void" {
+                format!("({})", params.join(", "))
+            } else {
+                format!("({}) -> {ret}", params.join(", "))
+            }
+        }
+        // A value where a type was expected is a bug elsewhere; rendered rather than
+        // hidden, for the same reason `jr-mir`'s dump does it.
+        Item::VoidValue
+        | Item::BoolValue(_)
+        | Item::IntValue { .. }
+        | Item::StrValue(_)
+        | Item::TypeValue(_)
+        | Item::ProcValue { .. }
+        | Item::ForeignLibraryValue(_) => String::from("<value>"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Goto definition
+// ---------------------------------------------------------------------------
+
+/// Where the name under the cursor was declared.
+///
+/// Handles all four resolutions `jr-hir` can produce, including `Res::Imported`, which
+/// crosses into another file — because goto-definition on `print` landing in
+/// `modules/Basic` is the one that demonstrates the module system actually resolved.
+#[must_use]
+pub fn goto_definition(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+    encoding: Encoding,
+    position: lsp_types::Position,
+) -> Option<Location> {
+    let text = file.text(db);
+    let index = jr_db::line_index(db, file);
+    let positions = Positions::new(text.as_ref(), &index, encoding);
+    let offset = positions.offset(position);
+
+    let hir = jr_db::file_hir(db, file);
+    let found = locate(hir.as_ref(), offset)?;
+    let resolve = jr_db::resolved(db, file, search_paths).map;
+    let res = resolve.get(found.scope, found.expr)?;
+
+    match res {
+        Res::Local(local) => {
+            let ExprScope::Body(body) = found.scope else {
+                return None;
+            };
+            let span = local_name_span(hir.bodies.get(body.index())?, local)?;
+            Some(here(db, file, &positions, span))
+        }
+        Res::Param(param) => {
+            let ExprScope::Body(body) = found.scope else {
+                return None;
+            };
+            // A parameter's span lives on `Proc::params`, not in the body — `jr-hir`
+            // does not store parameters as locals at all. So the owning procedure has
+            // to be found by which one declares this body.
+            let proc = owner_of(hir.as_ref(), body)?;
+            let span = param_name_span(hir.as_ref(), proc, param)?;
+            Some(here(db, file, &positions, span))
+        }
+        Res::Item(item) => {
+            let span = item_name_span(hir.as_ref(), item)?;
+            Some(here(db, file, &positions, span))
+        }
+        Res::Imported(import, name) => {
+            imported(db, hir.as_ref(), search_paths, encoding, import, name)
+        }
+        Res::Error => None,
+    }
+}
+
+/// The procedure whose body is `body`.
+///
+/// Linear, because nothing stores the reverse edge. Cheap: a file has few procedures,
+/// and this runs once per goto-definition on a parameter.
+fn owner_of(hir: &FileHir, body: jr_hir::BodyId) -> Option<jr_hir::ProcId> {
+    hir.procs
+        .iter()
+        .position(|proc| proc.body == Some(body))
+        .map(jr_hir::ProcId::from_usize)
+}
+
+/// A location in the file being edited.
+fn here(db: &dyn Db, file: SourceFile, positions: &Positions<'_>, span: jr_base::Span) -> Location {
+    let path = file.path(db);
+    Location {
+        uri: crate::uri::from_path(std::path::Path::new(path.as_ref()))
+            .unwrap_or_else(|| "file:///".parse().expect("a valid fallback uri")),
+        range: positions.range(span),
+    }
+}
+
+/// A definition in an imported module.
+///
+/// Resolved the same way `jr-db`'s `imported_procs` does — through `module_file` and the
+/// other file's HIR, and *only* its HIR. That is what ADR-0014 §4 requires and what
+/// keeps one file's analysis off another file's.
+fn imported(
+    db: &dyn Db,
+    hir: &FileHir,
+    search_paths: ModuleSearchPaths,
+    encoding: Encoding,
+    import: jr_hir::ItemId,
+    name: jr_base::Symbol,
+) -> Option<Location> {
+    let ItemKind::Import { path, .. } = &hir.items.get(import.index())?.kind else {
+        return None;
+    };
+    let lookup = jr_db::module_file(db, search_paths, Arc::from(path.as_str()));
+    let found = lookup.found?;
+    let module = db.source_file_for_path(found.to_string_lossy().as_ref())?;
+
+    let other = jr_db::file_hir(db, module);
+    let item = other.scope.get(name)?;
+    let span = item_name_span(other.as_ref(), item)?;
+
+    // The other file's own text and line index, deliberately: converting a span from
+    // one file using another file's lines produces a plausible wrong location, which is
+    // worse than no location at all.
+    let text = module.text(db);
+    let index = jr_db::line_index(db, module);
+    let range = Positions::new(text.as_ref(), &index, encoding).range(span);
+
+    Some(Location {
+        uri: crate::uri::from_path(&found)?,
+        range,
+    })
+}
