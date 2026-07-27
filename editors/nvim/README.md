@@ -1,6 +1,6 @@
 # Jairs in Neovim
 
-Diagnostics, hover, goto-definition, completion and tree-sitter highlighting, with **no plugin
+Diagnostics, hover, goto-definition, completion, references, rename, symbols and tree-sitter highlighting, with **no plugin
 manager and no plugins**. This directory is a runtimepath entry: Neovim discovers an LSP
 config in `lsp/`, a parser in `parser/`, queries in `queries/`, filetype detection in
 `ftdetect/` and buffer settings in `ftplugin/` on its own.
@@ -31,7 +31,7 @@ hover, `gd` for goto-definition and `<C-x><C-o>` for completion once the server 
 nvim --headless -u NONE -l editors/nvim/verify.lua
 ```
 
-39 checks, exiting non-zero on the first failure. It drives the real Neovim against the
+53 checks, exiting non-zero on the first failure. It drives the real Neovim against the
 real server: filetype, parser, every highlight capture it relies on (including
 `@comment.documentation`, whose `#lua-match?` predicate the tree-sitter CLI cannot
 validate), LSP attach, the negotiated position encoding, the resolved workspace root, four
@@ -56,7 +56,10 @@ integration is covered by CI.
 | Doc comments | `///` documents the declaration below it, `//!` the file. `////` is an ordinary comment. Highlighted distinctly from an aside |
 | Goto-definition | Locals, parameters, file-level items, and across an `#import` into `modules/` |
 | Folds, indent queries | Shipped; `foldexpr`/`indentexpr` are yours to set |
-| Rename, references, inlay hints, `signatureHelp` | **Not implemented.** Wave W9 (`PLAN.md` §2.1) |
+| References, document highlight | `gr` / cursor-idle highlight. A reference search covers the whole workspace; a highlight is confined to the file on purpose, since a client sends it on every cursor move |
+| Rename | `grn`. Workspace-wide, and it **refuses** rather than half-renaming: on a name collision, on a syntax error in a file it would edit, or on a workspace over 10 000 files (ADR-0030 §3) |
+| Document and workspace symbols | `gO` for the outline (struct fields nested), and your picker's workspace-symbol command |
+| Code actions, inlay hints, `signatureHelp` | **Not implemented.** Next wave |
 | Formatting via LSP | **Not implemented.** Use `jr fmt`; `textDocument/formatting` is not advertised |
 
 ## How it finds things

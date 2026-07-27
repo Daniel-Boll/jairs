@@ -314,6 +314,117 @@ if config then
       target
     )
 
+    -- ---- navigation (ADR-0029, ADR-0030) ------------------------------------
+
+    for _, capability in ipairs({
+      "referencesProvider",
+      "documentHighlightProvider",
+      "documentSymbolProvider",
+      "workspaceSymbolProvider",
+    }) do
+      local advertised = client.server_capabilities[capability]
+      check(
+        "advertises " .. capability,
+        advertised ~= nil and advertised ~= false,
+        vim.inspect(advertised)
+      )
+    end
+    check(
+      "advertises prepareRename, so a keyword can be refused before typing",
+      client.server_capabilities.renameProvider
+        and client.server_capabilities.renameProvider.prepareProvider == true,
+      vim.inspect(client.server_capabilities.renameProvider)
+    )
+
+    -- ADR-0029 §2 makes a client file watcher the primary freshness mechanism, and says to
+    -- verify rather than assume this editor has one. Without it the server silently falls
+    -- back to re-walking on save, which nothing else here would notice.
+    local watched = vim.lsp.protocol.make_client_capabilities().workspace.didChangeWatchedFiles
+    check(
+      "this Neovim can watch files for the server",
+      watched and watched.dynamicRegistration == true,
+      vim.inspect(watched)
+    )
+
+    local function request(method, params)
+      local result
+      vim.lsp.buf_request(buf, method, params, function(_, response)
+        result = response or false
+      end)
+      vim.wait(20000, function()
+        return result ~= nil
+      end, 50)
+      return result
+    end
+    local doc = vim.lsp.util.make_text_document_params(buf)
+
+    -- Line 19 (0-based) is `add :: (a: s64, b: s64) -> s64 {`. Worth stating: the first
+    -- draft of these checks used line 20, which is `return a + b;`, and read as two server
+    -- bugs rather than as an off-by-one in the test.
+    local symbols = request("textDocument/documentSymbol", { textDocument = doc })
+    local by_name = {}
+    for _, symbol in ipairs(symbols or {}) do
+      by_name[symbol.name] = symbol
+    end
+    check(
+      "documentSymbol outlines the file",
+      by_name["Point"] and by_name["add"] and by_name["main"],
+      vim.inspect(vim.tbl_keys(by_name))
+    )
+    check(
+      "a struct's fields nest under it",
+      by_name["Point"] and by_name["Point"].children and #by_name["Point"].children == 2,
+      by_name["Point"] and vim.inspect(by_name["Point"].children)
+    )
+    check(
+      "an outline entry carries the same signature the hover does",
+      by_name["add"] and by_name["add"].detail == "add :: (a: s64, b: s64) -> s64",
+      by_name["add"] and by_name["add"].detail
+    )
+    check(
+      "parameters do not nest under a procedure",
+      by_name["add"] and by_name["add"].children == nil,
+      by_name["add"] and vim.inspect(by_name["add"].children)
+    )
+
+    local found = request("textDocument/references", {
+      textDocument = doc,
+      position = { line = 19, character = 0 },
+      context = { includeDeclaration = true },
+    })
+    check(
+      "references finds the declaration and the call",
+      found and #found >= 2,
+      found and #found
+    )
+
+    local highlights = request("textDocument/documentHighlight", {
+      textDocument = doc,
+      position = { line = 28, character = 11 },
+    })
+    check(
+      "documentHighlight answers for the cursor's word",
+      highlights and #highlights >= 1,
+      highlights and #highlights
+    )
+
+    local prepared = request("textDocument/prepareRename", {
+      textDocument = doc,
+      position = { line = 19, character = 0 },
+    })
+    check(
+      "prepareRename offers the current name",
+      prepared and prepared.placeholder == "add",
+      vim.inspect(prepared)
+    )
+
+    local hits = request("workspace/symbol", { query = "print" })
+    check(
+      "workspaceSymbol reaches into modules/Basic",
+      hits and #hits > 0 and tostring(hits[1].location.uri):find("Basic") ~= nil,
+      hits and vim.inspect(hits[1])
+    )
+
     -- Diagnostics, on a file written to be wrong. Published as a notification, so this
     -- waits for them to land rather than requesting them.
     local broken = vim.fn.tempname() .. ".jr"
