@@ -448,6 +448,13 @@ dependencies = [
 [[package]]
 name = "jr-codegen"
 version = "0.0.0"
+dependencies = [
+ "jr-base",
+ "jr-hir",
+ "jr-mir",
+ "jr-pool",
+ "jr-sema",
+]
 
 [[package]]
 name = "jr-codegen-clif"
