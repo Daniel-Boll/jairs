@@ -42,10 +42,14 @@ return {
   filetypes = { "jairs" },
   --- The project root, so one server serves the whole workspace.
   ---
-  --- `modules/` is the marker rather than a `.git` directory: a Jairs project is
-  --- defined by having modules to import, and vendoring one inside a git repository
-  --- should not attach it to the outer project.
-  root_markers = { "modules", ".git" },
+  --- **Order is priority, not proximity** (`:h vim.fs.root`): the first marker in this
+  --- list that matches anywhere up the tree wins, even if a later one matches closer. So
+  --- `.git` comes first deliberately. ADR-0026 records why the original order was wrong:
+  --- with `modules` first, opening `tests/corpus/valid/024-hello.jr` in this very
+  --- repository rooted the server at `tests/corpus`, because `tests/corpus/modules/` is a
+  --- *fixture* directory. A directory named `modules` is far too common to be a project
+  --- marker.
+  root_markers = { ".git", "modules" },
   --- UTF-8 is offered first because a byte offset is what a `jr-base` span already is
   --- (ADR-0024 §3). Neovim supports the negotiation, so this costs nothing and removes
   --- a conversion from every request.

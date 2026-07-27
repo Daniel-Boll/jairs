@@ -203,7 +203,7 @@ flowchart LR
 - [x] Neovim: tree-sitter highlighting — and diagnostics, hover and goto-definition
       besides. `editors/nvim/` is a runtimepath directory needing no plugin manager
       (ADR-0025); two lines in `init.lua` and one build script. Verified by
-      `nvim --headless -u NONE -l editors/nvim/verify.lua`, 22 checks against the real
+      `nvim --headless -u NONE -l editors/nvim/verify.lua`, 23 checks against the real
       editor and the real server. Verified rather than gated: Neovim is not a build
       dependency of this workspace.
 - [ ] CI green on macOS arm64 **and** Linux x86-64 — the matrix is configured for
@@ -249,10 +249,10 @@ Status of each slice component, so this is answerable without reading the tree.
 | `jr-codegen-llvm` | **Not started** | Wave W8 owns it (ADR-0019 §5) |
 | `jr-lsp` | **Done** | `lsp-server` loop over `jr-db` queries: diagnostics, hover, goto-definition, run as `jr lsp` (ADR-0024). No completion, rename or inlay hints — W9 owns those |
 | `jr-driver` | **Not started** | |
-| `editors/nvim` | **Done** | Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 22 checks, needs an editor CI does not have |
+| `editors/nvim` | **Done** | Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 23 checks, needs an editor CI does not have |
 | VS Code extension | **Not started** | The remaining half of §1.4's first box |
 
-Accepted ADRs: 0001–0025. See [`docs/adr/README.md`](docs/adr/README.md).
+Accepted ADRs: 0001–0026. See [`docs/adr/README.md`](docs/adr/README.md).
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
 plus `jr-sema`'s crate docs are the only record of the typing rules today.

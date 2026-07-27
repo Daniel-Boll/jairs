@@ -46,3 +46,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0023](0023-store-to-load-forwarding.md) | Store-to-load forwarding: block-local, identical paths, and no layout | Accepted |
 | [0024](0024-language-server.md) | The language server: a worker snapshot, a span scan, negotiated positions | Accepted |
 | [0025](0025-editor-integration.md) | Editor integration as a runtimepath directory, verified rather than gated | Accepted |
+| [0026](0026-root-marker-order.md) | `.git` before `modules` as the workspace root marker (amends ADR-0025 §1) | Accepted |

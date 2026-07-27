@@ -18,7 +18,7 @@ error-recovering compiler written in Rust.
 ## Status, honestly
 
 Last updated after the **editor integration** wave. 696 workspace tests; six CI gates
-green on macOS arm64, plus 22 Neovim checks that are verified rather than gated.
+green on macOS arm64, plus 23 Neovim checks that are verified rather than gated.
 
 ### What you can actually do
 
@@ -83,7 +83,7 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
 | Differential harness | **Works** | Compares stdout, stderr and exit status of both engines as subprocesses |
 | LLVM back end | **Not started** | Wave W8 |
 | Language server | **Works** | `jr lsp`: diagnostics, hover, goto-definition (incl. across an `#import`), on a worker thread with salsa cancellation (ADR-0024). No completion, rename or inlay hints — W9 owns those |
-| Neovim integration | **Works** | `editors/nvim/` (ADR-0025), verified against the real editor by a 22-check script — **not** by CI, which has no Neovim |
+| Neovim integration | **Works** | `editors/nvim/` (ADR-0025), verified against the real editor by a 23-check script — **not** by CI, which has no Neovim |
 | VS Code integration | **Not started** | The server is ready; nothing launches it |
 | Compilation driver / workspaces | **Not started** | `jr-driver` is a one-line stub |
 | Debug info | **Not started** | No DWARF at all; a native binary is not debuggable |
@@ -115,7 +115,7 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
 - **ADR-0002's arithmetic has two implementations, not one.** `jr-pool` owns the one
   both *evaluators* share; `jr-codegen-clif` keeps its own because it emits code rather
   than evaluating. The pair is held equal by `differential.rs` and nothing else.
-- **Neovim integration is verified on one machine, not gated.** The 22 checks need an
+- **Neovim integration is verified on one machine, not gated.** The 23 checks need an
   editor, and Neovim is not a build dependency of this workspace, so `cargo test` cannot
   run them. VS Code has nothing at all.
 - **The tree-sitter parser must be rebuilt after a grammar change**, and highlighting

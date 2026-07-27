@@ -31,7 +31,7 @@ hover and `gd` for goto-definition once the server attaches.
 nvim --headless -u NONE -l editors/nvim/verify.lua
 ```
 
-22 checks, exiting non-zero on the first failure. It drives the real Neovim against the
+23 checks, exiting non-zero on the first failure. It drives the real Neovim against the
 real server: filetype, parser, every highlight capture it relies on, LSP attach, the
 negotiated position encoding, two hovers asserted by *text*, goto-definition across an
 `#import`, and a diagnostic on a deliberately broken file.
@@ -62,9 +62,10 @@ integration is covered by CI.
 - **Modules**: `--module-path <repo>/modules`, passed rather than discovered, because
   guessing a search path silently changes which module a program means. Point it somewhere
   else by copying `lsp/jairs.lua` into your own config and editing `cmd`.
-- **The project root**: the nearest ancestor containing `modules/`, then `.git`. A Jairs
-  project is defined by having modules to import, so vendoring one inside a git repository
-  should not attach it to the outer project.
+- **The project root**: `.git` first, then `modules/`. `root_markers` order is *priority*
+  rather than proximity (`:h vim.fs.root`), so `.git` wins wherever it appears. ADR-0026
+  records why the other order was wrong: `modules` first rooted this repository's own
+  corpus files at `tests/corpus`, because `tests/corpus/modules/` is a test fixture.
 
 ## Troubleshooting
 

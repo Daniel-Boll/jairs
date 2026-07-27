@@ -27,8 +27,12 @@ local function check(name, ok, detail)
   end
 end
 
-local here = vim.fs.normalize(vim.fs.dirname(debug.getinfo(1, "S").source:sub(2)))
-local root = vim.fs.normalize(here .. "/../..")
+-- Resolved to a real absolute path, not just normalised. `nvim -l` reports this script's
+-- source as the *relative* path it was invoked with, so `here .. "/../.."` normalises to
+-- something like `.` — which every path built from it still happens to work with, and
+-- which silently fails to equal the absolute `root_dir` an LSP client reports.
+local here = vim.uv.fs_realpath(vim.fs.dirname(debug.getinfo(1, "S").source:sub(2)))
+local root = vim.uv.fs_realpath(here .. "/../..")
 
 vim.opt.runtimepath:append(here)
 vim.opt.packpath = ""
@@ -108,6 +112,15 @@ if config then
       "the negotiated encoding is utf-8",
       client.offset_encoding == "utf-8",
       client.offset_encoding
+    )
+    -- Pinned because it was wrong, and wrong in a way only a real client showed:
+    -- `root_markers` order is priority rather than proximity, so listing `modules` first
+    -- rooted this repository's own corpus files at `tests/corpus`, where the fixture
+    -- directory `tests/corpus/modules/` lives (ADR-0026).
+    check(
+      "the workspace root is the repository, not a fixture directory",
+      client.root_dir == root,
+      client.root_dir
     )
 
     -- Asserting the *text* of each hover, not merely that one arrived: a server that
