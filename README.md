@@ -17,8 +17,8 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after the **store-to-load forwarding** wave. 668 workspace tests; six CI
-gates green on macOS arm64.
+Last updated after the **language server** wave. 695 workspace tests; six CI gates
+green on macOS arm64.
 
 ### What you can actually do
 
@@ -32,6 +32,7 @@ gates green on macOS arm64.
 | Call libc from Jairs | `#foreign` / `#system_library` | Through libffi at comptime, a real call natively |
 | Fold a compile-time call | `COMPUTED :: #run add(2, 3)` | One *trivial* `#run`: a call or a constant expression, same file only |
 | Import a module | `#import "Basic";` | One module = one file, flat imports, cycles legal |
+| Get diagnostics, hover and goto-definition in an editor | `jr lsp` | Speaks LSP 3.17 over stdio; **no VS Code extension or Neovim config ships yet**, so you must wire it up yourself |
 | Edit with tree-sitter highlighting | `tree-sitter-jairs/` | Grammar + queries exist; **editor packaging does not** |
 
 ### The language today
@@ -81,7 +82,7 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
 | salsa incremental database | **Works** | Built *and* optimized MIR staged (ADR-0021 §1); invalidation is at file grain |
 | Differential harness | **Works** | Compares stdout, stderr and exit status of both engines as subprocesses |
 | LLVM back end | **Not started** | Wave W8 |
-| Language server | **Not started** | `jr-lsp` is a one-line stub. Nothing in this repo gives an editor hover or goto-def |
+| Language server | **Works** | `jr lsp`: diagnostics, hover, goto-definition (incl. across an `#import`), on a worker thread with salsa cancellation (ADR-0024). No completion, rename or inlay hints — W9 owns those |
 | Compilation driver / workspaces | **Not started** | `jr-driver` is a one-line stub |
 | Debug info | **Not started** | No DWARF at all; a native binary is not debuggable |
 | Optimisation levels | **Not started** | No `--release`, no `opt_level`; one code path |
@@ -112,6 +113,11 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
 - **ADR-0002's arithmetic has two implementations, not one.** `jr-pool` owns the one
   both *evaluators* share; `jr-codegen-clif` keeps its own because it emits code rather
   than evaluating. The pair is held equal by `differential.rs` and nothing else.
+- **The language server works but nothing packages it.** `jr lsp` answers the three
+  capabilities over the real protocol, asserted by a test that speaks JSON-RPC to the
+  real binary. There is no VS Code extension and no Neovim config in this repo, so an
+  editor has to be pointed at it by hand.
+- **Hover shows a type and nothing else.** No documentation, no signature rendering.
 - **Nothing here is self-hosted.** The compiler is Rust; only `modules/Basic` is Jairs.
 
 ---

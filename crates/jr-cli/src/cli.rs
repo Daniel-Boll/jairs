@@ -100,6 +100,13 @@ pub enum Command {
     /// failed.
     Build(BuildArgs),
 
+    /// Run the language server over stdin and stdout.
+    ///
+    /// Speaks LSP 3.17 and provides exactly what `PLAN.md` §1.4 asks for: diagnostics,
+    /// hover and goto-definition. Point an editor at `jr lsp`; anything richer is wave
+    /// W9's (`PLAN.md` §2.1).
+    Lsp(LspArgs),
+
     /// Debug aid: parse a single file and display its structure.
     ///
     /// Without flags, prints a summary (token count, node count, diagnostic
@@ -189,4 +196,15 @@ pub struct ParseArgs {
     /// Print one token per line as `KIND range "text"`.
     #[arg(long)]
     pub tokens: bool,
+}
+
+/// Arguments for `jr lsp`.
+#[derive(Debug, Args)]
+pub struct LspArgs {
+    /// Directory to search for `#import`ed modules. Repeatable.
+    ///
+    /// Supplied rather than discovered, for the same reason `jr check --module-path` is:
+    /// guessing a search path silently changes which module a program means.
+    #[arg(long = "module-path", value_name = "DIR")]
+    pub module_path: Vec<std::path::PathBuf>,
 }
