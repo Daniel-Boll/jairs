@@ -79,11 +79,21 @@ pub trait Backend {
     /// defined, so that a call to a procedure defined later — or in another file —
     /// resolves to a real reference rather than to a patch-up list.
     ///
+    /// `pool` and `layout` are passed for the same reason
+    /// [`define`](Backend::define) takes them: a signature's parameter and return
+    /// types are [`PoolId`]s, and turning one into a machine type is a layout
+    /// question that only `jr-pool` may answer.
+    ///
     /// # Errors
     /// [`CodegenError`] when the signature cannot be represented, most often
     /// because a parameter or return type has no layout ([`PoolId::ERROR`], or a
     /// comptime-only type such as a `#system_library` handle).
-    fn declare(&mut self, decl: &ProcDecl) -> Result<(), CodegenError>;
+    fn declare(
+        &mut self,
+        decl: &ProcDecl,
+        pool: &Pool,
+        layout: TargetLayout,
+    ) -> Result<(), CodegenError>;
 
     /// Generates code for one procedure body.
     ///
