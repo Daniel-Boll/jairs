@@ -502,76 +502,68 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 ## 7. Immediate next actions
 
-Everything through the **language server** is done: workspace scaffolding, the ADRs,
-spec chapters 00–03, the corpus plus the drift gate, the lexer→parser→CST→`jr fmt` inch,
-HIR and name resolution, the module loader, the InternPool, `jr-sema`, `jr-mir`,
-`jr-vm`, `jr-codegen`, `jr-codegen-clif`, `jr-link`, a four-pass mid-end, and `jr-lsp`.
-See §1.5 for component status. **695 workspace tests**, all six gates green.
+Everything through **editor integration** is done: workspace scaffolding, the ADRs, spec
+chapters 00–03, the corpus plus the drift gate, the lexer→parser→CST→`jr fmt` inch, HIR
+and name resolution, the module loader, the InternPool, `jr-sema`, `jr-mir`, `jr-vm`,
+`jr-codegen`, `jr-codegen-clif`, `jr-link`, a four-pass mid-end, `jr-lsp`, and a Neovim
+integration that has been run against a real editor. See §1.5 for component status.
+**696 workspace tests**, all six gates green, plus 23 Neovim checks that are verified
+rather than gated.
 
-**ADR-0007's central claim is no longer an assertion.** The LSP is a consumer of the
-same salsa queries as the batch compiler: `diagnostics` is `file_diagnostics` reshaped,
-`hover` is `checked`'s `TypeMap` looked up, `goto_definition` is `resolved`'s
-`ResolveMap` followed. The only thing in `jr-lsp` that is not a query is the offset-to-
-node scan, and that is because ADR-0013 deferred `AstIdMap`.
+**§1.4's first box is half closed.** Neovim is ticked; VS Code is not. The server is
+ready and nothing launches it.
 
-### Two corrections this wave had to make first
+### The correction this wave had to make first
 
-Both were claims **this document** made, and both were wrong.
+**§7 was still the language-server wave's handoff.** It claimed 695 tests, opened with
+"everything through the language server", and listed **"Neovim packaging — an `lspconfig`
+entry and the tree-sitter parser registration"** as open work — a wave after ADR-0025
+shipped exactly that, and shipped it *without* `lspconfig`, as a runtimepath directory.
+Step 4 of `AGENTS.md`'s rhythm was skipped. The section's own final trap line reads *"Do
+not believe a handoff about what is left. Open the file."*
 
-- **§7 said the slice's remaining boxes were "editor packaging and a Linux CI run,
-  neither of which is compiler work", for three waves.** §1.4's first open box is *"VS
-  Code: diagnostics + hover + goto-def"*, which needed a crate that was one line of doc
-  comment with no dependencies — while §1.3 scoped `jr-lsp` into the slice in as many
-  words, justified as "proves the salsa boundary is real", and `lsp-server` and
-  `lsp-types` sat pinned and unused in §5's table from the beginning. The box is now
-  rewritten to separate the server (done) from the extension (packaging).
-- **§7 and ADR-0022 §1 said "§1.3's estimate has been waiting for" a performance
-  number.** §1.3 contains no performance estimate; its only figure is §1.4's "Estimated:
-  10–14 weeks solo", which is a schedule. §2.1 assigns the published compile-throughput
-  number to **wave W8**, and ADR-0019 §6's wording is a *trigger* — the inliner must
-  exist before any number is published — not a debt. The inliner exists, so nothing is
-  owed. ADR-0022 stays as written, because an ADR is immutable; ADR-0024's Context is
-  the record that one of its sentences was false.
+That is now four consecutive waves in which a claim in this document, or in an ADR
+Context, was false until someone checked it. The pattern is stable enough to name: **the
+handoff rots in the direction of "what remains is small".** Every one of these
+corrections has been in that direction, never the reverse.
 
-The lesson is the one this project keeps relearning: **a claim in a plan is not evidence.**
-Three waves of handoff repeated "the rest is packaging" without anyone opening
-`crates/jr-lsp/src/lib.rs`.
+### What the editor-integration wave landed
 
-### What the language-server wave landed
+- [x] **ADR-0025**, six decisions: a runtimepath directory rather than a plugin; the
+      queries as *symlinks* into `tree-sitter-jairs/` so the editor and the drift gate
+      cannot diverge; `vim.lsp.enable` rather than `nvim-lspconfig`; a committed
+      `parser/jairs.so` build script; verified-not-gated as an explicit status; and a
+      `tree-sitter query` gate.
+- [x] **`editors/nvim/`**: `lsp/jairs.lua`, `parser/`, `queries/jairs/` (symlinked),
+      `ftdetect/`, `ftplugin/`, `build.sh`, `verify.lua`, `README.md`.
+- [x] **Gate 6 grew query validation.** A query naming a node the grammar has not got was
+      previously *undetectable*, and the failure is silent: highlighting simply stops.
+      `tree-sitter query` exits 1 with `Invalid node type`. Confirmed to have teeth by
+      appending a bogus node and watching it fail.
+- [x] **A relative `--module-path` silently broke cross-file goto-definition.**
+      `uri::from_path` correctly refuses a relative path, so the handler returned "nothing
+      here" rather than an error. `jr lsp` now absolutises its search paths once, because a
+      server's working directory is whatever the editor happened to have. Pinned by a test.
+- [x] **ADR-0026**: `root_markers` order is **priority, not proximity** (`:h vim.fs.root`).
+      ADR-0025 §1 shipped `{ "modules", ".git" }`, which rooted this repository's own
+      corpus files at `tests/corpus` — because `tests/corpus/modules/` is a *fixture*
+      directory. Now `{ ".git", "modules" }`, and `verify.lua` asserts the resolved root.
+- [x] **`verify.lua` was measuring the wrong root.** `nvim -l` reports a script's source
+      as the *relative* path it was invoked with, so `here .. "/../.."` normalised to `.`.
+      Every path built from it still worked, which is why it went unnoticed; it simply
+      could never equal the absolute `root_dir` a client reports. `vim.uv.fs_realpath` now.
 
-- [x] **ADR-0024**, five decisions: a span scan rather than `AstIdMap`; a worker thread
-      reading a snapshot with salsa's own cancellation; negotiated position encoding with
-      a UTF-16 fallback; pure handlers plus one stdio smoke test; and `jr lsp` rather
-      than a second binary.
-- [x] **`JairsDatabase::snapshot`** — a field-wise clone, because `Interner` was already
-      an `Arc<ThreadedRodeo>` and every other field was already behind a mutex.
-- [x] **`jr-lsp`**: `position` (encoding conversion), `uri` (`file:` paths, hand-written
-      because `lsp-types` 0.97 dropped `Url`), `locate` (offset → HIR node), `handlers`
-      (the three capabilities), `server` (the stdio loop).
-- [x] **`jr lsp`**, and no new workspace dependency: `lsp-server`, `lsp-types`, `salsa`,
-      `serde_json` and `crossbeam-channel` were all already pinned.
-- [x] **27 new tests**, of which three speak the real protocol to the real binary.
+Three things about this wave are worth carrying forward.
 
-Four things about this wave are worth carrying forward.
-
-- **The stdio test earned its place on the first run.** `io.join()` waits for the writer
-  thread, which runs until every `Sender` into it is dropped — and `connection.sender` is
-  one of them. Joining while `connection` was still in scope deadlocked: every request
-  was answered correctly and the process simply never exited. No handler test could see
-  that, which is exactly why ADR-0024 §4 required a transport test and why the
-  `jr-codegen` lesson (both lines printed, exit status 1) was the argument for it.
-- **The worker held its snapshot between jobs, and that is a stall by construction.**
-  salsa blocks a writer until the snapshot count returns to one, so a cached snapshot
-  makes every edit wait for the last request. Each job now *owns* its snapshot, so the
-  borrow ends when the job does — including when it unwinds. ADR-0024 §2 predicted this
-  footgun in prose and the first implementation walked into it anyway.
-- **`jr_db::LineIndex::line_col` is 1-based and LSP is 0-based.** Converted once, in
-  `position.rs`, because the same off-by-one applied at four call sites is how a server
-  ends up highlighting the line below the error.
-- **`lsp-types` 0.97 replaced `Url` with a newtype over `fluent_uri::Uri`**, which knows
-  nothing about filesystem paths. Rather than add the `url` crate, `jr-lsp` owns ~40
-  lines of path↔URI conversion — and refuses Windows paths with a `compile_error!`
-  instead of half-handling them.
+- **Two of its four bugs were found by running the integration, not by reviewing it** —
+  and one of them was in the verification script itself. ADR-0025 §6 argued that
+  instructions nobody has executed have the same shape as the claims this plan keeps
+  having to retract. ADR-0026 is that argument collecting on its own decision.
+- **A test can assert a bug.** `verify.lua`'s first draft hovered `sum` in
+  `sum := add(…)` — a *declaration*, where the correct answer is no hover. It asserted the
+  wrong answer confidently. Hovers are now asserted by exact text.
+- **`-u NONE` starts with filetype detection off**, which looks identical to a broken
+  integration. A harness artefact, but it cost real time.
 
 Diagnostic codes: **E0231 is still the first free code.** `jr-lsp` defines none: it
 reports what the queries produced and adds no analysis. E0230 is `jr-db`'s const-eval
@@ -579,33 +571,34 @@ failure; E0227–E0229 are `jr-mir`'s. Beware that `jr-syntax`' parser still ill
 emits E0200/E0201/E0202 for "arrives in wave Wn" errors, colliding with `jr-hir` — do
 not filter tests by those.
 
-### Next: close the slice, for real this time
+### Next: close the slice
 
-What remains of §1.4 is now genuinely packaging and platform work, and it is worth
-saying that only because the previous claim to that effect was checked and found false.
+Two boxes. Both are platform and packaging work, and this time the claim is cheap to
+check: §1.4 lists them and §1.5 marks each **Not started**.
 
 #### Work items, in dependency order
 
 - [ ] **A VS Code extension** that launches `jr lsp`, contributes the `jairs` language id
-      and the `.jr` extension, and ships the tree-sitter grammar for highlighting. Small,
-      and it is what makes §1.4's first box tickable.
-- [ ] **Neovim packaging** — an `lspconfig` entry and the tree-sitter parser registration.
-      The grammar and queries already exist and the drift gate is green.
+      and the `.jr` extension, and ships the tree-sitter grammar for highlighting. It needs
+      the same root-marker logic as ADR-0026, and it should read it from one place rather
+      than re-derive it — there is no shared editor configuration yet, and this is one of
+      the two things that would go in it.
 - [ ] **A verified Linux x86-64 CI run.** The matrix is configured and has never run.
       Expect real work rather than a green tick: `cranelift_native` asks the host,
       `jr-pool` supplies layout, `cc` is invoked differently, and there is no codesigning
       step — so "should work" and "has been run" are different claims and only the second
       belongs in a status table.
-- [ ] **Then wave W8's compile-throughput number**, where §2.1 puts it. ADR-0023's
-      follow-on records why a *runtime* number waits for W1: Jairs-0 has no arrays, no
-      `for`, no floats and no way to print an integer, so the only expressible workload
-      is arithmetic in a `while` loop.
+- [ ] **Then wave W8's compile-throughput number**, where §2.1 puts it. ADR-0019 §6's
+      trigger — an inliner must exist first — is satisfied, so nothing blocks it but the
+      workload: Jairs-0 has no arrays, no `for`, no floats and no way to print an integer,
+      so the only expressible program is arithmetic in a `while` loop. A generator that
+      emits large type-checkable programs is probably the honest path.
 
 #### Also open, and smaller
 
 - **Keystroke-to-diagnostic latency**, which ADR-0013 named as its own trigger for
-  deciding whether `AstIdMap` earns its keep. This wave is what makes it measurable: the
-  offset-to-node scan is O(nodes) per request.
+  deciding whether `AstIdMap` earns its keep. The offset-to-node scan is O(nodes) per
+  request.
 - **Cross-block store-to-load forwarding, or SROA.** ADR-0023 §1's rejected alternatives.
 - **Compact the SSA value arena**, so a dead definition stops costing a register.
 - **A finer optimized-MIR key.** ADR-0021 §1's rejected alternative.
@@ -619,10 +612,16 @@ saying that only because the previous claim to that effect was checked and found
 #### Traps
 
 - **Do not hold a database snapshot across requests.** ADR-0024 §2. salsa blocks a writer
-  until the count returns to one, so a cached snapshot stalls the next keystroke — and
-  this wave's first implementation did exactly that.
+  until the count returns to one, so a cached snapshot stalls the next keystroke.
 - **Do not print to stdout from `jr lsp`.** It is the protocol channel; one stray byte
   desynchronises the framing for the whole session.
+- **`root_markers` order is priority, not proximity.** ADR-0026. The first pattern that
+  matches *anywhere* up the tree wins, even when a later one matches closer.
+- **A path handed to an editor integration must be absolute**, and both directions have
+  now bitten: `jr lsp`'s `--module-path`, and `verify.lua`'s own notion of the repository
+  root. `nvim -l` reports a relative script source.
+- **Rebuild the tree-sitter parser after a `grammar.js` change.** `ftplugin` starts
+  tree-sitter under `pcall`, so forgetting is silent.
 - **Do not compute a value outside `jr-pool`.** ADR-0022 §2. A second evaluator produces
   agreement on a wrong answer, not a visible disagreement.
 - **Do not compute layout.** ADR-0017 §5, and ADR-0023 §3's disjointness comes from
@@ -632,7 +631,8 @@ saying that only because the previous claim to that effect was checked and found
   load whose place is not *identical* to the store's.
 - **Do not format a trap message anywhere but `jr_base::trap_message`.**
 - **Do not add a corpus file without checking it is executed.**
-- **Do not believe a handoff about what is left.** Open the file.
+- **Do not believe a handoff about what is left.** Open the file. This section was wrong
+  about it one wave ago.
 
 ### After the slice
 
