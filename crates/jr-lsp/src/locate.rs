@@ -133,3 +133,77 @@ pub fn param_name_span(
 pub fn item_name_span(hir: &FileHir, item: jr_hir::ItemId) -> Option<Span> {
     hir.items.get(item.index()).map(|item| item.name_span)
 }
+
+// ---------------------------------------------------------------------------
+// Declaration sites
+// ---------------------------------------------------------------------------
+
+/// A declaration's own name token, which is not an expression.
+///
+/// [`locate`] scans expression arenas, so it answers `None` on the `add` in
+/// `add :: (a: s64)` — there is no `Expr::Name` there, only an `Item::name_span`. That
+/// made hover on a declaration silently empty, and `verify.lua`'s first draft asserted
+/// the emptiness as correct. This is the other half of the lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclSite {
+    /// A file-level declaration: a procedure, struct, constant, variable or import.
+    Item(jr_hir::ItemId),
+    /// A parameter, in the procedure that declares it.
+    Param {
+        /// The declaring procedure.
+        proc: jr_hir::ProcId,
+        /// Which parameter.
+        param: jr_hir::ParamId,
+    },
+    /// A local, in the body that declares it.
+    Local {
+        /// The declaring body.
+        body: jr_hir::BodyId,
+        /// Which local.
+        local: jr_hir::LocalId,
+    },
+}
+
+/// The declaration whose *name* contains `offset`, if any.
+///
+/// Deliberately checked only after [`locate`] returns `None`: where a name is used as an
+/// expression the resolution is the better answer, because it follows a name to what it
+/// means rather than to where the cursor happens to be. Name spans do not overlap
+/// expression spans, so the order is a preference rather than a conflict.
+///
+/// Narrowest-first is unnecessary here: a name token cannot contain another one.
+#[must_use]
+pub fn locate_declaration(hir: &FileHir, offset: TextSize) -> Option<DeclSite> {
+    for (index, item) in hir.items.iter().enumerate() {
+        // An unnamed item — a top-level `#run` — has a `name_span` that is not a name.
+        // Skipped rather than matched, or hovering `#run` would render the item that
+        // happens to be at that index.
+        if item.name.is_some() && contains(item.name_span, offset) {
+            return Some(DeclSite::Item(jr_hir::ItemId::from_usize(index)));
+        }
+    }
+
+    for (proc_index, proc) in hir.procs.iter().enumerate() {
+        for (param_index, param) in proc.params.iter().enumerate() {
+            if contains(param.name_span, offset) {
+                return Some(DeclSite::Param {
+                    proc: jr_hir::ProcId::from_usize(proc_index),
+                    param: jr_hir::ParamId::from_usize(param_index),
+                });
+            }
+        }
+    }
+
+    for (body_index, body) in hir.bodies.iter().enumerate() {
+        for (local_index, local) in body.locals.iter().enumerate() {
+            if contains(local.name_span, offset) {
+                return Some(DeclSite::Local {
+                    body: jr_hir::BodyId::from_usize(body_index),
+                    local: jr_hir::LocalId::from_usize(local_index),
+                });
+            }
+        }
+    }
+
+    None
+}

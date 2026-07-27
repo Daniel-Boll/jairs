@@ -224,7 +224,9 @@ impl Formatter {
                     pending_blank = false;
                 }
                 SyntaxElement::Token(tok) => match tok.kind() {
-                    LINE_COMMENT | BLOCK_COMMENT => {
+                    // A guard rather than two named arms, so that a comment kind added
+                    // later cannot fall into the `_` arm below and be deleted (ADR-0027 §4).
+                    k if k.is_comment() => {
                         if pending_blank && emitted_anything {
                             self.ensure_blank_line();
                             pending_blank = false;
@@ -250,7 +252,7 @@ impl Formatter {
         let mut last_was_comment = false;
         for tok in root.children_with_tokens().filter_map(|e| e.into_token()) {
             match tok.kind() {
-                LINE_COMMENT | BLOCK_COMMENT => {
+                k if k.is_comment() => {
                     self.emit_comment(&tok);
                     self.newline();
                     last_was_comment = true;
@@ -469,22 +471,18 @@ impl Formatter {
     fn format_struct_type(&mut self, node: &SyntaxNode) {
         self.emit("struct {");
         if let Some(field_list) = node.children().find(|n| n.kind() == FIELD_LIST) {
-            let fields: Vec<SyntaxNode> = field_list
-                .children()
-                .filter(|n| n.kind() == FIELD)
-                .collect();
-            if fields.is_empty() {
-                self.newline();
-            } else {
+            let has_fields = field_list.children().any(|n| n.kind() == FIELD);
+            if has_fields {
                 self.newline();
                 self.indent += 1;
-                for field in &fields {
-                    self.emit_indent();
-                    self.format_field(field);
-                    self.emit_trailing_comment(field);
-                    self.emit(";");
-                    self.newline();
-                }
+                self.emit_field_list(&field_list);
+                self.indent -= 1;
+            } else {
+                self.newline();
+                // An empty field list can still hold comments, and they are the only
+                // content there is to keep.
+                self.indent += 1;
+                self.emit_block_interior_comments(&field_list);
                 self.indent -= 1;
             }
         } else {
@@ -493,6 +491,82 @@ impl Formatter {
         self.emit_indent();
         self.emit("}");
         self.newline();
+    }
+
+    /// Emit a struct's fields together with the comments between them.
+    ///
+    /// Iterates tokens as well as nodes. The previous version walked only `FIELD`
+    /// children, so **every comment inside a struct body was silently deleted** — an
+    /// ordinary `//` aside as much as a `///` doc comment. It predates ADR-0027 and gate 5
+    /// never caught it, because no corpus struct contained a comment; `026-doc-comments.jr`
+    /// now does. Data loss in a formatter is the worst kind of bug this project can ship,
+    /// because the input is gone by the time anyone notices.
+    ///
+    /// One pass, with the newline after a field *deferred*: whether a comment is that
+    /// field's trailing comment or the next field's leading one is decided by whether a
+    /// newline token separates them, which is exactly what the source says. A first
+    /// version scanned ahead for a trailing comment instead and emitted every one twice —
+    /// once from the scan and once from the iteration.
+    fn emit_field_list(&mut self, field_list: &SyntaxNode) {
+        // `true` when a field has been emitted and its newline is still owed, so a
+        // comment arriving next belongs on the same line.
+        let mut owes_newline = false;
+        let mut pending_blank = false;
+        let mut emitted = false;
+
+        for element in field_list.children_with_tokens() {
+            match element {
+                SyntaxElement::Node(field) if field.kind() == FIELD => {
+                    if owes_newline {
+                        self.newline();
+                    }
+                    if pending_blank && emitted {
+                        self.newline();
+                    }
+                    pending_blank = false;
+                    self.emit_indent();
+                    self.format_field(&field);
+                    self.emit(";");
+                    owes_newline = true;
+                    emitted = true;
+                }
+                SyntaxElement::Token(tok) if tok.kind().is_comment() => {
+                    if owes_newline {
+                        // Same line as the field before it: `x: s64;  // why`.
+                        self.emit("  ");
+                        self.emit_comment(&tok);
+                        self.newline();
+                        owes_newline = false;
+                    } else {
+                        if pending_blank && emitted {
+                            self.newline();
+                        }
+                        self.emit_indent();
+                        self.emit_comment(&tok);
+                        if tok.kind().is_line_comment() {
+                            self.newline();
+                        }
+                    }
+                    pending_blank = false;
+                    emitted = true;
+                }
+                SyntaxElement::Token(tok) if tok.kind() == WHITESPACE => {
+                    let newlines = tok.text().chars().filter(|&c| c == '\n').count();
+                    if newlines >= 1 && owes_newline {
+                        self.newline();
+                        owes_newline = false;
+                    }
+                    if newlines >= 2 {
+                        pending_blank = true;
+                    }
+                }
+                SyntaxElement::Node(_) | SyntaxElement::Token(_) => {}
+            }
+        }
+
+        if owes_newline {
+            self.newline();
+        }
     }
 
     fn format_field(&mut self, node: &SyntaxNode) {
@@ -549,7 +623,7 @@ impl Formatter {
             let has_comments = node
                 .children_with_tokens()
                 .filter_map(|e| e.into_token())
-                .any(|t| t.kind() == LINE_COMMENT || t.kind() == BLOCK_COMMENT);
+                .any(|t| t.kind().is_comment());
             self.newline();
             if has_comments {
                 self.indent += 1;
@@ -602,10 +676,13 @@ impl Formatter {
                 continue;
             }
             match tok.kind() {
-                LINE_COMMENT | BLOCK_COMMENT => {
+                k if k.is_comment() => {
                     self.emit_indent();
                     self.emit_comment(&tok);
-                    if tok.kind() == LINE_COMMENT {
+                    // `///` and `//!` run to end of line exactly as `//` does, so they
+                    // force the same break. Testing for `LINE_COMMENT` alone would have
+                    // put the next statement inside the comment.
+                    if k.is_line_comment() {
                         self.newline();
                     }
                 }
@@ -625,10 +702,13 @@ impl Formatter {
     fn emit_block_interior_comments(&mut self, block: &SyntaxNode) {
         for tok in block.children_with_tokens().filter_map(|e| e.into_token()) {
             match tok.kind() {
-                LINE_COMMENT | BLOCK_COMMENT => {
+                k if k.is_comment() => {
                     self.emit_indent();
                     self.emit_comment(&tok);
-                    if tok.kind() == LINE_COMMENT {
+                    // `///` and `//!` run to end of line exactly as `//` does, so they
+                    // force the same break. Testing for `LINE_COMMENT` alone would have
+                    // put the next statement inside the comment.
+                    if k.is_line_comment() {
                         self.newline();
                     }
                 }
@@ -956,7 +1036,7 @@ impl Formatter {
                         return;
                     }
                 }
-                LINE_COMMENT | BLOCK_COMMENT => {
+                k if k.is_comment() => {
                     self.emit("  ");
                     self.emit_comment(&tok);
                     return;
@@ -1082,6 +1162,156 @@ mod tests {
             "formatted output does not parse cleanly:\n{src}\nErrors: {:?}",
             p.diagnostics()
         );
+    }
+
+    // ---- doc comments (ADR-0027 §4) ----------------------------------------
+    //
+    // Every comment site in this file matched `LINE_COMMENT | BLOCK_COMMENT` and ended
+    // in `_ => {}`. Adding a kind without converting them would have deleted every doc
+    // comment in a file, and `jr fmt --check` over the corpus would still have passed,
+    // because no corpus file had one. Hence these.
+
+    #[test]
+    fn a_doc_comment_on_a_declaration_survives() {
+        let src = "/// Adds two numbers.\nadd :: (a: s64, b: s64) -> s64 {\n    return a + b;\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("/// Adds two numbers."),
+            "doc comment was dropped:\n{out}"
+        );
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn a_module_doc_comment_survives() {
+        let src = "//! The Basic module.\n\nX :: 1;\n";
+        let out = fmt(src);
+        assert!(out.contains("//! The Basic module."), "dropped:\n{out}");
+        assert_idempotent(src);
+    }
+
+    #[test]
+    fn doc_comments_survive_everywhere_a_comment_can_appear() {
+        // One per formatter site: file level, inside a body between statements, inside
+        // an otherwise empty body, and trailing on a line.
+        let src = concat!(
+            "//! module\n",
+            "/// on an item\n",
+            "X :: 1;\n",
+            "/// on a proc\n",
+            "f :: () {\n",
+            "    /// between statements\n",
+            "    y := 1;\n",
+            "}\n",
+            "/// on an empty proc\n",
+            "g :: () {\n",
+            "    /// inside an empty body\n",
+            "}\n",
+        );
+        let out = fmt(src);
+        for expected in [
+            "//! module",
+            "/// on an item",
+            "/// on a proc",
+            "/// between statements",
+            "/// on an empty proc",
+            "/// inside an empty body",
+        ] {
+            assert!(out.contains(expected), "{expected:?} was dropped:\n{out}");
+        }
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn a_doc_comment_forces_a_break_like_a_line_comment() {
+        // `is_line_comment` rather than `== LINE_COMMENT`: if a `///` did not force a
+        // newline, the statement after it would be commented out — a formatter that
+        // silently changes what the program means.
+        let out = fmt("f :: () {\n    /// doc\n    y := 1;\n}\n");
+        let doc_line = out
+            .lines()
+            .position(|l| l.contains("/// doc"))
+            .expect("doc comment kept");
+        let stmt_line = out
+            .lines()
+            .position(|l| l.contains("y := 1"))
+            .expect("statement kept");
+        assert!(
+            stmt_line > doc_line,
+            "statement ended up on the doc comment's line:\n{out}"
+        );
+        assert_parses(&out);
+    }
+
+    // ---- comments inside a struct body ------------------------------------
+    //
+    // A pre-existing data-loss bug, not one ADR-0027 introduced: `format_struct_type`
+    // walked only `FIELD` children, so every comment between fields was dropped. Gate 5
+    // passed throughout because no corpus struct contained one.
+
+    #[test]
+    fn a_comment_between_fields_survives() {
+        let src = "Point :: struct {\n    // an aside\n    x: s64;\n}\n";
+        let out = fmt(src);
+        assert!(out.contains("// an aside"), "comment was dropped:\n{out}");
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn a_field_doc_comment_survives() {
+        let src = "Point :: struct {\n    /// The horizontal coordinate.\n    x: s64;\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("/// The horizontal coordinate."),
+            "field doc comment was dropped:\n{out}"
+        );
+        assert_idempotent(src);
+    }
+
+    #[test]
+    fn a_fields_trailing_comment_stays_on_its_line() {
+        let src = "Point :: struct {\n    x: s64; // why\n    y: s64;\n}\n";
+        let out = fmt(src);
+        let line = out
+            .lines()
+            .find(|l| l.contains("x: s64"))
+            .expect("the field survives");
+        assert!(
+            line.contains("// why"),
+            "the trailing comment left its line:\n{out}"
+        );
+        // And exactly once: a first fix emitted it twice, from a look-ahead scan and from
+        // the iteration both.
+        assert_eq!(out.matches("// why").count(), 1, "emitted twice:\n{out}");
+        assert_idempotent(src);
+    }
+
+    #[test]
+    fn a_blank_line_between_fields_survives() {
+        let src = "Point :: struct {\n    x: s64;\n\n    y: s64;\n}\n";
+        let out = fmt(src);
+        assert!(out.contains("x: s64;\n\n"), "blank line lost:\n{out}");
+        assert_idempotent(src);
+    }
+
+    #[test]
+    fn a_comment_in_an_empty_struct_survives() {
+        let src = "Empty :: struct {\n    // nothing yet\n}\n";
+        let out = fmt(src);
+        assert!(out.contains("// nothing yet"), "dropped:\n{out}");
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn four_slashes_stay_an_ordinary_comment() {
+        let src = "//// ----------\nX :: 1;\n";
+        let out = fmt(src);
+        assert!(out.contains("//// ----------"), "dropped:\n{out}");
+        assert_idempotent(src);
     }
 
     // ---- basic sanity -------------------------------------------------------

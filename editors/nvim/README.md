@@ -1,6 +1,6 @@
 # Jairs in Neovim
 
-Diagnostics, hover, goto-definition and tree-sitter highlighting, with **no plugin
+Diagnostics, hover, goto-definition, completion and tree-sitter highlighting, with **no plugin
 manager and no plugins**. This directory is a runtimepath entry: Neovim discovers an LSP
 config in `lsp/`, a parser in `parser/`, queries in `queries/`, filetype detection in
 `ftdetect/` and buffer settings in `ftplugin/` on its own.
@@ -23,7 +23,7 @@ vim.lsp.enable("jairs")
 ```
 
 Open any `.jr` file. You should get highlighting immediately, and diagnostics, `K` for
-hover and `gd` for goto-definition once the server attaches.
+hover, `gd` for goto-definition and `<C-x><C-o>` for completion once the server attaches.
 
 ## Check it works
 
@@ -31,10 +31,14 @@ hover and `gd` for goto-definition once the server attaches.
 nvim --headless -u NONE -l editors/nvim/verify.lua
 ```
 
-23 checks, exiting non-zero on the first failure. It drives the real Neovim against the
-real server: filetype, parser, every highlight capture it relies on, LSP attach, the
-negotiated position encoding, two hovers asserted by *text*, goto-definition across an
-`#import`, and a diagnostic on a deliberately broken file.
+39 checks, exiting non-zero on the first failure. It drives the real Neovim against the
+real server: filetype, parser, every highlight capture it relies on (including
+`@comment.documentation`, whose `#lua-match?` predicate the tree-sitter CLI cannot
+validate), LSP attach, the negotiated position encoding, the resolved workspace root, four
+hovers asserted by *text* — one of them an imported procedure's full card, prose and all —
+a completion list with its snippet and its lazily-resolved documentation, field completion
+after a `.`, goto-definition across an `#import`, and a diagnostic on a deliberately broken
+file.
 
 **This is verified, not gated.** It needs Neovim, which is not a build dependency of the
 workspace, so making it one of the six CI gates would fail `cargo test` on a machine with
@@ -47,10 +51,12 @@ integration is covered by CI.
 |---|---|
 | Syntax highlighting | tree-sitter, from the same `queries/*.scm` the drift gate checks — the files here are **symlinks**, so they cannot drift from the grammar's copies |
 | Diagnostics | Published on open and on every change, with the stable `E0…` code attached |
-| Hover | The type of the expression under the cursor. A *declaration* has no hover, which is correct rather than missing |
+| Hover | A card: the module or file, the declaration in Jairs syntax with parameter names, then its `///` documentation. Falls back to the type for an expression that is not a name. **A type annotation gets nothing** — `jr_hir::TypeRef` has no span (ADR-0028 §4) |
+| Completion | Locals and parameters, file items, imported module items, keywords, builtin types; fields after `.`, directives after `#`. Procedures insert as call snippets with real parameter names; documentation arrives via `completionItem/resolve`. Scope is approximated as "declared earlier in this body" rather than by block |
+| Doc comments | `///` documents the declaration below it, `//!` the file. `////` is an ordinary comment. Highlighted distinctly from an aside |
 | Goto-definition | Locals, parameters, file-level items, and across an `#import` into `modules/` |
 | Folds, indent queries | Shipped; `foldexpr`/`indentexpr` are yours to set |
-| Completion, rename, references, inlay hints | **Not implemented.** Wave W9 (`PLAN.md` §2.1) |
+| Rename, references, inlay hints, `signatureHelp` | **Not implemented.** Wave W9 (`PLAN.md` §2.1) |
 | Formatting via LSP | **Not implemented.** Use `jr fmt`; `textDocument/formatting` is not advertised |
 
 ## How it finds things

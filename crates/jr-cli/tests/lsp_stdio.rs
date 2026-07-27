@@ -317,3 +317,110 @@ fn opening_a_broken_file_publishes_diagnostics() {
     }
     panic!("the server never published diagnostics");
 }
+
+/// Completion and `completionItem/resolve`, over the real transport.
+///
+/// ADR-0024 §4's rule, applied to the capabilities ADR-0028 added: a handler test would
+/// pass with a broken transport, and the first stdio test in this file caught a deadlock
+/// no in-process assertion could see. Resolve is the interesting half — it is a second
+/// round trip whose request carries no document, so the item's own `data` has to survive
+/// serialisation to the client and back.
+#[test]
+fn the_server_advertises_completion_and_resolves_an_item() {
+    let dir = tempfile::TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("main.jr");
+    let source = "/// Adds two numbers.\nadd :: (a: s64, b: s64) -> s64 {\n    return a + b;\n}\n\nmain :: () {\n    n := a\n}\n";
+    std::fs::write(&path, source).expect("a writable temporary directory");
+    let uri = format!("file://{}", path.display());
+
+    let mut server = Server::start();
+    let initialized = server.initialize(serde_json::json!(["utf-8"]));
+
+    let completion = &initialized["result"]["capabilities"]["completionProvider"];
+    assert!(
+        !completion.is_null(),
+        "a client that is not told about completion will never send one"
+    );
+    assert_eq!(
+        completion["resolveProvider"], true,
+        "documentation is lazy, so resolve must be advertised or it never arrives"
+    );
+    let triggers = completion["triggerCharacters"]
+        .as_array()
+        .expect("trigger characters");
+    assert!(
+        triggers.iter().any(|c| c == ".") && triggers.iter().any(|c| c == "#"),
+        "`.` and `#` are what open a field and a directive list: {triggers:?}"
+    );
+
+    server.did_open(&uri, source);
+
+    // Line 6, character 10: just after the `a` in `n := a`.
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/completion",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 6, "character": 10 }
+        }
+    }));
+    let completed = server.response(2);
+    assert!(
+        completed["error"].is_null(),
+        "the completion failed: {}",
+        completed["error"]
+    );
+    let items = completed["result"]["items"]
+        .as_array()
+        .expect("a completion list")
+        .clone();
+    let add = items
+        .iter()
+        .find(|item| item["label"] == "add")
+        .unwrap_or_else(|| panic!("`add` must be offered: {items:?}"))
+        .clone();
+    assert_eq!(add["detail"], "add :: (a: s64, b: s64) -> s64");
+    assert_eq!(add["insertText"], "add(${1:a}, ${2:b})$0");
+    assert_eq!(add["insertTextFormat"], 2, "2 is Snippet");
+    assert!(
+        add["documentation"].is_null(),
+        "documentation must be lazy in the list"
+    );
+
+    // Round-trip the item exactly as a client would, `data` and all.
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "completionItem/resolve",
+        "params": add
+    }));
+    let resolved = server.response(3);
+    assert!(
+        resolved["error"].is_null(),
+        "the resolve failed: {}",
+        resolved["error"]
+    );
+    let docs = resolved["result"]["documentation"]["value"]
+        .as_str()
+        .unwrap_or_default();
+    assert_eq!(
+        docs, "```jr\nmain\nadd :: (a: s64, b: s64) -> s64\n```\n\n---\n\nAdds two numbers.",
+        "resolve must render the same card the hover does"
+    );
+
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "shutdown",
+        "params": serde_json::Value::Null
+    }));
+    assert!(server.response(4)["error"].is_null());
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "exit",
+        "params": {}
+    }));
+    let status = server.child.wait().expect("the server must exit");
+    assert!(status.success(), "a clean shutdown must exit 0");
+}

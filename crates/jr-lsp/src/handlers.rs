@@ -29,15 +29,16 @@ use std::sync::Arc;
 
 use jr_db::{Db, ModuleSearchPaths, SourceFile};
 use jr_hir::{ExprScope, FileHir, ItemKind, Res};
-use jr_pool::{Item, Pool, PoolId};
-use jr_sema::FileSignatures;
 use lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Hover, HoverContents, Location,
     MarkupContent, MarkupKind, NumberOrString,
 };
 
-use crate::locate::{item_name_span, local_name_span, locate, param_name_span};
+use crate::locate::{
+    DeclSite, Located, item_name_span, local_name_span, locate, locate_declaration, param_name_span,
+};
 use crate::position::{Encoding, Positions};
+use crate::render::{Card, Decl, binding_card, container_of, type_name};
 
 // ---------------------------------------------------------------------------
 // Diagnostics
@@ -154,7 +155,13 @@ fn severity(severity: jr_diag::Severity) -> DiagnosticSeverity {
 // Hover
 // ---------------------------------------------------------------------------
 
-/// The type of the expression under the cursor, if there is one.
+/// The declaration under the cursor, or failing that its type.
+///
+/// ADR-0028 §4 fixes the order: **resolve first**, render the type only when the cursor
+/// is not on a name. The old implementation did the second half only, which is why a
+/// procedure hovered as `(s64, s64) -> s64` — for a procedure the *type* is the
+/// signature shape, so the name, the parameter names and the origin were never in scope
+/// to be lost.
 ///
 /// `None` for whitespace, a comment, a brace, or a token lowering did not turn into an
 /// expression. That is a real answer: an editor showing nothing there is correct.
@@ -172,74 +179,229 @@ pub fn hover(
     let offset = positions.offset(position);
 
     let hir = jr_db::file_hir(db, file);
-    let found = locate(hir.as_ref(), offset)?;
 
-    let types = jr_db::checked(db, file, search_paths).types;
-    let ty = types.expr_type(found.scope, found.expr)?;
-    let signatures = jr_db::file_signatures(db, file, search_paths).signatures;
+    // A name *used* as an expression resolves to what it means, which is the better
+    // answer; a declaration's own name token is not an expression at all and is checked
+    // only when that fails. ADR-0028 §4.
+    if let Some(found) = locate(hir.as_ref(), offset) {
+        let card = declaration_card(db, file, search_paths, hir.as_ref(), &found)
+            .or_else(|| type_card(db, file, search_paths, hir.as_ref(), &found))?;
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: card.to_markdown(),
+            }),
+            range: Some(positions.range(found.span)),
+        });
+    }
 
-    let rendered = {
-        let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
-        render(&pool, signatures.as_ref(), ty)
-    };
-
+    let site = locate_declaration(hir.as_ref(), offset)?;
+    let (card, span) = declaration_site_card(db, file, search_paths, hir.as_ref(), site)?;
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: format!("```jr\n{rendered}\n```"),
+            value: card.to_markdown(),
         }),
-        range: Some(positions.range(found.span)),
+        range: Some(positions.range(span)),
     })
 }
 
-/// Renders a type for a human.
+/// The card for a declaration hovered at its own name.
 ///
-/// A third copy of this match, and ADR-0024 §6 records why that is acceptable here when
-/// ADR-0022 §2 refused a third copy of *arithmetic*: a wrong render is cosmetic, a wrong
-/// fold is a miscompile. It is also a different artifact — a hover is user-facing prose
-/// and a MIR dump is a debug aid, and they should be free to diverge.
-fn render(pool: &Pool, signatures: &FileSignatures, ty: PoolId) -> String {
-    if ty.index() >= pool.len() {
-        return String::from("<unknown>");
-    }
-    match pool.item(ty) {
-        Item::VoidType => String::from("void"),
-        Item::BoolType => String::from("bool"),
-        Item::IntType { signed, bits } => format!("{}{bits}", if *signed { 's' } else { 'u' }),
-        Item::StringType => String::from("string"),
-        Item::TypeType => String::from("type"),
-        Item::ErrorType => String::from("<unknown>"),
-        Item::ForeignLibraryType => String::from("#system_library"),
-        Item::PointerType(pointee) => format!("*{}", render(pool, signatures, *pointee)),
-        Item::StructType { decl } => signatures
-            .type_name(ty)
-            .map_or_else(|| format!("struct{decl:?}"), ToOwned::to_owned),
-        Item::ProcType {
-            params,
-            ret,
-            context: _,
-            effects: _,
-        } => {
-            let params: Vec<String> = params
-                .iter()
-                .map(|ty| render(pool, signatures, *ty))
-                .collect();
-            let ret = render(pool, signatures, *ret);
-            if ret == "void" {
-                format!("({})", params.join(", "))
-            } else {
-                format!("({}) -> {ret}", params.join(", "))
+/// Returns the name's span as well, so the client highlights the name rather than the
+/// whole declaration — hovering `add` should not light up its entire body.
+fn declaration_site_card(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+    hir: &FileHir,
+    site: DeclSite,
+) -> Option<(Card, jr_base::Span)> {
+    let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
+    let container = container_of(file.path(db).as_ref());
+
+    match site {
+        DeclSite::Item(item) => {
+            let docs = jr_db::file_docs(db, file);
+            let consts = jr_db::file_consts(db, file, search_paths).values;
+            let span = item_name_span(hir, item)?;
+            let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+            let card = Decl {
+                hir,
+                sigs: sigs.as_ref(),
+                docs: docs.as_ref(),
+                consts: Some(consts.as_ref()),
+                pool: &pool,
+                interner: db.interner(),
+                container: &container,
             }
+            .card(item)?;
+            Some((card, span))
         }
-        // A value where a type was expected is a bug elsewhere; rendered rather than
-        // hidden, for the same reason `jr-mir`'s dump does it.
-        Item::VoidValue
-        | Item::BoolValue(_)
-        | Item::IntValue { .. }
-        | Item::StrValue(_)
-        | Item::TypeValue(_)
-        | Item::ProcValue { .. }
-        | Item::ForeignLibraryValue(_) => String::from("<value>"),
+        DeclSite::Param { proc, param } => {
+            let span = param_name_span(hir, proc, param)?;
+            let name = hir.procs.get(proc.index())?.params.get(param.index())?.name;
+            let ty = sigs
+                .proc_sig(proc)
+                .and_then(|sig| sig.params.get(param.index()).copied());
+            let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+            let rendered = ty.map(|ty| type_name(&pool, sigs.as_ref(), ty));
+            Some((
+                binding_card(&container, db.interner().resolve(name), rendered),
+                span,
+            ))
+        }
+        DeclSite::Local { body, local } => {
+            let types = jr_db::checked(db, file, search_paths).types;
+            let span = local_name_span(hir.bodies.get(body.index())?, local)?;
+            let name = hir
+                .bodies
+                .get(body.index())?
+                .locals
+                .get(local.index())?
+                .name;
+            let ty = types.local_type(body, local);
+            let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+            let rendered = ty.map(|ty| type_name(&pool, sigs.as_ref(), ty));
+            Some((
+                binding_card(&container, db.interner().resolve(name), rendered),
+                span,
+            ))
+        }
+    }
+}
+
+/// The card for whatever the name under the cursor resolves to.
+///
+/// Every arm of `Res` is handled, including `Res::Imported`, which renders the *other*
+/// file's declaration using the *other* file's HIR, signatures and docs. Rendering it
+/// with this file's would produce a plausible wrong card, which is worse than none.
+fn declaration_card(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+    hir: &FileHir,
+    found: &Located,
+) -> Option<Card> {
+    let res = jr_db::resolved(db, file, search_paths)
+        .map
+        .get(found.scope, found.expr)?;
+
+    match res {
+        Res::Item(item) => {
+            let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
+            let docs = jr_db::file_docs(db, file);
+            let consts = jr_db::file_consts(db, file, search_paths).values;
+            let container = container_of(file.path(db).as_ref());
+            let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+            Decl {
+                hir,
+                sigs: sigs.as_ref(),
+                docs: docs.as_ref(),
+                consts: Some(consts.as_ref()),
+                pool: &pool,
+                interner: db.interner(),
+                container: &container,
+            }
+            .card(item)
+        }
+        Res::Imported(import, name) => imported_card(db, hir, search_paths, import, name),
+        // A parameter or a local has no documentation and no container of its own, so
+        // its card is its declared type. Better than the type alone: the name confirms
+        // which binding the cursor found, which matters where one shadows another.
+        Res::Param(_) | Res::Local(_) => {
+            let types = jr_db::checked(db, file, search_paths).types;
+            let ty = types.expr_type(found.scope, found.expr)?;
+            let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
+            let name = name_at(hir, found)?;
+            let container = container_of(file.path(db).as_ref());
+            let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+            Some(binding_card(
+                &container,
+                db.interner().resolve(name),
+                Some(type_name(&pool, sigs.as_ref(), ty)),
+            ))
+        }
+        Res::Error => None,
+    }
+}
+
+/// The card for a declaration in an imported module.
+///
+/// Resolved through `module_file` and the other file's own queries, the same way
+/// [`goto_definition`] does it and for the same reason (ADR-0014 §4).
+fn imported_card(
+    db: &dyn Db,
+    hir: &FileHir,
+    search_paths: ModuleSearchPaths,
+    import: jr_hir::ItemId,
+    name: jr_base::Symbol,
+) -> Option<Card> {
+    let ItemKind::Import { path, .. } = &hir.items.get(import.index())?.kind else {
+        return None;
+    };
+    let lookup = jr_db::module_file(db, search_paths, Arc::from(path.as_str()));
+    let found = lookup.found?;
+    let module = db.source_file_for_path(found.to_string_lossy().as_ref())?;
+
+    let other = jr_db::file_hir(db, module);
+    let item = other.scope.get(name)?;
+    let sigs = jr_db::file_signatures(db, module, search_paths).signatures;
+    let docs = jr_db::file_docs(db, module);
+    let container = container_of(found.to_string_lossy().as_ref());
+    let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+
+    Decl {
+        hir: other.as_ref(),
+        sigs: sigs.as_ref(),
+        docs: docs.as_ref(),
+        // Deliberately not fetched: computing another file's constants to render a
+        // hover would make reading one file evaluate another's `#run`.
+        consts: None,
+        pool: &pool,
+        interner: db.interner(),
+        container: &container,
+    }
+    .card(item)
+}
+
+/// The fallback: the type of an expression that is not a name.
+///
+/// `4 + 5`, a literal, a field access. There is no declaration to show, so the card
+/// carries the type alone and no signature line beyond it.
+fn type_card(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+    _hir: &FileHir,
+    found: &Located,
+) -> Option<Card> {
+    let types = jr_db::checked(db, file, search_paths).types;
+    let ty = types.expr_type(found.scope, found.expr)?;
+    let signatures = jr_db::file_signatures(db, file, search_paths).signatures;
+    let container = container_of(file.path(db).as_ref());
+    let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+
+    Some(Card {
+        container,
+        signature: type_name(&pool, signatures.as_ref(), ty),
+        docs: None,
+    })
+}
+
+/// The name an `Expr::Name` node holds, for rendering a binding's card.
+fn name_at(hir: &FileHir, found: &Located) -> Option<jr_base::Symbol> {
+    let expr = match found.scope {
+        ExprScope::TopLevel => hir.exprs.get(found.expr.index())?,
+        ExprScope::Body(body) => hir
+            .bodies
+            .get(body.index())?
+            .exprs
+            .get(found.expr.index())?,
+    };
+    match expr {
+        jr_hir::Expr::Name { name, .. } => Some(*name),
+        _ => None,
     }
 }
 

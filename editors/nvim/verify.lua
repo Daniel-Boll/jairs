@@ -85,6 +85,37 @@ if has_parser then
         check("highlights capture @" .. capture, seen[capture] == true)
       end
     end
+
+    -- Documentation highlighting, checked on the corpus file that has some. The capture
+    -- is predicated on `#lua-match?`, which is Neovim's own predicate: `tree-sitter
+    -- query` validates node names but knows nothing about it, so this is the only place
+    -- the doc-comment capture is actually exercised.
+    local docs_file = root .. "/tests/corpus/valid/026-doc-comments.jr"
+    if vim.uv.fs_stat(docs_file) then
+      vim.cmd.edit(vim.fn.fnameescape(docs_file))
+      local docs_buf = vim.api.nvim_get_current_buf()
+      local docs_ok, docs_parser = pcall(vim.treesitter.get_parser, docs_buf, "jairs")
+      local query_ok2, docs_query = pcall(vim.treesitter.query.get, "jairs", "highlights")
+      if docs_ok and docs_parser and query_ok2 and docs_query then
+        local docs_tree = docs_parser:parse()[1]
+        local seen_docs = {}
+        for id, _ in docs_query:iter_captures(docs_tree:root(), docs_buf, 0, -1) do
+          seen_docs[docs_query.captures[id]] = true
+        end
+        check(
+          "a /// comment captures as @comment.documentation",
+          seen_docs["comment.documentation"] == true,
+          vim.inspect(vim.tbl_keys(seen_docs))
+        )
+        check(
+          "an ordinary // comment still captures as @comment",
+          seen_docs["comment"] == true
+        )
+      end
+      -- Back to the file the LSP checks below expect.
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
   end
 end
 
@@ -126,10 +157,11 @@ if config then
     -- Asserting the *text* of each hover, not merely that one arrived: a server that
     -- answered every hover with an empty string would pass the weaker check.
     --
-    -- Line 28 (0-based) is `    sum := add(p.x, p.y);`. Column 15 is the `p` of `p.x`
-    -- and column 11 is the callee `add`. Deliberately *not* column 4, the `sum` in
-    -- `sum := …`: that is a declaration rather than an expression, so the correct answer
-    -- there is no hover at all, and a test that expected one would be asserting a bug.
+    -- Line 28 (0-based) is `    sum := add(p.x, p.y);`. Column 15 is the `p` of `p.x`,
+    -- column 11 the callee `add`, and column 4 the `sum` being declared. That last one
+    -- used to be excluded here with a comment saying the correct answer was no hover —
+    -- which was wrong, and ADR-0028 §4 is the correction: a declaration's name is not an
+    -- expression, so it needs `locate_declaration`, not exclusion from the test.
     local function hover_at(line, character)
       local text
       vim.lsp.buf_request(buf, "textDocument/hover", {
@@ -145,13 +177,121 @@ if config then
     end
 
     local struct_hover = hover_at(28, 15)
-    check("hover names a struct by its declared name", struct_hover == "```jr\nPoint\n```", struct_hover)
+    check(
+      "hover on a local names it and its type",
+      struct_hover == "```jr\n024-hello\np: Point\n```",
+      struct_hover
+    )
     local proc_hover = hover_at(28, 11)
     check(
-      "hover renders a procedure signature",
-      proc_hover == "```jr\n(s64, s64) -> s64\n```",
+      "hover on a call renders the declaration, with parameter names",
+      proc_hover == "```jr\n024-hello\nadd :: (a: s64, b: s64) -> s64\n```",
       proc_hover
     )
+    local decl_hover = hover_at(28, 4)
+    check(
+      "hover on a declaration is no longer empty",
+      decl_hover == "```jr\n024-hello\nsum: s64\n```",
+      decl_hover
+    )
+
+    -- The card that prompted the whole wave: container, signature, rule, prose — from
+    -- another file. Line 30 is `        print(MESSAGE);`.
+    local imported_hover = hover_at(30, 8)
+    check(
+      "hover on an imported procedure shows its module and its documentation",
+      imported_hover
+        == "```jr\nBasic\nprint :: (s: string)\n```\n\n---\n\nWrites a string to standard output.",
+      imported_hover
+    )
+
+    -- Completion, including the snippet and the lazily-resolved documentation.
+    local function complete_at(line, character)
+      local items
+      vim.lsp.buf_request(buf, "textDocument/completion", {
+        textDocument = vim.lsp.util.make_text_document_params(buf),
+        position = { line = line, character = character },
+        context = { triggerKind = 1 },
+      }, function(_, result)
+        if result then
+          items = result.items or result
+        else
+          items = {}
+        end
+      end)
+      vim.wait(10000, function()
+        return items ~= nil
+      end, 50)
+      return items or {}
+    end
+
+    local offered = complete_at(28, 14)
+    local by_label = {}
+    for _, item in ipairs(offered) do
+      by_label[item.label] = item
+    end
+    check("completion offers something at all", #offered > 0, #offered)
+    check("completion offers a local in scope", by_label["sum"] ~= nil)
+    check("completion offers an imported procedure", by_label["print"] ~= nil)
+    check("completion offers a keyword", by_label["while"] ~= nil)
+    check("completion offers a builtin type", by_label["s64"] ~= nil)
+    check(
+      "a reserved keyword is not offered",
+      by_label["cast"] == nil and by_label["enum"] == nil
+    )
+
+    local add_item = by_label["add"]
+    check("completion offers a procedure", add_item ~= nil)
+    if add_item then
+      check(
+        "a procedure completes as a call snippet",
+        add_item.insertText == "add(${1:a}, ${2:b})$0",
+        add_item.insertText
+      )
+      check(
+        "the snippet is marked as one, or the client inserts it literally",
+        add_item.insertTextFormat == 2,
+        add_item.insertTextFormat
+      )
+      check(
+        "the item carries the signature as its detail",
+        add_item.detail == "add :: (a: s64, b: s64) -> s64",
+        add_item.detail
+      )
+    end
+
+    -- Field completion after `.`, which is what the `.` trigger character is for.
+    local fields = complete_at(28, 18)
+    local field_labels = {}
+    for _, item in ipairs(fields) do
+      field_labels[item.label] = true
+    end
+    check(
+      "a dot offers the struct's fields",
+      field_labels["x"] and field_labels["y"],
+      vim.inspect(vim.tbl_keys(field_labels))
+    )
+
+    -- Resolve, round-tripping the item the server produced.
+    local print_item = by_label["print"]
+    if print_item then
+      local resolved
+      vim.lsp.buf_request(buf, "completionItem/resolve", print_item, function(_, result)
+        resolved = result or false
+      end)
+      vim.wait(10000, function()
+        return resolved ~= nil
+      end, 50)
+      local docs = resolved
+        and resolved.documentation
+        and (resolved.documentation.value or resolved.documentation)
+      check(
+        "resolve supplies the same card the hover shows",
+        docs
+          == "```jr\nBasic\nprint :: (s: string)\n```\n\n---\n\nWrites a string to standard output.",
+        docs
+      )
+    end
 
     -- Goto-definition across the `#import`, which is the one that shows the module
     -- system resolved rather than merely type-checked. Line 30 is `print(MESSAGE);`.

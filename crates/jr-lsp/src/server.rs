@@ -71,6 +71,14 @@ pub fn capabilities(encoding: Encoding) -> ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
+        completion_provider: Some(lsp_types::CompletionOptions {
+            // `.` for fields and `#` for directives (ADR-0028 §5). Identifier characters
+            // are deliberately absent: a client asks on its own as a word is typed, and
+            // listing them would mean a request per keystroke.
+            trigger_characters: Some(vec![String::from("."), String::from("#")]),
+            resolve_provider: Some(true),
+            ..lsp_types::CompletionOptions::default()
+        }),
         ..ServerCapabilities::default()
     }
 }
@@ -206,6 +214,25 @@ enum Job {
         file: SourceFile,
         position: lsp_types::Position,
     },
+    Completion {
+        db: Box<JairsDatabase>,
+        id: RequestId,
+        file: SourceFile,
+        position: lsp_types::Position,
+    },
+    /// `completionItem/resolve`: fill in one item's documentation.
+    ///
+    /// Carries the item rather than a position, because by the time a client asks, the
+    /// cursor has usually moved on.
+    ResolveCompletion {
+        db: Box<JairsDatabase>,
+        id: RequestId,
+        /// `None` for an item with nothing to resolve — a keyword, a builtin type, a
+        /// field. The item is then echoed back unchanged, which is what the protocol
+        /// wants; answering `null` would make a client drop an item it is displaying.
+        file: Option<SourceFile>,
+        item: Box<lsp_types::CompletionItem>,
+    },
     /// A request naming a file this server has never been told about.
     Unknown { id: RequestId },
 }
@@ -236,6 +263,32 @@ fn dispatch(db: &JairsDatabase, jobs: &Sender<Job>, request: Request) {
                         file,
                         position: params.text_document_position_params.position,
                     })
+                })
+        }
+        "textDocument/completion" => {
+            serde_json::from_value::<lsp_types::CompletionParams>(request.params)
+                .ok()
+                .and_then(|params| {
+                    let file = file_of(db, &params.text_document_position.text_document.uri)?;
+                    Some(Job::Completion {
+                        db: Box::new(db.snapshot()),
+                        id: id.clone(),
+                        file,
+                        position: params.text_document_position.position,
+                    })
+                })
+        }
+        // A resolve request carries no document, so the item's own `data` says which file
+        // declared it. Falling back to *some* open file would resolve the wrong item's
+        // docs, which is worse than resolving none.
+        "completionItem/resolve" => {
+            serde_json::from_value::<lsp_types::CompletionItem>(request.params)
+                .ok()
+                .map(|item| Job::ResolveCompletion {
+                    db: Box::new(db.snapshot()),
+                    id: id.clone(),
+                    file: resolve_target(db, &item),
+                    item: Box::new(item),
                 })
         }
         _ => None,
@@ -311,7 +364,52 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
             });
             answer(out, id, computed.map(serde_json::to_value));
         }
+        Job::Completion {
+            db,
+            id,
+            file,
+            position,
+        } => {
+            let db = db.as_ref();
+            let computed = catch(|| {
+                // `is_incomplete: false`: the list is everything in scope, so a client is
+                // free to filter it locally as the user keeps typing rather than asking
+                // again on every keystroke.
+                lsp_types::CompletionResponse::List(lsp_types::CompletionList {
+                    is_incomplete: false,
+                    items: crate::completion::completion(
+                        db,
+                        file,
+                        search_paths,
+                        encoding,
+                        position,
+                    ),
+                })
+            });
+            answer(out, id, computed.map(serde_json::to_value));
+        }
+        Job::ResolveCompletion { db, id, file, item } => {
+            let db = db.as_ref();
+            let computed = catch(|| match file {
+                Some(file) => crate::completion::resolve_completion(db, file, search_paths, *item),
+                None => *item,
+            });
+            answer(out, id, computed.map(serde_json::to_value));
+        }
     }
+}
+
+/// Which file a `completionItem/resolve` request is about.
+///
+/// Every resolvable item this server produced carries the requesting file's path in
+/// `data`, stamped by `completion::completion`. `None` here means the item is not one of
+/// ours or has nothing to resolve — a keyword or a field — and it is echoed back
+/// unchanged. Guessing a file would apply an `ItemId` to the wrong file's items and
+/// resolve a plausible wrong card.
+fn resolve_target(db: &JairsDatabase, item: &lsp_types::CompletionItem) -> Option<SourceFile> {
+    let data = item.data.as_ref()?;
+    let path = data.get("file").and_then(serde_json::Value::as_str)?;
+    db.source_file(path)
 }
 
 /// Runs a handler, catching salsa's cancellation unwind.

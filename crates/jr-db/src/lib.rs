@@ -43,6 +43,7 @@
 
 pub mod build;
 pub mod consts;
+pub mod docs;
 pub mod mir;
 pub mod module_loader;
 mod queries;
@@ -87,6 +88,11 @@ pub use module_loader::{
 
 pub use build::{BuildOutput, build_object, entry_of};
 pub use consts::{ConstResult, file_consts};
+// Re-exported because `ConstResult::values` is an `Arc<ConstValues>` in this crate's
+// public API: a consumer could not name the type it is handed without depending on
+// `jr-mir` for nothing else, which is what `jr-lsp` would otherwise have had to do.
+pub use docs::{FileDocs, file_docs};
+pub use jr_mir::ConstValues;
 pub use mir::{
     MirResult, dump_mir, dump_optimized_mir, file_mir, imported_procs, optimized_file_mir,
 };
