@@ -25,7 +25,7 @@ use jr_pool::TargetLayout;
 
 use crate::{
     Db, SourceFile,
-    mir::file_mir,
+    mir::optimized_file_mir,
     module_loader::{ModuleSearchPaths, file_hir},
     run::main_of,
 };
@@ -62,7 +62,7 @@ pub fn build_object(
     // never be held across a nested query call.
     let mut inputs = Vec::with_capacity(files.len());
     for file in files {
-        let mir = file_mir(db, file, search_paths);
+        let mir = optimized_file_mir(db, file, search_paths);
         if mir.gated {
             continue;
         }

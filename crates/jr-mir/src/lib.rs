@@ -30,9 +30,14 @@
 //! - **Resolve an imported name.** A cross-file callee is handed in as
 //!   [`ImportedProcs`] (ADR-0018 §5), so that resolving one never makes this file's
 //!   analysis depend on another file's.
-//! - **The mid-end.** The inliner, DCE and const-prop are a later wave. There is
-//!   no `mem2reg` and there never will be: Braun's construction means there is
-//!   nothing for it to do.
+//! - **Decide which bodies may be optimised.** [`inline_body`] rewrites whatever
+//!   body it is handed. ADR-0021 §2 keeps every body the `#run` closure reaches
+//!   byte-identical to its built form, and that is `jr-db`'s decision because the
+//!   closure is a query's business — [`const_callees`] is the fact this crate
+//!   contributes to it.
+//! - **DCE and const-prop.** Still a later wave. A splice leaves [`Statement::Nop`]s
+//!   behind and there is nothing yet that removes them. There is no `mem2reg` and
+//!   there never will be: Braun's construction means there is nothing for it to do.
 //!
 //! # What it does not know
 //!
@@ -47,6 +52,7 @@ mod cfg;
 mod code;
 mod dump;
 mod escape;
+mod inline;
 mod inputs;
 mod mir;
 mod span;
@@ -57,6 +63,7 @@ mod verify;
 pub use build::{lower_body, lower_file};
 pub use cfg::{body_diagnostics, file_diagnostics};
 pub use dump::{dump_body, dump_body_spans, dump_file};
+pub use inline::{Callees, MAX_INLINE_STATEMENTS, inline_body, is_inlinable};
 pub use inputs::{ConstValues, ImportedProcs};
 pub use mir::{
     BinOp, BlockData, BlockId, Callee, Facts, FileMir, MirBody, MirSpan, Operand, Place, PlaceBase,
@@ -64,4 +71,4 @@ pub use mir::{
     UndefinedRead, Unreachable, ValueData, ValueId,
 };
 pub use span::resolve_span;
-pub use thunk::{lower_const, thunk_ref};
+pub use thunk::{const_callees, lower_const, thunk_ref};

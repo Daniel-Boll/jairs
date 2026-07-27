@@ -227,12 +227,12 @@ Status of each slice component, so this is answerable without reading the tree.
 | `jr-hir` | **Done** | Lowering, name resolution, flat import merge (ADR-0014) |
 | `jr-pool` | **Done** | Types + comptime values in one pool (ADR-0015, ADR-0016 §3) |
 | `jr-sema` | **Done** | Signatures + checking (ADR-0016). No const-eval: that is `jr-vm` |
-| `jr-db` | **Done** | salsa queries: module loader, sema, MIR, const-eval, run (ADR-0007, ADR-0014, ADR-0018 §3) |
+| `jr-db` | **Done** | salsa queries: module loader, sema, MIR built *and* optimized, const-eval, run (ADR-0007, ADR-0014, ADR-0018 §3, ADR-0021 §1) |
 | `jr-cli` | **Done** | `jr check` (with `--module-path`), `jr fmt`, `jr parse`, `jr run`, `jr build` |
 | `tree-sitter-jairs` | **Done** | Grammar + queries; drift gate green |
 | `tests/corpus` | **Done** | 69 files, incl. `type-errors/` and `cfg-errors/` — one file per diagnostic |
 | `modules/Basic` | **Done** | Written, resolving, type-checking and **executing**; MIR snapshotted |
-| `jr-mir` | **Done** | Typed SSA, Braun construction, CFG diagnostics (ADR-0017). No mid-end |
+| `jr-mir` | **Done** | Typed SSA, Braun construction, CFG diagnostics (ADR-0017); the inliner (ADR-0021). No DCE, no const-prop |
 | `jr-vm` | **Done** | Register bytecode, interpreter, libffi bridge (ADR-0018); per-instruction spans, so a trap names its line (ADR-0020 §4). No JIT tier |
 | `jr-codegen` | **Done** | Three-phase `Backend` trait, no `cranelift-*` type in it (ADR-0009, ADR-0019 §1) |
 | `jr-codegen-clif` | **Done** | MIR → Cranelift IR, layout via `jr-pool`, traps through a generated helper (ADR-0019). Aggregate params only; aggregate returns and indirect calls refused |
@@ -240,16 +240,24 @@ Status of each slice component, so this is answerable without reading the tree.
 | `jr-codegen-llvm` | **Not started** | Wave W8 owns it (ADR-0019 §5) |
 | `jr-driver`, `jr-lsp` | **Not started** | |
 
-Accepted ADRs: 0001–0020. See [`docs/adr/README.md`](docs/adr/README.md).
+Accepted ADRs: 0001–0021. See [`docs/adr/README.md`](docs/adr/README.md).
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
 plus `jr-sema`'s crate docs are the only record of the typing rules today.
 
-`jr-mir` has **no mid-end**: no inliner, no DCE, no const-prop, and no `mem2reg`
-(ADR-0017 §2 makes the last one unnecessary rather than deferred). The wave that
-adds one is §2.1's, and §5 puts the inliner in MIR deliberately. Its absence is
-visible in a MIR dump: unreachable blocks survive, and `print_line` in
-`modules/Basic` keeps a spill slot it never reads.
+`jr-mir`'s mid-end is **one pass**: the inliner (ADR-0021), which splices a leaf
+callee under a statement threshold and is what `jr run` and `jr build` consume
+through `optimized_file_mir`. There is still no DCE and no const-prop, and there
+will never be a `mem2reg` (ADR-0017 §2 makes it unnecessary rather than deferred).
+The remaining absence is visible in a MIR dump: unreachable blocks survive, a
+splice leaves `nop`s behind, and `print_line` in `modules/Basic` keeps a spill slot
+it never reads.
+
+The inliner does **not** touch a body compile-time evaluation can reach (ADR-0021
+§2). That is what keeps §3.1's invariant true rather than merely likely: comptime
+runs MIR lowered inside `file_consts`, which is upstream of the optimized query, so
+freezing the `#run` closure makes the two engines run bit-identical MIR for every
+body either of them could disagree about.
 
 Layout exists once, in `jr-pool` (ADR-0018 §2), and `jr-codegen-clif` calls it
 rather than computing its own — the obligation ADR-0018 §2 exists to create, which
@@ -466,191 +474,139 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 ## 7. Immediate next actions
 
-Everything through the **native back end** is done: workspace scaffolding, the ADRs,
-spec chapters 00–03, the corpus plus the drift gate, the lexer→parser→CST→`jr fmt`
-inch, HIR and name resolution, the module loader, the InternPool, `jr-sema`, `jr-mir`,
-`jr-vm`, `jr-codegen`, `jr-codegen-clif` and `jr-link`. See §1.5 for component status.
+Everything through the **inliner** is done: workspace scaffolding, the ADRs, spec
+chapters 00–03, the corpus plus the drift gate, the lexer→parser→CST→`jr fmt` inch,
+HIR and name resolution, the module loader, the InternPool, `jr-sema`, `jr-mir`,
+`jr-vm`, `jr-codegen`, `jr-codegen-clif`, `jr-link`, and now a staged
+`optimized_file_mir` with a real inlining pass behind it. See §1.5 for component
+status. **637 workspace tests**, all six gates green.
 
-**`jr run` and `jr build` agree, down to where a trap happened.**
-`tests/corpus/valid/024-hello.jr` prints its two lines and exits 0 in the bytecode VM
-*and* as a linked arm64 binary, and a trapping program produces byte-identical stderr —
-including its `  --> path:line:col` — and the same exit status from both. §1.4's exit
-criterion is met and **nine of its twelve boxes are ticked; the three that are not are
-editor packaging and a Linux CI run, so every compiler criterion is done.**
+**The mid-end exists, and §3.1's invariant survived it.** `jr run` and `jr build`
+both consume `optimized_file_mir`, `024-hello.jr` still prints its two lines and
+exits 0 in both engines, and a trap in an inlined leaf now names the **call** rather
+than the callee: `a_trap_inside_an_inlined_leaf_names_the_call_in_both_engines`
+asserts line 10, and its negative control asserts line 7 for a callee too fat to
+inline. If those two ever agree on a line, one of them has stopped testing anything.
 
-### What the `jr-codegen` wave landed
+### What the inliner wave landed
 
-- [x] **ADR-0019**, six decisions: a three-phase `Backend`, traps through a runtime
-      helper, the existing span resolution reused instead of `AstIdMap`, the
-      `#foreign` library interned in the pool, `jr-codegen-llvm` left for W8, and
-      ADR-0009's "inliner before any backend" deliberately deferred with a named
-      expiry.
-- [x] **`jr-codegen`** — the `Backend` trait, with no `cranelift-*` type in it.
-- [x] **`jr-codegen-clif`** — MIR → Cranelift IR. Block parameters onto
-      `append_block_param`, slots onto Cranelift stack slots, `reverse_postorder()` as
-      the block order: ADR-0017's return, collected.
-- [x] **`jr-link`** and `jr build`, with no runtime object because the trap helper is
-      generated into the program's own object.
-- [x] **The differential harness**, which compares stdout, stderr and exit status.
-- [x] **One resolution of a `#foreign` library**, interned in the pool and read by
-      sema, the VM and the linker.
+- [x] **ADR-0021**, four decisions: a new per-file `optimized_file_mir` rather than
+      the interned `(file, proc)` key; the `#run` closure frozen so comptime and
+      runtime cannot diverge; every copied span rewritten to the call site; and a
+      leaf-only eligibility rule whose leafness *is* the termination argument.
+- [x] **`jr-mir`'s `inline.rs`** — the splice. A call is an rvalue, not a
+      terminator, so each site splits its block; the result becomes the
+      continuation's block parameter, so no copy is left for a pass that does not
+      exist to remove.
+- [x] **`Statement::Nop` and `Poisoned::Transitive` acquired producers.** Both were
+      declared by ADR-0017 for this wave and had sat unreachable since.
+- [x] **`optimized_file_mir`**, and `dump_optimized_mir` beside `dump_mir` so the
+      before and after are two reviewable snapshots rather than one flag.
+- [x] **`jr_mir::const_callees`**, which over-approximates deliberately: it walks the
+      whole file-level expression arena instead of mirroring `file_consts`' notion of
+      what wants evaluating, because those two drifting apart is unsound and
+      over-freezing is not.
+- [x] **20 new tests**: 11 on the splice, 7 on the query's policy, 2 differential.
 
 Three things about this wave are worth carrying forward.
 
-- **A blocker that was not where it looked.** `cranelift-codegen 0.134.2` needs rustc
-  1.94 through `wasmtime-internal-core`, and the machine was on 1.93.1 — so the pinned
-  codegen could not compile at all. Moving to stable 1.97 cost nothing directly, but
-  raising `rust-version` to 1.94 turned on an MSRV-gated clippy lint at thirteen sites
-  across eight crates. An MSRV bump is a lint change.
-- **A false blocker, believed for a whole wave.** The previous handoff said a trap had
-  no source location because `AstIdMap` was deferred. `jr-mir` had been resolving
-  `MirSpan`s to `Span`s since the MIR wave; the function was private. ADR-0019 §3
-  keeps the mistake on the record. **Check a claimed blocker against the code before
-  turning it into a design fork.**
-- **The exit status caught what output could not.** The first native run of
-  `024-hello.jr` printed both its lines perfectly and exited **1**, because a
-  `void`-returning Jairs `main` named `main` leaves the C runtime whatever was in the
-  return register. Output alone said the back end worked. This is why the differential
-  compares status and stderr too — and why the first version of it, which compared
-  only stdout, reported two engines as agreeing while their trap messages differed.
+- **A plan's stated blocker was the smaller of two.** §7 named ADR-0017 §3's
+  no-cross-body rule as what the inliner would collide with. It was the easy half —
+  §3 had already named the resolution (`mir_built` → `optimized_mir`) and accepted
+  the cost. The real collision was `#run`: `file_consts` calls `jr_mir::lower_file`
+  *directly* to avoid a salsa cycle, so comptime is upstream of any query that could
+  inline, and in `024-hello.jr` the cycle closes inside one file. **Read the
+  consumer's code before believing a handoff's list of forks is complete.**
+- **A soundness argument resting on an accident got a test rather than a comment.**
+  ADR-0021 §2 freezes only *same-file* calls, which is sound only because a
+  cross-file `#run` does not work. `a_cross_file_run_is_still_refused` pins that, and
+  its comment says not to delete the assertion when it starts failing.
+- **An ADR over-claimed and was corrected before the code was written.** §3's first
+  draft said the span rewrite gave the verifier an invariant to check. No `MirSpan`
+  carries a `FileId`, so it cannot; only `MirSpan::Param` is checkable. The real
+  guarantee is a nullary choke point — the shape ADR-0020 §4 used — and the ADR now
+  says so. An ADR that claims a check nobody wrote is worse than one that admits the
+  gap.
 
-Diagnostic codes: **E0231 is the first free code.** E0230 is `jr-db`'s const-eval
-failure; E0227–E0229 are `jr-mir`'s. `jr-codegen` deliberately defines none: every
-`CodegenError` is a compiler fault, and a program fault was reported upstream. Beware
-that `jr-syntax`' parser still illegally emits E0200/E0201/E0202 for "arrives in wave
-Wn" errors, colliding with `jr-hir` — do not filter tests by those.
+Diagnostic codes: **E0231 is still the first free code.** `jr-mir`'s inliner defines
+none, because every way a splice can fail is either "not eligible", which is a
+policy decision and not an error, or a verifier assertion, which is a compiler fault.
+E0230 is `jr-db`'s const-eval failure; E0227–E0229 are `jr-mir`'s. Beware that
+`jr-syntax`' parser still illegally emits E0200/E0201/E0202 for "arrives in wave Wn"
+errors, colliding with `jr-hir` — do not filter tests by those.
 
-### Next: the mid-end
+### Next: DCE, const-prop, and the first honest number
 
-**Every compiler criterion in §1.4 is met.** The three boxes still open are editor
-packaging and a Linux CI run — neither is compiler work. The slice is done.
-
-`jr run` and `jr build` agree on output, exit status and, since ADR-0020, on a trap's
-source location — byte for byte, checked by `crates/jr-cli/tests/differential.rs`
-rather than argued for. That harness is the most valuable test in the repository: it
-is the only thing that checks §3.1's load-bearing invariant.
+Every compiler criterion in §1.4 is met and the mid-end has its first pass. The
+three boxes still open are editor packaging and a Linux CI run, neither of which is
+compiler work.
 
 #### Read first, in this order
 
 1. This section, then §1.5 for status and §3.1 for the same-MIR invariant.
-2. **ADR-0009 §"Follow-on work"** and **ADR-0019 §6**, which together are the mandate
-   and the deferral: Cranelift cannot inline, so the inliner is ours and lives in MIR,
-   and it was deliberately postponed until now.
-3. **ADR-0017 §3**, whose no-cross-body-dependency rule is what the inliner is about
-   to collide with, and §4's follow-on note that the inliner must *propagate*
-   diagnostics rather than re-report them.
-4. `crates/jr-cli/tests/differential.rs`. Anything the mid-end changes must keep it
-   green, and it is a stronger constraint than it looks: an optimisation that changes
-   *when* a trap fires changes an observable message.
+2. **ADR-0021**, all four sections, and in particular §2 — every subsequent mid-end
+   pass inherits the frozen set, and a pass that ignores it reintroduces exactly the
+   divergence §2 exists to prevent.
+3. **ADR-0019 §6**, whose deferral this wave discharged, and which is also where the
+   condition for publishing a performance number is written down.
+4. `crates/jr-cli/tests/differential.rs` and
+   `crates/jr-db/tests/optimized_mir.rs`. The first is still the most valuable test
+   in the repository; the second is where a new pass states which bodies it may
+   touch.
 
 #### Work items, in dependency order
 
-- [ ] **The inliner.** ADR-0019 §6 named what ends its deferral and both conditions
-      are now reachable: the first `#expand`, or the first performance number this
-      plan proposes to publish. Note the tension to resolve *before* writing it —
-      ADR-0017 §3 keeps cross-body reads out of the built-MIR query precisely so that
-      editing a widely inlined leaf does not invalidate its whole fan-in, and an
-      inliner needs exactly that read. ADR-0017 §5 already accepts the invalidation
-      cost in principle; the question is which query does the inlining.
-- [ ] **Spans must survive inlining.** ADR-0020's follow-on work: an inlined body's
-      traps currently name the callee's source, so after inlining a trap would point
-      at `modules/Basic` rather than at the call. `differential.rs` will catch it,
-      because it asserts the rendered location — which is the point of asserting the
-      location rather than merely that the two engines agree.
-- [ ] **DCE and const-prop**, which the absence of a mid-end also makes visible: a MIR
-      dump still shows unreachable blocks, and `print_line` in `modules/Basic` keeps a
-      spill slot it never reads.
-- [ ] **Then a published performance number**, which is what §1.3's estimate has been
-      waiting for. Until the inliner exists any number measures the missing mid-end
-      rather than the back end, and ADR-0019 §6 says so explicitly.
+- [ ] **DCE.** The cheapest visible win and the tidy-up the inliner owes: a splice
+      leaves a `nop` per call site and can strand a copied block, and
+      `optimized_mir__hello_optimized_mir.snap` shows both. Note that dead-code
+      elimination must not remove a block a *trap* can reach, which is the one place
+      `Unreachable::Trap` differs from the other two variants.
+- [ ] **Const-prop.** `024-hello.jr` now reads `v13 = v11 + v12` where both
+      arguments arrive as edge arguments from `4_s64` and `5_s64` — the inliner made
+      a constant-folding opportunity that did not exist before it, which is the usual
+      reason const-prop follows inlining rather than preceding it.
+- [ ] **Then the first published performance number**, which is what §1.3's estimate
+      has been waiting for and what ADR-0019 §6 named as an expiry condition. It is
+      now honest to take one: the number will describe an inlined program.
 
 #### Also open, and smaller
 
+- **A finer optimized-MIR key.** ADR-0021 §1's rejected alternative. Editing
+  `modules/Basic` currently invalidates every importer's optimized MIR wholesale.
+  The fix is the interned `(file, proc)` key, and the consumer that will force it is
+  most likely monomorphization rather than this cost.
+- **An inline stack per span.** ADR-0021 §3's rejected alternative, which `#expand`
+  turns from a diagnostic improvement into a semantic requirement: a macro author
+  needs to know *which expansion* trapped. Doing it means `trap_message`, both
+  engines and every differential expectation move together.
+- **A cross-file `#run`.** Still open, and now load-bearing for something else:
+  ADR-0021 §2's soundness depends on its absence. Whoever enables it must also make
+  the frozen set cross-file, or give both engines one shared optimized query.
 - **Aggregate returns and calls through a procedure pointer**, both
-  `CodegenError::Unsupported` in the back end and `VmError::Unsupported` in the VM. An
-  aggregate return needs a caller-allocated result slot; an indirect call needs
-  something that maps a procedure *value* to a `ProcRef`, which nothing does in either
-  engine.
-- **A cross-file `#run`.** The const query is per file; evaluating a `#run` that calls
-  into another module needs the cross-body read ADR-0017 §3 keeps out — the same
-  collision the inliner has.
-- **Linux x86-64.** The back end asks `cranelift_native` for the host and `jr-pool`
-  for layout, so nothing is hardcoded — but "should work" and "has been run" are
-  different claims, and only the second is worth writing in a status table.
+  `CodegenError::Unsupported` and `VmError::Unsupported`. An indirect call is also
+  the one call shape the inliner refuses, for the same reason: nothing maps a
+  procedure *value* to a `ProcRef`.
+- **Linux x86-64.** Nothing is hardcoded — the back end asks `cranelift_native` for
+  the host and `jr-pool` for layout — but "should work" and "has been run" are
+  different claims and only the second belongs in a status table.
 
 #### Traps
 
-- **Do not compute layout.** Still the one mistake that produces a *silent*
-  comptime/runtime divergence. `jr-codegen-clif`'s `repr.rs` is the only place layout
-  enters the back end.
+- **Do not optimise a frozen body.** ADR-0021 §2. It is the one rule in the mid-end
+  whose violation is a *silent* comptime/runtime divergence rather than a wrong
+  answer with a test to catch it.
+- **Do not compute layout.** Still the other mistake that produces a silent
+  divergence. `jr-codegen-clif`'s `repr.rs` is the only place layout enters the back
+  end.
 - **Do not format a trap message anywhere but `jr_base::trap_message`.** Two engines
-  render at different times — the back end at compile time into a data object, the VM
-  at run time — and they have already drifted once. ADR-0020 §2 is why there is one
-  function.
-- **`Rvalue::Undef` is not poison**, and native models it as a tracked property of a
-  `ValueId` rather than as a value, so that a `Move` of an undefined value stays legal
-  while a *read* traps. Trapping at the definition would disagree with the VM about a
-  valid program.
-- **A `void` value occupies no register**, so a `void` block parameter takes no block
-  argument and a `void` store writes nothing. Zipping the parameter and argument lists
-  instead of filtering both is how that goes wrong.
-- **`PlaceBase::Deref` reads its pointer from a register; `Projection::Deref` reads
-  one from memory.** They look interchangeable and are not.
-- **The differential can be fooled by silence.** Only two corpus programs print
-  anything, so running the corpus alone largely compares "no output, exit 0" with
-  itself. That is why the harness also makes computations observable through `exit`.
-  Any new case should make its answer observable.
-- **A trap's exit status is 4 in both engines**, and `jr build`'s own failure status is
-  2. Changing either silently breaks the comparison.
+  render at different times, so a shared formatter is the only thing keeping them
+  equal.
+- **Do not add a corpus file without checking it is executed.** `modules/Basic` hid a
+  miscompile for a whole wave because it is not in `tests/corpus/valid/`. Only two of
+  the fifteen executable corpus programs print anything, which is why the
+  differential also drives computations out through `exit`.
 
-#### Gates — all six must pass
-
-`cargo fmt --all --check`; `cargo clippy --workspace --all-targets -- -D warnings`;
-`cargo test --workspace` (617 tests as of this handoff); `RUSTDOCFLAGS="-D warnings"
-cargo doc --workspace --no-deps`; `cargo run -q -p jr-cli -- fmt --check
-tests/corpus/valid tests/corpus/imports/valid tests/corpus/type-errors
-tests/corpus/cfg-errors tests/corpus/modules modules`; corpus-drift via
-`npx --yes tree-sitter-cli@0.26.11` (tree-sitter is not installed locally).
-
-House style is enforced by the first four: `[lints] workspace = true` and no
-crate-level `#![warn]`, `missing_docs` is a warning workspace-wide so every public
-item including enum variants and struct fields needs a `///`, private `mod` plus a
-curated `pub use` in `lib.rs`, module `//!` docs that argue *why* and name the
-rejected alternative, and exhaustive matches rather than `matches!` or guards so
-that a new variant is a compile error.
-
-One process note, repeated because it cost real time on two waves running:
-**subagents were unreliable.** Write the modules that define an API yourself;
-delegate only single-file work with the consumed signatures stated verbatim.
-
-### Known latent issues, none blocking
-
-- The parser's E0200/E0201/E0202 collision described above.
-- `Stmt::Item` and `FieldId` are declared but never constructed. Both are matched
-  exhaustively anyway, so the day one is constructed the arm is the thing to change.
-- An imported module's signatures are recomputed once per importer inside the
-  signature phase. ADR-0016 §5 forbids the obvious fix, and interning is idempotent,
-  so the cost is time rather than correctness. `file_consts` compounds it: it lowers
-  the file once per fixpoint round, which is one or two in practice.
-- A name that an *imported* module itself imported is invisible to the importer's
-  signature phase and resolves to poison.
-- The most negative value of a signed type cannot be written as a literal: the HIR
-  stores a magnitude and `-1` is negation applied to `1`.
-- `Pool` never shrinks; `jr-pool`'s docs record the remap-pass escape hatch.
-- A default-initialised local of *pointer* type is treated as uninitialised rather
-  than null, because the pool interns no null pointer. `Memory` reserves address 0 for
-  it, so interning one is all that is missing.
-- A `#run` producing a struct is refused: ADR-0015's `Item` has no aggregate-value
-  variant. A `#run` producing a *string* works, by copying the bytes out of VM memory
-  before the VM is dropped.
-- Calling through a procedure pointer is refused: the pool interns a procedure as an
-  `Item::ProcValue { decl }`, a `DeclId`, and nothing maps a `DeclId` to a `ProcRef`.
-- The VM's memory is 1 MiB and never grows, because growing would move the base and
-  dangle a host pointer held across a foreign call. Frame size is `value_count()`
-  rather than a live range, so a body with many short-lived values over-allocates.
-- `jr-mir` has no mid-end, so nothing folds constants or removes dead blocks.
-
-### After the native back end
+### After the mid-end
 
 §1.4's remaining criteria: the LSP (diagnostics, hover, goto-def), editor packaging,
 and CI verified on Linux x86-64 as well as macOS arm64.

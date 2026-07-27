@@ -46,7 +46,7 @@ use std::sync::Arc;
 
 use jr_base::{FileId, Symbol};
 use jr_hir::{ConstValue, FileHir, ItemId, ItemKind, Res};
-use jr_mir::{FileMir, ImportedProcs};
+use jr_mir::{Callees, FileMir, ImportedProcs};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
@@ -230,7 +230,34 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
 /// compares would cost memory for no invalidation benefit.
 #[must_use]
 pub fn dump_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) -> String {
-    let result = file_mir(db, file, search_paths);
+    render(db, file, search_paths, file_mir(db, file, search_paths))
+}
+
+/// A textual dump of a file's MIR *after* inlining.
+///
+/// Separate from [`dump_mir`] rather than a flag on it, because the two describe
+/// different things and a test should have to say which it means: `dump_mir` shows
+/// the program the user wrote, and this shows the program the back end receives.
+#[must_use]
+pub fn dump_optimized_mir(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+) -> String {
+    render(
+        db,
+        file,
+        search_paths,
+        optimized_file_mir(db, file, search_paths),
+    )
+}
+
+fn render(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+    result: MirResult,
+) -> String {
     if result.gated {
         return String::from("gated: the file has errors\n");
     }
@@ -245,4 +272,205 @@ pub fn dump_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
         signatures.as_ref(),
         interner,
     )
+}
+
+// ---------------------------------------------------------------------------
+// optimized_file_mir — tracked query
+// ---------------------------------------------------------------------------
+
+/// A file's MIR with every eligible call inlined (ADR-0021 §1).
+///
+/// This is the staged half ADR-0017 §3 described and deferred: [`file_mir`] stays
+/// the unstaged query with no cross-body dependencies, and this one — which reads
+/// the MIR of every module the file imports — is what `jr run` and `jr build`
+/// consume. Diagnostics and [`dump_mir`] deliberately stay on built MIR, so the
+/// dump, the corpus snapshots and the editor keep describing the program the
+/// programmer wrote.
+///
+/// The invalidation cost is real and is stated in ADR-0021 §1: editing
+/// `modules/Basic` invalidates this query for every importer wholesale. ADR-0017 §5
+/// accepted fan-in invalidation as inherent to inlining; the coarseness is what a
+/// per-body key would fix later.
+///
+/// # Why this cannot be what comptime runs
+///
+/// `file_consts` calls `jr_mir::lower_file` directly — its own docs explain that
+/// calling `file_mir` from there would be a salsa cycle — so comptime is strictly
+/// *upstream* of this query and could not consume it even if that were wanted.
+/// ADR-0021 §2 is the consequence: the bodies comptime executes are frozen here, so
+/// both engines run the same MIR for every one of them, and `PLAN.md` §3.1's
+/// invariant holds structurally rather than by trusting the inliner.
+///
+/// Uses `no_eq` to match the rest of this crate's queries.
+#[salsa::tracked(returns(clone), no_eq)]
+pub fn optimized_file_mir(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+) -> MirResult {
+    let built = file_mir(db, file, search_paths);
+    if built.gated {
+        return built;
+    }
+
+    let hir = file_hir(db, file);
+    let file_id = crate::queries::resolve_file_id(db, file);
+    let resolve = resolved(db, file, search_paths).map;
+    let imports = imported_procs(db, file, search_paths);
+    let frozen = frozen_procs(
+        file_id,
+        &built.mir,
+        &jr_mir::const_callees(hir.as_ref(), file_id, resolve.as_ref(), imports.as_ref()),
+    );
+
+    // Every module this file imports, because `imported_procs` only ever resolves a
+    // callee in a *direct* import, so a transitive walk would read MIR no
+    // `Callee::Direct` in this file can name.
+    let modules: Vec<Arc<FileMir>> = imported_modules(db, &hir, search_paths)
+        .into_iter()
+        .map(|module| file_mir(db, module, search_paths))
+        .filter(|result| !result.gated)
+        .map(|result| result.mir)
+        .collect();
+
+    // Every query result gathered before the pool is locked: the lock must never be
+    // held across a nested query call.
+    let pool = crate::sema::lock_pool(db);
+
+    let mut callees = Callees::new();
+    for module in &modules {
+        for (_, body) in module.iter() {
+            if let Ok(body) = body {
+                callees.insert(body);
+            }
+        }
+    }
+    // The file's own bodies are candidates too — `024-hello.jr`'s `add` is one — and
+    // they are taken from *built* MIR, so a splice never copies a partially inlined
+    // body. With a leaf-only rule there is nothing to cascade anyway; taking them
+    // from the built map means that stays true if the rule is ever relaxed.
+    for (_, body) in built.mir.iter() {
+        if let Ok(body) = body {
+            callees.insert(body);
+        }
+    }
+
+    let mut out = FileMir::new();
+    for (proc, body) in built.mir.iter() {
+        match body {
+            Ok(body) if !frozen.contains(&proc) => {
+                let mut body = body.clone();
+                jr_mir::inline_body(&mut body, &callees, &pool);
+                out.push(proc, Ok(body));
+            }
+            // A frozen body and a refused one are both passed through unchanged, for
+            // different reasons: ADR-0021 §2 for the first, and there being nothing
+            // to optimise for the second.
+            Ok(body) => out.push(proc, Ok(body.clone())),
+            Err(poisoned) => out.push(proc, Err(*poisoned)),
+        }
+    }
+    drop(pool);
+
+    MirResult {
+        mir: Arc::new(out),
+        gated: false,
+    }
+}
+
+/// The procedures in `file` that compile-time evaluation could execute.
+///
+/// ADR-0021 §2's frozen set: the inliner must leave every one of these
+/// byte-identical to its built form, because `file_consts` runs them from its own
+/// lowering and `PLAN.md` §3.1 requires both engines to execute the same MIR.
+///
+/// # Why same-file calls only
+///
+/// Because comptime cannot follow a cross-file call today: `file_consts` lowers only
+/// its own file's HIR, so a `Callee::Direct` naming another file has no body in the
+/// map it hands the VM and evaluation fails with E0230. Every body comptime can
+/// reach is therefore in this file, reached through this file's calls.
+///
+/// **This is the one place ADR-0021 §2's soundness rests on that accident.** A `#run`
+/// in another file calling into this one would need a set this per-file query cannot
+/// compute — salsa has no reverse dependencies. `tests/optimized_mir.rs` pins the
+/// refusal so that enabling a cross-file `#run` fails there rather than shipping a
+/// comptime/runtime divergence.
+fn frozen_procs(
+    file: FileId,
+    mir: &FileMir,
+    roots: &[jr_mir::ProcRef],
+) -> FxHashSet<jr_hir::ProcId> {
+    let mut frozen = FxHashSet::default();
+    let mut queue: Vec<jr_hir::ProcId> = roots
+        .iter()
+        .filter(|root| root.file == file)
+        .map(|root| root.proc)
+        .collect();
+    while let Some(proc) = queue.pop() {
+        if !frozen.insert(proc) {
+            continue;
+        }
+        let Some(Ok(body)) = mir.get(proc) else {
+            continue;
+        };
+        for callee in same_file_callees(body, file) {
+            if !frozen.contains(&callee) {
+                queue.push(callee);
+            }
+        }
+    }
+    frozen
+}
+
+/// Every procedure in this file that `body` calls directly.
+fn same_file_callees(body: &jr_mir::MirBody, file: FileId) -> Vec<jr_hir::ProcId> {
+    let mut out = Vec::new();
+    let mut note = |rvalue: &jr_mir::Rvalue| {
+        if let jr_mir::Rvalue::Call {
+            callee: jr_mir::Callee::Direct(target),
+            args: _,
+        } = rvalue
+            && target.file == file
+        {
+            out.push(target.proc);
+        }
+    };
+    for block in body.blocks() {
+        for stmt in &block.stmts {
+            match stmt {
+                jr_mir::Statement::Assign { rvalue, .. }
+                | jr_mir::Statement::Discard { rvalue, .. } => note(rvalue),
+                jr_mir::Statement::Store { .. } | jr_mir::Statement::Nop => {}
+            }
+        }
+    }
+    out
+}
+
+/// The already-loaded files this file imports directly.
+///
+/// A self-import is skipped for the same reason `run::reachable_files` skips one:
+/// ADR-0014 §6 makes it a no-op, and reading a file's own MIR from its own optimized
+/// query would be a salsa cycle rather than merely redundant.
+fn imported_modules(
+    db: &dyn Db,
+    hir: &FileHir,
+    search_paths: ModuleSearchPaths,
+) -> Vec<crate::SourceFile> {
+    let mut out: Vec<crate::SourceFile> = Vec::new();
+    for item in &hir.items {
+        let ItemKind::Import { path, .. } = &item.kind else {
+            continue;
+        };
+        let lookup = module_file(db, search_paths, Arc::from(path.as_str()));
+        let Some(found) = lookup.found else { continue };
+        let Some(module) = db.source_file_for_path(found.to_string_lossy().as_ref()) else {
+            continue;
+        };
+        if !out.contains(&module) {
+            out.push(module);
+        }
+    }
+    out
 }

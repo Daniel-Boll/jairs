@@ -109,6 +109,103 @@ fn expr_type(types: &TypeMap, expr: ExprId) -> Result<PoolId, Poisoned> {
     }
 }
 
+/// Every procedure a file's compile-time evaluation could possibly call.
+///
+/// ADR-0021 §2 needs this so that the optimized-MIR query can leave those bodies
+/// byte-identical to their built form: comptime executes MIR lowered inside
+/// `file_consts`, and if the back end were handed an *inlined* version of a body
+/// the VM ran uninlined, `PLAN.md` §3.1's invariant would hold only as far as the
+/// inliner is correct. Freezing them makes it hold by construction.
+///
+/// # Why it walks the whole arena instead of finding the roots
+///
+/// `FileHir::exprs` is the file-level expression arena and nothing else — a
+/// procedure body's expressions live in its own `Body::exprs`, which is the
+/// distinction [`ExprScope`] exists to make. So every expression a thunk could ever
+/// be built from is in here, and walking all of it cannot miss a root.
+///
+/// The alternative was to mirror `file_consts`' own notion of what wants
+/// evaluating. That is narrower and it is *drift waiting to happen*: the two would
+/// have to be changed together forever, and the failure mode of forgetting is a
+/// body that comptime runs and the inliner rewrote. Over-approximating here costs a
+/// procedure or two of missed inlining and cannot be unsound.
+///
+/// This is intentionally the direct callees only. The transitive closure needs
+/// callee *bodies*, which is a cross-body read and therefore the optimized query's
+/// business rather than this function's.
+#[must_use]
+pub fn const_callees(
+    hir: &FileHir,
+    file: FileId,
+    resolve: &ResolveMap,
+    imports: &ImportedProcs,
+) -> Vec<ProcRef> {
+    let mut out = Vec::new();
+    for expr in &hir.exprs {
+        let Expr::Call { callee, .. } = expr else {
+            continue;
+        };
+        // Resolution failures are simply skipped: a call a thunk cannot resolve is
+        // one it refuses to lower, so comptime never runs it either.
+        if let Ok(target) = resolve_callee(hir, file, resolve, imports, *callee)
+            && !out.contains(&target)
+        {
+            out.push(target);
+        }
+    }
+    out
+}
+
+/// The procedure a file-level call's callee expression names.
+///
+/// Shared with [`Thunk::callee`] so that [`const_callees`] cannot disagree with what
+/// a thunk would actually call — the two answering differently is the only way
+/// ADR-0021 §2's argument could quietly fail.
+///
+/// # Errors
+/// [`Poisoned`] with the specific reason, because a thunk's refusal reason is a
+/// snapshot key and each of these three cases reads differently in a dump.
+fn resolve_callee(
+    hir: &FileHir,
+    file: FileId,
+    resolve: &ResolveMap,
+    imports: &ImportedProcs,
+    callee: ExprId,
+) -> Result<ProcRef, Poisoned> {
+    let Some(Expr::Name {
+        name: _,
+        span: _,
+        res,
+    }) = hir.exprs.get(callee.index()).cloned()
+    else {
+        return Err(Poisoned::Here("a file-level call has no named callee"));
+    };
+    let res = resolve.get(ExprScope::TopLevel, callee).unwrap_or(res);
+    match res {
+        Res::Item(item) => {
+            let ItemKind::Const {
+                value: ConstValue::Proc(proc),
+            } = &hir
+                .items
+                .get(item.index())
+                .ok_or(Poisoned::Here("a name resolved to no item"))?
+                .kind
+            else {
+                return Err(Poisoned::Here(
+                    "a call to something that is not a procedure",
+                ));
+            };
+            Ok(ProcRef::new(file, *proc))
+        }
+        Res::Imported(import, name) => imports.get(import, name).ok_or(Poisoned::Here(
+            "a cross-file call needs the callee's signatures",
+        )),
+        Res::Local(_) | Res::Param(_) | Res::Error => {
+            Err(Poisoned::Here("a name failed to resolve at file scope"))
+        }
+    }
+}
+
 struct Thunk<'a> {
     hir: &'a FileHir,
     file: FileId,
@@ -238,39 +335,7 @@ impl Thunk<'_> {
     }
 
     fn callee(&mut self, callee: ExprId) -> Result<ProcRef, Poisoned> {
-        let Some(Expr::Name {
-            name: _,
-            span: _,
-            res,
-        }) = self.hir.exprs.get(callee.index()).cloned()
-        else {
-            return Err(Poisoned::Here("a file-level call has no named callee"));
-        };
-        let res = self.resolve.get(ExprScope::TopLevel, callee).unwrap_or(res);
-        match res {
-            Res::Item(item) => {
-                let ItemKind::Const {
-                    value: ConstValue::Proc(proc),
-                } = &self
-                    .hir
-                    .items
-                    .get(item.index())
-                    .ok_or(Poisoned::Here("a name resolved to no item"))?
-                    .kind
-                else {
-                    return Err(Poisoned::Here(
-                        "a call to something that is not a procedure",
-                    ));
-                };
-                Ok(ProcRef::new(self.file, *proc))
-            }
-            Res::Imported(import, name) => self.imports.get(import, name).ok_or(Poisoned::Here(
-                "a cross-file call needs the callee's signatures",
-            )),
-            Res::Local(_) | Res::Param(_) | Res::Error => {
-                Err(Poisoned::Here("a name failed to resolve at file scope"))
-            }
-        }
+        resolve_callee(self.hir, self.file, self.resolve, self.imports, callee)
     }
 }
 

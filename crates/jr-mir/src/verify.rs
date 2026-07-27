@@ -40,7 +40,8 @@
 use jr_pool::{Item, Pool, PoolId};
 
 use crate::mir::{
-    BinOp, BlockId, Callee, MirBody, Operand, Place, PlaceBase, Rvalue, Statement, Terminator, UnOp,
+    BinOp, BlockId, Callee, MirBody, MirSpan, Operand, Place, PlaceBase, Rvalue, Statement,
+    Terminator, UnOp,
 };
 
 // ---------------------------------------------------------------------------
@@ -138,6 +139,71 @@ impl Verifier<'_> {
         self.check_definitions();
         self.check_edges();
         self.check_types();
+        self.check_spans();
+    }
+
+    // -------------------------------------------------------------------
+    // Provenance
+    // -------------------------------------------------------------------
+
+    /// Every [`MirSpan`] that names a procedure names *this* one.
+    ///
+    /// This is the checkable fragment of ADR-0021 §3. A span copied out of an
+    /// inlined callee names arenas belonging to the callee's file, and
+    /// [`crate::resolve_span`] is handed the caller's `FileHir`, so a survivor
+    /// resolves to a plausible wrong line rather than to nothing — the worst
+    /// available outcome for a diagnostic.
+    ///
+    /// Only [`MirSpan::Param`] can be checked, and the ADR says so rather than
+    /// implying more: an `ExprId`, a `BodyId` and an `ExprScope` carry no `FileId`,
+    /// and a [`MirBody`] does not store the `BodyId` it was lowered from, so a
+    /// foreign `Expr` span is indistinguishable from a native one here. The real
+    /// guarantee for those is structural — `inline.rs` writes every copied span
+    /// through one nullary function — and this check is the cheap corroboration,
+    /// not the mechanism.
+    fn check_spans(&mut self) {
+        let own = self.body.proc().proc;
+        let mut foreign: Vec<String> = Vec::new();
+        for index in 0..self.body.value_count() {
+            let span = self.body.value(crate::mir::ValueId::from_usize(index)).span;
+            if let MirSpan::Param(proc, _) = span
+                && proc != own
+            {
+                foreign.push(format!("v{index} is a parameter of {proc:?}"));
+            }
+        }
+        for index in 0..self.body.slot_count() {
+            let span = self.body.slot(crate::mir::SlotId::from_usize(index)).span;
+            if let MirSpan::Param(proc, _) = span
+                && proc != own
+            {
+                foreign.push(format!("s{index} is a parameter of {proc:?}"));
+            }
+        }
+        for detail in foreign {
+            self.report(None, "foreign span", detail);
+        }
+
+        for index in 0..self.body.block_count() {
+            let block = BlockId::from_usize(index);
+            let mut details: Vec<String> = Vec::new();
+            for (position, stmt) in self.body.block(block).stmts.iter().enumerate() {
+                let span = match stmt {
+                    Statement::Assign { span, .. }
+                    | Statement::Store { span, .. }
+                    | Statement::Discard { span, .. } => *span,
+                    Statement::Nop => continue,
+                };
+                if let MirSpan::Param(proc, _) = span
+                    && proc != own
+                {
+                    details.push(format!("statement {position} is spanned by {proc:?}"));
+                }
+            }
+            for detail in details {
+                self.report(Some(block), "foreign span", detail);
+            }
+        }
     }
 
     // -------------------------------------------------------------------
