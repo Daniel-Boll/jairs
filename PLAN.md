@@ -186,8 +186,11 @@ flowchart LR
       is handed to `write` with no copy.
 - [ ] Integer overflow traps, in both the VM and native, with a source location —
       the VM traps (ADR-0002, `jr-vm`'s `execute.rs` pins every operator), but
-      **without a source location**: MIR carries HIR ids rather than spans
-      (ADR-0013), and nothing resolves a `MirSpan` back yet. Native is open.
+      **without a source location** at the trap site. Resolution itself is *not*
+      missing: `jr-mir`'s `resolve_span` turns a `MirSpan` into a `Span` and has
+      since the MIR wave — it is private, and the trap path does not call it.
+      ADR-0019 §3 corrects an earlier claim here that `AstIdMap` was the blocker;
+      ADR-0013 stores spans on HIR nodes directly, so it never was. Native is open.
 - [ ] VS Code: diagnostics + hover + goto-def
 - [ ] Neovim: tree-sitter highlighting — `grammar.js` and `queries/*.scm` exist
       and the drift gate is green; editor packaging is not done.
@@ -560,9 +563,12 @@ whose output matches the VM's byte for byte.
 - [ ] **`jr-link`** and `jr build`.
 - [ ] **The differential harness** §1.4 asks for: every corpus program's output must
       match under VM and native.
-- [ ] **A source location on a trap.** ADR-0013 deferred `AstIdMap`, so `MirSpan`
-      carries HIR ids and nothing resolves one back to a span. Both back ends need this
-      and neither has it; §1.4 lists it as unmet for exactly this reason.
+- [ ] **A source location on a trap.** `jr-mir::cfg::resolve_span` already turns a
+      `MirSpan` into a `Span`, for every non-synthetic variant, and has since the MIR
+      wave — it is merely private. ADR-0019 §3 records that an earlier version of this
+      item blamed ADR-0013's deferred `AstIdMap`, which was wrong: ADR-0013 stores
+      spans on HIR nodes *directly*, so resolution is a field read. The work is to
+      expose it and to call it from the trap path in both back ends.
 
 #### Traps
 
@@ -585,38 +591,33 @@ whose output matches the VM's byte for byte.
   query is per file; evaluating a `#run` that calls into another module needs the
   cross-body read ADR-0017 §3 keeps out of the built-MIR query.
 
-#### Decisions to put to the decider before writing code
+#### Decisions — settled in ADR-0019
 
-Every wave so far has settled its design forks *first*, via an ADR, and every one of
-them was expensive to undo. These are the forks this wave has, stated with the options
-so the conversation can start from them rather than from a blank page. **ADR-0019 is
-the next free number.**
+The five forks this wave had are settled and recorded in
+[ADR-0019](docs/adr/0019-native-backend-shape.md), with each rejected alternative
+argued at its own point of decision:
 
-1. **What shape is the `Backend` trait?** One `compile_body(&MirBody) -> ()` call with
-   the backend owning module state, or a finer interface (declare, define, finalise)
-   that the driver sequences. The finer one is what incremental recompilation
-   eventually wants and what `cranelift-module`'s `Module` trait already looks like;
-   the coarse one is smaller today. Whichever is chosen, ADR-0009 and CONTRIBUTING
-   require that *no* `cranelift-*` type appear in the trait.
-2. **How does an ADR-0002 trap become Cranelift IR?** Three real options: `trapif`-style
-   flag checks after each arithmetic op; an explicit compare-and-branch to one shared
-   trap block per procedure; or a call into a runtime helper that reports and aborts.
-   The third is the only one that can carry a *message*, which matters because §1.4
-   wants a source location on a trap — and the VM currently produces one and native
-   would produce none. The first two are faster and mute.
-3. **Where does `AstIdMap` land?** ADR-0013 deferred it, and both back ends now need it
-   for the same reason: `MirSpan` names an HIR node and nothing resolves one back to a
-   span. Options: build it in `jr-hir` as ADR-0013 anticipated; make it a `jr-db` query
-   over the CST; or give MIR real spans after all and accept the invalidation cost
-   ADR-0013 rejected. This is the last unmet §1.4 criterion that is not "there is no
-   native", so it is not deferrable much further.
-4. **How is `#foreign` resolved for a native build?** The VM uses a process-local
-   `dlsym`, which a linked binary cannot. This is the *third* independent resolution of
-   `ForeignInfo::library`, and ADR-0018 §4 already names a third as the signal to intern
-   the answer in the pool beside `Item::ForeignLibraryValue`. So the fork is really
-   "intern it now, or resolve it a third time and intern it on the fourth".
-5. **Does `jr-codegen-llvm` stay a stub?** It is a declared crate with no contents and
-   wave W8 owns it. Worth confirming it is out of scope rather than assuming.
+1. **`Backend` is three-phase** — declare every signature, define one body at a time,
+   finalise into an artifact. No `cranelift-*` type appears in the trait (ADR-0009).
+   The declare phase is what makes ADR-0018 §5's cross-file `Callee::Direct` work
+   without a patch-up pass.
+2. **A trap calls a runtime helper** rather than emitting a bare machine trap. It is
+   the only lowering that can carry a *message*, which is what makes §1.4's "trap with
+   a source location" reachable and lets the differential harness compare *failing*
+   programs rather than only succeeding ones.
+3. **Trap spans reuse `jr-mir`'s existing `resolve_span`.** `AstIdMap` stays deferred
+   and ADR-0013 stands unamended — the earlier claim that it was the blocker was
+   false, and ADR-0019 §3 records why so it is not re-litigated.
+4. **The resolved `#foreign` library is interned in the pool**, beside
+   `Item::ForeignLibraryValue`, and sema and the VM read it from there. This is the
+   third consumer, which is the trigger ADR-0018 §4 set.
+5. **`jr-codegen-llvm` stays an empty crate.** Wave W8 owns it.
+
+A sixth item was a contradiction rather than a fork, and ADR-0019 §6 settles it:
+ADR-0009's follow-on work requires an inliner *before* any backend consumes MIR, and
+§1.3 defers the mid-end. The backend is built first, because without `#expand` an
+uninlined backend is *slower*, never *wrong* — and the deferral expires on the first
+`#expand` or the first published performance number, whichever comes first.
 
 #### Where things are, as of this handoff
 

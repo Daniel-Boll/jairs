@@ -39,3 +39,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0016](0016-jairs-0-typing-rules.md) | Jairs-0 typing rules: context-typed literals, deferred `#run` | Accepted |
 | [0017](0017-mir-shape.md) | MIR shape: block parameters, SSA at construction, poison refused | Accepted |
 | [0018](0018-vm-shape.md) | VM shape: register bytecode, layout in the pool, const-eval as a query | Accepted |
+| [0019](0019-native-backend-shape.md) | Native back end: three-phase `Backend`, traps via a runtime helper, interned foreign library | Accepted |
