@@ -422,11 +422,11 @@ impl JairsDatabase {
                 }
 
                 let lookup = module_file(self, search_paths, name.clone());
-                if let Some(found_path) = lookup.found {
-                    if let Some(module_sf) = self.load_module(&found_path) {
-                        loaded.push(found_path);
-                        queue.push(module_sf);
-                    }
+                if let Some(found_path) = lookup.found
+                    && let Some(module_sf) = self.load_module(&found_path)
+                {
+                    loaded.push(found_path);
+                    queue.push(module_sf);
                 }
             }
         }

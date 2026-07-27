@@ -148,11 +148,11 @@ fn reachable(db: &dyn Db, root: SourceFile, search_paths: ModuleSearchPaths) -> 
             if path.as_ref() == own_path.as_ref() {
                 continue;
             }
-            if let Some(module) = db.source_file_for_path(path.as_ref()) {
-                if !seen.contains(&module) {
-                    seen.push(module);
-                    queue.push(module);
-                }
+            if let Some(module) = db.source_file_for_path(path.as_ref())
+                && !seen.contains(&module)
+            {
+                seen.push(module);
+                queue.push(module);
             }
         }
     }

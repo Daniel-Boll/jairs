@@ -473,10 +473,10 @@ pub fn file_diagnostics(
 /// fallback (should not happen in practice).
 fn find_import_span(hir: &FileHir, name: &str) -> Span {
     for item in &hir.items {
-        if let ItemKind::Import { path, path_span } = &item.kind {
-            if path == name {
-                return *path_span;
-            }
+        if let ItemKind::Import { path, path_span } = &item.kind
+            && path == name
+        {
+            return *path_span;
         }
     }
     // Fallback: use the first item's span, or a zero span.

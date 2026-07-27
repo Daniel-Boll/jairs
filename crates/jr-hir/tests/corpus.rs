@@ -198,12 +198,12 @@ fn resolve_import_file(
     // Build the imports slice from the #import items in the file.
     let mut imports: Vec<(&str, &ItemScope)> = Vec::new();
     for item in &hir.items {
-        if let jr_hir::ItemKind::Import { path, .. } = &item.kind {
-            if let Some(scope) = scopes.get(path.as_str()) {
-                imports.push((path.as_str(), scope));
-            }
-            // If the module is not in the map, we skip it (E0210 is jr-db's job).
+        if let jr_hir::ItemKind::Import { path, .. } = &item.kind
+            && let Some(scope) = scopes.get(path.as_str())
+        {
+            imports.push((path.as_str(), scope));
         }
+        // If the module is not in the map, we skip it (E0210 is jr-db's job).
     }
 
     let (_, resolve_diags) = resolve(&hir, &imports, interner);

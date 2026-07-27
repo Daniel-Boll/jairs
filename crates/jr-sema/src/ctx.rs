@@ -218,10 +218,10 @@ impl<'a> Ctx<'a> {
             // fields), so a struct that points at itself — or at a struct that
             // points back — resolves here without re-entering signature
             // computation and tripping the constant-cycle guard.
-            if let Some(entry) = self.sigs.lookup(sym) {
-                if let Some(ty) = entry.type_value {
-                    return ty;
-                }
+            if let Some(entry) = self.sigs.lookup(sym)
+                && let Some(ty) = entry.type_value
+            {
+                return ty;
             }
             let Some(entry) = self.entry_for_item(item) else {
                 return PoolId::ERROR;
