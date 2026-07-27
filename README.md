@@ -16,7 +16,8 @@ error-recovering compiler written in Rust.
 > it: `jr run tests/corpus/valid/024-hello.jr` prints its output through libc
 > `write`, having folded `#run add(2, 3)` at compile time. `jr build` compiles the
 > same file through Cranelift, links it with `cc`, and the binary prints the same
-> bytes and exits with the same status — including when it traps. `jr fmt` formats
+> bytes and exits with the same status — including when it traps, down to the
+> `  --> path:line:col` naming where. `jr fmt` formats
 > it; `jr parse` dumps its tokens or tree. Implemented crates: `jr-base` (spans,
 > interning, source map), `jr-diag` (diagnostics + renderer), `jr-syntax` (lexer,
 > error-recovering parser, lossless CST, typed AST), `jr-fmt`, `jr-hir` (lowering,

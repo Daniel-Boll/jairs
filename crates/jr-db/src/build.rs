@@ -99,12 +99,26 @@ pub fn build_object(
     // Phase 2: define every body MIR produced. A body MIR refused is skipped rather
     // than reported: the refusal is ADR-0017 §4 working, and something upstream
     // already reported the cause.
-    for (file_id, _, mir, _) in &inputs {
+    let map = db.source_map();
+    for (file_id, hir, mir, _) in &inputs {
         for (proc, outcome) in mir.iter() {
             let Ok(body) = outcome else { continue };
             let reference = jr_mir::ProcRef::new(*file_id, proc);
+            // The back end holds a `MirSpan` at every trap site and can resolve
+            // none of them: that needs the file's HIR and a source map, neither of
+            // which ADR-0009 lets it see. So the resolution happens here and arrives
+            // as text (ADR-0020 §3).
+            let locations = BodyLocations {
+                hir: hir.as_ref(),
+                map: &map,
+                body: hir
+                    .procs
+                    .get(proc.index())
+                    .and_then(|data| data.body)
+                    .and_then(|id| hir.bodies.get(id.index())),
+            };
             backend
-                .define(reference, body, &pool, layout)
+                .define(reference, body, &pool, layout, &locations)
                 .map_err(|e| e.to_string())?;
         }
     }
@@ -122,4 +136,23 @@ pub fn build_object(
 #[must_use]
 pub fn entry_of(db: &dyn Db, root: SourceFile) -> Option<ProcId> {
     main_of(db, root).map(|reference| reference.proc)
+}
+
+/// Resolves the trap locations of one body.
+///
+/// Built per body because `jr_mir::resolve_span` needs the HIR `Body` a `MirSpan`'s
+/// expression, local and statement ids index into — the arena trap ADR-0017 records:
+/// every body's arenas start at 0, so a span means nothing without knowing whose it
+/// is.
+struct BodyLocations<'a> {
+    hir: &'a jr_hir::FileHir,
+    body: Option<&'a jr_hir::Body>,
+    map: &'a jr_base::SourceMap,
+}
+
+impl jr_codegen::TrapLocations for BodyLocations<'_> {
+    fn location(&self, span: jr_mir::MirSpan) -> Option<String> {
+        let span = jr_mir::resolve_span(self.hir, self.body, span)?;
+        Some(jr_base::render_location(self.map, span))
+    }
 }

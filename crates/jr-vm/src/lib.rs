@@ -26,7 +26,7 @@ pub use code::{
     Code, ForeignProc, Instr, Operand, PlacePlan, PlaceRoot, PlaceStep, Reg, Routine, Shape,
     SlotPlan,
 };
-pub use error::{Trap, VmError};
+pub use error::{Trap, TrapSite, VmError};
 pub use interp::{MAX_DEPTH, Mode, Program, Vm};
 pub use lower::{compile, is_local_call};
 pub use memory::{DEFAULT_CAPACITY, Mark, Memory};

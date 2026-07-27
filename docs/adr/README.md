@@ -40,3 +40,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0017](0017-mir-shape.md) | MIR shape: block parameters, SSA at construction, poison refused | Accepted |
 | [0018](0018-vm-shape.md) | VM shape: register bytecode, layout in the pool, const-eval as a query | Accepted |
 | [0019](0019-native-backend-shape.md) | Native back end: three-phase `Backend`, traps via a runtime helper, interned foreign library | Accepted |
+| [0020](0020-trap-source-locations.md) | A trap names its source location; one formatter in `jr-base` decides how | Accepted |

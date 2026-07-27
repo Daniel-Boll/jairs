@@ -93,47 +93,28 @@ impl TrapKind {
     /// engines apart.
     pub const EXIT_STATUS: i32 = 4;
 
-    /// The message this trap reports, byte for byte as `jr run` reports it.
+    /// The sentence this trap reports, without a prefix, a location or a newline.
     ///
-    /// That includes the `error: ` prefix and the trailing newline, because the
-    /// comparison the differential harness makes is between two processes'
-    /// **stderr**, not between two Rust strings. `jr-cli`'s `report::error` produces
-    /// exactly this shape, and the wording after the prefix is `jr-vm`'s `Trap`
-    /// rendering.
+    /// The *shape* of the message — the `error: ` prefix, the `  --> ` location line,
+    /// the trailing newline — belongs to `jr_base::trap_message`, which the VM also
+    /// calls. ADR-0020 §2 put it there so that two engines rendering at different
+    /// times cannot drift; this function supplies only the part that is this back
+    /// end's to decide, and the wording matches `jr-vm`'s `Trap` rendering exactly
+    /// because `differential.rs` compares the finished bytes.
     #[must_use]
-    pub const fn message(self) -> &'static str {
+    pub const fn reason(self) -> &'static str {
         match self {
-            Self::OverflowAdd => "error: addition overflowed\n",
-            Self::OverflowSub => "error: subtraction overflowed\n",
-            Self::OverflowMul => "error: multiplication overflowed\n",
-            Self::OverflowDiv => "error: division overflowed\n",
-            Self::OverflowRem => "error: remainder overflowed\n",
-            Self::OverflowNeg => "error: negation overflowed\n",
-            Self::DivideByZero => "error: division by zero\n",
-            Self::Deliberate => "error: reached a deliberate trap\n",
-            Self::StrayJump => "error: a `break` or `continue` outside a loop was reached\n",
-            Self::FellOffEnd => {
-                "error: control reached the end of a procedure that must return a value\n"
-            }
-            Self::UninitialisedRead => "error: read a value that was never assigned\n",
-        }
-    }
-
-    /// The symbol name of the data object holding this message.
-    #[must_use]
-    pub const fn symbol(self) -> &'static str {
-        match self {
-            Self::OverflowAdd => "jr$trap$overflow_add",
-            Self::OverflowSub => "jr$trap$overflow_sub",
-            Self::OverflowMul => "jr$trap$overflow_mul",
-            Self::OverflowDiv => "jr$trap$overflow_div",
-            Self::OverflowRem => "jr$trap$overflow_rem",
-            Self::OverflowNeg => "jr$trap$overflow_neg",
-            Self::DivideByZero => "jr$trap$divide_by_zero",
-            Self::Deliberate => "jr$trap$deliberate",
-            Self::StrayJump => "jr$trap$stray_jump",
-            Self::FellOffEnd => "jr$trap$fell_off_end",
-            Self::UninitialisedRead => "jr$trap$uninitialised_read",
+            Self::OverflowAdd => "addition overflowed",
+            Self::OverflowSub => "subtraction overflowed",
+            Self::OverflowMul => "multiplication overflowed",
+            Self::OverflowDiv => "division overflowed",
+            Self::OverflowRem => "remainder overflowed",
+            Self::OverflowNeg => "negation overflowed",
+            Self::DivideByZero => "division by zero",
+            Self::Deliberate => "reached a deliberate trap",
+            Self::StrayJump => "a `break` or `continue` outside a loop was reached",
+            Self::FellOffEnd => "control reached the end of a procedure that must return a value",
+            Self::UninitialisedRead => "read a value that was never assigned",
         }
     }
 }
@@ -162,12 +143,25 @@ mod tests {
     }
 
     #[test]
-    fn messages_and_symbols_are_distinct() {
+    fn reasons_are_distinct() {
+        // Two kinds sharing a sentence would make a real disagreement between the
+        // engines invisible: the differential compares the rendered message, so an
+        // overflow reported as a division-by-zero would still match.
         for (index, kind) in TrapKind::ALL.iter().enumerate() {
             for other in &TrapKind::ALL[index + 1..] {
-                assert_ne!(kind.message(), other.message());
-                assert_ne!(kind.symbol(), other.symbol());
+                assert_ne!(kind.reason(), other.reason());
             }
+        }
+    }
+
+    #[test]
+    fn a_reason_carries_no_shape_of_its_own() {
+        // `jr_base::trap_message` owns the prefix and the newline (ADR-0020 §2). A
+        // reason that carried either would render as `error: error: ...`.
+        for kind in TrapKind::ALL {
+            let reason = kind.reason();
+            assert!(!reason.starts_with("error:"), "{reason:?} has a prefix");
+            assert!(!reason.ends_with('\n'), "{reason:?} has a newline");
         }
     }
 }

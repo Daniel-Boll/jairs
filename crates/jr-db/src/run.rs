@@ -104,7 +104,20 @@ pub fn run_main(
             RunOutcome::Completed
         }
         Err(VmError::Exited(status)) => RunOutcome::Exited(status),
-        Err(error) => RunOutcome::Failed(error.to_string()),
+        Err(error) => {
+            // A trap gets a source location; anything else is a compiler fault with
+            // no source text of its own to point at. Rendered here rather than in
+            // `jr-cli` because resolving the span needs the file's HIR, which is a
+            // query — and rendered through `jr_base::trap_message` so that the native
+            // back end's compile-time message and this one cannot drift (ADR-0020 §2).
+            let location = vm
+                .trap_site()
+                .and_then(|site| trap_location(db, &inputs, site));
+            RunOutcome::Failed(jr_base::trap_message(
+                &error.to_string(),
+                location.as_deref(),
+            ))
+        }
     })
 }
 
@@ -164,4 +177,34 @@ pub(crate) fn reachable_files(
         }
     }
     seen
+}
+
+/// One reachable file's query results, gathered before the pool is locked.
+///
+/// Named because the tuple is wide enough that clippy objects to it, and because both
+/// the run driver and `build` assemble the same four things for the same reason: the
+/// pool's lock must not be held across a nested query call.
+pub(crate) type FileInput = (
+    jr_base::FileId,
+    Arc<jr_hir::FileHir>,
+    Arc<jr_mir::FileMir>,
+    Arc<jr_sema::FileSignatures>,
+);
+
+/// Renders a trap's source location as `path:line:col`, if it has one.
+///
+/// `None` when the span is `MirSpan::Synthetic` — a compiler-invented value has no
+/// source text — or when the trapping procedure's file is not among the inputs, which
+/// would mean the program called into a file that was never assembled.
+fn trap_location(db: &dyn Db, inputs: &[FileInput], site: jr_vm::TrapSite) -> Option<String> {
+    let hir = inputs
+        .iter()
+        .find_map(|(file_id, hir, _, _)| (*file_id == site.proc.file).then_some(hir))?;
+    let body = hir
+        .procs
+        .get(site.proc.proc.index())
+        .and_then(|data| data.body)
+        .and_then(|id| hir.bodies.get(id.index()));
+    let span = jr_mir::resolve_span(hir, body, site.span)?;
+    Some(jr_base::render_location(&db.source_map(), span))
 }

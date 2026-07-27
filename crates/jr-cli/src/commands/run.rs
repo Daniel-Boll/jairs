@@ -82,7 +82,11 @@ pub fn run(args: RunArgs, global: &GlobalArgs) -> Result<i32> {
         Ok(RunOutcome::Completed) => Ok(0),
         Ok(RunOutcome::Exited(status)) => Ok(i32::try_from(status).unwrap_or(TRAP_EXIT)),
         Ok(RunOutcome::Failed(message)) => {
-            crate::report::error(&message);
+            // Written verbatim: `run_main` already rendered it through
+            // `jr_base::trap_message`, prefix and trailing newline included, because
+            // the native back end must emit exactly the same bytes (ADR-0020 §2).
+            // Passing it through `report::error` would add a second `error: `.
+            eprint!("{message}");
             Ok(TRAP_EXIT)
         }
         // Assembling the program failed, which is a compiler problem rather than a

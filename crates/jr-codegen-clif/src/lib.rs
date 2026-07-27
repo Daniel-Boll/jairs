@@ -40,7 +40,7 @@ use cranelift_codegen::settings::{self, Configurable as _};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use jr_codegen::{Backend, CodegenError, ProcDecl, ProcKind};
+use jr_codegen::{Backend, CodegenError, ProcDecl, ProcKind, TrapLocations};
 use jr_mir::{MirBody, ProcRef};
 use jr_pool::{Item, Pool, PoolId, StrId, TargetLayout};
 use rustc_hash::FxHashMap;
@@ -55,8 +55,6 @@ pub struct ClifBackend {
     foreign: FxHashMap<ProcRef, bool>,
     /// The data object holding each string constant's bytes.
     strings: FxHashMap<StrId, DataId>,
-    /// The data object holding each trap kind's message.
-    trap_messages: FxHashMap<TrapKind, DataId>,
     /// The runtime helper a trap calls.
     trap_helper: FuncId,
     /// Every library a `#foreign` declaration named, for the link line.
@@ -108,12 +106,10 @@ impl ClifBackend {
             ids: FxHashMap::default(),
             foreign: FxHashMap::default(),
             strings: FxHashMap::default(),
-            trap_messages: FxHashMap::default(),
             trap_helper,
             libraries: Vec::new(),
             entry: None,
         };
-        backend.emit_trap_messages()?;
         backend.emit_strings(pool)?;
         backend.define_trap_helper()?;
         Ok(backend)
@@ -274,23 +270,6 @@ impl ClifBackend {
         Ok(())
     }
 
-    /// Emits one read-only data object per trap message.
-    fn emit_trap_messages(&mut self) -> Result<(), CodegenError> {
-        for kind in TrapKind::ALL {
-            let id = self
-                .module
-                .declare_data(kind.symbol(), Linkage::Local, false, false)
-                .map_err(|e| CodegenError::Internal(format!("trap message: {e}")))?;
-            let mut description = DataDescription::new();
-            description.define(kind.message().as_bytes().to_vec().into_boxed_slice());
-            self.module
-                .define_data(id, &description)
-                .map_err(|e| CodegenError::Internal(format!("trap message: {e}")))?;
-            self.trap_messages.insert(kind, id);
-        }
-        Ok(())
-    }
-
     /// Emits one read-only data object per interned string.
     ///
     /// Not NUL-terminated: a Jairs string is `{data, count}` and carries its own
@@ -394,6 +373,7 @@ impl Backend for ClifBackend {
         mir: &MirBody,
         pool: &Pool,
         layout: TargetLayout,
+        locations: &dyn TrapLocations,
     ) -> Result<(), CodegenError> {
         let id = *self.ids.get(&proc).ok_or(CodegenError::Undeclared(proc))?;
         if self.foreign.get(&proc).copied().unwrap_or(false) {
@@ -432,7 +412,7 @@ impl Backend for ClifBackend {
             funcs: &funcs,
             strings: &self.strings,
             trap_helper,
-            trap_messages: &self.trap_messages,
+            locations,
         };
         body::translate(&mut builder, &mut self.module, &ctx, proc, mir)?;
         builder.finalize(self.module.target_config());

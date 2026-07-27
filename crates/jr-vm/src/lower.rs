@@ -41,7 +41,7 @@
 //! That is the concrete payoff ADR-0017 promised for enforcing the invariant.
 
 use jr_mir::{
-    Callee, MirBody, Place, PlaceBase, Projection, Rvalue, Statement, Target, Terminator,
+    Callee, MirBody, MirSpan, Place, PlaceBase, Projection, Rvalue, Statement, Target, Terminator,
 };
 use jr_pool::{
     Item, Pool, PoolId, TargetLayout, field_offset, layout_of, string_count, string_data,
@@ -65,6 +65,8 @@ pub fn compile(body: &MirBody, pool: &Pool, target: TargetLayout) -> Result<Code
         pool,
         target,
         instrs: Vec::new(),
+        spans: Vec::new(),
+        current: MirSpan::Synthetic,
         addresses: BlockAddresses::with_blocks(body.block_count()),
         fixups: Vec::new(),
         types: (0..body.value_count())
@@ -95,6 +97,20 @@ struct Compiler<'a> {
     /// temporary cannot be allocated without giving it a type — which matters,
     /// because ADR-0002's trapping arithmetic reads the destination's type.
     types: Vec<PoolId>,
+    /// The span of every emitted instruction, parallel to `instrs`.
+    ///
+    /// ADR-0020 §4: a span for *every* instruction rather than only for the ones
+    /// that can trap. The set of trapping instructions grows every wave, and the
+    /// narrow version would silently give a new one no location — an absent detail
+    /// rather than a wrong answer, which is the failure mode this project has learned
+    /// to distrust.
+    spans: Vec<MirSpan>,
+    /// The span instructions emitted right now belong to.
+    ///
+    /// Set once per statement and per terminator rather than threaded through every
+    /// helper, because `emit` is the single choke point every instruction passes
+    /// through and a field there cannot be forgotten at a call site.
+    current: MirSpan,
 }
 
 impl Compiler<'_> {
@@ -105,9 +121,12 @@ impl Compiler<'_> {
             let start = self.instrs.len();
             self.addresses.set(block, start);
             for stmt in &self.body.block(block).stmts {
+                self.current = statement_span(stmt);
                 self.statement(stmt)?;
             }
-            self.terminator(&self.body.block(block).term.clone())?;
+            let term = self.body.block(block).term.clone();
+            self.current = self.terminator_span(&term);
+            self.terminator(&term)?;
         }
 
         self.patch()?;
@@ -125,6 +144,7 @@ impl Compiler<'_> {
             slots,
             params: self.body.params().to_vec(),
             entry,
+            spans: self.spans,
         })
     }
 
@@ -166,7 +186,34 @@ impl Compiler<'_> {
 
     fn emit(&mut self, instr: Instr) -> usize {
         self.instrs.push(instr);
+        self.spans.push(self.current);
         self.instrs.len() - 1
+    }
+
+    /// The span a terminator's instructions belong to.
+    ///
+    /// A [`Terminator`] carries no span of its own, but its operand is a value and
+    /// every value does — so a branch reports the condition that was tested and a
+    /// return reports the expression that produced the result. A terminator with no
+    /// operand has no source text of its own, and says so.
+    fn terminator_span(&self, term: &Terminator) -> MirSpan {
+        match term {
+            Terminator::Branch { cond, .. } => self.operand_span(*cond),
+            Terminator::Return(Some(operand)) => self.operand_span(*operand),
+            Terminator::Goto(_) | Terminator::Return(None) | Terminator::Unreachable(_) => {
+                MirSpan::Synthetic
+            }
+        }
+    }
+
+    /// The span of the value an operand names, if it names one.
+    fn operand_span(&self, operand: Operand) -> MirSpan {
+        match operand {
+            Operand::Value(value) => self.body.value(value).span,
+            // A constant was written in the source, but MIR keeps no span for the
+            // literal itself — only for the value that uses it.
+            Operand::Constant(_) => MirSpan::Synthetic,
+        }
     }
 
     /// A register no MIR value uses, of type `ty`.
@@ -531,5 +578,18 @@ pub fn is_local_call(body: &MirBody, callee: &Callee) -> bool {
     match callee {
         Callee::Direct(target) => target.file == body.file(),
         Callee::Indirect(_) => false,
+    }
+}
+
+/// The span a statement's instructions belong to.
+///
+/// Every [`Statement`] variant except [`Statement::Nop`] carries one; a `Nop` emits
+/// nothing, so its span is never read.
+fn statement_span(stmt: &Statement) -> MirSpan {
+    match stmt {
+        Statement::Assign { span, .. }
+        | Statement::Store { span, .. }
+        | Statement::Discard { span, .. } => *span,
+        Statement::Nop => MirSpan::Synthetic,
     }
 }

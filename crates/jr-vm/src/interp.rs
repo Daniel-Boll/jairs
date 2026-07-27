@@ -42,7 +42,7 @@ use rustc_hash::FxHashMap;
 use crate::code::{
     Code, ForeignProc, Instr, Operand, PlacePlan, PlaceRoot, PlaceStep, Routine, Shape,
 };
-use crate::error::{Trap, VmError, ice};
+use crate::error::{Trap, TrapSite, VmError, ice};
 use crate::memory::Memory;
 use crate::value::{Address, IntKind, Value};
 
@@ -157,6 +157,8 @@ pub struct Vm<'a> {
     /// Bytes a foreign write produced, when the bridge is capturing rather than
     /// writing through. Empty under [`Mode::Runtime`].
     captured: Vec<u8>,
+    /// The instruction currently executing, for [`Vm::trap_site`].
+    at: Option<TrapSite>,
 }
 
 impl<'a> Vm<'a> {
@@ -173,6 +175,7 @@ impl<'a> Vm<'a> {
             depth: 0,
             strings: FxHashMap::default(),
             captured: Vec::new(),
+            at: None,
         };
         vm.intern_strings()?;
         Ok(vm)
@@ -198,6 +201,18 @@ impl<'a> Vm<'a> {
     #[must_use]
     pub fn captured_output(&self) -> &[u8] {
         &self.captured
+    }
+
+    /// Where the last trap happened, if one did.
+    ///
+    /// Valid only after a call returned [`VmError::Trap`]: execution stops at a trap,
+    /// so the instruction recorded is the one that raised it. Reported as MIR identity
+    /// rather than as a rendered location because resolving one needs the file's HIR
+    /// and a `SourceMap`, neither of which the VM has — see [`TrapSite`] and
+    /// ADR-0020 §3.
+    #[must_use]
+    pub const fn trap_site(&self) -> Option<TrapSite> {
+        self.at
     }
 
     /// The VM's memory, for inspecting a result that lives there.
@@ -302,6 +317,15 @@ impl<'a> Vm<'a> {
             let instr = code.instr(pc).ok_or_else(|| {
                 VmError::internal(format!("ran off the end of the bytecode at {pc}"))
             })?;
+            // Recorded *before* the instruction runs, so that whatever it raises is
+            // attributed to it. Execution stops at a trap, so the last instruction
+            // recorded is the one that trapped — and a nested call overwrites this
+            // with its own deeper instruction, which is what a trap inside a callee
+            // should report (ADR-0020 §4).
+            self.at = code.spans.get(pc).copied().map(|span| TrapSite {
+                proc: code.proc,
+                span,
+            });
             pc += 1;
             match instr {
                 Instr::Move { dest, src } => {
