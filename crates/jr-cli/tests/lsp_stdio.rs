@@ -424,3 +424,179 @@ fn the_server_advertises_completion_and_resolves_an_item() {
     let status = server.child.wait().expect("the server must exit");
     assert!(status.success(), "a clean shutdown must exit 0");
 }
+
+/// Rename, references and symbols over the real transport, including a refusal.
+///
+/// The refusal is the half a handler test cannot check: ADR-0030 §3 says a refused rename is
+/// an error *response* rather than an empty edit, and whether that survives serialisation —
+/// and whether the client sees a message rather than `null` — is a transport property.
+#[test]
+fn the_server_answers_navigation_requests_and_refuses_a_bad_rename() {
+    let dir = tempfile::TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("main.jr");
+    let source = "first :: 1;\nsecond :: 2;\n\nmain :: () {\n    n := first;\n}\n";
+    std::fs::write(&path, source).expect("a writable temporary directory");
+    let uri = format!("file://{}", path.display());
+
+    let mut server = Server::start();
+    let initialized = server.initialize(serde_json::json!(["utf-8"]));
+    let caps = &initialized["result"]["capabilities"];
+    assert_eq!(caps["referencesProvider"], true);
+    assert_eq!(caps["documentHighlightProvider"], true);
+    assert_eq!(caps["documentSymbolProvider"], true);
+    assert_eq!(caps["workspaceSymbolProvider"], true);
+    assert_eq!(
+        caps["renameProvider"]["prepareProvider"], true,
+        "without prepareProvider a client cannot be told `while` is not renameable"
+    );
+
+    server.did_open(&uri, source);
+
+    // documentSymbol.
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 2,
+        "method": "textDocument/documentSymbol",
+        "params": { "textDocument": { "uri": uri } }
+    }));
+    let symbols = server.response(2);
+    assert!(symbols["error"].is_null(), "{}", symbols["error"]);
+    let names: Vec<String> = symbols["result"]
+        .as_array()
+        .expect("an outline")
+        .iter()
+        .map(|s| s["name"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(names, vec!["first", "second", "main"]);
+
+    // references on `first`, line 4 character 9.
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 3,
+        "method": "textDocument/references",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 4, "character": 9 },
+            "context": { "includeDeclaration": true }
+        }
+    }));
+    let found = server.response(3);
+    assert!(found["error"].is_null(), "{}", found["error"]);
+    assert_eq!(
+        found["result"].as_array().expect("locations").len(),
+        2,
+        "the declaration and one use: {}",
+        found["result"]
+    );
+
+    // prepareRename on the same position.
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 4,
+        "method": "textDocument/prepareRename",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 4, "character": 9 }
+        }
+    }));
+    let prepared = server.response(4);
+    assert!(prepared["error"].is_null(), "{}", prepared["error"]);
+    assert_eq!(prepared["result"]["placeholder"], "first");
+
+    // A rename that collides must come back as an error with a message, not as null.
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 5,
+        "method": "textDocument/rename",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 4, "character": 9 },
+            "newName": "second"
+        }
+    }));
+    let refused = server.response(5);
+    assert!(
+        !refused["error"].is_null(),
+        "a colliding rename must be refused, got {refused}"
+    );
+    let message = refused["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("already declared"),
+        "the refusal must say why: {message:?}"
+    );
+
+    // And a legal one produces edits.
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 6,
+        "method": "textDocument/rename",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 4, "character": 9 },
+            "newName": "renamed"
+        }
+    }));
+    let renamed = server.response(6);
+    assert!(renamed["error"].is_null(), "{}", renamed["error"]);
+    let changes = renamed["result"]["changes"]
+        .as_object()
+        .expect("a WorkspaceEdit with changes");
+    let edits = changes.values().next().expect("one file's edits");
+    assert_eq!(edits.as_array().expect("edits").len(), 2);
+
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 7, "method": "shutdown", "params": serde_json::Value::Null
+    }));
+    assert!(server.response(7)["error"].is_null());
+    server.send(&serde_json::json!({ "jsonrpc": "2.0", "method": "exit", "params": {} }));
+    assert!(
+        server.child.wait().expect("the server must exit").success(),
+        "a clean shutdown must exit 0"
+    );
+}
+
+/// A client that advertises watched-file support is asked to watch `**/*.jr`.
+///
+/// ADR-0029 §2 makes the watcher the primary freshness mechanism, so the registration going
+/// out at all is worth asserting: without it the server silently falls back to re-walking on
+/// save, and nothing else would notice.
+#[test]
+fn the_server_registers_a_file_watcher_when_the_client_can_watch() {
+    let mut server = Server::start();
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "capabilities": {
+                "general": { "positionEncodings": ["utf-8"] },
+                "workspace": {
+                    "didChangeWatchedFiles": { "dynamicRegistration": true }
+                }
+            }
+        }
+    }));
+    let _ = server.response(1);
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0", "method": "initialized", "params": {}
+    }));
+
+    // The registration is a *server-to-client* request, so it arrives as a message with a
+    // method rather than as a response to anything.
+    let mut registered = None;
+    for _ in 0..10 {
+        let message = server.receive();
+        if message["method"] == "client/registerCapability" {
+            registered = Some(message);
+            break;
+        }
+    }
+    let registration = registered.expect("the server must ask the client to watch files");
+    let first = &registration["params"]["registrations"][0];
+    assert_eq!(first["method"], "workspace/didChangeWatchedFiles");
+    assert_eq!(
+        first["registerOptions"]["watchers"][0]["globPattern"], "**/*.jr",
+        "the watcher must cover Jairs sources: {registration}"
+    );
+
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 99, "method": "shutdown", "params": serde_json::Value::Null
+    }));
+    server.send(&serde_json::json!({ "jsonrpc": "2.0", "method": "exit", "params": {} }));
+    let _ = server.child.wait();
+}

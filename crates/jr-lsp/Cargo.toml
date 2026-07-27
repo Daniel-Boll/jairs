@@ -22,3 +22,7 @@ lsp-types.workspace = true
 salsa.workspace = true
 serde_json.workspace = true
 crossbeam-channel.workspace = true
+
+[dev-dependencies]
+# The workspace walk under test needs a real filesystem, so its tests need a temporary one.
+tempfile = "3"
