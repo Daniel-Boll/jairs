@@ -17,9 +17,8 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after the **hover, completion and doc comments** wave. 759 workspace tests;
-six CI gates green on macOS arm64, plus 39 Neovim checks that are verified rather than
-gated.
+Last updated after the **references and rename** wave. 790 workspace tests; six CI gates
+green on macOS arm64, plus 53 Neovim checks that are verified rather than gated.
 
 ### What you can actually do
 
@@ -83,10 +82,10 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
 | salsa incremental database | **Works** | Built *and* optimized MIR staged (ADR-0021 §1); invalidation is at file grain |
 | Differential harness | **Works** | Compares stdout, stderr and exit status of both engines as subprocesses |
 | LLVM back end | **Not started** | Wave W8 |
-| Language server | **Works** | `jr lsp`: diagnostics, hover, goto-definition (incl. across an `#import`), completion with call snippets and `completionItem/resolve`, on a worker thread with salsa cancellation (ADR-0024, ADR-0028). No rename, references, inlay hints or `signatureHelp` |
-| Neovim integration | **Works** | `editors/nvim/` (ADR-0025), verified against the real editor by a 39-check script — **not** by CI, which has no Neovim |
+| Language server | **Works** | `jr lsp`, nine capabilities: diagnostics, hover, goto-definition, completion + resolve, references, documentHighlight, rename (workspace-wide, refuses rather than half-renaming), documentSymbol, workspaceSymbol (ADR-0024, ADR-0028, ADR-0030). No code actions, inlay hints or `signatureHelp` |
+| Neovim integration | **Works** | `editors/nvim/` (ADR-0025), verified against the real editor by a 53-check script — **not** by CI, which has no Neovim |
 | VS Code integration | **Not started** | The server is ready; nothing launches it |
-| Compilation driver / workspaces | **Not started** | `jr-driver` is a one-line stub |
+| Compilation driver / workspaces | **Partly** | `jr-driver` is still a one-line stub; the workspace *file list* exists in `jr-db::workspace` (ADR-0029): the search paths plus the root tree, walked and watched, bounded at 10 000 files |
 | Debug info | **Not started** | No DWARF at all; a native binary is not debuggable |
 | Optimisation levels | **Not started** | No `--release`, no `opt_level`; one code path |
 
@@ -116,7 +115,7 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
 - **ADR-0002's arithmetic has two implementations, not one.** `jr-pool` owns the one
   both *evaluators* share; `jr-codegen-clif` keeps its own because it emits code rather
   than evaluating. The pair is held equal by `differential.rs` and nothing else.
-- **Neovim integration is verified on one machine, not gated.** The 39 checks need an
+- **Neovim integration is verified on one machine, not gated.** The 53 checks need an
   editor, and Neovim is not a build dependency of this workspace, so `cargo test` cannot
   run them. VS Code has nothing at all.
 - **The tree-sitter parser must be rebuilt after a grammar change**, and highlighting
@@ -129,10 +128,20 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
 - **Completion's idea of scope is "declared earlier in this body"**, not block scope. It
   over-offers — a local from a sibling block that has already closed — and never
   under-offers, which is the direction that would make the list feel broken.
-- **Neither hover nor completion has a latency number.** Both run an O(nodes) scan per
-  request to turn an offset into a node, and completion runs it far more often than hover
-  ever did. ADR-0013 named exactly this measurement as the trigger for deciding whether
-  `AstIdMap` earns its keep; it has still not been taken.
+- **No language-server operation has a latency number.** Hover and completion run an
+  O(nodes) scan per request to turn an offset into a node; on top of that the first
+  `references`, `rename` or `workspaceSymbol` **reads and parses every file in the
+  workspace**, because ADR-0029 §3 discovers paths rather than loading files. Three
+  features now want the measurement ADR-0013 named as its own trigger, and it has still not
+  been taken.
+- **A rename can refuse, and it will.** It refuses on a name collision, on a syntax error in
+  any file it would edit, on a non-identifier, and when the workspace exceeded 10 000 files.
+  That is deliberate (ADR-0030 §3) — a rename that half-completes leaves a broken build, and
+  one that resolves a collision by shadowing leaves code that compiles and means something
+  else — but it does mean the feature says no more often than a Rust user expects.
+- **Completion's scope, and rename's, are not the same notion.** Completion offers locals
+  "declared earlier in this body"; rename resolves them properly through `ResolveMap`. The
+  first is an approximation, the second is not.
 - **Nothing checks that a doc comment is true**, and nothing but the language server reads
   one. There are no doc tests and no `jr doc`.
 - **Nothing here is self-hosted.** The compiler is Rust; only `modules/Basic` is Jairs.

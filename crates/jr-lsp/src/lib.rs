@@ -27,16 +27,23 @@
 //! grew a fourth would be a wave that did not finish the one it was scoped to.
 
 pub mod completion;
+pub mod defs;
 pub mod handlers;
 pub mod locate;
+pub mod navigate;
 pub mod position;
 pub mod render;
 pub mod server;
 pub mod uri;
 
 pub use completion::{completion, resolve_completion};
+pub use defs::{DefId, Reference, definition_at, references};
 pub use handlers::{diagnostics, goto_definition, hover};
 pub use locate::{DeclSite, Located, locate, locate_declaration};
+pub use navigate::{
+    RenameRefusal, document_highlight, document_symbol, find_references, prepare_rename, rename,
+    workspace_symbol,
+};
 pub use position::{Encoding, Positions};
 pub use render::{Card, Decl, binding_card, container_of, type_name};
 pub use server::{ServerOptions, capabilities, run_stdio};

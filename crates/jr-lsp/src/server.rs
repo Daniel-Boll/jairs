@@ -33,6 +33,7 @@
 
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crossbeam_channel::Sender;
 use jr_db::{JairsDatabase, ModuleSearchPaths, SourceFile};
@@ -60,8 +61,9 @@ pub struct ServerOptions {
 
 /// The capabilities this server advertises, under a negotiated encoding.
 ///
-/// Exactly the three §1.4 asks for. A server that quietly advertised a fourth would be
-/// promising something wave W9 owns.
+/// Nine now. Each is advertised only where it is implemented for every case a client may
+/// send: advertising one that answers "nothing" for half its inputs is worse than not
+/// advertising it, because the client stops offering the user an alternative.
 #[must_use]
 pub fn capabilities(encoding: Encoding) -> ServerCapabilities {
     ServerCapabilities {
@@ -79,8 +81,81 @@ pub fn capabilities(encoding: Encoding) -> ServerCapabilities {
             resolve_provider: Some(true),
             ..lsp_types::CompletionOptions::default()
         }),
+        references_provider: Some(OneOf::Left(true)),
+        document_highlight_provider: Some(OneOf::Left(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        workspace_symbol_provider: Some(OneOf::Left(true)),
+        // `prepare_provider` is what lets the server refuse a keyword or a builtin type
+        // *before* the user types a replacement (ADR-0030 §3). Without it a client goes
+        // straight to `rename`, and the only way to refuse is after the fact.
+        rename_provider: Some(OneOf::Right(lsp_types::RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: lsp_types::WorkDoneProgressOptions::default(),
+        })),
         ..ServerCapabilities::default()
     }
+}
+
+/// Whether the client can watch files for us.
+///
+/// ADR-0029 §2: with a watcher the file list is refreshed when the filesystem changes;
+/// without one it is refreshed on `didOpen` and `didSave`, and the staleness window is much
+/// larger. Read from the client's own capabilities rather than assumed, because assuming is
+/// what the last two waves each got wrong.
+fn client_can_watch(params: &InitializeParams) -> bool {
+    params
+        .capabilities
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.did_change_watched_files.as_ref())
+        .and_then(|watched| watched.dynamic_registration)
+        .unwrap_or(false)
+}
+
+/// The directories discovery walks: the search paths, plus the client's root.
+///
+/// ADR-0029 §1. The root arrives from the client at `initialize`; a client that sends none
+/// leaves only the search paths, which is correct rather than degraded — that is exactly
+/// the situation `jr check --module-path` is in.
+fn workspace_roots(options: &ServerOptions, params: &InitializeParams) -> Vec<PathBuf> {
+    let mut roots = options.module_search_paths.clone();
+    if let Some(folders) = params.workspace_folders.as_ref() {
+        for folder in folders {
+            if let Some(path) = uri::to_path(&folder.uri) {
+                roots.push(path);
+            }
+        }
+    }
+    roots
+}
+
+/// Asks the client to watch `**/*.jr`.
+///
+/// Sent as a `client/registerCapability` request. The response is not awaited: the reply
+/// carries no information beyond success, and blocking the message loop on it would delay
+/// the first `didOpen`.
+fn register_watcher(connection: &Connection) {
+    let registration = lsp_types::Registration {
+        id: String::from("jairs-watch-jr-files"),
+        method: String::from("workspace/didChangeWatchedFiles"),
+        register_options: serde_json::to_value(
+            lsp_types::DidChangeWatchedFilesRegistrationOptions {
+                watchers: vec![lsp_types::FileSystemWatcher {
+                    glob_pattern: lsp_types::GlobPattern::String(String::from("**/*.jr")),
+                    kind: None,
+                }],
+            },
+        )
+        .ok(),
+    };
+    let request = lsp_server::Request::new(
+        lsp_server::RequestId::from(String::from("jairs-watch-registration")),
+        String::from("client/registerCapability"),
+        lsp_types::RegistrationParams {
+            registrations: vec![registration],
+        },
+    );
+    let _ = connection.sender.send(Message::Request(request));
 }
 
 /// Runs the server over stdin and stdout until the client shuts it down.
@@ -110,6 +185,17 @@ pub fn run_stdio(options: &ServerOptions) -> Result<(), Box<dyn std::error::Erro
     let mut db = JairsDatabase::default();
     let search_paths = db.set_module_search_paths(options.module_search_paths.clone());
 
+    // Discovery runs once here, on the main thread, outside any query — which is ADR-0029
+    // §2's requirement, not a convenience.
+    let roots = workspace_roots(options, &params);
+    db.set_workspace_roots(&roots);
+
+    let mut roots = roots;
+    let watching = client_can_watch(&params);
+    if watching {
+        register_watcher(&connection);
+    }
+
     let (jobs, worker) = spawn_worker(connection.sender.clone(), search_paths, encoding);
 
     for message in &connection.receiver {
@@ -118,16 +204,45 @@ pub fn run_stdio(options: &ServerOptions) -> Result<(), Box<dyn std::error::Erro
                 if connection.handle_shutdown(&request)? {
                     break;
                 }
-                dispatch(&db, &jobs, request);
+                dispatch(&mut db, &jobs, request);
             }
             Message::Notification(notification) => {
+                if notification.method == "workspace/didChangeWatchedFiles" {
+                    // A whole re-walk rather than applying the delta. The notification's
+                    // `changes` are enough to patch the list, but a re-walk is one code
+                    // path instead of two and cannot drift from the walk's own rules about
+                    // symlinks and ignored directories. It is also what the fallback below
+                    // does, so both routes converge on the same state.
+                    db.set_workspace_roots(&roots);
+                    continue;
+                }
                 // A write. It happens on this thread, and salsa cancels whatever the
                 // worker had in flight against the previous revision.
                 if let Some(file) = apply(&mut db, &notification) {
+                    // A file the workspace does not cover contributes its own directory as
+                    // a root. A client that sends no `workspaceFolders` — or a user opening
+                    // a scratch file outside the tree — would otherwise get a rename and a
+                    // reference search over an empty file list, which look like working
+                    // features returning "only the declaration".
+                    if adopt_root(&mut db, &mut roots, file) {
+                        db.set_workspace_roots(&roots);
+                    }
                     let _ = jobs.send(Job::Diagnostics {
                         db: Box::new(db.snapshot()),
                         file,
                     });
+                }
+                // The fallback for a client that cannot watch (ADR-0029 §2). Re-walking on
+                // every keystroke would be indefensible, so it is tied to open and save —
+                // which is why a client *with* a watcher is much fresher, and why the
+                // difference is stated rather than hidden.
+                if !watching
+                    && matches!(
+                        notification.method.as_str(),
+                        "textDocument/didOpen" | "textDocument/didSave"
+                    )
+                {
+                    db.set_workspace_roots(&roots);
                 }
             }
             Message::Response(_) => {}
@@ -233,11 +348,94 @@ enum Job {
         file: Option<SourceFile>,
         item: Box<lsp_types::CompletionItem>,
     },
+    References {
+        db: Box<JairsDatabase>,
+        id: RequestId,
+        file: SourceFile,
+        position: lsp_types::Position,
+        include_declaration: bool,
+        /// The workspace list, captured at dispatch so the job sees one consistent set.
+        workspace: Arc<jr_db::WorkspaceFileList>,
+    },
+    Highlight {
+        db: Box<JairsDatabase>,
+        id: RequestId,
+        file: SourceFile,
+        position: lsp_types::Position,
+    },
+    PrepareRename {
+        db: Box<JairsDatabase>,
+        id: RequestId,
+        file: SourceFile,
+        position: lsp_types::Position,
+    },
+    Rename {
+        db: Box<JairsDatabase>,
+        id: RequestId,
+        file: SourceFile,
+        position: lsp_types::Position,
+        new_name: String,
+        workspace: Arc<jr_db::WorkspaceFileList>,
+    },
+    DocumentSymbols {
+        db: Box<JairsDatabase>,
+        id: RequestId,
+        file: SourceFile,
+    },
+    WorkspaceSymbols {
+        db: Box<JairsDatabase>,
+        id: RequestId,
+        query: String,
+        workspace: Arc<jr_db::WorkspaceFileList>,
+    },
     /// A request naming a file this server has never been told about.
     Unknown { id: RequestId },
 }
 
-fn dispatch(db: &JairsDatabase, jobs: &Sender<Job>, request: Request) {
+/// Adds the opened file's directory to `roots` when discovery does not already cover it.
+///
+/// Returns whether `roots` changed, so the caller only re-walks when it must.
+fn adopt_root(db: &mut JairsDatabase, roots: &mut Vec<PathBuf>, file: SourceFile) -> bool {
+    let path = PathBuf::from(file.path(db).as_ref());
+    let covered = db
+        .workspace_files()
+        .map(|files| files.list(db))
+        .is_some_and(|list| list.contains(&path));
+    if covered {
+        return false;
+    }
+    let Some(parent) = path.parent().map(std::path::Path::to_path_buf) else {
+        return false;
+    };
+    if roots.contains(&parent) {
+        return false;
+    }
+    roots.push(parent);
+    true
+}
+
+/// Whether answering this request requires every workspace file to be in the database.
+///
+/// Checked before the snapshot is taken, because loading is a write and a job holds a
+/// read-only snapshot. Getting this list wrong is not a crash — it is a reference search
+/// that quietly sees only the files the editor happened to open, which is exactly the
+/// confident wrong answer ADR-0029 §3 warns about.
+fn needs_whole_workspace(method: &str) -> bool {
+    matches!(
+        method,
+        "textDocument/references" | "textDocument/rename" | "workspace/symbol"
+    )
+}
+
+fn dispatch(db: &mut JairsDatabase, jobs: &Sender<Job>, request: Request) {
+    if needs_whole_workspace(&request.method) {
+        db.load_workspace_files();
+    }
+    let workspace = db
+        .workspace_files()
+        .map(|files| files.list(db))
+        .unwrap_or_default();
+
     let id = request.id.clone();
     let job = match request.method.as_str() {
         "textDocument/hover" => serde_json::from_value::<lsp_types::HoverParams>(request.params)
@@ -289,6 +487,82 @@ fn dispatch(db: &JairsDatabase, jobs: &Sender<Job>, request: Request) {
                     id: id.clone(),
                     file: resolve_target(db, &item),
                     item: Box::new(item),
+                })
+        }
+        "textDocument/references" => {
+            serde_json::from_value::<lsp_types::ReferenceParams>(request.params)
+                .ok()
+                .and_then(|params| {
+                    let file = file_of(db, &params.text_document_position.text_document.uri)?;
+                    Some(Job::References {
+                        db: Box::new(db.snapshot()),
+                        id: id.clone(),
+                        file,
+                        position: params.text_document_position.position,
+                        include_declaration: params.context.include_declaration,
+                        workspace: Arc::clone(&workspace),
+                    })
+                })
+        }
+        "textDocument/documentHighlight" => serde_json::from_value::<
+            lsp_types::DocumentHighlightParams,
+        >(request.params)
+        .ok()
+        .and_then(|params| {
+            let file = file_of(db, &params.text_document_position_params.text_document.uri)?;
+            Some(Job::Highlight {
+                db: Box::new(db.snapshot()),
+                id: id.clone(),
+                file,
+                position: params.text_document_position_params.position,
+            })
+        }),
+        "textDocument/prepareRename" => {
+            serde_json::from_value::<lsp_types::TextDocumentPositionParams>(request.params)
+                .ok()
+                .and_then(|params| {
+                    let file = file_of(db, &params.text_document.uri)?;
+                    Some(Job::PrepareRename {
+                        db: Box::new(db.snapshot()),
+                        id: id.clone(),
+                        file,
+                        position: params.position,
+                    })
+                })
+        }
+        "textDocument/rename" => serde_json::from_value::<lsp_types::RenameParams>(request.params)
+            .ok()
+            .and_then(|params| {
+                let file = file_of(db, &params.text_document_position.text_document.uri)?;
+                Some(Job::Rename {
+                    db: Box::new(db.snapshot()),
+                    id: id.clone(),
+                    file,
+                    position: params.text_document_position.position,
+                    new_name: params.new_name,
+                    workspace: Arc::clone(&workspace),
+                })
+            }),
+        "textDocument/documentSymbol" => {
+            serde_json::from_value::<lsp_types::DocumentSymbolParams>(request.params)
+                .ok()
+                .and_then(|params| {
+                    let file = file_of(db, &params.text_document.uri)?;
+                    Some(Job::DocumentSymbols {
+                        db: Box::new(db.snapshot()),
+                        id: id.clone(),
+                        file,
+                    })
+                })
+        }
+        "workspace/symbol" => {
+            serde_json::from_value::<lsp_types::WorkspaceSymbolParams>(request.params)
+                .ok()
+                .map(|params| Job::WorkspaceSymbols {
+                    db: Box::new(db.snapshot()),
+                    id: id.clone(),
+                    query: params.query,
+                    workspace: Arc::clone(&workspace),
                 })
         }
         _ => None,
@@ -385,6 +659,117 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
                         position,
                     ),
                 })
+            });
+            answer(out, id, computed.map(serde_json::to_value));
+        }
+        Job::References {
+            db,
+            id,
+            file,
+            position,
+            include_declaration,
+            workspace,
+        } => {
+            let db = db.as_ref();
+            let computed = catch(|| {
+                crate::navigate::find_references(
+                    db,
+                    file,
+                    search_paths,
+                    encoding,
+                    position,
+                    include_declaration,
+                    &workspace.files,
+                )
+            });
+            answer(out, id, computed.map(serde_json::to_value));
+        }
+        Job::Highlight {
+            db,
+            id,
+            file,
+            position,
+        } => {
+            let db = db.as_ref();
+            let computed = catch(|| {
+                crate::navigate::document_highlight(db, file, search_paths, encoding, position)
+            });
+            answer(out, id, computed.map(serde_json::to_value));
+        }
+        Job::PrepareRename {
+            db,
+            id,
+            file,
+            position,
+        } => {
+            let db = db.as_ref();
+            let computed = catch(|| {
+                crate::navigate::prepare_rename(db, file, search_paths, encoding, position)
+            });
+            answer(out, id, computed.map(serde_json::to_value));
+        }
+        Job::Rename {
+            db,
+            id,
+            file,
+            position,
+            new_name,
+            workspace,
+        } => {
+            let db = db.as_ref();
+            let computed = catch(|| {
+                crate::navigate::rename(
+                    db,
+                    file,
+                    search_paths,
+                    encoding,
+                    position,
+                    &new_name,
+                    workspace.as_ref(),
+                )
+            });
+            match computed {
+                // A refusal is an error *response*, not an empty edit: a client that gets
+                // `null` shows nothing and the user concludes rename is broken, where an
+                // error message says which of ADR-0030 §3's five reasons applied.
+                Ok(Err(refusal)) => {
+                    let _ = out.send(Message::Response(Response::new_err(
+                        id,
+                        lsp_server::ErrorCode::RequestFailed as i32,
+                        refusal.to_string(),
+                    )));
+                }
+                Ok(Ok(edit)) => answer(out, id, Ok(serde_json::to_value(edit))),
+                Err(cancelled) => answer(out, id, Err(cancelled)),
+            }
+        }
+        Job::DocumentSymbols { db, id, file } => {
+            let db = db.as_ref();
+            let computed = catch(|| {
+                lsp_types::DocumentSymbolResponse::Nested(crate::navigate::document_symbol(
+                    db,
+                    file,
+                    search_paths,
+                    encoding,
+                ))
+            });
+            answer(out, id, computed.map(serde_json::to_value));
+        }
+        Job::WorkspaceSymbols {
+            db,
+            id,
+            query,
+            workspace,
+        } => {
+            let db = db.as_ref();
+            let computed = catch(|| {
+                crate::navigate::workspace_symbol(
+                    db,
+                    search_paths,
+                    encoding,
+                    &query,
+                    &workspace.files,
+                )
             });
             answer(out, id, computed.map(serde_json::to_value));
         }

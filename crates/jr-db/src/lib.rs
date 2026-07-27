@@ -49,6 +49,7 @@ pub mod module_loader;
 mod queries;
 pub mod run;
 pub mod sema;
+pub mod workspace;
 
 // The salsa macro generates undocumented associated functions (new, field
 // getters, field setters). We allow missing_docs for the module that contains
@@ -97,6 +98,7 @@ pub use mir::{
     MirResult, dump_mir, dump_optimized_mir, file_mir, imported_procs, optimized_file_mir,
 };
 pub use run::{RunOutcome, main_of, run_main};
+pub use workspace::{MAX_FILES, WorkspaceFileList, WorkspaceFiles, walk};
 
 pub use sema::{CheckResult, SignatureResult, checked, file_signatures};
 
@@ -188,6 +190,12 @@ pub struct JairsDatabase {
     in_memory_modules: Option<Arc<InMemoryModules>>,
     /// The current module search paths salsa input, if set.
     module_search_paths: Arc<Mutex<Option<ModuleSearchPaths>>>,
+    /// The current workspace file list salsa input, if set (ADR-0029 §2).
+    ///
+    /// Held here for the same reason as `module_search_paths`: an input has to be created
+    /// once and then updated, or every refresh would make a new input and orphan the
+    /// dependencies of the old one.
+    workspace_files: Arc<Mutex<Option<workspace::WorkspaceFiles>>>,
     /// The shared interned types and compile-time values.
     ///
     /// Outside salsa for the same reason as `source_map`: it is an identity
@@ -206,6 +214,7 @@ impl Default for JairsDatabase {
             file_inputs: Arc::new(Mutex::new(rustc_hash::FxHashMap::default())),
             in_memory_modules: None,
             module_search_paths: Arc::new(Mutex::new(None)),
+            workspace_files: Arc::new(Mutex::new(None)),
             pool: Arc::new(Mutex::new(Pool::new())),
         }
     }
@@ -235,6 +244,7 @@ impl JairsDatabase {
             file_inputs: Arc::clone(&self.file_inputs),
             in_memory_modules: self.in_memory_modules.clone(),
             module_search_paths: Arc::clone(&self.module_search_paths),
+            workspace_files: Arc::clone(&self.workspace_files),
             pool: Arc::clone(&self.pool),
         }
     }
@@ -252,6 +262,7 @@ impl JairsDatabase {
             file_inputs: Arc::new(Mutex::new(rustc_hash::FxHashMap::default())),
             in_memory_modules: None,
             module_search_paths: Arc::new(Mutex::new(None)),
+            workspace_files: Arc::new(Mutex::new(None)),
             pool: Arc::new(Mutex::new(Pool::new())),
         }
     }
@@ -269,6 +280,7 @@ impl JairsDatabase {
             file_inputs: Arc::new(Mutex::new(rustc_hash::FxHashMap::default())),
             in_memory_modules: Some(Arc::new(modules)),
             module_search_paths: Arc::new(Mutex::new(None)),
+            workspace_files: Arc::new(Mutex::new(None)),
             pool: Arc::new(Mutex::new(Pool::new())),
         }
     }
@@ -288,6 +300,7 @@ impl JairsDatabase {
             file_inputs: Arc::new(Mutex::new(rustc_hash::FxHashMap::default())),
             in_memory_modules: Some(Arc::new(modules)),
             module_search_paths: Arc::new(Mutex::new(None)),
+            workspace_files: Arc::new(Mutex::new(None)),
             pool: Arc::new(Mutex::new(Pool::new())),
         }
     }
@@ -373,6 +386,95 @@ impl JairsDatabase {
             *guard = Some(sp);
             sp
         }
+    }
+
+    /// Walks `roots` and records the result as the workspace file list.
+    ///
+    /// The walk happens **here**, outside any query, which is ADR-0029 §2's whole point: a
+    /// directory listing is untracked I/O, so it belongs on the input side of the database
+    /// rather than inside a query that salsa would then believe it could cache.
+    ///
+    /// Call it again to refresh — on a file-watcher notification, or on `didSave` for a
+    /// client that cannot watch. Updating the existing input is what lets salsa invalidate
+    /// exactly the queries that consulted the old list.
+    pub fn set_workspace_roots(&mut self, roots: &[PathBuf]) -> workspace::WorkspaceFiles {
+        self.set_workspace_files(Arc::new(workspace::walk(roots)))
+    }
+
+    /// Records an already-computed file list.
+    ///
+    /// Separate from [`Self::set_workspace_roots`] so that a test can supply a list without
+    /// touching a filesystem, and so that a caller which already walked (a watcher handler
+    /// with a delta) need not walk again.
+    pub fn set_workspace_files(
+        &mut self,
+        list: Arc<workspace::WorkspaceFileList>,
+    ) -> workspace::WorkspaceFiles {
+        let existing = {
+            let guard = self
+                .workspace_files
+                .lock()
+                .expect("workspace_files lock poisoned");
+            *guard
+        };
+        if let Some(existing) = existing {
+            existing.set_list(self).to(list);
+            existing
+        } else {
+            let files = workspace::WorkspaceFiles::new(self, list);
+            let mut guard = self
+                .workspace_files
+                .lock()
+                .expect("workspace_files lock poisoned");
+            *guard = Some(files);
+            files
+        }
+    }
+
+    /// Reads every workspace file that is not yet in the database.
+    ///
+    /// ADR-0029 §3: discovery yields *paths*, and a path is not a `SourceFile`. Anything
+    /// that must see the whole workspace — a rename, a reference search, a symbol query —
+    /// has to call this first, or it will scan only the handful of files an editor happens
+    /// to have opened and report a confident wrong answer.
+    ///
+    /// **This is where the cost the ADR promised lands**: the first call reads and later
+    /// queries parse every file in the workspace. Returns how many files it read, so a
+    /// caller can log or test that.
+    ///
+    /// A file that cannot be read is skipped. An unreadable file is not a reason to refuse
+    /// a rename — it is a reason for it not to be in the list of files a rename touches,
+    /// which is what skipping achieves.
+    pub fn load_workspace_files(&mut self) -> usize {
+        let Some(files) = self.workspace_files() else {
+            return 0;
+        };
+        let list = files.list(self);
+        let mut read = 0;
+        for path in list.files.iter() {
+            let key = path.to_string_lossy();
+            if self.source_file(key.as_ref()).is_some() {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(path) {
+                self.set_file_text(key.as_ref(), text.as_str());
+                read += 1;
+            }
+        }
+        read
+    }
+
+    /// The workspace file list, if one has been set.
+    ///
+    /// `None` means discovery has not run — which a consumer must distinguish from an
+    /// empty workspace, because "I do not know" and "there are no other files" lead to
+    /// different answers for a rename.
+    #[must_use]
+    pub fn workspace_files(&self) -> Option<workspace::WorkspaceFiles> {
+        *self
+            .workspace_files
+            .lock()
+            .expect("workspace_files lock poisoned")
     }
 
     /// Returns the current [`ModuleSearchPaths`] salsa input, if set.

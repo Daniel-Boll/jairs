@@ -150,6 +150,12 @@ a `///` saying exactly what raises it. Ranges: E0001–E0006 lexer, E0100–E019
 E0200–E0211 `jr-hir` (E0210 actually raised by `jr-db`'s module loader, E0204 relocated
 to `jr-sema`), E0212–E0226 `jr-sema`, E0227–E0229 `jr-mir`, E0230 `jr-db` const-eval.
 
-**E0231 is the first free code.** Beware that `jr-syntax`' parser still illegally emits
-E0200/E0201/E0202 for "arrives in wave Wn" errors, colliding with `jr-hir` — do not
-filter tests by those.
+**E0231 is the first free code**; E0123 is the first free *parser* code.
+
+`jr-syntax` used to be the exception that proved the rule — it had no `code.rs`, its codes
+were inline `&str` literals, and so its parser emitted **E0200/E0201/E0202** for three
+"arrives in wave Wn" refusals, colliding with `jr-hir`'s duplicate-declaration,
+unresolved-name and use-before-declaration. A `&str` cannot collide at compile time, so
+this stood for waves behind a warning here telling people not to filter tests by those
+codes. The codes are now E0120–E0122 and the crate has a `code.rs` whose tests assert that
+no code is used twice and that every one falls inside a range the crate owns.

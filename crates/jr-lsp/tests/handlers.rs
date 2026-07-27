@@ -685,3 +685,439 @@ fn the_hover_range_covers_the_name_and_not_the_body() {
     assert_eq!(range.end.line, 0);
     assert_eq!(range.end.character, 3);
 }
+
+// ---------------------------------------------------------------------------
+// References, rename, symbols (ADR-0029, ADR-0030)
+// ---------------------------------------------------------------------------
+
+/// A database with several files on disk, discovered the way the server discovers them.
+///
+/// Files are written to a real temporary directory rather than injected, because ADR-0029's
+/// walk is the thing under test in half of these and a walk needs a filesystem.
+fn workspace(
+    files: &[(&str, &str)],
+) -> (jr_db::JairsDatabase, ModuleSearchPaths, tempfile::TempDir) {
+    let dir = tempfile::TempDir::new().expect("a temporary directory");
+    for (name, text) in files {
+        let path = dir.path().join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        std::fs::write(&path, text).expect("write");
+    }
+    let mut db = jr_db::JairsDatabase::default();
+    let search = db.set_module_search_paths(vec![modules(), dir.path().to_path_buf()]);
+    db.set_workspace_roots(&[dir.path().to_path_buf(), modules()]);
+    db.load_workspace_files();
+    (db, search, dir)
+}
+
+fn file_in(db: &jr_db::JairsDatabase, dir: &tempfile::TempDir, name: &str) -> SourceFile {
+    let path = dir.path().join(name);
+    db.source_file(path.to_string_lossy().as_ref())
+        .expect("discovery must have loaded the file")
+}
+
+fn list_of(db: &jr_db::JairsDatabase) -> std::sync::Arc<jr_db::WorkspaceFileList> {
+    let files = db.workspace_files().expect("discovery ran");
+    files.list(db)
+}
+
+#[test]
+fn discovery_loads_every_workspace_file_not_just_the_open_one() {
+    // The bug this guards: `source_file_for_path` only sees loaded files, so a reference
+    // scan over a *path* list would silently cover whatever the editor had opened.
+    let (db, _search, dir) = workspace(&[("a.jr", "A :: 1;\n"), ("sub/b.jr", "B :: 2;\n")]);
+    let list = list_of(&db);
+    assert!(list.contains(&dir.path().join("a.jr")));
+    assert!(list.contains(&dir.path().join("sub/b.jr")));
+    for path in list.files.iter() {
+        assert!(
+            db.source_file(path.to_string_lossy().as_ref()).is_some(),
+            "{} was discovered but never loaded",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn references_to_a_local_stay_in_one_file() {
+    let source = "main :: () {\n    total := 1;\n    n := total + total;\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let found = jr_lsp::find_references(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(source, "total +"),
+        true,
+        &list_of(&db).files,
+    );
+    // The declaration plus two uses.
+    assert_eq!(found.len(), 3, "{found:?}");
+}
+
+#[test]
+fn excluding_the_declaration_drops_exactly_one() {
+    let source = "main :: () {\n    total := 1;\n    n := total;\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let with = jr_lsp::find_references(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(source, "total;"),
+        true,
+        &list_of(&db).files,
+    );
+    let without = jr_lsp::find_references(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(source, "total;"),
+        false,
+        &list_of(&db).files,
+    );
+    assert_eq!(with.len(), without.len() + 1);
+}
+
+#[test]
+fn references_to_an_imported_name_cross_files() {
+    // The point of identifying a definition by declaration site rather than by name
+    // (ADR-0030 §1): `print` is spelled `print` in both importers.
+    let a = "#import \"Basic\";\n\nmain :: () {\n    print(\"a\");\n}\n";
+    let b = "#import \"Basic\";\n\nsecond :: () {\n    print(\"b\");\n    print(\"c\");\n}\n";
+    let (db, search, dir) = workspace(&[("a.jr", a), ("b.jr", b)]);
+    let file = file_in(&db, &dir, "a.jr");
+    let found = jr_lsp::find_references(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(a, "print(\"a\")"),
+        false,
+        &list_of(&db).files,
+    );
+    // Five, and the count is the interesting part: one use in `a.jr`, two in `b.jr`, and
+    // **two inside `Basic` itself**, where `print_line` calls `print`. A search that only
+    // looked at importers would have found three and looked correct.
+    let per_file = |suffix: &str| {
+        found
+            .iter()
+            .filter(|l| l.uri.as_str().ends_with(suffix))
+            .count()
+    };
+    assert_eq!(per_file("a.jr"), 1, "{found:?}");
+    assert_eq!(per_file("b.jr"), 2, "{found:?}");
+    assert_eq!(
+        per_file("Basic/module.jr"),
+        2,
+        "uses inside the declaring module are references too: {found:?}"
+    );
+    assert_eq!(found.len(), 5, "{found:?}");
+}
+
+#[test]
+fn a_same_named_local_in_another_file_is_not_a_reference() {
+    // Name matching would have found this; declaration-site matching must not.
+    let a = "value :: 1;\n\nmain :: () {\n    n := value;\n}\n";
+    let b = "main2 :: () {\n    value := 99;\n    m := value;\n}\n";
+    let (db, search, dir) = workspace(&[("a.jr", a), ("b.jr", b)]);
+    let file = file_in(&db, &dir, "a.jr");
+    let found = jr_lsp::find_references(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(a, "value;"),
+        true,
+        &list_of(&db).files,
+    );
+    assert!(
+        found.iter().all(|l| l.uri.as_str().ends_with("a.jr")),
+        "b.jr's unrelated local `value` was reported: {found:?}"
+    );
+}
+
+#[test]
+fn document_highlight_never_leaves_the_file() {
+    let a = "#import \"Basic\";\n\nmain :: () {\n    print(\"a\");\n}\n";
+    let b = "#import \"Basic\";\n\nsecond :: () {\n    print(\"b\");\n}\n";
+    let (db, search, dir) = workspace(&[("a.jr", a), ("b.jr", b)]);
+    let file = file_in(&db, &dir, "a.jr");
+    let found =
+        jr_lsp::document_highlight(&db, file, search, Encoding::Utf8, at(a, "print(\"a\")"));
+    assert_eq!(found.len(), 1, "a workspace scan leaked in: {found:?}");
+}
+
+#[test]
+fn prepare_rename_offers_the_current_name_as_the_placeholder() {
+    let source = "add :: (a: s64) -> s64 {\n    return a;\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let prepared = jr_lsp::prepare_rename(&db, file, search, Encoding::Utf8, at(source, "add ::"))
+        .expect("a declaration is renameable");
+    match prepared {
+        lsp_types::PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. } => {
+            assert_eq!(placeholder, "add");
+        }
+        other => panic!("expected a placeholder, got {other:?}"),
+    }
+}
+
+#[test]
+fn prepare_rename_refuses_a_keyword_and_a_builtin_type() {
+    let source = "main :: () {\n    while true {\n        break;\n    }\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    assert!(
+        jr_lsp::prepare_rename(&db, file, search, Encoding::Utf8, at(source, "while")).is_none(),
+        "a keyword must not be renameable"
+    );
+
+    let typed = "main :: () {\n    n: s64 = 1;\n}\n";
+    let (db, search, dir) = workspace(&[("t.jr", typed)]);
+    let file = file_in(&db, &dir, "t.jr");
+    assert!(
+        jr_lsp::prepare_rename(&db, file, search, Encoding::Utf8, at(typed, "s64")).is_none(),
+        "a builtin type name must not be renameable"
+    );
+}
+
+#[test]
+fn renaming_an_imported_procedure_edits_every_file_including_its_module() {
+    let a = "#import \"Basic\";\n\nmain :: () {\n    print(\"a\");\n}\n";
+    let (db, search, dir) = workspace(&[("a.jr", a)]);
+    let file = file_in(&db, &dir, "a.jr");
+    let edit = jr_lsp::rename(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(a, "print(\"a\")"),
+        "write_line",
+        &list_of(&db),
+    )
+    .expect("renaming an imported procedure is allowed");
+    // See `navigate::rename`: the protocol's own map is keyed by `Uri`, whose interior
+    // `Cell` is a cache and takes no part in its hash.
+    #[allow(
+        clippy::mutable_key_type,
+        reason = "WorkspaceEdit::changes is keyed by Uri by the protocol"
+    )]
+    let changes = edit.changes.expect("edits");
+    assert!(
+        changes.keys().any(|uri| uri.as_str().ends_with("a.jr")),
+        "the importer was not edited"
+    );
+    assert!(
+        changes
+            .keys()
+            .any(|uri| uri.as_str().ends_with("Basic/module.jr")),
+        "the declaring module was not edited: {:?}",
+        changes.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn rename_refuses_a_name_that_is_not_an_identifier() {
+    let source = "add :: (a: s64) -> s64 {\n    return a;\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    for bad in ["2x", "", "a-b", "a b", "#foreign"] {
+        let refusal = jr_lsp::rename(
+            &db,
+            file,
+            search,
+            Encoding::Utf8,
+            at(source, "add ::"),
+            bad,
+            &list_of(&db),
+        )
+        .expect_err("must refuse");
+        assert!(
+            matches!(refusal, jr_lsp::RenameRefusal::NotAnIdentifier(_)),
+            "{bad:?} gave {refusal:?}"
+        );
+    }
+}
+
+#[test]
+fn rename_refuses_a_collision_rather_than_shadowing() {
+    // The one outcome a refactor must never produce: code that compiles and means
+    // something else.
+    let source = "first :: 1;\nsecond :: 2;\n\nmain :: () {\n    n := first;\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let refusal = jr_lsp::rename(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(source, "first ::"),
+        "second",
+        &list_of(&db),
+    )
+    .expect_err("renaming onto an existing name must be refused");
+    assert!(
+        matches!(refusal, jr_lsp::RenameRefusal::Collision { .. }),
+        "{refusal:?}"
+    );
+    // And the message says what to do, not merely that something failed.
+    assert!(
+        refusal.to_string().contains("already declared"),
+        "unhelpful message: {refusal}"
+    );
+}
+
+#[test]
+fn rename_refuses_a_local_colliding_with_another_local() {
+    let source = "main :: () {\n    a := 1;\n    b := 2;\n    n := a + b;\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let refusal = jr_lsp::rename(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(source, "a :="),
+        "b",
+        &list_of(&db),
+    )
+    .expect_err("must refuse");
+    assert!(
+        matches!(refusal, jr_lsp::RenameRefusal::Collision { .. }),
+        "{refusal:?}"
+    );
+}
+
+#[test]
+fn rename_refuses_when_a_file_it_must_edit_does_not_parse() {
+    // Named in the message, because otherwise this reads as a bug in rename rather than a
+    // syntax error somewhere the user is not looking.
+    let a = "shared :: 1;\n\nmain :: () {\n    n := shared;\n}\n";
+    let broken = "#import \"a\";\n\nuse :: () {\n    n := shared +;\n}\n";
+    let (db, search, dir) = workspace(&[("a.jr", a), ("broken.jr", broken)]);
+    let file = file_in(&db, &dir, "a.jr");
+    let refusal = jr_lsp::rename(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(a, "shared ::"),
+        "renamed",
+        &list_of(&db),
+    )
+    .expect_err("a broken file that must be edited blocks the rename");
+    match &refusal {
+        jr_lsp::RenameRefusal::UnparsedFile(path) => {
+            assert!(
+                path.ends_with("broken.jr"),
+                "the wrong file was blamed: {}",
+                path.display()
+            );
+        }
+        other => panic!("expected UnparsedFile, got {other:?}"),
+    }
+    assert!(refusal.to_string().contains("broken.jr"));
+}
+
+#[test]
+fn rename_refuses_on_a_truncated_workspace_but_not_for_a_local() {
+    // ADR-0029 §4: a consumer that must be exhaustive to be correct refuses; and a
+    // file-local rename is not endangered by a truncated list, so it must still work.
+    let source = "shared :: 1;\n\nmain :: () {\n    local := 1;\n    n := shared + local;\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let truncated = jr_db::WorkspaceFileList {
+        files: list_of(&db).files.clone(),
+        truncated: true,
+    };
+
+    let refusal = jr_lsp::rename(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(source, "shared ::"),
+        "renamed",
+        &truncated,
+    )
+    .expect_err("a file-level name cannot be proven complete");
+    assert!(
+        matches!(refusal, jr_lsp::RenameRefusal::TruncatedWorkspace),
+        "{refusal:?}"
+    );
+
+    jr_lsp::rename(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(source, "local :="),
+        "renamed",
+        &truncated,
+    )
+    .expect("a local rename does not depend on the file list being complete");
+}
+
+#[test]
+fn document_symbols_nest_struct_fields_and_carry_signatures() {
+    let source = "/// A point.\nPoint :: struct { x: s64; y: s64; }\n\nadd :: (a: s64) -> s64 {\n    return a;\n}\n\nMESSAGE :: \"hi\";\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let symbols = jr_lsp::document_symbol(&db, file, search, Encoding::Utf8);
+
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["Point", "add", "MESSAGE"], "in source order");
+
+    let point = &symbols[0];
+    assert_eq!(point.kind, lsp_types::SymbolKind::STRUCT);
+    let fields = point
+        .children
+        .as_ref()
+        .expect("fields nest under the struct");
+    assert_eq!(
+        fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+        vec!["x", "y"]
+    );
+
+    let add = &symbols[1];
+    assert_eq!(add.kind, lsp_types::SymbolKind::FUNCTION);
+    assert_eq!(add.detail.as_deref(), Some("add :: (a: s64) -> s64"));
+    assert!(
+        add.children.is_none(),
+        "parameters must not nest: the signature already lists them"
+    );
+    assert_eq!(symbols[2].kind, lsp_types::SymbolKind::CONSTANT);
+}
+
+#[test]
+fn workspace_symbols_span_files_and_filter_case_insensitively() {
+    let (db, search, _dir) = workspace(&[
+        ("a.jr", "AlphaThing :: 1;\n"),
+        ("b.jr", "BetaThing :: 2;\n"),
+    ]);
+    let all = jr_lsp::workspace_symbol(&db, search, Encoding::Utf8, "", &list_of(&db).files);
+    let names: Vec<&str> = all.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"AlphaThing"), "{names:?}");
+    assert!(names.contains(&"BetaThing"), "{names:?}");
+    // And `Basic`'s exports, since `modules/` is a discovery root here.
+    assert!(names.contains(&"print"), "{names:?}");
+
+    let filtered =
+        jr_lsp::workspace_symbol(&db, search, Encoding::Utf8, "alphath", &list_of(&db).files);
+    assert_eq!(filtered.len(), 1, "{filtered:?}");
+    assert_eq!(filtered[0].name, "AlphaThing");
+}
+
+#[test]
+fn workspace_symbols_proceed_on_a_truncated_list() {
+    // Unlike rename: a partial outline is still useful (ADR-0029 §4).
+    let (db, search, _dir) = workspace(&[("a.jr", "Thing :: 1;\n")]);
+    let found = jr_lsp::workspace_symbol(&db, search, Encoding::Utf8, "thing", &list_of(&db).files);
+    assert_eq!(found.len(), 1);
+}

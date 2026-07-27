@@ -26,6 +26,10 @@
 
 use rowan::{Checkpoint, GreenNode, GreenNodeBuilder};
 
+use crate::code::{
+    E0100, E0101, E0102, E0103, E0104, E0105, E0106, E0107, E0108, E0109, E0110, E0111, E0112,
+    E0113, E0114, E0115, E0116, E0117, E0118, E0119, E0120, E0121, E0122, E0199,
+};
 use crate::kind::{SyntaxKind, SyntaxKind::*, SyntaxNode};
 use crate::lexer::{Token, lex};
 use jr_base::{FileId, Span, TextSize};
@@ -362,7 +366,7 @@ impl<'src> Parser<'src> {
         self.error(
             span,
             format!("expected {}, found {}", kind.describe(), found.describe()),
-            "E0100",
+            E0100,
         );
         false
     }
@@ -421,7 +425,7 @@ impl<'src> Parser<'src> {
             if !self.depth_error_reported {
                 self.depth_error_reported = true;
                 let span = self.current_span();
-                self.error(span, "input is nested too deeply", "E0199");
+                self.error(span, "input is nested too deeply", E0199);
             }
             return false;
         }
@@ -443,7 +447,7 @@ impl<'src> Parser<'src> {
         }
         self.depth_error_reported = true;
         let span = self.current_span();
-        self.error(span, "input is nested too deeply", "E0199");
+        self.error(span, "input is nested too deeply", E0199);
     }
 
     // ---- error recovery --------------------------------------------------
@@ -510,7 +514,7 @@ impl<'src> Parser<'src> {
                 // that can start an item.
                 let before = self.pos;
                 let span = self.current_span();
-                self.error(span, "unexpected token at top level", "E0101");
+                self.error(span, "unexpected token at top level", E0101);
                 self.recover_until(ITEM_START, false);
                 // A bare `x` at top level is already in ITEM_START, so the line
                 // above can consume nothing. Without this the loop spins.
@@ -588,7 +592,7 @@ impl<'src> Parser<'src> {
             _ => {
                 // Should not happen given callers check first.
                 let span = self.current_span();
-                self.error(span, "expected a declaration", "E0102");
+                self.error(span, "expected a declaration", E0102);
             }
         }
     }
@@ -645,7 +649,7 @@ impl<'src> Parser<'src> {
                     self.expect(SEMICOLON);
                 } else {
                     let span = self.current_span();
-                    self.error(span, "expected a value after `::`", "E0103");
+                    self.error(span, "expected a value after `::`", E0103);
                     self.recover_until(ITEM_START.union(STMT_START), true);
                 }
             }
@@ -661,7 +665,7 @@ impl<'src> Parser<'src> {
             self.parse_rhs_value();
         } else {
             let span = self.current_span();
-            self.error(span, "expected an expression after `:=`", "E0104");
+            self.error(span, "expected an expression after `:=`", E0104);
             self.recover_until(STMT_START.union(ITEM_START), true);
         }
         self.expect(SEMICOLON);
@@ -678,7 +682,7 @@ impl<'src> Parser<'src> {
             self.parse_type();
         } else {
             let span = self.current_span();
-            self.error(span, "expected a type after `:`", "E0105");
+            self.error(span, "expected a type after `:`", E0105);
             // Don't consume — let the `=` or `;` be found below
         }
         // Optional `= rhs`
@@ -721,7 +725,7 @@ impl<'src> Parser<'src> {
                 self.error(
                     span,
                     "expected a procedure body `{ ... }` or `#foreign`",
-                    "E0106",
+                    E0106,
                 );
                 // Don't consume — let the caller recover
             }
@@ -757,11 +761,11 @@ impl<'src> Parser<'src> {
                 self.parse_type();
             } else {
                 let span = self.current_span();
-                self.error(span, "expected a type for parameter", "E0107");
+                self.error(span, "expected a type for parameter", E0107);
             }
         } else {
             let span = self.current_span();
-            self.error(span, "expected a parameter name", "E0108");
+            self.error(span, "expected a parameter name", E0108);
             // Recover: skip to `,` or `)`
             self.recover_until(TokenSet::new(&[COMMA, R_PAREN]), true);
         }
@@ -775,7 +779,7 @@ impl<'src> Parser<'src> {
             self.parse_type();
         } else {
             let span = self.current_span();
-            self.error(span, "expected a return type after `->`", "E0109");
+            self.error(span, "expected a return type after `->`", E0109);
         }
         self.finish_node();
     }
@@ -788,7 +792,7 @@ impl<'src> Parser<'src> {
             self.bump();
         } else {
             let span = self.current_span();
-            self.error(span, "expected a library name after `#foreign`", "E0110");
+            self.error(span, "expected a library name after `#foreign`", E0110);
         }
         // Optional symbol name (string literal)
         self.eat(STRING_LITERAL);
@@ -834,7 +838,7 @@ impl<'src> Parser<'src> {
             }
             _ => {
                 let span = self.current_span();
-                self.error(span, "expected a type", "E0111");
+                self.error(span, "expected a type", E0111);
             }
         }
     }
@@ -850,7 +854,7 @@ impl<'src> Parser<'src> {
             } else {
                 let before = self.pos;
                 let span = self.current_span();
-                self.error(span, "expected a field name", "E0112");
+                self.error(span, "expected a field name", E0112);
                 self.recover_until(TokenSet::new(&[IDENT, R_BRACE]), true);
                 self.force_progress(before);
             }
@@ -868,7 +872,7 @@ impl<'src> Parser<'src> {
             self.parse_type();
         } else {
             let span = self.current_span();
-            self.error(span, "expected a type for field", "E0113");
+            self.error(span, "expected a type for field", E0113);
         }
         self.expect(SEMICOLON);
         self.finish_node();
@@ -887,14 +891,14 @@ impl<'src> Parser<'src> {
                 // statement start or `}`. Never consume `}` here.
                 let before = self.pos;
                 let span = self.current_span();
-                self.error(span, "unexpected token in block", "E0114");
+                self.error(span, "unexpected token in block", E0114);
                 self.recover_until(STMT_START, true);
                 self.force_progress(before);
             }
         }
         if !self.eat(R_BRACE) {
             // Unclosed brace: report at the opening `{`.
-            self.error(open_brace_span, "unclosed `{`", "E0115");
+            self.error(open_brace_span, "unclosed `{`", E0115);
         }
         self.finish_node();
     }
@@ -1005,7 +1009,7 @@ impl<'src> Parser<'src> {
             // Single statement without braces.
             if !self.parse_stmt() {
                 let span = self.current_span();
-                self.error(span, "expected a statement or `{`", "E0116");
+                self.error(span, "expected a statement or `{`", E0116);
             }
         }
     }
@@ -1146,7 +1150,7 @@ impl<'src> Parser<'src> {
                     self.bump(); // `.`
                     if !self.eat(IDENT) {
                         let span = self.current_span();
-                        self.error(span, "expected a field name after `.`", "E0117");
+                        self.error(span, "expected a field name after `.`", E0117);
                     }
                     self.finish_node();
                 }
@@ -1206,7 +1210,7 @@ impl<'src> Parser<'src> {
                 // Float literals are reserved (wave W1). Emit a diagnostic but
                 // still produce a LITERAL_EXPR so the tree is usable.
                 let span = self.current_span();
-                self.error(span, "floating-point literals arrive in wave W1", "E0200");
+                self.error(span, "floating-point literals arrive in wave W1", E0120);
                 self.start_node(LITERAL_EXPR);
                 self.bump();
                 self.finish_node();
@@ -1251,7 +1255,7 @@ impl<'src> Parser<'src> {
                 self.error(
                     span,
                     format!("`{}` arrives in wave W2", kw.static_text().unwrap_or("?")),
-                    "E0201",
+                    E0121,
                 );
                 self.start_node(ERROR);
                 self.bump();
@@ -1263,7 +1267,7 @@ impl<'src> Parser<'src> {
                 self.error(
                     span,
                     format!("`{}` arrives in wave W1", kw.static_text().unwrap_or("?")),
-                    "E0201",
+                    E0121,
                 );
                 self.start_node(ERROR);
                 self.bump();
@@ -1272,7 +1276,7 @@ impl<'src> Parser<'src> {
             // Bitwise operators used as prefix (reserved).
             AMP | PIPE | CARET | TILDE | SHL | SHR => {
                 let span = self.current_span();
-                self.error(span, "bitwise operators arrive in wave W1", "E0202");
+                self.error(span, "bitwise operators arrive in wave W1", E0122);
                 self.start_node(ERROR);
                 self.bump();
                 self.finish_node();
@@ -1284,7 +1288,7 @@ impl<'src> Parser<'src> {
                 self.error(
                     span,
                     format!("expected an expression, found {}", found.describe()),
-                    "E0118",
+                    E0118,
                 );
                 // Emit an ERROR node covering nothing (the caller will handle recovery).
                 self.start_node(ERROR);
@@ -1311,7 +1315,7 @@ impl<'src> Parser<'src> {
         if !self.eat(R_PAREN) {
             // Unclosed argument list: recover to `;` or `}`.
             let span = self.current_span();
-            self.error(span, "unclosed `(` in argument list", "E0119");
+            self.error(span, "unclosed `(` in argument list", E0119);
             self.recover_until(TokenSet::new(&[SEMICOLON, R_BRACE]), true);
             self.eat(SEMICOLON); // consume the `;` if present so the caller doesn't double-report
         }

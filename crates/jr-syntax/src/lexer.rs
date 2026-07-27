@@ -14,6 +14,7 @@
 //!   end-of-file would swallow the rest of the program and turn one typo into a
 //!   cascade of nonsense errors.
 
+use crate::code::{E0001, E0002, E0003, E0004, E0005, E0006};
 use crate::kind::SyntaxKind::{self, *};
 use jr_base::{FileId, Span, TextRange, TextSize};
 use jr_diag::{Diagnostic, Diagnostics};
@@ -205,7 +206,7 @@ impl<'a> Lexer<'a> {
                     outermost,
                     outermost + 2,
                     "unterminated block comment",
-                    "E0002",
+                    E0002,
                 )
                 .with_note(format!(
                     "{depth} unclosed `/*` {} still open at end of file",
@@ -251,7 +252,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn unterminated_string(&mut self, start: usize) {
-        self.error(start, self.pos, "unterminated string literal", "E0001")
+        self.error(start, self.pos, "unterminated string literal", E0001)
             .with_help("string literals may not span multiple lines")
             .emit(&mut self.diagnostics);
     }
@@ -282,7 +283,7 @@ impl<'a> Lexer<'a> {
                         start,
                         self.pos.max(digits_start),
                         "invalid unicode escape",
-                        "E0003",
+                        E0003,
                     )
                     .with_help("a unicode escape is `\\u` followed by exactly four hex digits")
                     .emit(&mut self.diagnostics);
@@ -297,7 +298,7 @@ impl<'a> Lexer<'a> {
                     start,
                     self.pos,
                     format!("unknown escape `\\{other}`"),
-                    "E0003",
+                    E0003,
                 )
                 .with_help("valid escapes are `\\n` `\\r` `\\t` `\\0` `\\\\` `\\\"` and `\\uXXXX`")
                 .emit(&mut self.diagnostics);
@@ -329,7 +330,7 @@ impl<'a> Lexer<'a> {
                     start,
                     self.pos,
                     format!("{name} literal has no digits"),
-                    "E0004",
+                    E0004,
                 )
                 .emit(&mut self.diagnostics);
             }
@@ -372,7 +373,7 @@ impl<'a> Lexer<'a> {
             // Saying "invalid suffix" here would send the user looking for a
             // feature Jairs does not have instead of at their typo.
             if radix_name.is_none() && matches!(suffix, "e" | "E") {
-                self.error(start, self.pos, "exponent has no digits", "E0004")
+                self.error(start, self.pos, "exponent has no digits", E0004)
                     .with_help("an exponent needs at least one digit, as in `1e9` or `1.5e-3`")
                     .emit(&mut self.diagnostics);
             } else {
@@ -380,7 +381,7 @@ impl<'a> Lexer<'a> {
                     suffix_start,
                     self.pos,
                     "invalid suffix on numeric literal",
-                    "E0004",
+                    E0004,
                 )
                 .with_help(
                     "Jairs has no literal suffixes; write the type on the declaration instead",
@@ -428,7 +429,7 @@ impl<'a> Lexer<'a> {
                 start,
                 self.pos,
                 "expected a directive name after `#`",
-                "E0006",
+                E0006,
             )
             .with_help("directives look like `#import`, `#run`, or `#foreign`")
             .emit(&mut self.diagnostics);
@@ -458,7 +459,7 @@ impl<'a> Lexer<'a> {
             start,
             self.pos,
             format!("unexpected character `{c}`"),
-            "E0005",
+            E0005,
         )
         .emit(&mut self.diagnostics);
         UNKNOWN
