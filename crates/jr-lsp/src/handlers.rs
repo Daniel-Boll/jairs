@@ -238,6 +238,30 @@ fn declaration_site_card(
             .card(item)?;
             Some((card, span))
         }
+        // An import's card is built by `import_card` rather than by `Decl`, because none of
+        // `Decl`'s inputs apply: an import has no type, no signature and no `///` of its own
+        // (ADR-0035 §2). Note this reaches for the *module's* docs, not this file's — the
+        // `//!` block being shown belongs to the file being imported.
+        DeclSite::Import(item) => {
+            let jr_hir::ItemKind::Import { path, .. } = &hir.items.get(item.index())?.kind else {
+                return None;
+            };
+            let span = hir.items.get(item.index())?.span;
+            let found = jr_db::module_file(db, search_paths, Arc::from(path.as_str())).found;
+            // The module's own `//!`, when the file is loaded. A discovered-but-unloaded
+            // module yields no docs rather than loading it here: a hover must not be the
+            // thing that pulls a file into the database.
+            let docs = found
+                .as_deref()
+                .and_then(|path| db.source_file_for_path(path.to_string_lossy().as_ref()))
+                .map(|module| jr_db::file_docs(db, module));
+            let card = crate::render::import_card(
+                path,
+                found.as_deref(),
+                docs.as_ref().and_then(|docs| docs.module()),
+            );
+            Some((card, span))
+        }
         DeclSite::Param { proc, param } => {
             let span = param_name_span(hir, proc, param)?;
             let name = hir.procs.get(proc.index())?.params.get(param.index())?.name;
@@ -428,6 +452,16 @@ pub fn goto_definition(
     let offset = positions.offset(position);
 
     let hir = jr_db::file_hir(db, file);
+
+    // An `#import` line is checked first, and before `locate`, because it is not an
+    // expression at all — there is nothing on that line for a resolve map to hold. Until
+    // ADR-0035 this handler consulted only `locate`, so goto-definition on the one
+    // declaration in the language that names another *file* answered nothing at every
+    // column, including on the module name itself.
+    if let Some(target) = import_target(db, hir.as_ref(), search_paths, encoding, offset) {
+        return Some(target);
+    }
+
     let found = locate(hir.as_ref(), offset)?;
     let resolve = jr_db::resolved(db, file, search_paths).map;
     let res = resolve.get(found.scope, found.expr)?;
@@ -460,6 +494,42 @@ pub fn goto_definition(
         }
         Res::Error => None,
     }
+}
+
+/// The module file an `#import` under the cursor names, as a location.
+///
+/// The whole `#import "Basic";` declaration is the target, not just the path string: the line
+/// has one meaning and no sub-parts worth distinguishing, so a cursor anywhere on it means the
+/// same thing (ADR-0035 §1).
+///
+/// The destination is the **start of the file**, because a module is a file (ADR-0014 §1) and
+/// there is no "definition of a module" to land on. Landing on its first declaration would be
+/// an arbitrary choice the user did not ask for.
+///
+/// `None` for a module that does not resolve — E0210 already reports that, and pointing at
+/// where the file *would* be would open an empty buffer at a path nobody chose (§3).
+fn import_target(
+    db: &dyn Db,
+    hir: &FileHir,
+    search_paths: ModuleSearchPaths,
+    encoding: Encoding,
+    offset: jr_base::TextSize,
+) -> Option<Location> {
+    let DeclSite::Import(item) = locate_declaration(hir, offset)? else {
+        return None;
+    };
+    let ItemKind::Import { path, .. } = &hir.items.get(item.index())?.kind else {
+        return None;
+    };
+    let found = jr_db::module_file(db, search_paths, Arc::from(path.as_str())).found?;
+    // The encoding is irrelevant to a zero range, but taken as a parameter anyway so that
+    // this cannot silently become the one place that ignores the negotiated encoding if it
+    // ever points somewhere other than the start of the file.
+    let _ = encoding;
+    Some(Location {
+        uri: crate::uri::from_path(&found)?,
+        range: lsp_types::Range::default(),
+    })
 }
 
 /// The procedure whose body is `body`.
