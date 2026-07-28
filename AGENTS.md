@@ -148,9 +148,12 @@ picking a side quietly.
 There is no central registry; each crate has a `code.rs` with one constant per code and
 a `///` saying exactly what raises it. Ranges: E0001–E0006 lexer, E0100–E0199 parser,
 E0200–E0211 `jr-hir` (E0210 actually raised by `jr-db`'s module loader, E0204 relocated
-to `jr-sema`), E0212–E0226 `jr-sema`, E0227–E0229 `jr-mir`, E0230 `jr-db` const-eval.
+to `jr-sema`), E0212–E0226 `jr-sema`, E0227–E0229 `jr-mir`, E0230 `jr-db` const-eval,
+E0231 `jr-db` unused imports.
 
-**E0231 is the first free code**; E0123 is the first free *parser* code.
+**E0232 is the first free code**; E0123 is the first free *parser* code. E0231 is `jr-db`'s
+unused-import warning — the first code in this project that is a *warning* rather than an
+error, so a consumer filtering by severity has something to filter.
 
 `jr-syntax` used to be the exception that proved the rule — it had no `code.rs`, its codes
 were inline `&str` literals, and so its parser emitted **E0200/E0201/E0202** for three

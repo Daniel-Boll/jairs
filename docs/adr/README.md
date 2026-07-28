@@ -51,3 +51,9 @@ The ADR numbers are stable and are referenced from code comments and
 | [0028](0028-hover-and-completion.md) | The hover card, and completion pulled forward from W9 | Accepted |
 | [0029](0029-workspace-discovery.md) | The workspace is the search paths plus the root tree, walked and watched | Accepted |
 | [0030](0030-references-and-rename.md) | References, rename that refuses rather than half-renames, and symbols | Accepted |
+| [0031](0031-code-actions-and-hints.md) | Code actions from diagnostics, an unused-import warning, signature help, inlay hints | Accepted |
+| [0032](0032-write-before-queue.md) | Every write before the snapshot; a cancelled publish must be re-queued (amends ADR-0024 §2) | Accepted |
+| [0033](0033-latency-measurement.md) | `jr bench`: latency measured in three cache regimes, because a benchmark harness would measure the memo | Accepted |
+| [0034](0034-no-reverse-index.md) | No reverse index: the reference scan is 99% parsing, 1% searching (closes ADR-0030's reservation) | Accepted |
+| [0035](0035-import-navigation.md) | An `#import` line navigates to its module, from anywhere on the line | Accepted |
+| [0036](0036-no-vscode-extension.md) | No VS Code extension; Neovim is the supported editor (amends §1.4's first criterion) | Accepted |

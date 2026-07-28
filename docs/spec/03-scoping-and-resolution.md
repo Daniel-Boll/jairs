@@ -107,6 +107,20 @@ chapter exists.
 | E0209 | a directive used where it is not valid |
 | E0210 | module not found (lists every path searched) — emitted by `jr-db` |
 | E0211 | ambiguous name provided by two or more imported modules; in type position, emitted by `jr-sema` |
+| E0231 | an `#import` nothing in the file uses — a **warning**, emitted by `jr-db` |
+
+E0231 is the only warning this chapter lists, and the only one in the language so far.
+Jairs warns about an unused import where Jai does not, because imports here are a flat
+merge (ADR-0014 §2): an unused one does not merely cost a line, it enlarges the name
+space every identifier in the file resolves against, and can make a later declaration
+ambiguous against a module the file never uses. It is a warning rather than an error
+because a file part-way through an edit legitimately has one.
+
+Deliberately conservative: an import is reported only when nothing in the file uses a
+name it provides — in expression **or** type position. The second half matters more than
+it sounds, because a type annotation is not resolved by name resolution at all
+(ADR-0031 §2), so a check that consulted only this chapter's machinery would report an
+import that the program needs.
 
 E0204 is the one code that moved phase. An integer literal has no intrinsic type
 (ADR-0016 §1), so what it must fit is decided by its context — and lowering, which

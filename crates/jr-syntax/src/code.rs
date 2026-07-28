@@ -27,8 +27,9 @@
 //! | E0212–E0226 | `jr-sema` |
 //! | E0227–E0229 | `jr-mir` |
 //! | E0230 | `jr-db` const-eval |
+//! | E0231 | `jr-db` unused imports |
 //!
-//! **E0231 is the first free code overall**, and **E0123 the first free parser code.**
+//! **E0232 is the first free code overall**, and **E0123 the first free parser code.**
 
 // ---------------------------------------------------------------------------
 // Lexer: E0001–E0006
