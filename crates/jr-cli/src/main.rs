@@ -19,6 +19,7 @@ fn main() {
 
 fn run(cli: Cli) -> Result<i32> {
     match cli.command {
+        Command::Bench(args) => jr_cli::commands::bench::run(args, &cli.global),
         Command::Build(args) => jr_cli::commands::build::run(args, &cli.global),
         Command::Check(args) => jr_cli::commands::check::run(args, &cli.global),
         Command::Fmt(args) => jr_cli::commands::fmt::run(args, &cli.global),
