@@ -1,0 +1,13 @@
+// EXPECT: E0218 — `Rect` has no field `widht`, and the help line names `width`
+// A transposition is the commonest typing error, and plain Levenshtein charges 2 for
+// one — which is why `jr-sema`'s suggester uses optimal string alignment instead
+// (ADR-0031 §1). Without that this file would get the bare error and no suggestion.
+Rect :: struct {
+    width: s64;
+    height: s64;
+}
+
+main :: () {
+    r: Rect;
+    n := r.widht;
+}

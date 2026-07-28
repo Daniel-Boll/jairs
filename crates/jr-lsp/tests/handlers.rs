@@ -1121,3 +1121,679 @@ fn workspace_symbols_proceed_on_a_truncated_list() {
     let found = jr_lsp::workspace_symbol(&db, search, Encoding::Utf8, "thing", &list_of(&db).files);
     assert_eq!(found.len(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// Code actions (ADR-0031)
+// ---------------------------------------------------------------------------
+
+/// Every action offered at `needle`, given the file's own diagnostics.
+///
+/// The diagnostics are computed rather than hand-written, because the handler reads them
+/// the way a client sends them — and a hand-written diagnostic would let a test pass while
+/// the real message wording had drifted out from under the action.
+fn actions_at(
+    db: &JairsDatabase,
+    search: ModuleSearchPaths,
+    file: SourceFile,
+    source: &str,
+    needle: &str,
+    workspace: &jr_db::WorkspaceFileList,
+) -> Vec<lsp_types::CodeAction> {
+    let position = at(source, needle);
+    let range = lsp_types::Range {
+        start: position,
+        end: position,
+    };
+    let diags: Vec<lsp_types::Diagnostic> = diagnostics(db, file, search, Encoding::Utf8)
+        .into_iter()
+        .filter(|d| d.range.start.line == position.line)
+        .collect();
+    jr_lsp::code_actions(db, file, search, Encoding::Utf8, range, &diags, workspace)
+        .into_iter()
+        .filter_map(|action| match action {
+            lsp_types::CodeActionOrCommand::CodeAction(action) => Some(action),
+            lsp_types::CodeActionOrCommand::Command(_) => None,
+        })
+        .collect()
+}
+
+fn titles(actions: &[lsp_types::CodeAction]) -> Vec<String> {
+    actions.iter().map(|a| a.title.clone()).collect()
+}
+
+/// The single edit an action carries, panicking if it carries a different number.
+///
+/// The `mutable_key_type` allow is the same one `navigate.rs` carries and for the same
+/// reason: `WorkspaceEdit::changes` *is* a `HashMap<Uri, _>` in the protocol type, and
+/// `fluent_uri`'s interior `Cell` is a lazily-computed authority cache that takes no part in
+/// `Hash` or `Eq`. Allowed per-function rather than crate-wide, so a genuinely mutable key
+/// elsewhere still fails the build.
+#[allow(
+    clippy::mutable_key_type,
+    reason = "the protocol's own type; Uri's Cell is a cache, not part of its hash"
+)]
+fn only_edit(action: &lsp_types::CodeAction) -> lsp_types::TextEdit {
+    let changes = action
+        .edit
+        .as_ref()
+        .and_then(|edit| edit.changes.as_ref())
+        .expect("an action must carry an edit");
+    let edits: Vec<&lsp_types::TextEdit> = changes.values().flatten().collect();
+    assert_eq!(edits.len(), 1, "expected one edit, got {edits:?}");
+    edits[0].clone()
+}
+
+/// Applies every edit an action carries to `source`, so a test asserts on the result
+/// rather than on a range triple.
+///
+/// Edits are applied last-first, which is what makes multiple edits in one file safe: an
+/// earlier edit would otherwise shift every later range.
+#[allow(
+    clippy::mutable_key_type,
+    reason = "the protocol's own type; Uri's Cell is a cache, not part of its hash"
+)]
+fn apply(source: &str, action: &lsp_types::CodeAction) -> String {
+    let changes = action
+        .edit
+        .as_ref()
+        .and_then(|edit| edit.changes.as_ref())
+        .expect("an action must carry an edit");
+    let mut edits: Vec<lsp_types::TextEdit> = changes.values().flatten().cloned().collect();
+    edits.sort_by_key(|edit| (edit.range.start.line, edit.range.start.character));
+    let mut lines: Vec<String> = source.split('\n').map(ToOwned::to_owned).collect();
+    for edit in edits.iter().rev() {
+        let start_line = edit.range.start.line as usize;
+        let end_line = edit.range.end.line as usize;
+        let start_char = edit.range.start.character as usize;
+        let end_char = edit.range.end.character as usize;
+        let head: String = lines
+            .get(start_line)
+            .map(|line| line.chars().take(start_char).collect())
+            .unwrap_or_default();
+        let tail: String = lines
+            .get(end_line)
+            .map(|line| line.chars().skip(end_char).collect())
+            .unwrap_or_default();
+        let replacement = format!("{head}{}{tail}", edit.new_text);
+        let last = end_line.min(lines.len().saturating_sub(1));
+        lines.splice(
+            start_line..=last,
+            replacement.split('\n').map(ToOwned::to_owned),
+        );
+    }
+    lines.join("\n")
+}
+
+#[test]
+fn an_unresolved_name_offers_an_import_of_the_module_that_exports_it() {
+    let source = "main :: () {\n    print(\"hi\\n\");\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let list = list_of(&db);
+
+    let actions = actions_at(&db, search, file, source, "print", &list);
+    let titles = titles(&actions);
+    assert!(
+        titles.contains(&String::from("import `Basic` for `print`")),
+        "{titles:?}"
+    );
+
+    // The edit goes at the top of the file, and produces something that compiles.
+    let applied = apply(source, &actions[0]);
+    assert!(
+        applied.starts_with("#import \"Basic\";\n"),
+        "got {applied:?}"
+    );
+}
+
+#[test]
+fn a_module_that_does_not_export_the_name_is_not_offered() {
+    // The whole reason ADR-0031 §5 parses the discovered modules: an offer for a module
+    // that does not export the name replaces one error with two.
+    let source = "main :: () {\n    nonexistent_thing();\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source), ("Other.jr", "OTHER :: 1;\n")]);
+    let file = file_in(&db, &dir, "main.jr");
+    let list = list_of(&db);
+
+    let actions = actions_at(&db, search, file, source, "nonexistent_thing", &list);
+    let imports: Vec<String> = titles(&actions)
+        .into_iter()
+        .filter(|title| title.starts_with("import "))
+        .collect();
+    assert!(imports.is_empty(), "{imports:?}");
+}
+
+#[test]
+fn an_import_that_is_already_present_is_not_offered_again() {
+    let source = "#import \"Basic\";\n\nmain :: () {\n    print(\"hi\\n\");\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let list = list_of(&db);
+
+    // `print` resolves here, so there is no E0201 at all and therefore no offer.
+    let actions = actions_at(&db, search, file, source, "print(", &list);
+    let imports: Vec<String> = titles(&actions)
+        .into_iter()
+        .filter(|title| title.starts_with("import "))
+        .collect();
+    assert!(imports.is_empty(), "{imports:?}");
+}
+
+#[test]
+fn an_unused_import_offers_removal_that_deletes_the_whole_line() {
+    let source = "#import \"Basic\";\n\nmain :: () {\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let list = list_of(&db);
+
+    let actions = actions_at(&db, search, file, source, "#import", &list);
+    let titles = titles(&actions);
+    assert!(
+        titles.contains(&String::from("remove unused import `Basic`")),
+        "{titles:?}"
+    );
+
+    let action = actions
+        .iter()
+        .find(|a| a.title.starts_with("remove unused"))
+        .expect("the removal action");
+    // No blank line left behind: the range must reach the start of the next line.
+    let edit = only_edit(action);
+    assert_eq!(edit.range.start.character, 0);
+    assert_eq!(edit.range.end.line, edit.range.start.line + 1);
+    assert_eq!(edit.range.end.character, 0);
+    assert_eq!(apply(source, action), "\nmain :: () {\n}\n");
+}
+
+#[test]
+fn two_unused_imports_offer_one_organise_action_as_well() {
+    let source = "#import \"Basic\";\n#import \"Colors\";\n\nmain :: () {\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source), ("Colors.jr", "BLACK :: 0;\n")]);
+    let file = file_in(&db, &dir, "main.jr");
+    let list = list_of(&db);
+
+    let actions = actions_at(&db, search, file, source, "#import \"Basic\"", &list);
+    let organise = actions
+        .iter()
+        .find(|a| a.kind == Some(lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS))
+        .expect("an organise-imports action");
+    assert_eq!(organise.title, "remove 2 unused imports");
+
+    // Both lines go, and the rest of the file is untouched.
+    assert_eq!(apply(source, organise), "\nmain :: () {\n}\n");
+}
+
+#[test]
+fn one_unused_import_offers_no_organise_action() {
+    // It would be the single-import action under a second title.
+    let source = "#import \"Basic\";\n\nmain :: () {\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let list = list_of(&db);
+
+    let actions = actions_at(&db, search, file, source, "#import", &list);
+    assert!(
+        !actions
+            .iter()
+            .any(|a| a.kind == Some(lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS)),
+        "{:?}",
+        titles(&actions)
+    );
+}
+
+#[test]
+fn a_misspelled_field_offers_the_name_the_compiler_suggested() {
+    let source = "Rect :: struct {\n    width: s64;\n}\n\nmain :: () {\n    r: Rect;\n    n := r.widht;\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let list = list_of(&db);
+
+    let actions = actions_at(&db, search, file, source, "widht", &list);
+    let titles = titles(&actions);
+    assert!(
+        titles.contains(&String::from("change to `width`")),
+        "{titles:?}"
+    );
+
+    let action = actions
+        .iter()
+        .find(|a| a.title == "change to `width`")
+        .expect("the rename action");
+    assert!(apply(source, action).contains("r.width;"));
+}
+
+#[test]
+fn a_field_with_no_near_name_offers_nothing() {
+    // The suggestion is read off the diagnostic, so no `help:` line means no action —
+    // which is right: nothing was near enough to act on.
+    let source =
+        "Point :: struct {\n    x: s64;\n}\n\nmain :: () {\n    p: Point;\n    n := p.zzzzz;\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let list = list_of(&db);
+
+    let actions = actions_at(&db, search, file, source, "zzzzz", &list);
+    let changes: Vec<String> = titles(&actions)
+        .into_iter()
+        .filter(|title| title.starts_with("change to"))
+        .collect();
+    assert!(changes.is_empty(), "{changes:?}");
+}
+
+#[test]
+fn a_misspelled_type_offers_the_type_the_compiler_suggested() {
+    let source =
+        "Rectangle :: struct {\n    width: s64;\n}\n\nmain :: () {\n    r: Recatngle;\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let list = list_of(&db);
+
+    let actions = actions_at(&db, search, file, source, "Recatngle", &list);
+    let titles = titles(&actions);
+    assert!(
+        titles.contains(&String::from("change to `Rectangle`")),
+        "{titles:?}"
+    );
+}
+
+#[test]
+fn a_procedure_with_no_body_is_offered_one() {
+    let source = "add :: (a: s64) -> s64;\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let list = list_of(&db);
+
+    let actions = actions_at(&db, search, file, source, "add", &list);
+    let titles = titles(&actions);
+    assert!(
+        titles.contains(&String::from("give this procedure an empty body")),
+        "{titles:?}"
+    );
+}
+
+#[test]
+fn a_comment_above_a_declaration_can_become_documentation() {
+    let source = "// Adds two numbers.\nadd :: (a: s64, b: s64) -> s64 {\n    return a + b;\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let list = list_of(&db);
+
+    let actions = actions_at(&db, search, file, source, "// Adds", &list);
+    let action = actions
+        .iter()
+        .find(|a| a.title == "make this comment documentation")
+        .unwrap_or_else(|| panic!("expected the refactor, got {:?}", titles(&actions)));
+    assert_eq!(
+        action.kind,
+        Some(lsp_types::CodeActionKind::REFACTOR_REWRITE)
+    );
+    // The comment's text survives verbatim: only the `//` is replaced.
+    assert!(
+        apply(source, action).starts_with("/// Adds two numbers.\n"),
+        "got {:?}",
+        apply(source, action)
+    );
+}
+
+#[test]
+fn a_comment_above_nothing_is_not_offered_documentation() {
+    // A `///` that precedes no declaration is silently dropped (ADR-0027 §3), so offering
+    // this would be an action that appears to do nothing.
+    let source = "main :: () {\n}\n\n// A trailing note about the file.\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let list = list_of(&db);
+
+    let actions = actions_at(&db, search, file, source, "// A trailing", &list);
+    assert!(
+        !titles(&actions).contains(&String::from("make this comment documentation")),
+        "{:?}",
+        titles(&actions)
+    );
+}
+
+#[test]
+fn a_doc_comment_is_not_offered_promotion_again() {
+    let source = "/// Already documentation.\nadd :: (a: s64) -> s64 {\n    return a;\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let list = list_of(&db);
+
+    let actions = actions_at(&db, search, file, source, "/// Already", &list);
+    assert!(
+        !titles(&actions).contains(&String::from("make this comment documentation")),
+        "{:?}",
+        titles(&actions)
+    );
+}
+
+#[test]
+fn four_slashes_stay_an_ordinary_comment() {
+    // ADR-0027 §1 makes `////` deliberately *not* documentation, so promoting it would
+    // silently change what the file means.
+    let source = "//// A banner, not documentation.\nadd :: (a: s64) -> s64 {\n    return a;\n}\n";
+    let (db, search, dir) = workspace(&[("main.jr", source)]);
+    let file = file_in(&db, &dir, "main.jr");
+    let list = list_of(&db);
+
+    let actions = actions_at(&db, search, file, source, "////", &list);
+    assert!(
+        !titles(&actions).contains(&String::from("make this comment documentation")),
+        "{:?}",
+        titles(&actions)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Signature help (ADR-0031 §6)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn signature_help_names_the_procedure_and_the_active_parameter() {
+    let source = "add :: (a: s64, b: s64) -> s64 {\n    return a + b;\n}\n\nmain :: () {\n    n := add(1, 2);\n}\n";
+    let (db, search, _file) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+
+    // On the first argument.
+    let help = jr_lsp::signature_help(&db, file, search, Encoding::Utf8, at(source, "1, 2"))
+        .expect("inside a call");
+    assert_eq!(help.signatures[0].label, "add :: (a: s64, b: s64) -> s64");
+    assert_eq!(help.signatures[0].active_parameter, Some(0));
+
+    // On the second.
+    let help = jr_lsp::signature_help(&db, file, search, Encoding::Utf8, at(source, "2);"))
+        .expect("inside a call");
+    assert_eq!(help.signatures[0].active_parameter, Some(1));
+}
+
+#[test]
+fn signature_help_lists_parameters_with_their_types() {
+    let source = "add :: (a: s64, b: s64) -> s64 {\n    return a + b;\n}\n\nmain :: () {\n    n := add(1, 2);\n}\n";
+    let (db, search, _f) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+    let help = jr_lsp::signature_help(&db, file, search, Encoding::Utf8, at(source, "1, 2"))
+        .expect("inside a call");
+    let params = help.signatures[0].parameters.as_ref().expect("parameters");
+    let labels: Vec<String> = params
+        .iter()
+        .map(|p| match &p.label {
+            lsp_types::ParameterLabel::Simple(text) => text.clone(),
+            other => panic!("expected a simple label, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(labels, vec!["a: s64", "b: s64"]);
+}
+
+#[test]
+fn signature_help_crosses_into_an_imported_module() {
+    let source = "#import \"Basic\";\n\nmain :: () {\n    print(\"hi\\n\");\n}\n";
+    let (db, search, _f) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+    let help = jr_lsp::signature_help(&db, file, search, Encoding::Utf8, at(source, "\"hi"))
+        .expect("inside a call");
+    assert!(
+        help.signatures[0].label.starts_with("print :: ("),
+        "{:?}",
+        help.signatures[0].label
+    );
+}
+
+#[test]
+fn signature_help_outside_a_call_returns_nothing() {
+    let source = "add :: (a: s64) -> s64 {\n    return a;\n}\n";
+    let (db, search, _f) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+    assert!(
+        jr_lsp::signature_help(&db, file, search, Encoding::Utf8, at(source, "return")).is_none()
+    );
+}
+
+#[test]
+fn too_many_arguments_still_highlight_the_last_parameter() {
+    // Clamped rather than out of range: a client given an index past the end highlights
+    // nothing, exactly when the user needs to see what they overran.
+    let source =
+        "one :: (a: s64) -> s64 {\n    return a;\n}\n\nmain :: () {\n    n := one(1, 2);\n}\n";
+    let (db, search, _f) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+    let help = jr_lsp::signature_help(&db, file, search, Encoding::Utf8, at(source, "2);"))
+        .expect("inside a call");
+    assert_eq!(help.signatures[0].active_parameter, Some(0));
+}
+
+#[test]
+fn the_inner_call_wins_when_calls_nest() {
+    let source = "add :: (a: s64, b: s64) -> s64 {\n    return a + b;\n}\n\none :: (x: s64) -> s64 {\n    return x;\n}\n\nmain :: () {\n    n := add(one(5), 2);\n}\n";
+    let (db, search, _f) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+    let help = jr_lsp::signature_help(&db, file, search, Encoding::Utf8, at(source, "5)"))
+        .expect("inside a call");
+    assert_eq!(help.signatures[0].label, "one :: (x: s64) -> s64");
+}
+
+// ---------------------------------------------------------------------------
+// Inlay hints (ADR-0031 §7)
+// ---------------------------------------------------------------------------
+
+fn hint_labels(hints: &[lsp_types::InlayHint]) -> Vec<String> {
+    hints
+        .iter()
+        .map(|hint| match &hint.label {
+            lsp_types::InlayHintLabel::String(text) => text.clone(),
+            other => panic!("expected a string label, got {other:?}"),
+        })
+        .collect()
+}
+
+fn whole_file() -> lsp_types::Range {
+    lsp_types::Range {
+        start: lsp_types::Position {
+            line: 0,
+            character: 0,
+        },
+        end: lsp_types::Position {
+            line: 10_000,
+            character: 0,
+        },
+    }
+}
+
+#[test]
+fn an_inferred_local_gets_a_type_hint() {
+    let source = "add :: (a: s64, b: s64) -> s64 {\n    return a + b;\n}\n\nmain :: () {\n    n := add(1, 2);\n}\n";
+    let (db, search, _f) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+    let hints = jr_lsp::inlay_hints(&db, file, search, Encoding::Utf8, whole_file());
+    assert_eq!(hint_labels(&hints), vec![": s64"]);
+    // Placed after the name, so the line reads `n: s64 := add(1, 2);`.
+    assert_eq!(hints[0].position, at(source, " := add(1, 2)"));
+}
+
+#[test]
+fn an_annotated_local_gets_no_hint() {
+    // The type is already on screen; repeating it is noise.
+    let source = "main :: () {\n    n: s64 = 1;\n}\n";
+    let (db, search, _f) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+    let hints = jr_lsp::inlay_hints(&db, file, search, Encoding::Utf8, whole_file());
+    assert!(hint_labels(&hints).is_empty(), "{:?}", hint_labels(&hints));
+}
+
+#[test]
+fn a_run_directive_shows_the_value_it_computed() {
+    // The hint nothing outside this project can offer: the fold happened in the bytecode
+    // VM, and the text says nothing about `5`.
+    let source =
+        "add :: (a: s64, b: s64) -> s64 {\n    return a + b;\n}\n\nCOMPUTED :: #run add(2, 3);\n";
+    let (db, search, _f) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+    let hints = jr_lsp::inlay_hints(&db, file, search, Encoding::Utf8, whole_file());
+    assert!(
+        hint_labels(&hints).contains(&String::from(" = 5")),
+        "{:?}",
+        hint_labels(&hints)
+    );
+}
+
+#[test]
+fn an_ordinary_constant_gets_no_value_hint() {
+    // `FOUR :: 4` would restate its own text.
+    let source = "FOUR :: 4;\n";
+    let (db, search, _f) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+    let hints = jr_lsp::inlay_hints(&db, file, search, Encoding::Utf8, whole_file());
+    assert!(hint_labels(&hints).is_empty(), "{:?}", hint_labels(&hints));
+}
+
+#[test]
+fn hints_outside_the_requested_range_are_not_computed() {
+    let source = "main :: () {\n    n := 1;\n    m := 2;\n}\n";
+    let (db, search, _f) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+    let just_the_first = lsp_types::Range {
+        start: lsp_types::Position {
+            line: 1,
+            character: 0,
+        },
+        end: lsp_types::Position {
+            line: 1,
+            character: 99,
+        },
+    };
+    let hints = jr_lsp::inlay_hints(&db, file, search, Encoding::Utf8, just_the_first);
+    assert_eq!(hints.len(), 1, "{:?}", hint_labels(&hints));
+    assert_eq!(hints[0].position.line, 1);
+}
+
+// ---------------------------------------------------------------------------
+// #import navigation (ADR-0035)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn goto_definition_on_an_import_opens_the_module_from_anywhere_on_the_line() {
+    // The request that prompted ADR-0035, and the bug it fixes: before it, every column of
+    // this line answered nothing — including the module name itself — because an import is
+    // lowered with `name: None` and `locate_declaration` skipped nameless items to keep a
+    // top-level `#run` from matching.
+    let source = "#import \"Basic\";\n\nmain :: () {\n}\n";
+    let (db, search, _f) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+
+    // Every column of `#import "Basic";`, so "anywhere on the line" is asserted rather
+    // than assumed of one representative position.
+    for character in 0..source.lines().next().expect("a first line").len() {
+        let at = Position {
+            line: 0,
+            character: u32::try_from(character).expect("small"),
+        };
+        let found = goto_definition(&db, file, search, Encoding::Utf8, at)
+            .unwrap_or_else(|| panic!("column {character} must navigate"));
+        assert!(
+            found.uri.as_str().ends_with("modules/Basic/module.jr"),
+            "column {character} landed at {}",
+            found.uri.as_str()
+        );
+        // The start of the file: a module is a file, and there is no declaration inside it
+        // that is "the definition of the module" (ADR-0035 §1).
+        assert_eq!(found.range.start.line, 0);
+        assert_eq!(found.range.start.character, 0);
+    }
+}
+
+#[test]
+fn goto_definition_on_an_unresolved_import_returns_nothing() {
+    // Rather than pointing at where the file would be, which would open an empty buffer at
+    // a path the user never chose. E0210 already reports the failure (ADR-0035 §3).
+    let source = "#import \"NoSuchModule\";\n\nmain :: () {\n}\n";
+    let (db, search, _f) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+    assert!(
+        goto_definition(
+            &db,
+            file,
+            search,
+            Encoding::Utf8,
+            at(source, "NoSuchModule")
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn hovering_an_import_shows_the_resolved_path_and_the_modules_own_docs() {
+    let source = "#import \"Basic\";\n\nmain :: () {\n}\n";
+    let (db, search, _f) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+
+    let hovered = hover(&db, file, search, Encoding::Utf8, at(source, "Basic"))
+        .expect("an import must hover");
+    let text = hover_text(&hovered.contents);
+    assert!(text.contains("#import \"Basic\""), "{text}");
+    // The resolved path is the part worth hovering for: `#import "Basic"` does not say
+    // *which* `Basic`, and the search-path order decides (ADR-0035 §2).
+    assert!(text.contains("modules/Basic/module.jr"), "{text}");
+    // The module's `//!` block, which `file_docs` has collected since ADR-0027 and which
+    // nothing displayed until now.
+    assert!(
+        text.contains("the bottom of the Jairs standard library"),
+        "the module's own `//!` documentation must appear: {text}"
+    );
+}
+
+#[test]
+fn hovering_an_unresolved_import_says_so_rather_than_vanishing() {
+    // A hover that disappears next to an E0210 reads as a second, unrelated failure.
+    let source = "#import \"NoSuchModule\";\n\nmain :: () {\n}\n";
+    let (db, search, _f) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+    let hovered = hover(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(source, "NoSuchModule"),
+    )
+    .expect("an unresolved import must still hover");
+    let text = hover_text(&hovered.contents);
+    assert!(text.contains("#import \"NoSuchModule\""), "{text}");
+    assert!(text.contains("not found"), "{text}");
+}
+
+#[test]
+fn an_import_is_not_a_rename_target() {
+    // Renaming a module means editing its file and every `#import` naming it — a real
+    // feature `PLAN.md` §7 lists, and not this one. Answering here would half-implement it
+    // in a way that compiles (ADR-0035 consequences).
+    let source = "#import \"Basic\";\n\nmain :: () {\n}\n";
+    let (db, search, _f) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+    let offset = {
+        let text = file.text(&db);
+        let index = jr_db::line_index(&db, file);
+        jr_lsp::Positions::new(text.as_ref(), &index, Encoding::Utf8).offset(at(source, "Basic"))
+    };
+    assert!(
+        jr_lsp::definition_at(&db, file, search, offset).is_none(),
+        "an import must have no DefId"
+    );
+}
+
+#[test]
+fn a_top_level_run_still_does_not_hover_as_an_item() {
+    // The guard ADR-0035 §4 kept. `locate_declaration` skips nameless items so that a
+    // top-level `#run` does not render whatever item sits at its index; imports now match
+    // through their own arm instead of by weakening that guard.
+    let source = "add :: (a: s64) -> s64 {\n    return a;\n}\n\n#run add(1);\n";
+    let (db, search, _f) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+    let hovered = hover(&db, file, search, Encoding::Utf8, at(source, "#run"));
+    // `#run` itself is not a declaration to hover. Whatever comes back must not be an
+    // item's card — the failure this pins is a *wrong* card, not a missing one.
+    if let Some(hovered) = hovered {
+        let text = hover_text(&hovered.contents);
+        assert!(
+            !text.contains("add :: "),
+            "hovering `#run` must not render the item at its index: {text}"
+        );
+    }
+}
