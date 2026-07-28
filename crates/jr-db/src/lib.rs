@@ -40,10 +40,20 @@
 //! salsa does not own: the interned type [`Pool`], reached through [`Db::pool`].
 //! Its module docs argue why that is sound and what the alternative would have
 //! cost.
+//!
+//! # The two queries here that exist only because an editor asked
+//!
+//! [`docs`] attaches doc-comment prose to declarations (ADR-0027 §2), and
+//! [`imports`] answers which `#import`s nothing in a file uses (ADR-0031 §3). Both
+//! are compiler-side rather than editor-side for the same reason: `jr check` reports
+//! them too, and a fact computed in `jr-lsp` would be a fact the batch compiler
+//! cannot see. [`workspace`] is the third of that kind, and the only one whose
+//! answer comes from outside the database.
 
 pub mod build;
 pub mod consts;
 pub mod docs;
+pub mod imports;
 pub mod mir;
 pub mod module_loader;
 mod queries;
@@ -93,6 +103,7 @@ pub use consts::{ConstResult, file_consts};
 // public API: a consumer could not name the type it is handed without depending on
 // `jr-mir` for nothing else, which is what `jr-lsp` would otherwise have had to do.
 pub use docs::{FileDocs, file_docs};
+pub use imports::{UnusedImport, UnusedImports, unused_imports};
 pub use jr_mir::ConstValues;
 pub use mir::{
     MirResult, dump_mir, dump_optimized_mir, file_mir, imported_procs, optimized_file_mir,

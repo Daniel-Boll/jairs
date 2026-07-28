@@ -451,6 +451,12 @@ pub fn file_diagnostics(
     let consts = crate::consts::file_consts(db, file, search_paths);
     all.extend(consts.diagnostics.iter().cloned());
 
+    // E0231: an import nothing in the file uses. A warning rather than an error, and here
+    // rather than in `frontend_diagnostics` for the same reason E0230 is: MIR's gate reads
+    // that query, and an unused import must not stop a file being lowered.
+    let unused = crate::imports::unused_imports(db, file, search_paths);
+    all.extend(unused.diagnostics().into_vec());
+
     let mir = crate::mir::file_mir(db, file, search_paths);
     if !mir.gated {
         let hir = file_hir(db, file);
