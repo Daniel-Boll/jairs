@@ -54,6 +54,19 @@ pub struct CheckOutput {
     pub types: TypeMap,
     /// Diagnostics about bodies, `#run` items, and foreign bindings.
     pub diagnostics: Diagnostics,
+    /// Modules a *local* annotation named a type from.
+    ///
+    /// The signature phase records the same thing for file-level annotations, on
+    /// `FileSignatures`. This phase needs its own channel because a local's annotation is
+    /// resolved *here* and `FileSignatures` is an input to this phase rather than an
+    /// output of it — so a record made on `Ctx::sigs` during a check is discarded when the
+    /// context is dropped.
+    ///
+    /// Which is not hypothetical: `r: Rect;` in
+    /// `tests/corpus/imports/valid/001-import-directory-module.jr` is a local, so without
+    /// this field ADR-0031 §2's whole point would be defeated for exactly the file that
+    /// motivated it.
+    pub type_name_imports: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -139,9 +152,20 @@ pub fn check_file(
         ctx.body = None;
     }
 
+    // Collected before `ctx.sigs` is dropped. It started as a clone of the file's
+    // signatures, so an entry the *signature* phase recorded is in here too; the union is
+    // taken by the consumer rather than filtered here, because a module named in both
+    // positions is used either way.
+    let type_name_imports: Vec<String> = ctx
+        .sigs
+        .modules_used_in_type_position()
+        .map(ToOwned::to_owned)
+        .collect();
+
     CheckOutput {
         types: ctx.types,
         diagnostics: ctx.diags,
+        type_name_imports,
     }
 }
 
@@ -831,13 +855,34 @@ impl Ctx<'_> {
         }
     }
 
-    /// Reports a field the receiver's type does not have.
+    /// Reports a field the receiver's type does not have, suggesting a near one.
+    ///
+    /// The candidate list is the receiver's own fields, which is why the suggestion is
+    /// computed here rather than in an editor: nothing outside this crate knows them
+    /// (ADR-0031 §1). Field order is declaration order, so a tie resolves to the field
+    /// declared first rather than to whatever the pool iterated over.
     fn no_such_field(&mut self, ty: PoolId, field: &str, span: Span) {
         let text = self.describe(ty);
-        self.diags.push(
-            Diagnostic::error(span, format!("no field `{field}` on type `{text}`"))
-                .with_code(E0218),
-        );
+        let candidates: Vec<String> = match self.pool.item(ty) {
+            // ADR-0004's two pseudo-fields, spelled out because `string` is not the
+            // struct of its own layout and the pool has no field list for it.
+            Item::StringType => vec![String::from("data"), String::from("count")],
+            Item::StructType { decl } => self
+                .pool
+                .struct_fields(*decl)
+                .unwrap_or(&[])
+                .iter()
+                .map(|f| self.interner.resolve(f.name).to_owned())
+                .collect(),
+            _ => Vec::new(),
+        };
+
+        let mut diag = Diagnostic::error(span, format!("no field `{field}` on type `{text}`"))
+            .with_code(E0218);
+        if let Some(near) = crate::suggest::nearest(field, candidates.iter().map(String::as_str)) {
+            diag = diag.with_help(format!("did you mean `{near}`?"));
+        }
+        self.diags.push(diag);
     }
 
     /// Types a dereference.

@@ -74,7 +74,14 @@
 //! | E0225 | `#foreign` library operand is not a library |
 //! | E0226 | a constant's type depends on itself |
 //!
-//! E0227 is the first free code.
+//! E0227 was the first free code when this crate claimed its range; E0227–E0229 are
+//! `jr-mir`'s, E0230 and E0231 are `jr-db`'s, and **E0232 is free**.
+//!
+//! E0212 and E0218 each carry a `did you mean` help line where a near name exists
+//! (ADR-0031 §1). The suggestion is computed here rather than in an editor because the
+//! candidate set — the fields of a type, the names that denote one — is semantic
+//! information only the checker has, and a second implementation of the guess in `jr-lsp`
+//! would leave `jr check` permanently worse at explaining its own error.
 //!
 //! # What is deliberately not checked yet
 //!
@@ -92,6 +99,7 @@ mod ctx;
 mod map;
 mod signature;
 mod sigs;
+mod suggest;
 
 pub use check::{CheckOutput, check_file};
 pub use map::TypeMap;
