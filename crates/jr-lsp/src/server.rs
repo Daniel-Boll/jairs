@@ -73,7 +73,7 @@ pub struct ServerOptions {
 
 /// The capabilities this server advertises, under a negotiated encoding.
 ///
-/// Nine now. Each is advertised only where it is implemented for every case a client may
+/// Twelve now. Each is advertised only where it is implemented for every case a client may
 /// send: advertising one that answers "nothing" for half its inputs is worse than not
 /// advertising it, because the client stops offering the user an alternative.
 #[must_use]
@@ -104,6 +104,31 @@ pub fn capabilities(encoding: Encoding) -> ServerCapabilities {
             prepare_provider: Some(true),
             work_done_progress_options: lsp_types::WorkDoneProgressOptions::default(),
         })),
+        // The kinds are listed rather than left to `Some(true)` so a client can put
+        // "organise imports" on a menu of its own — several do, and an unlisted kind is
+        // reachable only through the generic lightbulb.
+        code_action_provider: Some(lsp_types::CodeActionProviderCapability::Options(
+            lsp_types::CodeActionOptions {
+                code_action_kinds: Some(vec![
+                    lsp_types::CodeActionKind::QUICKFIX,
+                    lsp_types::CodeActionKind::REFACTOR_REWRITE,
+                    lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
+                ]),
+                // No `codeAction/resolve`: every action here carries its edit already. An
+                // edit computed lazily would be computed against a later revision than the
+                // one the user was looking at.
+                resolve_provider: Some(false),
+                work_done_progress_options: lsp_types::WorkDoneProgressOptions::default(),
+            },
+        )),
+        signature_help_provider: Some(lsp_types::SignatureHelpOptions {
+            // `(` opens the help and `,` moves to the next parameter. `)` is deliberately
+            // absent as a *trigger*: the call is finished there.
+            trigger_characters: Some(vec![String::from("("), String::from(",")]),
+            retrigger_characters: None,
+            work_done_progress_options: lsp_types::WorkDoneProgressOptions::default(),
+        }),
+        inlay_hint_provider: Some(OneOf::Left(true)),
         ..ServerCapabilities::default()
     }
 }
@@ -422,6 +447,32 @@ enum Job {
         query: String,
         workspace: Arc<jr_db::WorkspaceFileList>,
     },
+    CodeActions {
+        db: Box<JairsDatabase>,
+        id: RequestId,
+        file: SourceFile,
+        range: lsp_types::Range,
+        /// The diagnostics the *client* holds for that range.
+        ///
+        /// Taken from the request rather than recomputed, because an action must appear
+        /// exactly where the user already sees a problem — and because a client may hold a
+        /// diagnostic from a revision this snapshot has moved past (ADR-0031 §4).
+        diagnostics: Vec<lsp_types::Diagnostic>,
+        /// Captured at dispatch: auto-import consults the discovered modules.
+        workspace: Arc<jr_db::WorkspaceFileList>,
+    },
+    SignatureHelp {
+        db: Box<JairsDatabase>,
+        id: RequestId,
+        file: SourceFile,
+        position: lsp_types::Position,
+    },
+    InlayHints {
+        db: Box<JairsDatabase>,
+        id: RequestId,
+        file: SourceFile,
+        range: lsp_types::Range,
+    },
     /// A request naming a file this server has never been told about.
     Unknown { id: RequestId },
 }
@@ -457,7 +508,14 @@ fn adopt_root(db: &mut JairsDatabase, roots: &mut Vec<PathBuf>, file: SourceFile
 fn needs_whole_workspace(method: &str) -> bool {
     matches!(
         method,
-        "textDocument/references" | "textDocument/rename" | "workspace/symbol"
+        "textDocument/references"
+            | "textDocument/rename"
+            | "workspace/symbol"
+            // Auto-import must know which discovered module exports the missing name, and
+            // discovery yields paths rather than loaded files (ADR-0031 §5). Without this
+            // the quick fix silently offers only modules the editor happens to have open,
+            // and an absent offer reads as "there is nothing to import".
+            | "textDocument/codeAction"
     )
 }
 
@@ -597,6 +655,48 @@ fn dispatch(db: &mut JairsDatabase, jobs: &Sender<Job>, request: Request) {
                     id: id.clone(),
                     query: params.query,
                     workspace: Arc::clone(&workspace),
+                })
+        }
+        "textDocument/codeAction" => {
+            serde_json::from_value::<lsp_types::CodeActionParams>(request.params)
+                .ok()
+                .and_then(|params| {
+                    let file = file_of(db, &params.text_document.uri)?;
+                    Some(Job::CodeActions {
+                        db: Box::new(db.snapshot()),
+                        id: id.clone(),
+                        file,
+                        range: params.range,
+                        diagnostics: params.context.diagnostics,
+                        workspace: Arc::clone(&workspace),
+                    })
+                })
+        }
+        "textDocument/signatureHelp" => {
+            serde_json::from_value::<lsp_types::SignatureHelpParams>(request.params)
+                .ok()
+                .and_then(|params| {
+                    let file =
+                        file_of(db, &params.text_document_position_params.text_document.uri)?;
+                    Some(Job::SignatureHelp {
+                        db: Box::new(db.snapshot()),
+                        id: id.clone(),
+                        file,
+                        position: params.text_document_position_params.position,
+                    })
+                })
+        }
+        "textDocument/inlayHint" => {
+            serde_json::from_value::<lsp_types::InlayHintParams>(request.params)
+                .ok()
+                .and_then(|params| {
+                    let file = file_of(db, &params.text_document.uri)?;
+                    Some(Job::InlayHints {
+                        db: Box::new(db.snapshot()),
+                        id: id.clone(),
+                        file,
+                        range: params.range,
+                    })
                 })
         }
         _ => None,
@@ -817,6 +917,50 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
                 Some(file) => crate::completion::resolve_completion(db, file, search_paths, *item),
                 None => *item,
             });
+            answer(out, id, computed.map(serde_json::to_value));
+        }
+        Job::CodeActions {
+            db,
+            id,
+            file,
+            range,
+            diagnostics,
+            workspace,
+        } => {
+            let db = db.as_ref();
+            let computed = catch(|| {
+                crate::actions::code_actions(
+                    db,
+                    file,
+                    search_paths,
+                    encoding,
+                    range,
+                    &diagnostics,
+                    workspace.as_ref(),
+                )
+            });
+            answer(out, id, computed.map(serde_json::to_value));
+        }
+        Job::SignatureHelp {
+            db,
+            id,
+            file,
+            position,
+        } => {
+            let db = db.as_ref();
+            let computed =
+                catch(|| crate::hints::signature_help(db, file, search_paths, encoding, position));
+            answer(out, id, computed.map(serde_json::to_value));
+        }
+        Job::InlayHints {
+            db,
+            id,
+            file,
+            range,
+        } => {
+            let db = db.as_ref();
+            let computed =
+                catch(|| crate::hints::inlay_hints(db, file, search_paths, encoding, range));
             answer(out, id, computed.map(serde_json::to_value));
         }
     }
