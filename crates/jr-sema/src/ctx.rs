@@ -246,8 +246,17 @@ impl<'a> Ctx<'a> {
                 self.unknown_type(sym, span);
                 PoolId::ERROR
             }
-            [(_, entry)] => match entry.type_value {
-                Some(ty) => ty,
+            [(module, entry)] => match entry.type_value {
+                Some(ty) => {
+                    // Recorded so that "is this import used" can see a type annotation at
+                    // all. `ResolveMap` covers `Expr::Name` only, so without this an
+                    // import used *solely* for a type — which
+                    // `tests/corpus/imports/valid/001-import-directory-module.jr` is —
+                    // reads as unused, and the quick fix beside the warning breaks the
+                    // build (ADR-0031 §2).
+                    self.sigs.insert_type_name_import(sym, module);
+                    ty
+                }
                 None => {
                     self.not_a_type(sym, entry.kind, span);
                     PoolId::ERROR
@@ -455,8 +464,42 @@ impl<'a> Ctx<'a> {
                 .with_help("a procedure that returns nothing omits the `->` entirely");
         } else {
             diag = diag.with_note("the builtin types are `s64`, `u8`, `bool` and `string`");
+            // Only a name that *denotes* a type is a candidate: suggesting a procedure in
+            // type position would trade E0212 for E0213, which is not help (ADR-0031 §1).
+            if let Some(near) = self.nearest_type_name(name) {
+                diag = diag.with_help(format!("did you mean `{near}`?"));
+            }
         }
         self.diags.push(diag);
+    }
+
+    /// The nearest type name to one that does not exist.
+    ///
+    /// Searched in the same order resolution uses (ADR-0014 §3) — builtins, this file,
+    /// then imports — so that where two are equally near, the one resolution would have
+    /// picked is the one suggested.
+    fn nearest_type_name(&self, wanted: &str) -> Option<String> {
+        let mut candidates: Vec<String> = vec![
+            String::from("s64"),
+            String::from("u8"),
+            String::from("bool"),
+            String::from("string"),
+        ];
+        let is_type = |entry: &SigEntry| entry.type_value.is_some();
+        for sym in self.sigs.declared_names() {
+            if self.sigs.lookup(sym).as_ref().is_some_and(is_type) {
+                candidates.push(self.interner.resolve(sym).to_owned());
+            }
+        }
+        for (_, sigs) in &self.imports {
+            for sym in sigs.declared_names() {
+                if sigs.lookup(sym).as_ref().is_some_and(is_type) {
+                    candidates.push(self.interner.resolve(sym).to_owned());
+                }
+            }
+        }
+        crate::suggest::nearest(wanted, candidates.iter().map(String::as_str))
+            .map(ToOwned::to_owned)
     }
 
     /// Reports a type annotation that names something which is not a type.

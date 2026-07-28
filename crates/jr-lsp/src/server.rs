@@ -25,6 +25,18 @@
 //! than show an error. Answering with a success and stale data would be worse, and
 //! answering nothing at all leaves a client waiting.
 //!
+//! # The ordering rule on the write side
+//!
+//! ADR-0024 §2 stated salsa's obligation on the *reader* — snapshot per job, drop it on
+//! unwind — and not the matching one on this thread. [ADR-0032](../../../docs/adr/0032-write-before-queue.md):
+//! **every write for a notification happens before the snapshot that answers it.** A
+//! snapshot is bound to its revision and the next write cancels it, so a job dispatched
+//! before a write is a job racing that write. `Job::Diagnostics` answers a cancellation by
+//! publishing nothing, which is only correct when the canceller re-queues — `set_file_text`
+//! does, `set_workspace_roots` does not. Getting this backwards cost a client with no file
+//! watcher its diagnostics on open, 11 times in 16 on a loaded machine, for several waves
+//! behind the word "flaky".
+//!
 //! # What it does not do
 //!
 //! No request queue and no coalescing: jobs run in arrival order, one at a time. Two
@@ -61,7 +73,7 @@ pub struct ServerOptions {
 
 /// The capabilities this server advertises, under a negotiated encoding.
 ///
-/// Nine now. Each is advertised only where it is implemented for every case a client may
+/// Twelve now. Each is advertised only where it is implemented for every case a client may
 /// send: advertising one that answers "nothing" for half its inputs is worse than not
 /// advertising it, because the client stops offering the user an alternative.
 #[must_use]
@@ -92,6 +104,31 @@ pub fn capabilities(encoding: Encoding) -> ServerCapabilities {
             prepare_provider: Some(true),
             work_done_progress_options: lsp_types::WorkDoneProgressOptions::default(),
         })),
+        // The kinds are listed rather than left to `Some(true)` so a client can put
+        // "organise imports" on a menu of its own — several do, and an unlisted kind is
+        // reachable only through the generic lightbulb.
+        code_action_provider: Some(lsp_types::CodeActionProviderCapability::Options(
+            lsp_types::CodeActionOptions {
+                code_action_kinds: Some(vec![
+                    lsp_types::CodeActionKind::QUICKFIX,
+                    lsp_types::CodeActionKind::REFACTOR_REWRITE,
+                    lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
+                ]),
+                // No `codeAction/resolve`: every action here carries its edit already. An
+                // edit computed lazily would be computed against a later revision than the
+                // one the user was looking at.
+                resolve_provider: Some(false),
+                work_done_progress_options: lsp_types::WorkDoneProgressOptions::default(),
+            },
+        )),
+        signature_help_provider: Some(lsp_types::SignatureHelpOptions {
+            // `(` opens the help and `,` moves to the next parameter. `)` is deliberately
+            // absent as a *trigger*: the call is finished there.
+            trigger_characters: Some(vec![String::from("("), String::from(",")]),
+            retrigger_characters: None,
+            work_done_progress_options: lsp_types::WorkDoneProgressOptions::default(),
+        }),
+        inlay_hint_provider: Some(OneOf::Left(true)),
         ..ServerCapabilities::default()
     }
 }
@@ -218,7 +255,26 @@ pub fn run_stdio(options: &ServerOptions) -> Result<(), Box<dyn std::error::Erro
                 }
                 // A write. It happens on this thread, and salsa cancels whatever the
                 // worker had in flight against the previous revision.
-                if let Some(file) = apply(&mut db, &notification) {
+                let touched = apply(&mut db, &notification);
+
+                // **Every write first, then one snapshot, then the job.** The order is the
+                // whole point, and getting it wrong is how `didOpen` silently published no
+                // diagnostics at all.
+                //
+                // A snapshot is bound to the revision it was taken in, and the *next* write
+                // cancels every reader still holding an older one. `Job::Diagnostics`
+                // answers a cancellation by publishing nothing — correctly, because the
+                // write that cancelled it normally queues a replacement. `set_workspace_roots`
+                // is the writer that does **not**: it is the workspace list changing, not the
+                // file, so nothing re-queues, and the diagnostics for the file the user just
+                // opened are never published.
+                //
+                // It reproduced 5 times in 12 under CPU load and 0 times in 12 idle — a race
+                // whose window is the walk between the snapshot and the set — which is why it
+                // survived several waves as "a flaky test" rather than being read as the
+                // user-visible bug it is: a real editor with no file watcher gets no
+                // diagnostics on open, on a loaded machine, some of the time.
+                if let Some(file) = touched {
                     // A file the workspace does not cover contributes its own directory as
                     // a root. A client that sends no `workspaceFolders` — or a user opening
                     // a scratch file outside the tree — would otherwise get a rename and a
@@ -227,10 +283,6 @@ pub fn run_stdio(options: &ServerOptions) -> Result<(), Box<dyn std::error::Erro
                     if adopt_root(&mut db, &mut roots, file) {
                         db.set_workspace_roots(&roots);
                     }
-                    let _ = jobs.send(Job::Diagnostics {
-                        db: Box::new(db.snapshot()),
-                        file,
-                    });
                 }
                 // The fallback for a client that cannot watch (ADR-0029 §2). Re-walking on
                 // every keystroke would be indefensible, so it is tied to open and save —
@@ -243,6 +295,13 @@ pub fn run_stdio(options: &ServerOptions) -> Result<(), Box<dyn std::error::Erro
                     )
                 {
                     db.set_workspace_roots(&roots);
+                }
+                // Only now, with no write left to cancel it.
+                if let Some(file) = touched {
+                    let _ = jobs.send(Job::Diagnostics {
+                        db: Box::new(db.snapshot()),
+                        file,
+                    });
                 }
             }
             Message::Response(_) => {}
@@ -388,6 +447,32 @@ enum Job {
         query: String,
         workspace: Arc<jr_db::WorkspaceFileList>,
     },
+    CodeActions {
+        db: Box<JairsDatabase>,
+        id: RequestId,
+        file: SourceFile,
+        range: lsp_types::Range,
+        /// The diagnostics the *client* holds for that range.
+        ///
+        /// Taken from the request rather than recomputed, because an action must appear
+        /// exactly where the user already sees a problem — and because a client may hold a
+        /// diagnostic from a revision this snapshot has moved past (ADR-0031 §4).
+        diagnostics: Vec<lsp_types::Diagnostic>,
+        /// Captured at dispatch: auto-import consults the discovered modules.
+        workspace: Arc<jr_db::WorkspaceFileList>,
+    },
+    SignatureHelp {
+        db: Box<JairsDatabase>,
+        id: RequestId,
+        file: SourceFile,
+        position: lsp_types::Position,
+    },
+    InlayHints {
+        db: Box<JairsDatabase>,
+        id: RequestId,
+        file: SourceFile,
+        range: lsp_types::Range,
+    },
     /// A request naming a file this server has never been told about.
     Unknown { id: RequestId },
 }
@@ -423,7 +508,14 @@ fn adopt_root(db: &mut JairsDatabase, roots: &mut Vec<PathBuf>, file: SourceFile
 fn needs_whole_workspace(method: &str) -> bool {
     matches!(
         method,
-        "textDocument/references" | "textDocument/rename" | "workspace/symbol"
+        "textDocument/references"
+            | "textDocument/rename"
+            | "workspace/symbol"
+            // Auto-import must know which discovered module exports the missing name, and
+            // discovery yields paths rather than loaded files (ADR-0031 §5). Without this
+            // the quick fix silently offers only modules the editor happens to have open,
+            // and an absent offer reads as "there is nothing to import".
+            | "textDocument/codeAction"
     )
 }
 
@@ -565,6 +657,48 @@ fn dispatch(db: &mut JairsDatabase, jobs: &Sender<Job>, request: Request) {
                     workspace: Arc::clone(&workspace),
                 })
         }
+        "textDocument/codeAction" => {
+            serde_json::from_value::<lsp_types::CodeActionParams>(request.params)
+                .ok()
+                .and_then(|params| {
+                    let file = file_of(db, &params.text_document.uri)?;
+                    Some(Job::CodeActions {
+                        db: Box::new(db.snapshot()),
+                        id: id.clone(),
+                        file,
+                        range: params.range,
+                        diagnostics: params.context.diagnostics,
+                        workspace: Arc::clone(&workspace),
+                    })
+                })
+        }
+        "textDocument/signatureHelp" => {
+            serde_json::from_value::<lsp_types::SignatureHelpParams>(request.params)
+                .ok()
+                .and_then(|params| {
+                    let file =
+                        file_of(db, &params.text_document_position_params.text_document.uri)?;
+                    Some(Job::SignatureHelp {
+                        db: Box::new(db.snapshot()),
+                        id: id.clone(),
+                        file,
+                        position: params.text_document_position_params.position,
+                    })
+                })
+        }
+        "textDocument/inlayHint" => {
+            serde_json::from_value::<lsp_types::InlayHintParams>(request.params)
+                .ok()
+                .and_then(|params| {
+                    let file = file_of(db, &params.text_document.uri)?;
+                    Some(Job::InlayHints {
+                        db: Box::new(db.snapshot()),
+                        id: id.clone(),
+                        file,
+                        range: params.range,
+                    })
+                })
+        }
         _ => None,
     };
     // Every request gets an answer, including one this server does not implement and one
@@ -609,9 +743,13 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
             let db = db.as_ref();
             let path = file.path(db);
             let computed = catch(|| handlers::diagnostics(db, file, search_paths, encoding));
-            // A cancelled diagnostics pass is simply not published: the write that
-            // cancelled it will queue another one, so there is nothing to report and
-            // nothing to apologise for.
+            // A cancelled diagnostics pass is not published — but that is only correct
+            // when a **re-queueing** writer cancelled it (ADR-0032 §2). `set_file_text`
+            // re-queues; `set_workspace_roots` does not, and this comment used to claim
+            // otherwise, which is how `didOpen` came to silently publish nothing at all
+            // for a client with no file watcher. What makes silence safe here is §1's
+            // ordering: the job is dispatched after every write, so nothing is left to
+            // cancel it except the next real edit.
             let Ok(items) = computed else { return };
             publish(out, path.as_ref(), items);
         }
@@ -779,6 +917,50 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
                 Some(file) => crate::completion::resolve_completion(db, file, search_paths, *item),
                 None => *item,
             });
+            answer(out, id, computed.map(serde_json::to_value));
+        }
+        Job::CodeActions {
+            db,
+            id,
+            file,
+            range,
+            diagnostics,
+            workspace,
+        } => {
+            let db = db.as_ref();
+            let computed = catch(|| {
+                crate::actions::code_actions(
+                    db,
+                    file,
+                    search_paths,
+                    encoding,
+                    range,
+                    &diagnostics,
+                    workspace.as_ref(),
+                )
+            });
+            answer(out, id, computed.map(serde_json::to_value));
+        }
+        Job::SignatureHelp {
+            db,
+            id,
+            file,
+            position,
+        } => {
+            let db = db.as_ref();
+            let computed =
+                catch(|| crate::hints::signature_help(db, file, search_paths, encoding, position));
+            answer(out, id, computed.map(serde_json::to_value));
+        }
+        Job::InlayHints {
+            db,
+            id,
+            file,
+            range,
+        } => {
+            let db = db.as_ref();
+            let computed =
+                catch(|| crate::hints::inlay_hints(db, file, search_paths, encoding, range));
             answer(out, id, computed.map(serde_json::to_value));
         }
     }

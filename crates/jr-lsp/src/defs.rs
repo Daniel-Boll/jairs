@@ -157,6 +157,16 @@ pub fn definition_at(
             body,
             local,
         }),
+        // An import is **not** a definition, so it has no `DefId` and this answers `None`
+        // (ADR-0035 consequences). It is reachable — goto-definition and hover both act on
+        // an import line — so the arm is deliberate rather than a gap.
+        //
+        // What would go wrong otherwise: `references` would report the import line as a
+        // declaration and `prepareRename` would offer to rename it, when renaming a module
+        // means editing its *file* and every other `#import` naming it. That is a real
+        // feature (§7 lists it) and it is not this one; answering here would half-implement
+        // it in a way that compiles.
+        crate::DeclSite::Import(_) => None,
     }
 }
 

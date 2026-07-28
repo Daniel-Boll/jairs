@@ -141,6 +141,27 @@ pub struct FileSignatures {
     /// walks these declarations, and every later consumer reads it instead of
     /// repeating it.
     foreign_libraries: FxHashMap<ProcId, PoolId>,
+    /// The module each *type* name in this file was resolved from, when it came
+    /// from an import.
+    ///
+    /// ADR-0031 §2 is why this exists, and it is worth stating what goes wrong
+    /// without it. `ResolveMap` covers `Expr::Name` and **only** `Expr::Name`; a
+    /// type annotation is a `TypeRef::Name`, resolved by this crate's
+    /// `Ctx::resolve_type_name` and recorded nowhere. So a consumer
+    /// asking "is this import used" from the resolve map alone answers *no* for
+    /// `#import "Shapes"` in a file whose only use of `Shapes` is `r: Rect` —
+    /// which `tests/corpus/imports/valid/001-import-directory-module.jr` is.
+    ///
+    /// Re-deriving the answer outside this crate would mean a second copy of
+    /// ADR-0014 §3's shadowing order, and a divergence would surface as a
+    /// warning telling the user to delete an import their program needs.
+    /// Recorded here for the same reason `foreign_libraries` is: the phase that
+    /// already resolved it is the only one that knows.
+    ///
+    /// Keyed by module name because that is what an `#import` item carries; a
+    /// name resolved to a builtin or to this file is deliberately absent rather
+    /// than recorded as "not an import".
+    type_name_imports: FxHashMap<jr_base::Symbol, String>,
 }
 
 impl FileSignatures {
@@ -181,6 +202,18 @@ impl FileSignatures {
     #[must_use]
     pub fn foreign_library(&self, proc: ProcId) -> Option<PoolId> {
         self.foreign_libraries.get(&proc).copied()
+    }
+
+    /// Every module this file resolved a *type* name from, in no particular order.
+    ///
+    /// The other half of what "is this import used" needs, the first half being
+    /// `ResolveMap`'s `Res::Imported` — which covers `Expr::Name` and **only**
+    /// `Expr::Name`, so a type annotation naming an imported struct is invisible to
+    /// it. ADR-0031 §2 has the failure that motivated recording this: without it,
+    /// a file whose only use of an import is `r: Rect` gets a warning telling the
+    /// user to delete an import their program needs.
+    pub fn modules_used_in_type_position(&self) -> impl Iterator<Item = &str> {
+        self.type_name_imports.values().map(String::as_str)
     }
 
     /// The number of named declarations. Non-zero for any file that declares
@@ -236,5 +269,18 @@ impl FileSignatures {
     /// Records a `#foreign` procedure's resolved library.
     pub(crate) fn insert_foreign_library(&mut self, proc: ProcId, library: PoolId) {
         self.foreign_libraries.insert(proc, library);
+    }
+
+    /// Records that a type name resolved to a declaration in an imported module.
+    pub(crate) fn insert_type_name_import(&mut self, name: jr_base::Symbol, module: &str) {
+        self.type_name_imports.insert(name, module.to_owned());
+    }
+
+    /// The names this file declares, for a "did you mean" suggestion.
+    ///
+    /// Returns symbols rather than strings because the caller has the interner and
+    /// this crate's diagnostics resolve names through it anyway.
+    pub(crate) fn declared_names(&self) -> impl Iterator<Item = jr_base::Symbol> {
+        self.names.keys().copied()
     }
 }

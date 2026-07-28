@@ -154,6 +154,27 @@ if config then
       client.root_dir
     )
 
+    -- The binary the client actually launched, and *which* one. A fixed preference for
+    -- `target/release` is how a stale release build silently serves an editor while the
+    -- developer tests a debug build they just made: the session looks like the change had
+    -- no effect and nothing says which binary answered. `PLAN.md` §7 carries it as a trap
+    -- because it has cost real time twice. The rule is now "whichever is newer", so this
+    -- asserts the launched path is in fact the newest of the two that exist.
+    local launched = client.config.cmd[1]
+    local newest, newest_time = nil, -1
+    for _, profile in ipairs({ "release", "debug" }) do
+      local candidate = root .. "/target/" .. profile .. "/jr"
+      local stat = vim.uv.fs_stat(candidate)
+      if stat and stat.mtime.sec > newest_time then
+        newest, newest_time = candidate, stat.mtime.sec
+      end
+    end
+    check(
+      "the server launched is the most recently built one, not a stale profile",
+      newest == nil or launched == newest or vim.fn.exepath("jr") ~= "",
+      launched .. " (newest is " .. tostring(newest) .. ")"
+    )
+
     -- Asserting the *text* of each hover, not merely that one arrived: a server that
     -- answered every hover with an empty string would pass the weaker check.
     --
@@ -424,6 +445,189 @@ if config then
       hits and #hits > 0 and tostring(hits[1].location.uri):find("Basic") ~= nil,
       hits and vim.inspect(hits[1])
     )
+
+    -- ---- code actions, signature help, inlay hints (ADR-0031) ---------------
+
+    for _, capability in ipairs({
+      "codeActionProvider",
+      "signatureHelpProvider",
+      "inlayHintProvider",
+    }) do
+      local advertised = client.server_capabilities[capability]
+      check(
+        "advertises " .. capability,
+        advertised ~= nil and advertised ~= false,
+        vim.inspect(advertised)
+      )
+    end
+    check(
+      "the organise-imports kind is listed, so a client can put it on its own menu",
+      vim.tbl_contains(
+        (client.server_capabilities.codeActionProvider or {}).codeActionKinds or {},
+        "source.organizeImports"
+      ),
+      vim.inspect(client.server_capabilities.codeActionProvider)
+    )
+
+    -- Line 28 (0-based) is `    sum := add(p.x, p.y);`. Character 20 is inside the second
+    -- argument. Stated because the last wave's two "server bugs" in these checks were both
+    -- an off-by-one here rather than anything in the server.
+    local help = request("textDocument/signatureHelp", {
+      textDocument = doc,
+      position = { line = 28, character = 20 },
+    })
+    check(
+      "signatureHelp names the procedure being called",
+      help
+        and help.signatures
+        and help.signatures[1]
+        and help.signatures[1].label == "add :: (a: s64, b: s64) -> s64",
+      vim.inspect(help)
+    )
+    check(
+      "signatureHelp marks the argument the cursor is in",
+      help and help.signatures and help.signatures[1] and help.signatures[1].activeParameter == 1,
+      help and help.signatures and vim.inspect(help.signatures[1])
+    )
+
+    -- Inlay hints over the whole file. `sum := add(p.x, p.y)` must get `: s64`, and
+    -- `COMPUTED :: #run add(2, 3)` must get `= 5` — the hint that makes compile-time
+    -- execution visible, which is the one nothing outside this project can offer.
+    local hints = request("textDocument/inlayHint", {
+      textDocument = doc,
+      range = {
+        start = { line = 0, character = 0 },
+        ["end"] = { line = 60, character = 0 },
+      },
+    })
+    local labels = {}
+    for _, hint in ipairs(hints or {}) do
+      labels[#labels + 1] = type(hint.label) == "string" and hint.label or vim.inspect(hint.label)
+    end
+    check(
+      "an inferred local gets a type hint",
+      vim.tbl_contains(labels, ": s64"),
+      vim.inspect(labels)
+    )
+    check(
+      "a #run constant shows the value the VM computed",
+      vim.tbl_contains(labels, " = 5"),
+      vim.inspect(labels)
+    )
+
+    -- A code action on a file that needs one: `print` with no `#import "Basic";`.
+    local needs_import = vim.fn.tempname() .. ".jr"
+    vim.fn.writefile({ "main :: () {", '    print("hi\\n");', "}" }, needs_import)
+    vim.cmd.edit(vim.fn.fnameescape(needs_import))
+    local importing = vim.api.nvim_get_current_buf()
+    -- Wait for the diagnostic first: a code-action request carries the client's own
+    -- diagnostics, so asking before they land would test nothing.
+    vim.wait(20000, function()
+      return #vim.diagnostic.get(importing) > 0
+    end, 100)
+    local unresolved = vim.diagnostic.get(importing)[1]
+    local action_result
+    vim.lsp.buf_request(importing, "textDocument/codeAction", {
+      textDocument = vim.lsp.util.make_text_document_params(importing),
+      range = {
+        start = { line = 1, character = 4 },
+        ["end"] = { line = 1, character = 9 },
+      },
+      context = {
+        diagnostics = unresolved
+            and {
+              {
+                range = {
+                  start = { line = 1, character = 4 },
+                  ["end"] = { line = 1, character = 9 },
+                },
+                message = unresolved.message,
+                code = unresolved.code,
+                severity = 1,
+              },
+            }
+          or {},
+      },
+    }, function(_, response)
+      action_result = response or false
+    end)
+    vim.wait(20000, function()
+      return action_result ~= nil
+    end, 50)
+    local action_titles = {}
+    for _, action in ipairs(action_result or {}) do
+      action_titles[#action_titles + 1] = action.title
+    end
+    check(
+      "an unresolved name offers an import of the module that exports it",
+      vim.tbl_contains(action_titles, "import `Basic` for `print`"),
+      vim.inspect(action_titles)
+    )
+
+    -- Goto-definition on the `#import` line, at **every** column. It answered nothing at
+    -- all until ADR-0035: an import is lowered with `name: None`, and `locate_declaration`
+    -- skipped nameless items to keep a top-level `#run` from matching, so the one
+    -- declaration in the language that names another *file* was the one you could not
+    -- follow. Line 9 (0-based) of `024-hello.jr` is `#import "Basic";`.
+    local import_line = 9
+    local import_len = #(vim.api.nvim_buf_get_lines(buf, import_line, import_line + 1, false)[1] or "")
+    local reached, missed = 0, nil
+    for column = 0, import_len - 1 do
+      local target = request("textDocument/definition", {
+        textDocument = doc,
+        position = { line = import_line, character = column },
+      })
+      local uri = target and (target.uri or (target[1] and target[1].uri))
+      if uri and tostring(uri):find("modules/Basic/module.jr") then
+        reached = reached + 1
+      else
+        missed = missed or column
+      end
+    end
+    check(
+      "goto-definition on an #import works at every column of the line",
+      reached == import_len,
+      "reached " .. reached .. "/" .. import_len .. ", first miss at column " .. tostring(missed)
+    )
+    check(
+      "hovering an #import names the resolved module file",
+      (function()
+        local h = request("textDocument/hover", {
+          textDocument = doc,
+          position = { line = import_line, character = 3 },
+        })
+        local value = h and h.contents and h.contents.value or ""
+        -- The resolved path is the part worth hovering for: `#import "Basic"` does not say
+        -- *which* `Basic` (ADR-0035 §2).
+        return value:find("modules/Basic/module.jr", 1, true) ~= nil
+      end)()
+    )
+
+    -- A standalone file in a directory with no `.git` and no `modules/`: the case a marker
+    -- list cannot answer. Before the `root_dir` fallback this attached with `root_dir=nil`,
+    -- which means an empty workspace — so `references` reported only the declaration and
+    -- `rename` would have edited only the open buffer. Three capabilities returning a
+    -- confident wrong answer, and nothing on screen saying so.
+    local loose_dir = vim.fn.tempname()
+    vim.fn.mkdir(loose_dir, "p")
+    local loose = loose_dir .. "/loose.jr"
+    vim.fn.writefile({ "solo :: (a: s64) -> s64 {", "    return a;", "}" }, loose)
+    vim.cmd.edit(vim.fn.fnameescape(loose))
+    local loose_buf = vim.api.nvim_get_current_buf()
+    local loose_attached = vim.wait(20000, function()
+      return #vim.lsp.get_clients({ bufnr = loose_buf }) > 0
+    end, 100)
+    check("a .jr file outside any project still attaches", loose_attached)
+    if loose_attached then
+      local loose_client = vim.lsp.get_clients({ bufnr = loose_buf })[1]
+      check(
+        "a file with no project marker still gets a workspace root",
+        loose_client.root_dir ~= nil and loose_client.root_dir ~= vim.NIL,
+        vim.inspect(loose_client.root_dir)
+      )
+    end
+    vim.cmd.edit(vim.fn.fnameescape(sample))
+    buf = vim.api.nvim_get_current_buf()
 
     -- Diagnostics, on a file written to be wrong. Published as a notification, so this
     -- waits for them to land rather than requesting them.

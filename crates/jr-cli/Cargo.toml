@@ -27,6 +27,8 @@ jr-hir.workspace = true
 jr-syntax.workspace = true
 jr-fmt.workspace = true
 jr-lsp.workspace = true
+# `jr bench` builds the `Range` a code-action request carries (ADR-0033 §3).
+lsp-types.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 tempfile = "3"

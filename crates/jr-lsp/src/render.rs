@@ -229,6 +229,18 @@ impl Decl<'_> {
             )
     }
 
+    /// A constant's computed value as source-like text, if it has one.
+    ///
+    /// The inlay-hint caller's entry point (ADR-0031 §7). Public where `value_text`
+    /// is private because a hint needs the value *alone*, without the `NAME :: type =`
+    /// framing a card puts around it — and ADR-0028 §1 requires that both come from here
+    /// rather than a hint formatting a `PoolId` itself.
+    #[must_use]
+    pub fn value_of(&self, item: ItemId) -> Option<String> {
+        let value = self.consts?.item(item)?;
+        self.value_text(value)
+    }
+
     /// A constant's value as source-like text, or `None` if it is not a scalar.
     ///
     /// Deliberately narrow: an aggregate constant would need the layout rules to print,
@@ -266,6 +278,40 @@ impl Decl<'_> {
     /// [`type_name`] with this card's pool and signatures.
     fn type_name_of(&self, ty: PoolId) -> String {
         type_name(self.pool, self.sigs, ty)
+    }
+}
+
+/// The card for an `#import` line: the declaration, where it resolved, and the module's
+/// own `//!` documentation.
+///
+/// A free function rather than a [`Decl`] method because none of [`Decl`]'s fields apply —
+/// an import has no type, no signature and no `///` of its own. What it has is a *resolved
+/// path*, which only the caller knows, having done the lookup.
+///
+/// # Why the path is the point
+///
+/// `#import "Basic"` does not say **which** `Basic`. ADR-0014's search-path order decides,
+/// so the answer depends on how the server was configured — and that is the one question the
+/// line cannot answer for itself (ADR-0035 §2). The module's `//!` block comes along because
+/// `file_docs` has collected it since ADR-0027 §2 and nothing has ever shown it.
+///
+/// `found` is `None` for a module that did not resolve. The card then says so rather than
+/// rendering nothing: E0210 already reports the error, and a hover that vanishes next to a
+/// diagnostic reads as a second, unrelated failure.
+#[must_use]
+pub fn import_card(module: &str, found: Option<&std::path::Path>, docs: Option<&str>) -> Card {
+    let mut body = match found {
+        Some(path) => format!("{}", path.display()),
+        None => String::from("not found on any module search path"),
+    };
+    if let Some(docs) = docs {
+        body.push_str("\n\n");
+        body.push_str(docs);
+    }
+    Card {
+        container: String::from("module"),
+        signature: format!("#import \"{module}\""),
+        docs: Some(body),
     }
 }
 

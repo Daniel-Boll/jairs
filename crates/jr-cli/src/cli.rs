@@ -107,6 +107,14 @@ pub enum Command {
     /// W9's (`PLAN.md` §2.1).
     Lsp(LspArgs),
 
+    /// Measure how long language-server requests take on a file.
+    ///
+    /// Prints min / median / p95 for each operation in three cache states: cold (a fresh
+    /// database), warm (memoized), and after a whitespace-only edit. **Reports, never
+    /// judges** — there is no threshold and no failure (ADR-0033 §4). This is not one of
+    /// the six gates.
+    Bench(BenchArgs),
+
     /// Debug aid: parse a single file and display its structure.
     ///
     /// Without flags, prints a summary (token count, node count, diagnostic
@@ -207,4 +215,28 @@ pub struct LspArgs {
     /// guessing a search path silently changes which module a program means.
     #[arg(long = "module-path", value_name = "DIR")]
     pub module_path: Vec<std::path::PathBuf>,
+}
+
+/// Arguments for `jr bench`.
+#[derive(Debug, Args)]
+pub struct BenchArgs {
+    /// The `.jr` file to measure requests against.
+    ///
+    /// One file rather than a set: the measurement is per-request latency, and the question
+    /// ADR-0033 exists to answer is what one request costs.
+    pub file: std::path::PathBuf,
+
+    /// How many times to run each operation in each cache state.
+    ///
+    /// Twenty by default, which is enough for a median to mean something and small enough
+    /// that a cold run — a fresh database per iteration — finishes promptly.
+    #[arg(long, default_value_t = 20, value_name = "N")]
+    pub iterations: usize,
+
+    /// Extra directories to search for `#import`ed modules.
+    ///
+    /// Same meaning as `jr check --module-path`, and passed for the same reason: guessing a
+    /// search path silently changes which module a program means.
+    #[arg(long = "module-path", value_name = "DIR")]
+    pub module_paths: Vec<std::path::PathBuf>,
 }

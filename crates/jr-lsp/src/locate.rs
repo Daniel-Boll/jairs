@@ -148,6 +148,15 @@ pub fn item_name_span(hir: &FileHir, item: jr_hir::ItemId) -> Option<Span> {
 pub enum DeclSite {
     /// A file-level declaration: a procedure, struct, constant, variable or import.
     Item(jr_hir::ItemId),
+    /// An `#import "Name";` declaration, matched anywhere on its line.
+    ///
+    /// Separate from [`DeclSite::Item`] because an import has no name — `jr-hir` lowers it
+    /// with `name: None`, correctly, since ADR-0014's flat merge means an import declares
+    /// nothing in the file's scope. That is exactly why it needs its own variant: the
+    /// `name.is_some()` guard in [`locate_declaration`] exists to keep a top-level `#run`
+    /// from matching, and an import was caught by a guard aimed at something else
+    /// (ADR-0035 §4).
+    Import(jr_hir::ItemId),
     /// A parameter, in the procedure that declares it.
     Param {
         /// The declaring procedure.
@@ -175,8 +184,15 @@ pub enum DeclSite {
 #[must_use]
 pub fn locate_declaration(hir: &FileHir, offset: TextSize) -> Option<DeclSite> {
     for (index, item) in hir.items.iter().enumerate() {
-        // An unnamed item — a top-level `#run` — has a `name_span` that is not a name.
-        // Skipped rather than matched, or hovering `#run` would render the item that
+        // An `#import` is matched over its **whole span**, not its name span — it has no
+        // name, and the line has one meaning with no sub-parts worth distinguishing, so a
+        // cursor anywhere on it means the same thing (ADR-0035 §1). Checked before the
+        // named-item arm because the guard there would reject it.
+        if matches!(item.kind, jr_hir::ItemKind::Import { .. }) && contains(item.span, offset) {
+            return Some(DeclSite::Import(jr_hir::ItemId::from_usize(index)));
+        }
+        // Any other unnamed item — a top-level `#run` — has a `name_span` that is not a
+        // name. Skipped rather than matched, or hovering `#run` would render the item that
         // happens to be at that index.
         if item.name.is_some() && contains(item.name_span, offset) {
             return Some(DeclSite::Item(jr_hir::ItemId::from_usize(index)));

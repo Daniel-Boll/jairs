@@ -686,6 +686,7 @@ dependencies = [
  "jr-link",
  "jr-lsp",
  "jr-syntax",
+ "lsp-types",
  "serde_json",
  "tempfile",
 ]

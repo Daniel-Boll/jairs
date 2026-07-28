@@ -78,6 +78,12 @@ pub struct CheckResult {
     pub types: Arc<TypeMap>,
     /// Diagnostics from checking bodies, `#run` items, and foreign bindings.
     pub diagnostics: Arc<Diagnostics>,
+    /// Modules a type annotation inside a body named a type from.
+    ///
+    /// Carried through from `jr-sema` so that [`crate::unused_imports`] can see a local's
+    /// annotation, which `ResolveMap` cannot (ADR-0031 §2). The signature phase's half of
+    /// the same answer lives on `FileSignatures`.
+    pub type_name_imports: Arc<[String]>,
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +234,7 @@ pub fn checked(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) -
     CheckResult {
         types: Arc::new(types),
         diagnostics: Arc::new(output.diagnostics),
+        type_name_imports: Arc::from(output.type_name_imports),
     }
 }
 

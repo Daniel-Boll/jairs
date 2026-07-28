@@ -17,8 +17,9 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after the **references and rename** wave. 790 workspace tests; six CI gates
-green on macOS arm64, plus 53 Neovim checks that are verified rather than gated.
+Last updated after the **`#import` navigation** wave (ADR-0035). 837 workspace
+tests; six CI gates green on macOS arm64, plus 67 Neovim checks that are verified rather than
+gated.
 
 ### What you can actually do
 
@@ -26,14 +27,15 @@ green on macOS arm64, plus 53 Neovim checks that are verified rather than gated.
 |---|---|---|
 | Compile and run a program in the comptime VM | `jr run file.jr` | Register bytecode interpreter, no JIT tier |
 | Compile to a native executable | `jr build file.jr -o out` | arm64 macOS verified; x86-64 Linux configured in CI but **never run** |
-| Get rustc-grade diagnostics | `jr check file.jr` | 59 codes across lexer, parser, HIR, sema, MIR and const-eval |
+| Get rustc-grade diagnostics | `jr check file.jr` | 61 codes across lexer, parser, HIR, sema, MIR and const-eval. E0218 and E0212 suggest a near name; E0231 is the one *warning* — an unused `#import` |
 | Format source canonically | `jr fmt [--check] paths…` | The corpus is canonical under it, CI-enforced |
 | Inspect tokens or the CST | `jr parse file.jr` | Debug aid |
+| Measure language-server latency | `jr bench file.jr` | Reports min/median/p95 cold, warm and after an edit. **Reports, never judges** — no threshold, not a gate (ADR-0033) |
 | Call libc from Jairs | `#foreign` / `#system_library` | Through libffi at comptime, a real call natively |
 | Fold a compile-time call | `COMPUTED :: #run add(2, 3)` | One *trivial* `#run`: a call or a constant expression, same file only |
 | Import a module | `#import "Basic";` | One module = one file, flat imports, cycles legal |
-| Edit in Neovim, with highlighting, diagnostics, hover, goto-definition and completion | `editors/nvim/` | Two lines in `init.lua` and one build script; no plugin manager. Neovim **0.11+**. See [`editors/nvim/README.md`](editors/nvim/README.md) |
-| Get the same in another editor | `jr lsp` | Speaks LSP 3.17 over stdio; **no VS Code extension ships yet**, so you wire it up yourself |
+| Edit in Neovim, with highlighting, diagnostics, hover, goto-definition, completion, rename, code actions, signature help and inlay hints | `editors/nvim/` | Two lines in `init.lua` and one build script; no plugin manager. Neovim **0.11+** — every capability is on a stock 0.11 default binding (`K`, `gd`, `gra`, `grn`, `grr`, `gO`, `<C-s>`), so there are no keymaps to add. Works on a standalone `.jr` file too, not only inside a checkout. See [`editors/nvim/README.md`](editors/nvim/README.md) |
+| Use any other LSP editor | `jr lsp` | Speaks LSP 3.17 over stdio. The repository packages for Neovim only and **will not ship a VS Code extension** (ADR-0036) — point your client at the command yourself |
 
 ### The language today
 
@@ -82,19 +84,26 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
 | salsa incremental database | **Works** | Built *and* optimized MIR staged (ADR-0021 §1); invalidation is at file grain |
 | Differential harness | **Works** | Compares stdout, stderr and exit status of both engines as subprocesses |
 | LLVM back end | **Not started** | Wave W8 |
-| Language server | **Works** | `jr lsp`, nine capabilities: diagnostics, hover, goto-definition, completion + resolve, references, documentHighlight, rename (workspace-wide, refuses rather than half-renaming), documentSymbol, workspaceSymbol (ADR-0024, ADR-0028, ADR-0030). No code actions, inlay hints or `signatureHelp` |
-| Neovim integration | **Works** | `editors/nvim/` (ADR-0025), verified against the real editor by a 53-check script — **not** by CI, which has no Neovim |
-| VS Code integration | **Not started** | The server is ready; nothing launches it |
+| Language server | **Works** | `jr lsp`, twelve capabilities: diagnostics, hover, goto-definition, completion + resolve, references, documentHighlight, rename (workspace-wide, refuses rather than half-renaming), documentSymbol, workspaceSymbol, code actions, `signatureHelp`, inlay hints (ADR-0024, ADR-0028, ADR-0030, ADR-0031). Dispatches a read only after every write, because the reverse silently lost `didOpen`'s diagnostics (ADR-0032). No semantic tokens |
+| Neovim integration | **Works** | `editors/nvim/` (ADR-0025), verified against the real editor by a 67-check script — **not** by CI, which has no Neovim |
+| VS Code integration | **Will not be built** | ADR-0036: the maintainer does not use it, and a packaging target for an unused editor rots. `jr lsp` is editor-agnostic, so any LSP client works |
 | Compilation driver / workspaces | **Partly** | `jr-driver` is still a one-line stub; the workspace *file list* exists in `jr-db::workspace` (ADR-0029): the search paths plus the root tree, walked and watched, bounded at 10 000 files |
 | Debug info | **Not started** | No DWARF at all; a native binary is not debuggable |
 | Optimisation levels | **Not started** | No `--release`, no `opt_level`; one code path |
 
 ### Things it is easy to over-read
 
-- **No published performance number.** ADR-0019 §6 says a number taken without a
-  mid-end measures the missing mid-end. The mid-end now exists, so a number is finally
-  honest to take — and it has not been taken. Nothing in this repo has been benchmarked
-  against anything.
+- **There is still no published *compile-throughput* number.** ADR-0019 §6 says a number
+  taken without a mid-end measures the missing mid-end; the mid-end now exists, so one is
+  finally honest to take, and it has not been taken. What *has* been measured is
+  language-server latency (`jr bench`, ADR-0033) — a different question, and no substitute.
+- **The latency numbers, so they are not overstated.** On a synthetic 36 000-line, 302-file
+  workspace: every operation is under **1 ms** cold except `references` and `rename`, which
+  cost **55 ms** because they parse the workspace, and `workspace_load` at **41 ms**. A
+  40-line corpus file puts everything under 0.6 ms. These are one machine, one synthetic
+  tree, and a floor rather than a promise. `jr bench` also reports two rows that are not
+  client requests — `parse_all_files` and `resolve_all_files` — because they are what turned
+  "references is slow" into "parsing is slow" (ADR-0034).
 - **The two engines agreeing is *tested*, not assumed.** They share MIR, which makes
   agreement likely; `crates/jr-cli/tests/differential.rs` is what makes it checked.
   Both of this project's silent miscompiles were places where a plausible argument
@@ -115,12 +124,17 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
 - **ADR-0002's arithmetic has two implementations, not one.** `jr-pool` owns the one
   both *evaluators* share; `jr-codegen-clif` keeps its own because it emits code rather
   than evaluating. The pair is held equal by `differential.rs` and nothing else.
-- **Neovim integration is verified on one machine, not gated.** The 53 checks need an
+- **Neovim integration is verified on one machine, not gated.** The 67 checks need an
   editor, and Neovim is not a build dependency of this workspace, so `cargo test` cannot
-  run them. VS Code has nothing at all.
+  run them. No other editor is packaged for, deliberately (ADR-0036).
 - **The tree-sitter parser must be rebuilt after a grammar change**, and highlighting
   fails *silently* if you forget — `ftplugin` starts tree-sitter under `pcall`, because a
   missing parser is an ordinary state rather than an error.
+- **Hover on an `#import` shows which file it resolved to**, because `#import "Basic"` does
+  not say *which* `Basic` — the module search-path order decides, so the answer depends on how
+  the server was configured. It also shows the module's `//!` documentation. Both were
+  unreachable before ADR-0035, behind an `ItemKind::Import` arm whose comment claimed
+  otherwise.
 - **Hover does not work on a type annotation.** The `Point` in `p: Point` gets nothing,
   and no care in the language server can fix it: `jr_hir::TypeRef::Name` carries a symbol
   and no span, so there is no position to match a cursor against. A test pins the
@@ -128,12 +142,13 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
 - **Completion's idea of scope is "declared earlier in this body"**, not block scope. It
   over-offers — a local from a sibling block that has already closed — and never
   under-offers, which is the direction that would make the list feel broken.
-- **No language-server operation has a latency number.** Hover and completion run an
-  O(nodes) scan per request to turn an offset into a node; on top of that the first
-  `references`, `rename` or `workspaceSymbol` **reads and parses every file in the
-  workspace**, because ADR-0029 §3 discovers paths rather than loading files. Three
-  features now want the measurement ADR-0013 named as its own trigger, and it has still not
-  been taken.
+- **`references` and `rename` cost 55 ms on their first call, and a reverse index would not
+  help.** Both scan every workspace file, because ADR-0029 §3 discovers paths rather than
+  loading them — but the split says where the time goes: **31 ms parsing, 24 ms lowering and
+  resolving, 0.5 ms actually searching**. It is a cold-start cost paid once per session, and
+  an index would have optimised the last 1% (ADR-0034) — which is what the previous handoff
+  had already promised to build. Warm it is 0.53 ms, and 0.10 ms after an edit. The live lead,
+  if this ever matters, is parsing the files in parallel.
 - **A rename can refuse, and it will.** It refuses on a name collision, on a syntax error in
   any file it would edit, on a non-identifier, and when the workspace exceeded 10 000 files.
   That is deliberate (ADR-0030 §3) — a rename that half-completes leaves a broken build, and
@@ -144,6 +159,26 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
   first is an approximation, the second is not.
 - **Nothing checks that a doc comment is true**, and nothing but the language server reads
   one. There are no doc tests and no `jr doc`.
+- **A "did you mean" suggestion is a guess, and stays silent rather than guessing badly.**
+  E0218 and E0212 offer the nearest field or type name within an edit distance that scales
+  with length — and *nothing* for a name under three characters, because at that length every
+  identifier is within reach of every other and the suggestion would carry no information.
+  A missing suggestion is the common case.
+- **The unused-import warning is a language-design position, not a lint.** Jai does not warn
+  about one; Jairs does, because ADR-0014's flat import merge means an unused import silently
+  enlarges the name space every identifier resolves against, and can turn a later declaration
+  into an ambiguity error from a module the file never uses. It is deliberately conservative:
+  an import is reported only when nothing in the file uses a name it provides, in either
+  expression *or* type position.
+- **A "flaky test" turned out to be a real bug that lost your diagnostics.** For several
+  waves `opening_a_broken_file_publishes_diagnostics` hung intermittently and was recorded as
+  flaky. It was not: the server queued the diagnostics job and *then* re-walked the workspace,
+  and that write cancelled the job, which published nothing because a comment claimed the
+  canceller would queue a replacement — true of an edit, false of a re-walk. Any client
+  without a file watcher, which includes a plain `nvim`, silently got no diagnostics on open.
+  Fixed and pinned by ADR-0032: **11 failures in 16 loaded runs before, 0 in 16 after**. It
+  stayed hidden because it never reproduced on an idle machine, and because a test with no
+  timeout does not fail — it waits.
 - **Nothing here is self-hosted.** The compiler is Rust; only `modules/Basic` is Jairs.
 
 ---

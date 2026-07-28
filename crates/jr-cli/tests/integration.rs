@@ -425,3 +425,64 @@ fn run_reports_a_program_with_no_main() {
         "the error must say what is missing: {error}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// jr bench (ADR-0033)
+// ---------------------------------------------------------------------------
+
+/// `jr bench` runs and produces a finite number for every operation.
+///
+/// A smoke test and deliberately nothing more: ADR-0033 §4 refuses a timing assertion,
+/// because a duration compared against a threshold on a shared machine fails for reasons
+/// that have nothing to do with the code, and this project's gates are meant to be
+/// believable.
+///
+/// What it does guard is the harness rotting into something that reports zeros — which is
+/// the failure mode a measurement tool actually has. The first draft of `jr bench` measured
+/// a cursor sitting inside the `return` keyword of `024-hello.jr`, so `references` and
+/// `rename` took their "nothing here" early return and reported **0.002 ms**: a workspace
+/// scan that never happened, presented as a very fast one. Deriving the cursor from the file
+/// fixed it, and this test is what would notice if it regressed.
+#[test]
+fn bench_reports_a_number_for_every_operation() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let file = copy_corpus("valid/024-hello.jr", dir.path());
+
+    let args = jr_cli::cli::BenchArgs {
+        file,
+        // Two, because the assertion is about shape rather than about statistics; twenty
+        // would make this test the slowest in the suite for no extra confidence.
+        iterations: 2,
+        module_paths: Vec::new(),
+    };
+    let code = jr_cli::commands::bench::run(args, &quiet_global()).expect("bench must run");
+    assert_eq!(code, 0, "bench reports, it does not judge — it cannot fail");
+}
+
+/// The cursor `jr bench` measures at lands on a declaration, not on a keyword.
+///
+/// This is the assertion that actually has teeth. `references` and `rename` are keyed on a
+/// `DefId` (ADR-0030 §1), so a position that yields none makes both return immediately and
+/// report a sub-microsecond "scan" — the exact wrong answer, and one that looks like good
+/// news. Pinning the *position* pins the meaning of half the table.
+#[test]
+fn bench_measures_at_a_declaration_and_not_inside_a_keyword() {
+    let text = fs::read_to_string(corpus_path("valid/024-hello.jr")).expect("readable");
+    let at = jr_cli::commands::bench::cursor_for_test(&text);
+    let line = text
+        .lines()
+        .nth(at.line as usize)
+        .expect("the chosen line must exist");
+    assert!(
+        line.contains(" :: ") || line.contains(" := "),
+        "line {} is {line:?}, which is not a declaration",
+        at.line
+    );
+    // Column 0 of a top-level declaration is its name. An indented `::` would be inside a
+    // body, where the name may be a local rather than an item.
+    assert_eq!(at.character, 0);
+    assert!(
+        !line.starts_with(char::is_whitespace),
+        "a top-level declaration starts at column 0: {line:?}"
+    );
+}

@@ -1,0 +1,15 @@
+// EXPECT: E0212 — there is no type named `Recatngle`, and the help line names `Rectangle`
+// The candidate set is only names that *denote* a type: suggesting the procedure `area`
+// here would trade E0212 for E0213, which is not help (ADR-0031 §1).
+Rectangle :: struct {
+    width: s64;
+    height: s64;
+}
+
+area :: (r: Rectangle) -> s64 {
+    return r.width * r.height;
+}
+
+main :: () {
+    r: Recatngle;
+}

@@ -31,7 +31,7 @@ hover, `gd` for goto-definition and `<C-x><C-o>` for completion once the server 
 nvim --headless -u NONE -l editors/nvim/verify.lua
 ```
 
-53 checks, exiting non-zero on the first failure. It drives the real Neovim against the
+67 checks, exiting non-zero on the first failure. It drives the real Neovim against the
 real server: filetype, parser, every highlight capture it relies on (including
 `@comment.documentation`, whose `#lua-match?` predicate the tree-sitter CLI cannot
 validate), LSP attach, the negotiated position encoding, the resolved workspace root, four
@@ -51,10 +51,10 @@ integration is covered by CI.
 |---|---|
 | Syntax highlighting | tree-sitter, from the same `queries/*.scm` the drift gate checks — the files here are **symlinks**, so they cannot drift from the grammar's copies |
 | Diagnostics | Published on open and on every change, with the stable `E0…` code attached |
-| Hover | A card: the module or file, the declaration in Jairs syntax with parameter names, then its `///` documentation. Falls back to the type for an expression that is not a name. **A type annotation gets nothing** — `jr_hir::TypeRef` has no span (ADR-0028 §4) |
+| Hover | A card: the module or file, the declaration in Jairs syntax with parameter names, then its `///` documentation. Falls back to the type for an expression that is not a name. **A type annotation gets nothing** — `jr_hir::TypeRef` has no span (ADR-0028 §4). An `#import` line hovers as the module's resolved path plus its `//!` documentation |
 | Completion | Locals and parameters, file items, imported module items, keywords, builtin types; fields after `.`, directives after `#`. Procedures insert as call snippets with real parameter names; documentation arrives via `completionItem/resolve`. Scope is approximated as "declared earlier in this body" rather than by block |
 | Doc comments | `///` documents the declaration below it, `//!` the file. `////` is an ordinary comment. Highlighted distinctly from an aside |
-| Goto-definition | Locals, parameters, file-level items, and across an `#import` into `modules/` |
+| Goto-definition | Locals, parameters, file-level items, across an `#import` into `modules/`, and on an **`#import` line itself** — from any column, landing at the start of the module file (ADR-0035) |
 | Folds, indent queries | Shipped; `foldexpr`/`indentexpr` are yours to set |
 | References, document highlight | `gr` / cursor-idle highlight. A reference search covers the whole workspace; a highlight is confined to the file on purpose, since a client sends it on every cursor move |
 | Rename | `grn`. Workspace-wide, and it **refuses** rather than half-renaming: on a name collision, on a syntax error in a file it would edit, or on a workspace over 10 000 files (ADR-0030 §3) |
