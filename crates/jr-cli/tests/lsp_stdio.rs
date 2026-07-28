@@ -21,21 +21,84 @@
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// How long any one test will wait for the whole conversation before killing the server.
+///
+/// # Why a deadline at all
+///
+/// Because a framed read is `read_line`, which blocks forever, and a test that blocks
+/// forever **cannot fail — it can only wait**. That is not a hypothetical tidiness point:
+/// `opening_a_broken_file_publishes_diagnostics` hung twice under `cargo test --workspace`
+/// in one session, and because there was no deadline the run simply sat there. Both samples
+/// showed every server thread parked and nothing holding the pool, which is as much as an
+/// outside observer can learn from a wait.
+///
+/// Killing the child turns the next `read_line` into a zero-length read, which the framing
+/// already asserts on — so a hang now reports "the server closed stdout before replying"
+/// against a named test instead of stalling the suite.
+///
+/// Generous on purpose: these tests take about 0.3 s each, and the point is to catch a hang
+/// rather than to police latency on a loaded machine.
+const DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Kills the server if the test has not finished with it after [`DEADLINE`].
+///
+/// A detached thread rather than a timeout on the read, because `BufReader<ChildStdout>` has
+/// no read timeout to set: the way to unblock a blocking read on a pipe is to close the far
+/// end, and the way to do that is to kill the writer.
+///
+/// `done` is what keeps this from killing a *passing* test's server — the flag is set when
+/// the `Server` is dropped, and a killed-but-finished server would at worst turn a clean exit
+/// into a signal. It takes an `Arc<Mutex<Child>>` rather than a raw pid deliberately: killing
+/// by pid needs `libc`, and adding a dependency to this workspace is a decision ADR-0009
+/// makes deliberate — `Child::kill` is already in `std` and cannot kill a recycled pid.
+///
+/// Deliberately not joined: joining would reintroduce exactly the wait this exists to bound.
+fn arm_deadline(child: Arc<Mutex<Child>>, done: Arc<AtomicBool>) {
+    std::thread::Builder::new()
+        .name(String::from("lsp-stdio-deadline"))
+        .spawn(move || {
+            // Woken periodically rather than sleeping the whole deadline, so a passing test's
+            // watchdog stops holding a `Child` it will never need.
+            let step = std::time::Duration::from_millis(200);
+            let mut waited = std::time::Duration::ZERO;
+            while waited < DEADLINE {
+                if done.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(step);
+                waited += step;
+            }
+            if let Ok(mut child) = child.lock() {
+                // The error is ignored: "it already exited" is the expected case, and there
+                // is nothing useful to do about a failure to kill from a watchdog.
+                let _ = child.kill();
+            }
+        })
+        .expect("spawning a thread");
+}
+
 /// A running server, with framed reads and writes.
 struct Server {
-    child: Child,
+    /// Shared with the deadline watchdog, which is the only reason it is not a plain
+    /// [`Child`]: the watchdog has to be able to kill it while this thread blocks in a read.
+    child: Arc<Mutex<Child>>,
+    /// Set on drop, so a passing test's watchdog stops early instead of killing a server
+    /// that already finished.
+    done: Arc<AtomicBool>,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
 }
 
 impl Server {
     fn start() -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_jr"))
+        let child = Command::new(env!("CARGO_BIN_EXE_jr"))
             .arg("lsp")
             .arg("--quiet")
             .arg("--module-path")
@@ -45,13 +108,34 @@ impl Server {
             .stderr(Stdio::null())
             .spawn()
             .expect("the `jr` binary is built before its own integration tests");
+        Self::adopt(child)
+    }
+
+    /// Takes over a spawned server, arming the deadline watchdog.
+    ///
+    /// Shared by [`Server::start`] and the one test that needs a different working
+    /// directory, so neither can be the one that forgets the watchdog.
+    fn adopt(mut child: Child) -> Self {
         let stdin = child.stdin.take().expect("piped");
         let stdout = BufReader::new(child.stdout.take().expect("piped"));
+        let child = Arc::new(Mutex::new(child));
+        let done = Arc::new(AtomicBool::new(false));
+        arm_deadline(Arc::clone(&child), Arc::clone(&done));
         Self {
             child,
+            done,
             stdin,
             stdout,
         }
+    }
+
+    /// Waits for the server to exit, as a test asserting a clean shutdown does.
+    fn wait(&mut self) -> std::process::ExitStatus {
+        self.child
+            .lock()
+            .expect("the watchdog does not panic while holding this")
+            .wait()
+            .expect("the server must exit")
     }
 
     /// Writes one message with LSP's `Content-Length` framing.
@@ -139,8 +223,13 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // Told first, so the watchdog does not sit on the `Child` for the rest of the
+        // deadline after a test that passed.
+        self.done.store(true, Ordering::Relaxed);
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -207,10 +296,7 @@ fn the_server_completes_a_handshake_and_answers_a_hover() {
         "params": {}
     }));
 
-    let status = server
-        .child
-        .wait()
-        .expect("the server must exit after `exit`");
+    let status = server.wait();
     assert!(
         status.success(),
         "a clean shutdown must exit 0, or an editor reports the server as crashed"
@@ -241,7 +327,7 @@ fn a_relative_module_path_still_resolves_across_an_import() {
     //
     // Run from the workspace root so that `modules` is a meaningful relative path, which
     // is the whole point of the case.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_jr"))
+    let child = Command::new(env!("CARGO_BIN_EXE_jr"))
         .arg("lsp")
         .arg("--quiet")
         .arg("--module-path")
@@ -252,13 +338,9 @@ fn a_relative_module_path_still_resolves_across_an_import() {
         .stderr(Stdio::null())
         .spawn()
         .expect("the `jr` binary is built before its own integration tests");
-    let stdin = child.stdin.take().expect("piped");
-    let stdout = BufReader::new(child.stdout.take().expect("piped"));
-    let mut server = Server {
-        child,
-        stdin,
-        stdout,
-    };
+    // Through `adopt` rather than built by hand, so this one — the only test that needs a
+    // different working directory — gets the deadline watchdog like every other.
+    let mut server = Server::adopt(child);
 
     let path = workspace_root()
         .join("tests/corpus/valid/024-hello.jr")
@@ -421,7 +503,7 @@ fn the_server_advertises_completion_and_resolves_an_item() {
         "method": "exit",
         "params": {}
     }));
-    let status = server.child.wait().expect("the server must exit");
+    let status = server.wait();
     assert!(status.success(), "a clean shutdown must exit 0");
 }
 
@@ -544,10 +626,7 @@ fn the_server_answers_navigation_requests_and_refuses_a_bad_rename() {
     }));
     assert!(server.response(7)["error"].is_null());
     server.send(&serde_json::json!({ "jsonrpc": "2.0", "method": "exit", "params": {} }));
-    assert!(
-        server.child.wait().expect("the server must exit").success(),
-        "a clean shutdown must exit 0"
-    );
+    assert!(server.wait().success(), "a clean shutdown must exit 0");
 }
 
 /// A client that advertises watched-file support is asked to watch `**/*.jr`.
@@ -598,5 +677,118 @@ fn the_server_registers_a_file_watcher_when_the_client_can_watch() {
         "jsonrpc": "2.0", "id": 99, "method": "shutdown", "params": serde_json::Value::Null
     }));
     server.send(&serde_json::json!({ "jsonrpc": "2.0", "method": "exit", "params": {} }));
-    let _ = server.child.wait();
+    let _ = server.wait();
+}
+
+/// Diagnostics survive the workspace re-walk that `didOpen` triggers.
+///
+/// # The bug this pins
+///
+/// The main thread queued the diagnostics job, *then* called `set_workspace_roots` — the
+/// no-watcher freshness fallback (ADR-0029 §2). That write cancels every reader holding an
+/// older revision, and `Job::Diagnostics` answers a cancellation by publishing **nothing**,
+/// on the reasoning that the write which cancelled it will queue a replacement. That
+/// reasoning does not hold for this writer: the workspace *list* changed, not the file, so
+/// nothing re-queued and the file the user just opened got no diagnostics at all.
+///
+/// It was read as a flaky test for several waves. It is a real defect: a client with no file
+/// watcher — which is what this test advertises, and what a plain `nvim` does — silently
+/// loses diagnostics on open. Measured against the reverted fix: **11 hangs in 16** with the
+/// machine loaded, **0 in 16** idle.
+///
+/// # Why it makes its own load, and repeats
+///
+/// Because the race window is the walk, and it only opens under contention. Three drafts of
+/// this test failed to detect the defect at all — one waited for the `initialize` reply
+/// (which lets the startup walk finish and closes the window), one padded the walked tree to
+/// 1 600 files (which changed nothing, so tree size is not the variable), and one ran a
+/// single attempt under self-inflicted load (which caught it 2 times in 8), and one with eight
+/// attempts (4 in 5). Contention plus repetition is what works, and the attempt count is set
+/// from measurement rather than arithmetic: the attempts are not independent, so 24 was
+/// chosen by running the reverted fix until it failed every time.
+///
+/// This is the shape a race regression test has to have. A single-attempt version passes on
+/// the broken code most of the time, which is worse than no test — it reports the defect
+/// fixed.
+#[test]
+fn didopen_publishes_diagnostics_even_though_it_rewalks_the_workspace() {
+    // Stops the spinners however this test leaves — including a panic, where a leaked busy
+    // loop would slow every test that follows.
+    struct Spinners {
+        stop: Arc<AtomicBool>,
+        handles: Vec<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for Spinners {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            for handle in self.handles.drain(..) {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut handles = Vec::new();
+    for _ in 0..std::thread::available_parallelism().map_or(4, std::num::NonZero::get) {
+        let stop = Arc::clone(&stop);
+        handles.push(std::thread::spawn(move || {
+            // `black_box` keeps the loop from being optimised away, which would leave this
+            // test asserting nothing under a release profile.
+            let mut n = 0u64;
+            while !stop.load(Ordering::Relaxed) {
+                n = std::hint::black_box(n.wrapping_add(1));
+            }
+        }));
+    }
+    let _spinners = Spinners {
+        stop: Arc::clone(&stop),
+        handles,
+    };
+
+    let source = "main :: () {\n    x: bool = 1;\n}\n";
+    for attempt in 0..24 {
+        let dir = tempfile::TempDir::new().expect("a temporary directory");
+        let path = dir.path().join("broken.jr");
+        std::fs::write(&path, source).expect("a writable temporary directory");
+        let uri = format!("file://{}", path.display());
+
+        let mut server = Server::start();
+        // **Pipelined deliberately**: `initialize`, `initialized` and `didOpen` all go out
+        // before a single reply is read, which is what a real client does — and reading the
+        // reply first lets the startup walk finish and closes the window the bug lives in.
+        //
+        // `didChangeWatchedFiles` is deliberately *not* advertised, so the server takes the
+        // re-walk-on-open fallback: the path carrying the extra write.
+        server.send(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": { "general": { "positionEncodings": ["utf-8"] } } }
+        }));
+        server.send(&serde_json::json!({
+            "jsonrpc": "2.0", "method": "initialized", "params": {}
+        }));
+        server.did_open(&uri, source);
+
+        let mut published = false;
+        for _ in 0..32 {
+            let message = server.receive();
+            if message["method"] == "textDocument/publishDiagnostics" {
+                let items = message["params"]["diagnostics"]
+                    .as_array()
+                    .expect("an array of diagnostics");
+                assert!(
+                    !items.is_empty(),
+                    "attempt {attempt}: the re-walk must not swallow the diagnostics: {message}"
+                );
+                published = true;
+                break;
+            }
+        }
+        assert!(
+            published,
+            "attempt {attempt}: no diagnostics published — the workspace re-walk cancelled \
+             the diagnostics pass and nothing re-queued it"
+        );
+    }
 }

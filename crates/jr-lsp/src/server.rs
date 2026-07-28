@@ -25,6 +25,18 @@
 //! than show an error. Answering with a success and stale data would be worse, and
 //! answering nothing at all leaves a client waiting.
 //!
+//! # The ordering rule on the write side
+//!
+//! ADR-0024 §2 stated salsa's obligation on the *reader* — snapshot per job, drop it on
+//! unwind — and not the matching one on this thread. [ADR-0032](../../../docs/adr/0032-write-before-queue.md):
+//! **every write for a notification happens before the snapshot that answers it.** A
+//! snapshot is bound to its revision and the next write cancels it, so a job dispatched
+//! before a write is a job racing that write. `Job::Diagnostics` answers a cancellation by
+//! publishing nothing, which is only correct when the canceller re-queues — `set_file_text`
+//! does, `set_workspace_roots` does not. Getting this backwards cost a client with no file
+//! watcher its diagnostics on open, 11 times in 16 on a loaded machine, for several waves
+//! behind the word "flaky".
+//!
 //! # What it does not do
 //!
 //! No request queue and no coalescing: jobs run in arrival order, one at a time. Two
@@ -218,7 +230,26 @@ pub fn run_stdio(options: &ServerOptions) -> Result<(), Box<dyn std::error::Erro
                 }
                 // A write. It happens on this thread, and salsa cancels whatever the
                 // worker had in flight against the previous revision.
-                if let Some(file) = apply(&mut db, &notification) {
+                let touched = apply(&mut db, &notification);
+
+                // **Every write first, then one snapshot, then the job.** The order is the
+                // whole point, and getting it wrong is how `didOpen` silently published no
+                // diagnostics at all.
+                //
+                // A snapshot is bound to the revision it was taken in, and the *next* write
+                // cancels every reader still holding an older one. `Job::Diagnostics`
+                // answers a cancellation by publishing nothing — correctly, because the
+                // write that cancelled it normally queues a replacement. `set_workspace_roots`
+                // is the writer that does **not**: it is the workspace list changing, not the
+                // file, so nothing re-queues, and the diagnostics for the file the user just
+                // opened are never published.
+                //
+                // It reproduced 5 times in 12 under CPU load and 0 times in 12 idle — a race
+                // whose window is the walk between the snapshot and the set — which is why it
+                // survived several waves as "a flaky test" rather than being read as the
+                // user-visible bug it is: a real editor with no file watcher gets no
+                // diagnostics on open, on a loaded machine, some of the time.
+                if let Some(file) = touched {
                     // A file the workspace does not cover contributes its own directory as
                     // a root. A client that sends no `workspaceFolders` — or a user opening
                     // a scratch file outside the tree — would otherwise get a rename and a
@@ -227,10 +258,6 @@ pub fn run_stdio(options: &ServerOptions) -> Result<(), Box<dyn std::error::Erro
                     if adopt_root(&mut db, &mut roots, file) {
                         db.set_workspace_roots(&roots);
                     }
-                    let _ = jobs.send(Job::Diagnostics {
-                        db: Box::new(db.snapshot()),
-                        file,
-                    });
                 }
                 // The fallback for a client that cannot watch (ADR-0029 §2). Re-walking on
                 // every keystroke would be indefensible, so it is tied to open and save —
@@ -243,6 +270,13 @@ pub fn run_stdio(options: &ServerOptions) -> Result<(), Box<dyn std::error::Erro
                     )
                 {
                     db.set_workspace_roots(&roots);
+                }
+                // Only now, with no write left to cancel it.
+                if let Some(file) = touched {
+                    let _ = jobs.send(Job::Diagnostics {
+                        db: Box::new(db.snapshot()),
+                        file,
+                    });
                 }
             }
             Message::Response(_) => {}
@@ -609,9 +643,13 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
             let db = db.as_ref();
             let path = file.path(db);
             let computed = catch(|| handlers::diagnostics(db, file, search_paths, encoding));
-            // A cancelled diagnostics pass is simply not published: the write that
-            // cancelled it will queue another one, so there is nothing to report and
-            // nothing to apologise for.
+            // A cancelled diagnostics pass is not published — but that is only correct
+            // when a **re-queueing** writer cancelled it (ADR-0032 §2). `set_file_text`
+            // re-queues; `set_workspace_roots` does not, and this comment used to claim
+            // otherwise, which is how `didOpen` came to silently publish nothing at all
+            // for a client with no file watcher. What makes silence safe here is §1's
+            // ordering: the job is dispatched after every write, so nothing is left to
+            // cancel it except the next real edit.
             let Ok(items) = computed else { return };
             publish(out, path.as_ref(), items);
         }
