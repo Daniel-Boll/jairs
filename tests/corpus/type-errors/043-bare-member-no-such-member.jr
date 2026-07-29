@@ -1,0 +1,12 @@
+// EXPECT: E0238 — a bare member the enum does not have (ADR-0046 §3)
+// The *same* code and the same near-name suggestion the qualified `Colour.REDD` produces
+// (ADR-0041 §4), because the two spellings must not disagree about which members exist. This
+// file exists to prove the sharing rather than to test a new rule.
+Colour :: enum {
+    RED;
+    GREEN;
+}
+
+main :: () {
+    c: Colour = .REDD;
+}

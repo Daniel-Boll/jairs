@@ -93,6 +93,7 @@ proc main -> void {
   slots:
     s0: Line  // local 0
   bb0():
+    zero s0
     store s0.0.0 <- 1_s64
     store s0.0.1 <- 2_s64
     store s0.1.0 <- 3_s64
@@ -259,6 +260,7 @@ proc main -> void {
     v2: s64 = load (v1).*
     v3: *s64 = load s1
     store (v3).* <- 43_s64
+    zero s2
     v4: *Point = addr s2
     store (v4).*.0 <- 1_s64
     v5: **s64 = addr s1
@@ -404,6 +406,7 @@ proc main -> void {
     s0: Point  // local 0
     s1: s64  // local 1
   bb0():
+    zero s0
     store s0.0 <- 4_s64
     store s0.1 <- 5_s64
     v0: s64 = load s0.0
@@ -474,6 +477,7 @@ proc main -> void {
   slots:
     s0: Point  // local 0
   bb0():
+    zero s0
     store s0.0 <- 3_s64
     store s0.1 <- 4_s64
     v0: s64 = load s0.0
@@ -488,4 +492,1664 @@ proc main -> void {
     goto bb3()
   bb3():
     return
+}
+
+========================================
+027-numeric-tower.jr
+========================================
+proc main -> void {
+  bb0():
+    return
+}
+
+========================================
+028-cast.jr
+========================================
+proc main -> void {
+  bb0():
+    v0: u8 = convert 300_s64 from s64
+    v1: s64 = convert -1_s8 from s8
+    v2: u64 = convert 300_s64 from s64
+    v3: bool = v0 == 44_u8
+    branch v3 ? bb1() : bb2()
+  bb1():
+    v4: bool = v1 == -1_s64
+    branch v4 ? bb4() : bb5()
+  bb4():
+    v5: bool = v2 == 300_u64
+    branch v5 ? bb7() : bb8()
+  bb7():
+    discard call extern proc1(0_s64)
+    goto bb9()
+  bb8():
+    goto bb9()
+  bb9():
+    goto bb6()
+  bb5():
+    goto bb6()
+  bb6():
+    goto bb3()
+  bb2():
+    goto bb3()
+  bb3():
+    discard call extern proc1(1_s64)
+    return
+}
+
+========================================
+029-negative-literals.jr
+========================================
+proc main -> void {
+  bb0():
+    v0: s64 = convert -128_s8 from s8
+    v1: s64 = --5_s64
+    v2: bool = v0 == -128_s64
+    branch v2 ? bb1() : bb2()
+  bb1():
+    v3: bool = -5_s64 == -5_s64
+    branch v3 ? bb4() : bb5()
+  bb4():
+    v4: bool = v1 == 5_s64
+    branch v4 ? bb7() : bb8()
+  bb7():
+    discard call extern proc1(0_s64)
+    goto bb9()
+  bb8():
+    goto bb9()
+  bb9():
+    goto bb6()
+  bb5():
+    goto bb6()
+  bb6():
+    goto bb3()
+  bb2():
+    goto bb3()
+  bb3():
+    discard call extern proc1(1_s64)
+    return
+}
+
+========================================
+030-arrays.jr
+========================================
+proc main -> void {
+  slots:
+    s0: [4]u8  // local 0
+    s1: [3]s64  // local 4
+    s2: [2]Point  // local 5
+  bb0():
+    zero s0
+    bounds_check 0_s64 < 4_s64
+    store s0[0_s64] <- 65_u8
+    bounds_check 1_s64 < 4_s64
+    store s0[1_s64] <- 66_u8
+    bounds_check 3_s64 < 4_s64
+    store s0[3_s64] <- 1_u8
+    goto bb1(0_s64, 0_s64)
+  bb1(v0: s64, v2: s64):
+    v1: bool = v0 < 4_s64
+    branch v1 ? bb2() : bb3()
+  bb2():
+    bounds_check v0 < 4_s64
+    v3: u8 = load s0[v0]
+    v4: s64 = convert v3 from u8
+    v5: s64 = v2 + v4
+    v6: s64 = v0 + 1_s64
+    goto bb1(v6, v5)
+  bb3():
+    goto bb4()
+  bb4():
+    v7: s64 = 4_s64 - 1_s64
+    bounds_check v7 < 4_s64
+    v8: u8 = load s0[v7]
+    zero s1
+    bounds_check 2_s64 < 3_s64
+    store s1[2_s64] <- 7_s64
+    bounds_check 0_s64 < 3_s64
+    bounds_check 2_s64 < 3_s64
+    v9: s64 = load s1[2_s64]
+    v10: s64 = v9 * 2_s64
+    store s1[0_s64] <- v10
+    zero s2
+    bounds_check 1_s64 < 2_s64
+    store s2[1_s64].0 <- 5_s64
+    bounds_check 1_s64 < 2_s64
+    store s2[1_s64].1 <- 6_s64
+    v11: bool = v2 == 132_s64
+    branch v11 ? bb5() : bb6()
+  bb5():
+    v12: bool = v8 == 1_u8
+    branch v12 ? bb8() : bb9()
+  bb8():
+    bounds_check 0_s64 < 3_s64
+    v13: s64 = load s1[0_s64]
+    v14: bool = v13 == 14_s64
+    branch v14 ? bb11() : bb12()
+  bb11():
+    bounds_check 1_s64 < 2_s64
+    v15: s64 = load s2[1_s64].0
+    bounds_check 1_s64 < 2_s64
+    v16: s64 = load s2[1_s64].1
+    v17: s64 = v15 + v16
+    v18: bool = v17 == 11_s64
+    branch v18 ? bb14() : bb15()
+  bb14():
+    bounds_check 0_s64 < 2_s64
+    v19: s64 = load s2[0_s64].0
+    v20: bool = v19 == 0_s64
+    branch v20 ? bb17() : bb18()
+  bb17():
+    discard call extern proc1(0_s64)
+    goto bb19()
+  bb18():
+    goto bb19()
+  bb19():
+    goto bb16()
+  bb15():
+    goto bb16()
+  bb16():
+    goto bb13()
+  bb12():
+    goto bb13()
+  bb13():
+    goto bb10()
+  bb9():
+    goto bb10()
+  bb10():
+    goto bb7()
+  bb6():
+    goto bb7()
+  bb7():
+    discard call extern proc1(1_s64)
+    return
+}
+
+========================================
+031-floats.jr
+========================================
+proc main -> void {
+  bb0():
+    v0: float64 = 1.5_float64 + 1.5_float64
+    v1: float64 = 1.5_float64 - 1.5_float64
+    v2: float64 = 1.5_float64 * 4.0_float64
+    v3: float64 = 1.0_float64 / 0.0_float64
+    v4: float64 = -1.0_float64
+    v5: float64 = v4 / 0.0_float64
+    v6: float64 = 0.0_float64 / 0.0_float64
+    v7: float64 = -0.0_float64
+    v8: float64 = convert 1.5_float32 from float32
+    v9: float32 = convert 1.5_float64 from float64
+    v10: float64 = convert 7_s64 from s64
+    v11: float64 = -1.9_float64
+    v12: s64 = convert v11 from float64
+    v13: s8 = convert 1000.0_float64 from float64
+    v14: s64 = convert v6 from float64
+    v15: bool = v6 == v6
+    branch v15 ? bb1() : bb2()
+  bb1():
+    v16: s64 = 0_s64 + 1_s64
+    goto bb3(v16)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v19: s64):
+    v18: bool = v6 != v6
+    branch v18 ? bb4() : bb5()
+  bb4():
+    v20: s64 = v19 + 2_s64
+    goto bb6(v20)
+  bb5():
+    goto bb6(v19)
+  bb6(v24: s64):
+    v23: bool = v7 == 0.0_float64
+    branch v23 ? bb7() : bb8()
+  bb7():
+    v25: s64 = v24 + 4_s64
+    goto bb9(v25)
+  bb8():
+    goto bb9(v24)
+  bb9(v30: s64):
+    v29: bool = v3 > 1e300_float64
+    branch v29 ? bb10() : bb11()
+  bb10():
+    v31: s64 = v30 + 8_s64
+    goto bb12(v31)
+  bb11():
+    goto bb12(v30)
+  bb12(v38: s64):
+    v36: float64 = -1e300_float64
+    v37: bool = v5 < v36
+    branch v37 ? bb13() : bb14()
+  bb13():
+    v39: s64 = v38 + 16_s64
+    goto bb15(v39)
+  bb14():
+    goto bb15(v38)
+  bb15(v49: s64):
+    v45: float64 = convert inf_float32 from float32
+    v48: bool = v45 == v3
+    branch v48 ? bb16() : bb17()
+  bb16():
+    v50: s64 = v49 + 32_s64
+    goto bb18(v50)
+  bb17():
+    goto bb18(v49)
+  bb18(v58: s64):
+    v57: bool = v0 == 3.0_float64
+    branch v57 ? bb19() : bb20()
+  bb19():
+    v59: s64 = v58 + 64_s64
+    goto bb21(v59)
+  bb20():
+    goto bb21(v58)
+  bb21(v68: s64):
+    v67: bool = v1 == 0.0_float64
+    branch v67 ? bb22() : bb23()
+  bb22():
+    v69: s64 = v68 + 128_s64
+    goto bb24(v69)
+  bb23():
+    goto bb24(v68)
+  bb24(v79: s64):
+    v78: bool = v2 == 6.0_float64
+    branch v78 ? bb25() : bb26()
+  bb25():
+    v80: s64 = v79 + 256_s64
+    goto bb27(v80)
+  bb26():
+    goto bb27(v79)
+  bb27(v91: s64):
+    v90: bool = v8 == 1.5_float64
+    branch v90 ? bb28() : bb29()
+  bb28():
+    v92: s64 = v91 + 512_s64
+    goto bb30(v92)
+  bb29():
+    goto bb30(v91)
+  bb30(v114: s64):
+    v113: bool = v9 == 1.5_float32
+    branch v113 ? bb31() : bb32()
+  bb31():
+    v115: s64 = v114 + 1024_s64
+    goto bb33(v115)
+  bb32():
+    goto bb33(v114)
+  bb33(v128: s64):
+    v127: bool = v10 == 7.0_float64
+    branch v127 ? bb34() : bb35()
+  bb34():
+    v129: s64 = v128 + 2048_s64
+    goto bb36(v129)
+  bb35():
+    goto bb36(v128)
+  bb36(v143: s64):
+    v142: bool = v12 == -1_s64
+    branch v142 ? bb37() : bb38()
+  bb37():
+    v144: s64 = v143 + 4096_s64
+    goto bb39(v144)
+  bb38():
+    goto bb39(v143)
+  bb39(v159: s64):
+    v158: bool = v13 == 127_s8
+    branch v158 ? bb40() : bb41()
+  bb40():
+    v160: s64 = v159 + 8192_s64
+    goto bb42(v160)
+  bb41():
+    goto bb42(v159)
+  bb42(v176: s64):
+    v175: bool = v14 == 0_s64
+    branch v175 ? bb43() : bb44()
+  bb43():
+    v177: s64 = v176 + 16384_s64
+    goto bb45(v177)
+  bb44():
+    goto bb45(v176)
+  bb45(v194: s64):
+    v193: bool = 1000000000.0_float64 == 1000000000.0_float64
+    branch v193 ? bb46() : bb47()
+  bb46():
+    v195: s64 = v194 + 32768_s64
+    goto bb48(v195)
+  bb47():
+    goto bb48(v194)
+  bb48(v213: s64):
+    v212: bool = 0.0015_float64 < 0.01_float64
+    branch v212 ? bb49() : bb50()
+  bb49():
+    v214: s64 = v213 + 65536_s64
+    goto bb51(v214)
+  bb50():
+    goto bb51(v213)
+  bb51(v233: s64):
+    v232: bool = 1000.5_float64 == 1000.5_float64
+    branch v232 ? bb52() : bb53()
+  bb52():
+    v234: s64 = v233 + 131072_s64
+    goto bb54(v234)
+  bb53():
+    goto bb54(v233)
+  bb54(v235: s64):
+    v236: bool = v235 == 262142_s64
+    branch v236 ? bb55() : bb56()
+  bb55():
+    discard call extern proc1(0_s64)
+    goto bb57()
+  bb56():
+    goto bb57()
+  bb57():
+    discard call extern proc1(1_s64)
+    return
+}
+
+========================================
+032-enums.jr
+========================================
+proc main -> void {
+  bb0():
+    v0: bool = 0_Colour == 0_Colour
+    branch v0 ? bb1() : bb2()
+  bb1():
+    v1: s64 = 0_s64 + 1_s64
+    goto bb3(v1)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v3: s64):
+    v2: bool = 0_Colour != 1_Colour
+    branch v2 ? bb4() : bb5()
+  bb4():
+    v4: s64 = v3 + 2_s64
+    goto bb6(v4)
+  bb5():
+    goto bb6(v3)
+  bb6(v7: s64):
+    v5: s64 = convert 0_Colour from s64
+    v6: bool = v5 == 0_s64
+    branch v6 ? bb7() : bb8()
+  bb7():
+    v8: s64 = v7 + 4_s64
+    goto bb9(v8)
+  bb8():
+    goto bb9(v7)
+  bb9(v11: s64):
+    v9: s64 = convert 2_Colour from s64
+    v10: bool = v9 == 2_s64
+    branch v10 ? bb10() : bb11()
+  bb10():
+    v12: s64 = v11 + 8_s64
+    goto bb12(v12)
+  bb11():
+    goto bb12(v11)
+  bb12(v15: s64):
+    v13: s64 = convert 200_Status from s64
+    v14: bool = v13 == 200_s64
+    branch v14 ? bb13() : bb14()
+  bb13():
+    v16: s64 = v15 + 16_s64
+    goto bb15(v16)
+  bb14():
+    goto bb15(v15)
+  bb15(v19: s64):
+    v17: s64 = convert 404_Status from s64
+    v18: bool = v17 == 404_s64
+    branch v18 ? bb16() : bb17()
+  bb16():
+    v20: s64 = v19 + 32_s64
+    goto bb18(v20)
+  bb17():
+    goto bb18(v19)
+  bb18(v23: s64):
+    v21: s64 = convert 405_Status from s64
+    v22: bool = v21 == 405_s64
+    branch v22 ? bb19() : bb20()
+  bb19():
+    v24: s64 = v23 + 64_s64
+    goto bb21(v24)
+  bb20():
+    goto bb21(v23)
+  bb21(v27: s64):
+    v25: s64 = convert 200_Status from s64
+    v26: bool = v25 == 200_s64
+    branch v26 ? bb22() : bb23()
+  bb22():
+    v28: s64 = v27 + 128_s64
+    goto bb24(v28)
+  bb23():
+    goto bb24(v27)
+  bb24(v30: s64):
+    v29: bool = 1_Colour == 1_Colour
+    branch v29 ? bb25() : bb26()
+  bb25():
+    v31: s64 = v30 + 256_s64
+    goto bb27(v31)
+  bb26():
+    goto bb27(v30)
+  bb27(v34: s64):
+    v33: bool = 2_Colour == 2_Colour
+    branch v33 ? bb28() : bb29()
+  bb28():
+    v35: s64 = v34 + 512_s64
+    goto bb30(v35)
+  bb29():
+    goto bb30(v34)
+  bb30(v37: s64):
+    v36: bool = call proc1(0_Colour)
+    branch v36 ? bb31() : bb32()
+  bb31():
+    v38: s64 = v37 + 1024_s64
+    goto bb33(v38)
+  bb32():
+    goto bb33(v37)
+  bb33(v40: s64):
+    v39: bool = call proc1(2_Colour)
+    branch v39 ? bb34() : bb35()
+  bb34():
+    v41: s64 = v40 + 2048_s64
+    goto bb36(v41)
+  bb35():
+    goto bb36(v40)
+  bb36(v42: s64):
+    v43: bool = v42 == 2047_s64
+    branch v43 ? bb37() : bb38()
+  bb37():
+    discard call extern proc1(0_s64)
+    goto bb39()
+  bb38():
+    goto bb39()
+  bb39():
+    discard call extern proc1(1_s64)
+    return
+}
+proc is_warm -> bool {
+  params: v0: Colour
+  bb0(v0: Colour):
+    v1: bool = v0 == 0_Colour
+    return v1
+}
+
+========================================
+033-bitwise.jr
+========================================
+proc main -> void {
+  bb0():
+    v0: s64 = 6_s64 & 3_s64
+    v1: bool = v0 == 2_s64
+    branch v1 ? bb1() : bb2()
+  bb1():
+    v2: s64 = 0_s64 + 1_s64
+    goto bb3(v2)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v6: s64):
+    v4: s64 = 6_s64 | 1_s64
+    v5: bool = v4 == 7_s64
+    branch v5 ? bb4() : bb5()
+  bb4():
+    v7: s64 = v6 + 2_s64
+    goto bb6(v7)
+  bb5():
+    goto bb6(v6)
+  bb6(v11: s64):
+    v9: s64 = 6_s64 ^ 5_s64
+    v10: bool = v9 == 3_s64
+    branch v10 ? bb7() : bb8()
+  bb7():
+    v12: s64 = v11 + 4_s64
+    goto bb9(v12)
+  bb8():
+    goto bb9(v11)
+  bb9(v16: s64):
+    v14: s64 = 6_s64 << 2_s64
+    v15: bool = v14 == 24_s64
+    branch v15 ? bb10() : bb11()
+  bb10():
+    v17: s64 = v16 + 8_s64
+    goto bb12(v17)
+  bb11():
+    goto bb12(v16)
+  bb12(v21: s64):
+    v19: s64 = 6_s64 >> 1_s64
+    v20: bool = v19 == 3_s64
+    branch v20 ? bb13() : bb14()
+  bb13():
+    v22: s64 = v21 + 16_s64
+    goto bb15(v22)
+  bb14():
+    goto bb15(v21)
+  bb15(v26: s64):
+    v23: u8 = convert 0_u8 from u8
+    v24: u8 = ~v23
+    v25: bool = v24 == 255_u8
+    branch v25 ? bb16() : bb17()
+  bb16():
+    v27: s64 = v26 + 32_s64
+    goto bb18(v27)
+  bb17():
+    goto bb18(v26)
+  bb18(v30: s64):
+    v28: s8 = -8_s8 >> 1_s64
+    v29: bool = v28 == -4_s8
+    branch v29 ? bb19() : bb20()
+  bb19():
+    v31: s64 = v30 + 64_s64
+    goto bb21(v31)
+  bb20():
+    goto bb21(v30)
+  bb21(v34: s64):
+    v32: u8 = 240_u8 >> 4_s64
+    v33: bool = v32 == 15_u8
+    branch v33 ? bb22() : bb23()
+  bb22():
+    v35: s64 = v34 + 128_s64
+    goto bb24(v35)
+  bb23():
+    goto bb24(v34)
+  bb24(v42: s64):
+    v40: s64 = 6_s64 & 3_s64
+    v41: bool = v40 == 2_s64
+    branch v41 ? bb25() : bb26()
+  bb25():
+    v43: s64 = v42 + 256_s64
+    goto bb27(v43)
+  bb26():
+    goto bb27(v42)
+  bb27(v47: s64):
+    v44: s64 = 1_s64 << 3_s64
+    v45: s64 = 1_s64 + v44
+    v46: bool = v45 == 9_s64
+    branch v46 ? bb28() : bb29()
+  bb28():
+    v48: s64 = v47 + 512_s64
+    goto bb30(v48)
+  bb29():
+    goto bb30(v47)
+  bb30(v53: s64):
+    v49: s64 = 6_s64 & 3_s64
+    v50: s64 = 1_s64 ^ 2_s64
+    v51: s64 = v49 | v50
+    v52: bool = v51 == 3_s64
+    branch v52 ? bb31() : bb32()
+  bb31():
+    v54: s64 = v53 + 1024_s64
+    goto bb33(v54)
+  bb32():
+    goto bb33(v53)
+  bb33(v61: s64):
+    v55: s64 = 1_s64 << 3_s64
+    v56: s64 = v55 | 1_s64
+    v57: s64 = v56 & 12_s64
+    v58: s64 = v57 ^ 4_s64
+    v59: s64 = v58 >> 1_s64
+    v60: bool = v59 == 6_s64
+    branch v60 ? bb34() : bb35()
+  bb34():
+    v62: s64 = v61 + 2048_s64
+    goto bb36(v62)
+  bb35():
+    goto bb36(v61)
+  bb36(v63: s64):
+    v64: bool = v63 == 4095_s64
+    branch v64 ? bb37() : bb38()
+  bb37():
+    discard call extern proc1(0_s64)
+    goto bb39()
+  bb38():
+    goto bb39()
+  bb39():
+    discard call extern proc1(1_s64)
+    return
+}
+
+========================================
+034-enum-flags.jr
+========================================
+proc main -> void {
+  bb0():
+    v0: s64 = convert 1_Perm from s64
+    v1: bool = v0 == 1_s64
+    branch v1 ? bb1() : bb2()
+  bb1():
+    v2: s64 = 0_s64 + 1_s64
+    goto bb3(v2)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v5: s64):
+    v3: s64 = convert 2_Perm from s64
+    v4: bool = v3 == 2_s64
+    branch v4 ? bb4() : bb5()
+  bb4():
+    v6: s64 = v5 + 2_s64
+    goto bb6(v6)
+  bb5():
+    goto bb6(v5)
+  bb6(v9: s64):
+    v7: s64 = convert 4_Perm from s64
+    v8: bool = v7 == 4_s64
+    branch v8 ? bb7() : bb8()
+  bb7():
+    v10: s64 = v9 + 4_s64
+    goto bb9(v10)
+  bb8():
+    goto bb9(v9)
+  bb9(v14: s64):
+    v11: Perm = 1_Perm | 2_Perm
+    v12: s64 = convert v11 from s64
+    v13: bool = v12 == 3_s64
+    branch v13 ? bb10() : bb11()
+  bb10():
+    v15: s64 = v14 + 8_s64
+    goto bb12(v15)
+  bb11():
+    goto bb12(v14)
+  bb12(v19: s64):
+    v17: Perm = v11 & 1_Perm
+    v18: bool = v17 == 1_Perm
+    branch v18 ? bb13() : bb14()
+  bb13():
+    v20: s64 = v19 + 16_s64
+    goto bb15(v20)
+  bb14():
+    goto bb15(v19)
+  bb15(v24: s64):
+    v22: Perm = v11 & 4_Perm
+    v23: bool = v22 != 4_Perm
+    branch v23 ? bb16() : bb17()
+  bb16():
+    v25: s64 = v24 + 32_s64
+    goto bb18(v25)
+  bb17():
+    goto bb18(v24)
+  bb18(v30: s64):
+    v27: Perm = v11 ^ 4_Perm
+    v28: s64 = convert v27 from s64
+    v29: bool = v28 == 7_s64
+    branch v29 ? bb19() : bb20()
+  bb19():
+    v31: s64 = v30 + 64_s64
+    goto bb21(v31)
+  bb20():
+    goto bb21(v30)
+  bb21(v35: s64):
+    v32: Perm = ~1_Perm
+    v33: s64 = convert v32 from s64
+    v34: bool = v33 == -2_s64
+    branch v34 ? bb22() : bb23()
+  bb22():
+    v36: s64 = v35 + 128_s64
+    goto bb24(v36)
+  bb23():
+    goto bb24(v35)
+  bb24(v43: s64):
+    v39: Perm = 1_Perm | 4_Perm
+    v40: Perm = v27 & v39
+    v41: Perm = 1_Perm | 4_Perm
+    v42: bool = v40 == v41
+    branch v42 ? bb25() : bb26()
+  bb25():
+    v44: s64 = v43 + 256_s64
+    goto bb27(v44)
+  bb26():
+    goto bb27(v43)
+  bb27(v47: s64):
+    v45: s64 = convert 0_Edge from s64
+    v46: bool = v45 == 0_s64
+    branch v46 ? bb28() : bb29()
+  bb28():
+    v48: s64 = v47 + 512_s64
+    goto bb30(v48)
+  bb29():
+    goto bb30(v47)
+  bb30(v51: s64):
+    v49: s64 = convert 1_Edge from s64
+    v50: bool = v49 == 1_s64
+    branch v50 ? bb31() : bb32()
+  bb31():
+    v52: s64 = v51 + 1024_s64
+    goto bb33(v52)
+  bb32():
+    goto bb33(v51)
+  bb33(v55: s64):
+    v53: s64 = convert 16_Edge from s64
+    v54: bool = v53 == 16_s64
+    branch v54 ? bb34() : bb35()
+  bb34():
+    v56: s64 = v55 + 2048_s64
+    goto bb36(v56)
+  bb35():
+    goto bb36(v55)
+  bb36(v59: s64):
+    v57: s64 = convert 4_Edge from s64
+    v58: bool = v57 == 4_s64
+    branch v58 ? bb37() : bb38()
+  bb37():
+    v60: s64 = v59 + 4096_s64
+    goto bb39(v60)
+  bb38():
+    goto bb39(v59)
+  bb39(v63: s64):
+    v61: s64 = convert 1_Colour from s64
+    v62: bool = v61 == 1_s64
+    branch v62 ? bb40() : bb41()
+  bb40():
+    v64: s64 = v63 + 8192_s64
+    goto bb42(v64)
+  bb41():
+    goto bb42(v63)
+  bb42(v74: s64):
+    v73: bool = call proc1(v11)
+    branch v73 ? bb43() : bb44()
+  bb43():
+    v75: s64 = v74 + 16384_s64
+    goto bb45(v75)
+  bb44():
+    goto bb45(v74)
+  bb45(v76: s64):
+    v77: bool = v76 == 32767_s64
+    branch v77 ? bb46() : bb47()
+  bb46():
+    discard call extern proc1(0_s64)
+    goto bb48()
+  bb47():
+    goto bb48()
+  bb48():
+    discard call extern proc1(1_s64)
+    return
+}
+proc can_write -> bool {
+  params: v0: Perm
+  bb0(v0: Perm):
+    v1: Perm = v0 & 2_Perm
+    v2: bool = v1 == 2_Perm
+    return v2
+}
+
+========================================
+035-views.jr
+========================================
+proc total -> s64 {
+  params: v0: []s64
+  slots:
+    s0: []s64  // temporary
+  bb0(v0: []s64):
+    store s0 <- v0
+    goto bb1(0_s64, 0_s64)
+  bb1(v1: s64, v4: s64):
+    v2: s64 = load s0.view_count
+    v3: bool = v1 < v2
+    branch v3 ? bb2() : bb3()
+  bb2():
+    v5: s64 = load s0.view_count
+    bounds_check v1 < v5
+    v6: s64 = load s0.view_data[v1]
+    v7: s64 = v4 + v6
+    v8: s64 = v1 + 1_s64
+    goto bb1(v8, v7)
+  bb3():
+    goto bb4()
+  bb4():
+    return v4
+}
+proc fill -> void {
+  params: v0: []s64, v1: s64
+  slots:
+    s0: []s64  // temporary
+  bb0(v0: []s64, v1: s64):
+    store s0 <- v0
+    goto bb1(0_s64)
+  bb1(v2: s64):
+    v3: s64 = load s0.view_count
+    v4: bool = v2 < v3
+    branch v4 ? bb2() : bb3()
+  bb2():
+    v5: s64 = load s0.view_count
+    bounds_check v2 < v5
+    store s0.view_data[v2] <- v1
+    v6: s64 = v2 + 1_s64
+    goto bb1(v6)
+  bb3():
+    goto bb4()
+  bb4():
+    return
+}
+proc length_of -> s64 {
+  params: v0: []s64
+  slots:
+    s0: []s64  // temporary
+  bb0(v0: []s64):
+    store s0 <- v0
+    v1: s64 = load s0.view_count
+    return v1
+}
+proc main -> void {
+  slots:
+    s0: [4]s64  // local 1
+    s1: [2]s64  // local 2
+    s2: []s64  // temporary
+    s3: []s64  // temporary
+    s4: []s64  // temporary
+    s5: []s64  // temporary
+    s6: []s64  // local 3
+    s7: []s64  // temporary
+    s8: []s64  // temporary
+    s9: [3]u8  // local 4
+    s10: []u8  // local 5
+    s11: []u8  // temporary
+    s12: []s64  // local 6
+    s13: *[4]s64  // local 7
+    s14: []s64  // temporary
+  bb0():
+    zero s0
+    bounds_check 0_s64 < 4_s64
+    store s0[0_s64] <- 1_s64
+    bounds_check 1_s64 < 4_s64
+    store s0[1_s64] <- 2_s64
+    bounds_check 2_s64 < 4_s64
+    store s0[2_s64] <- 4_s64
+    bounds_check 3_s64 < 4_s64
+    store s0[3_s64] <- 8_s64
+    zero s1
+    bounds_check 0_s64 < 2_s64
+    store s1[0_s64] <- 16_s64
+    bounds_check 1_s64 < 2_s64
+    store s1[1_s64] <- 32_s64
+    v0: *s64 = addr s0[0_s64]
+    zero s2
+    store s2.view_data <- v0
+    store s2.view_count <- 4_s64
+    v1: []s64 = load s2
+    v2: s64 = call proc0(v1)
+    v3: bool = v2 == 15_s64
+    branch v3 ? bb1() : bb2()
+  bb1():
+    v4: s64 = 0_s64 + 1_s64
+    goto bb3(v4)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v9: s64):
+    v5: *s64 = addr s1[0_s64]
+    zero s3
+    store s3.view_data <- v5
+    store s3.view_count <- 2_s64
+    v6: []s64 = load s3
+    v7: s64 = call proc0(v6)
+    v8: bool = v7 == 48_s64
+    branch v8 ? bb4() : bb5()
+  bb4():
+    v10: s64 = v9 + 2_s64
+    goto bb6(v10)
+  bb5():
+    goto bb6(v9)
+  bb6(v15: s64):
+    v11: *s64 = addr s0[0_s64]
+    zero s4
+    store s4.view_data <- v11
+    store s4.view_count <- 4_s64
+    v12: []s64 = load s4
+    v13: s64 = call proc2(v12)
+    v14: bool = v13 == 4_s64
+    branch v14 ? bb7() : bb8()
+  bb7():
+    v16: s64 = v15 + 4_s64
+    goto bb9(v16)
+  bb8():
+    goto bb9(v15)
+  bb9(v21: s64):
+    v17: *s64 = addr s1[0_s64]
+    zero s5
+    store s5.view_data <- v17
+    store s5.view_count <- 2_s64
+    v18: []s64 = load s5
+    v19: s64 = call proc2(v18)
+    v20: bool = v19 == 2_s64
+    branch v20 ? bb10() : bb11()
+  bb10():
+    v22: s64 = v21 + 8_s64
+    goto bb12(v22)
+  bb11():
+    goto bb12(v21)
+  bb12(v28: s64):
+    v23: *s64 = addr s0[0_s64]
+    zero s7
+    store s7.view_data <- v23
+    store s7.view_count <- 4_s64
+    v24: []s64 = load s7
+    store s6 <- v24
+    v25: s64 = load s6.view_count
+    bounds_check 2_s64 < v25
+    v26: s64 = load s6.view_data[2_s64]
+    v27: bool = v26 == 4_s64
+    branch v27 ? bb13() : bb14()
+  bb13():
+    v29: s64 = v28 + 16_s64
+    goto bb15(v29)
+  bb14():
+    goto bb15(v28)
+  bb15(v32: s64):
+    v30: s64 = load s6.view_count
+    v31: bool = v30 == 4_s64
+    branch v31 ? bb16() : bb17()
+  bb16():
+    v33: s64 = v32 + 32_s64
+    goto bb18(v33)
+  bb17():
+    goto bb18(v32)
+  bb18(v38: s64):
+    v34: *s64 = addr s1[0_s64]
+    zero s8
+    store s8.view_data <- v34
+    store s8.view_count <- 2_s64
+    v35: []s64 = load s8
+    discard call proc1(v35, 7_s64)
+    bounds_check 0_s64 < 2_s64
+    v36: s64 = load s1[0_s64]
+    v37: bool = v36 == 7_s64
+    branch v37 ? bb19() : bb20()
+  bb19():
+    v39: s64 = v38 + 64_s64
+    goto bb21(v39)
+  bb20():
+    goto bb21(v38)
+  bb21(v42: s64):
+    bounds_check 1_s64 < 2_s64
+    v40: s64 = load s1[1_s64]
+    v41: bool = v40 == 7_s64
+    branch v41 ? bb22() : bb23()
+  bb22():
+    v43: s64 = v42 + 128_s64
+    goto bb24(v43)
+  bb23():
+    goto bb24(v42)
+  bb24(v47: s64):
+    v44: s64 = load s6.view_count
+    bounds_check 0_s64 < v44
+    store s6.view_data[0_s64] <- 100_s64
+    bounds_check 0_s64 < 4_s64
+    v45: s64 = load s0[0_s64]
+    v46: bool = v45 == 100_s64
+    branch v46 ? bb25() : bb26()
+  bb25():
+    v48: s64 = v47 + 256_s64
+    goto bb27(v48)
+  bb26():
+    goto bb27(v47)
+  bb27(v53: s64):
+    zero s9
+    bounds_check 0_s64 < 3_s64
+    store s9[0_s64] <- 65_u8
+    bounds_check 2_s64 < 3_s64
+    store s9[2_s64] <- 67_u8
+    v49: *u8 = addr s9[0_s64]
+    zero s11
+    store s11.view_data <- v49
+    store s11.view_count <- 3_s64
+    v50: []u8 = load s11
+    store s10 <- v50
+    v51: s64 = load s10.view_count
+    v52: bool = v51 == 3_s64
+    branch v52 ? bb28() : bb29()
+  bb28():
+    v54: s64 = v53 + 512_s64
+    goto bb30(v54)
+  bb29():
+    goto bb30(v53)
+  bb30(v58: s64):
+    v55: s64 = load s10.view_count
+    bounds_check 0_s64 < v55
+    v56: u8 = load s10.view_data[0_s64]
+    v57: bool = v56 == 65_u8
+    branch v57 ? bb31() : bb32()
+  bb31():
+    v59: s64 = v58 + 1024_s64
+    goto bb33(v59)
+  bb32():
+    goto bb33(v58)
+  bb33(v63: s64):
+    v60: s64 = load s10.view_count
+    bounds_check 1_s64 < v60
+    v61: u8 = load s10.view_data[1_s64]
+    v62: bool = v61 == 0_u8
+    branch v62 ? bb34() : bb35()
+  bb34():
+    v64: s64 = v63 + 2048_s64
+    goto bb36(v64)
+  bb35():
+    goto bb36(v63)
+  bb36(v69: s64):
+    v65: []s64 = load s6
+    store s12 <- v65
+    v66: s64 = load s12.view_count
+    bounds_check 3_s64 < v66
+    store s12.view_data[3_s64] <- 9_s64
+    bounds_check 3_s64 < 4_s64
+    v67: s64 = load s0[3_s64]
+    v68: bool = v67 == 9_s64
+    branch v68 ? bb37() : bb38()
+  bb37():
+    v70: s64 = v69 + 4096_s64
+    goto bb39(v70)
+  bb38():
+    goto bb39(v69)
+  bb39(v77: s64):
+    v71: *[4]s64 = addr s0
+    store s13 <- v71
+    v72: *[4]s64 = load s13
+    v73: *s64 = addr (v72).*[0_s64]
+    zero s14
+    store s14.view_data <- v73
+    store s14.view_count <- 4_s64
+    v74: []s64 = load s14
+    v75: s64 = call proc0(v74)
+    v76: bool = v75 == 115_s64
+    branch v76 ? bb40() : bb41()
+  bb40():
+    v78: s64 = v77 + 8192_s64
+    goto bb42(v78)
+  bb41():
+    goto bb42(v77)
+  bb42(v79: s64):
+    v80: bool = v79 == 16383_s64
+    branch v80 ? bb43() : bb44()
+  bb43():
+    discard call extern proc1(0_s64)
+    goto bb45()
+  bb44():
+    goto bb45()
+  bb45():
+    discard call extern proc1(1_s64)
+    return
+}
+
+========================================
+036-unions.jr
+========================================
+proc main -> void {
+  slots:
+    s0: Bits  // local 1
+    s1: Mixed  // local 2
+    s2: Bits  // local 3
+    s3: Tagged  // local 4
+  bb0():
+    zero s0
+    store s0.0 <- -1_s64
+    v0: u64 = load s0.1
+    v1: bool = v0 == 18446744073709551615_u64
+    branch v1 ? bb1() : bb2()
+  bb1():
+    v2: s64 = 0_s64 + 1_s64
+    goto bb3(v2)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v5: s64):
+    store s0.1 <- 255_u64
+    v3: s64 = load s0.0
+    v4: bool = v3 == 255_s64
+    branch v4 ? bb4() : bb5()
+  bb4():
+    v6: s64 = v5 + 2_s64
+    goto bb6(v6)
+  bb5():
+    goto bb6(v5)
+  bb6(v9: s64):
+    zero s1
+    store s1.1 <- 511_s64
+    v7: u8 = load s1.0
+    v8: bool = v7 == 255_u8
+    branch v8 ? bb7() : bb8()
+  bb7():
+    v10: s64 = v9 + 4_s64
+    goto bb9(v10)
+  bb8():
+    goto bb9(v9)
+  bb9(v13: s64):
+    store s1.1 <- 0_s64
+    store s1.0 <- 7_u8
+    v11: s64 = load s1.1
+    v12: bool = v11 == 7_s64
+    branch v12 ? bb10() : bb11()
+  bb10():
+    v14: s64 = v13 + 8_s64
+    goto bb12(v14)
+  bb11():
+    goto bb12(v13)
+  bb12(v17: s64):
+    zero s2
+    v15: s64 = load s2.0
+    v16: bool = v15 == 0_s64
+    branch v16 ? bb13() : bb14()
+  bb13():
+    v18: s64 = v17 + 16_s64
+    goto bb15(v18)
+  bb14():
+    goto bb15(v17)
+  bb15(v21: s64):
+    v19: u64 = load s2.1
+    v20: bool = v19 == 0_u64
+    branch v20 ? bb16() : bb17()
+  bb16():
+    v22: s64 = v21 + 32_s64
+    goto bb18(v22)
+  bb17():
+    goto bb18(v21)
+  bb18(v25: s64):
+    zero s3
+    store s3.0 <- 1_s64
+    store s3.1.0 <- -2_s64
+    v23: s64 = load s3.0
+    v24: bool = v23 == 1_s64
+    branch v24 ? bb19() : bb20()
+  bb19():
+    v26: s64 = v25 + 64_s64
+    goto bb21(v26)
+  bb20():
+    goto bb21(v25)
+  bb21(v29: s64):
+    v27: s64 = load s3.1.0
+    v28: bool = v27 == -2_s64
+    branch v28 ? bb22() : bb23()
+  bb22():
+    v30: s64 = v29 + 128_s64
+    goto bb24(v30)
+  bb23():
+    goto bb24(v29)
+  bb24(v34: s64):
+    v31: Mixed = load s1
+    v32: u8 = call proc1(v31)
+    v33: bool = v32 == 7_u8
+    branch v33 ? bb25() : bb26()
+  bb25():
+    v35: s64 = v34 + 256_s64
+    goto bb27(v35)
+  bb26():
+    goto bb27(v34)
+  bb27(v39: s64):
+    v36: *Bits = addr s0
+    store (v36).*.0 <- 9_s64
+    v37: s64 = load s0.0
+    v38: bool = v37 == 9_s64
+    branch v38 ? bb28() : bb29()
+  bb28():
+    v40: s64 = v39 + 512_s64
+    goto bb30(v40)
+  bb29():
+    goto bb30(v39)
+  bb30(v41: s64):
+    v42: bool = v41 == 1023_s64
+    branch v42 ? bb31() : bb32()
+  bb31():
+    discard call extern proc1(0_s64)
+    goto bb33()
+  bb32():
+    goto bb33()
+  bb33():
+    discard call extern proc1(1_s64)
+    return
+}
+proc low_byte -> u8 {
+  params: v0: Mixed
+  slots:
+    s0: Mixed  // temporary
+  bb0(v0: Mixed):
+    store s0 <- v0
+    v1: u8 = load s0.0
+    return v1
+}
+
+========================================
+037-autocast-and-bare-members.jr
+========================================
+proc main -> void {
+  bb0():
+    v0: u8 = convert 300_s64 from s64
+    v1: bool = v0 == 44_u8
+    branch v1 ? bb1() : bb2()
+  bb1():
+    v2: s64 = 0_s64 + 1_s64
+    goto bb3(v2)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v6: s64):
+    v4: float64 = convert 300_s64 from s64
+    v5: bool = v4 == 300.0_float64
+    branch v5 ? bb4() : bb5()
+  bb4():
+    v7: s64 = v6 + 2_s64
+    goto bb6(v7)
+  bb5():
+    goto bb6(v6)
+  bb6(v10: s64):
+    v8: s64 = convert 7.9_float64 from float64
+    v9: bool = v8 == 7_s64
+    branch v9 ? bb7() : bb8()
+  bb7():
+    v11: s64 = v10 + 4_s64
+    goto bb9(v11)
+  bb8():
+    goto bb9(v10)
+  bb9(v14: s64):
+    v12: s64 = convert 100_s8 from s8
+    v13: bool = v12 == 100_s64
+    branch v13 ? bb10() : bb11()
+  bb10():
+    v15: s64 = v14 + 8_s64
+    goto bb12(v15)
+  bb11():
+    goto bb12(v14)
+  bb12(v18: s64):
+    v16: s64 = convert 2_Colour from s64
+    v17: bool = v16 == 2_s64
+    branch v17 ? bb13() : bb14()
+  bb13():
+    v19: s64 = v18 + 16_s64
+    goto bb15(v19)
+  bb14():
+    goto bb15(v18)
+  bb15(v27: s64):
+    v24: u8 = convert 300_s64 from s64
+    v25: u8 = call proc1(v24)
+    v26: bool = v25 == 44_u8
+    branch v26 ? bb16() : bb17()
+  bb16():
+    v28: s64 = v27 + 32_s64
+    goto bb18(v28)
+  bb17():
+    goto bb18(v27)
+  bb18(v35: s64):
+    v32: s64 = convert 100_s8 from s8
+    v33: s64 = v32 + 1_s64
+    v34: bool = v33 == 101_s64
+    branch v34 ? bb19() : bb20()
+  bb19():
+    v36: s64 = v35 + 64_s64
+    goto bb21(v36)
+  bb20():
+    goto bb21(v35)
+  bb21(v39: s64):
+    v37: s64 = convert 1_Colour from s64
+    v38: bool = v37 == 1_s64
+    branch v38 ? bb22() : bb23()
+  bb22():
+    v40: s64 = v39 + 128_s64
+    goto bb24(v40)
+  bb23():
+    goto bb24(v39)
+  bb24(v43: s64):
+    v42: bool = 1_Colour == 1_Colour
+    branch v42 ? bb25() : bb26()
+  bb25():
+    v44: s64 = v43 + 256_s64
+    goto bb27(v44)
+  bb26():
+    goto bb27(v43)
+  bb27(v47: s64):
+    v46: bool = 1_Colour != 0_Colour
+    branch v46 ? bb28() : bb29()
+  bb28():
+    v48: s64 = v47 + 512_s64
+    goto bb30(v48)
+  bb29():
+    goto bb30(v47)
+  bb30(v50: s64):
+    v49: bool = call proc2(0_Colour)
+    branch v49 ? bb31() : bb32()
+  bb31():
+    v51: s64 = v50 + 1024_s64
+    goto bb33(v51)
+  bb32():
+    goto bb33(v50)
+  bb33(v55: s64):
+    v52: Perm = 1_Perm | 2_Perm
+    v53: s64 = convert v52 from s64
+    v54: bool = v53 == 3_s64
+    branch v54 ? bb34() : bb35()
+  bb34():
+    v56: s64 = v55 + 2048_s64
+    goto bb36(v56)
+  bb35():
+    goto bb36(v55)
+  bb36(v61: s64):
+    v59: Perm = v52 & 1_Perm
+    v60: bool = v59 == 1_Perm
+    branch v60 ? bb37() : bb38()
+  bb37():
+    v62: s64 = v61 + 4096_s64
+    goto bb39(v62)
+  bb38():
+    goto bb39(v61)
+  bb39(v65: s64):
+    v63: s64 = convert 2_Colour from s64
+    v64: bool = v63 == 2_s64
+    branch v64 ? bb40() : bb41()
+  bb40():
+    v66: s64 = v65 + 8192_s64
+    goto bb42(v66)
+  bb41():
+    goto bb42(v65)
+  bb42(v78: s64):
+    v75: s64 = convert 100_s8 from s8
+    v76: s64 = call proc3(2_Colour, v75)
+    v77: bool = v76 == 102_s64
+    branch v77 ? bb43() : bb44()
+  bb43():
+    v79: s64 = v78 + 16384_s64
+    goto bb45(v79)
+  bb44():
+    goto bb45(v78)
+  bb45(v80: s64):
+    v81: bool = v80 == 32767_s64
+    branch v81 ? bb46() : bb47()
+  bb46():
+    discard call extern proc1(0_s64)
+    goto bb48()
+  bb47():
+    goto bb48()
+  bb48():
+    discard call extern proc1(1_s64)
+    return
+}
+proc takes_u8 -> u8 {
+  params: v0: u8
+  bb0(v0: u8):
+    return v0
+}
+proc is_red -> bool {
+  params: v0: Colour
+  bb0(v0: Colour):
+    v1: bool = v0 == 0_Colour
+    return v1
+}
+proc describe -> s64 {
+  params: v0: Colour, v1: s64
+  bb0(v0: Colour, v1: s64):
+    v2: s64 = convert v0 from s64
+    v3: s64 = v2 + v1
+    return v3
+}
+
+========================================
+038-operator-overloading.jr
+========================================
+proc operator + #0 -> s64 {
+  params: v0: Vec2, v1: Vec2
+  slots:
+    s0: Vec2  // temporary
+    s1: Vec2  // temporary
+  bb0(v0: Vec2, v1: Vec2):
+    store s0 <- v0
+    store s1 <- v1
+    v2: s64 = load s0.0
+    v3: s64 = load s1.0
+    v4: s64 = v2 + v3
+    v5: s64 = load s0.1
+    v6: s64 = v4 + v5
+    v7: s64 = load s1.1
+    v8: s64 = v6 + v7
+    return v8
+}
+proc operator * #1 -> s64 {
+  params: v0: Vec2, v1: s64
+  slots:
+    s0: Vec2  // temporary
+  bb0(v0: Vec2, v1: s64):
+    store s0 <- v0
+    v2: s64 = load s0.0
+    v3: s64 = load s0.1
+    v4: s64 = v2 + v3
+    v5: s64 = v4 * v1
+    return v5
+}
+proc operator * #2 -> s64 {
+  params: v0: s64, v1: Vec2
+  slots:
+    s0: Vec2  // temporary
+  bb0(v0: s64, v1: Vec2):
+    store s0 <- v1
+    v2: s64 = load s0.0
+    v3: s64 = load s0.1
+    v4: s64 = v2 + v3
+    v5: s64 = v0 * v4
+    return v5
+}
+proc operator + #3 -> s64 {
+  params: v0: Pair, v1: Pair
+  slots:
+    s0: Pair  // temporary
+    s1: Pair  // temporary
+  bb0(v0: Pair, v1: Pair):
+    store s0 <- v0
+    store s1 <- v1
+    v2: s64 = load s0.0
+    v3: s64 = load s1.0
+    v4: s64 = v2 + v3
+    v5: s64 = load s0.1
+    v6: s64 = v4 + v5
+    v7: s64 = load s1.1
+    v8: s64 = v6 + v7
+    return v8
+}
+proc operator == #4 -> bool {
+  params: v0: Vec2, v1: Vec2
+  slots:
+    s0: Vec2  // temporary
+    s1: Vec2  // temporary
+  bb0(v0: Vec2, v1: Vec2):
+    store s0 <- v0
+    store s1 <- v1
+    v2: s64 = load s0.0
+    v3: s64 = load s1.0
+    v4: bool = v2 == v3
+    branch v4 ? bb1() : bb2()
+  bb1():
+    v6: s64 = load s0.1
+    v7: s64 = load s1.1
+    v8: bool = v6 == v7
+    goto bb3(v8)
+  bb2():
+    goto bb3(false)
+  bb3(v5: bool):
+    return v5
+}
+proc operator != #5 -> bool {
+  params: v0: Vec2, v1: Vec2
+  slots:
+    s0: Vec2  // temporary
+    s1: Vec2  // temporary
+  bb0(v0: Vec2, v1: Vec2):
+    store s0 <- v0
+    store s1 <- v1
+    v2: s64 = load s0.0
+    v3: s64 = load s1.0
+    v4: bool = v2 != v3
+    branch v4 ? bb2() : bb1()
+  bb2():
+    goto bb3(true)
+  bb1():
+    v6: s64 = load s0.1
+    v7: s64 = load s1.1
+    v8: bool = v6 != v7
+    goto bb3(v8)
+  bb3(v5: bool):
+    return v5
+}
+proc operator < #6 -> bool {
+  params: v0: Vec2, v1: Vec2
+  slots:
+    s0: Vec2  // temporary
+    s1: Vec2  // temporary
+  bb0(v0: Vec2, v1: Vec2):
+    store s0 <- v0
+    store s1 <- v1
+    v2: s64 = load s0.0
+    v3: s64 = load s0.1
+    v4: s64 = v2 + v3
+    v5: s64 = load s1.0
+    v6: s64 = load s1.1
+    v7: s64 = v5 + v6
+    v8: bool = v4 < v7
+    return v8
+}
+proc main -> void {
+  slots:
+    s0: Vec2  // local 1
+    s1: Vec2  // local 2
+    s2: Pair  // local 3
+    s3: Pair  // local 4
+    s4: Vec2  // local 5
+  bb0():
+    zero s0
+    store s0.0 <- 1_s64
+    store s0.1 <- 2_s64
+    zero s1
+    store s1.0 <- 10_s64
+    store s1.1 <- 20_s64
+    v0: Vec2 = load s0
+    v1: Vec2 = load s1
+    v2: s64 = call proc0(v0, v1)
+    v3: bool = v2 == 33_s64
+    branch v3 ? bb1() : bb2()
+  bb1():
+    v4: s64 = 0_s64 + 1_s64
+    goto bb3(v4)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v8: s64):
+    v5: Vec2 = load s0
+    v6: s64 = call proc1(v5, 10_s64)
+    v7: bool = v6 == 30_s64
+    branch v7 ? bb4() : bb5()
+  bb4():
+    v9: s64 = v8 + 2_s64
+    goto bb6(v9)
+  bb5():
+    goto bb6(v8)
+  bb6(v13: s64):
+    v10: Vec2 = load s0
+    v11: s64 = call proc2(10_s64, v10)
+    v12: bool = v11 == 30_s64
+    branch v12 ? bb7() : bb8()
+  bb7():
+    v14: s64 = v13 + 4_s64
+    goto bb9(v14)
+  bb8():
+    goto bb9(v13)
+  bb9(v19: s64):
+    zero s2
+    store s2.0 <- 100_s64
+    store s2.1 <- 200_s64
+    zero s3
+    store s3.0 <- 1_s64
+    store s3.1 <- 2_s64
+    v15: Pair = load s2
+    v16: Pair = load s3
+    v17: s64 = call proc3(v15, v16)
+    v18: bool = v17 == 303_s64
+    branch v18 ? bb10() : bb11()
+  bb10():
+    v20: s64 = v19 + 8_s64
+    goto bb12(v20)
+  bb11():
+    goto bb12(v19)
+  bb12(v24: s64):
+    zero s4
+    store s4.0 <- 1_s64
+    store s4.1 <- 2_s64
+    v21: Vec2 = load s0
+    v22: Vec2 = load s4
+    v23: bool = call proc4(v21, v22)
+    branch v23 ? bb13() : bb14()
+  bb13():
+    v25: s64 = v24 + 16_s64
+    goto bb15(v25)
+  bb14():
+    goto bb15(v24)
+  bb15(v29: s64):
+    v26: Vec2 = load s0
+    v27: Vec2 = load s1
+    v28: bool = call proc5(v26, v27)
+    branch v28 ? bb16() : bb17()
+  bb16():
+    v30: s64 = v29 + 32_s64
+    goto bb18(v30)
+  bb17():
+    goto bb18(v29)
+  bb18(v34: s64):
+    v31: Vec2 = load s0
+    v32: Vec2 = load s1
+    v33: bool = call proc6(v31, v32)
+    branch v33 ? bb19() : bb20()
+  bb19():
+    v35: s64 = v34 + 64_s64
+    goto bb21(v35)
+  bb20():
+    goto bb21(v34)
+  bb21(v38: s64):
+    v36: s64 = 7_s64 + 5_s64
+    v37: bool = v36 == 12_s64
+    branch v37 ? bb22() : bb23()
+  bb22():
+    v39: s64 = v38 + 128_s64
+    goto bb24(v39)
+  bb23():
+    goto bb24(v38)
+  bb24(v44: s64):
+    v42: s64 = 7_s64 * 5_s64
+    v43: bool = v42 == 35_s64
+    branch v43 ? bb25() : bb26()
+  bb25():
+    v45: s64 = v44 + 256_s64
+    goto bb27(v45)
+  bb26():
+    goto bb27(v44)
+  bb27(v48: s64):
+    v47: bool = 7_s64 == 7_s64
+    branch v47 ? bb28() : bb29()
+  bb28():
+    v49: s64 = v48 + 512_s64
+    goto bb30(v49)
+  bb29():
+    goto bb30(v48)
+  bb30(v55: s64):
+    v50: Vec2 = load s0
+    v51: Vec2 = load s1
+    v52: s64 = call proc0(v50, v51)
+    v53: s64 = v52 * 2_s64
+    v54: bool = v53 == 66_s64
+    branch v54 ? bb31() : bb32()
+  bb31():
+    v56: s64 = v55 + 1024_s64
+    goto bb33(v56)
+  bb32():
+    goto bb33(v55)
+  bb33(v61: s64):
+    v57: Vec2 = load s0
+    v58: Vec2 = load s1
+    v59: s64 = call proc8(v57, v58)
+    v60: bool = v59 == 33_s64
+    branch v60 ? bb34() : bb35()
+  bb34():
+    v62: s64 = v61 + 2048_s64
+    goto bb36(v62)
+  bb35():
+    goto bb36(v61)
+  bb36(v63: s64):
+    v64: bool = v63 == 4095_s64
+    branch v64 ? bb37() : bb38()
+  bb37():
+    discard call extern proc1(0_s64)
+    goto bb39()
+  bb38():
+    goto bb39()
+  bb39():
+    discard call extern proc1(1_s64)
+    return
+}
+proc total -> s64 {
+  params: v0: Vec2, v1: Vec2
+  slots:
+    s0: Vec2  // temporary
+    s1: Vec2  // temporary
+  bb0(v0: Vec2, v1: Vec2):
+    store s0 <- v0
+    store s1 <- v1
+    v2: s64 = call proc0(v0, v1)
+    return v2
 }

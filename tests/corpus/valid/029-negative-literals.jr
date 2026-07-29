@@ -1,0 +1,30 @@
+// A leading `-` is folded into the literal during lowering (ADR-0038 §1), which is
+// what makes a signed minimum expressible: `-128` is one constant, not `Neg`
+// applied to 128, so nothing negates a value its type cannot hold.
+//
+// This file *executes* the result rather than only type-checking it. The
+// differential harness compares both engines' exit status, so a back end that
+// interned the wrong bits for a negative constant fails here — where
+// `027-numeric-tower.jr` would still pass, because it only declares.
+#import "Basic";
+
+main :: () {
+    // The minimum of a two's-complement type is not the negation of anything the
+    // type can hold, which is the whole reason the fold exists.
+    small: s8 = -128;
+    widened := cast(s64, small);
+
+    // An ordinary negative literal, and a negation of a *value* — which still
+    // lowers to `Unary(Neg, ..)` and still traps on overflow (ADR-0002).
+    ordinary := -5;
+    negated := -ordinary;
+
+    if widened == -128 {
+        if ordinary == -5 {
+            if negated == 5 {
+                exit(0);
+            }
+        }
+    }
+    exit(1);
+}

@@ -28,7 +28,8 @@ use rowan::{Checkpoint, GreenNode, GreenNodeBuilder};
 
 use crate::code::{
     E0100, E0101, E0102, E0103, E0104, E0105, E0106, E0107, E0108, E0109, E0110, E0111, E0112,
-    E0113, E0114, E0115, E0116, E0117, E0118, E0119, E0120, E0121, E0122, E0199,
+    E0113, E0114, E0115, E0116, E0117, E0118, E0119, E0121, E0123, E0124, E0125, E0126, E0127,
+    E0199,
 };
 use crate::kind::{SyntaxKind, SyntaxKind::*, SyntaxNode};
 use crate::lexer::{Token, lex};
@@ -162,8 +163,26 @@ const EXPR_START: TokenSet = TokenSet::new(&[
     MINUS,
     BANG,
     STAR,
+    // `~` is a prefix operator (ADR-0042 §4), so it starts an expression. Needed here as
+    // well as in `parse_unary_or_primary`: this is the third feature that would otherwise
+    // have been swallowed by a token-set predicate — `CAST_KW` against this set and
+    // `L_BRACK` against `TYPE_START` were the first two.
+    TILDE,
     UNINIT,
     DIRECTIVE,
+    // `cast(T, x)` (ADR-0037 §2). Needed here as well as in `parse_primary`: without it
+    // `n := cast(u8, 65);` never reaches the expression parser at all, because `:=` and the
+    // statement dispatcher both gate on this set — which is how the first draft of this
+    // change produced a `cast` arm that could not be reached.
+    CAST_KW,
+    // `xx expr` (ADR-0046 §2) and `.RED` (§3), both prefix forms. Needed here as well as in
+    // `parse_primary` for the reason `CAST_KW` was: `:=` and the statement dispatcher both gate
+    // on this set, so without them `c := .RED;` never reaches the expression parser at all.
+    //
+    // ADR-0045 found `TYPE_START` missing *three* keywords when one was being added, so the
+    // neighbours were checked here too: every other prefix form is present.
+    XX_KW,
+    DOT,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -542,6 +561,11 @@ impl<'src> Parser<'src> {
                     }
                 }
             }
+            // `operator + :: (…) -> T { … }` (ADR-0048 §1). Its own arm because this dispatch is
+            // on `IDENT` and `operator` is a keyword — without it the declaration would be a
+            // stray token at top level, which is the same class of omission as `TYPE_START`
+            // missing three keywords in ADR-0045.
+            OPERATOR_KW => self.parse_operator_decl(),
             IDENT => {
                 // Could be `name ::` (const decl), `name :=` (var decl), or `name :` (typed var decl).
                 // Look ahead past the name to the next non-trivia token.
@@ -603,6 +627,38 @@ impl<'src> Parser<'src> {
         self.finish_node();
     }
 
+    /// Parses `operator + :: (a: T, b: T) -> T { … }` (ADR-0048 §1).
+    ///
+    /// The operator token is kept in the node rather than folded into a synthetic name here:
+    /// lowering is what interns `"operator+"`, so the tree stays a faithful record of what was
+    /// written and a formatter can print the operator back.
+    fn parse_operator_decl(&mut self) {
+        self.start_node(OPERATOR_DECL);
+        self.bump(); // `operator`
+        // Which operators may be overloaded is a *semantic* question (ADR-0048 §2 refuses the
+        // wrapping and bitwise forms with a reason), so the parser accepts any operator token
+        // and sema says no. Accepting only the overloadable set here would report "expected an
+        // operator" for `operator +%`, which is true and unhelpful.
+        if self.at_set(OVERLOADABLE_OPS) || self.at_set(NON_OVERLOADABLE_OPS) {
+            self.bump();
+        } else {
+            let span = self.current_span();
+            self.error(span, "expected an operator after `operator`", E0126);
+        }
+        self.expect(COLON_COLON);
+        if self.at(L_PAREN) {
+            self.parse_proc();
+        } else {
+            let span = self.current_span();
+            self.error(
+                span,
+                "an operator overload's value must be a procedure",
+                E0126,
+            );
+        }
+        self.finish_node();
+    }
+
     fn parse_const_decl(&mut self) {
         self.start_node(CONST_DECL);
         self.parse_name();
@@ -619,6 +675,16 @@ impl<'src> Parser<'src> {
             STRUCT_KW => {
                 // `struct { ... }` — no trailing semicolon
                 self.parse_struct_type();
+            }
+            // `enum { ... }` and `enum_flags { ... }`, the same shape and for the same reason:
+            // ADR-0012 makes all of these instances of `name :: value`, so none takes a
+            // trailing semicolon.
+            ENUM_KW | FLAGS_KW => {
+                self.parse_enum_type();
+            }
+            // `union { ... }` — a struct's shape with one layout rule changed (ADR-0045).
+            UNION_KW => {
+                self.parse_union_type();
             }
             L_PAREN => {
                 // Genuinely ambiguous: after `::`, a `(` may open a procedure's
@@ -833,8 +899,45 @@ impl<'src> Parser<'src> {
                 self.bump();
                 self.finish_node();
             }
+            L_BRACK if self.nth(1) == R_BRACK => {
+                // `[]T` — a view (ADR-0044 §1). Its own node rather than an `ARRAY_TYPE`
+                // with an absent length: `TypeRef::Array` already uses `len: None` to mean
+                // "the length was not a usable literal" (ADR-0039 §3a, E0233), so reusing
+                // the node would make a view indistinguishable from that error.
+                self.start_node(VIEW_TYPE);
+                self.bump(); // `[`
+                self.bump(); // `]`
+                self.parse_type();
+                self.finish_node();
+            }
+            L_BRACK => {
+                // `[N]T` (ADR-0039 §3). `[..]T` is a later wave, and it is refused here
+                // rather than parsed-then-rejected: a dynamic array has no representation
+                // to lower to, so accepting the syntax would mean inventing one.
+                self.start_node(ARRAY_TYPE);
+                self.bump(); // `[`
+                if self.at(DOT_DOT) {
+                    let span = self.current_span();
+                    self.error(span, "dynamic arrays `[..]T` arrive in a later wave", E0124);
+                    self.bump(); // `..`
+                } else if self.at_set(EXPR_START) {
+                    self.parse_expr();
+                } else {
+                    let span = self.current_span();
+                    self.error(span, "expected an array length after `[`", E0124);
+                }
+                self.expect(R_BRACK);
+                self.parse_type();
+                self.finish_node();
+            }
             STRUCT_KW => {
                 self.parse_struct_type();
+            }
+            ENUM_KW | FLAGS_KW => {
+                self.parse_enum_type();
+            }
+            UNION_KW => {
+                self.parse_union_type();
             }
             _ => {
                 let span = self.current_span();
@@ -862,6 +965,93 @@ impl<'src> Parser<'src> {
         self.expect(R_BRACE);
         self.finish_node(); // FIELD_LIST
         self.finish_node(); // STRUCT_TYPE
+    }
+
+    /// Parses `union { i: s64; f: float64; }` (ADR-0045).
+    ///
+    /// Deliberately identical to [`Parser::parse_struct_type`] apart from the node kind: a
+    /// union's *fields* are a struct's fields, sharing `FIELD_LIST`/`FIELD` and therefore the
+    /// same recovery behaviour and the same E0112/E0113 diagnostics. Everything that differs
+    /// between the two is layout, which is `jr-pool`'s (ADR-0045 §3).
+    fn parse_union_type(&mut self) {
+        self.start_node(UNION_TYPE);
+        self.bump(); // `union`
+        self.start_node(FIELD_LIST);
+        self.expect(L_BRACE);
+        while !self.at(R_BRACE) && !self.at(EOF) {
+            if self.at(IDENT) {
+                self.parse_field();
+            } else {
+                let before = self.pos;
+                let span = self.current_span();
+                self.error(span, "expected a field name", E0112);
+                self.recover_until(TokenSet::new(&[IDENT, R_BRACE]), true);
+                self.force_progress(before);
+            }
+        }
+        self.expect(R_BRACE);
+        self.finish_node(); // FIELD_LIST
+        self.finish_node(); // UNION_TYPE
+    }
+
+    /// Parses `enum { RED; GREEN :: 10; }` (ADR-0041 §3).
+    ///
+    /// Shaped like [`Parser::parse_struct_type`] deliberately: the recovery behaviour on a
+    /// malformed member should match a malformed field's, because a user who has seen one
+    /// error already knows what the other means.
+    fn parse_enum_type(&mut self) {
+        self.start_node(ENUM_TYPE);
+        // `enum` or `enum_flags`; the keyword token stays in the node, so lowering reads which
+        // form this was from the tree rather than from a second node kind. One node kind means
+        // every consumer that handles an enum handles both (ADR-0043 §1).
+        self.bump();
+        self.start_node(MEMBER_LIST);
+        self.expect(L_BRACE);
+        while !self.at(R_BRACE) && !self.at(EOF) {
+            if self.at(IDENT) {
+                self.parse_member();
+            } else {
+                let before = self.pos;
+                let span = self.current_span();
+                self.error(span, "expected an enum member name", E0125);
+                self.recover_until(TokenSet::new(&[IDENT, R_BRACE]), true);
+                self.force_progress(before);
+            }
+        }
+        self.expect(R_BRACE);
+        self.finish_node(); // MEMBER_LIST
+        self.finish_node(); // ENUM_TYPE
+    }
+
+    /// Parses one enum member: `RED;` or `NOT_FOUND :: 404;`.
+    ///
+    /// The `:: value` form is optional, which is what makes auto-numbering the default
+    /// (ADR-0041 §3). A `:` here would be a *type* annotation, which an enum member does not
+    /// have — so it is refused by name rather than by falling through to "expected `;`".
+    fn parse_member(&mut self) {
+        self.start_node(MEMBER);
+        self.bump(); // member name (IDENT)
+        if self.eat(COLON_COLON) {
+            if self.at_set(EXPR_START) {
+                self.parse_expr();
+            } else {
+                let span = self.current_span();
+                self.error(span, "expected a value after `::`", E0103);
+            }
+        } else if self.at(COLON) {
+            let span = self.current_span();
+            self.error(
+                span,
+                "an enum member has a value, not a type; use `::` to give it one",
+                E0125,
+            );
+            self.bump(); // `:`
+            if self.at_set(TYPE_START) {
+                self.parse_type();
+            }
+        }
+        self.expect(SEMICOLON);
+        self.finish_node();
     }
 
     fn parse_field(&mut self) {
@@ -938,6 +1128,14 @@ impl<'src> Parser<'src> {
                 self.parse_while_stmt();
                 true
             }
+            FOR_KW => {
+                self.parse_for_stmt();
+                true
+            }
+            DEFER_KW => {
+                self.parse_defer_stmt();
+                true
+            }
             RETURN_KW => {
                 self.parse_return_stmt();
                 true
@@ -953,6 +1151,13 @@ impl<'src> Parser<'src> {
             IDENT => {
                 // Could be: decl (name :: / name := / name :), assign stmt, or expr stmt.
                 let next = self.nth(1);
+                // A **loop label** is `name:` followed by `for` or `while` (ADR-0049 §2), which
+                // collides with a typed declaration `x: s64` on the first two tokens. Only the
+                // *third* tells them apart, so this looks one further rather than committing.
+                if next == COLON && matches!(self.nth(2), FOR_KW | WHILE_KW) {
+                    self.parse_labelled_loop();
+                    return true;
+                }
                 match next {
                     COLON_COLON | COLON_EQ | COLON => {
                         self.start_node(DECL_STMT);
@@ -993,6 +1198,96 @@ impl<'src> Parser<'src> {
         self.finish_node();
     }
 
+    /// Parses `label: for …` or `label: while …` (ADR-0049 §2).
+    ///
+    /// The label wraps the loop rather than the loop containing the label, so a consumer that
+    /// does not care about labels can find the `FOR_STMT`/`WHILE_STMT` by kind and ignore this.
+    fn parse_labelled_loop(&mut self) {
+        self.start_node(LOOP_LABEL);
+        // A `NAME` node rather than a bare token: `LoopLabel::name()` looks for one, and bumping
+        // the identifier straight into the label node left nothing to find — so the label was
+        // silently `None` and `break outer` reported "outside a loop".
+        self.parse_name();
+        self.bump(); // `:`
+        if self.at(FOR_KW) {
+            self.parse_for_stmt();
+        } else {
+            self.parse_while_stmt();
+        }
+        self.finish_node();
+    }
+
+    /// Parses `for x: buf { … }`, `for x, i: buf { … }` and `for i: 0..n { … }` (ADR-0049 §1).
+    ///
+    /// The `<` reverse marker is a *prefix* on the loop rather than a direction on the range,
+    /// because reversing an array and reversing a range must be spelled the same way and only a
+    /// marker on the `for` can do both.
+    fn parse_for_stmt(&mut self) {
+        self.start_node(FOR_STMT);
+        self.bump(); // `for`
+        self.eat(LT); // the optional `<` reverse marker
+        // One or two names, then `:`. The names are `NAME` nodes so that a consumer reads them
+        // the same way it reads any other binding.
+        if self.at(IDENT) {
+            self.parse_name();
+            if self.eat(COMMA) {
+                if self.at(IDENT) {
+                    self.parse_name();
+                } else {
+                    let span = self.current_span();
+                    self.error(span, "expected an index name after `,`", E0127);
+                }
+            }
+        } else {
+            let span = self.current_span();
+            self.error(span, "expected a loop variable name after `for`", E0127);
+        }
+        self.expect(COLON);
+        self.parse_for_iterable();
+        self.parse_body();
+        self.finish_node();
+    }
+
+    /// Parses a `for` header's iterable: an expression, or `a..b` as a `RANGE_EXPR`.
+    ///
+    /// A range is reachable **only** here (ADR-0049 §1): there is no `..` operator in the
+    /// expression grammar, which is what keeps `0..n` from colliding with `[..]T`.
+    fn parse_for_iterable(&mut self) {
+        let cp = self.builder.checkpoint();
+        if self.at_set(EXPR_START) {
+            self.parse_expr();
+        } else {
+            let span = self.current_span();
+            self.error(span, "expected something to iterate over", E0127);
+            return;
+        }
+        if self.at(DOT_DOT) {
+            self.start_node_at(cp, RANGE_EXPR);
+            self.bump(); // `..`
+            if self.at_set(EXPR_START) {
+                self.parse_expr();
+            } else {
+                let span = self.current_span();
+                self.error(span, "expected the end of the range after `..`", E0127);
+            }
+            self.finish_node();
+        }
+    }
+
+    /// Parses `defer stmt;` (ADR-0049 §3).
+    ///
+    /// The deferred thing is an arbitrary statement, not restricted to a call: restricting it
+    /// would need a rule about what counts as "a cleanup".
+    fn parse_defer_stmt(&mut self) {
+        self.start_node(DEFER_STMT);
+        self.bump(); // `defer`
+        if !self.parse_stmt() {
+            let span = self.current_span();
+            self.error(span, "expected a statement after `defer`", E0127);
+        }
+        self.finish_node();
+    }
+
     fn parse_while_stmt(&mut self) {
         self.start_node(WHILE_STMT);
         self.bump(); // `while`
@@ -1027,6 +1322,11 @@ impl<'src> Parser<'src> {
     fn parse_break_stmt(&mut self) {
         self.start_node(BREAK_STMT);
         self.bump(); // `break`
+        // An optional label (ADR-0049 §2). `break;` still means the innermost loop, so the name is
+        // eaten only when present rather than expected.
+        if self.at(IDENT) {
+            self.parse_name();
+        }
         self.expect(SEMICOLON);
         self.finish_node();
     }
@@ -1034,6 +1334,9 @@ impl<'src> Parser<'src> {
     fn parse_continue_stmt(&mut self) {
         self.start_node(CONTINUE_STMT);
         self.bump(); // `continue`
+        if self.at(IDENT) {
+            self.parse_name();
+        }
         self.expect(SEMICOLON);
         self.finish_node();
     }
@@ -1077,8 +1380,17 @@ impl<'src> Parser<'src> {
     /// 1. `||`
     /// 2. `&&`
     /// 3. `==` `!=` `<` `<=` `>` `>=`
-    /// 4. `+` `-` `+%` `-%`
-    /// 5. `*` `/` `%` `*%`
+    /// 4. `|`
+    /// 5. `^`
+    /// 6. `&`
+    /// 7. `+` `-` `+%` `-%`
+    /// 8. `<<` `>>`
+    /// 9. `*` `/` `%` `*%`
+    ///
+    /// The bitwise levels sit **above** comparison rather than below it, which is where C
+    /// puts them (ADR-0042 §1): `flags & MASK == 0` means `(flags & MASK) == 0`, not
+    /// `flags & (MASK == 0)`. Shifts sit between `+` and `*`, following Go and Rust — C puts
+    /// them below `+`, so C reads `a + b << c` as `(a + b) << c`.
     fn parse_expr_bp(&mut self, min_bp: u8) {
         let cp = self.checkpoint();
 
@@ -1100,8 +1412,14 @@ impl<'src> Parser<'src> {
                 PIPE_PIPE => (1, 2),
                 AMP_AMP => (3, 4),
                 EQ_EQ | BANG_EQ | LT | LT_EQ | GT | GT_EQ => (5, 6),
-                PLUS | MINUS | PLUS_PERCENT | MINUS_PERCENT => (7, 8),
-                STAR | SLASH | PERCENT | STAR_PERCENT => (9, 10),
+                // `|` loosest, then `^`, then `&`, so `a & b | c & d` is `(a & b) | (c & d)`
+                // — how a bit-manipulation idiom is written (ADR-0042 §1).
+                PIPE => (7, 8),
+                CARET => (9, 10),
+                AMP => (11, 12),
+                PLUS | MINUS | PLUS_PERCENT | MINUS_PERCENT => (13, 14),
+                SHL | SHR => (15, 16),
+                STAR | SLASH | PERCENT | STAR_PERCENT => (17, 18),
                 _ => break,
             };
 
@@ -1159,6 +1477,33 @@ impl<'src> Parser<'src> {
                     self.bump(); // `.*`
                     self.finish_node();
                 }
+                L_BRACK => {
+                    // `buf[]` and `buf[i]` are the same two tokens up to the bracket's
+                    // contents, so which node this is cannot be decided until after the
+                    // `[` is consumed — hence one arm producing two kinds rather than a
+                    // lookahead that would have to peek past a whole expression.
+                    //
+                    // `buf[]` is the slice operator (ADR-0044 §2). It is a *distinct* node
+                    // from an index with a missing subscript, which is what E0123 used to
+                    // report here: an empty subscript is now legal and means something.
+                    if self.nth(1) == R_BRACK {
+                        self.start_node_at(cp, SLICE_EXPR);
+                        self.bump(); // `[`
+                        self.bump(); // `]`
+                        self.finish_node();
+                        continue;
+                    }
+                    self.start_node_at(cp, INDEX_EXPR);
+                    self.bump(); // `[`
+                    if self.at_set(EXPR_START) {
+                        self.parse_expr();
+                    } else {
+                        let span = self.current_span();
+                        self.error(span, "expected an index expression after `[`", E0123);
+                    }
+                    self.expect(R_BRACK);
+                    self.finish_node();
+                }
                 L_PAREN => {
                     self.start_node_at(cp, CALL_EXPR);
                     self.parse_arg_list();
@@ -1182,7 +1527,9 @@ impl<'src> Parser<'src> {
             return;
         }
         match self.current() {
-            MINUS | BANG | STAR => {
+            // `~` joins the prefix operators (ADR-0042 §4), at the same precedence as the
+            // others — so `~a & b` is `(~a) & b`.
+            MINUS | BANG | STAR | TILDE => {
                 self.start_node(UNARY_EXPR);
                 self.bump(); // operator
                 self.parse_unary_or_primary();
@@ -1201,16 +1548,11 @@ impl<'src> Parser<'src> {
 
     fn parse_primary(&mut self) {
         match self.current() {
-            INT_LITERAL | STRING_LITERAL | TRUE_KW | FALSE_KW => {
-                self.start_node(LITERAL_EXPR);
-                self.bump();
-                self.finish_node();
-            }
-            FLOAT_LITERAL => {
-                // Float literals are reserved (wave W1). Emit a diagnostic but
-                // still produce a LITERAL_EXPR so the tree is usable.
-                let span = self.current_span();
-                self.error(span, "floating-point literals arrive in wave W1", E0120);
+            // `FLOAT_LITERAL` joins the others: it used to be refused with E0120 saying
+            // floats "arrive in wave W1", and W1 is where they arrived (ADR-0040). The
+            // refusal is deleted rather than reworded, because a message naming a wave that
+            // has happened is the plan contradicting the code.
+            INT_LITERAL | FLOAT_LITERAL | STRING_LITERAL | TRUE_KW | FALSE_KW => {
                 self.start_node(LITERAL_EXPR);
                 self.bump();
                 self.finish_node();
@@ -1249,7 +1591,10 @@ impl<'src> Parser<'src> {
                 }
             }
             // Reserved keywords: emit a wave-specific diagnostic.
-            FOR_KW | DEFER_KW | USING_KW => {
+            // `for` and `defer` are real syntax as of ADR-0049 and are handled by
+            // `parse_stmt_inner`, so only `using` is still refused here. Reaching this arm with
+            // `for` would mean one appeared in *expression* position, which is a different error.
+            USING_KW => {
                 let span = self.current_span();
                 let kw = self.current();
                 self.error(
@@ -1261,7 +1606,67 @@ impl<'src> Parser<'src> {
                 self.bump();
                 self.finish_node();
             }
-            ENUM_KW | UNION_KW | CAST_KW | XX_KW | NULL_KW => {
+            // `cast(T, x)`. Parsed as its own node rather than as a call, because the first
+            // argument is a type and Jairs has no way to pass one in a call (ADR-0037 §3).
+            // A missing or malformed operand recovers rather than aborting: the node is
+            // produced either way, so the rest of the expression still parses.
+            CAST_KW => {
+                self.start_node(CAST_EXPR);
+                self.bump(); // `cast`
+                self.expect(L_PAREN);
+                self.parse_type();
+                self.expect(COMMA);
+                self.parse_expr();
+                self.expect(R_PAREN);
+                self.finish_node();
+            }
+            // `xx expr` (ADR-0046 §2). Prefix, and the operand is parsed with the *unary*
+            // parser rather than `parse_expr`, so `xx n + 1` is `(xx n) + 1` — the same
+            // precedence `-`, `!`, `~` and `*` have.
+            XX_KW => {
+                self.start_node(AUTOCAST_EXPR);
+                self.bump(); // `xx`
+                if self.at_set(EXPR_START) {
+                    self.parse_unary_or_primary();
+                } else {
+                    let span = self.current_span();
+                    self.error(span, "expected an expression after `xx`", E0118);
+                }
+                self.finish_node();
+            }
+            // `.RED` (ADR-0046 §3). Reached only here, in *prefix* position: the postfix chain
+            // handles a `.` that follows an expression, so the two cannot be confused.
+            DOT => {
+                self.start_node(MEMBER_EXPR);
+                self.bump(); // `.`
+                if !self.eat(IDENT) {
+                    let span = self.current_span();
+                    self.error(span, "expected a member name after `.`", E0117);
+                }
+                self.finish_node();
+            }
+            // `enum` is real syntax as of ADR-0041, but it is a *type* — so in expression
+            // position it is still an error, and the message must say which kind. Leaving it
+            // in the "arrives in wave W1" list would have told a user a feature they were
+            // using had not arrived.
+            ENUM_KW => {
+                let span = self.current_span();
+                self.error(span, "`enum` is a type, not an expression", E0121);
+                self.start_node(ERROR);
+                self.bump();
+                self.finish_node();
+            }
+            // `union` joined `enum` here when ADR-0045 landed: it is real syntax and a
+            // *type*, so in expression position the message must say which kind rather than
+            // claiming a feature the user is using has not arrived.
+            UNION_KW => {
+                let span = self.current_span();
+                self.error(span, "`union` is a type, not an expression", E0121);
+                self.start_node(ERROR);
+                self.bump();
+                self.finish_node();
+            }
+            NULL_KW => {
                 let span = self.current_span();
                 let kw = self.current();
                 self.error(
@@ -1273,10 +1678,18 @@ impl<'src> Parser<'src> {
                 self.bump();
                 self.finish_node();
             }
-            // Bitwise operators used as prefix (reserved).
-            AMP | PIPE | CARET | TILDE | SHL | SHR => {
+            // `&`, `|`, `^`, `<<` and `>>` are *binary* operators (ADR-0042 §1) and `~` is
+            // prefix (§4), so reaching any of them here means one appeared where an operand
+            // belongs — `a & & b`. Reported as a missing expression rather than as a reserved
+            // operator, which is what it now is.
+            AMP | PIPE | CARET | SHL | SHR => {
                 let span = self.current_span();
-                self.error(span, "bitwise operators arrive in wave W1", E0122);
+                let op = self.current().static_text().unwrap_or("?");
+                self.error(
+                    span,
+                    format!("expected an expression, found the binary operator `{op}`"),
+                    E0118,
+                );
                 self.start_node(ERROR);
                 self.bump();
                 self.finish_node();
@@ -1328,11 +1741,58 @@ impl<'src> Parser<'src> {
 // ---------------------------------------------------------------------------
 
 /// Tokens that can start a type.
-const TYPE_START: TokenSet = TokenSet::new(&[STAR, IDENT, STRUCT_KW]);
+/// The tokens a type can begin with.
+///
+/// `L_BRACK` is here for `[N]T` (ADR-0039 §3). Needed in this set as well as in
+/// `parse_type_inner`: every site that parses a type gates on this first, so without it
+/// `buf: [4]u8;` never reaches the type parser at all and reports "expected a type after
+/// `:`" pointing at the `[`. That is the identical mistake `CAST_KW` made against
+/// `EXPR_START` one wave earlier — a new syntax form needs adding to the *predicate* as
+/// well as to the parser.
+///
+/// `UNION_KW` and `ENUM_KW` are here for a *nested* inline aggregate — `f: union { … }` inside
+/// a struct or a parameter list. `jr-hir` refuses to lower an inline aggregate in a body
+/// (both arenas would have to agree where it lives), but that refusal belongs downstream: the
+/// parser's job is to produce the tree, and a missing entry here would report "expected a
+/// type" at the keyword instead.
+const TYPE_START: TokenSet =
+    TokenSet::new(&[STAR, IDENT, STRUCT_KW, ENUM_KW, FLAGS_KW, UNION_KW, L_BRACK]);
+
+/// The operators ADR-0048 §2 permits an overload for.
+///
+/// Arithmetic and comparison. Kept as a token set rather than a match so that the parser and
+/// sema cannot disagree about which tokens are even *spellable* in the declaration form.
+const OVERLOADABLE_OPS: TokenSet = TokenSet::new(&[
+    PLUS, MINUS, STAR, SLASH, PERCENT, EQ_EQ, BANG_EQ, LT, LT_EQ, GT, GT_EQ,
+]);
+
+/// Operator tokens the *parser* accepts in the declaration form and sema then refuses.
+///
+/// Accepted here so that `operator +% :: …` reports ADR-0048 §2's actual reason — the wrapping
+/// forms are about a machine representation — rather than a syntax error pointing at `+%`.
+const NON_OVERLOADABLE_OPS: TokenSet = TokenSet::new(&[
+    PLUS_PERCENT,
+    MINUS_PERCENT,
+    STAR_PERCENT,
+    AMP,
+    PIPE,
+    CARET,
+    TILDE,
+    SHL,
+    SHR,
+    AMP_AMP,
+    PIPE_PIPE,
+    BANG,
+]);
 
 /// Assignment operators.
 const ASSIGN_OPS: TokenSet = TokenSet::new(&[
     EQ,
+    AMP_EQ,
+    PIPE_EQ,
+    CARET_EQ,
+    SHL_EQ,
+    SHR_EQ,
     PLUS_EQ,
     MINUS_EQ,
     STAR_EQ,
@@ -1676,8 +2136,28 @@ mod tests {
     }
 
     #[test]
-    fn float_literal_is_rejected() {
-        check_has_errors("f :: () { x := 1.5; }");
+    fn float_literals_parse_in_every_form_the_lexer_produces() {
+        // This test used to be `float_literal_is_rejected`, pinning the E0120 refusal. It is
+        // rewritten rather than deleted, because the *lexer* forms are the thing worth
+        // asserting now that the parser accepts them (ADR-0040).
+        for source in [
+            "f :: () { x := 1.5; }",
+            "f :: () { x := 1e9; }",
+            "f :: () { x := 1.5e-3; }",
+            "f :: () { x: float64 = 0.5; }",
+        ] {
+            let p = parse(source, file());
+            assert!(!p.has_errors(), "expected no errors for: {source:?}");
+        }
+    }
+
+    #[test]
+    fn a_dot_still_does_not_start_a_float_without_a_digit() {
+        // The two ways float lexing breaks a language with a postfix deref and a range: `x.*`
+        // must stay a deref and `1..2` must stay three tokens. The lexer already got this
+        // right; this asserts the *parser* agrees now that it accepts floats at all.
+        let p = parse("f :: () { y := x.*; }", file());
+        assert!(!p.has_errors(), "`x.*` is a deref, not a malformed float");
     }
 
     #[test]

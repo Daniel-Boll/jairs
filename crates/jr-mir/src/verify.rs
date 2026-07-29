@@ -40,8 +40,8 @@
 use jr_pool::{Item, Pool, PoolId};
 
 use crate::mir::{
-    BinOp, BlockId, Callee, MirBody, MirSpan, Operand, Place, PlaceBase, Rvalue, Statement,
-    Terminator, UnOp,
+    BinOp, BlockId, Callee, MirBody, MirSpan, Operand, Place, PlaceBase, Projection, Rvalue,
+    Statement, Terminator, UnOp,
 };
 
 // ---------------------------------------------------------------------------
@@ -191,7 +191,9 @@ impl Verifier<'_> {
                 let span = match stmt {
                     Statement::Assign { span, .. }
                     | Statement::Store { span, .. }
-                    | Statement::Discard { span, .. } => *span,
+                    | Statement::Discard { span, .. }
+                    | Statement::Zero { span, .. }
+                    | Statement::BoundsCheck { span, .. } => *span,
                     Statement::Nop => continue,
                 };
                 if let MirSpan::Param(proc, _) = span
@@ -305,6 +307,15 @@ impl Verifier<'_> {
                 self.check_operand_ids(at, *value);
             }
             Statement::Discard { rvalue, span: _ } => self.check_rvalue_ids(at, rvalue),
+            Statement::Zero { place, span: _ } => self.check_place_ids(at, place),
+            Statement::BoundsCheck {
+                index,
+                len,
+                span: _,
+            } => {
+                self.check_operand_ids(at, *index);
+                self.check_operand_ids(at, *len);
+            }
             Statement::Nop => {}
         }
     }
@@ -317,6 +328,7 @@ impl Verifier<'_> {
                 self.check_operand_ids(at, *rhs);
             }
             Rvalue::Unary { op: _, operand } => self.check_operand_ids(at, *operand),
+            Rvalue::Convert { operand, from: _ } => self.check_operand_ids(at, *operand),
             Rvalue::Call { callee, args } => {
                 match callee {
                     Callee::Direct(_) => {}
@@ -339,6 +351,20 @@ impl Verifier<'_> {
                 }
             }
             PlaceBase::Deref(operand) => self.check_operand_ids(at, *operand),
+        }
+        // An index operand is a `ValueId` like any other and can dangle like any other —
+        // which is the whole reason `dce.rs`, `ssa.rs` and `inline.rs` all had to learn to
+        // walk it. This is the check that would catch one of them forgetting.
+        for projection in &place.projection {
+            match projection {
+                Projection::Index(operand) => self.check_operand_ids(at, *operand),
+                Projection::Field(_)
+                | Projection::Deref
+                | Projection::StringData
+                | Projection::StringCount
+                | Projection::ViewData
+                | Projection::ViewCount => {}
+            }
         }
     }
 
@@ -439,6 +465,15 @@ impl Verifier<'_> {
                     } => {
                         mark_place(place, &mut used);
                         mark_operand(*value, &mut used);
+                    }
+                    Statement::Zero { place, span: _ } => mark_place(place, &mut used),
+                    Statement::BoundsCheck {
+                        index,
+                        len,
+                        span: _,
+                    } => {
+                        mark_operand(*index, &mut used);
+                        mark_operand(*len, &mut used);
                     }
                     Statement::Nop => {}
                 }
@@ -575,16 +610,42 @@ impl Verifier<'_> {
             | Item::TypeType
             | Item::ErrorType
             | Item::ForeignLibraryType
+            | Item::ArrayType { .. }
+            | Item::ViewType { .. }
+            | Item::FloatType { .. }
+            | Item::EnumType { .. }
             | Item::StructType { .. }
+            | Item::UnionType { .. }
             | Item::ProcType { .. }
             | Item::VoidValue
             | Item::BoolValue(_)
             | Item::IntValue { .. }
+            | Item::FloatValue { .. }
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
             | Item::ForeignLibraryValue(_) => false,
         }
+    }
+
+    /// Whether `ty` is an `enum_flags` type (ADR-0043 §3).
+    ///
+    /// Kept separate from [`Self::is_integer`], which several checks still want on its own —
+    /// a bounds check's operands must be integers specifically (ADR-0039 §1), and a plain
+    /// enum must *not* pass here.
+    fn is_flags_enum(&self, ty: PoolId) -> bool {
+        if ty.index() >= self.pool.len() {
+            return false;
+        }
+        matches!(self.pool.item(ty), Item::EnumType { flags: true, .. })
+    }
+
+    /// Whether `ty` is an integer or a float type.
+    ///
+    /// Separate from [`Self::is_integer`], which several checks still want on its own — a
+    /// bounds check's operands must be integers specifically (ADR-0039 §1).
+    fn is_numeric(&self, ty: PoolId) -> bool {
+        self.is_integer(ty) || jr_pool::FloatKind::of(self.pool, ty).is_some()
     }
 
     fn is_integer(&self, ty: PoolId) -> bool {
@@ -600,11 +661,17 @@ impl Verifier<'_> {
             | Item::ErrorType
             | Item::ForeignLibraryType
             | Item::PointerType(_)
+            | Item::ArrayType { .. }
+            | Item::ViewType { .. }
+            | Item::FloatType { .. }
+            | Item::EnumType { .. }
             | Item::StructType { .. }
+            | Item::UnionType { .. }
             | Item::ProcType { .. }
             | Item::VoidValue
             | Item::BoolValue(_)
             | Item::IntValue { .. }
+            | Item::FloatValue { .. }
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
@@ -630,6 +697,29 @@ impl Verifier<'_> {
                     Statement::Discard { rvalue, span: _ } => {
                         self.check_rvalue_types(at, None, rvalue);
                     }
+                    Statement::Zero { place, span: _ } => self.check_place_types(at, place),
+                    // Both operands must be integers. This is a real check rather than a
+                    // formality: the comparison is unsigned (ADR-0039 §1), so a `bool` or a
+                    // pointer reaching here would be compared as though it were a width
+                    // the back end picked, and the check would pass or fail for reasons
+                    // unrelated to the index.
+                    Statement::BoundsCheck {
+                        index,
+                        len,
+                        span: _,
+                    } => {
+                        for (operand, which) in [(index, "index"), (len, "length")] {
+                            if let Some(ty) = self.operand_type(*operand)
+                                && !self.is_integer(ty)
+                            {
+                                self.report(
+                                    Some(at),
+                                    "bounds check on a non-integer",
+                                    format!("the {which} of a bounds check must be an integer"),
+                                );
+                            }
+                        }
+                    }
                     Statement::Store {
                         place,
                         value,
@@ -647,6 +737,36 @@ impl Verifier<'_> {
 
     fn check_rvalue_types(&mut self, at: BlockId, dest: Option<PoolId>, rvalue: &Rvalue) {
         match rvalue {
+            // The one check that matters for a conversion: `from` is *recorded* rather than
+            // recovered (see `Rvalue::Convert`), so nothing but this stops it drifting from
+            // the operand it describes. A wrong `from` sign-extends where it should
+            // zero-extend and produces a wrong *number* — no poison, no type error, exactly
+            // the silent miscompile shape `PLAN.md` §5 names.
+            Rvalue::Convert { operand, from } => {
+                if let Some(source) = self.operand_type(*operand)
+                    && let Some(actual) = crate::mir::NumKind::of(self.pool, source)
+                    && actual != *from
+                {
+                    self.report(
+                        Some(at),
+                        "convert disagrees about its source",
+                        format!(
+                            "recorded `from` is {} but the operand is {}",
+                            from.name(),
+                            actual.name()
+                        ),
+                    );
+                }
+                if let Some(dest) = dest
+                    && crate::mir::NumKind::of(self.pool, dest).is_none()
+                {
+                    self.report(
+                        Some(at),
+                        "convert to a non-integer",
+                        "a conversion's destination must be an integer type".to_owned(),
+                    );
+                }
+            }
             Rvalue::Use(operand) => {
                 if let (Some(dest), Some(source)) = (dest, self.operand_type(*operand))
                     && dest != source
@@ -659,7 +779,14 @@ impl Verifier<'_> {
                 }
             }
             Rvalue::Binary { op, lhs, rhs } => {
-                if let (Some(lhs), Some(rhs)) = (self.operand_type(*lhs), self.operand_type(*rhs))
+                // A **shift** is the one binary form whose operands need not share a type: the
+                // count is a separate integer, so `x << 1` has an `s8` value and an `s64`
+                // count and that is correct rather than a coercion (ADR-0042 §2). Every other
+                // operator still requires one type, which is ADR-0015's no-coercion rule.
+                let operands_must_match = !matches!(op, BinOp::Shl | BinOp::Shr);
+                if operands_must_match
+                    && let (Some(lhs), Some(rhs)) =
+                        (self.operand_type(*lhs), self.operand_type(*rhs))
                     && lhs != rhs
                 {
                     self.report(
@@ -684,14 +811,34 @@ impl Verifier<'_> {
                             );
                         }
                     }
-                    UnOp::Neg => {
+                    // `~` is integers only (ADR-0042 §5), unlike `-` — so this is the one
+                    // unary check that must *not* accept a float.
+                    UnOp::BitNot => {
+                        // A flags enum is integer-shaped for bitwise purposes (ADR-0043 §3):
+                        // `~Perm.READ` is well-formed MIR and keeps the flags type.
                         if let Some(ty) = operand_ty
                             && !self.is_integer(ty)
+                            && !self.is_flags_enum(ty)
                         {
                             self.report(
                                 Some(at),
-                                "negation of a non-integer",
-                                "unary `-` wants an integer".to_owned(),
+                                "complement of a non-integer",
+                                "`~` wants an integer".to_owned(),
+                            );
+                        }
+                    }
+                    UnOp::Neg => {
+                        // Integers *and* floats: negating a float flips its sign bit and
+                        // cannot fail, where negating the most negative integer traps
+                        // (ADR-0002 versus ADR-0040 §1). Both are well-formed MIR; the
+                        // difference is in the arithmetic, not the shape.
+                        if let Some(ty) = operand_ty
+                            && !self.is_numeric(ty)
+                        {
+                            self.report(
+                                Some(at),
+                                "negation of a non-number",
+                                "unary `-` wants an integer or a float".to_owned(),
                             );
                         }
                     }
@@ -738,7 +885,13 @@ impl Verifier<'_> {
             | BinOp::Rem
             | BinOp::WrapAdd
             | BinOp::WrapSub
-            | BinOp::WrapMul => {}
+            | BinOp::WrapMul
+            // A bitwise operator's and a shift's result is the operand's type, not a `bool`.
+            | BinOp::BitAnd
+            | BinOp::BitOr
+            | BinOp::BitXor
+            | BinOp::Shl
+            | BinOp::Shr => {}
         }
     }
 
@@ -825,6 +978,17 @@ fn mark_place(place: &Place, used: &mut [bool]) {
         PlaceBase::Slot(_) => {}
         PlaceBase::Deref(operand) => mark_operand(*operand, used),
     }
+    for projection in &place.projection {
+        match projection {
+            Projection::Index(operand) => mark_operand(*operand, used),
+            Projection::Field(_)
+            | Projection::Deref
+            | Projection::StringData
+            | Projection::StringCount
+            | Projection::ViewData
+            | Projection::ViewCount => {}
+        }
+    }
 }
 
 fn mark_rvalue(rvalue: &Rvalue, used: &mut [bool]) {
@@ -835,6 +999,7 @@ fn mark_rvalue(rvalue: &Rvalue, used: &mut [bool]) {
             mark_operand(*rhs, used);
         }
         Rvalue::Unary { op: _, operand } => mark_operand(*operand, used),
+        Rvalue::Convert { operand, from: _ } => mark_operand(*operand, used),
         Rvalue::Call { callee, args } => {
             match callee {
                 Callee::Direct(_) => {}

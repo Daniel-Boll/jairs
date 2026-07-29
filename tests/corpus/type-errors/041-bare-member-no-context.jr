@@ -1,0 +1,13 @@
+// EXPECT: E0244 — a bare `.` member with no context (ADR-0046 §3)
+// `:=` infers from the initialiser, so there is no enum to resolve `RED` in. Deliberately not
+// "unresolved name `RED`", which would send the reader looking for a declaration that was never
+// meant to exist — and deliberately not resolved by searching every enum in scope, because that
+// answer would change the day an unrelated type grew a `RED`.
+Colour :: enum {
+    RED;
+    GREEN;
+}
+
+main :: () {
+    c := .RED;
+}

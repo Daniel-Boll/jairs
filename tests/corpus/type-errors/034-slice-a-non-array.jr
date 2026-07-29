@@ -1,0 +1,8 @@
+// EXPECT: E0239 — `[]` applied to something that is not an array (ADR-0044 §2)
+// `[]` makes a view over a `[N]T`. Applied to a scalar there is nothing to view, and the
+// operator is refused rather than given a meaning — a one-element view of an `s64` would be a
+// different feature with its own design questions.
+main :: () {
+    n := 7;
+    xs := n[];
+}

@@ -127,6 +127,32 @@ pub struct EffectRow;
 // Struct fields
 // ---------------------------------------------------------------------------
 
+/// One member of an enum type (ADR-0041 §4).
+///
+/// A `(name, value)` pair rather than a [`Field`]: a field has a *type* and a member has a
+/// *value*, so reusing `Field` would mean a `PoolId` that is always the backing type and a
+/// name that lies about what it holds.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EnumMember {
+    /// The member's name, interned by the shared [`jr_base::Interner`].
+    pub name: Symbol,
+    /// The member's value.
+    ///
+    /// `i64` rather than `PoolId`: every member of every enum has the same backing type
+    /// (ADR-0041 §3), so interning each value would add a pool entry per member for no
+    /// identity gain. The value is interned on demand where a `Colour.RED` expression needs
+    /// one.
+    pub value: i64,
+}
+
+impl EnumMember {
+    /// Creates a member.
+    #[must_use]
+    pub const fn new(name: Symbol, value: i64) -> Self {
+        Self { name, value }
+    }
+}
+
 /// One field of a struct type.
 ///
 /// Fields are *not* part of a struct type's key (ADR-0015 makes struct identity
@@ -181,6 +207,15 @@ pub enum Item {
         /// Width in bits.
         bits: u16,
     },
+    /// `float32` or `float64` (ADR-0040 §2).
+    ///
+    /// **Structural**, like [`Item::IntType`]: the width is the whole identity, and there is
+    /// no signedness field because IEEE-754 has one signed representation and no unsigned
+    /// counterpart.
+    FloatType {
+        /// Width in bits: 32 or 64.
+        bits: u16,
+    },
     /// `string` — a distinct builtin type whose *layout* is
     /// `{data: *u8, count: s64}` (ADR-0004, ADR-0015 §2).
     ///
@@ -216,6 +251,56 @@ pub enum Item {
         /// The pointee type.
         PoolId,
     ),
+    /// `[N]T` — a fixed-size array (ADR-0039 §3).
+    ///
+    /// **Structural**, like [`Item::PointerType`] (ADR-0015 §4): `[4]s64` interns to
+    /// one ID however many files write it, and the length is part of the key, so
+    /// `[4]s64` and `[5]s64` are different types. Nests, so `[2][3]u8` is this
+    /// variant applied twice.
+    ArrayType {
+        /// The element type.
+        elem: PoolId,
+        /// The number of elements.
+        ///
+        /// In the key: a length outside the type identity would make `[4]s64` and
+        /// `[5]s64` the same type and push the length into sema, which is how a
+        /// language ends up unable to say what a value's type is.
+        len: u64,
+    },
+    /// `[]T` — a view over a run of elements (ADR-0044 §1).
+    ///
+    /// **Structural**, like [`Item::PointerType`] and [`Item::ArrayType`] (ADR-0015 §4), and
+    /// it nests: `[][]s64` is this variant applied twice. There is no length in the key
+    /// because a view's length is *runtime* data — that is the whole difference from
+    /// [`Item::ArrayType`], whose `len` is part of its identity.
+    ///
+    /// The layout is `{data: *T, count: s64}`, the same two words [`Item::StringType`] has
+    /// (ADR-0004). The layouts are shared and the identities are not: `string` is UTF-8 by
+    /// convention and a `[]u8` is bytes, so merging them would make every byte run printable
+    /// and every string indexable as a number (ADR-0044 §1).
+    ViewType {
+        /// The element type.
+        elem: PoolId,
+    },
+    /// A nominal enum type, keyed on its declaration site (ADR-0041 §4).
+    ///
+    /// Structurally identical to [`Item::StructType`], and nominal for the same reason: a
+    /// bare integer must not be passable where an enum belongs, which is the only thing an
+    /// enum buys over its backing type.
+    ///
+    /// The member list is *not* in the key. It is stored separately and may be filled in
+    /// after the type has an ID — see [`Pool::set_enum_members`](crate::Pool::set_enum_members).
+    EnumType {
+        /// Where the enum was declared. This alone is the identity.
+        decl: DeclId,
+        /// `true` for `enum_flags` (ADR-0043 §2).
+        ///
+        /// Redundant *as identity* — two enums at one `DeclId` cannot differ in it — and
+        /// carried anyway so that any consumer holding a `PoolId` can answer "is this a flags
+        /// enum" without a side-table lookup. Sema needs that answer at every operator site,
+        /// and a lookup per site is how the two would eventually disagree.
+        flags: bool,
+    },
     /// A nominal struct type, keyed on its declaration site (ADR-0015 §1).
     ///
     /// The field list is *not* in the key. It is stored separately and may be
@@ -223,6 +308,21 @@ pub enum Item {
     /// [`Pool::set_struct_fields`](crate::Pool::set_struct_fields).
     StructType {
         /// Where the struct was declared. This alone is the identity.
+        decl: DeclId,
+    },
+    /// A nominal union type, keyed on its declaration site (ADR-0045 §4).
+    ///
+    /// Structurally identical to [`Item::StructType`] and nominal for the same reason, and it
+    /// shares the *same* field side table — `set_struct_fields` keys on [`DeclId`] and knows
+    /// nothing about which kind of declaration it was, so the fields are the same data.
+    ///
+    /// A **separate variant** rather than a `union: bool` on `StructType`, because the two
+    /// differ in *layout*: every field of a union sits at offset 0 and the size is the largest
+    /// field's. A boolean would let a site that forgot to check compute struct offsets for a
+    /// union and produce wrong addresses silently; a variant makes every offset-computing site
+    /// a compile error until it handles both.
+    UnionType {
+        /// Where the union was declared. This alone is the identity.
         decl: DeclId,
     },
     /// A procedure type.
@@ -257,6 +357,21 @@ pub enum Item {
         /// The value's type.
         ty: PoolId,
         /// The value, as raw bits.
+        bits: u64,
+    },
+    /// A floating-point compile-time value.
+    ///
+    /// The value is stored as **bits**, not as an `f64`, because this enum derives `Hash`
+    /// and `Eq` and `f64` has neither: `NaN != NaN` breaks `Eq`, and `0.0 == -0.0` with
+    /// different bit patterns breaks the `Hash`/`Eq` contract (ADR-0040's Consequences).
+    ///
+    /// The consequence is that `0.0` and `-0.0` are **distinct pool entries**, which is
+    /// correct rather than a compromise: they are distinguishable values, and
+    /// `1.0/0.0` against `1.0/-0.0` proves it.
+    FloatValue {
+        /// The value's type.
+        ty: PoolId,
+        /// The value, as raw IEEE-754 bits. A `float32`'s are its low 32.
         bits: u64,
     },
     /// A string compile-time value.
@@ -305,17 +420,23 @@ impl Item {
             Self::VoidType
             | Self::BoolType
             | Self::IntType { .. }
+            | Self::FloatType { .. }
             | Self::StringType
             | Self::TypeType
             | Self::ErrorType
             | Self::ForeignLibraryType
             | Self::PointerType(_)
+            | Self::ArrayType { .. }
+            | Self::ViewType { .. }
+            | Self::EnumType { .. }
             | Self::StructType { .. }
+            | Self::UnionType { .. }
             | Self::ProcType { .. } => true,
 
             Self::VoidValue
             | Self::BoolValue(_)
             | Self::IntValue { .. }
+            | Self::FloatValue { .. }
             | Self::StrValue(_)
             | Self::TypeValue(_)
             | Self::ProcValue { .. }

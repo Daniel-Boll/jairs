@@ -63,14 +63,19 @@
 //! `jr-hir`.
 
 mod arith;
+mod float;
 mod item;
 mod layout;
 mod pool;
 
-pub use arith::{IntCmp, IntKind, IntOp, IntTrap, int_binary, int_compare, int_negate};
-pub use item::{ContextKind, DeclId, EffectRow, Field, Item, PoolId, StrId};
+pub use arith::{IntCmp, IntKind, IntOp, IntTrap, int_binary, int_compare, int_negate, int_not};
+pub use float::{
+    FloatCmp, FloatKind, FloatOp, float_binary, float_compare, float_negate, float_to_int,
+    int_to_float,
+};
+pub use item::{ContextKind, DeclId, EffectRow, EnumMember, Field, Item, PoolId, StrId};
 pub use layout::{
-    Layout, LayoutError, TargetLayout, align_up, field_offset, layout_of, string_count,
-    string_data, string_layout,
+    Layout, LayoutError, TargetLayout, align_up, field_offset, layout_of, pair_count, pair_data,
+    pair_layout, string_count, string_data, string_layout,
 };
 pub use pool::Pool;

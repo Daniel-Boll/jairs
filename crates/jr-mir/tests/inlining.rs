@@ -34,7 +34,9 @@ fn spans(body: &MirBody) -> Vec<MirSpan> {
             match stmt {
                 Statement::Assign { span, .. }
                 | Statement::Store { span, .. }
-                | Statement::Discard { span, .. } => out.push(*span),
+                | Statement::Discard { span, .. }
+                | Statement::Zero { span, .. }
+                | Statement::BoundsCheck { span, .. } => out.push(*span),
                 Statement::Nop => {}
             }
         }
@@ -49,7 +51,10 @@ fn calls(body: &MirBody) -> usize {
         for stmt in &block.stmts {
             let rvalue = match stmt {
                 Statement::Assign { rvalue, .. } | Statement::Discard { rvalue, .. } => rvalue,
-                Statement::Store { .. } | Statement::Nop => continue,
+                Statement::Store { .. }
+                | Statement::Zero { .. }
+                | Statement::BoundsCheck { .. }
+                | Statement::Nop => continue,
             };
             if matches!(rvalue, Rvalue::Call { .. }) {
                 count += 1;

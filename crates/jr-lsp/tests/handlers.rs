@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use jr_db::{JairsDatabase, ModuleSearchPaths, SourceFile};
-use jr_lsp::{Encoding, diagnostics, goto_definition, hover};
+use jr_lsp::{Encoding, completion, diagnostics, goto_definition, hover};
 use lsp_types::{HoverContents, MarkupContent, Position};
 
 // ---------------------------------------------------------------------------
@@ -116,6 +116,91 @@ fn hovering_a_local_shows_its_type() {
     // ADR-0028 §4: the name is on the card, not just the type. Which binding the
     // cursor found matters wherever one shadows another, and `s64` alone did not say.
     assert_eq!(hover_text(&found.contents), "```jr\nmain\nn: s64\n```");
+}
+
+#[test]
+fn hovering_an_array_local_shows_the_length_in_the_type() {
+    // ADR-0039 §3 makes the length part of the type's identity, so a hover card that
+    // said `[]u8` would be describing a different type — and one this wave does not have.
+    let source = "main :: () {\n    buf: [4]u8;\n    other := buf;\n}\n";
+    let (db, search, file) = program(source);
+    let found = hover(&db, file, search, Encoding::Utf8, at(source, "buf;"))
+        .expect("an array local has a type");
+    assert_eq!(hover_text(&found.contents), "```jr\nmain\nbuf: [4]u8\n```");
+}
+
+#[test]
+fn completing_a_field_on_an_array_offers_count_and_not_data() {
+    // `.count` exists and `.data` deliberately does not (ADR-0039 §5): handing out a `*T`
+    // into a stack slot with no way to bound it would undo the bounds check this same wave
+    // added. A completion list that offered it would advertise a field sema rejects.
+    let source = "main :: () {\n    buf: [4]u8;\n    n := buf.\n}\n";
+    let (db, search, file) = program(source);
+    let items = completion(&db, file, search, Encoding::Utf8, at(source, "\n}"));
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"count"),
+        "expected `count`, got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"data"),
+        "an array has no `.data`, got {labels:?}"
+    );
+}
+
+#[test]
+fn hovering_an_enum_shows_its_members_with_resolved_values() {
+    // The values are what a hover card can say that the *source* cannot: auto-numbering is
+    // invisible in `enum { RED; GREEN; }`, and the whole point of showing a member list is to
+    // answer "what number is `GREEN`" (ADR-0041). Read from the pool, so the card cannot
+    // disagree with the compiler about a value.
+    let source =
+        "Colour :: enum { RED; GREEN :: 5; BLUE; }\n\nmain :: () {\n    c := Colour.RED;\n}\n";
+    let (db, search, file) = program(source);
+    let found = hover(&db, file, search, Encoding::Utf8, at(source, "Colour ::"))
+        .expect("an enum declaration has a card");
+    let text = hover_text(&found.contents);
+    assert!(
+        text.contains("RED = 0"),
+        "auto-numbering starts at 0, got {text:?}"
+    );
+    assert!(text.contains("GREEN = 5"), "explicit value, got {text:?}");
+    assert!(
+        text.contains("BLUE = 6"),
+        "a later member continues from an explicit value rather than resetting to its \
+         index, got {text:?}"
+    );
+}
+
+#[test]
+fn hovering_an_enum_typed_local_names_the_enum_not_its_backing_type() {
+    // `Colour` is nominal, not an alias for `s64` (ADR-0041 §3) — a card that said `s64`
+    // would be describing the representation rather than the type.
+    let source = "Colour :: enum { RED; }\n\nmain :: () {\n    c := Colour.RED;\n    d := c;\n}\n";
+    let (db, search, file) = program(source);
+    let found = hover(&db, file, search, Encoding::Utf8, at(source, "c;"))
+        .expect("an enum-typed local has a type");
+    assert_eq!(hover_text(&found.contents), "```jr\nmain\nc: Colour\n```");
+}
+
+#[test]
+fn hovering_an_enum_flags_names_the_form_and_shows_powers_of_two() {
+    // Two things a card must not get wrong (ADR-0043): the *form*, because `enum` and
+    // `enum_flags` number differently and accept different operators, and the *values*, because
+    // powers-of-two numbering is invisible in the source.
+    let source =
+        "Perm :: enum_flags { READ; WRITE; EXEC; }\n\nmain :: () {\n    p := Perm.READ;\n}\n";
+    let (db, search, file) = program(source);
+    let found = hover(&db, file, search, Encoding::Utf8, at(source, "Perm ::"))
+        .expect("an enum_flags declaration has a card");
+    let text = hover_text(&found.contents);
+    assert!(
+        text.contains("enum_flags"),
+        "the card must say which form, got {text:?}"
+    );
+    assert!(text.contains("READ = 1"), "flags start at 1, got {text:?}");
+    assert!(text.contains("WRITE = 2"), "powers of two, got {text:?}");
+    assert!(text.contains("EXEC = 4"), "powers of two, got {text:?}");
 }
 
 #[test]
@@ -801,9 +886,14 @@ fn references_to_an_imported_name_cross_files() {
         false,
         &list_of(&db).files,
     );
-    // Five, and the count is the interesting part: one use in `a.jr`, two in `b.jr`, and
-    // **two inside `Basic` itself**, where `print_line` calls `print`. A search that only
-    // looked at importers would have found three and looked correct.
+    // Six, and the count is the interesting part: one use in `a.jr`, two in `b.jr`, and
+    // **three inside `Basic` itself** — `print_line` calls `print` twice and `print_int`
+    // calls it once for the minus sign. A search that only looked at importers would have
+    // found three and looked correct.
+    //
+    // This count is deliberately exact rather than `>=`, which is why adding `print_int` to
+    // `Basic` moved it from five to six: a loose assertion here would not have noticed a
+    // search that started missing the declaring module.
     let per_file = |suffix: &str| {
         found
             .iter()
@@ -814,10 +904,10 @@ fn references_to_an_imported_name_cross_files() {
     assert_eq!(per_file("b.jr"), 2, "{found:?}");
     assert_eq!(
         per_file("Basic/module.jr"),
-        2,
+        3,
         "uses inside the declaring module are references too: {found:?}"
     );
-    assert_eq!(found.len(), 5, "{found:?}");
+    assert_eq!(found.len(), 6, "{found:?}");
 }
 
 #[test]

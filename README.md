@@ -17,8 +17,13 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after the **`#import` navigation** wave (ADR-0035). 837 workspace
-tests; six CI gates green on macOS arm64, plus 67 Neovim checks that are verified rather than
+Last updated after **operator overloading** (ADR-0048), which **completes wave W1**, on top of
+imported enum members and a refused body that reports instead of crashing (ADR-0047), and `xx`
+autocast with bare `.RED` (ADR-0046), on top of `union` (ADR-0045), `[]T` views
+(ADR-0044), `enum_flags` (ADR-0043), the bitwise operators (ADR-0042), `enum` (ADR-0041),
+`float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and bounds checks (ADR-0039), negative
+literals (ADR-0038) and the integer tower, `cast` and `print_int` (ADR-0037). 896 workspace
+tests; six CI gates green on macOS arm64, plus 103 Neovim checks that are verified rather than
 gated.
 
 ### What you can actually do
@@ -27,13 +32,14 @@ gated.
 |---|---|---|
 | Compile and run a program in the comptime VM | `jr run file.jr` | Register bytecode interpreter, no JIT tier |
 | Compile to a native executable | `jr build file.jr -o out` | arm64 macOS verified; x86-64 Linux configured in CI but **never run** |
-| Get rustc-grade diagnostics | `jr check file.jr` | 61 codes across lexer, parser, HIR, sema, MIR and const-eval. E0218 and E0212 suggest a near name; E0231 is the one *warning* — an unused `#import` |
+| Get rustc-grade diagnostics | `jr check file.jr` | 79 codes across lexer, parser, HIR, sema, MIR and const-eval. E0218 and E0212 suggest a near name; E0231 is the one *warning* — an unused `#import` |
 | Format source canonically | `jr fmt [--check] paths…` | The corpus is canonical under it, CI-enforced |
 | Inspect tokens or the CST | `jr parse file.jr` | Debug aid |
 | Measure language-server latency | `jr bench file.jr` | Reports min/median/p95 cold, warm and after an edit. **Reports, never judges** — no threshold, not a gate (ADR-0033) |
+| Print a number | `print_int(n)` from `modules/Basic` | Written in Jairs, and still recursive — both the `[N]u8` buffer and the `[]u8` view it wanted now exist, so nothing in the language is missing; converting it is its own change. Traps on the most negative `s64`, which cannot be negated (ADR-0002) |
 | Call libc from Jairs | `#foreign` / `#system_library` | Through libffi at comptime, a real call natively |
 | Fold a compile-time call | `COMPUTED :: #run add(2, 3)` | One *trivial* `#run`: a call or a constant expression, same file only |
-| Import a module | `#import "Basic";` | One module = one file, flat imports, cycles legal |
+| Import a module | `#import "Basic";` | One module = one file, flat imports, cycles legal. Procedures, types and enum members cross the boundary; an imported *constant*'s value does not, and E0245 warns rather than failing silently |
 | Edit in Neovim, with highlighting, diagnostics, hover, goto-definition, completion, rename, code actions, signature help and inlay hints | `editors/nvim/` | Two lines in `init.lua` and one build script; no plugin manager. Neovim **0.11+** — every capability is on a stock 0.11 default binding (`K`, `gd`, `gra`, `grn`, `grr`, `gO`, `<C-s>`), so there are no keymaps to add. Works on a standalone `.jr` file too, not only inside a checkout. See [`editors/nvim/README.md`](editors/nvim/README.md) |
 | Use any other LSP editor | `jr lsp` | Speaks LSP 3.17 over stdio. The repository packages for Neovim only and **will not ship a VS Code extension** (ADR-0036) — point your client at the command yourself |
 
@@ -47,19 +53,28 @@ The authoritative version of this list is
 
 | Works | Absent (wave) |
 |---|---|
-| `s64`, `bool`, `string`, `*T` | rest of the numeric tower, `float32/64` (**W1**) |
-| `u8` in type position only, for `*u8` and FFI | general `u8` arithmetic, `cast()`, `xx` (**W1**) |
-| `struct { … }`, one level, nominal | `enum`, `enum_flags`, `union` (**W1**) |
+| `s8 s16 s32 s64`, `u8 u16 u32 u64`, `bool`, `string`, `*T` | |
+| `float32`, `float64` — plain IEEE-754, no traps | `%` on floats, `is_nan`, math intrinsics (**W7**) |
+| `cast(T, x)` between any two numeric types, and `xx` where the context gives the type | pointer conversions — `xx` is no more powerful than `cast` |
+| `struct { … }`, one level, nominal | |
+| `union { … }`, nominal, **untagged** — every field at offset 0 | a *tagged* variant type (**W2**, once pattern matching exists) |
+| `enum { RED; GREEN :: 5; }`, nominal, namespaced members, and bare `.RED` from context | `.RED` in a `switch`, since there is no `switch` (**W2**) |
+| `enum_flags { READ; WRITE; }` — powers of two, combines with `& \| ^ ~` | building one from a computed integer (`cast(Perm, 3)` is refused) |
 | procedures, single return value | multiple returns, named/default args (**W2**) |
 | `::` constant, `:=` inferred, `: T = v` typed, `---` uninit | |
 | `if` / `else if` / `else`, `while`, `break`, `continue`, `return` | `for`, labelled break, `defer`, `using` (**W2**) |
 | blocks and block scope, shadowing | `#scope_*` visibility (**W2**) |
-| `+ - * / %` trapping, `+% -% *%` wrapping, unary `-` | bitwise `& \| ^ ~ << >>` (**W1**) |
-| `== != < <= > >=`, `&& \|\| !` short-circuiting | operator overloading (**W1**) |
-| `=` and compound `+= -= *= /= %= +%= -%= *%=` | |
-| `a.b.c` field access, auto-deref through pointers | arrays `[N]T`, views `[]T`, dynamic `[..]T` (**W1**) |
+| `+ - * / %` trapping, `+% -% *%` wrapping, unary `-` | |
+| `& \| ^ ~ << >>`, **non-C precedence**, trapping shift count | `transmute` — though a `union { f: float64; bits: u64; }` reads a float's bits |
+| `== != < <= > >=`, `&& \|\| !` short-circuiting | |
+| `operator + :: (a: Vec2, b: Vec2) -> s64` — arithmetic and comparison, one operand local | unary, `[]`, `()` and compound-assignment overloading; an overload in a `#run` |
+| `=` and compound `+= -= *= /= %= +%= -%= *%= &= \|= ^= <<= >>=` | |
+| `a.b.c` field access, auto-deref through pointers | dynamic arrays `[..]T` (**a later wave**) |
+| `[]T` views: `buf[]`, `xs[i]`, `xs.count`, writes through to the array | sub-slicing `buf[1..3]`, `==` on views, returning a view (**a later wave**) |
+| `[N]T` fixed arrays: `a[i]`, `.count`, zeroed by default, bounds-checked | array literals `[1, 2, 3]` (**a later wave**) |
 | calls, nested; a discarded call is a statement | |
-| integer literals (dec/hex/bin/oct, `_`), string literals + escapes | usable float literals — they lex, the parser rejects them (**W1**) |
+| integer literals (dec/hex/bin/oct, `_`), string literals + escapes | |
+| float literals: `1.5`, `1e9`, `1.5e-3`, `1_000.5` | float *printing* — `print_int` has no counterpart |
 | nesting block comments; `///` and `//!` doc comments, shown on hover | doc generation (`jr doc`) — nothing consumes docs but the language server |
 | one trivial `#run` | arbitrary `#run`, RTTI, `#insert`, `#code` (**W4**) |
 | `#import`, `#foreign`, `#system_library` | polymorphs `$T`, `#expand` macros (**W5**) |
@@ -76,23 +91,141 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
 | Formatter | **Works** | Pure function over the CST |
 | HIR, name resolution, module loader | **Works** | Flat import merge (ADR-0014) |
 | InternPool (types, comptime values, layout, arithmetic) | **Works** | One layout computation and one integer evaluator, shared (ADR-0018 §2, ADR-0022 §2) |
-| Sema (signatures, checking, inference) | **Works** | E0212–E0226; no const-eval here — ADR-0018 §3 puts it in the VM |
-| MIR (typed SSA, Braun construction) | **Works** | Block parameters, not phis (ADR-0017); CFG diagnostics E0227–E0229 |
-| Mid-end | **Four passes** | Inliner, store-to-load forwarding, const-prop, DCE, to a bounded fixed point (ADR-0021 – ADR-0023). Forwarding is block-local, so a value read across a loop stays in memory; no SROA; the SSA value arena is never compacted |
-| Bytecode VM + libffi | **Works** | Per-instruction spans, so a trap names its line. No JIT |
+| Sema (signatures, checking, inference) | **Works** | E0212–E0246; a union's diagnostics are a struct's unchanged, deliberately, and a bare `.RED`'s "no such member" is the qualified form's; no const-eval here — ADR-0018 §3 puts it in the VM, which is why an array length must be a literal. Float literals are context-typed with **no** fit check, because IEEE-754 saturates (ADR-0040 §5) |
+| MIR (typed SSA, Braun construction) | **Works** | Block parameters, not phis (ADR-0017); CFG diagnostics E0227–E0229; an explicit `bounds_check` statement and an explicit `zero`, both ADR-0039 |
+| Mid-end | **Four passes** | Inliner, store-to-load forwarding, const-prop, DCE, to a bounded fixed point (ADR-0021 – ADR-0023). Forwarding is block-local, so a value read across a loop stays in memory, and it refuses two unequal array indices as possibly-aliasing; no SROA; the SSA value arena is never compacted |
+| Bytecode VM + libffi | **Works** | Per-instruction spans, so a trap names its line. Floats need no new value variant, but are dispatched *before* the bit-compare fallback that would answer `NaN == NaN` and `-0.0 == 0.0` backwards. No JIT |
 | Cranelift back end + linker | **Works** | Refuses an aggregate return and a call through a procedure pointer — so does the VM |
 | salsa incremental database | **Works** | Built *and* optimized MIR staged (ADR-0021 §1); invalidation is at file grain |
 | Differential harness | **Works** | Compares stdout, stderr and exit status of both engines as subprocesses |
 | LLVM back end | **Not started** | Wave W8 |
 | Language server | **Works** | `jr lsp`, twelve capabilities: diagnostics, hover, goto-definition, completion + resolve, references, documentHighlight, rename (workspace-wide, refuses rather than half-renaming), documentSymbol, workspaceSymbol, code actions, `signatureHelp`, inlay hints (ADR-0024, ADR-0028, ADR-0030, ADR-0031). Dispatches a read only after every write, because the reverse silently lost `didOpen`'s diagnostics (ADR-0032). No semantic tokens |
-| Neovim integration | **Works** | `editors/nvim/` (ADR-0025), verified against the real editor by a 67-check script — **not** by CI, which has no Neovim |
+| Neovim integration | **Works** | `editors/nvim/` (ADR-0025), verified against the real editor by an 81-check script — **not** by CI, which has no Neovim |
 | VS Code integration | **Will not be built** | ADR-0036: the maintainer does not use it, and a packaging target for an unused editor rots. `jr lsp` is editor-agnostic, so any LSP client works |
 | Compilation driver / workspaces | **Partly** | `jr-driver` is still a one-line stub; the workspace *file list* exists in `jr-db::workspace` (ADR-0029): the search paths plus the root tree, walked and watched, bounded at 10 000 files |
 | Debug info | **Not started** | No DWARF at all; a native binary is not debuggable |
-| Optimisation levels | **Not started** | No `--release`, no `opt_level`; one code path |
+| Optimisation levels | **Not started** | No `--release`, no `opt_level`; one code path. This is why bounds checks cannot yet be *stripped*: the MIR op exists and the build setting that removes it does not (ADR-0039 §7) |
 
 ### Things it is easy to over-read
 
+- **A flags enum's combination names no member, and that is the design.** `Perm.READ |
+  Perm.WRITE` is 3, which no member has. The type's job is keeping a *set* distinguishable from
+  an integer — so a `Perm` stays a `Perm` through `& | ^ ~` — not naming every subset. Testing a
+  flag is `(f & Perm.READ) == Perm.READ`, which is the idiom Jai uses and which composes:
+  `f & (A|B)` tests two at once, where a binary `has` operator would not.
+- **`enum_flags` numbers by powers of two, and the continue-from-here rule has two ways to go
+  wrong.** After an explicit `B :: 8` the next flag is 16 — the next power of two above the
+  *value*, not above the member's index. And that holds when the previous value is not itself a
+  power of two: after a named mask `AB :: 3` the next flag is 4, not 6. An explicit `NONE :: 0;`
+  leaves the sequence undisturbed, and zero is never created for you.
+- **A plain `enum` still refuses `|`**, deliberately (ADR-0043 §4). If bitwise worked on both
+  forms the declaration would carry no information, and the numbering difference alone would
+  separate a set from an alternative — which is how `READ|WRITE` silently colliding with a
+  member becomes possible. The diagnostic names `enum_flags`, because a reader who has not met
+  the form cannot find it.
+- **There is no way to build a flags value from a computed integer.** `cast(Perm, 3)` is
+  refused, and the hole it closes is wider for flags than for a plain enum: *most* integers are
+  valid flag sets, so a wrong one would look right. Members are combined with `|` instead.
+- **Bitwise operators bind tighter than comparison, which is *not* C's ordering.**
+  `flags & MASK == 0` means `(flags & MASK) == 0`. C reads it as `flags & (MASK == 0)` —
+  something Ritchie described as a mistake kept only for compatibility with pre-`&&` C, and
+  which Go, Rust and Zig all changed. Shifts sit between `+` and `*`, so `a + b << c` is
+  `a + (b << c)`; C puts them below `+`. Under C's ordering Jairs would *refuse* a line that
+  reads correctly, because `flags & bool` is a type error here rather than a wrong answer.
+- **An out-of-range shift count traps.** `x << 8` on an `s8` traps, and so does a negative
+  count. This is ADR-0002's rule applied to a new operator: masking to the width is what x86
+  does natively and would silently turn `<< 8` into `<< 0`, and saturating to 0 costs the same
+  branch while turning a likely bug into an answer. The shift's *result* is not checked —
+  `1 << 7` in an `s8` is -128, because that is exactly the bits requested.
+- **`>>` is arithmetic for a signed type and logical for an unsigned one**, decided by the
+  type exactly as `/` chooses between `sdiv` and `udiv`. There is no `>>>`: a program that
+  wants the bits without the sign casts to the unsigned type of the same width.
+- **Bitwise operators are integers only.** `1.5 & 2.5` is refused, because a float's bits are
+  a sign, an exponent and a mantissa — ANDing two of them is the AND of nothing meaningful.
+  There is also **no way to read a float's bits**: `cast` converts values, not
+  representations, so a bit-level float inspection needs an operation Jairs does not have.
+  `Colour.RED | Colour.GREEN` is refused too, and that refusal is what `enum_flags` will lift.
+- **An enum is nominal, and `Colour.RED` is the only way to name a member.** `Colour` is not
+  `s64`: a bare integer cannot be passed where an enum belongs, and `cast(s64, c)` is how the
+  number is obtained. Members are namespaced and never enter the enclosing scope, so adding one
+  cannot shadow an existing name — C's rule would be worse here than in C, because ADR-0014's
+  flat import merge would let an imported enum's members enlarge the name space every
+  identifier resolves against.
+- **Bare `.RED` does not work yet, and that is a planned gap rather than an oversight.** Jai
+  allows `c: Colour = .RED;`. ADR-0041 §2 records the five concrete steps it needs — a syntax
+  node, an HIR expression, a sema rule on the context path, an audit of every place a type is
+  pushed inward, and a decision about `switch` — because it asks the context for a *namespace
+  to resolve a name in* rather than a type to give an untyped value, which is a new resolution
+  rule and not a new literal. `Colour.RED` stays valid forever, so nothing written today breaks
+  when `.RED` lands.
+- **An enum's numbering is Jai's, including the part that surprises people.** Members
+  auto-number from 0, an explicit value is allowed, and **later members continue from it** —
+  `enum { A; B :: 10; C; }` is 0, 10, 11, not 0, 10, 2. Duplicate values are legal. Ordering
+  and arithmetic are refused: with auto-numbering `Colour.RED < Colour.GREEN` would be true by
+  an accident of declaration order, which is a fact about the source file rather than about
+  colours.
+- **An enum declared in an imported module cannot be used from another file yet.** The member
+  lookup handles a local declaration only, because an imported enum's arena index belongs to
+  the other file — the same cross-file restriction an imported *constant* has (ADR-0017 §3).
+- **Floats do not trap, and that is a scoping of ADR-0002 rather than an exception to it.**
+  `1.0/0.0` is `inf`, `0.0/0.0` is `NaN`, and an overflowing multiply saturates. Integer
+  overflow traps because an overflowing `+` produces a result the program did not ask for;
+  IEEE-754 *defines* `inf` as the answer, so there is nothing to refuse (ADR-0040 §1). The
+  consequence that surprises people: `==` is not reflexive, because `NaN == NaN` is false.
+  There is no `is_nan` yet, so the check is spelled `x != x`.
+- **`NaN == NaN` and `-0.0 == 0.0` are the two answers a raw bit compare gets wrong**, in
+  opposite directions — identical bits for the first, different bits for the second. The VM
+  has a bit-compare fallback for `bool` and pointer equality, and a float reaching it would
+  answer both backwards. That is a *plausible wrong answer* rather than an error, which is
+  why floats are dispatched before it and why a corpus file pins both values in both engines.
+- **A `float32` operation is computed at `float64` precision in the VM.** `jr-pool` does the
+  arithmetic in `f64` and rounds once at the end, while Cranelift emits native `f32`
+  instructions throughout. That is a double rounding and it is visible in the last bit of
+  some results. The two engines are held equal by `differential.rs` rather than by
+  construction, so a case that disagreed would be a real finding rather than a surprise.
+- **There is no implicit conversion between an integer and a float**, in either direction.
+  `1 + 1.5` is a type error and so is `some_s64 + some_float64`; `cast` is the only way
+  across, exactly as it is between integer widths. Stricter than C, and the same strictness
+  ADR-0016's rules already had — one implicit conversion would make the float the only type
+  that silently changes another's meaning. The exception that is not a conversion: an untyped
+  *literal* takes its context's type, so `1.5 + f32_value` works while `1 + f64_value` does
+  not, because `1` is an integer literal.
+- **A float→int cast saturates rather than wrapping or trapping.** `cast(s8, 1000.0)` is 127
+  and `NaN` is 0. C makes this undefined behaviour and Cranelift offers both a trapping and a
+  saturating instruction; saturation is chosen because it is total, so every float has an
+  answer in every integer type and there is no trap to add to a path that has none
+  (ADR-0040 §4). Rust made the same change for the same reason.
+- **A float literal that does not fit `float32` is not an error.** `x: float32 = 1e300;` is
+  `inf`. This differs from `x: u8 = 300;`, which *is* E0204, and the difference is that there
+  is no integer `inf` to saturate to — an integer literal that does not fit has no answer,
+  while a float literal always has one.
+- **The bounds check exists and cannot yet be turned off.** ADR-0003 decided in the *slice*
+  that bounds checking is a build setting carried as an explicit MIR operation strippable by
+  one pass. The operation was never built — this wave built it (ADR-0039) — and the pass that
+  strips it still is not, because there is no build-configuration surface at all yet. So
+  every index is checked, always, and `#no_abc` remains a reserved directive. Stated plainly
+  so it does not become a second decision that sits undone while a plan calls it merely
+  untested.
+- **An array is zeroed; a scalar declared without an initialiser is not the same thing.**
+  `buf: [20]u8;` zeroes, `buf: [20]u8 = ---;` does not. The difference from a scalar is
+  deliberate: MIR tracks definedness per *slot*, so treating an array like a scalar would
+  make the first partial write an uninitialised read of the whole array (ADR-0039 §4).
+- **A default-initialised `struct` used to read stack garbage natively.** `p: Point;` emitted
+  no zeroing at all, above a comment saying that was codegen's job. Neither back end did it:
+  the VM zeroes a fresh frame, so it looked right there, while Cranelift's stack slot is
+  uninitialised — the same program exited 0 in the VM and 184, then 200, natively. Fixed by
+  ADR-0039 §4a. It hid because `differential.rs` compares observable output and nothing in
+  the corpus observed one.
+- **An index trap names the line but not the index.** `TrapKind::reason()` is a
+  `&'static str` and native code raises a trap by handing a helper a pointer to a constant
+  string, so there is no formatting step to interpolate a runtime value into. Naming the
+  value means a formatting trap helper, which applies to every trap kind at once and is a
+  better change than a special case for this one (ADR-0039 §2).
+- **An array length must be a literal.** `[20]u8` works and `[COUNT]u8` does not, and it is
+  not a preference: constant evaluation lives in `jr-db` over the bytecode VM (ADR-0018 §3),
+  *downstream* of where a type annotation is resolved, so sema cannot ask for `COUNT`'s
+  value without inverting that dependency. E0233 says so rather than resolving it wrongly.
+  It becomes possible in W4, the wave that makes sema and comptime mutually recursive.
 - **There is still no published *compile-throughput* number.** ADR-0019 §6 says a number
   taken without a mid-end measures the missing mid-end; the mid-end now exists, so one is
   finally honest to take, and it has not been taken. What *has* been measured is
@@ -108,14 +241,26 @@ it. There is no GC and no RAII, which is a design value rather than a missing fe
   agreement likely; `crates/jr-cli/tests/differential.rs` is what makes it checked.
   Both of this project's silent miscompiles were places where a plausible argument
   stood in for a check.
-- **Only two of fifteen executable corpus programs print anything**, so the corpus
+- **Only two of twenty executable corpus programs print anything**, so the corpus
   differential largely compares silence with silence. That is why it also drives
   computations out through `exit` — arithmetic, precedence, loops, block parameters,
   pointers, struct offsets and both traps.
 - **A cross-file `#run` does not work**, and ADR-0021 §2 now depends on that. Enabling
   it requires more than removing the refusal.
-- **`u8` is not a supported integer type.** It exists so `*u8` and byte-sized FFI
-  arguments can be spelled.
+- **The integer tower cost almost nothing, and that is a fact about the code rather than
+  luck.** `jr-pool`'s `IntKind` was already generic over width and signedness, both back ends
+  already read it that way, and interning is structural — so `s8`..`u64` is eight names mapped
+  onto an existing representation (ADR-0037 §1). `float32/64` is the part that is genuinely
+  missing, because it needs a new value representation everywhere.
+- **`cast` truncates and does not trap.** ADR-0002 makes integer *overflow* trap, because an
+  overflowing `+` produces a result the program did not ask for; a narrowing cast is the program
+  asking for the low bits. A narrowing cast of a *literal* is still a compile error, reusing
+  E0204 (ADR-0037 §2).
+- **A signed minimum is now writable, and was not before.** `a: s8 = -128;` used to be
+  rejected by a diagnostic that printed "the range of `s8` is -128 to 127". A leading `-` is now
+  folded into the literal during lowering (ADR-0038), which is the only way the minimum of a
+  two's-complement type can exist: negating 128 in an `s8` overflows, so `-128` has to *be* a
+  literal rather than a negation of one. `-x` on a value still negates, and still traps.
 - **Optimisation is real but shallow.** Four passes run, and `024-hello.jr` now folds
   its struct away entirely, collapses an `if` and deletes the dead arm. But forwarding is
   one walk per basic block, so anything read across a loop boundary stays in memory, and
@@ -205,7 +350,7 @@ main :: () {
     i := 0;
     while i < 3 { i = i + 1; }        // while
     ptr := *sum;                      // pointer take + deref
-    if ptr.* == 9  print_line("ok");  // `print_int` needs `cast`, which is W1
+    if ptr.* == 9  print_int(9);      // `print_int` works as of ADR-0037
 }
 ```
 

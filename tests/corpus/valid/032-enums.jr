@@ -1,0 +1,94 @@
+// `enum` (ADR-0041): a nominal type whose members are namespaced.
+//
+// The rules under test are Jai's, and the third is the one that is easy to get wrong by
+// resetting to the member's index instead:
+//
+//   * auto-numbered from 0 in declaration order,
+//   * an explicit value is allowed,
+//   * and later members **continue from it** rather than from their position.
+//
+// The `exit` at the end is what gives this file teeth under the differential harness: only
+// two corpus programs print, so a computation has to be made observable through an exit
+// status or the comparison is silence against silence.
+#import "Basic";
+
+/// Auto-numbered: 0, 1, 2.
+Colour :: enum {
+    RED;
+    GREEN;
+    BLUE;
+}
+
+/// Explicit values, and the continue-from-here rule.
+Status :: enum {
+    OK :: 200;
+    // `NEXT` is 405, one past `MISSING` -- not 2, which is its index.
+    MISSING :: 404;
+    NEXT;
+    // Two names for one value. C and Jai both allow this, and it is occasionally what
+    // someone means.
+    ALSO_OK :: 200;
+}
+
+main :: () {
+    n := 0;
+
+    // `==` and `!=` work between two values of the same enum type. Ordering and arithmetic
+    // deliberately do not (ADR-0041 §6) and live in `type-errors/`.
+    if Colour.RED == Colour.RED {
+        n = n + 1;
+    }
+    if Colour.RED != Colour.GREEN {
+        n = n + 2;
+    }
+
+    // `cast(s64, c)` is how the number is obtained: the enum is nominal, so it is not an
+    // `s64` and does not silently become one.
+    if cast(s64, Colour.RED) == 0 {
+        n = n + 4;
+    }
+    if cast(s64, Colour.BLUE) == 2 {
+        n = n + 8;
+    }
+    if cast(s64, Status.OK) == 200 {
+        n = n + 16;
+    }
+    if cast(s64, Status.MISSING) == 404 {
+        n = n + 32;
+    }
+    // The continue-from-here rule, which is the whole reason this file has a second enum.
+    if cast(s64, Status.NEXT) == 405 {
+        n = n + 64;
+    }
+    if cast(s64, Status.ALSO_OK) == 200 {
+        n = n + 128;
+    }
+
+    // An enum-typed local, annotated and inferred, and an enum-typed parameter.
+    annotated: Colour = Colour.GREEN;
+    inferred := Colour.BLUE;
+    if annotated == Colour.GREEN {
+        n = n + 256;
+    }
+    if inferred == Colour.BLUE {
+        n = n + 512;
+    }
+    if is_warm(Colour.RED) {
+        n = n + 1024;
+    }
+    if is_warm(Colour.BLUE) {
+        n = n + 2048;
+    }
+
+    // Every assertion but the last: 2047. `exit` takes the low byte, so the status is 255.
+    if n == 2047 {
+        exit(0);
+    }
+    exit(1);
+}
+
+/// An enum crossing a procedure boundary, which is what makes it a real type rather than a
+/// constant folded at its use site.
+is_warm :: (c: Colour) -> bool {
+    return c == Colour.RED;
+}

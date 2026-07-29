@@ -2,7 +2,7 @@
 
 use rustc_hash::FxHashMap;
 
-use crate::item::{ContextKind, DeclId, EffectRow, Field, Item, PoolId, StrId};
+use crate::item::{ContextKind, DeclId, EffectRow, EnumMember, Field, Item, PoolId, StrId};
 
 // ---------------------------------------------------------------------------
 // The well-known prefix
@@ -83,6 +83,8 @@ pub struct Pool {
     /// Resolved struct bodies, keyed by declaration rather than by [`PoolId`]
     /// because the body is not part of the type's identity (ADR-0015 §1).
     struct_fields: FxHashMap<DeclId, Vec<Field>>,
+    /// Enum members, keyed by declaration site (ADR-0041 §4).
+    enum_members: FxHashMap<DeclId, Vec<EnumMember>>,
 }
 
 impl Default for Pool {
@@ -104,6 +106,7 @@ impl Pool {
             strings: Vec::new(),
             string_dedupe: FxHashMap::default(),
             struct_fields: FxHashMap::default(),
+            enum_members: FxHashMap::default(),
         };
 
         let void = pool.intern(Item::VoidType);
@@ -159,6 +162,22 @@ impl Pool {
         id
     }
 
+    /// Looks an item up **without interning it**, for a consumer holding `&Pool`.
+    ///
+    /// This exists because both back ends need the type a `Projection::ViewData` lands on —
+    /// `*T` for the view's element `T` — and neither has `&mut Pool` to intern one. Returning
+    /// `None` rather than fabricating a pointer type is what keeps the failure visible: a
+    /// consumer that guessed `*u8` would index with the wrong stride and produce wrong
+    /// addresses rather than an error.
+    ///
+    /// In practice the answer is always `Some` for a well-formed body, because `jr-mir`'s
+    /// lowering interns `*T` while building the view. The `Option` is the honest shape for a
+    /// lookup, not a hedge against that.
+    #[must_use]
+    pub fn find(&self, item: &Item) -> Option<PoolId> {
+        self.dedupe.get(item).copied()
+    }
+
     /// Returns the item an ID names.
     ///
     /// # Panics
@@ -210,12 +229,17 @@ impl Pool {
             Item::VoidType
             | Item::BoolType
             | Item::IntType { .. }
+            | Item::FloatType { .. }
             | Item::StringType
             | Item::TypeType
             | Item::ErrorType
             | Item::ForeignLibraryType
             | Item::PointerType(_)
+            | Item::ArrayType { .. }
+            | Item::ViewType { .. }
+            | Item::EnumType { .. }
             | Item::StructType { .. }
+            | Item::UnionType { .. }
             | Item::ProcType { .. } => PoolId::TYPE,
 
             Item::VoidValue => PoolId::VOID,
@@ -223,8 +247,10 @@ impl Pool {
             Item::StrValue(_) => PoolId::STRING,
             Item::TypeValue(_) => PoolId::TYPE,
             Item::ForeignLibraryValue(_) => PoolId::FOREIGN_LIBRARY,
-            // These two carry their own type, because one shape can have many.
-            Item::IntValue { ty, .. } | Item::ProcValue { ty, .. } => *ty,
+            // These carry their own type, because one shape can have many.
+            Item::IntValue { ty, .. }
+            | Item::FloatValue { ty, .. }
+            | Item::ProcValue { ty, .. } => *ty,
         }
     }
 
@@ -235,6 +261,47 @@ impl Pool {
     /// Interns `*pointee`.
     pub fn pointer_to(&mut self, pointee: PoolId) -> PoolId {
         self.intern(Item::PointerType(pointee))
+    }
+
+    /// Interns a floating-point value from its raw bits.
+    ///
+    /// Bits rather than an `f64` for the reason [`Item::FloatValue`] records: this pool's key
+    /// derives `Hash` and `Eq`, and `f64` has neither.
+    pub fn float_value(&mut self, ty: PoolId, bits: u64) -> PoolId {
+        self.intern(Item::FloatValue { ty, bits })
+    }
+
+    /// Interns `[len]elem` (ADR-0039 §3).
+    pub fn array_of(&mut self, elem: PoolId, len: u64) -> PoolId {
+        self.intern(Item::ArrayType { elem, len })
+    }
+
+    /// Interns `[]elem` (ADR-0044 §1).
+    ///
+    /// No length, which is the whole difference from [`Pool::array_of`]: a view's length is
+    /// runtime data, so `[]s64` is one type however many elements any particular view has.
+    pub fn view_of(&mut self, elem: PoolId) -> PoolId {
+        self.intern(Item::ViewType { elem })
+    }
+
+    /// Interns the nominal enum type declared at `decl` (ADR-0041 §4).
+    ///
+    /// The member list is not required and not part of the key, for the same reason a
+    /// struct's fields are not (ADR-0015 §1): a member's value is a constant expression that
+    /// resolution may have to evaluate, and the type must have an ID before that starts.
+    pub fn enum_type(&mut self, decl: DeclId, flags: bool) -> PoolId {
+        self.intern(Item::EnumType { decl, flags })
+    }
+
+    /// Records the resolved members of the enum declared at `decl`.
+    pub fn set_enum_members(&mut self, decl: DeclId, members: Vec<EnumMember>) {
+        self.enum_members.insert(decl, members);
+    }
+
+    /// Returns the resolved members of the enum declared at `decl`, if recorded yet.
+    #[must_use]
+    pub fn enum_members(&self, decl: DeclId) -> Option<&[EnumMember]> {
+        self.enum_members.get(&decl).map(Vec::as_slice)
     }
 
     /// Interns the nominal struct type declared at `decl`.
@@ -249,6 +316,14 @@ impl Pool {
     /// already have an ID while its own fields are still being lowered.
     pub fn struct_type(&mut self, decl: DeclId) -> PoolId {
         self.intern(Item::StructType { decl })
+    }
+
+    /// Interns the nominal union type declared at `decl` (ADR-0045 §4).
+    ///
+    /// Its fields go in the *same* side table a struct's do — [`Pool::set_struct_fields`] —
+    /// because the field list is the same data. Only the layout differs.
+    pub fn union_type(&mut self, decl: DeclId) -> PoolId {
+        self.intern(Item::UnionType { decl })
     }
 
     /// Records the resolved fields of the struct declared at `decl`.
@@ -352,16 +427,22 @@ impl Pool {
             Item::VoidType
             | Item::BoolType
             | Item::IntType { .. }
+            | Item::FloatType { .. }
             | Item::StringType
             | Item::TypeType
             | Item::ErrorType
             | Item::ForeignLibraryType
             | Item::PointerType(_)
+            | Item::ArrayType { .. }
+            | Item::ViewType { .. }
+            | Item::EnumType { .. }
             | Item::StructType { .. }
+            | Item::UnionType { .. }
             | Item::ProcType { .. }
             | Item::VoidValue
             | Item::BoolValue(_)
             | Item::IntValue { .. }
+            | Item::FloatValue { .. }
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. } => None,

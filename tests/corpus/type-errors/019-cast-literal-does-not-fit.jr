@@ -1,0 +1,9 @@
+// EXPECT: E0204 — 300 does not fit `u8`, even inside a `cast`
+//
+// ADR-0037 §2: a `cast` supplies a *context*, and ADR-0016 §1 already says an
+// integer literal takes its type from its context and must fit it. So this is the
+// same error `x: u8 = 300;` raises, reusing the same code — the cast's fit check
+// is not a second implementation.
+main :: () {
+    n := cast(u8, 300);
+}

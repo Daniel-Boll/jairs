@@ -1,0 +1,121 @@
+// `union` (ADR-0045): a struct's shape with one layout rule changed.
+//
+// **A union is untagged, and writing one field then reading another reinterprets the bits.**
+// That is not an oversight — it is the decision, and ADR-0045 §1 argues it: a tag's value comes
+// almost entirely from exhaustive destructuring, Jairs has no `switch` and no `match`, so a tag
+// could only be spent on a runtime trap per field read that a program would have no way to
+// avoid. It would also make a union wider than its largest field, which is the one property a
+// systems programmer reaches for a union to get.
+//
+// So the hazard is real and documented rather than prevented. When W2 brings pattern matching
+// and W4 brings RTTI, a *tagged* variant type becomes worth having -- and it should be a new
+// declaration form then, the way `enum_flags` is separate from `enum`, rather than a silent
+// change to what `union` means.
+//
+// The `exit` at the end is what gives this file teeth under the differential harness: only two
+// corpus programs print, so a computation has to be made observable through an exit status or
+// the comparison is silence against silence.
+#import "Basic";
+
+/// Two fields of the same width, so a write through one is readable through the other with a
+/// value this program can predict exactly.
+Bits :: union {
+    signed: s64;
+    unsigned: u64;
+}
+
+/// Fields of *different* widths: the union is the size of the largest, and the smaller field
+/// aliases its low bytes.
+Mixed :: union {
+    byte: u8;
+    word: s64;
+}
+
+/// A union as a struct field must be a **named** field of a named union type -- anonymous
+/// members are C11's and are out of scope (ADR-0045 §6).
+Tagged :: struct {
+    which: s64;
+    value: Bits;
+}
+
+main :: () {
+    n := 0;
+
+    // Reinterpretation, with a value chosen so the two readings are visibly different: -1 as
+    // an `s64` is every bit set, which as a `u64` is 18446744073709551615. Comparing against
+    // that literal is what makes this a test of the *layout* rather than of the syntax.
+    b: Bits;
+    b.signed = -1;
+    if b.unsigned == 18446744073709551615 {
+        n = n + 1;
+    }
+
+    // And back the other way.
+    b.unsigned = 255;
+    if b.signed == 255 {
+        n = n + 2;
+    }
+
+    // Every field is at offset 0, so the narrow field sees the wide field's low byte. 0x1FF is
+    // 511, whose low byte is 255 -- so a union that placed `byte` at offset 8, the way a
+    // struct's second field would sit, would read 0 here instead.
+    m: Mixed;
+    m.word = 511;
+    if m.byte == 255 {
+        n = n + 4;
+    }
+
+    // Writing the narrow field leaves the wide field's other bytes alone, which is what "every
+    // field at offset 0" means in the other direction.
+    m.word = 0;
+    m.byte = 7;
+    if m.word == 7 {
+        n = n + 8;
+    }
+
+    // A default-initialised union is zeroed like any other aggregate (ADR-0039 §4a), so every
+    // field reads zero rather than stack garbage.
+    z: Bits;
+    if z.signed == 0 {
+        n = n + 16;
+    }
+    if z.unsigned == 0 {
+        n = n + 32;
+    }
+
+    // A union nested in a struct: the union's field is reached through the struct's, and the
+    // struct's *own* second field sits after the union's full width.
+    t: Tagged;
+    t.which = 1;
+    t.value.signed = -2;
+    if t.which == 1 {
+        n = n + 64;
+    }
+    if t.value.signed == -2 {
+        n = n + 128;
+    }
+
+    // A union crossing a procedure boundary by value, which is what makes it a real type
+    // rather than a local trick.
+    if low_byte(m) == 7 {
+        n = n + 256;
+    }
+
+    // A pointer to a union, with field access auto-dereferencing exactly as a struct's does.
+    p := *b;
+    p.signed = 9;
+    if b.signed == 9 {
+        n = n + 512;
+    }
+
+    // Every assertion: 1023.
+    if n == 1023 {
+        exit(0);
+    }
+    exit(1);
+}
+
+/// A union as a parameter, passed by copy like any aggregate.
+low_byte :: (m: Mixed) -> u8 {
+    return m.byte;
+}

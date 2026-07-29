@@ -1,0 +1,12 @@
+// EXPECT: E0223 — ordering is not defined on an enum (ADR-0041 §6)
+// With auto-numbering, `Colour.RED < Colour.GREEN` would be true by an accident of
+// *declaration order* — a fact about this file rather than about colours. A program that
+// wants the number writes `cast(s64, c)` and gets ordering where it means something.
+Colour :: enum {
+    RED;
+    GREEN;
+}
+
+main :: () {
+    b := Colour.RED < Colour.GREEN;
+}

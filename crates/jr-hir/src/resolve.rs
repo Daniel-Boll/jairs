@@ -58,7 +58,10 @@ use jr_base::{Interner, Span, Symbol};
 use jr_diag::{Diagnostic, Diagnostics, Label};
 use rustc_hash::FxHashMap;
 
-use crate::hir::{BodyId, Expr, ExprId, FileHir, ItemId, ItemKind, ItemScope, Res, Stmt, StmtId};
+use crate::hir::{
+    BodyId, ConstValue, Expr, ExprId, FileHir, ForIterable, ItemId, ItemKind, ItemScope, Res, Stmt,
+    StmtId,
+};
 
 // ---------------------------------------------------------------------------
 // Diagnostic codes
@@ -343,6 +346,22 @@ impl<'a> ResolveCtx<'a> {
         let mut seen: FxHashMap<Symbol, (ItemId, Span)> = FxHashMap::default();
         for (i, item) in self.hir.items.iter().enumerate() {
             let Some(name) = item.name else { continue };
+            // **An operator overload is exempt**, because one operator legitimately has many
+            // overloads: `operator * :: (Vec2, s64)` and `operator * :: (s64, Vec2)` are two
+            // declarations that must coexist, and both intern to the synthetic name `operator*`
+            // (ADR-0048 §1).
+            //
+            // Their real key is `(operator, lhs, rhs)`, and a *genuine* duplicate — the same
+            // operator on the same operand pair — is reported by `jr-sema` where that key exists.
+            // This scan is about names a user wrote, and nobody wrote `operator*`.
+            if matches!(
+                item.kind,
+                ItemKind::Const {
+                    value: ConstValue::Operator(_, _)
+                }
+            ) {
+                continue;
+            }
             let item_id = ItemId::from_usize(i);
             if let Some((_orig_id, orig_span)) = seen.get(&name) {
                 let name_text = self.interner.resolve(name);
@@ -396,10 +415,41 @@ impl<'a> ResolveCtx<'a> {
                 let receiver = *receiver;
                 self.resolve_top_expr(receiver);
             }
+            // Both sides are ordinary expressions: `a[i]` resolves `a` and `i` the same way
+            // any other operand is resolved. There is no third thing to look up — an index
+            // is not a name in a scope the way a *field* is.
+            Expr::Index { base, index, .. } => {
+                let (base, index) = (*base, *index);
+                self.resolve_top_expr(base);
+                self.resolve_top_expr(index);
+            }
+            Expr::Slice { base, .. } => {
+                let base = *base;
+                self.resolve_top_expr(base);
+            }
             Expr::Deref(ptr, _) => {
                 let ptr = *ptr;
                 self.resolve_top_expr(ptr);
             }
+            // The *operand* is resolved; the target type is not. A `TypeRef::Name` is
+            // resolved by `jr-sema`'s `resolve_type_name`, never by this map — which is the
+            // asymmetry ADR-0031 §2 had to work around for unused imports, restated here so
+            // it is not mistaken for an omission.
+            Expr::Cast { operand, .. } => {
+                let operand = *operand;
+                self.resolve_top_expr(operand);
+            }
+            // The operand is resolved; there is no target type to resolve, which is the whole
+            // of `xx` (ADR-0046 §2).
+            Expr::Autocast { operand, .. } => {
+                let operand = *operand;
+                self.resolve_top_expr(operand);
+            }
+            // A bare `.RED` names no *scope*, so this map has nothing to say about it: the
+            // member is found in an enum sema picks from the context type (ADR-0046 §3). Left
+            // unresolved deliberately rather than resolved to `Res::Error`, which would read as
+            // a failed lookup.
+            Expr::Member { .. } => {}
             Expr::Run(inner, _) => {
                 let inner = *inner;
                 self.resolve_top_expr(inner);
@@ -454,7 +504,23 @@ impl<'a> ResolveCtx<'a> {
                     self.resolve_body_expr(body_id, e);
                 }
             }
-            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Error(_) => {}
+            // A `for`'s iterable is resolved; its loop *variables* are locals that lowering
+            // already bound, and its label names a loop rather than a value (ADR-0049 §2), so
+            // there is nothing here for this map to say about either.
+            Stmt::For { iterable, body, .. } => {
+                match iterable {
+                    ForIterable::Sequence(e) => self.resolve_body_expr(body_id, e),
+                    ForIterable::Range { start, end } => {
+                        self.resolve_body_expr(body_id, start);
+                        self.resolve_body_expr(body_id, end);
+                    }
+                }
+                self.resolve_body_stmt(body_id, body);
+            }
+            // The deferred statement is resolved once, where it was written — `jr-mir` duplicates
+            // its *lowering*, not its identity (ADR-0049 §3).
+            Stmt::Defer(inner, _) => self.resolve_body_stmt(body_id, inner),
+            Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
         }
     }
 
@@ -488,9 +554,23 @@ impl<'a> ResolveCtx<'a> {
             Expr::Field { receiver, .. } => {
                 self.resolve_body_expr(body_id, receiver);
             }
+            Expr::Index { base, index, .. } => {
+                self.resolve_body_expr(body_id, base);
+                self.resolve_body_expr(body_id, index);
+            }
+            Expr::Slice { base, .. } => {
+                self.resolve_body_expr(body_id, base);
+            }
             Expr::Deref(ptr, _) => {
                 self.resolve_body_expr(body_id, ptr);
             }
+            Expr::Cast { operand, .. } => {
+                self.resolve_body_expr(body_id, operand);
+            }
+            Expr::Autocast { operand, .. } => {
+                self.resolve_body_expr(body_id, operand);
+            }
+            Expr::Member { .. } => {}
             Expr::Run(inner, _) => {
                 self.resolve_body_expr(body_id, inner);
             }

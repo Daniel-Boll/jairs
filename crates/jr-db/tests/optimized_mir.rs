@@ -62,7 +62,10 @@ fn calls_left(
             let rvalue = match stmt {
                 jr_mir::Statement::Assign { rvalue, .. }
                 | jr_mir::Statement::Discard { rvalue, .. } => rvalue,
-                jr_mir::Statement::Store { .. } | jr_mir::Statement::Nop => continue,
+                jr_mir::Statement::Store { .. }
+                | jr_mir::Statement::Zero { .. }
+                | jr_mir::Statement::BoundsCheck { .. }
+                | jr_mir::Statement::Nop => continue,
             };
             if matches!(rvalue, jr_mir::Rvalue::Call { .. }) {
                 count += 1;

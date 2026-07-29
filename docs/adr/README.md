@@ -57,3 +57,15 @@ The ADR numbers are stable and are referenced from code comments and
 | [0034](0034-no-reverse-index.md) | No reverse index: the reference scan is 99% parsing, 1% searching (closes ADR-0030's reservation) | Accepted |
 | [0035](0035-import-navigation.md) | An `#import` line navigates to its module, from anywhere on the line | Accepted |
 | [0036](0036-no-vscode-extension.md) | No VS Code extension; Neovim is the supported editor (amends §1.4's first criterion) | Accepted |
+| [0037](0037-numeric-tower-and-cast.md) | The integer tower is a naming change; `cast(T, x)` is Jai's, checked at comptime | Accepted |
+| [0038](0038-negative-literals.md) | A leading `-` on a literal is folded during lowering, so a signed minimum is writable | Accepted |
+| [0039](0039-fixed-arrays-and-bounds-checks.md) | `[N]T` fixed arrays, and the explicit `bounds_check` op ADR-0003 asked for in the slice | Accepted |
+| [0040](0040-floating-point.md) | `float32`/`float64` are plain IEEE-754 with no traps; `Convert` carries a `NumKind` | Accepted |
+| [0041](0041-enums.md) | `enum` is a nominal type whose members are namespaced; bare `.RED` is deferred with a plan | Accepted |
+| [0042](0042-bitwise-operators.md) | Bitwise binds tighter than comparison (unlike C); an out-of-range shift traps | Accepted |
+| [0043](0043-enum-flags.md) | `enum_flags` numbers by powers of two; a combination is a value, not a member | Accepted |
+| [0044](0044-array-views.md) | `[]T` is a `{data, count}` pair; an array converts to one only via explicit `buf[]` | Accepted |
+| [0045](0045-unions.md) | `union` is untagged — a tag with no pattern matching to read it is cost without benefit | Accepted |
+| [0046](0046-autocast-and-bare-enum-members.md) | `xx` and bare `.RED` are one idea: the context supplies what the source omits | Accepted |
+| [0047](0047-imported-enum-members-and-refused-bodies.md) | An enum member is found through its *type*; a refused body warns, and running one fails | Accepted |
+| [0048](0048-operator-overloading.md) | `operator +` is a constant whose name is an operator; one operand must be declared locally | Accepted |

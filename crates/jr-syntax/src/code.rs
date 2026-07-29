@@ -121,10 +121,10 @@ pub(crate) const E0118: &str = "E0118";
 /// A `(` in an argument list that is never closed.
 pub(crate) const E0119: &str = "E0119";
 
-/// A floating-point literal, which lexes but arrives in wave W1.
-///
-/// **Was E0200**, which is `jr-hir`'s "duplicate declaration". See this module's header.
-pub(crate) const E0120: &str = "E0120";
+// **E0120 is retired, not free.** It meant "a float literal, which lexes but arrives in wave
+// W1", and floats arrived in ADR-0040 so the refusal is gone. The number is deliberately not
+// reused: a user who searched for E0120 once would find a different error, and the codes are
+// meant to be stable enough to look up. E0125 is the next free parser code.
 
 /// A reserved keyword — `enum`, `union`, `cast`, `xx`, `null`, `for`, `defer`, `using` —
 /// used where an expression was expected. The message names the wave it arrives in.
@@ -132,11 +132,41 @@ pub(crate) const E0120: &str = "E0120";
 /// **Was E0201**, which is `jr-hir`'s "unresolved name". See this module's header.
 pub(crate) const E0121: &str = "E0121";
 
-/// A bitwise operator used as a prefix operator; they arrive in wave W1.
+// **E0122 is retired, not free.** It meant "a bitwise operator, which arrives in wave W1",
+// and they arrived in ADR-0042. Like E0120 before it, the number is deliberately not reused:
+// a user who searched for E0122 once should not find a different error. E0126 is the next
+// free parser code.
+
+/// `[` with no index expression after it, in `a[i]` (ADR-0039 §5).
+pub(crate) const E0123: &str = "E0123";
+
+/// An array type whose length is missing, or a `[]T` view or `[..]T` dynamic array — both
+/// of which arrive in a later wave (ADR-0039 §2).
 ///
-/// **Was E0202**, which is `jr-hir`'s "use of a local before its declaration". See this
-/// module's header.
-pub(crate) const E0122: &str = "E0122";
+/// One code for all three because they are the same shape of refusal — "this array type
+/// is not one this wave has" — and the *message* says which.
+pub(crate) const E0124: &str = "E0124";
+
+/// A malformed enum member: a missing name, or a `:` type annotation where a `::` value
+/// belongs (ADR-0041 §3).
+pub(crate) const E0125: &str = "E0125";
+
+/// A malformed `operator` declaration (ADR-0048 §1).
+///
+/// Two shapes: no operator token after the keyword, and a value that is not a procedure. One code
+/// because both are "this is not the `operator OP :: (…)` form" and the *message* says which.
+///
+/// **Which** operators may be overloaded is deliberately not this code's business: the parser
+/// accepts any operator token and `jr-sema` refuses the wrapping and bitwise forms with the reason
+/// (ADR-0048 §2), because "expected an operator" would be true and unhelpful for `operator +%`.
+pub(crate) const E0126: &str = "E0126";
+
+/// A malformed `for` or `defer` (ADR-0049 §1, §3).
+///
+/// Four shapes: no loop variable after `for`, no index name after the `,`, nothing to iterate, and
+/// no statement after `defer`. One code because each is "this is not the form", and the *message*
+/// says which — the same reasoning E0126 uses for a malformed `operator` declaration.
+pub(crate) const E0127: &str = "E0127";
 
 /// Input nested more deeply than the parser's depth limit.
 ///
@@ -175,9 +205,12 @@ mod tests {
         ("E0117", "missing field name after ."),
         ("E0118", "expected an expression"),
         ("E0119", "unclosed paren in arguments"),
-        ("E0120", "float literal reserved"),
         ("E0121", "reserved keyword"),
-        ("E0122", "bitwise operator reserved"),
+        ("E0123", "missing index expression"),
+        ("E0124", "array type not available"),
+        ("E0125", "malformed enum member"),
+        ("E0126", "malformed operator declaration"),
+        ("E0127", "malformed for or defer"),
         ("E0199", "nesting depth limit"),
     ];
 

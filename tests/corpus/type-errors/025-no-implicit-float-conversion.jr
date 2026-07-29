@@ -1,0 +1,10 @@
+// EXPECT: E0214 — no implicit conversion between an integer and a float (ADR-0040 §6)
+// `cast` is the only way across, exactly as it is between integer widths. This is stricter
+// than C, and it is the strictness ADR-0016's typing rules already have: adding one
+// implicit conversion for floats would make the float the only type that silently changes
+// another's meaning.
+main :: () {
+    n: s64 = 1;
+    f: float64 = 1.5;
+    bad := n + f;
+}

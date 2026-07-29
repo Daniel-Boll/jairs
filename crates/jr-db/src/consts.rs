@@ -207,6 +207,16 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
             signatures.signatures.as_ref(),
             &values,
             imports.as_ref(),
+            // **Empty, deliberately.** Const-eval runs before `checked`, so the overload map does
+            // not exist yet — and asking for it here would make const-eval depend on the check
+            // phase, which is the cycle ADR-0018 §3 avoided by putting const-eval downstream of
+            // *signatures* rather than of checking.
+            //
+            // The consequence, stated because it bites: an operator overload cannot be used in a
+            // `#run` or a `::` constant. `scan` refuses such a body — the operator finds no
+            // overload, falls through to the builtin path, and sema has already reported the
+            // operand types as unsupported — so this is a refusal rather than a wrong answer.
+            &jr_mir::OperatorCalls::new(),
             interner,
             &mut pool,
         );

@@ -14,6 +14,7 @@
 //! (`docs/spec/02-declarations.md`), and it stops holding the day return-type
 //! inference is added.
 
+use jr_base::FileId;
 use jr_hir::{ItemId, ProcId};
 use jr_pool::{DeclId, Field, Pool, PoolId};
 use rustc_hash::FxHashMap;
@@ -38,6 +39,23 @@ pub enum SigKind {
     Proc,
     /// `name :: struct { … }`.
     Struct,
+    /// `name :: union { … }` (ADR-0045).
+    ///
+    /// Distinct from [`SigKind::Struct`] for the reason [`SigKind::Enum`] is: a diagnostic
+    /// calling a union a struct would be wrong in a way the reader cannot correct, and the two
+    /// differ in a way that matters to anyone reading it — a union's fields overlap.
+    Union,
+    /// `operator + :: (…) -> T { … }` (ADR-0048 §1).
+    ///
+    /// Distinct from [`SigKind::Proc`] so a diagnostic can say "`+` is an operator, not a
+    /// procedure" — an overload's name is the synthetic `"operator+"`, which no user wrote and
+    /// which a "cannot find procedure" message would send them looking for.
+    Operator,
+    /// `name :: enum { … }` (ADR-0041).
+    ///
+    /// Distinct from [`SigKind::Struct`] because a diagnostic that says "`Colour` is a
+    /// struct, not a procedure" would be wrong in a way the reader cannot correct.
+    Enum,
 }
 
 // ---------------------------------------------------------------------------
@@ -56,8 +74,9 @@ pub struct SigEntry {
     pub ty: PoolId,
     /// The type this name *denotes*, when it denotes one.
     ///
-    /// `Some` exactly for [`SigKind::Struct`]. This is the field a type
-    /// annotation reads; `ty` is the field an expression reads.
+    /// `Some` exactly for [`SigKind::Struct`] and [`SigKind::Enum`] — the two nominal
+    /// declarations. This is the field a type annotation reads; `ty` is the field an
+    /// expression reads.
     pub type_value: Option<PoolId>,
     /// Which kind of declaration this was.
     pub kind: SigKind,
@@ -72,7 +91,12 @@ impl SigEntry {
     pub fn is_assignable(&self) -> bool {
         match self.kind {
             SigKind::Var => true,
-            SigKind::Const | SigKind::Proc | SigKind::Struct => false,
+            SigKind::Const
+            | SigKind::Proc
+            | SigKind::Operator
+            | SigKind::Struct
+            | SigKind::Union
+            | SigKind::Enum => false,
         }
     }
 }
@@ -112,6 +136,27 @@ pub struct FileSignatures {
     names: FxHashMap<jr_base::Symbol, SigEntry>,
     /// Each procedure's resolved signature, keyed by its HIR id.
     procs: FxHashMap<ProcId, ProcSig>,
+    /// The file these signatures belong to.
+    ///
+    /// Needed because an imported *overload* must become a `ProcRef` at lowering time, and a
+    /// `ProcId` alone indexes whichever file's arena the reader happens to hold — the same reason
+    /// ADR-0018 §5 widened `Callee::Direct` to carry a `FileId`.
+    ///
+    /// `None` for a `FileSignatures::new()` that nothing has populated, which is what the
+    /// standalone unit tests build.
+    file: Option<FileId>,
+    /// Operator overloads declared in this file, keyed on the operator and both operand types
+    /// (ADR-0048 §4).
+    ///
+    /// A map rather than a scan, and keyed on the *exact* pair because resolution requires an
+    /// exact match: no conversion, no promotion, no ranking. `Vec2 * float64` and
+    /// `float64 * Vec2` are therefore two entries, which is the cost ADR-0048 §4 accepts to
+    /// avoid becoming C++.
+    ///
+    /// Carried on `FileSignatures` rather than in a side table so that an overload crosses a
+    /// module boundary the way every other declaration does — `record_in` is what an importer
+    /// calls, and nothing new had to learn about overloads.
+    operators: FxHashMap<(jr_hir::BinOp, PoolId, PoolId), ProcId>,
     /// The resolved field list of every struct declared in this file.
     ///
     /// Kept here as well as in the pool so that the pool dependency is
@@ -181,6 +226,65 @@ impl FileSignatures {
     #[must_use]
     pub fn proc_sig(&self, proc: ProcId) -> Option<&ProcSig> {
         self.procs.get(&proc)
+    }
+
+    /// The file these signatures were computed for, if it has been recorded.
+    ///
+    /// Returns file 0 when absent rather than panicking: an unpopulated
+    /// `FileSignatures` declares no overloads, so nothing can ask this and get a wrong answer that
+    /// matters.
+    #[must_use]
+    pub fn file(&self) -> FileId {
+        self.file.unwrap_or_else(|| FileId::from_usize(0))
+    }
+
+    /// Records which file these signatures describe.
+    pub(crate) fn set_file(&mut self, file: FileId) {
+        self.file = Some(file);
+    }
+
+    /// The overload for `op` on this exact pair of operand types, if this file declares one
+    /// (ADR-0048 §4).
+    #[must_use]
+    pub fn operator(&self, op: jr_hir::BinOp, lhs: PoolId, rhs: PoolId) -> Option<ProcId> {
+        self.operators.get(&(op, lhs, rhs)).copied()
+    }
+
+    /// Records an overload, or reports the [`ProcId`] already registered for that key.
+    ///
+    /// `Err` is a **genuine duplicate**: the same operator on the same operand pair. That is the
+    /// only real collision, and it has to be caught here because `jr-hir`'s name scan deliberately
+    /// exempts overloads — one operator has many, all interning to one synthetic name, so the name
+    /// map cannot tell a second overload from a redefinition (ADR-0048 §1).
+    ///
+    /// # Errors
+    /// The previously-registered procedure, so the caller can point at both.
+    pub(crate) fn insert_operator(
+        &mut self,
+        op: jr_hir::BinOp,
+        lhs: PoolId,
+        rhs: PoolId,
+        proc: ProcId,
+    ) -> Result<(), ProcId> {
+        match self.operators.insert((op, lhs, rhs), proc) {
+            None => Ok(()),
+            Some(previous) => {
+                // Keep the *first* declaration, matching the name map's shadowing story: a
+                // later duplicate is the error, so the earlier one stays usable and only one
+                // diagnostic is produced.
+                self.operators.insert((op, lhs, rhs), previous);
+                Err(previous)
+            }
+        }
+    }
+
+    /// Whether this file declares any overload at all.
+    ///
+    /// Lets the operator path skip the lookup entirely for the overwhelmingly common file that
+    /// declares none, so builtin arithmetic pays nothing for the feature existing.
+    #[must_use]
+    pub fn has_operators(&self) -> bool {
+        !self.operators.is_empty()
     }
 
     /// Returns the display name of a nominal type declared in this file.

@@ -80,9 +80,11 @@ fn stmt_span(stmt: &jr_hir::Stmt) -> Span {
         | Stmt::Item(_, span)
         | Stmt::Expr(_, span)
         | Stmt::Return(_, span)
-        | Stmt::Break(span)
-        | Stmt::Continue(span)
         | Stmt::Error(span) => *span,
-        Stmt::Assign { span, .. } | Stmt::If { span, .. } | Stmt::While { span, .. } => *span,
+        Stmt::Break(_, span) | Stmt::Continue(_, span) | Stmt::Defer(_, span) => *span,
+        Stmt::Assign { span, .. }
+        | Stmt::If { span, .. }
+        | Stmt::While { span, .. }
+        | Stmt::For { span, .. } => *span,
     }
 }

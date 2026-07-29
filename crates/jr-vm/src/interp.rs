@@ -35,7 +35,7 @@
 //! for the same reason `MirBody::reverse_postorder` uses an explicit stack. The depth
 //! cap turns it into [`VmError::Exhausted`].
 
-use jr_mir::{BinOp, Callee, ProcRef, UnOp, Unreachable};
+use jr_mir::{BinOp, Callee, NumKind, ProcRef, UnOp, Unreachable};
 use jr_pool::{Item, Pool, PoolId, StrId, TargetLayout, string_count, string_data, string_layout};
 use rustc_hash::FxHashMap;
 
@@ -340,6 +340,14 @@ impl<'a> Vm<'a> {
                     let value = self.unary(code, frame, *dest, *op, *operand)?;
                     frame.regs[dest.index()] = value;
                 }
+                Instr::Convert {
+                    dest,
+                    operand,
+                    from,
+                } => {
+                    let value = self.convert(code, frame, *dest, *operand, *from)?;
+                    frame.regs[dest.index()] = value;
+                }
                 Instr::Call { dest, callee, args } => {
                     let target = self.resolve_callee(frame, callee)?;
                     let mut values = Vec::with_capacity(args.len());
@@ -358,6 +366,22 @@ impl<'a> Vm<'a> {
                 Instr::Address { dest, place } => {
                     let address = self.address(frame, place)?;
                     frame.regs[dest.index()] = Value::Scalar(address);
+                }
+                Instr::Zero { place, size } => {
+                    let address = self.address(frame, place)?;
+                    let zeros = vec![0u8; usize::try_from(*size).unwrap_or(0)];
+                    self.memory.write(address, &zeros)?;
+                }
+                // ADR-0003's check, run rather than compiled. The comparison is
+                // **unsigned**: a negative index is an enormous unsigned value and so
+                // fails the same test, which is the one comparison ADR-0039 §1 relies on
+                // covering both ends of the range.
+                Instr::BoundsCheck { index, len } => {
+                    let index = self.operand(frame, *index)?.scalar()?;
+                    let len = self.operand(frame, *len)?.scalar()?;
+                    if index >= len {
+                        return Err(VmError::Trap(Trap::IndexOutOfBounds));
+                    }
                 }
                 Instr::Store { place, value } => {
                     let value = self.operand(frame, *value)?;
@@ -418,6 +442,10 @@ impl<'a> Vm<'a> {
                 let kind = IntKind::of(self.pool, ty).unwrap_or(IntKind::S64);
                 Ok(Value::Scalar(bits & kind.mask()))
             }
+            // Already normalised to the type's width by `FloatKind::encode`, so the bits are
+            // passed through — a `float32`'s live in the low 32 and the interpretation comes
+            // from the type at every use.
+            Item::FloatValue { ty: _, bits } => Ok(Value::Scalar(bits)),
             Item::StrValue(str_id) => self.string_value(str_id),
             // A type or a procedure as a *value* is comptime-only (wave W4) and has
             // no runtime representation; `jr_pool::LayoutError::ComptimeOnly` says
@@ -425,9 +453,29 @@ impl<'a> Vm<'a> {
             Item::TypeValue(_) | Item::ProcValue { .. } | Item::ForeignLibraryValue(_) => Err(
                 VmError::unsupported("a type, procedure or library used as a runtime value"),
             ),
-            ref other => Err(VmError::internal(format!(
-                "expected a value constant, found the type {other:?}"
-            ))),
+            // Exhaustive by *type* variant rather than a catch-all, and that change is this
+            // wave's doing: a `ref other` arm here swallowed `Item::FloatValue` and reported
+            // "expected a value constant, found the type FloatValue" at run time, while the
+            // native back end computed the right answer. A catch-all cannot be a compile
+            // error when a variant is added, which is exactly what `AGENTS.md` bans a `_` arm
+            // for.
+            Item::VoidType
+            | Item::BoolType
+            | Item::IntType { .. }
+            | Item::FloatType { .. }
+            | Item::EnumType { .. }
+            | Item::StringType
+            | Item::TypeType
+            | Item::ErrorType
+            | Item::ForeignLibraryType
+            | Item::PointerType(_)
+            | Item::ArrayType { .. }
+            | Item::ViewType { .. }
+            | Item::StructType { .. }
+            | Item::UnionType { .. }
+            | Item::ProcType { .. } => Err(VmError::internal(
+                "a type was used where a value constant belongs",
+            )),
         }
     }
 
@@ -484,6 +532,29 @@ impl<'a> Vm<'a> {
             .copied()
             .unwrap_or(PoolId::ERROR);
 
+        // **Floats first, before the bit-compare fallback below.** That ordering is the
+        // whole hazard ADR-0040's Consequences names: the fallback answers `==` with a raw
+        // bit compare, which gets `-0.0 == 0.0` wrong (true in IEEE-754, different bits) and
+        // `NaN == NaN` wrong (false in IEEE-754, identical bits). Both are *plausible wrong
+        // answers* rather than errors, which is this project's named failure mode, so a float
+        // must never reach it.
+        if let Some(float) = jr_pool::FloatKind::of(self.pool, operand_ty) {
+            let a = float.decode(left.scalar()?);
+            let b = float.decode(right.scalar()?);
+            if let Some(cmp) = op.as_float_cmp() {
+                return Ok(Value::bool(jr_pool::float_compare(cmp, a, b)));
+            }
+            let Some(arith) = op.as_float_op() else {
+                // `%` and the wrapping operators, which sema already refused (ADR-0040 §7).
+                // Reaching here means sema and the VM disagree about what was checked.
+                return Err(VmError::unsupported(format!(
+                    "{op:?} is not defined on a floating-point operand"
+                )));
+            };
+            let out = jr_pool::FloatKind::of(self.pool, dest_ty).unwrap_or(float);
+            return Ok(Value::Scalar(jr_pool::float_binary(arith, out, a, b)));
+        }
+
         // Equality on a non-integer scalar — a `bool` or a pointer — is a raw bit
         // compare. Ordering is not: `<` on pointers is not in the Jairs-0 subset, and
         // silently defining it would make the first attempt succeed by accident.
@@ -519,6 +590,53 @@ impl<'a> Vm<'a> {
         ))
     }
 
+    /// Converts an integer to the destination register's width (ADR-0037 §2).
+    ///
+    /// # Why this wraps where arithmetic traps
+    ///
+    /// ADR-0002 makes overflow trap because an overflowing `+` produces a result the program
+    /// did not ask for. A narrowing `cast` is the opposite: the program asked for the low
+    /// bits. So this calls `IntKind::wrap`, and `jr-mir`'s `fold_convert` calls the *same*
+    /// function — which is what keeps comptime folding and runtime execution agreeing about
+    /// the same program, the invariant `differential.rs` exists to check.
+    ///
+    /// `from` decides sign extension when widening: the incoming bits are meaningless without
+    /// knowing whether their top bit was a sign.
+    fn convert(
+        &mut self,
+        code: &Code,
+        frame: &Frame,
+        dest: crate::code::Reg,
+        operand: Operand,
+        from: NumKind,
+    ) -> Result<Value, VmError> {
+        let value = self.operand(frame, operand)?;
+        let ty = code
+            .types
+            .get(dest.index())
+            .copied()
+            .unwrap_or(PoolId::ERROR);
+        let to = NumKind::of(self.pool, ty)
+            .ok_or_else(|| VmError::unsupported("a cast to a non-numeric type"))?;
+
+        // Four directions (ADR-0040 §3), each delegating to `jr-pool` so that the folder and
+        // the interpreter cannot disagree — the rule ADR-0022 §2 states and which matters
+        // more for floats, not less, because a folded float constant is baked into a `PoolId`
+        // both engines then read.
+        Ok(Value::Scalar(match (from, to) {
+            // Decoded through `from` so that a negative `s8` widens to a negative `s64`
+            // rather than to 255-ish, then re-wrapped into the destination.
+            (NumKind::Int(from), NumKind::Int(to)) => to.wrap(value.as_int(from)?),
+            (NumKind::Int(from), NumKind::Float(to)) => {
+                jr_pool::int_to_float(to, value.as_int(from)?)
+            }
+            (NumKind::Float(from), NumKind::Int(to)) => {
+                jr_pool::float_to_int(to, from.decode(value.scalar()?))
+            }
+            (NumKind::Float(from), NumKind::Float(to)) => to.encode(from.decode(value.scalar()?)),
+        }))
+    }
+
     fn unary(
         &mut self,
         code: &Code,
@@ -530,14 +648,32 @@ impl<'a> Vm<'a> {
         let value = self.operand(frame, operand)?;
         match op {
             UnOp::Not => Ok(Value::bool(!value.boolean()?)),
-            UnOp::Neg => {
+            // Integers only (ADR-0042 §5), and normalised to the type's width by `int_not` —
+            // the same function the folder calls, so a folded `~0` and a run-time one agree.
+            UnOp::BitNot => {
                 let ty = code
                     .types
                     .get(dest.index())
                     .copied()
                     .unwrap_or(PoolId::ERROR);
                 let kind = IntKind::of(self.pool, ty)
-                    .ok_or_else(|| VmError::unsupported("negation of a non-integer"))?;
+                    .ok_or_else(|| VmError::unsupported("`~` on a non-integer"))?;
+                Ok(Value::Scalar(jr_pool::int_not(kind, value.as_int(kind)?)))
+            }
+            UnOp::Neg => {
+                let ty = code
+                    .types
+                    .get(dest.index())
+                    .copied()
+                    .unwrap_or(PoolId::ERROR);
+                // Floats first, and this one is total: negating a float flips its sign bit,
+                // so `-0.0` is a real value and there is nothing to trap on (ADR-0040 §1).
+                if let Some(float) = jr_pool::FloatKind::of(self.pool, ty) {
+                    let decoded = float.decode(value.scalar()?);
+                    return Ok(Value::Scalar(jr_pool::float_negate(float, decoded)));
+                }
+                let kind = IntKind::of(self.pool, ty)
+                    .ok_or_else(|| VmError::unsupported("negation of a non-number"))?;
                 // Traps on the most negative value (ADR-0002): its negation is one
                 // past the maximum, so the ordinary range check covers it.
                 Ok(Value::Scalar(
@@ -563,6 +699,14 @@ impl<'a> Vm<'a> {
             address = match step {
                 PlaceStep::Offset(offset) => address.wrapping_add(*offset),
                 PlaceStep::Indirect { size } => self.memory.read_scalar(address, *size)?,
+                // Wrapping, like `Offset` above. An index that would wrap has already
+                // failed its bounds check — the check is a separate statement that runs
+                // first — so this cannot reach a wrong address in a checked build, and in
+                // an unchecked one the wrap is the same arithmetic native code does.
+                PlaceStep::ScaledIndex { index, stride } => {
+                    let index = self.operand(frame, *index)?.scalar()?;
+                    address.wrapping_add(index.wrapping_mul(*stride))
+                }
             };
         }
         Ok(address)
@@ -677,6 +821,7 @@ fn write_le(bytes: &mut [u8], offset: u64, size: u64, value: u64) {
 const fn trap_of(trap: jr_pool::IntTrap) -> VmError {
     match trap {
         jr_pool::IntTrap::Overflow { what } => VmError::Trap(Trap::Overflow { what }),
+        jr_pool::IntTrap::ShiftOutOfRange => VmError::Trap(Trap::ShiftOutOfRange),
         jr_pool::IntTrap::DivideByZero => VmError::Trap(Trap::DivideByZero),
     }
 }

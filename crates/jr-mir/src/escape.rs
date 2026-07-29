@@ -85,6 +85,13 @@ pub(crate) struct Promotable {
     ///
     /// Parallel to [`Body::locals`]: entry `i` answers for `LocalId::from_usize(i)`.
     flags: Vec<bool>,
+    /// Parameters whose address is taken, and which therefore need a stack slot.
+    ///
+    /// Parameters are **not** locals — `MirBody::params` says so, and `jr-hir`'s `Body` does
+    /// not store them — so they cannot share `flags`. They are carried here anyway because
+    /// this is the pass that already walks for `AddrOf`, and a second walk in `build.rs`
+    /// would be a second opinion about the same question.
+    addr_taken_params: FxHashSet<jr_hir::ParamId>,
 }
 
 impl Promotable {
@@ -95,6 +102,15 @@ impl Promotable {
     #[must_use]
     pub(crate) fn is_promotable(&self, local: LocalId) -> bool {
         self.flags[local.index()]
+    }
+
+    /// Whether `param`'s address is taken, and so whether it must be spilled at entry.
+    ///
+    /// A scalar parameter used only by value stays a block parameter, which is the common
+    /// case and costs nothing.
+    #[must_use]
+    pub(crate) fn param_needs_slot(&self, param: jr_hir::ParamId) -> bool {
+        self.addr_taken_params.contains(&param)
     }
 
     /// How many locals were promoted. For tests and the dump.
@@ -121,7 +137,17 @@ impl Promotable {
 pub(crate) fn is_register_representable(pool: &Pool, ty: PoolId) -> bool {
     match pool.item(ty) {
         // Register-representable: a bit pattern of fixed, small width.
-        Item::BoolType | Item::IntType { .. } | Item::PointerType(_) => true,
+        // A float is register-representable: it is a fixed, small bit pattern, and both
+        // targets have float registers. Adding it here is what lets a `float64` local be
+        // promoted to SSA rather than spilled to a slot.
+        // An enum is its backing integer at run time (ADR-0041 §3), so it lives in a
+        // register like one. Classifying it as an aggregate would spill every enum local to
+        // a slot for no reason.
+        Item::BoolType
+        | Item::IntType { .. }
+        | Item::FloatType { .. }
+        | Item::EnumType { .. }
+        | Item::PointerType(_) => true,
 
         // Every aggregate, wide, or non-value item lives in memory. `StringType`
         // is here deliberately: ADR-0004 makes `string` a two-word
@@ -131,11 +157,17 @@ pub(crate) fn is_register_representable(pool: &Pool, ty: PoolId) -> bool {
         | Item::TypeType
         | Item::ErrorType
         | Item::ForeignLibraryType
+        | Item::ArrayType { .. }
+        // A view is two words, so it is no more register-representable than the `string` it
+        // shares a layout with (ADR-0044 §1).
+        | Item::ViewType { .. }
         | Item::StructType { .. }
+        | Item::UnionType { .. }
         | Item::ProcType { .. }
         | Item::VoidValue
         | Item::BoolValue(_)
         | Item::IntValue { .. }
+        | Item::FloatValue { .. }
         | Item::StrValue(_)
         | Item::TypeValue(_)
         | Item::ProcValue { .. }
@@ -156,7 +188,8 @@ pub(crate) fn is_register_representable(pool: &Pool, ty: PoolId) -> bool {
 fn is_addr_of(op: UnOp) -> bool {
     match op {
         UnOp::AddrOf => true,
-        UnOp::Neg | UnOp::Not => false,
+        // `~` reads a value, never an address — the same as `-` and `!`.
+        UnOp::Neg | UnOp::Not | UnOp::BitNot => false,
     }
 }
 
@@ -177,8 +210,26 @@ fn is_addr_of(op: UnOp) -> bool {
 /// every expression the arena holds is visited once, regardless of whether a
 /// branch containing it could ever run. That is deliberate — see the module
 /// docs' "no flow sensitivity" argument.
-fn addr_taken_locals(body: &Body) -> FxHashSet<LocalId> {
+/// The parameters whose address is taken somewhere in this body.
+///
+/// # Why this exists, and what went wrong without it
+///
+/// `build.rs` spilled an *aggregate* parameter to a slot so that `s.data` had a place to
+/// project, and its comment recorded the failure that forced it: without the spill, lowering
+/// "silently produced `Rvalue::Undef` — a `write` from a garbage pointer, with no diagnostic
+/// anywhere".
+///
+/// A **scalar** parameter had the same hole and it was live. `place()` said a scalar parameter
+/// has no place because "nothing in Jairs-0 can ask for its address" — but `*b` on a parameter
+/// asks exactly that, so `place()` answered `None`, `unary`'s `AddrOf` fell back to
+/// `Rvalue::Undef`, and the program read an unassigned value. `put_byte :: (b: u8) { p := *b; }`
+/// is the case that surfaced it, and it predates this wave: nothing in the corpus took the
+/// address of a parameter, so nothing noticed.
+///
+/// Collected by the same walk that finds escaping locals, tagged the same way.
+fn addr_taken(body: &Body) -> (FxHashSet<LocalId>, FxHashSet<jr_hir::ParamId>) {
     let mut escaped = FxHashSet::default();
+    let mut escaped_params: FxHashSet<jr_hir::ParamId> = FxHashSet::default();
 
     let mut stmt_worklist = vec![body.root];
     // One entry per expression still to visit, tagged with whether it is
@@ -226,21 +277,73 @@ fn addr_taken_locals(body: &Body) -> FxHashSet<LocalId> {
                     expr_worklist.push((*e, false));
                 }
             }
-            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Error(_) => {}
+            // A `for`'s iterable reaches an **address**: the loop reads elements through a place,
+            // so an array iterated over must be spilled exactly as one indexed by hand is. `true`
+            // rather than `under_addr_of`, for the reason `Expr::Slice` uses it (ADR-0044 §2) — the
+            // loop takes an address whether or not it sits under a `*`.
+            Stmt::For {
+                iterable,
+                body: loop_body,
+                ..
+            } => {
+                match iterable {
+                    jr_hir::ForIterable::Sequence(e) => expr_worklist.push((*e, true)),
+                    jr_hir::ForIterable::Range { start, end } => {
+                        expr_worklist.push((*start, false));
+                        expr_worklist.push((*end, false));
+                    }
+                }
+                stmt_worklist.push(*loop_body);
+            }
+            Stmt::Defer(inner, _) => stmt_worklist.push(*inner),
+            Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
         }
     }
 
     while let Some((expr_id, under_addr_of)) = expr_worklist.pop() {
         match body.expr(expr_id) {
             Expr::Name { res, .. } => {
-                if under_addr_of && let Res::Local(local) = res {
-                    escaped.insert(*local);
+                if under_addr_of {
+                    match res {
+                        Res::Local(local) => {
+                            escaped.insert(*local);
+                        }
+                        // The parameter case, which is why this returns two sets.
+                        Res::Param(param) => {
+                            escaped_params.insert(*param);
+                        }
+                        Res::Item(_) | Res::Imported(_, _) | Res::Error => {}
+                    }
                 }
             }
             Expr::Binary { lhs, rhs, .. } => {
                 expr_worklist.push((*lhs, under_addr_of));
                 expr_worklist.push((*rhs, under_addr_of));
             }
+            // `*a[i]` takes the address of an *element*, which escapes the whole array —
+            // MIR tracks address-taken-ness per slot, and there is one slot for the array.
+            // The index is an ordinary value and never under the `*`, because `*a[i]` is
+            // `*(a[i])`: the postfix binds tighter.
+            Expr::Index { base, index, .. } => {
+                expr_worklist.push((*base, under_addr_of));
+                expr_worklist.push((*index, false));
+            }
+            // **`buf[]` escapes `buf`, and this arm is why the operator is explicit.**
+            // A view's `data` word holds the address of its base's storage, so the base must
+            // *have* storage — and a promoted local does not. `true` rather than
+            // `under_addr_of`: the slice takes an address whether or not it sits under a `*`,
+            // exactly as `UnOp::AddrOf` does.
+            //
+            // ADR-0044 §2 rejected an implicit array-to-view coercion partly on this: a
+            // coercion takes an address at a site containing no `AddrOf`, this walk would not
+            // see it, and the result would be a promoted local with no address for the view to
+            // point at — a miscompile, not a diagnostic.
+            Expr::Slice { base, .. } => expr_worklist.push((*base, true)),
+            // A cast does not take an address, and the target is a type rather than an
+            // expression, so `under_addr_of` passes through to the operand unchanged.
+            Expr::Cast { operand, .. } => expr_worklist.push((*operand, under_addr_of)),
+            // Same as a cast: reads a value, produces a value, takes no address.
+            Expr::Autocast { operand, .. } => expr_worklist.push((*operand, under_addr_of)),
             Expr::Unary { op, operand, .. } => {
                 let operand_under_addr_of = under_addr_of || is_addr_of(*op);
                 expr_worklist.push((*operand, operand_under_addr_of));
@@ -259,11 +362,16 @@ fn addr_taken_locals(body: &Body) -> FxHashSet<LocalId> {
             // escaped — see the module docs' over-approximation note.
             Expr::Deref(inner, _) => expr_worklist.push((*inner, under_addr_of)),
             Expr::Run(inner, _) => expr_worklist.push((*inner, under_addr_of)),
-            Expr::Literal(_, _) | Expr::Uninit(_) | Expr::Directive { .. } | Expr::Error(_) => {}
+            // A bare `.RED` is a constant with no operand and no storage.
+            Expr::Member { .. }
+            | Expr::Literal(_, _)
+            | Expr::Uninit(_)
+            | Expr::Directive { .. }
+            | Expr::Error(_) => {}
         }
     }
 
-    escaped
+    (escaped, escaped_params)
 }
 
 // ---------------------------------------------------------------------------
@@ -286,7 +394,7 @@ pub(crate) fn classify(
     types: &TypeMap,
     pool: &Pool,
 ) -> Promotable {
-    let escaped = addr_taken_locals(body);
+    let (escaped, escaped_params) = addr_taken(body);
     let flags = (0..body.locals.len())
         .map(LocalId::from_usize)
         .map(|local| {
@@ -296,7 +404,10 @@ pub(crate) fn classify(
                     .is_some_and(|ty| is_register_representable(pool, ty))
         })
         .collect();
-    Promotable { flags }
+    Promotable {
+        flags,
+        addr_taken_params: escaped_params,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +483,31 @@ mod tests {
         let promotable = classify(&hir, body, body_id, &types, &pool);
         assert!(promotable.is_promotable(LocalId::from_usize(0)));
         assert_eq!(promotable.promoted_count(), 1);
+    }
+
+    #[test]
+    fn slicing_a_local_marks_it_escaped() {
+        // ADR-0044 §2's third point, pinned at the level where it is actually true. An array
+        // is not register-representable, so `buf` would get a slot with or without this — the
+        // assertion is therefore about the **escape set**, not about promotability, because
+        // asserting the latter would pass even if the `Expr::Slice` arm were deleted.
+        //
+        // What it protects: a view's `data` word holds the address of its base's storage, so
+        // if arrays ever become register-representable, an unmarked slice would promote a local
+        // that has no address for the view to point at.
+        let (hir, body_id, types, _pool) = analyse(
+            "main :: () {
+                buf: [2]s64;
+                xs := buf[];
+            }",
+        );
+        let _ = types;
+        let body = hir.body(body_id);
+        let (escaped, _params) = addr_taken(body);
+        assert!(
+            escaped.contains(&LocalId::from_usize(0)),
+            "`buf[]` must escape `buf`, exactly as `*buf` does"
+        );
     }
 
     #[test]

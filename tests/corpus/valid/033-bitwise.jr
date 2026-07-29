@@ -1,0 +1,89 @@
+// `& | ^ ~ << >>` (ADR-0042), the last of W1's arithmetic.
+//
+// Two rules here are *not* C's, and both are checked below:
+//
+//   * bitwise binds **tighter** than comparison, so `a & 3 == 2` is `(a & 3) == 2`. C reads
+//     it the other way round, which Ritchie called a mistake kept only for compatibility;
+//   * shifts sit between `+` and `*`, so `a + b << c` is `a + (b << c)`. C puts shifts below
+//     `+` and reads it as `(a + b) << c`.
+//
+// The `exit` at the end is what gives this file teeth under the differential harness: only
+// two corpus programs print, so a computation has to be made observable through an exit
+// status or the comparison is silence against silence.
+#import "Basic";
+
+main :: () {
+    a := 6;
+    n := 0;
+
+    // The three that cannot trap.
+    if (a & 3) == 2 {
+        n = n + 1;
+    }
+    if (a | 1) == 7 {
+        n = n + 2;
+    }
+    if (a ^ 5) == 3 {
+        n = n + 4;
+    }
+
+    // Shifts. The count is a separate integer and need not share the value's type, which is
+    // the one binary form where that is true (ADR-0042 §2).
+    if (a << 2) == 24 {
+        n = n + 8;
+    }
+    if (a >> 1) == 3 {
+        n = n + 16;
+    }
+
+    // `~` complements on the type's *own* width, so `~0` in a `u8` is 255 rather than a
+    // truncated -1 (ADR-0042 §4).
+    if ~cast(u8, 0) == 255 {
+        n = n + 32;
+    }
+
+    // `>>` is arithmetic for a signed type and logical for an unsigned one -- the type
+    // decides, exactly as it does for `/`.
+    s: s8 = -8;
+    if (s >> 1) == -4 {
+        n = n + 64;
+    }
+    u: u8 = 240;
+    if (u >> 4) == 15 {
+        n = n + 128;
+    }
+
+    // Precedence, unparenthesised. Under C's ordering this would be `a & (3 == 2)`, which is
+    // `a & false` -- a type error here rather than a wrong answer, so C's ordering would make
+    // Jairs *refuse* a line that reads correctly.
+    if a & 3 == 2 {
+        n = n + 256;
+    }
+
+    // Shifts above `+`: `1 + 1 << 3` is `1 + 8`, not `2 << 3`.
+    if 1 + 1 << 3 == 9 {
+        n = n + 512;
+    }
+
+    // `|` loosest, then `^`, then `&`, so this is `(6 & 3) | (1 ^ 2)` = 2 | 3 = 3.
+    if (6 & 3 | 1 ^ 2) == 3 {
+        n = n + 1024;
+    }
+
+    // Compound assignment, all five forms (ADR-0042 §6).
+    f := 1;
+    f <<= 3;
+    f |= 1;
+    f &= 12;
+    f ^= 4;
+    f >>= 1;
+    if f == 6 {
+        n = n + 2048;
+    }
+
+    // Every assertion: 4095. `exit` takes the low byte, so the status is 255.
+    if n == 4095 {
+        exit(0);
+    }
+    exit(1);
+}

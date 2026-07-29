@@ -160,7 +160,9 @@ fn build_module_map(interner: &Interner) -> (HashMap<String, FileHir>, HashMap<S
     let modules_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus/modules");
 
     // The module names we know about (from the corpus README).
-    let module_names = ["Shapes", "Colors", "Palette", "Cycle_A", "Cycle_B"];
+    let module_names = [
+        "Shapes", "Colors", "Palette", "Palette2", "Cycle_A", "Cycle_B",
+    ];
 
     let mut hirs: HashMap<String, FileHir> = HashMap::new();
     let mut scopes: HashMap<String, ItemScope> = HashMap::new();
@@ -210,7 +212,7 @@ fn resolve_import_file(
     resolve_diags
 }
 
-/// All 7 `imports/valid/` files must resolve with zero diagnostics.
+/// All 8 `imports/valid/` files must resolve with zero diagnostics.
 #[test]
 fn imports_valid_all_resolve_cleanly() {
     let interner = Interner::new();
@@ -227,8 +229,8 @@ fn imports_valid_all_resolve_cleanly() {
 
     assert_eq!(
         entries.len(),
-        7,
-        "expected 7 files in imports/valid/, found {}",
+        8,
+        "expected 8 files in imports/valid/, found {}",
         entries.len()
     );
 

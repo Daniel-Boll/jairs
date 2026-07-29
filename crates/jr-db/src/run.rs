@@ -66,6 +66,31 @@ pub fn run_main(
 ) -> Result<RunOutcome, String> {
     let entry = main_of(db, root).ok_or_else(|| "the file declares no `main`".to_owned())?;
 
+    // **The entry point must have lowered.** E0245 warns about a refused body at check time,
+    // because one nobody calls does not stop the program — but `main` is called by definition,
+    // and skipping it used to reach the interpreter's own lookup as
+    // `internal compiler error: no routine for file 0 proc 0` on a program `jr check` called
+    // clean. Checked here rather than left to that lookup, so the failure names the procedure
+    // and says whose fault it is (ADR-0047 §2).
+    //
+    // Only `main` is checked, not every reachable body: a refused body deeper in the program is
+    // only a problem if it is *reached*, and deciding that statically is the call graph this
+    // query deliberately does not build.
+    {
+        let mir = optimized_file_mir(db, root, search_paths);
+        if let Some(Err(reason)) = mir
+            .mir
+            .iter()
+            .find(|(proc, _)| *proc == entry.proc)
+            .map(|(_, outcome)| outcome)
+        {
+            return Err(format!(
+                "the compiler could not lower `main` ({reason:?}); this program is legal and \
+                 this compiler has a gap — please report it"
+            ));
+        }
+    }
+
     let files = reachable_files(db, root, search_paths);
 
     // Gather every query result before locking the pool: the lock must never be held

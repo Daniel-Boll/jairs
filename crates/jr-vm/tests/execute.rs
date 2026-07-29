@@ -82,6 +82,7 @@ impl Fixture {
             &signatures.signatures,
             &ConstValues::new(),
             &ImportedProcs::new(),
+            &jr_mir::OperatorCalls::new(),
             &interner,
             &mut pool,
         );

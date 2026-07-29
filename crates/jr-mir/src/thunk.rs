@@ -291,6 +291,22 @@ impl Thunk<'_> {
                 Ok(self.define(ty, Rvalue::Unary { op, operand }, id))
             }
 
+            // A `cast` inside a `#run` is evaluated, not skipped: `COMPUTED :: #run
+            // cast(u8, 65)` must fold in the VM exactly as it would at runtime, which is
+            // PLAN.md §3.1's same-MIR invariant applied to this wave's new rvalue.
+            Expr::Cast {
+                ty: _,
+                operand,
+                span: _,
+            } => {
+                let from_ty = expr_type(self.types, operand)?;
+                let from = crate::mir::NumKind::of(self.pool, from_ty).ok_or(Poisoned::Here(
+                    "a cast from a type comptime evaluation cannot reduce to a number",
+                ))?;
+                let operand = self.expr(operand)?;
+                Ok(self.define(ty, Rvalue::Convert { operand, from }, id))
+            }
+
             Expr::Call {
                 callee,
                 args,
@@ -313,9 +329,24 @@ impl Thunk<'_> {
 
             // Each of these is argued in the module docs.
             Expr::Directive { .. } => Err(Poisoned::Here("a directive has no runtime value")),
-            Expr::Field { .. } | Expr::Deref(_, _) => {
+            // An index needs a place for the same reason a field access does — and a
+            // file-level expression has none. `[N]u8` cannot appear in a `::` constant
+            // anyway, since there is no array literal to initialise one with (ADR-0039 §6).
+            Expr::Field { .. } | Expr::Index { .. } | Expr::Deref(_, _) => {
                 Err(Poisoned::Here("a file-level expression has no place"))
             }
+            // `buf[]` needs the *address* of a local's storage, and a file-level expression
+            // has no frame to take one in. Refused rather than half-built.
+            Expr::Slice { .. } => Err(Poisoned::Here("`[]` has no place at file level")),
+            // Both are legal at file level in principle, and neither is reachable: a `::`
+            // constant's initialiser is typed with no expectation, so sema has already refused
+            // `X :: xx 1;` (E0242) and `X :: .RED;` (E0244) before a thunk is built. Refused
+            // here rather than lowered, because a thunk that guessed a target type would be
+            // inventing the very thing the diagnostic says is missing.
+            Expr::Autocast { .. } => Err(Poisoned::Here("`xx` has no context at file level")),
+            Expr::Member { .. } => Err(Poisoned::Here(
+                "a bare enum member has no context at file level",
+            )),
             Expr::Uninit(_) => Err(Poisoned::Here("`---` has no value")),
             Expr::Error(_) => Err(Poisoned::Here("the expression contains recovered syntax")),
         }
@@ -323,12 +354,32 @@ impl Thunk<'_> {
 
     fn literal(&mut self, literal: &Literal, ty: PoolId) -> PoolId {
         match literal {
-            // `value` is a magnitude: `-1` is `Neg` applied to `1`.
+            // Wrapped into the destination's kind, because `int_value` takes raw bits and a
+            // negative literal's bits are its two's-complement encoding. The same
+            // `IntKind::wrap` the interpreter and `constprop` use, so a constant folded here
+            // and one computed at run time cannot differ (ADR-0038 §2).
+            //
+            // A literal whose type is not an integer — which sema has already rejected —
+            // interns its low 64 bits rather than panicking, since lowering must not
+            // introduce a second refusal path.
             Literal::Int {
                 value,
                 radix: _,
                 overflowed: _,
-            } => self.pool.int_value(ty, *value),
+            } => {
+                let bits = jr_pool::IntKind::of(self.pool, ty)
+                    .map_or(*value as u64, |kind| kind.wrap(*value));
+                self.pool.int_value(ty, bits)
+            }
+            // Re-encoded into the destination width, exactly as `build.rs`'s `constant` does
+            // — the two must agree, because a `#run` folds through this path and the same
+            // literal at run time folds through that one (PLAN.md §3.1).
+            Literal::Float { bits, malformed: _ } => {
+                let value = f64::from_bits(*bits);
+                let encoded =
+                    jr_pool::FloatKind::of(self.pool, ty).map_or(*bits, |kind| kind.encode(value));
+                self.pool.float_value(ty, encoded)
+            }
             Literal::Bool(value) => self.pool.bool_value(*value),
             Literal::Str(text) => self.pool.str_value(text),
         }
@@ -354,6 +405,11 @@ fn bin_op(op: jr_hir::BinOp) -> Result<BinOp, Poisoned> {
         jr_hir::BinOp::WrapAdd => BinOp::WrapAdd,
         jr_hir::BinOp::WrapSub => BinOp::WrapSub,
         jr_hir::BinOp::WrapMul => BinOp::WrapMul,
+        jr_hir::BinOp::BitAnd => BinOp::BitAnd,
+        jr_hir::BinOp::BitOr => BinOp::BitOr,
+        jr_hir::BinOp::BitXor => BinOp::BitXor,
+        jr_hir::BinOp::Shl => BinOp::Shl,
+        jr_hir::BinOp::Shr => BinOp::Shr,
         jr_hir::BinOp::Eq => BinOp::Eq,
         jr_hir::BinOp::Ne => BinOp::Ne,
         jr_hir::BinOp::Lt => BinOp::Lt,
@@ -372,6 +428,7 @@ fn un_op(op: jr_hir::UnOp) -> Result<UnOp, Poisoned> {
     Ok(match op {
         jr_hir::UnOp::Neg => UnOp::Neg,
         jr_hir::UnOp::Not => UnOp::Not,
+        jr_hir::UnOp::BitNot => UnOp::BitNot,
         // Prefix `*` needs a place, and a file-level expression has none.
         jr_hir::UnOp::AddrOf => {
             return Err(Poisoned::Here("a file-level expression has no place"));

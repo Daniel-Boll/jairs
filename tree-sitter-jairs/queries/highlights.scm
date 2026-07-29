@@ -29,6 +29,26 @@
   "return"
   "break"
   "continue"
+  ; `cast` is real syntax as of ADR-0037, not a reserved word. It is listed here rather
+  ; than in the reserved-keyword match below, which would have kept colouring it as
+  ; "arrives in a later wave" after it arrived.
+  "cast"
+  ; `enum` likewise, as of ADR-0041 — and it was in the reserved match, so this is the
+  ; second time the same trap has been walked into. The reserved list is the thing to check
+  ; whenever a keyword becomes real.
+  "enum"
+  ; `enum_flags`, new in ADR-0043 rather than promoted from the reserved list — it was never
+  ; reserved, so there was nothing to remove.
+  "enum_flags"
+  ; `union`, real as of ADR-0045 and promoted *out* of the reserved match below — the third
+  ; time that pairing has come up, after `cast` and `enum`. Checked rather than discovered
+  ; this time, because ADR-0045's Consequences named it in advance.
+  "union"
+  ; `xx`, real as of ADR-0046 and out of the reserved match too — four for four.
+  "xx"
+  ; `operator`, new in ADR-0048 and never reserved, so there was nothing to remove — the same
+  ; position `enum_flags` was in, which is why both sit outside `is_reserved_keyword`'s range.
+  "operator"
 ] @keyword
 
 ; Boolean literals are keywords in Jairs
@@ -38,7 +58,7 @@
 ; Reserved keywords — highlight so users see them as reserved
 ; These lex as identifiers but we match them by text.
 ((identifier) @keyword.reserved
-  (#match? @keyword.reserved "^(enum|union|for|defer|using|cast|xx|null)$"))
+  (#match? @keyword.reserved "^(for|defer|using|null)$"))
 
 ; ---- Literals ----------------------------------------------------------------
 
@@ -57,6 +77,12 @@
 
 ; Struct keyword in struct type
 (struct_type "struct" @keyword.type)
+
+; Enum keyword, and a member name — which is a *constant*, matching how a `::` declaration's
+; name is captured, because that is what an enum member is (ADR-0012, ADR-0041 §3).
+(enum_type "enum" @keyword.type)
+(enum_type "enum_flags" @keyword.type)
+(member name: (identifier) @constant)
 
 ; ---- Declarations ------------------------------------------------------------
 

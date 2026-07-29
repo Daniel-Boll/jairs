@@ -43,7 +43,7 @@
 //! `PlacePlan` are the same numbers Cranelift will emit, because they come from the
 //! same function.
 
-use jr_mir::{BinOp, BlockId, Callee, MirSpan, ProcRef, UnOp, Unreachable, ValueId};
+use jr_mir::{BinOp, BlockId, Callee, MirSpan, NumKind, ProcRef, UnOp, Unreachable, ValueId};
 use jr_pool::PoolId;
 
 /// A register index. Identical to a MIR [`ValueId`], deliberately (ADR-0018 §1).
@@ -108,6 +108,21 @@ pub enum PlaceStep {
         /// The target's pointer width, from [`jr_pool::TargetLayout`].
         size: u64,
     },
+    /// Add `index * stride` bytes — an array element (ADR-0039).
+    ///
+    /// The index is a *runtime* operand, which is what distinguishes this from
+    /// [`PlaceStep::Offset`]: a field's position is known at lowering time and an
+    /// element's is not. The stride comes from `jr-pool`'s layout, so ADR-0018 §2 still
+    /// holds — this is the one place that turns an element index into bytes for the VM.
+    ///
+    /// Carries no length: the bounds check is [`Instr::BoundsCheck`], a separate
+    /// instruction lowered from a separate MIR statement (ADR-0003).
+    ScaledIndex {
+        /// The element index, in elements.
+        index: Operand,
+        /// The size of one element in bytes, including any tail padding.
+        stride: u64,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +138,26 @@ pub enum Instr {
         dest: Reg,
         /// What to copy.
         src: Operand,
+    },
+    /// Sets `size` bytes at `place` to zero (ADR-0039 §4a).
+    ///
+    /// A default-initialised aggregate. The VM zeroes a fresh frame anyway, so this is
+    /// redundant *here* — and that is exactly why it must exist: Cranelift's stack slot is
+    /// not zeroed, so before this instruction the two engines disagreed about
+    /// `p: Point; exit(p.x + p.y);`. Emitting it in both keeps the agreement a property of
+    /// the IR rather than of one engine's allocator.
+    Zero {
+        /// Where to start.
+        place: PlacePlan,
+        /// How many bytes to clear.
+        size: u64,
+    },
+    /// Traps unless `index` is unsigned-less-than `len` (ADR-0003).
+    BoundsCheck {
+        /// The index being checked.
+        index: Operand,
+        /// The number of elements.
+        len: Operand,
     },
     /// `dest <- lhs op rhs`. Never `&&` or `||`: MIR has no such operator, because
     /// short-circuiting is control flow.
@@ -144,6 +179,22 @@ pub enum Instr {
         op: UnOp,
         /// The operand.
         operand: Operand,
+    },
+    /// Converts an integer to another width or signedness: `cast(T, x)` (ADR-0037 §2).
+    ///
+    /// Truncates or extends, and **never traps** — which is what distinguishes it from
+    /// [`Instr::Binary`]'s arithmetic, where ADR-0002 makes overflow a trap. A cast is the
+    /// program explicitly asking for the low bits.
+    ///
+    /// The destination register's own kind supplies the target width, so only the *source*
+    /// kind is carried: sign-extending needs to know whether the incoming bits were signed.
+    Convert {
+        /// The destination register.
+        dest: Reg,
+        /// The value to convert.
+        operand: Operand,
+        /// The kind being converted from.
+        from: NumKind,
     },
     /// Calls a procedure. `dest` is `None` for a call in statement position.
     Call {

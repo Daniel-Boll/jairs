@@ -103,6 +103,7 @@ fn nth_child_node<N: AstNode>(parent: &SyntaxNode, n: usize) -> Option<N> {
 
 ast_node!(SourceFile, SOURCE_FILE);
 ast_node!(ConstDecl, CONST_DECL);
+ast_node!(OperatorDecl, OPERATOR_DECL);
 ast_node!(VarDecl, VAR_DECL);
 ast_node!(ImportDecl, IMPORT_DECL);
 ast_node!(RunDecl, RUN_DECL);
@@ -114,7 +115,13 @@ ast_node!(RetType, RET_TYPE);
 ast_node!(ForeignAttr, FOREIGN_ATTR);
 ast_node!(NameType, NAME_TYPE);
 ast_node!(PointerType, POINTER_TYPE);
+ast_node!(ArrayType, ARRAY_TYPE);
+ast_node!(ViewType, VIEW_TYPE);
 ast_node!(StructType, STRUCT_TYPE);
+ast_node!(UnionType, UNION_TYPE);
+ast_node!(EnumType, ENUM_TYPE);
+ast_node!(MemberList, MEMBER_LIST);
+ast_node!(Member, MEMBER);
 ast_node!(FieldList, FIELD_LIST);
 ast_node!(Field, FIELD);
 ast_node!(Block, BLOCK);
@@ -124,6 +131,10 @@ ast_node!(AssignStmt, ASSIGN_STMT);
 ast_node!(IfStmt, IF_STMT);
 ast_node!(ElseBranch, ELSE_BRANCH);
 ast_node!(WhileStmt, WHILE_STMT);
+ast_node!(ForStmt, FOR_STMT);
+ast_node!(RangeExpr, RANGE_EXPR);
+ast_node!(DeferStmt, DEFER_STMT);
+ast_node!(LoopLabel, LOOP_LABEL);
 ast_node!(ReturnStmt, RETURN_STMT);
 ast_node!(BreakStmt, BREAK_STMT);
 ast_node!(ContinueStmt, CONTINUE_STMT);
@@ -135,8 +146,13 @@ ast_node!(ParenExpr, PAREN_EXPR);
 ast_node!(CallExpr, CALL_EXPR);
 ast_node!(ArgList, ARG_LIST);
 ast_node!(FieldExpr, FIELD_EXPR);
+ast_node!(IndexExpr, INDEX_EXPR);
+ast_node!(SliceExpr, SLICE_EXPR);
 ast_node!(DerefExpr, DEREF_EXPR);
 ast_node!(UninitExpr, UNINIT_EXPR);
+ast_node!(CastExpr, CAST_EXPR);
+ast_node!(AutocastExpr, AUTOCAST_EXPR);
+ast_node!(MemberExpr, MEMBER_EXPR);
 ast_node!(RunExpr, RUN_EXPR);
 ast_node!(DirectiveExpr, DIRECTIVE_EXPR);
 
@@ -149,6 +165,8 @@ ast_node!(DirectiveExpr, DIRECTIVE_EXPR);
 pub enum Item {
     /// `name :: value`
     Const(ConstDecl),
+    /// `operator + :: (…) -> T { … }` (ADR-0048 §1)
+    Operator(OperatorDecl),
     /// `name := expr;` or `name: T = expr;`
     Var(VarDecl),
     /// `#import "module";`
@@ -159,12 +177,16 @@ pub enum Item {
 
 impl AstNode for Item {
     fn can_cast(kind: SyntaxKind) -> bool {
-        matches!(kind, CONST_DECL | VAR_DECL | IMPORT_DECL | RUN_DECL)
+        matches!(
+            kind,
+            CONST_DECL | OPERATOR_DECL | VAR_DECL | IMPORT_DECL | RUN_DECL
+        )
     }
 
     fn cast(node: SyntaxNode) -> Option<Self> {
         match node.kind() {
             CONST_DECL => Some(Self::Const(ConstDecl(node))),
+            OPERATOR_DECL => Some(Self::Operator(OperatorDecl(node))),
             VAR_DECL => Some(Self::Var(VarDecl(node))),
             IMPORT_DECL => Some(Self::Import(ImportDecl(node))),
             RUN_DECL => Some(Self::Run(RunDecl(node))),
@@ -175,6 +197,7 @@ impl AstNode for Item {
     fn syntax(&self) -> &SyntaxNode {
         match self {
             Self::Const(n) => n.syntax(),
+            Self::Operator(n) => n.syntax(),
             Self::Var(n) => n.syntax(),
             Self::Import(n) => n.syntax(),
             Self::Run(n) => n.syntax(),
@@ -191,22 +214,43 @@ impl AstNode for Item {
 pub enum TypeExpr {
     /// `*T`
     Pointer(PointerType),
+    /// `[N]T`
+    Array(ArrayType),
+    /// `[]T` (ADR-0044 §1)
+    View(ViewType),
     /// `Ident`
     Name(NameType),
     /// `struct { ... }`
     Struct(StructType),
+    /// `union { ... }` (ADR-0045)
+    Union(UnionType),
+    /// `enum { ... }`
+    Enum(EnumType),
 }
 
 impl AstNode for TypeExpr {
     fn can_cast(kind: SyntaxKind) -> bool {
-        matches!(kind, POINTER_TYPE | NAME_TYPE | STRUCT_TYPE)
+        matches!(
+            kind,
+            POINTER_TYPE
+                | ARRAY_TYPE
+                | VIEW_TYPE
+                | NAME_TYPE
+                | STRUCT_TYPE
+                | UNION_TYPE
+                | ENUM_TYPE
+        )
     }
 
     fn cast(node: SyntaxNode) -> Option<Self> {
         match node.kind() {
             POINTER_TYPE => Some(Self::Pointer(PointerType(node))),
+            ARRAY_TYPE => Some(Self::Array(ArrayType(node))),
+            VIEW_TYPE => Some(Self::View(ViewType(node))),
             NAME_TYPE => Some(Self::Name(NameType(node))),
             STRUCT_TYPE => Some(Self::Struct(StructType(node))),
+            UNION_TYPE => Some(Self::Union(UnionType(node))),
+            ENUM_TYPE => Some(Self::Enum(EnumType(node))),
             _ => None,
         }
     }
@@ -214,8 +258,12 @@ impl AstNode for TypeExpr {
     fn syntax(&self) -> &SyntaxNode {
         match self {
             Self::Pointer(n) => n.syntax(),
+            Self::Array(n) => n.syntax(),
+            Self::View(n) => n.syntax(),
             Self::Name(n) => n.syntax(),
             Self::Struct(n) => n.syntax(),
+            Self::Union(n) => n.syntax(),
+            Self::Enum(n) => n.syntax(),
         }
     }
 }
@@ -241,10 +289,16 @@ pub enum Stmt {
     While(WhileStmt),
     /// `return expr;`
     Return(ReturnStmt),
-    /// `break;`
+    /// `break;` or `break label;`
     Break(BreakStmt),
-    /// `continue;`
+    /// `continue;` or `continue label;`
     Continue(ContinueStmt),
+    /// `for x: buf { … }` (ADR-0049 §1)
+    For(ForStmt),
+    /// `defer stmt;` (ADR-0049 §3)
+    Defer(DeferStmt),
+    /// `label: for …` or `label: while …` (ADR-0049 §2)
+    Labelled(LoopLabel),
 }
 
 impl AstNode for Stmt {
@@ -260,6 +314,9 @@ impl AstNode for Stmt {
                 | RETURN_STMT
                 | BREAK_STMT
                 | CONTINUE_STMT
+                | FOR_STMT
+                | DEFER_STMT
+                | LOOP_LABEL
         )
     }
 
@@ -274,6 +331,9 @@ impl AstNode for Stmt {
             RETURN_STMT => Some(Self::Return(ReturnStmt(node))),
             BREAK_STMT => Some(Self::Break(BreakStmt(node))),
             CONTINUE_STMT => Some(Self::Continue(ContinueStmt(node))),
+            FOR_STMT => Some(Self::For(ForStmt(node))),
+            DEFER_STMT => Some(Self::Defer(DeferStmt(node))),
+            LOOP_LABEL => Some(Self::Labelled(LoopLabel(node))),
             _ => None,
         }
     }
@@ -289,6 +349,9 @@ impl AstNode for Stmt {
             Self::Return(n) => n.syntax(),
             Self::Break(n) => n.syntax(),
             Self::Continue(n) => n.syntax(),
+            Self::For(n) => n.syntax(),
+            Self::Defer(n) => n.syntax(),
+            Self::Labelled(n) => n.syntax(),
         }
     }
 }
@@ -314,10 +377,22 @@ pub enum Expr {
     Call(CallExpr),
     /// `a.b`
     Field(FieldExpr),
+    /// `a[i]`
+    Index(IndexExpr),
+    /// `a[]` (ADR-0044 §2)
+    Slice(SliceExpr),
+    /// `a..b` — reachable only in a `for` header (ADR-0049 §1)
+    Range(RangeExpr),
     /// `p.*`
     Deref(DerefExpr),
     /// `---`
     Uninit(UninitExpr),
+    /// `cast(T, x)`
+    Cast(CastExpr),
+    /// `xx expr` (ADR-0046 §2)
+    Autocast(AutocastExpr),
+    /// `.RED` (ADR-0046 §3)
+    Member(MemberExpr),
     /// `#run expr`
     Run(RunExpr),
     /// `#directive ...`
@@ -335,8 +410,14 @@ impl AstNode for Expr {
                 | PAREN_EXPR
                 | CALL_EXPR
                 | FIELD_EXPR
+                | INDEX_EXPR
+                | SLICE_EXPR
+                | RANGE_EXPR
                 | DEREF_EXPR
                 | UNINIT_EXPR
+                | CAST_EXPR
+                | AUTOCAST_EXPR
+                | MEMBER_EXPR
                 | RUN_EXPR
                 | DIRECTIVE_EXPR
         )
@@ -351,8 +432,14 @@ impl AstNode for Expr {
             PAREN_EXPR => Some(Self::Paren(ParenExpr(node))),
             CALL_EXPR => Some(Self::Call(CallExpr(node))),
             FIELD_EXPR => Some(Self::Field(FieldExpr(node))),
+            INDEX_EXPR => Some(Self::Index(IndexExpr(node))),
+            SLICE_EXPR => Some(Self::Slice(SliceExpr(node))),
+            RANGE_EXPR => Some(Self::Range(RangeExpr(node))),
             DEREF_EXPR => Some(Self::Deref(DerefExpr(node))),
             UNINIT_EXPR => Some(Self::Uninit(UninitExpr(node))),
+            CAST_EXPR => Some(Self::Cast(CastExpr(node))),
+            AUTOCAST_EXPR => Some(Self::Autocast(AutocastExpr(node))),
+            MEMBER_EXPR => Some(Self::Member(MemberExpr(node))),
             RUN_EXPR => Some(Self::Run(RunExpr(node))),
             DIRECTIVE_EXPR => Some(Self::Directive(DirectiveExpr(node))),
             _ => None,
@@ -368,8 +455,14 @@ impl AstNode for Expr {
             Self::Paren(n) => n.syntax(),
             Self::Call(n) => n.syntax(),
             Self::Field(n) => n.syntax(),
+            Self::Index(n) => n.syntax(),
+            Self::Slice(n) => n.syntax(),
+            Self::Range(n) => n.syntax(),
             Self::Deref(n) => n.syntax(),
             Self::Uninit(n) => n.syntax(),
+            Self::Cast(n) => n.syntax(),
+            Self::Autocast(n) => n.syntax(),
+            Self::Member(n) => n.syntax(),
             Self::Run(n) => n.syntax(),
             Self::Directive(n) => n.syntax(),
         }
@@ -407,6 +500,16 @@ impl ConstDecl {
 
     /// The struct type value, if this constant is a struct type.
     pub fn struct_type(&self) -> Option<StructType> {
+        child_node(&self.0)
+    }
+
+    /// The `union { … }` value, if this declaration is a union type (ADR-0045).
+    pub fn union_type(&self) -> Option<UnionType> {
+        child_node(&self.0)
+    }
+
+    /// The enum value, if this constant is an enum type (ADR-0041).
+    pub fn enum_type(&self) -> Option<EnumType> {
         child_node(&self.0)
     }
 }
@@ -538,9 +641,223 @@ impl PointerType {
     }
 }
 
+impl ArrayType {
+    /// The length expression, `N` in `[N]T`.
+    ///
+    /// An expression rather than a literal because `[COUNT]u8` must parse; whether it is
+    /// a compile-time constant is `jr-sema`'s question (ADR-0039 §3).
+    pub fn len(&self) -> Option<Expr> {
+        child_node(&self.0)
+    }
+
+    /// The element type, `T` in `[N]T`.
+    pub fn elem(&self) -> Option<TypeExpr> {
+        child_node(&self.0)
+    }
+}
+
+impl ViewType {
+    /// The element type, `T` in `[]T`.
+    ///
+    /// There is deliberately no `len()`: a view's length is runtime data, which is the whole
+    /// difference from [`ArrayType`] (ADR-0044 §1).
+    pub fn elem(&self) -> Option<TypeExpr> {
+        child_node(&self.0)
+    }
+}
+impl AutocastExpr {
+    /// The operand being converted.
+    pub fn operand(&self) -> Option<Expr> {
+        child_node(&self.0)
+    }
+}
+impl MemberExpr {
+    /// The member name token, `RED` in `.RED`.
+    ///
+    /// There is deliberately no `receiver()`: the absence of one *is* the form (ADR-0046 §3).
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        child_token(&self.0, IDENT)
+    }
+}
+impl SliceExpr {
+    /// The expression being sliced, `a` in `a[]`.
+    pub fn base(&self) -> Option<Expr> {
+        child_node(&self.0)
+    }
+}
+impl IndexExpr {
+    /// The expression being indexed, `a` in `a[i]`.
+    pub fn base(&self) -> Option<Expr> {
+        child_node(&self.0)
+    }
+
+    /// The index, `i` in `a[i]`.
+    ///
+    /// The second `Expr` child: the base is first, because the postfix parser opens the
+    /// node at the base's checkpoint.
+    pub fn index(&self) -> Option<Expr> {
+        self.0.children().filter_map(Expr::cast).nth(1)
+    }
+}
+
 impl StructType {
     /// The field list.
     pub fn field_list(&self) -> Option<FieldList> {
+        child_node(&self.0)
+    }
+}
+impl ForStmt {
+    /// Whether the loop is reversed — the `<` after `for` (ADR-0049 §1).
+    pub fn is_reverse(&self) -> bool {
+        child_token(&self.0, LT).is_some()
+    }
+
+    /// The element variable, `x` in `for x: buf`.
+    pub fn value_name(&self) -> Option<Name> {
+        child_node(&self.0)
+    }
+
+    /// The index variable, `i` in `for x, i: buf` — absent in the one-name form.
+    pub fn index_name(&self) -> Option<Name> {
+        nth_child_node(&self.0, 1)
+    }
+
+    /// The thing being iterated: an expression, or a [`RangeExpr`].
+    pub fn iterable(&self) -> Option<Expr> {
+        child_node(&self.0)
+    }
+
+    /// The loop body: a braced block, or a single unbraced statement.
+    pub fn body(&self) -> Option<ControlBody> {
+        control_body(&self.0)
+    }
+}
+impl RangeExpr {
+    /// The start of the range, `a` in `a..b`.
+    pub fn start(&self) -> Option<Expr> {
+        child_node(&self.0)
+    }
+
+    /// The end of the range, `b` in `a..b` — excluded, since the range is half-open.
+    pub fn end(&self) -> Option<Expr> {
+        nth_child_node(&self.0, 1)
+    }
+}
+impl DeferStmt {
+    /// The deferred statement.
+    ///
+    /// Reuses [`ControlBody`], since `defer { … }` and `defer f();` are the same two shapes an
+    /// `if` body has — and reusing it means a consumer handles both without a second convention.
+    pub fn stmt(&self) -> Option<ControlBody> {
+        control_body(&self.0)
+    }
+}
+impl LoopLabel {
+    /// The label name.
+    pub fn name(&self) -> Option<Name> {
+        child_node(&self.0)
+    }
+
+    /// The loop the label names — a `FOR_STMT` or a `WHILE_STMT`.
+    pub fn loop_stmt(&self) -> Option<SyntaxNode> {
+        self.0
+            .children()
+            .find(|n| matches!(n.kind(), FOR_STMT | WHILE_STMT))
+    }
+}
+impl OperatorDecl {
+    /// The operator token, `+` in `operator + :: …`.
+    ///
+    /// Found by *kind* rather than by position: the first token after the keyword is the operator,
+    /// but a malformed declaration may have none and a positional search would then pick the `::`.
+    pub fn op_token(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(SyntaxElement::into_token)
+            .find(|t| {
+                matches!(
+                    t.kind(),
+                    PLUS | MINUS
+                        | STAR
+                        | SLASH
+                        | PERCENT
+                        | EQ_EQ
+                        | BANG_EQ
+                        | LT
+                        | LT_EQ
+                        | GT
+                        | GT_EQ
+                        | PLUS_PERCENT
+                        | MINUS_PERCENT
+                        | STAR_PERCENT
+                        | AMP
+                        | PIPE
+                        | CARET
+                        | TILDE
+                        | SHL
+                        | SHR
+                        | AMP_AMP
+                        | PIPE_PIPE
+                        | BANG
+                )
+            })
+    }
+
+    /// The procedure that implements the overload.
+    pub fn proc(&self) -> Option<Proc> {
+        child_node(&self.0)
+    }
+}
+impl UnionType {
+    /// The field list.
+    ///
+    /// The *same* `FieldList` node a struct has, because a union's fields are a struct's
+    /// fields — only the layout differs (ADR-0045 §5).
+    pub fn field_list(&self) -> Option<FieldList> {
+        child_node(&self.0)
+    }
+}
+
+impl EnumType {
+    /// Whether this was declared `enum_flags` rather than `enum` (ADR-0043 §1).
+    ///
+    /// Read from the keyword token rather than from a second node kind, so that every consumer
+    /// which handles an enum handles both forms and only the ones that *care* about the
+    /// difference ask.
+    pub fn is_flags(&self) -> bool {
+        self.0
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .any(|t| t.kind() == FLAGS_KW)
+    }
+
+    /// The member list.
+    pub fn member_list(&self) -> Option<MemberList> {
+        child_node(&self.0)
+    }
+}
+
+impl MemberList {
+    /// All members, in declaration order.
+    ///
+    /// Order is load-bearing: auto-numbering counts from 0 in this order, and an explicit
+    /// value makes later members continue from it (ADR-0041 §3).
+    pub fn members(&self) -> impl Iterator<Item = Member> + '_ {
+        self.0.children().filter_map(Member::cast)
+    }
+}
+
+impl Member {
+    /// The member's name token.
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .find(|t| t.kind() == IDENT)
+    }
+
+    /// The explicit value, if the member was written `NAME :: value`.
+    pub fn value(&self) -> Option<Expr> {
         child_node(&self.0)
     }
 }
@@ -607,6 +924,13 @@ impl AssignStmt {
                         | PLUS_PERCENT_EQ
                         | MINUS_PERCENT_EQ
                         | STAR_PERCENT_EQ
+                        // As above: without these `flags |= FLAG` becomes `flags = FLAG`,
+                        // because `lower_assign_op` recovers to `AssignOp::Assign`.
+                        | AMP_EQ
+                        | PIPE_EQ
+                        | CARET_EQ
+                        | SHL_EQ
+                        | SHR_EQ
                 )
             })
     }
@@ -708,6 +1032,22 @@ impl WhileStmt {
     }
 }
 
+impl BreakStmt {
+    /// The label this `break` names, if any (ADR-0049 §2).
+    ///
+    /// `None` for a bare `break;`, which still means the innermost loop.
+    pub fn label(&self) -> Option<Name> {
+        child_node(&self.0)
+    }
+}
+
+impl ContinueStmt {
+    /// The label this `continue` names, if any (ADR-0049 §2).
+    pub fn label(&self) -> Option<Name> {
+        child_node(&self.0)
+    }
+}
+
 impl ReturnStmt {
     /// The return value, if present.
     pub fn expr(&self) -> Option<Expr> {
@@ -763,6 +1103,17 @@ impl BinaryExpr {
                     t.kind(),
                     PIPE_PIPE
                         | AMP_AMP
+                        // The bitwise operators (ADR-0042). Omitting them here made
+                        // `6 & 3` evaluate to 9: `op_token` returned `None`, and
+                        // `lower_bin_op`'s `_ => BinOp::Add` recovery arm turned every
+                        // bitwise operator into an addition — in *both* engines, silently,
+                        // with no diagnostic anywhere. A well-typed placeholder standing in
+                        // for a missing case, which is this project's named failure mode.
+                        | AMP
+                        | PIPE
+                        | CARET
+                        | SHL
+                        | SHR
                         | EQ_EQ
                         | BANG_EQ
                         | LT
@@ -793,7 +1144,10 @@ impl UnaryExpr {
         self.0
             .children_with_tokens()
             .filter_map(SyntaxElement::into_token)
-            .find(|t| matches!(t.kind(), MINUS | BANG | STAR))
+            // `TILDE` for `~` (ADR-0042 §4). The *third* kind-filtered `op_token` this wave
+            // had to extend: without it `~0` recovered to `UnOp::Neg` and evaluated to `-0`,
+            // which is 0 — a plausible answer, in both engines, with no diagnostic.
+            .find(|t| matches!(t.kind(), MINUS | BANG | STAR | TILDE))
     }
 
     /// The operand.
@@ -843,6 +1197,21 @@ impl FieldExpr {
 impl DerefExpr {
     /// The pointer expression being dereferenced.
     pub fn pointer(&self) -> Option<Expr> {
+        child_node(&self.0)
+    }
+}
+
+impl CastExpr {
+    /// The target type: the `T` of `cast(T, x)`.
+    pub fn target(&self) -> Option<TypeExpr> {
+        child_node(&self.0)
+    }
+
+    /// The operand: the `x` of `cast(T, x)`.
+    ///
+    /// `child_node` finds the first `Expr` child, and the target is a `Type` rather than an
+    /// `Expr`, so the two cannot be confused even though the type is written first.
+    pub fn operand(&self) -> Option<Expr> {
         child_node(&self.0)
     }
 }

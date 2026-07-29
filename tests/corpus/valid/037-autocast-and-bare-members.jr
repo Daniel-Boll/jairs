@@ -1,0 +1,150 @@
+// `xx` and bare `.RED` (ADR-0046): one idea, two spellings.
+//
+// Both let the *context* supply what the source omits -- `xx` the target type of a conversion,
+// `.RED` the enum to resolve a member in. Neither invents a fallback when there is no context:
+// an `xx` that defaulted would convert to a type nobody wrote, and a `.RED` that searched every
+// enum in scope would resolve differently the day an unrelated type grew a member of the same
+// name. Both are errors instead (E0242, E0244), and both diagnostics name the explicit form.
+//
+// The three contexts checked below are the three a Jai programmer tries first: an annotation,
+// the other side of a comparison, and a call argument. The middle one works because
+// `check_operands` already threads the non-literal side's type into the other -- machinery that
+// existed before this wave and only needed confirming.
+//
+// The `exit` at the end is what gives this file teeth under the differential harness: only two
+// corpus programs print, so a computation has to be made observable through an exit status or
+// the comparison is silence against silence.
+#import "Basic";
+
+/// A plain enum, for the bare-member forms.
+Colour :: enum {
+    RED;
+    GREEN;
+    BLUE;
+}
+
+/// A flags enum, because a bare member must work for both declaration forms (ADR-0043 §1).
+Perm :: enum_flags {
+    READ;
+    WRITE;
+}
+
+main :: () {
+    n := 0;
+
+    // ---- `xx`: the target comes from the context ----------------------------------------
+
+    // An annotation.
+    big := 300;
+    small: u8 = xx big;
+    // 300 truncates to 44 in a `u8`, exactly as `cast(u8, 300)` would -- `xx` is sugar for a
+    // `cast` whose type was written elsewhere in the statement, never a looser conversion.
+    if small == 44 {
+        n = n + 1;
+    }
+
+    // Int to float, which `cast` allows and no implicit conversion does (ADR-0040 §6).
+    f: float64 = xx big;
+    if f == 300.0 {
+        n = n + 2;
+    }
+
+    // Float to int, saturating rather than trapping (ADR-0040 §4).
+    g := 7.9;
+    truncated: s64 = xx g;
+    if truncated == 7 {
+        n = n + 4;
+    }
+
+    // A narrower integer widening, which Jairs requires a conversion for even though it is
+    // lossless (ADR-0037 §2) -- so `xx` earns its keep on the common case.
+    tiny: s8 = 100;
+    widened: s64 = xx tiny;
+    if widened == 100 {
+        n = n + 8;
+    }
+
+    // An enum to its backing integer, the one asymmetric direction (ADR-0041 §3).
+    value: s64 = xx Colour.BLUE;
+    if value == 2 {
+        n = n + 16;
+    }
+
+    // A call argument's parameter type is the context.
+    if takes_u8(xx big) == 44 {
+        n = n + 32;
+    }
+
+    // Precedence: `xx` is prefix at the same level as `-`, so this is `(xx tiny) + 1`.
+    sum: s64 = xx tiny + 1;
+    if sum == 101 {
+        n = n + 64;
+    }
+
+    // ---- bare `.RED`: the enum comes from the context -----------------------------------
+
+    // An annotation.
+    c: Colour = .GREEN;
+    if cast(s64, c) == 1 {
+        n = n + 128;
+    }
+
+    // The other side of a comparison, which is the idiom worth having.
+    if c == .GREEN {
+        n = n + 256;
+    }
+    if c != .RED {
+        n = n + 512;
+    }
+
+    // A call argument.
+    if is_red(.RED) {
+        n = n + 1024;
+    }
+
+    // A flags enum, and a *combination* of bare members -- `|` yields the flags type, so the
+    // second operand's context is that type (ADR-0043 §3).
+    p: Perm = .READ;
+    both: Perm = .READ | .WRITE;
+    if cast(s64, both) == 3 {
+        n = n + 2048;
+    }
+    if (both & p) == p {
+        n = n + 4096;
+    }
+
+    // Assignment to an existing variable: the target's type is the context.
+    c = .BLUE;
+    if cast(s64, c) == 2 {
+        n = n + 8192;
+    }
+
+    // ---- the two compose ----------------------------------------------------------------
+
+    // The same call site takes an `xx` and a bare member in different arguments, which proves
+    // the context reaches arguments once rather than twice (ADR-0046 §5).
+    if describe(.BLUE, xx tiny) == 102 {
+        n = n + 16384;
+    }
+
+    // Every assertion: 32767.
+    if n == 32767 {
+        exit(0);
+    }
+    exit(1);
+}
+
+/// A `u8` parameter, so `xx` at the call site has a target.
+takes_u8 :: (b: u8) -> u8 {
+    return b;
+}
+
+/// An enum parameter, so a bare member at the call site has an enum.
+is_red :: (c: Colour) -> bool {
+    return c == .RED;
+}
+
+/// Both kinds of context in one signature.
+describe :: (c: Colour, weight: s64) -> s64 {
+    return cast(s64, c) + weight;
+}

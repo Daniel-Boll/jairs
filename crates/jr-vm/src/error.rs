@@ -105,6 +105,8 @@ pub enum Trap {
     },
     /// A divisor was zero.
     DivideByZero,
+    /// A shift count was negative or `>=` the type's width (ADR-0042 §3).
+    ShiftOutOfRange,
     /// `Terminator::Unreachable(Unreachable::Trap)` was reached.
     Deliberate,
     /// A `break` or `continue` outside a loop was reached at run time.
@@ -122,6 +124,18 @@ pub enum Trap {
     /// well-typed value that has no bits — so the VM traps on use rather than
     /// inventing a zero, which would hide the bug the diagnostic exists to report.
     UninitialisedRead,
+    /// An array index was outside the array (ADR-0003, ADR-0039 §2).
+    ///
+    /// Distinct from [`Trap::BadAddress`], which is a property of this VM's linear
+    /// memory model and has no native counterpart. This one is a *language* trap that
+    /// both engines raise, from the explicit `Statement::BoundsCheck` the index lowered
+    /// to, so `differential.rs` compares the two.
+    ///
+    /// Carries no index or length: the message is static so that it matches
+    /// `jr-codegen-clif`'s `TrapKind::reason`, which is a `&'static str` because native
+    /// code raises a trap through a helper taking a pointer to a constant string
+    /// (ADR-0039 §2).
+    IndexOutOfBounds,
     /// A memory access was out of bounds or misaligned.
     ///
     /// Reachable from a valid program: `ptr := *sum;` followed by arithmetic on the
@@ -140,6 +154,7 @@ impl fmt::Display for Trap {
         match self {
             Self::Overflow { what } => write!(f, "{what} overflowed"),
             Self::DivideByZero => write!(f, "division by zero"),
+            Self::ShiftOutOfRange => write!(f, "shift count out of range"),
             Self::Deliberate => write!(f, "reached a deliberate trap"),
             Self::StrayJump => write!(f, "a `break` or `continue` outside a loop was reached"),
             Self::FellOffEnd => write!(
@@ -147,6 +162,7 @@ impl fmt::Display for Trap {
                 "control reached the end of a procedure that must return a value"
             ),
             Self::UninitialisedRead => write!(f, "read a value that was never assigned"),
+            Self::IndexOutOfBounds => write!(f, "index out of bounds"),
             Self::BadAddress { address, size } => {
                 write!(f, "invalid access of {size} bytes at address {address:#x}")
             }

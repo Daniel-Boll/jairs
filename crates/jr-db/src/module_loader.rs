@@ -53,7 +53,7 @@ use std::{
     sync::Arc,
 };
 
-use jr_base::Span;
+use jr_base::{Interner, Span};
 use jr_diag::{Diagnostic, Diagnostics};
 use jr_hir::{FileHir, ItemKind, ItemScope, ResolveMap};
 
@@ -64,6 +64,18 @@ use crate::{Db, SourceFile};
 // ---------------------------------------------------------------------------
 
 const E0210: &str = "E0210";
+
+/// A body the compiler could not lower, in a file that otherwise checks clean (ADR-0047 §2).
+///
+/// The **first code in this project that reports a compiler limitation** rather than a program
+/// error — E0231 was the first warning, and this is the first admission. A category worth having
+/// exactly once, so it is one code raised from one place, meaning "this program is legal and
+/// this compiler could not lower it".
+///
+/// It replaced a crash: a refused body that was actually *called* surfaced as
+/// `internal compiler error: no routine for file 0 proc 0` on a program `jr check` had just
+/// called clean.
+const E0245: &str = "E0245";
 
 // ---------------------------------------------------------------------------
 // Module name type alias
@@ -463,9 +475,96 @@ pub fn file_diagnostics(
         let interner = db.interner();
         let cfg = jr_mir::file_diagnostics(hir.as_ref(), mir.mir.as_ref(), interner);
         all.extend(cfg.into_vec());
+        all.extend(refused_bodies(hir.as_ref(), mir.mir.as_ref(), interner).into_vec());
     }
 
     Arc::new(all)
+}
+
+/// E0245: a body the compiler could not lower, in a file that otherwise checks clean.
+///
+/// **This exists because the alternative was a crash.** A refused body is skipped when the
+/// program is assembled — correct, and verified: one nobody calls costs nothing. But a *called*
+/// one reached the interpreter's own lookup and produced `internal compiler error: no routine
+/// for file 0 proc 0` on a program `jr check` had just called clean. No user can act on that
+/// (ADR-0047 §2).
+///
+/// Reported *here*, in `file_diagnostics`, rather than at the entry point: every consumer —
+/// `jr check`, `jr run`, `jr build`, the LSP — then sees it through the one path they already
+/// share, so none of them can be the one that still crashes. That is the asymmetry ADR-0047
+/// exists to remove, and gating only `run` would have reintroduced it in `build`.
+///
+/// Only reached when `mir.gated` is false, which means the file has no *errors*: a body refused
+/// because an earlier phase reported the cause is not reported twice, which is ADR-0017 §4's
+/// silence preserved.
+fn refused_bodies(hir: &FileHir, mir: &jr_mir::FileMir, interner: &Interner) -> Diagnostics {
+    let mut diags = Diagnostics::new();
+    for (proc, outcome) in mir.iter() {
+        let Err(reason) = outcome else {
+            continue;
+        };
+        let Some(data) = hir.procs.get(proc.index()) else {
+            continue;
+        };
+        // A `#foreign` procedure has no body to lower and is never refused; guard anyway, so
+        // that a future refusal shape cannot make one look broken.
+        if data.body.is_none() {
+            continue;
+        }
+        // The name is on the *item* that declares the procedure, not on the `Proc`:
+        // procedures are constants (ADR-0012), so a `Proc` carries no name of its own. Found
+        // the same way `main_of` finds `main`, rather than by a second convention.
+        let declaration = hir.items.iter().find(|item| {
+            matches!(
+                &item.kind,
+                ItemKind::Const {
+                    value: jr_hir::ConstValue::Proc(p)
+                } if *p == proc
+            )
+        });
+        let name = declaration
+            .and_then(|item| item.name)
+            .map(|sym| interner.resolve(sym).to_owned())
+            .unwrap_or_else(|| String::from("<anonymous>"));
+        // The declaration's *name* span, so the diagnostic points at the procedure rather than
+        // at its whole body. Falls back to the body's span, which is still inside the right
+        // procedure.
+        let span = declaration.map_or(data.span, |item| item.name_span);
+        // The reason is a short compiler-facing string (`Poisoned::Here`), deliberately not
+        // user-facing prose (ADR-0017 §4). It goes in a *note* rather than the headline, so the
+        // headline says what happened and the note says what the compiler was doing.
+        let detail = match reason {
+            jr_mir::Poisoned::Here(what) => (*what).to_owned(),
+            jr_mir::Poisoned::Transitive(other) => {
+                format!("a body it depends on could not be lowered ({other:?})")
+            }
+        };
+        // A **warning**, not an error, and the severity is the whole design. A refused body
+        // that nobody calls genuinely does not stop the program — verified: one sitting beside a
+        // working `main` runs and exits normally, and six files in
+        // `tests/corpus/imports/valid/` have been in exactly that state since they were written
+        // (each reads an imported constant, which `jr-mir` still refuses). Making this an error
+        // would reject programs that work today.
+        //
+        // What must *not* be a warning is a refused body that is actually **run**. `run_main`
+        // therefore checks the entry point itself and fails hard, so the ICE cannot come back
+        // through the door this severity opens (ADR-0047 §2).
+        diags.push(
+            Diagnostic::warning(
+                span,
+                format!("the compiler could not lower the body of `{name}`"),
+            )
+            .with_code(E0245)
+            .with_note(format!("the lowering step reported: {detail}"))
+            .with_note(
+                "this program is legal and this compiler has a gap — it is not a mistake in \
+                 your code",
+            )
+            .with_note("calling it is an error; leaving it uncalled is not")
+            .with_help("please report it, with this file, at the project's issue tracker"),
+        );
+    }
+    diags
 }
 
 // ---------------------------------------------------------------------------

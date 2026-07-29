@@ -124,19 +124,60 @@ pub fn dump_file(
 /// on the `Item` whose `ItemKind::Const` holds `ConstValue::Proc`. When no item
 /// claims it — which nothing in the corpus does, but recovery could produce — the
 /// `ProcId` itself is the name, because a dump must never panic.
+/// The source spelling of an HIR operator, for an overload's dump label.
+///
+/// A local copy rather than reaching for `jr-hir`'s formatter, for the reason this module already
+/// has its own `ty`: exporting a debug-rendering helper would make a formatting choice part of
+/// another crate's public contract.
+fn hir_op_text(op: jr_hir::BinOp) -> &'static str {
+    match op {
+        jr_hir::BinOp::Add => "+",
+        jr_hir::BinOp::Sub => "-",
+        jr_hir::BinOp::Mul => "*",
+        jr_hir::BinOp::Div => "/",
+        jr_hir::BinOp::Rem => "%",
+        jr_hir::BinOp::WrapAdd => "+%",
+        jr_hir::BinOp::WrapSub => "-%",
+        jr_hir::BinOp::WrapMul => "*%",
+        jr_hir::BinOp::Eq => "==",
+        jr_hir::BinOp::Ne => "!=",
+        jr_hir::BinOp::Lt => "<",
+        jr_hir::BinOp::Le => "<=",
+        jr_hir::BinOp::Gt => ">",
+        jr_hir::BinOp::Ge => ">=",
+        jr_hir::BinOp::And => "&&",
+        jr_hir::BinOp::Or => "||",
+        jr_hir::BinOp::BitAnd => "&",
+        jr_hir::BinOp::BitOr => "|",
+        jr_hir::BinOp::BitXor => "^",
+        jr_hir::BinOp::Shl => "<<",
+        jr_hir::BinOp::Shr => ">>",
+    }
+}
+
 fn proc_name(hir: &FileHir, interner: &Interner, proc: ProcId) -> String {
     for item in &hir.items {
-        let ItemKind::Const {
-            value: ConstValue::Proc(id),
-        } = &item.kind
-        else {
-            continue;
-        };
-        if *id == proc {
-            return match item.name {
-                Some(name) => interner.resolve(name).to_owned(),
-                None => format!("<anon proc {}>", proc.index()),
-            };
+        match &item.kind {
+            ItemKind::Const {
+                value: ConstValue::Proc(id),
+            } if *id == proc => {
+                return match item.name {
+                    Some(name) => interner.resolve(name).to_owned(),
+                    None => format!("<anon proc {}>", proc.index()),
+                };
+            }
+            // An **overload** is named for the operator it implements and the types it takes
+            // (ADR-0048 §1). Its interned name is the synthetic `operator+`, which every overload
+            // of `+` shares — so printing that would make four distinct procedures in
+            // `038-operator-overloading.jr` indistinguishable in a dump, which is the one thing a
+            // snapshot exists to prevent. The index disambiguates without printing a `FileId`,
+            // which `AGENTS.md` forbids because load order renumbers it.
+            ItemKind::Const {
+                value: ConstValue::Operator(id, op),
+            } if *id == proc => {
+                return format!("operator {} #{}", hir_op_text(*op), proc.index());
+            }
+            _ => {}
         }
     }
     format!("<proc {}>", proc.index())
@@ -311,6 +352,17 @@ impl Dumper<'_> {
             Statement::Discard { rvalue, span } => {
                 format!("discard {}{}", self.rvalue(rvalue), self.span(*span))
             }
+            Statement::Zero { place, span } => {
+                format!("zero {}{}", self.place(place), self.span(*span))
+            }
+            Statement::BoundsCheck { index, len, span } => {
+                format!(
+                    "bounds_check {} < {}{}",
+                    self.operand(*index),
+                    self.operand(*len),
+                    self.span(*span)
+                )
+            }
             Statement::Nop => String::from("nop"),
         }
     }
@@ -360,6 +412,12 @@ impl Dumper<'_> {
     fn rvalue(&self, rvalue: &Rvalue) -> String {
         match rvalue {
             Rvalue::Use(operand) => self.operand(*operand),
+            // The *source* kind is printed, because the destination is already on the
+            // defining value's type line and printing it twice would make a snapshot diff
+            // ambiguous about which side changed.
+            Rvalue::Convert { operand, from } => {
+                format!("convert {} from {}", self.operand(*operand), from.name())
+            }
             Rvalue::Binary { op, lhs, rhs } => {
                 format!(
                     "{} {} {}",
@@ -391,9 +449,17 @@ impl Dumper<'_> {
         for step in &place.projection {
             match step {
                 Projection::Field(index) => text.push_str(&format!(".{index}")),
+                Projection::Index(operand) => {
+                    text.push_str(&format!("[{}]", self.operand(*operand)));
+                }
                 Projection::Deref => text.push_str(".*"),
                 Projection::StringData => text.push_str(".data"),
                 Projection::StringCount => text.push_str(".count"),
+                // Spelled differently from `.data`/`.count` on purpose: a dump that printed
+                // both the same way could not show that a view's count is a load where an
+                // array's is a constant, which is the one thing a reader checks here.
+                Projection::ViewData => text.push_str(".view_data"),
+                Projection::ViewCount => text.push_str(".view_count"),
             }
         }
         text
@@ -438,7 +504,22 @@ impl Dumper<'_> {
         match self.pool.item(id) {
             Item::VoidValue => String::from("void"),
             Item::BoolValue(value) => value.to_string(),
-            Item::IntValue { ty, bits } => format!("{bits}_{}", self.ty(*ty)),
+            // Decoded through `IntKind`, not printed as raw bits. Before ADR-0038 a negative
+            // literal was `Neg` applied to a positive constant, so no negative value ever
+            // reached here and printing `bits` looked correct; folding the sign in made
+            // `-1_s8` dump as `255_s8`. The values were right and only the *dump* was wrong,
+            // which is precisely how a snapshot earns its keep.
+            Item::IntValue { ty, bits } => match jr_pool::IntKind::of(self.pool, *ty) {
+                Some(kind) => format!("{}_{}", kind.decode(*bits), self.ty(*ty)),
+                None => format!("{bits}_{}", self.ty(*ty)),
+            },
+            // Decoded and printed with `{:?}`, so `1.0` does not render as `1` and become
+            // indistinguishable from an integer constant in a snapshot. Raw bits would hide
+            // the value entirely, which is the trap ADR-0038 left behind for integers.
+            Item::FloatValue { ty, bits } => match jr_pool::FloatKind::of(self.pool, *ty) {
+                Some(kind) => format!("{:?}_{}", kind.decode(*bits), self.ty(*ty)),
+                None => format!("{bits}_{}", self.ty(*ty)),
+            },
             Item::StrValue(str_id) => format!("{:?}", self.pool.resolve_str(*str_id)),
             Item::TypeValue(ty) => format!("type({})", self.ty(*ty)),
             Item::ProcValue { ty: _, decl } => format!("proc({decl:?})"),
@@ -449,6 +530,10 @@ impl Dumper<'_> {
             // produces, but rendering it is cheaper than deciding it cannot happen.
             Item::VoidType
             | Item::BoolType
+            | Item::ArrayType { .. }
+            | Item::ViewType { .. }
+            | Item::FloatType { .. }
+            | Item::EnumType { .. }
             | Item::IntType { .. }
             | Item::StringType
             | Item::TypeType
@@ -456,6 +541,7 @@ impl Dumper<'_> {
             | Item::ForeignLibraryType
             | Item::PointerType(_)
             | Item::StructType { .. }
+            | Item::UnionType { .. }
             | Item::ProcType { .. } => format!("type({})", self.ty(id)),
         }
     }
@@ -484,10 +570,24 @@ impl Dumper<'_> {
                 format!("{}{bits}", if *signed { 's' } else { 'u' })
             }
             Item::StringType => String::from("string"),
+            Item::FloatType { bits } => format!("float{bits}"),
+            Item::EnumType { decl, .. } => match self.signatures.type_name(id) {
+                Some(name) => name.to_owned(),
+                None => format!("enum{decl:?}"),
+            },
+            Item::ArrayType { elem, len } => format!("[{len}]{}", self.ty(*elem)),
+            Item::ViewType { elem } => format!("[]{}", self.ty(*elem)),
             Item::TypeType => String::from("type"),
             Item::ErrorType => String::from("<unknown>"),
             Item::ForeignLibraryType => String::from("<library>"),
             Item::PointerType(pointee) => format!("*{}", self.ty(*pointee)),
+            // Prints the *keyword* it is, so a dump cannot make a union look like a struct —
+            // which matters here more than usual, since the two differ only in offsets and a
+            // dump is where a wrong offset would first be visible.
+            Item::UnionType { decl } => match self.signatures.type_name(id) {
+                Some(name) => name.to_owned(),
+                None => format!("union{decl:?}"),
+            },
             Item::StructType { decl } => match self.signatures.type_name(id) {
                 Some(name) => name.to_owned(),
                 None => format!("struct{decl:?}"),
@@ -506,6 +606,7 @@ impl Dumper<'_> {
             Item::VoidValue
             | Item::BoolValue(_)
             | Item::IntValue { .. }
+            | Item::FloatValue { .. }
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
@@ -526,6 +627,11 @@ fn bin_op(op: BinOp) -> &'static str {
         BinOp::WrapAdd => "+%",
         BinOp::WrapSub => "-%",
         BinOp::WrapMul => "*%",
+        BinOp::BitAnd => "&",
+        BinOp::BitOr => "|",
+        BinOp::BitXor => "^",
+        BinOp::Shl => "<<",
+        BinOp::Shr => ">>",
         BinOp::Eq => "==",
         BinOp::Ne => "!=",
         BinOp::Lt => "<",
@@ -540,6 +646,7 @@ fn un_op(op: UnOp) -> &'static str {
     match op {
         UnOp::Neg => "-",
         UnOp::Not => "!",
+        UnOp::BitNot => "~",
     }
 }
 
@@ -733,6 +840,7 @@ proc <0> -> s64 {
             scope: jr_hir::ItemScope::default(),
             procs: Vec::new(),
             structs: Vec::new(),
+            enums: Vec::new(),
             bodies: Vec::new(),
             exprs: Vec::new(),
             expr_spans: Vec::new(),

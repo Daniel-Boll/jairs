@@ -1,0 +1,8 @@
+// EXPECT: E0236 — a literal index that cannot be in range (ADR-0039 §2)
+// The bounds check is a *runtime* check, but an index that is a literal is decidable
+// at compile time, and a program that can only ever trap is better refused. This does
+// not replace the runtime check -- it is one shape of index out of many.
+main :: () {
+    buf: [4]u8;
+    x := buf[4];
+}

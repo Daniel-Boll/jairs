@@ -1,0 +1,12 @@
+// EXPECT: E0239 — `[]` applied to a view (ADR-0044 §6)
+// `xs[]` would be an identity, and an operator that silently does nothing is one a reader
+// concludes did something. The help says to drop it, because that is the whole fix.
+total :: (xs: []s64) -> s64 {
+    ys := xs[];
+    return ys.count;
+}
+
+main :: () {
+    buf: [2]s64;
+    n := total(buf[]);
+}

@@ -40,6 +40,51 @@ use rustc_hash::FxHashMap;
 use crate::mir::ProcRef;
 
 // ---------------------------------------------------------------------------
+// Operator overloads
+// ---------------------------------------------------------------------------
+
+/// Which overload each operator expression resolved to (ADR-0048 §5).
+///
+/// Produced by `jr-sema`, which did the resolution, and read here rather than recomputed: two
+/// implementations of ADR-0048 §4's exact-match rule are two chances to disagree, and a
+/// disagreement would silently call a different procedure. The same reasoning that makes `jr-mir`
+/// read `TypeMap` instead of typing expressions itself.
+///
+/// Empty for every file that uses no overload, which is the common case and costs nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OperatorCalls {
+    calls: FxHashMap<(ExprScope, ExprId), ProcRef>,
+}
+
+impl OperatorCalls {
+    /// An empty map: no operator expression resolves to an overload.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records that an operator expression resolved to `target`.
+    ///
+    /// Keyed by [`ExprScope`] as well as [`ExprId`] for the reason [`ConstValues::set_run`] is:
+    /// a bare `ExprId` is not unique within a file and has already caused one real collision bug.
+    pub fn set(&mut self, scope: ExprScope, expr: ExprId, target: ProcRef) {
+        self.calls.insert((scope, expr), target);
+    }
+
+    /// The overload an operator expression resolved to, if it did.
+    #[must_use]
+    pub fn get(&self, scope: ExprScope, expr: ExprId) -> Option<ProcRef> {
+        self.calls.get(&(scope, expr)).copied()
+    }
+
+    /// Whether anything resolved to an overload at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.calls.is_empty()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Constant values
 // ---------------------------------------------------------------------------
 

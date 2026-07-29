@@ -274,6 +274,7 @@ impl Formatter {
     fn format_item(&mut self, node: &SyntaxNode) {
         match node.kind() {
             CONST_DECL => self.format_const_decl(node),
+            OPERATOR_DECL => self.format_operator_decl(node),
             VAR_DECL => self.format_var_decl(node),
             IMPORT_DECL => self.format_import_decl(node),
             RUN_DECL => self.format_run_decl(node),
@@ -287,6 +288,34 @@ impl Formatter {
 
     // ---- const decl --------------------------------------------------------
 
+    /// Formats `operator + :: (…) -> T { … }` (ADR-0048 §1).
+    ///
+    /// Its own function rather than sharing `format_const_decl`, which reads a `NAME` child that
+    /// an operator declaration does not have: sharing would have emitted `` :: `` with an empty
+    /// name and dropped the operator. Sixth consecutive wave for that trap, so it is written
+    /// first rather than discovered by `jr fmt --check`.
+    fn format_operator_decl(&mut self, node: &SyntaxNode) {
+        self.emit_indent();
+        self.emit("operator ");
+        // The operator is the one token that is neither the keyword nor the `::`. Found by
+        // exclusion rather than by position, because a malformed declaration may be missing it
+        // and a positional read would then emit the `::` as the operator.
+        if let Some(op) = node
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .find(|t| !t.kind().is_trivia() && t.kind() != OPERATOR_KW && t.kind() != COLON_COLON)
+        {
+            self.emit(op.text());
+        }
+        self.emit(" :: ");
+        if let Some(proc) = node.children().find(|n| n.kind() == PROC) {
+            self.format_proc(&proc);
+        } else {
+            self.emit(";");
+            self.newline();
+        }
+    }
+
     fn format_const_decl(&mut self, node: &SyntaxNode) {
         self.emit_indent();
         let name = node
@@ -297,7 +326,12 @@ impl Formatter {
         self.emit(&name);
         self.emit(" :: ");
 
-        // The value: PROC, STRUCT_TYPE, or an expression.
+        // The value: PROC, STRUCT_TYPE, ENUM_TYPE, or an expression.
+        //
+        // The `_ => {}` at the end of this match is why `ENUM_TYPE` had to be added *here*
+        // as well as to `is_type_kind`: an unmatched value kind falls through to the bare
+        // `;` below, so `Colour :: enum { … }` formatted to `Colour :: ;`. The same silent
+        // deletion `cast` suffered in ADR-0037's wave, in a second dispatch site.
         for child in node.children() {
             match child.kind() {
                 NAME => {}
@@ -305,8 +339,12 @@ impl Formatter {
                     self.format_proc(&child);
                     return;
                 }
-                STRUCT_TYPE => {
+                STRUCT_TYPE | UNION_TYPE => {
                     self.format_struct_type(&child);
+                    return;
+                }
+                ENUM_TYPE => {
+                    self.format_enum_type(&child);
                     return;
                 }
                 _ if is_expr_kind(child.kind()) => {
@@ -468,8 +506,18 @@ impl Formatter {
 
     // ---- struct type -------------------------------------------------------
 
+    /// Formats `struct { … }` **and** `union { … }`.
+    ///
+    /// The keyword comes from the *node kind*, not from a literal. Emitting `"struct {"`
+    /// unconditionally would rewrite `union` to `struct` — a different working program with
+    /// overlapping fields turned into non-overlapping ones, which is precisely the mistake
+    /// ADR-0043 caught when a literal `"enum"` rewrote an `enum_flags` (§7's standing trap).
     fn format_struct_type(&mut self, node: &SyntaxNode) {
-        self.emit("struct {");
+        self.emit(if node.kind() == UNION_TYPE {
+            "union {"
+        } else {
+            "struct {"
+        });
         if let Some(field_list) = node.children().find(|n| n.kind() == FIELD_LIST) {
             let has_fields = field_list.children().any(|n| n.kind() == FIELD);
             if has_fields {
@@ -508,15 +556,54 @@ impl Formatter {
     /// version scanned ahead for a trailing comment instead and emitted every one twice —
     /// once from the scan and once from the iteration.
     fn emit_field_list(&mut self, field_list: &SyntaxNode) {
+        self.emit_item_list(field_list, FIELD, Self::format_field);
+    }
+
+    /// Emit an enum's members together with the comments between them.
+    ///
+    /// Shares [`Formatter::emit_item_list`] with the struct case rather than repeating it,
+    /// because the comment handling there was written to fix real data loss and a second copy
+    /// would be a second chance to lose a comment.
+    fn emit_member_list(&mut self, member_list: &SyntaxNode) {
+        self.emit_item_list(member_list, MEMBER, Self::format_member);
+    }
+
+    /// One member: `RED` or `NOT_FOUND :: 404`.
+    ///
+    /// The `;` is emitted by the caller, exactly as it is for a field.
+    fn format_member(&mut self, node: &SyntaxNode) {
+        if let Some(name_tok) = node
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .find(|t| t.kind() == IDENT)
+        {
+            self.emit(name_tok.text());
+        }
+        // An auto-numbered member has no value node, and must not gain one: printing the
+        // number the compiler computed would make `jr fmt` change what the source says.
+        if let Some(value) = node.children().find(|n| is_expr_kind(n.kind())) {
+            self.emit(" :: ");
+            self.format_expr(&value);
+        }
+    }
+
+    /// The shared body of [`Formatter::emit_field_list`] and
+    /// [`Formatter::emit_member_list`].
+    fn emit_item_list(
+        &mut self,
+        list: &SyntaxNode,
+        item_kind: SyntaxKind,
+        format_one: fn(&mut Self, &SyntaxNode),
+    ) {
         // `true` when a field has been emitted and its newline is still owed, so a
         // comment arriving next belongs on the same line.
         let mut owes_newline = false;
         let mut pending_blank = false;
         let mut emitted = false;
 
-        for element in field_list.children_with_tokens() {
+        for element in list.children_with_tokens() {
             match element {
-                SyntaxElement::Node(field) if field.kind() == FIELD => {
+                SyntaxElement::Node(field) if field.kind() == item_kind => {
                     if owes_newline {
                         self.newline();
                     }
@@ -525,14 +612,14 @@ impl Formatter {
                     }
                     pending_blank = false;
                     self.emit_indent();
-                    self.format_field(&field);
+                    format_one(self, &field);
                     self.emit(";");
                     owes_newline = true;
                     emitted = true;
                 }
                 SyntaxElement::Token(tok) if tok.kind().is_comment() => {
                     if owes_newline {
-                        // Same line as the field before it: `x: s64;  // why`.
+                        // Same line as the item before it: `x: s64;  // why`.
                         self.emit("  ");
                         self.emit_comment(&tok);
                         self.newline();
@@ -569,6 +656,46 @@ impl Formatter {
         }
     }
 
+    /// `enum { RED; GREEN :: 5; }` — mirroring [`Formatter::format_struct_type`].
+    fn format_enum_type(&mut self, node: &SyntaxNode) {
+        // The keyword comes from the *token*, not from a literal: emitting `"enum {"`
+        // unconditionally rewrote `enum_flags` to `enum`, which changes the numbering rule and
+        // which operators apply (ADR-0043). Worse than deleting the construct — a deletion
+        // fails to parse, while this produced a different working program.
+        let keyword = node
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .find(|t| matches!(t.kind(), ENUM_KW | FLAGS_KW))
+            .map_or("enum", |t| {
+                if t.kind() == FLAGS_KW {
+                    "enum_flags"
+                } else {
+                    "enum"
+                }
+            });
+        self.emit(keyword);
+        self.emit(" {");
+        if let Some(member_list) = node.children().find(|n| n.kind() == MEMBER_LIST) {
+            let has_members = member_list.children().any(|n| n.kind() == MEMBER);
+            if has_members {
+                self.newline();
+                self.indent += 1;
+                self.emit_member_list(&member_list);
+                self.indent -= 1;
+            } else {
+                self.newline();
+                self.indent += 1;
+                self.emit_block_interior_comments(&member_list);
+                self.indent -= 1;
+            }
+        } else {
+            self.newline();
+        }
+        self.emit_indent();
+        self.emit("}");
+        self.newline();
+    }
+
     fn format_field(&mut self, node: &SyntaxNode) {
         if let Some(name_tok) = node
             .children_with_tokens()
@@ -602,8 +729,34 @@ impl Formatter {
                     self.format_type(&inner);
                 }
             }
-            STRUCT_TYPE => {
+            VIEW_TYPE => {
+                // No length child to format, which is the whole difference from `ARRAY_TYPE`
+                // (ADR-0044 §1). Its own arm rather than a shared one whose length happens to
+                // be absent: `is_expr_kind` would find no length in a *malformed* array
+                // either, and emitting `[]` for that would silently change the program.
+                self.emit("[]");
+                if let Some(elem) = node.children().find(|n| is_type_kind(n.kind())) {
+                    self.format_type(&elem);
+                }
+            }
+            ARRAY_TYPE => {
+                self.emit("[");
+                // The length is an *expression* child (ADR-0039 §3), so it is formatted as
+                // one rather than emitted as raw text — which keeps `[ 4 ]u8` normalising
+                // to `[4]u8` like every other construct.
+                if let Some(len) = node.children().find(|n| is_expr_kind(n.kind())) {
+                    self.format_expr(&len);
+                }
+                self.emit("]");
+                if let Some(elem) = node.children().find(|n| is_type_kind(n.kind())) {
+                    self.format_type(&elem);
+                }
+            }
+            STRUCT_TYPE | UNION_TYPE => {
                 self.format_struct_type(node);
+            }
+            ENUM_TYPE => {
+                self.format_enum_type(node);
             }
             _ => {
                 self.emit(&node.text().to_string());
@@ -927,7 +1080,9 @@ impl Formatter {
                 if let Some(op) = node
                     .children_with_tokens()
                     .filter_map(|e| e.into_token())
-                    .find(|t| matches!(t.kind(), MINUS | BANG | STAR))
+                    // `TILDE` for `~`; without it the operator vanished and `~a` formatted
+                    // to `a`, which is a *different program* rather than a formatting change.
+                    .find(|t| matches!(t.kind(), MINUS | BANG | STAR | TILDE))
                 {
                     self.emit(op.text());
                 }
@@ -963,6 +1118,28 @@ impl Formatter {
                     self.emit(field.text());
                 }
             }
+            SLICE_EXPR => {
+                // The base and nothing else. Emitting the node's raw text would work today
+                // and would stop normalising the base — `( buf )[]` must still become
+                // `(buf)[]` with the parens formatted, not preserved verbatim.
+                if let Some(base) = node.children().find(|n| is_expr_kind(n.kind())) {
+                    self.format_expr(&base);
+                }
+                self.emit("[]");
+            }
+            INDEX_EXPR => {
+                // The base is the first expression child and the index the second, matching
+                // the order the postfix parser builds them in.
+                let mut exprs = node.children().filter(|n| is_expr_kind(n.kind()));
+                if let Some(base) = exprs.next() {
+                    self.format_expr(&base);
+                }
+                self.emit("[");
+                if let Some(index) = exprs.next() {
+                    self.format_expr(&index);
+                }
+                self.emit("]");
+            }
             DEREF_EXPR => {
                 if let Some(ptr) = node.children().find(|n| is_expr_kind(n.kind())) {
                     self.format_expr(&ptr);
@@ -971,6 +1148,43 @@ impl Formatter {
             }
             UNINIT_EXPR => {
                 self.emit("---");
+            }
+            // `xx expr` — a prefix operator, so a space follows the keyword and nothing else
+            // changes. Its own arm rather than joining the unary emitter's token list, because
+            // that list works from an operator *token* and `xx` is a keyword.
+            AUTOCAST_EXPR => {
+                self.emit("xx ");
+                if let Some(operand) = node.children().find(|n| is_expr_kind(n.kind())) {
+                    self.format_expr(&operand);
+                }
+            }
+            // `.RED` — the leading `.` and the name, and deliberately not the node's raw text:
+            // that would stop normalising anything inside, and a formatter that preserves one
+            // construct verbatim is a formatter with an exception to explain.
+            MEMBER_EXPR => {
+                self.emit(".");
+                if let Some(name) = node
+                    .children_with_tokens()
+                    .filter_map(|e| e.into_token())
+                    .find(|t| t.kind() == IDENT)
+                {
+                    self.emit(name.text());
+                }
+            }
+            CAST_EXPR => {
+                // `cast(T, x)` — the type first, then the operand. Both children are found
+                // by *kind*, because the type is a `NAME_TYPE`/`POINTER_TYPE` and the operand
+                // an expression, so a positional search would confuse them the day a type
+                // becomes expressible as an expression.
+                self.emit("cast(");
+                if let Some(target) = node.children().find(|n| is_type_kind(n.kind())) {
+                    self.format_type(&target);
+                }
+                self.emit(", ");
+                if let Some(operand) = node.children().find(|n| is_expr_kind(n.kind())) {
+                    self.format_expr(&operand);
+                }
+                self.emit(")");
             }
             RUN_EXPR => {
                 self.emit("#run ");
@@ -1064,6 +1278,18 @@ fn is_expr_kind(kind: SyntaxKind) -> bool {
             | FIELD_EXPR
             | DEREF_EXPR
             | UNINIT_EXPR
+            // Omitting this is how the formatter *deleted* every `cast` outright: an
+            // unrecognised expression kind is not emitted at all, so `small := cast(u8, big);`
+            // formatted to `small := ;`. The same shape as the struct-comment deletion an
+            // earlier wave fixed — silent data loss, caught only because the corpus
+            // round-trip gate re-parses its own output.
+            | CAST_EXPR
+            | AUTOCAST_EXPR
+            | MEMBER_EXPR
+            // Same reason as `CAST_EXPR` above, and the reason the previous wave's trap
+            // list says to check this on every new expression kind (ADR-0039).
+            | INDEX_EXPR
+            | SLICE_EXPR
             | RUN_EXPR
             | DIRECTIVE_EXPR
     )
@@ -1071,7 +1297,13 @@ fn is_expr_kind(kind: SyntaxKind) -> bool {
 
 /// Returns `true` if `kind` is a type node kind.
 fn is_type_kind(kind: SyntaxKind) -> bool {
-    matches!(kind, NAME_TYPE | POINTER_TYPE | STRUCT_TYPE)
+    // `ARRAY_TYPE` belongs here for the same reason `INDEX_EXPR` belongs in
+    // `is_expr_kind`: an unrecognised kind is not emitted, so omitting it would make the
+    // formatter delete the type from `buf: [4]u8;`.
+    matches!(
+        kind,
+        NAME_TYPE | POINTER_TYPE | STRUCT_TYPE | UNION_TYPE | ARRAY_TYPE | VIEW_TYPE | ENUM_TYPE
+    )
 }
 
 /// Returns `true` if `kind` is a statement node kind.
@@ -1096,6 +1328,14 @@ fn is_binary_op(kind: SyntaxKind) -> bool {
         kind,
         PIPE_PIPE
             | AMP_AMP
+            // The bitwise operators (ADR-0042). A binary operator missing from this set is
+            // not emitted at all, so `6 & 3 | 1` formatted to `631` — the fourth
+            // kind-filtered list this wave had to extend, and the one that loses data.
+            | AMP
+            | PIPE
+            | CARET
+            | SHL
+            | SHR
             | EQ_EQ
             | BANG_EQ
             | LT
@@ -1125,6 +1365,13 @@ fn is_assign_op(kind: SyntaxKind) -> bool {
             | PLUS_PERCENT_EQ
             | MINUS_PERCENT_EQ
             | STAR_PERCENT_EQ
+            // Same reason as `is_binary_op`: an omitted assignment operator is not emitted,
+            // so `a |= 1;` formatted to `a1;` (ADR-0042 §6).
+            | AMP_EQ
+            | PIPE_EQ
+            | CARET_EQ
+            | SHL_EQ
+            | SHR_EQ
     )
 }
 

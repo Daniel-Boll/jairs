@@ -53,8 +53,8 @@
 use jr_pool::{IntKind, Item, Pool, PoolId};
 
 use crate::mir::{
-    BinOp, BlockId, Callee, MirBody, Operand, Place, PlaceBase, Rvalue, Statement, Target,
-    Terminator, UnOp, ValueId,
+    BinOp, BlockId, Callee, MirBody, Operand, Place, PlaceBase, Projection, Rvalue, Statement,
+    Target, Terminator, UnOp, ValueId,
 };
 use crate::verify;
 
@@ -86,6 +86,19 @@ fn as_int(pool: &Pool, id: PoolId) -> Option<(IntKind, i128)> {
         return None;
     };
     let kind = IntKind::of(pool, *ty)?;
+    Some((kind, kind.decode(*bits)))
+}
+
+/// The mathematical value of a constant float, with its kind.
+///
+/// Beside [`as_int`], and asked in the same places: a fold must handle both families or a
+/// float constant silently stops folding — which is not *wrong* (declining to fold is always
+/// safe) but leaves floats second-class in a way nothing would report.
+fn as_float(pool: &Pool, id: PoolId) -> Option<(jr_pool::FloatKind, f64)> {
+    let Item::FloatValue { ty, bits } = pool.item(id) else {
+        return None;
+    };
+    let kind = jr_pool::FloatKind::of(pool, *ty)?;
     Some((kind, kind.decode(*bits)))
 }
 
@@ -254,6 +267,11 @@ fn fold(pool: &mut Pool, rvalue: &Rvalue, ty: PoolId) -> Option<PoolId> {
     match rvalue {
         Rvalue::Binary { op, lhs, rhs } => fold_binary(pool, *op, *lhs, *rhs, ty),
         Rvalue::Unary { op, operand } => fold_unary(pool, *op, *operand, ty),
+        // A cast of a constant folds, which is what makes `cast(u8, 65)` in `print_int` a
+        // literal by the time the back end sees it. `from` is unused here on purpose: the
+        // operand constant already carries its own type, and re-deriving the source kind from
+        // the rvalue would be a second opinion about the same fact.
+        Rvalue::Convert { operand, from: _ } => fold_convert(pool, *operand, ty),
         // `Use` of a constant is already folded; everything else either has no
         // constant answer or must not be given one here.
         Rvalue::Use(_)
@@ -282,6 +300,18 @@ fn fold_binary(
         if let (Some((_, a)), Some((_, b))) = (as_int(pool, left), as_int(pool, right)) {
             return Some(pool.bool_value(jr_pool::int_compare(cmp, a, b)));
         }
+        // Floats, through `float_compare` — the same function the interpreter calls, which is
+        // what keeps a folded `NaN == NaN` and a run-time one from disagreeing. Folding this
+        // with an integer comparison, or with a bit compare, would get `NaN` and `-0.0`
+        // backwards *at compile time* and bake the wrong answer into a constant both engines
+        // then read, which `differential.rs` could not see (ADR-0022 §2).
+        if let (Some(fcmp), Some((_, a)), Some((_, b))) = (
+            op.as_float_cmp(),
+            as_float(pool, left),
+            as_float(pool, right),
+        ) {
+            return Some(pool.bool_value(jr_pool::float_compare(fcmp, a, b)));
+        }
         // Equality on a `bool` is the one non-integer comparison the VM defines; `<`
         // on pointers is deliberately not in the subset, so nothing else folds.
         return match (op, as_bool(pool, left), as_bool(pool, right)) {
@@ -289,6 +319,16 @@ fn fold_binary(
             (BinOp::Ne, Some(a), Some(b)) => Some(pool.bool_value(a != b)),
             _ => None,
         };
+    }
+
+    // Float arithmetic first, and it never declines for a trap because there is nothing to
+    // trap on (ADR-0040 §1) — the `.ok()?` the integer path needs has no counterpart.
+    if let Some(out) = jr_pool::FloatKind::of(pool, ty)
+        && let Some(farith) = op.as_float_op()
+        && let (Some((_, a)), Some((_, b))) = (as_float(pool, left), as_float(pool, right))
+    {
+        let bits = jr_pool::float_binary(farith, out, a, b);
+        return Some(pool.float_value(ty, bits));
     }
 
     let arith = op.as_int_op()?;
@@ -310,13 +350,63 @@ fn fold_unary(pool: &mut Pool, op: UnOp, operand: Operand, ty: PoolId) -> Option
             let value = as_bool(pool, id)?;
             Some(pool.bool_value(!value))
         }
+        // Total, and the fold *is* the arithmetic: `int_not` normalises to the type's width,
+        // which is what makes a folded `~0` in a `u8` be 255 rather than a truncated -1
+        // (ADR-0042 §4). Floats have no `~` (§5), so a float operand simply declines.
+        UnOp::BitNot => {
+            let (_, a) = as_int(pool, id)?;
+            let out = IntKind::of(pool, ty)?;
+            Some(pool.int_value(ty, jr_pool::int_not(out, a)))
+        }
         UnOp::Neg => {
+            // Total for a float, so no `.ok()?`: negation flips the sign bit (ADR-0040 §1).
+            if let Some(out) = jr_pool::FloatKind::of(pool, ty)
+                && let Some((_, a)) = as_float(pool, id)
+            {
+                return Some(pool.float_value(ty, jr_pool::float_negate(out, a)));
+            }
             let (_, a) = as_int(pool, id)?;
             let out = IntKind::of(pool, ty)?;
             let bits = jr_pool::int_negate(out, a).ok()?;
             Some(pool.int_value(ty, bits))
         }
     }
+}
+
+/// The constant a conversion yields, wrapped into the destination type.
+///
+/// **Wrapping, not checking.** ADR-0037 §2 makes a narrowing cast of a runtime value truncate,
+/// and folding must agree with running or the two engines disagree about the same program —
+/// which is what `differential.rs` exists to catch and what ADR-0002's shared arithmetic
+/// exists to prevent. So this calls `IntKind::wrap`, the same function the interpreter uses,
+/// rather than `check`.
+///
+/// A literal that does not fit never reaches here: `jr-sema` rejected it at compile time
+/// (E0204), because a *literal* operand takes the cast's target as its context.
+fn fold_convert(pool: &mut Pool, operand: Operand, ty: PoolId) -> Option<PoolId> {
+    let Operand::Constant(id) = operand else {
+        return None;
+    };
+    // All four directions (ADR-0040 §3), each through the `jr-pool` function the interpreter
+    // calls — including the saturating float-to-int, whose disagreement with the interpreter
+    // would be a wrong constant rather than a wrong instruction.
+    let source_int = as_int(pool, id);
+    let source_float = as_float(pool, id);
+    if let Some(out) = jr_pool::FloatKind::of(pool, ty) {
+        let bits = match (source_int, source_float) {
+            (Some((_, value)), _) => jr_pool::int_to_float(out, value),
+            (_, Some((_, value))) => out.encode(value),
+            _ => return None,
+        };
+        return Some(pool.float_value(ty, bits));
+    }
+    let out = IntKind::of(pool, ty)?;
+    let bits = match (source_int, source_float) {
+        (Some((_, value)), _) => out.wrap(value),
+        (_, Some((_, value))) => jr_pool::float_to_int(out, value),
+        _ => return None,
+    };
+    Some(pool.int_value(ty, bits))
 }
 
 // ---------------------------------------------------------------------------
@@ -383,6 +473,11 @@ fn substitute_value(body: &mut MirBody, value: ValueId, with: Operand) {
                     substitute_place(place, &subst);
                     subst(v);
                 }
+                Statement::Zero { place, .. } => substitute_place(place, &subst),
+                Statement::BoundsCheck { index, len, .. } => {
+                    subst(index);
+                    subst(len);
+                }
                 Statement::Nop => {}
             }
         }
@@ -408,6 +503,21 @@ fn substitute_place(place: &mut Place, subst: &impl Fn(&mut Operand)) {
         PlaceBase::Slot(_) => {}
         PlaceBase::Deref(operand) => subst(operand),
     }
+    // Projections held no operands before `Projection::Index`, so this loop did not
+    // exist. Without it a constant index is never substituted, which is not wrong but
+    // leaves `buf[v3]` where `buf[2]` was proven — and the bounds check beside it *would*
+    // fold, so the two would disagree about what the index is.
+    for projection in &mut place.projection {
+        match projection {
+            Projection::Index(operand) => subst(operand),
+            Projection::Field(_)
+            | Projection::Deref
+            | Projection::StringData
+            | Projection::StringCount
+            | Projection::ViewData
+            | Projection::ViewCount => {}
+        }
+    }
 }
 
 fn substitute_rvalue(rvalue: &mut Rvalue, subst: &impl Fn(&mut Operand)) {
@@ -418,6 +528,7 @@ fn substitute_rvalue(rvalue: &mut Rvalue, subst: &impl Fn(&mut Operand)) {
             subst(rhs);
         }
         Rvalue::Unary { op: _, operand } => subst(operand),
+        Rvalue::Convert { operand, from: _ } => subst(operand),
         Rvalue::Call { callee, args } => {
             match callee {
                 Callee::Direct(_) => {}

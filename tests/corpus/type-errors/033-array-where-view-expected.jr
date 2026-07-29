@@ -1,0 +1,13 @@
+// EXPECT: E0240 — an array passed where a view was wanted (ADR-0044 §2)
+// Jairs has **no** implicit array-to-view conversion, deliberately: it would be the language's
+// first implicit conversion, and it would silently take the array's address. So this is a
+// specific diagnostic whose help names `buf[]`, rather than the generic E0214 mismatch — a
+// reader arriving from Jai, where the conversion is implicit, hits this first.
+total :: (xs: []s64) -> s64 {
+    return xs.count;
+}
+
+main :: () {
+    buf: [4]s64;
+    n := total(buf);
+}

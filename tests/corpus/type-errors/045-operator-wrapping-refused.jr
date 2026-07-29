@@ -1,0 +1,15 @@
+// EXPECT: E0246 — the wrapping operators cannot be overloaded (ADR-0048 §2)
+// `+%` means "wrap the machine integer at this width" (ADR-0002) — a statement about a
+// two's-complement representation, not an abstract operation. A `Vec2 +% Vec2` would be asking
+// which of the struct's bits wrap. Its own note rather than a shared "unsupported", because the
+// bitwise refusal is a *different* fact and a reader can act on each.
+Vec2 :: struct {
+    x: s64;
+}
+
+operator +% :: (a: Vec2, b: Vec2) -> s64 {
+    return a.x;
+}
+
+main :: () {
+}

@@ -100,11 +100,44 @@ impl Repr {
                 ty: int_type(*bits)?,
                 signed: *signed,
             }),
+            // An enum *is* its backing type in a register (ADR-0041 §3), and the backing
+            // type is `s64` for every enum this wave has — so `signed: true` is not a guess,
+            // it is `s64`'s signedness. An explicit backing type would read it from the
+            // declaration instead.
+            Item::EnumType { .. } => Ok(Self::Scalar {
+                ty: types::I64,
+                signed: true,
+            }),
+            // A float is a scalar in a *float* register, and `signed` is meaningless for one
+            // — IEEE-754 has one signed representation. It is recorded as `true` because the
+            // only consumer that reads it for a float is `unary`'s negation, and a float
+            // negation is the signed kind: it flips the sign bit rather than subtracting from
+            // zero.
+            Item::FloatType { bits } => Ok(Self::Scalar {
+                ty: match bits {
+                    32 => types::F32,
+                    64 => types::F64,
+                    other => {
+                        return Err(CodegenError::Internal(format!(
+                            "no Cranelift type for a {other}-bit float"
+                        )));
+                    }
+                },
+                signed: true,
+            }),
             Item::PointerType(_) | Item::ProcType { .. } => Ok(Self::Scalar {
                 ty: pointer_type(target),
                 signed: false,
             }),
-            Item::StringType | Item::StructType { .. } => {
+            // A view joins the aggregates: two words, so it lives in memory and is passed
+            // by copy exactly as a `string` is (ADR-0044 §1).
+            Item::StringType
+            | Item::StructType { .. }
+            // A union is an aggregate: it lives in memory and is passed by copy, exactly as a
+            // struct is. Its size is its largest field's, which `layout_of` already knows.
+            | Item::UnionType { .. }
+            | Item::ArrayType { .. }
+            | Item::ViewType { .. } => {
                 let layout = layout_of(pool, target, ty)
                     .map_err(|reason| CodegenError::NoLayout { ty, reason })?;
                 Ok(Self::Aggregate {
@@ -121,6 +154,7 @@ impl Repr {
             | Item::VoidValue
             | Item::BoolValue(_)
             | Item::IntValue { .. }
+            | Item::FloatValue { .. }
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }

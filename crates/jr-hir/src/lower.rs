@@ -22,16 +22,17 @@ use jr_syntax::{
     SyntaxKind::*,
     SyntaxNode, SyntaxToken,
     ast::{
-        AssignStmt, AstNode, BinaryExpr, Block, ConstDecl, ControlBody, DeclStmt, ElseBranch,
-        Expr as AstExpr, IfStmt, ImportDecl, Item as AstItem, LiteralExpr, Proc as AstProc,
-        RunDecl, SourceFile, Stmt as AstStmt, StructType, TypeExpr, UnaryExpr, VarDecl, WhileStmt,
+        ArrayType, AssignStmt, AstNode, BinaryExpr, Block, ConstDecl, ControlBody, DeclStmt,
+        ElseBranch, EnumType, Expr as AstExpr, ForStmt, IfStmt, ImportDecl, Item as AstItem,
+        LiteralExpr, Proc as AstProc, RunDecl, SourceFile, Stmt as AstStmt, StructType, TypeExpr,
+        UnaryExpr, VarDecl, WhileStmt,
     },
 };
 
 use crate::hir::{
-    AssignOp, BinOp, Body, BodyId, ConstValue, Expr, ExprId, Field, FileHir, ForeignInfo, Item,
-    ItemId, ItemKind, ItemScope, Literal, Local, LocalId, Param, ParamId, Proc, ProcId, Res, Stmt,
-    StmtId, Struct, StructId, TypeRef, TypeRefId, UnOp,
+    AssignOp, BinOp, Body, BodyId, ConstValue, Enum, EnumId, EnumMember, Expr, ExprId, Field,
+    FileHir, ForIterable, ForeignInfo, Item, ItemId, ItemKind, ItemScope, Literal, Local, LocalId,
+    Param, ParamId, Proc, ProcId, Res, Stmt, StmtId, Struct, StructId, TypeRef, TypeRefId, UnOp,
 };
 
 // ---------------------------------------------------------------------------
@@ -90,6 +91,7 @@ struct LowerCtx<'a> {
     scope: ItemScope,
     procs: Vec<Proc>,
     structs: Vec<Struct>,
+    enums: Vec<Enum>,
     bodies: Vec<Body>,
 
     // Top-level expression arenas (for const values, var initialisers, #run)
@@ -108,6 +110,7 @@ impl<'a> LowerCtx<'a> {
             scope: ItemScope::new(),
             procs: Vec::new(),
             structs: Vec::new(),
+            enums: Vec::new(),
             bodies: Vec::new(),
             top_exprs: Vec::new(),
             top_expr_spans: Vec::new(),
@@ -157,6 +160,12 @@ impl<'a> LowerCtx<'a> {
         id
     }
 
+    fn alloc_enum(&mut self, e: Enum) -> EnumId {
+        let id = EnumId::from_usize(self.enums.len());
+        self.enums.push(e);
+        id
+    }
+
     fn alloc_struct(&mut self, s: Struct) -> StructId {
         let id = StructId::from_usize(self.structs.len());
         self.structs.push(s);
@@ -188,9 +197,42 @@ impl<'a> LowerCtx<'a> {
                 };
                 self.alloc_top_type_ref(TypeRef::Pointer(inner))
             }
+            TypeExpr::Array(a) => {
+                let len_span = a.len().map_or_else(
+                    || self.span_of_node(a.syntax()),
+                    |e| self.span_of_node(e.syntax()),
+                );
+                let len = lower_array_len(a, len_span, self.interner, &mut self.diags);
+                let elem = if let Some(e) = a.elem() {
+                    self.lower_type_expr_top(&e)
+                } else {
+                    self.alloc_top_type_ref(TypeRef::Error)
+                };
+                self.alloc_top_type_ref(TypeRef::Array {
+                    elem,
+                    len,
+                    len_span,
+                })
+            }
+            TypeExpr::View(v) => {
+                let elem = if let Some(e) = v.elem() {
+                    self.lower_type_expr_top(&e)
+                } else {
+                    self.alloc_top_type_ref(TypeRef::Error)
+                };
+                self.alloc_top_type_ref(TypeRef::View { elem })
+            }
             TypeExpr::Struct(s) => {
                 let struct_id = self.lower_struct_type(s);
                 self.alloc_top_type_ref(TypeRef::Struct(struct_id))
+            }
+            TypeExpr::Union(u) => {
+                let union_id = self.lower_union_type(u);
+                self.alloc_top_type_ref(TypeRef::Union(union_id))
+            }
+            TypeExpr::Enum(e) => {
+                let enum_id = self.lower_enum_type(e);
+                self.alloc_top_type_ref(TypeRef::Enum(enum_id))
             }
         }
     }
@@ -199,9 +241,30 @@ impl<'a> LowerCtx<'a> {
 
     fn lower_struct_type(&mut self, s: &StructType) -> StructId {
         let span = self.span_of_node(s.syntax());
+        self.lower_fields_into_struct(span, s.field_list(), false)
+    }
+
+    /// Lowers `union { i: s64; f: float64; }` (ADR-0045).
+    ///
+    /// Allocates into the **same arena** `lower_struct_type` does, with `is_union` set. That is
+    /// not a shortcut: a `DeclId` is an index within its arena and does not record which arena
+    /// (ADR-0041 §4a), and unions share `Pool::struct_fields` with structs — so two arenas would
+    /// let a struct and a union at the same index overwrite each other's field lists.
+    fn lower_union_type(&mut self, u: &jr_syntax::ast::UnionType) -> StructId {
+        let span = self.span_of_node(u.syntax());
+        self.lower_fields_into_struct(span, u.field_list(), true)
+    }
+
+    /// The field loop both aggregate forms share.
+    fn lower_fields_into_struct(
+        &mut self,
+        span: jr_base::Span,
+        field_list: Option<jr_syntax::ast::FieldList>,
+        is_union: bool,
+    ) -> StructId {
         let mut fields = Vec::new();
 
-        if let Some(fl) = s.field_list() {
+        if let Some(fl) = field_list {
             for f in fl.fields() {
                 let name_tok = f.name_token();
                 let name = name_tok
@@ -222,9 +285,48 @@ impl<'a> LowerCtx<'a> {
         }
 
         self.alloc_struct(Struct {
+            is_union,
             fields,
             span,
             type_refs: Vec::new(),
+        })
+    }
+
+    /// Lowers `enum { RED; GREEN :: 10; }` (ADR-0041 §3).
+    ///
+    /// The member *values* are lowered as expressions and left unevaluated: auto-numbering
+    /// and the continue-from-here rule are applied in `jr-sema`, where a constant can be
+    /// read. Doing the arithmetic here would put it upstream of the only phase that can
+    /// reject a bad member value, which is the mistake ADR-0039 §3a corrected for array
+    /// lengths.
+    fn lower_enum_type(&mut self, e: &EnumType) -> EnumId {
+        let span = self.span_of_node(e.syntax());
+        let mut members = Vec::new();
+
+        if let Some(ml) = e.member_list() {
+            for m in ml.members() {
+                let name_tok = m.name_token();
+                let name = name_tok
+                    .as_ref()
+                    .map(|t| self.intern(t.text()))
+                    .unwrap_or_else(|| self.intern("<error>"));
+                let name_span = name_tok
+                    .as_ref()
+                    .map(|t| self.span_of_token(t))
+                    .unwrap_or(span);
+                let value = m.value().map(|v| self.lower_top_expr(&v));
+                members.push(EnumMember {
+                    name,
+                    name_span,
+                    value,
+                });
+            }
+        }
+
+        self.alloc_enum(Enum {
+            flags: e.is_flags(),
+            members,
+            span,
         })
     }
 
@@ -366,6 +468,21 @@ impl<'a> LowerCtx<'a> {
             }
             AstExpr::Unary(u) => {
                 let op = lower_un_op(u);
+                // A `-` directly on an integer literal folds into it, so that a signed
+                // minimum is expressible at all (ADR-0038 §1). Only a literal *directly*
+                // under the `-`: `-x` and `-(128)` still lower to `Unary(Neg, ..)`, where
+                // ADR-0002's trapping negation applies (§3).
+                if op == UnOp::Neg
+                    && let Some(AstExpr::Literal(lit)) = u.operand()
+                    && let Some(folded) = negate_literal(&lower_literal_impl(
+                        &lit,
+                        span,
+                        self.interner,
+                        &mut self.diags,
+                    ))
+                {
+                    return self.alloc_top_expr(Expr::Literal(folded, span), span);
+                }
                 let operand = u
                     .operand()
                     .map(|e| self.lower_top_expr(&e))
@@ -424,6 +541,48 @@ impl<'a> LowerCtx<'a> {
                     span,
                 )
             }
+            AstExpr::Index(ix) => {
+                let base = ix
+                    .base()
+                    .map(|e| self.lower_top_expr(&e))
+                    .unwrap_or_else(|| {
+                        let err = Expr::Error(span);
+                        self.alloc_top_expr(err, span)
+                    });
+                let (index, index_span) = match ix.index() {
+                    Some(e) => {
+                        let s = self.span_of_node(e.syntax());
+                        (self.lower_top_expr(&e), s)
+                    }
+                    // The parser reported the missing index (E0123); lowering keeps going
+                    // with a poison expression rather than dropping the access, so the
+                    // shape of the tree still matches what was written.
+                    None => (self.alloc_top_expr(Expr::Error(span), span), span),
+                };
+                self.alloc_top_expr(
+                    Expr::Index {
+                        base,
+                        index,
+                        index_span,
+                        span,
+                    },
+                    span,
+                )
+            }
+            // A range is reachable **only** in a `for` header (ADR-0049 §1), so at file level it
+            // is recovered syntax rather than an expression to lower. Refused rather than lowered
+            // to its start, which would silently compile `X :: 0..4;` as `0`.
+            AstExpr::Range(_) => self.alloc_top_expr(Expr::Error(span), span),
+            AstExpr::Slice(sl) => {
+                let base = sl
+                    .base()
+                    .map(|e| self.lower_top_expr(&e))
+                    .unwrap_or_else(|| {
+                        let err = Expr::Error(span);
+                        self.alloc_top_expr(err, span)
+                    });
+                self.alloc_top_expr(Expr::Slice { base, span }, span)
+            }
             AstExpr::Deref(d) => {
                 let ptr = d
                     .pointer()
@@ -435,6 +594,42 @@ impl<'a> LowerCtx<'a> {
                 self.alloc_top_expr(Expr::Deref(ptr, span), span)
             }
             AstExpr::Uninit(_) => self.alloc_top_expr(Expr::Uninit(span), span),
+            AstExpr::Cast(c) => {
+                // Same refusal as the body case, and for the same reason.
+                let Some(target) = c.target() else {
+                    return self.alloc_top_expr(Expr::Error(span), span);
+                };
+                let Some(operand) = c.operand() else {
+                    return self.alloc_top_expr(Expr::Error(span), span);
+                };
+                let ty = self.lower_type_expr_top(&target);
+                let operand = self.lower_top_expr(&operand);
+                self.alloc_top_expr(Expr::Cast { ty, operand, span }, span)
+            }
+            AstExpr::Autocast(a) => {
+                // Same refusal shape as `cast`: no operand means `Expr::Error`, not an autocast
+                // wrapped around a placeholder.
+                let Some(operand) = a.operand() else {
+                    return self.alloc_top_expr(Expr::Error(span), span);
+                };
+                let operand = self.lower_top_expr(&operand);
+                self.alloc_top_expr(Expr::Autocast { operand, span }, span)
+            }
+            AstExpr::Member(m) => {
+                let Some(token) = m.name_token() else {
+                    return self.alloc_top_expr(Expr::Error(span), span);
+                };
+                let name = self.intern(token.text());
+                let name_span = self.span_of_token(&token);
+                self.alloc_top_expr(
+                    Expr::Member {
+                        name,
+                        name_span,
+                        span,
+                    },
+                    span,
+                )
+            }
             AstExpr::Run(r) => {
                 let inner = r
                     .expr()
@@ -462,6 +657,43 @@ impl<'a> LowerCtx<'a> {
 
     // ---- items -------------------------------------------------------------
 
+    /// Lowers `operator + :: (…) -> T { … }` (ADR-0048 §1).
+    ///
+    /// The name is the **synthetic symbol** `"operator+"` — one token, no space — which is what
+    /// makes the rest free: it lands in the same flat per-file name map every other constant does,
+    /// so importing, shadowing and ADR-0014 §3's ambiguity reporting all work with no new
+    /// mechanism. Nothing can collide with it, because a user cannot write that identifier.
+    fn lower_operator_decl(&mut self, od: &jr_syntax::ast::OperatorDecl) {
+        let span = self.span_of_node(od.syntax());
+        let Some(token) = od.op_token() else {
+            // The parser reported the missing operator (E0126). Dropping the declaration rather
+            // than inventing one keeps a nonexistent `operator +` out of the name map.
+            return;
+        };
+        let name_span = self.span_of_token(&token);
+        let Some(op) = bin_op_of_token(token.kind()) else {
+            // A token the parser accepted and `BinOp` has no variant for — `!` and `~` are unary,
+            // and `&&`/`||` are control flow, so none of them is a `BinOp` at all. Dropped here
+            // and reported by sema as a non-overloadable operator (ADR-0048 §2), which is where
+            // the *reason* lives.
+            return;
+        };
+        let Some(proc) = od.proc() else {
+            // Reported by the parser (E0126) as a value that is not a procedure.
+            return;
+        };
+        let proc_id = self.lower_proc(&proc);
+        let name = self.intern(&format!("operator{}", token.text()));
+        self.items.push(Item {
+            name: Some(name),
+            span,
+            name_span,
+            kind: ItemKind::Const {
+                value: ConstValue::Operator(proc_id, op),
+            },
+        });
+    }
+
     fn lower_const_decl(&mut self, cd: &ConstDecl) {
         let span = self.span_of_node(cd.syntax());
         let name_node = cd.name();
@@ -483,6 +715,16 @@ impl<'a> LowerCtx<'a> {
             let struct_id = self.lower_struct_type(&st);
             ItemKind::Const {
                 value: ConstValue::Struct(struct_id),
+            }
+        } else if let Some(un) = cd.union_type() {
+            let union_id = self.lower_union_type(&un);
+            ItemKind::Const {
+                value: ConstValue::Union(union_id),
+            }
+        } else if let Some(en) = cd.enum_type() {
+            let enum_id = self.lower_enum_type(&en);
+            ItemKind::Const {
+                value: ConstValue::Enum(enum_id),
             }
         } else if let Some(expr) = cd.value_expr() {
             let expr_id = self.lower_top_expr(&expr);
@@ -568,6 +810,7 @@ impl<'a> LowerCtx<'a> {
             scope: self.scope,
             procs: self.procs,
             structs: self.structs,
+            enums: self.enums,
             bodies: self.bodies,
             exprs: self.top_exprs,
             expr_spans: self.top_expr_spans,
@@ -695,8 +938,34 @@ impl<'a> BodyLowerCtx<'a> {
                 };
                 self.alloc_type_ref(TypeRef::Pointer(inner))
             }
-            TypeExpr::Struct(_) => {
-                // Inline struct types inside bodies are unusual
+            TypeExpr::Array(a) => {
+                let len_span = a.len().map_or_else(
+                    || self.span_of_node(a.syntax()),
+                    |e| self.span_of_node(e.syntax()),
+                );
+                let len = lower_array_len(a, len_span, self.interner, &mut self.diags);
+                let elem = if let Some(e) = a.elem() {
+                    self.lower_type_expr(&e)
+                } else {
+                    self.alloc_type_ref(TypeRef::Error)
+                };
+                self.alloc_type_ref(TypeRef::Array {
+                    elem,
+                    len,
+                    len_span,
+                })
+            }
+            TypeExpr::View(v) => {
+                let elem = if let Some(e) = v.elem() {
+                    self.lower_type_expr(&e)
+                } else {
+                    self.alloc_type_ref(TypeRef::Error)
+                };
+                self.alloc_type_ref(TypeRef::View { elem })
+            }
+            TypeExpr::Struct(_) | TypeExpr::Union(_) | TypeExpr::Enum(_) => {
+                // An inline aggregate type inside a body is unusual, and both arenas would
+                // have to agree about where it lives; refused rather than half-lowered.
                 self.alloc_type_ref(TypeRef::Error)
             }
         }
@@ -728,13 +997,54 @@ impl<'a> BodyLowerCtx<'a> {
             }
             AstStmt::Assign(a) => self.lower_assign_stmt(a, span),
             AstStmt::If(i) => self.lower_if_stmt(i, span),
-            AstStmt::While(w) => self.lower_while_stmt(w, span),
+            AstStmt::While(w) => self.lower_while_stmt(w, span, None),
+            AstStmt::For(f) => self.lower_for_stmt(f, span, None),
+            // The deferred statement is lowered *here*, once, and `jr-mir` emits it before every
+            // terminator that leaves the scope (ADR-0049 §3). Lowering it once means the deferred
+            // expression has one identity, so a `TypeMap` entry and a `ResolveMap` entry each exist
+            // exactly once — which is what keeps the duplication in MIR rather than in HIR.
+            AstStmt::Defer(d) => {
+                let inner = d
+                    .stmt()
+                    .map(|b| self.lower_control_body(&b))
+                    .unwrap_or_else(|| self.alloc_stmt(Stmt::Error(span)));
+                self.alloc_stmt(Stmt::Defer(inner, span))
+            }
+            // `label: for …` — the label is carried *on the loop* rather than in a wrapper
+            // statement, so `jr-mir`'s loop stack has it without walking outward for a parent.
+            AstStmt::Labelled(l) => {
+                let label = l
+                    .name()
+                    .and_then(|n| n.text())
+                    .map(|t| self.intern(t.as_str()));
+                let Some(inner) = l.loop_stmt() else {
+                    return self.alloc_stmt(Stmt::Error(span));
+                };
+                let inner_span = self.span_of_node(&inner);
+                match jr_syntax::ast::Stmt::cast(inner) {
+                    Some(AstStmt::For(f)) => self.lower_for_stmt(&f, inner_span, label),
+                    Some(AstStmt::While(w)) => self.lower_while_stmt(&w, inner_span, label),
+                    _ => self.alloc_stmt(Stmt::Error(span)),
+                }
+            }
             AstStmt::Return(r) => {
                 let expr = r.expr().map(|e| self.lower_expr(&e));
                 self.alloc_stmt(Stmt::Return(expr, span))
             }
-            AstStmt::Break(_) => self.alloc_stmt(Stmt::Break(span)),
-            AstStmt::Continue(_) => self.alloc_stmt(Stmt::Continue(span)),
+            AstStmt::Break(b) => {
+                let label = b
+                    .label()
+                    .and_then(|n| n.text())
+                    .map(|t| self.intern(t.as_str()));
+                self.alloc_stmt(Stmt::Break(label, span))
+            }
+            AstStmt::Continue(c) => {
+                let label = c
+                    .label()
+                    .and_then(|n| n.text())
+                    .map(|t| self.intern(t.as_str()));
+                self.alloc_stmt(Stmt::Continue(label, span))
+            }
         }
     }
 
@@ -744,6 +1054,13 @@ impl<'a> BodyLowerCtx<'a> {
         };
 
         match inner {
+            // An `operator` declaration is file-level only: it names no scope and a body-local
+            // one would be visible to nothing. The parser reaches this arm only for a nested
+            // declaration statement, so refusing here is refusing a construct nobody can use.
+            AstItem::Operator(od) => {
+                let od_span = self.span_of_node(od.syntax());
+                self.alloc_stmt(Stmt::Error(od_span))
+            }
             AstItem::Var(vd) => {
                 let vd_span = self.span_of_node(vd.syntax());
                 let name_node = vd.name();
@@ -885,7 +1202,83 @@ impl<'a> BodyLowerCtx<'a> {
         }
     }
 
-    fn lower_while_stmt(&mut self, w: &WhileStmt, span: Span) -> StmtId {
+    /// Lowers `for x: iterable { … }` (ADR-0049 §1).
+    ///
+    /// The loop variables are **real locals**, so they obey the ordinary promotion rules and
+    /// `x = 0` inside the body modifies a copy rather than the sequence — which follows from `x`
+    /// being a local rather than needing a rule of its own.
+    ///
+    /// Order matters here: the iterable is lowered *before* the scope is pushed, so
+    /// `for x: x` refers to an outer `x` rather than to itself.
+    fn lower_for_stmt(&mut self, f: &ForStmt, span: Span, label: Option<Symbol>) -> StmtId {
+        let iterable = self.lower_for_iterable(f, span);
+
+        self.push_scope();
+        let value = self.bind_loop_local(f.value_name().as_ref(), span);
+        let index = f.index_name().map(|n| self.bind_loop_local(Some(&n), span));
+        let body = f
+            .body()
+            .map(|b| self.lower_control_body(&b))
+            .unwrap_or_else(|| self.alloc_stmt(Stmt::Error(span)));
+        self.pop_scope();
+
+        self.alloc_stmt(Stmt::For {
+            value,
+            index,
+            iterable,
+            reverse: f.is_reverse(),
+            body,
+            label,
+            span,
+        })
+    }
+
+    /// Allocates and binds one `for` loop variable.
+    ///
+    /// It has no annotation and no initialiser: its type comes from the iterable (`jr-sema`'s job)
+    /// and its value from the loop (`jr-mir`'s). `uninit` is **false**, because a loop variable is
+    /// assigned on every iteration that runs — marking it uninitialised would make the
+    /// definite-assignment pass report a variable the loop guarantees.
+    fn bind_loop_local(&mut self, name: Option<&jr_syntax::ast::Name>, span: Span) -> LocalId {
+        let (sym, name_span) = match name {
+            Some(n) => {
+                let text = n.text().unwrap_or_else(|| String::from("<error>"));
+                (self.intern(&text), self.span_of_node(n.syntax()))
+            }
+            None => (self.intern("<error>"), span),
+        };
+        let id = self.alloc_local(Local {
+            name: sym,
+            name_span,
+            ty: None,
+            init: None,
+            uninit: false,
+            span,
+        });
+        self.define_local(sym, id);
+        id
+    }
+
+    /// Lowers a `for` header's iterable, recognising `a..b` as a range (ADR-0049 §1).
+    fn lower_for_iterable(&mut self, f: &ForStmt, span: Span) -> ForIterable {
+        match f.iterable() {
+            Some(jr_syntax::ast::Expr::Range(r)) => {
+                let start = r
+                    .start()
+                    .map(|e| self.lower_expr(&e))
+                    .unwrap_or_else(|| self.alloc_expr(Expr::Error(span), span));
+                let end = r
+                    .end()
+                    .map(|e| self.lower_expr(&e))
+                    .unwrap_or_else(|| self.alloc_expr(Expr::Error(span), span));
+                ForIterable::Range { start, end }
+            }
+            Some(other) => ForIterable::Sequence(self.lower_expr(&other)),
+            None => ForIterable::Sequence(self.alloc_expr(Expr::Error(span), span)),
+        }
+    }
+
+    fn lower_while_stmt(&mut self, w: &WhileStmt, span: Span, label: Option<Symbol>) -> StmtId {
         let cond = w
             .condition()
             .map(|e| self.lower_expr(&e))
@@ -894,7 +1287,12 @@ impl<'a> BodyLowerCtx<'a> {
             .body()
             .map(|b| self.lower_control_body(&b))
             .unwrap_or_else(|| self.alloc_stmt(Stmt::Error(span)));
-        self.alloc_stmt(Stmt::While { cond, body, span })
+        self.alloc_stmt(Stmt::While {
+            cond,
+            body,
+            label,
+            span,
+        })
     }
 
     fn lower_expr(&mut self, expr: &AstExpr) -> ExprId {
@@ -933,6 +1331,21 @@ impl<'a> BodyLowerCtx<'a> {
             }
             AstExpr::Unary(u) => {
                 let op = lower_un_op(u);
+                // A `-` directly on an integer literal folds into it, so that a signed
+                // minimum is expressible at all (ADR-0038 §1). Only a literal *directly*
+                // under the `-`: `-x` and `-(128)` still lower to `Unary(Neg, ..)`, where
+                // ADR-0002's trapping negation applies (§3).
+                if op == UnOp::Neg
+                    && let Some(AstExpr::Literal(lit)) = u.operand()
+                    && let Some(folded) = negate_literal(&lower_literal_impl(
+                        &lit,
+                        span,
+                        self.interner,
+                        &mut self.diags,
+                    ))
+                {
+                    return self.alloc_expr(Expr::Literal(folded, span), span);
+                }
                 let operand = u
                     .operand()
                     .map(|e| self.lower_expr(&e))
@@ -975,6 +1388,36 @@ impl<'a> BodyLowerCtx<'a> {
                     span,
                 )
             }
+            AstExpr::Index(ix) => {
+                let base = ix
+                    .base()
+                    .map(|e| self.lower_expr(&e))
+                    .unwrap_or_else(|| self.alloc_expr(Expr::Error(span), span));
+                let (index, index_span) = match ix.index() {
+                    Some(e) => {
+                        let s = self.span_of_node(e.syntax());
+                        (self.lower_expr(&e), s)
+                    }
+                    None => (self.alloc_expr(Expr::Error(span), span), span),
+                };
+                self.alloc_expr(
+                    Expr::Index {
+                        base,
+                        index,
+                        index_span,
+                        span,
+                    },
+                    span,
+                )
+            }
+            AstExpr::Range(_) => self.alloc_expr(Expr::Error(span), span),
+            AstExpr::Slice(sl) => {
+                let base = sl
+                    .base()
+                    .map(|e| self.lower_expr(&e))
+                    .unwrap_or_else(|| self.alloc_expr(Expr::Error(span), span));
+                self.alloc_expr(Expr::Slice { base, span }, span)
+            }
             AstExpr::Deref(d) => {
                 let ptr = d
                     .pointer()
@@ -983,6 +1426,45 @@ impl<'a> BodyLowerCtx<'a> {
                 self.alloc_expr(Expr::Deref(ptr, span), span)
             }
             AstExpr::Uninit(_) => self.alloc_expr(Expr::Uninit(span), span),
+            AstExpr::Cast(c) => {
+                // A `cast` missing its type or its operand lowers to `Expr::Error`, not to a
+                // cast with a placeholder inside it. `TypeRef::Error` and a poison operand
+                // both flow through sema silently (ADR-0016's poison rule), so a cast built
+                // around one would type-check and then convert *something* — a well-typed
+                // placeholder standing in for a construct that was never written, which is
+                // this project's first named failure mode.
+                let Some(target) = c.target() else {
+                    return self.alloc_expr(Expr::Error(span), span);
+                };
+                let Some(operand) = c.operand() else {
+                    return self.alloc_expr(Expr::Error(span), span);
+                };
+                let ty = self.lower_type_expr(&target);
+                let operand = self.lower_expr(&operand);
+                self.alloc_expr(Expr::Cast { ty, operand, span }, span)
+            }
+            AstExpr::Autocast(a) => {
+                let Some(operand) = a.operand() else {
+                    return self.alloc_expr(Expr::Error(span), span);
+                };
+                let operand = self.lower_expr(&operand);
+                self.alloc_expr(Expr::Autocast { operand, span }, span)
+            }
+            AstExpr::Member(m) => {
+                let Some(token) = m.name_token() else {
+                    return self.alloc_expr(Expr::Error(span), span);
+                };
+                let name = self.intern(token.text());
+                let name_span = self.span_of_token(&token);
+                self.alloc_expr(
+                    Expr::Member {
+                        name,
+                        name_span,
+                        span,
+                    },
+                    span,
+                )
+            }
             AstExpr::Run(r) => {
                 let inner = r
                     .expr()
@@ -1018,6 +1500,38 @@ fn strip_quotes(s: &str) -> String {
     }
 }
 
+/// The [`BinOp`] a token spells, or `None` for one that is not a binary operator.
+///
+/// Shared by [`lower_bin_op`] and the `operator` declaration, so the two cannot disagree about
+/// which token means which operator — the `op_token` trap from ADR-0042, where three
+/// kind-filtered matchers each paired with a `_ =>` arm producing `Add`.
+fn bin_op_of_token(kind: SyntaxKind) -> Option<BinOp> {
+    Some(match kind {
+        PLUS => BinOp::Add,
+        MINUS => BinOp::Sub,
+        STAR => BinOp::Mul,
+        SLASH => BinOp::Div,
+        PERCENT => BinOp::Rem,
+        PLUS_PERCENT => BinOp::WrapAdd,
+        MINUS_PERCENT => BinOp::WrapSub,
+        STAR_PERCENT => BinOp::WrapMul,
+        EQ_EQ => BinOp::Eq,
+        BANG_EQ => BinOp::Ne,
+        LT => BinOp::Lt,
+        LT_EQ => BinOp::Le,
+        GT => BinOp::Gt,
+        GT_EQ => BinOp::Ge,
+        AMP => BinOp::BitAnd,
+        PIPE => BinOp::BitOr,
+        CARET => BinOp::BitXor,
+        SHL => BinOp::Shl,
+        SHR => BinOp::Shr,
+        AMP_AMP => BinOp::And,
+        PIPE_PIPE => BinOp::Or,
+        _ => return None,
+    })
+}
+
 fn lower_bin_op(b: &BinaryExpr) -> BinOp {
     match b.op_token().map(|t| t.kind()) {
         Some(PLUS) => BinOp::Add,
@@ -1034,6 +1548,11 @@ fn lower_bin_op(b: &BinaryExpr) -> BinOp {
         Some(LT_EQ) => BinOp::Le,
         Some(GT) => BinOp::Gt,
         Some(GT_EQ) => BinOp::Ge,
+        Some(AMP) => BinOp::BitAnd,
+        Some(PIPE) => BinOp::BitOr,
+        Some(CARET) => BinOp::BitXor,
+        Some(SHL) => BinOp::Shl,
+        Some(SHR) => BinOp::Shr,
         Some(AMP_AMP) => BinOp::And,
         Some(PIPE_PIPE) => BinOp::Or,
         _ => BinOp::Add, // error recovery
@@ -1045,6 +1564,7 @@ fn lower_un_op(u: &UnaryExpr) -> UnOp {
         Some(MINUS) => UnOp::Neg,
         Some(BANG) => UnOp::Not,
         Some(STAR) => UnOp::AddrOf,
+        Some(TILDE) => UnOp::BitNot,
         _ => UnOp::Neg, // error recovery
     }
 }
@@ -1060,7 +1580,61 @@ fn lower_assign_op(kind: SyntaxKind) -> AssignOp {
         PLUS_PERCENT_EQ => AssignOp::WrapAddAssign,
         MINUS_PERCENT_EQ => AssignOp::WrapSubAssign,
         STAR_PERCENT_EQ => AssignOp::WrapMulAssign,
+        AMP_EQ => AssignOp::BitAndAssign,
+        PIPE_EQ => AssignOp::BitOrAssign,
+        CARET_EQ => AssignOp::BitXorAssign,
+        SHL_EQ => AssignOp::ShlAssign,
+        SHR_EQ => AssignOp::ShrAssign,
         _ => AssignOp::Assign, // error recovery
+    }
+}
+
+/// Reads the literal length of an `[N]T`, or `None` if it was not one (ADR-0039 §3a).
+///
+/// **Emits no diagnostic.** A bad length is reported by `jr-sema` as E0233, not here, and
+/// the reason is a contract rather than a preference: `tests/corpus/type-errors/` requires
+/// its files to lex, parse, lower and resolve *cleanly* and be rejected by sema alone, so
+/// a lowering error would make `[COUNT]u8` untestable in the directory where every other
+/// rejected type lives.
+///
+/// This function's job is narrower than it looks: it reaches the literal *token*, which
+/// only the AST has. Whether the resulting length is acceptable is sema's call.
+///
+/// Shared by the top-level and body type-lowering paths so that `[COUNT]u8` behaves
+/// identically wherever it is written; the two paths have separate arenas and had already
+/// drifted once for pointers.
+/// Reads the literal length of an `[N]T`, or `None` if it was not one (ADR-0039 §3a).
+///
+/// **Emits no diagnostic.** A bad length is reported by `jr-sema` as E0233, not here, and
+/// the reason is a contract rather than a preference: `tests/corpus/type-errors/` requires
+/// its files to lex, parse, lower and resolve *cleanly* and be rejected by sema alone, so
+/// a lowering error would make `[COUNT]u8` untestable in the directory where every other
+/// rejected type lives.
+///
+/// This function's job is narrower than it looks: it reaches the literal *token*, which
+/// only the AST has. Whether the resulting length is acceptable is sema's call.
+///
+/// Shared by the top-level and body type-lowering paths so that `[COUNT]u8` behaves
+/// identically wherever it is written; the two paths have separate arenas and had already
+/// drifted once for pointers.
+fn lower_array_len(
+    ty: &ArrayType,
+    len_span: Span,
+    interner: &Interner,
+    diags: &mut Diagnostics,
+) -> Option<u64> {
+    let AstExpr::Literal(lit) = ty.len()? else {
+        return None;
+    };
+    // The literal is a signed `i128` since ADR-0038, so a negative length and one too
+    // large for a `u64` are both visible here rather than after a lossy conversion. Both
+    // yield `None` and sema explains which.
+    match lower_literal_impl(&lit, len_span, interner, diags) {
+        Literal::Int { value, .. } => u64::try_from(value).ok(),
+        // `[1.5]u8` is not an array length. Sema reports it as E0233 like any other
+        // non-integer-literal length; there is deliberately no float-specific message,
+        // because "an array length must be an integer literal" already says it.
+        Literal::Float { .. } | Literal::Bool(_) | Literal::Str(_) => None,
     }
 }
 
@@ -1085,6 +1659,25 @@ fn lower_literal_impl(
         INT_LITERAL => {
             let raw = tok.text();
             parse_int_literal_impl(raw)
+        }
+        FLOAT_LITERAL => {
+            // Underscores are digit separators here too, so `1_000.5` parses.
+            let cleaned: String = tok.text().chars().filter(|&c| c != '_').collect();
+            match cleaned.parse::<f64>() {
+                // `1e400` parses to `inf` rather than failing, and ADR-0040 §1 makes that a
+                // legitimate value — so there is no overflow check and no diagnostic.
+                Ok(value) => Literal::Float {
+                    bits: value.to_bits(),
+                    malformed: false,
+                },
+                // Unreachable in practice: the lexer only produces `FLOAT_LITERAL` for text
+                // `f64`'s parser accepts. Recorded rather than assumed away, and *not* a
+                // diagnostic, because a diagnostic nothing can trigger is untestable.
+                Err(_) => Literal::Float {
+                    bits: 0,
+                    malformed: true,
+                },
+            }
         }
         _ => Literal::Bool(false),
     }
@@ -1200,20 +1793,57 @@ fn parse_int_literal_impl(raw: &str) -> Literal {
         };
     }
 
+    // Parsed as `u64` because that is the widest *magnitude* the source can spell — a
+    // literal has no sign of its own; `negate_literal` applies one afterwards (ADR-0038 §1).
     match u64::from_str_radix(digits, radix) {
         Ok(value) => Literal::Int {
-            value,
+            value: i128::from(value),
             radix,
-            overflowed: value > i64::MAX as u64,
+            // `u64::MAX` is a legal `u64`, so the widest *positive* literal that fits nothing
+            // is one past it — which `u64::from_str_radix` cannot produce, so this is `false`
+            // for every value that parses. Kept as a field because the `Err` arm below does
+            // set it, and because a negated literal can also overflow (see `negate_literal`).
+            overflowed: false,
         },
-        // Too large for even `u64`. Clamping keeps the value monotone, so the
-        // fit check in sema rejects it for every integer type there is.
+        // Too large for even `u64`. Clamped rather than rejected here, because lowering does
+        // not diagnose: `overflowed` is what makes sema reject it for every integer type.
         Err(_) => Literal::Int {
-            value: u64::MAX,
+            value: i128::from(u64::MAX),
             radix,
             overflowed: true,
         },
     }
+}
+
+/// Folds a leading `-` into an integer literal (ADR-0038 §1).
+///
+/// `None` when the literal is not an integer, which leaves the caller to lower an ordinary
+/// `Unary(Neg, …)`.
+///
+/// # Why this exists rather than a flag in sema
+///
+/// Because the minimum of a two's-complement type is not the negation of anything the type can
+/// hold. `-128` as an `s8` needs the sign to be *part of* the literal: negating 128 in `s8`
+/// overflows, so `jr_pool::int_negate` traps on it, and teaching only the fit check to accept
+/// it would move the failure from compile time to run time (ADR-0038 §1's rejected
+/// alternative).
+fn negate_literal(literal: &Literal) -> Option<Literal> {
+    let Literal::Int {
+        value,
+        radix,
+        overflowed,
+    } = literal
+    else {
+        return None;
+    };
+    let negated = value.checked_neg()?;
+    Some(Literal::Int {
+        value: negated,
+        radix: *radix,
+        // A magnitude too large to parse stays too large once negated. Recomputed rather than
+        // copied so that the field means the same thing on both sides of the fold.
+        overflowed: *overflowed,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1252,6 +1882,7 @@ pub fn lower_file(
                 scope: ItemScope::new(),
                 procs: Vec::new(),
                 structs: Vec::new(),
+                enums: Vec::new(),
                 bodies: Vec::new(),
                 exprs: Vec::new(),
                 expr_spans: Vec::new(),
@@ -1266,6 +1897,7 @@ pub fn lower_file(
     for item in source_file.items() {
         match item {
             AstItem::Const(cd) => ctx.lower_const_decl(&cd),
+            AstItem::Operator(od) => ctx.lower_operator_decl(&od),
             AstItem::Var(vd) => ctx.lower_var_decl_item(&vd),
             AstItem::Import(id) => ctx.lower_import_decl(&id),
             AstItem::Run(rd) => ctx.lower_run_decl(&rd),

@@ -86,6 +86,392 @@ if has_parser then
       end
     end
 
+    -- Arrays, on the corpus file that has them. The compiler's parser and tree-sitter
+    -- must agree about the *shape*, and ADR-0010's drift gate compares error counts —
+    -- which cannot see a wrong tree. `cast(u8, x)` parsed as a `call_expr` with zero
+    -- ERROR nodes for a whole wave for exactly this reason, so an array's nodes are
+    -- named here rather than assumed from a clean parse.
+    local arrays_file = root .. "/tests/corpus/valid/030-arrays.jr"
+    if vim.uv.fs_stat(arrays_file) then
+      vim.cmd.edit(vim.fn.fnameescape(arrays_file))
+      local arr_buf = vim.api.nvim_get_current_buf()
+      local arr_ok, arr_parser = pcall(vim.treesitter.get_parser, arr_buf, "jairs")
+      if arr_ok and arr_parser then
+        local arr_tree = arr_parser:parse()[1]
+        check("the arrays corpus file parses with no ERROR node", not arr_tree:root():has_error())
+        local kinds = {}
+        local function walk(node)
+          kinds[node:type()] = true
+          for child in node:iter_children() do
+            walk(child)
+          end
+        end
+        walk(arr_tree:root())
+        check("tree-sitter produces array_type, not a wrong shape", kinds["array_type"] == true)
+        check("tree-sitter produces index_expr, not a call_expr", kinds["index_expr"] == true)
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- Floats, for the same reason and found the same way: the grammar's `float_literal`
+    -- required a fractional part, so `1e9` produced an ERROR node here while the compiler's
+    -- lexer accepted it (ADR-0040). The drift gate sees an ERROR only once a corpus file
+    -- contains one, so this pins the *kinds* as well.
+    local floats_file = root .. "/tests/corpus/valid/031-floats.jr"
+    if vim.uv.fs_stat(floats_file) then
+      vim.cmd.edit(vim.fn.fnameescape(floats_file))
+      local f_buf = vim.api.nvim_get_current_buf()
+      local f_ok, f_parser = pcall(vim.treesitter.get_parser, f_buf, "jairs")
+      if f_ok and f_parser then
+        local f_tree = f_parser:parse()[1]
+        check("the floats corpus file parses with no ERROR node", not f_tree:root():has_error())
+        local f_kinds = {}
+        local function fwalk(node)
+          f_kinds[node:type()] = true
+          for child in node:iter_children() do
+            fwalk(child)
+          end
+        end
+        fwalk(f_tree:root())
+        check("tree-sitter produces float_literal", f_kinds["float_literal"] == true)
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- Enums, for the third time and the same reason. `enum` was also in the *reserved
+    -- keyword* highlight match, which would have kept colouring it "arrives in a later
+    -- wave" after it arrived (ADR-0041) -- the identical trap `cast` walked into. So this
+    -- checks the node kinds *and* that `enum` is captured as a keyword rather than as a
+    -- reserved word.
+    local enums_file = root .. "/tests/corpus/valid/032-enums.jr"
+    if vim.uv.fs_stat(enums_file) then
+      vim.cmd.edit(vim.fn.fnameescape(enums_file))
+      local e_buf = vim.api.nvim_get_current_buf()
+      local e_ok, e_parser = pcall(vim.treesitter.get_parser, e_buf, "jairs")
+      if e_ok and e_parser then
+        local e_tree = e_parser:parse()[1]
+        check("the enums corpus file parses with no ERROR node", not e_tree:root():has_error())
+        local e_kinds = {}
+        local function ewalk(node)
+          e_kinds[node:type()] = true
+          for child in node:iter_children() do
+            ewalk(child)
+          end
+        end
+        ewalk(e_tree:root())
+        check("tree-sitter produces enum_type", e_kinds["enum_type"] == true)
+        check("tree-sitter produces member", e_kinds["member"] == true)
+
+        local e_query_ok, e_query = pcall(vim.treesitter.query.get, "jairs", "highlights")
+        if e_query_ok and e_query then
+          local saw_keyword_type = false
+          local saw_reserved = false
+          for id, node in e_query:iter_captures(e_tree:root(), e_buf, 0, -1) do
+            local capture = e_query.captures[id]
+            local text = vim.treesitter.get_node_text(node, e_buf)
+            if capture == "keyword.type" and text == "enum" then
+              saw_keyword_type = true
+            end
+            if capture == "keyword.reserved" and text == "enum" then
+              saw_reserved = true
+            end
+          end
+          check("`enum` highlights as a keyword", saw_keyword_type)
+          check("`enum` is no longer highlighted as reserved", not saw_reserved)
+        end
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- `enum_flags`, which was never reserved and so had nothing to remove from the reserved
+    -- match — but still needs its own highlight entry, and the *keyword* is what distinguishes
+    -- a flag set from an alternative (ADR-0043 §1).
+    local flags_file = root .. "/tests/corpus/valid/034-enum-flags.jr"
+    if vim.uv.fs_stat(flags_file) then
+      vim.cmd.edit(vim.fn.fnameescape(flags_file))
+      local g_buf = vim.api.nvim_get_current_buf()
+      local g_ok, g_parser = pcall(vim.treesitter.get_parser, g_buf, "jairs")
+      if g_ok and g_parser then
+        local g_tree = g_parser:parse()[1]
+        check(
+          "the enum_flags corpus file parses with no ERROR node",
+          not g_tree:root():has_error()
+        )
+        local g_query_ok, g_query = pcall(vim.treesitter.query.get, "jairs", "highlights")
+        if g_query_ok and g_query then
+          local saw_flags = false
+          for id, node in g_query:iter_captures(g_tree:root(), g_buf, 0, -1) do
+            local capture = g_query.captures[id]
+            local text = vim.treesitter.get_node_text(node, g_buf)
+            if capture == "keyword.type" and text == "enum_flags" then
+              saw_flags = true
+            end
+          end
+          check("`enum_flags` highlights as a keyword", saw_flags)
+        end
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- Operator overloading (ADR-0048). Two things the drift gate cannot see: that `operator`
+    -- highlights as a *keyword* rather than as reserved — it was never reserved, so unlike `cast`,
+    -- `enum`, `union` and `xx` there was nothing to remove, and this pins that it stayed out — and
+    -- that an `operator_decl` is a distinct node from a `const_decl`, which a shared rule would
+    -- have hidden.
+    local op_file = root .. "/tests/corpus/valid/038-operator-overloading.jr"
+    if vim.uv.fs_stat(op_file) then
+      vim.cmd.edit(vim.fn.fnameescape(op_file))
+      local o_buf = vim.api.nvim_get_current_buf()
+      local o_ok, o_parser = pcall(vim.treesitter.get_parser, o_buf, "jairs")
+      if o_ok and o_parser then
+        local o_tree = o_parser:parse()[1]
+        check("the operator corpus file parses with no ERROR node", not o_tree:root():has_error())
+
+        local o_kinds = {}
+        local function o_walk(node)
+          o_kinds[node:type()] = (o_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            o_walk(child)
+          end
+        end
+        o_walk(o_tree:root())
+        check("`operator + :: …` produces an operator_decl node", (o_kinds.operator_decl or 0) > 0)
+        check(
+          "an ordinary `name :: …` still produces a const_decl node beside it",
+          (o_kinds.const_decl or 0) > 0
+        )
+
+        local o_query_ok, o_query = pcall(vim.treesitter.query.get, "jairs", "highlights")
+        if o_query_ok and o_query then
+          local saw_kw, saw_res = false, false
+          for id, node in o_query:iter_captures(o_tree:root(), o_buf, 0, -1) do
+            local capture = o_query.captures[id]
+            local text = vim.treesitter.get_node_text(node, o_buf)
+            if text == "operator" then
+              if capture == "keyword" then
+                saw_kw = true
+              elseif capture == "keyword.reserved" then
+                saw_res = true
+              end
+            end
+          end
+          check("`operator` highlights as a keyword", saw_kw)
+          check("`operator` is not highlighted as reserved", not saw_res)
+        end
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- `xx` and bare `.RED` (ADR-0046). Three things the drift gate cannot see: that `xx`
+    -- highlights as a keyword rather than as reserved (four for four on that trap now), that
+    -- `.RED` produces a `member_expr`, and — the one that actually broke — that `p.x` still
+    -- produces a `field_expr`. `member_expr` at precedence 10 won the ambiguity against
+    -- `field_expr` and split `dots[1].x` in two; it sits at 1 now, and this pins the ordering
+    -- because a wrong *shape* is not an ERROR node.
+    local ac_file = root .. "/tests/corpus/valid/037-autocast-and-bare-members.jr"
+    if vim.uv.fs_stat(ac_file) then
+      vim.cmd.edit(vim.fn.fnameescape(ac_file))
+      local a_buf = vim.api.nvim_get_current_buf()
+      local a_ok, a_parser = pcall(vim.treesitter.get_parser, a_buf, "jairs")
+      if a_ok and a_parser then
+        local a_tree = a_parser:parse()[1]
+        check("the autocast corpus file parses with no ERROR node", not a_tree:root():has_error())
+
+        local a_kinds = {}
+        local function a_walk(node)
+          a_kinds[node:type()] = (a_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            a_walk(child)
+          end
+        end
+        a_walk(a_tree:root())
+        check("`xx expr` produces an autocast_expr node", (a_kinds.autocast_expr or 0) > 0)
+        check("`.RED` produces a member_expr node", (a_kinds.member_expr or 0) > 0)
+
+        local a_query_ok, a_query = pcall(vim.treesitter.query.get, "jairs", "highlights")
+        if a_query_ok and a_query then
+          local saw_kw, saw_res = false, false
+          for id, node in a_query:iter_captures(a_tree:root(), a_buf, 0, -1) do
+            local capture = a_query.captures[id]
+            local text = vim.treesitter.get_node_text(node, a_buf)
+            if text == "xx" then
+              if capture == "keyword" then
+                saw_kw = true
+              elseif capture == "keyword.reserved" then
+                saw_res = true
+              end
+            end
+          end
+          check("`xx` highlights as a keyword", saw_kw)
+          check("`xx` is no longer highlighted as reserved", not saw_res)
+        end
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- A field access must still be a `field_expr`, not a bare member. This is the regression
+    -- `member_expr` caused at precedence 10, pinned at the level where it was invisible: the
+    -- corpus still parsed, so only the *shape* showed it.
+    local arrays_file = root .. "/tests/corpus/valid/030-arrays.jr"
+    if vim.uv.fs_stat(arrays_file) then
+      vim.cmd.edit(vim.fn.fnameescape(arrays_file))
+      local fa_buf = vim.api.nvim_get_current_buf()
+      local fa_ok, fa_parser = pcall(vim.treesitter.get_parser, fa_buf, "jairs")
+      if fa_ok and fa_parser then
+        local fa_tree = fa_parser:parse()[1]
+        local fa_kinds = {}
+        local function fa_walk(node)
+          fa_kinds[node:type()] = (fa_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            fa_walk(child)
+          end
+        end
+        fa_walk(fa_tree:root())
+        check("`dots[1].x` is a field_expr", (fa_kinds.field_expr or 0) > 0)
+        check(
+          "no bare member appears where a field access was written",
+          (fa_kinds.member_expr or 0) == 0
+        )
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- `union`, promoted out of the reserved-keyword match (ADR-0045). Two things the drift
+    -- gate cannot see: that `union` now highlights as a *keyword* rather than as reserved —
+    -- colouring a live feature "arrives in a later wave" is the trap `cast` and `enum` both hit
+    -- — and that `union_type` is a distinct node kind from `struct_type`, which a shared rule
+    -- would have hidden.
+    local unions_file = root .. "/tests/corpus/valid/036-unions.jr"
+    if vim.uv.fs_stat(unions_file) then
+      vim.cmd.edit(vim.fn.fnameescape(unions_file))
+      local u_buf = vim.api.nvim_get_current_buf()
+      local u_ok, u_parser = pcall(vim.treesitter.get_parser, u_buf, "jairs")
+      if u_ok and u_parser then
+        local u_tree = u_parser:parse()[1]
+        check("the unions corpus file parses with no ERROR node", not u_tree:root():has_error())
+
+        local u_kinds = {}
+        local function u_walk(node)
+          u_kinds[node:type()] = (u_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            u_walk(child)
+          end
+        end
+        u_walk(u_tree:root())
+        check("`union { … }` produces a union_type node", (u_kinds.union_type or 0) > 0)
+        check(
+          "`struct { … }` still produces a struct_type node beside it",
+          (u_kinds.struct_type or 0) > 0
+        )
+
+        local u_query_ok, u_query = pcall(vim.treesitter.query.get, "jairs", "highlights")
+        if u_query_ok and u_query then
+          local saw_keyword, saw_reserved = false, false
+          for id, node in u_query:iter_captures(u_tree:root(), u_buf, 0, -1) do
+            local capture = u_query.captures[id]
+            local text = vim.treesitter.get_node_text(node, u_buf)
+            if text == "union" then
+              if capture == "keyword" then
+                saw_keyword = true
+              elseif capture == "keyword.reserved" then
+                saw_reserved = true
+              end
+            end
+          end
+          check("`union` highlights as a keyword", saw_keyword)
+          check("`union` is no longer highlighted as reserved", not saw_reserved)
+        end
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- `[]T` views. The drift gate proves the file *parses*; what it cannot see is that the
+    -- two bracket forms produce two different node kinds. `[]s64` must be a `view_type` and
+    -- `[4]s64` an `array_type`, and `buf[]` a `slice_expr` rather than an `index_expr` with a
+    -- missing subscript — a grammar that reused one rule for both would parse the corpus
+    -- cleanly and give a query no way to tell a view from an array (ADR-0044 §1).
+    local views_file = root .. "/tests/corpus/valid/035-views.jr"
+    if vim.uv.fs_stat(views_file) then
+      vim.cmd.edit(vim.fn.fnameescape(views_file))
+      local v_buf = vim.api.nvim_get_current_buf()
+      local v_ok, v_parser = pcall(vim.treesitter.get_parser, v_buf, "jairs")
+      if v_ok and v_parser then
+        local v_tree = v_parser:parse()[1]
+        check("the views corpus file parses with no ERROR node", not v_tree:root():has_error())
+
+        local kinds = {}
+        local function walk(node)
+          kinds[node:type()] = (kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            walk(child)
+          end
+        end
+        walk(v_tree:root())
+        check("`[]T` produces a view_type node", (kinds.view_type or 0) > 0)
+        check("`buf[]` produces a slice_expr node", (kinds.slice_expr or 0) > 0)
+        check(
+          "`[N]T` still produces an array_type node beside them",
+          (kinds.array_type or 0) > 0
+        )
+        check("`xs[i]` still produces an index_expr node", (kinds.index_expr or 0) > 0)
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- Bitwise operators. The *shape* is what matters and the drift gate cannot see it:
+    -- `a & 3 == 2` must group as `(a & 3) == 2`, which is Jairs's ordering and not C's
+    -- (ADR-0042 §1). A grammar that used C's precedence would parse without an ERROR node
+    -- and produce a different tree, so this asserts the nesting.
+    local bitwise_file = root .. "/tests/corpus/valid/033-bitwise.jr"
+    if vim.uv.fs_stat(bitwise_file) then
+      vim.cmd.edit(vim.fn.fnameescape(bitwise_file))
+      local w_buf = vim.api.nvim_get_current_buf()
+      local w_ok, w_parser = pcall(vim.treesitter.get_parser, w_buf, "jairs")
+      if w_ok and w_parser then
+        local w_tree = w_parser:parse()[1]
+        check(
+          "the bitwise corpus file parses with no ERROR node",
+          not w_tree:root():has_error()
+        )
+      end
+      -- The precedence itself, on a minimal buffer so the assertion is about one expression.
+      local prec_buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(prec_buf, 0, -1, false, { "main :: () { x := a & 3 == 2; }" })
+      vim.bo[prec_buf].filetype = "jairs"
+      local p_ok, p_parser = pcall(vim.treesitter.get_parser, prec_buf, "jairs")
+      if p_ok and p_parser then
+        local p_tree = p_parser:parse()[1]
+        -- Find the outermost binary_expr and check its *left* child is also one: that is
+        -- `(a & 3) == 2`. Under C's ordering the *right* child would be the binary one.
+        local outer = nil
+        local function findbin(node)
+          if node:type() == "binary_expr" and outer == nil then
+            outer = node
+            return
+          end
+          for child in node:iter_children() do
+            findbin(child)
+          end
+        end
+        findbin(p_tree:root())
+        local left_is_binary = outer ~= nil
+          and outer:field("lhs")[1] ~= nil
+          and outer:field("lhs")[1]:type() == "binary_expr"
+        check("`a & 3 == 2` groups as `(a & 3) == 2`, not C's grouping", left_is_binary)
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
     -- Documentation highlighting, checked on the corpus file that has some. The capture
     -- is predicated on `#lua-match?`, which is Neovim's own predicate: `tree-sitter
     -- query` validates node names but knows nothing about it, so this is the only place

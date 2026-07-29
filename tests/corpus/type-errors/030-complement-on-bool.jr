@@ -1,0 +1,7 @@
+// EXPECT: E0223 — `~` is a bitwise complement, not a boolean one (ADR-0042 §4)
+// `!` is the boolean negation. A `bool` is one byte and its complement is 254, which is not
+// a `bool` at all — so the help line names `!` rather than leaving the reader to guess.
+main :: () {
+    a := true;
+    b := ~a;
+}

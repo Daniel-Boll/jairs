@@ -74,11 +74,11 @@ pub use dce::{dce, is_pure};
 pub use dump::{dump_body, dump_body_spans, dump_file};
 pub use forward::forward_stores;
 pub use inline::{Callees, MAX_INLINE_STATEMENTS, inline_body, is_inlinable};
-pub use inputs::{ConstValues, ImportedProcs};
+pub use inputs::{ConstValues, ImportedProcs, OperatorCalls};
 pub use mir::{
-    BinOp, BlockData, BlockId, Callee, Facts, FileMir, MirBody, MirSpan, Operand, Place, PlaceBase,
-    Poisoned, ProcRef, Projection, Rvalue, SlotData, SlotId, Statement, Target, Terminator, UnOp,
-    UndefinedRead, Unreachable, ValueData, ValueId,
+    BinOp, BlockData, BlockId, Callee, Facts, FileMir, MirBody, MirSpan, NumKind, Operand, Place,
+    PlaceBase, Poisoned, ProcRef, Projection, Rvalue, SlotData, SlotId, Statement, Target,
+    Terminator, UnOp, UndefinedRead, Unreachable, ValueData, ValueId,
 };
 pub use optimize::{MAX_OPT_ROUNDS, OptStats, optimize};
 pub use span::resolve_span;

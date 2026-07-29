@@ -84,6 +84,11 @@ pub struct CheckResult {
     /// annotation, which `ResolveMap` cannot (ADR-0031 §2). The signature phase's half of
     /// the same answer lives on `FileSignatures`.
     pub type_name_imports: Arc<[String]>,
+    /// Which overload each operator expression resolved to (ADR-0048 §5).
+    ///
+    /// Carried through from `jr-sema` so that `jr-mir` can lower the call without re-running
+    /// resolution — the same reason `types` is carried rather than recomputed.
+    pub operator_calls: Arc<jr_mir::OperatorCalls>,
 }
 
 // ---------------------------------------------------------------------------
@@ -231,10 +236,19 @@ pub fn checked(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) -
     let mut types = output.types;
     types.absorb(own.types.as_ref());
 
+    // Translated from `jr-sema`'s `(FileId, ProcId)` pairs into `jr-mir`'s `ProcRef`, which is
+    // the one place that mapping belongs: `jr-sema` must not depend on `jr-mir`, and `jr-mir`
+    // must not re-resolve.
+    let mut operator_calls = jr_mir::OperatorCalls::new();
+    for ((scope, expr), (target_file, proc)) in &output.operator_calls {
+        operator_calls.set(*scope, *expr, jr_mir::ProcRef::new(*target_file, *proc));
+    }
+
     CheckResult {
         types: Arc::new(types),
         diagnostics: Arc::new(output.diagnostics),
         type_name_imports: Arc::from(output.type_name_imports),
+        operator_calls: Arc::new(operator_calls),
     }
 }
 

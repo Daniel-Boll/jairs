@@ -1359,8 +1359,12 @@ fn a_module_cycle_type_checks_through_the_database() {
         "#import \"Cycle_A\";\n\nmain :: () {\n    x := a_calls_b();\n    y := A_VALUE;\n}\n",
     );
     let diags = file_diagnostics(&db, importer, sp);
+    // No *errors*. The body reads `A_VALUE` — an imported constant, which `jr-mir` still refuses
+    // to lower — so E0245 warns about it (ADR-0047 §2). That warning is the honest state of
+    // affairs and asserting `is_empty` would conflate it with a type error, which is the
+    // distinction this test is about.
     assert!(
-        diags.is_empty(),
+        !diags.has_errors(),
         "an import cycle is legal and must type-check, got {:?}",
         diags
             .iter()
@@ -1404,8 +1408,9 @@ fn changing_a_modules_declaration_retypes_the_importer() {
     db.set_file_text("/modules/MyMod.jr", "MY_CONST :: false;\n");
 
     let after = file_diagnostics(&db, importer, sp);
+    // Errors only, for the reason above: the imported constant still draws an E0245 warning.
     assert!(
-        after.is_empty(),
+        !after.has_errors(),
         "changing the constant's type must clear the importer's error, got {:?}",
         after
             .iter()

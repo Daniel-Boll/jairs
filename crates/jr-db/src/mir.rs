@@ -198,7 +198,9 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
     let hir = file_hir(db, file);
     let own_resolve = resolved(db, file, search_paths).map;
     let own = crate::sema::file_signatures(db, file, search_paths);
-    let types = checked(db, file, search_paths).types;
+    let checked_file = checked(db, file, search_paths);
+    let types = checked_file.types;
+    let operators = checked_file.operator_calls;
     let imports = imported_procs(db, file, search_paths);
     let consts = crate::consts::file_consts(db, file, search_paths).values;
     let interner = db.interner();
@@ -213,6 +215,7 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
         own.signatures.as_ref(),
         consts.as_ref(),
         imports.as_ref(),
+        operators.as_ref(),
         interner,
         &mut pool,
     );
@@ -447,7 +450,11 @@ fn same_file_callees(body: &jr_mir::MirBody, file: FileId) -> Vec<jr_hir::ProcId
             match stmt {
                 jr_mir::Statement::Assign { rvalue, .. }
                 | jr_mir::Statement::Discard { rvalue, .. } => note(rvalue),
-                jr_mir::Statement::Store { .. } | jr_mir::Statement::Nop => {}
+                // None of these can contain a call, so none contributes a callee.
+                jr_mir::Statement::Store { .. }
+                | jr_mir::Statement::Zero { .. }
+                | jr_mir::Statement::BoundsCheck { .. }
+                | jr_mir::Statement::Nop => {}
             }
         }
     }

@@ -47,6 +47,13 @@ pub enum TrapKind {
     OverflowNeg,
     /// A divisor was zero.
     DivideByZero,
+    /// A shift count was negative or `>=` the type's width (ADR-0042 §3).
+    ///
+    /// The third trapping operation, after overflow and division by zero. Cranelift's shift
+    /// instructions mask the count rather than trapping, so this is an explicit
+    /// compare-and-trap emitted before the shift — the masking would otherwise turn `x << 8`
+    /// on an `s8` silently into `x << 0`.
+    ShiftOutOfRange,
     /// `Terminator::Unreachable(Unreachable::Trap)` was reached.
     Deliberate,
     /// A `break` or `continue` outside a loop was reached at run time.
@@ -64,6 +71,12 @@ pub enum TrapKind {
     /// well-typed value with no bits — so native traps on use rather than reading a
     /// zero, which would hide the bug the diagnostic exists to report.
     UninitialisedRead,
+    /// An array index was outside the array (ADR-0003, ADR-0039 §2).
+    ///
+    /// Raised by the comparison `Statement::BoundsCheck` lowers to. Unlike
+    /// [`TrapKind::UninitialisedRead`], nothing reports this statically in general — a
+    /// *literal* index out of range is E0236, but a computed one is only knowable here.
+    IndexOutOfBounds,
 }
 
 impl TrapKind {
@@ -111,6 +124,8 @@ impl TrapKind {
             Self::OverflowRem => "remainder overflowed",
             Self::OverflowNeg => "negation overflowed",
             Self::DivideByZero => "division by zero",
+            Self::ShiftOutOfRange => "shift count out of range",
+            Self::IndexOutOfBounds => "index out of bounds",
             Self::Deliberate => "reached a deliberate trap",
             Self::StrayJump => "a `break` or `continue` outside a loop was reached",
             Self::FellOffEnd => "control reached the end of a procedure that must return a value",

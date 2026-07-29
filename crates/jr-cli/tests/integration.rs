@@ -486,3 +486,65 @@ fn bench_measures_at_a_declaration_and_not_inside_a_keyword() {
         "a top-level declaration starts at column 0: {line:?}"
     );
 }
+
+#[test]
+fn a_refused_body_is_a_diagnostic_rather_than_a_crash() {
+    // ADR-0047 §2. **This replaced an internal compiler error surfaced to the user**: a body
+    // MIR could not lower was skipped when the program was assembled, and calling one reached
+    // the interpreter's own lookup — `internal compiler error: no routine for file 0 proc 0`,
+    // on a program `jr check` had just called clean.
+    //
+    // The construct used here is a reference to an *imported constant*, which `jr-mir`'s module
+    // docs record as the one thing still refused unconditionally: its value would have to come
+    // from another file's const evaluation, the cross-body read ADR-0017 §3 keeps out. Chosen
+    // deliberately over the bug that motivated the gate — imported *enum members*, which
+    // ADR-0047 §1 fixed — so this test survives that fix rather than dying with it.
+    let dir = TempDir::new().unwrap();
+    let modules = dir.path().join("Widths");
+    std::fs::create_dir_all(&modules).unwrap();
+    std::fs::write(modules.join("module.jr"), "WIDTH :: 7;\n").unwrap();
+    let path = dir.path().join("main.jr");
+    std::fs::write(
+        &path,
+        "#import \"Basic\";\n#import \"Widths\";\n\nmain :: () {\n    n := WIDTH;\n    exit(n);\n}\n",
+    )
+    .unwrap();
+
+    // `check` **warns** rather than erroring, and the severity is deliberate: a refused body
+    // nobody calls does not stop a program, and six files in `tests/corpus/imports/valid/` have
+    // been in that state since they were written. Making it an error would reject programs that
+    // work today.
+    let global = quiet_global();
+    let check = jr_cli::commands::check::run(
+        jr_cli::cli::CheckArgs {
+            paths: vec![path.clone()],
+            module_paths: vec![dir.path().to_path_buf()],
+        },
+        &global,
+    )
+    .unwrap();
+    assert_eq!(check, 0, "a refused body is a warning, not an error");
+
+    // But `main` is called by definition, so running it must fail — with a message naming the
+    // procedure and saying whose fault it is, rather than the `no routine for file 0 proc 0`
+    // internal error this replaced.
+    let run = jr_cli::commands::run::run(
+        jr_cli::cli::RunArgs {
+            path,
+            module_paths: vec![dir.path().to_path_buf()],
+        },
+        &global,
+    );
+    let message = match run {
+        Ok(status) => panic!("running a refused `main` must fail, got status {status}"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        message.contains("could not lower `main`"),
+        "the failure must name `main`: {message}"
+    );
+    assert!(
+        !message.contains("no routine for"),
+        "the internal compiler error must not reach the user: {message}"
+    );
+}

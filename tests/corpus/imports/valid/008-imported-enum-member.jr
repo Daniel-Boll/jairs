@@ -1,0 +1,21 @@
+// An enum declared in another module, used from this one (ADR-0047 §1).
+//
+// **This did not work, and the way it failed is why the ADR exists.** The bare form
+// `.MID` resolved through the context *type* and worked; the qualified `Shade.MID` went
+// through a lookup that read an `EnumId` out of the declaring file's arena, refused the
+// body, and surfaced as `internal compiler error: no routine for file 0 proc 0` — on a
+// program `jr check` called clean. The member is now found from the expression's own
+// type, so both spellings resolve by one mechanism and cannot disagree.
+#import "Palette2";
+
+main :: () {
+    // The qualified form, which used to crash.
+    a := Shade.LIGHT;
+    // The bare form, which already worked (ADR-0046 §3).
+    b: Shade = .LIGHT;
+    // A member crossing the boundary a second way: as a call argument.
+    n := level(.MID);
+    // A flags enum from another module, combined.
+    both: Style = .BOLD | .ITALIC;
+    m := cast(s64, both);
+}

@@ -43,21 +43,65 @@ print_line :: (s: string) {
     print("\n");
 }
 
+/// Writes one byte to standard output.
+///
+/// The address of a local is what makes this expressible: `write` wants a `*u8` and a
+/// count, and a one-byte local supplies both (ADR-0011's prefix `*`). There is no buffer
+/// because `[N]u8` arrives with arrays; see `print_int`.
+put_byte :: (b: u8) {
+    p := *b;
+    write(STDOUT, p, 1);
+}
+
+/// Writes the decimal digits of a non-negative number.
+///
+/// Recursive, and deliberately so: `print_int` has no buffer to format into, because
+/// `[N]u8` arrives with arrays in a later wave. Recursion emits the digits in the right
+/// order without one -- divide first, print the high digits, then this digit on the way
+/// back out. It costs one frame per digit, which for a 64-bit number is at most 20.
+///
+/// This is the shape `PLAN.md` §1.2 predicted: the wave that unblocks integer printing is
+/// the wave that adds `cast`, and the buffer is still owed. When arrays land, this becomes
+/// a loop over a `[20]u8` and the recursion goes away.
+print_digits :: (n: s64) {
+    if n >= 10 {
+        print_digits(n / 10);
+    }
+    // `n % 10` is 0..9, so `+ 48` is '0'..'9' and the cast cannot lose information --
+    // which is why it is a cast and not a checked conversion (ADR-0037 §2).
+    put_byte(cast(u8, n % 10 + 48));
+}
+
+/// Writes a number in decimal.
+///
+/// Handles the sign here rather than in `print_digits`, so the recursion has one job. Note
+/// what is *not* handled: the most negative `s64` cannot be negated -- `-(-9223372036854775808)`
+/// overflows, and ADR-0002 makes that a trap rather than a wrap. So this traps on it, which
+/// is honest; printing it needs either an unsigned path or `-%`, and both are later waves.
+print_int :: (n: s64) {
+    if n < 0 {
+        print("-");
+        print_digits(-n);
+    } else {
+        print_digits(n);
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Not yet implementable: integer printing
+// Integer printing: what it took, and what it still owes
 // ---------------------------------------------------------------------------
 //
-// `print_int` needs to turn a digit value into a byte to hand to `write`, i.e. a
-// conversion from `s64` to `u8`. That requires `cast`, which is lexed but
-// reserved until wave W1 (see docs/spec/01-lexical.md). The alternatives all
-// depend on features the slice also lacks:
+// This section used to say `print_int` was not implementable. It is now above, and the
+// thing that unblocked it was `cast` (ADR-0037): turning a digit value into a byte for
+// `write` is an `s64` to `u8` conversion and nothing else would do.
 //
-//   * a fixed-size buffer `[N]u8` to format into -- arrays arrive in W1
-//   * pointer arithmetic into a digit table -- not in the subset, and there is
-//     no type checker yet to stop it being written by accident
-//   * libc `printf` -- variadic, and the arm64 variadic ABI passes variadic
-//     arguments on the stack, so a non-variadic `#foreign` declaration would
-//     pass them in registers and quietly produce garbage
+// Still owed, and visible in the code above:
 //
-// Faking it would be worse than its absence, so `print_int` lands with `cast` in
-// wave W1.
+//   * a fixed-size buffer `[N]u8` to format into. `print_digits` recurses instead, one
+//     frame per digit, because emitting digits high-end-first needs either a buffer or a
+//     stack and only one of those exists yet.
+//   * the most negative `s64`. `print_int` negates a negative, and negating
+//     -9223372036854775808 overflows, which ADR-0002 makes a trap. Printing it needs an
+//     unsigned path or the wrapping `-%` operator.
+//
+// Neither is faked. A wrong digit would be worse than a missing feature.

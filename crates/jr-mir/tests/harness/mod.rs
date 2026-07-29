@@ -171,6 +171,7 @@ impl Program {
             &signatures.signatures,
             consts,
             imports,
+            &jr_mir::OperatorCalls::new(),
             &self.interner,
             &mut self.pool,
         );
