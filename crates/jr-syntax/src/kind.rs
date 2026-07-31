@@ -132,6 +132,13 @@ pub enum SyntaxKind {
     /// reserved block would mean immediately having to remember to exclude it — the trap `cast`,
     /// `enum`, `union` and `xx` each walked into from the other side.
     OPERATOR_KW,
+    /// `push_context` — real syntax as of ADR-0063.
+    ///
+    /// Placed **after** `NULL_KW`, like `CONTEXT_KW` and `OPERATOR_KW`, which puts it *outside*
+    /// [`SyntaxKind::is_reserved_keyword`]'s range: it was never reserved (no wave ever emitted a
+    /// "arrives later" refusal for it), so adding it to that block would mean immediately having to
+    /// remember to exclude it — the trap `cast`, `enum`, `union` and `xx` each walked into.
+    PUSH_CONTEXT_KW,
 
     // ---- delimiters ------------------------------------------------------
     /// `(`
@@ -432,6 +439,12 @@ pub enum SyntaxKind {
     RANGE_EXPR,
     /// `defer stmt;` (ADR-0049 §3).
     DEFER_STMT,
+    /// `push_context { … }` (ADR-0063) — a block with its own copy of the context.
+    ///
+    /// Wraps a `BLOCK`. Its own node rather than a flag on `BLOCK`, so every exhaustive match over
+    /// statements is forced to decide what a context scope means rather than treating it as an
+    /// ordinary block that happens to swap a pointer.
+    PUSH_CONTEXT_STMT,
     /// `label:` before a `for` or `while` (ADR-0049 §2).
     ///
     /// A label names a *loop* and is deliberately not an expression name: it is resolved against
@@ -603,6 +616,7 @@ impl SyntaxKind {
             "enum_flags" => Self::FLAGS_KW,
             "operator" => Self::OPERATOR_KW,
             "context" => Self::CONTEXT_KW,
+            "push_context" => Self::PUSH_CONTEXT_KW,
             "union" => Self::UNION_KW,
             "for" => Self::FOR_KW,
             "defer" => Self::DEFER_KW,
@@ -634,6 +648,7 @@ impl SyntaxKind {
             Self::FLAGS_KW => "enum_flags",
             Self::OPERATOR_KW => "operator",
             Self::CONTEXT_KW => "context",
+            Self::PUSH_CONTEXT_KW => "push_context",
             Self::UNION_KW => "union",
             Self::FOR_KW => "for",
             Self::DEFER_KW => "defer",

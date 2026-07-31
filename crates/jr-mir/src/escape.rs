@@ -318,6 +318,10 @@ fn addr_taken(body: &Body) -> (FxHashSet<LocalId>, FxHashSet<jr_hir::ParamId>) {
                 stmt_worklist.push(*loop_body);
             }
             Stmt::Defer(inner, _) => stmt_worklist.push(*inner),
+            // A `push_context` block's statements are walked like any block's. The context copy it
+            // introduces is a synthesised slot no *local* names, so nothing here promotes it — the
+            // block's own locals are reached through `inner` (ADR-0063 §2).
+            Stmt::PushContext(inner, _) => stmt_worklist.push(*inner),
             Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
         }
     }

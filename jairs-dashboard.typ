@@ -96,19 +96,19 @@
 #h(4pt)
 #pill[919 tests]
 #h(4pt)
-#pill[ADR-0062 latest]
+#pill[ADR-0063 latest]
 #h(4pt)
-#pill(fill: rgb("#fdf2e6"), stroke: warn)[W3 in progress · 14 waves uncommitted]
+#pill(fill: rgb("#fdf2e6"), stroke: warn)[W3 in progress · temporary storage + backtraces left]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
   metric("Tests", "919", "workspace, all passing"),
-  metric("Corpus", "144", "jr files, both engines"),
-  metric("ADRs", "62", "0001 to 0062, immutable"),
+  metric("Corpus", "146", "jr files, both engines"),
+  metric("ADRs", "63", "0001 to 0063, immutable"),
   metric("Diagnostics", "88", "codes, E0258 next free"),
-  metric("Editor checks", "151", "Neovim, verified not gated"),
+  metric("Editor checks", "156", "Neovim, verified not gated"),
 )
 
 // ---------------------------------------------------------------------------
@@ -144,19 +144,21 @@
         one shared formatter.
       ]
     - #text(size: 7.4pt)[
-        *MIR snapshots pin the exact instruction sequence* for all 138 files. Last wave they changed for every file
-        that calls anything; this wave they are what shows a `#no_abc` procedure lowering without
-        the check its neighbour keeps.
+        *MIR snapshots pin the exact instruction sequence.* This wave the `push_context` file shows
+        the whole feature: a `Context` slot, a load of the caller's context, a store into the slot,
+        an address-of — the copy-plus-swap, with no new MIR node.
       ]
     - #text(size: 7.4pt)[
-        *Every fix is verified by reverting it* and watching the test fail. A test that passes
-        without its fix is worse than none — and this wave two grammar rules were reverted to prove
-        their checks had teeth.
+        *Every fix is verified by reverting it* and watching the test fail. This wave the highlight
+        check was reverted to prove it bites, and the isolation the wave adds was verified by
+        *running the claim it corrects* — a two-line program showed a callee's write leaking to its
+        caller, which ADR-0057 §2 said could not happen.
       ]
     - #text(size: 7.4pt, fill: warn)[
-        *The gates cannot see everything.* `context` is a legal identifier, so a tree-sitter grammar
-        that had never heard of it still parsed the corpus cleanly while meaning something else. Gate
-        6 was green throughout. That class of drift is now checked on the node type instead.
+        *A documented invariant is not a verified one.* ADR-0057 §2 claimed a callee cannot change
+        its caller's context; it was false for six waves because no corpus program observed a write
+        *failing* to propagate — every allocator test wanted the shared behaviour. push_context is the
+        construct that makes the claim true, and the ADR amends §2 to say so.
       ]
   ],
 )
@@ -182,10 +184,11 @@
   ("One trivial compile-time run, folded", "arbitrary run, RTTI, insert (W4)"),
   ("Traps name their source line", "backtraces (W3)"),
   ("Bounds checks, strippable by build setting or #no_abc", "a per-index #no_abc; any other build setting"),
-  ("context, a hidden parameter passed by pointer", "allocators, temp storage (W3)"),
+  ("context, a hidden parameter passed by pointer", "temp storage (W3)"),
   ("Procedures as values: call, pass, return, struct field", "a cross-file or foreign proc value; comparing one"),
   ("null, a context-typed pointer literal; malloc and free", "pointer arithmetic; cast to a pointer"),
-  ("An allocator in the context, installed and called through", "push_context; a bump allocator; temp storage (W3)"),
+  ("An allocator in the context, installed and called through", "a bump allocator; temp storage (W3)"),
+  ("push_context, a block with its own copy of the context", ""),
 )
 
 #table(
@@ -233,7 +236,7 @@
   ("Cranelift back end", "works", "Aggregate returns via sret; indirect calls via func_addr"),
   ("LLVM back end", "not started", "W8 owns it"),
   ("Language server", "12 caps", "Diagnostics, hover, goto, completion, rename, actions, hints"),
-  ("Neovim integration", "works", "Runtimepath dir, no plugin manager; 151 checks"),
+  ("Neovim integration", "works", "Runtimepath dir, no plugin manager; 156 checks"),
   ("Driver", "stub", "Should consume the workspace notion that now exists"),
 )
 
@@ -274,7 +277,7 @@
   ),
   (
     "W3 Runtime core", "in progress",
-    "Five of six done. context (ADR-0057), the bounds-check build setting (ADR-0058, finishing ADR-0003), indirect calls (ADR-0059), null plus a memory source (ADR-0060/0061), and the allocator protocol (ADR-0062) — a program installs an allocator in the context and a callee allocates through it without knowing which. Remaining: temporary storage (which wants push_context too) and traps with backtraces.",
+    "Six of eight done. context (ADR-0057), the bounds-check build setting (ADR-0058, finishing ADR-0003), indirect calls (ADR-0059), null plus a memory source (ADR-0060/0061), the allocator protocol (ADR-0062), and push_context (ADR-0063) — a block gets its own copy of the context, restored on exit, which made true the isolation ADR-0057 §2 claimed and never had. Remaining: temporary storage (blocked on pointer arithmetic for a bump allocator) and traps with backtraces.",
   ),
   (
     "W4 Comptime", "not started",
@@ -336,19 +339,19 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[Fourteen waves shipped]
+    #sub[Fifteen waves shipped]
     #text(size: 7.4pt)[
-      ADR-0049 through 0062: for and defer, using, aggregate returns, multiple returns, named and
+      ADR-0049 through 0063: for and defer, using, aggregate returns, multiple returns, named and
       default arguments, scope visibility, imported constants, float constants, context, the
-      bounds-check build setting, indirect calls, null plus a memory source, and the allocator
-      protocol.
+      bounds-check build setting, indirect calls, null plus a memory source, the allocator
+      protocol, and push_context.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 919. Corpus 116 to 144 files. Neovim checks 103 to 151. W2 closed; W3 opened
-      and five of its six features landed. A program can now install an allocator in the context and
-      a callee allocates through it without knowing which.
+      Test count 900 to 919. Corpus 116 to 146 files. Neovim checks 103 to 156. W2 closed; W3 opened
+      and six of its eight features landed. A program can install an allocator in the context, a
+      callee allocates through it, and a push_context block scopes the whole thing — restored on exit.
     ]
 
     #v(0.3em)

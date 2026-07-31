@@ -69,6 +69,12 @@
   ; declared, colouring as a variable. A node the two parsers agree on is what makes it a keyword
   ; here rather than a text predicate.
   "context"
+  ; `push_context`, real as of ADR-0063 and never reserved — the same position `context`,
+  ; `enum_flags` and `operator` were in. Like `context` (above), it is a legal identifier, so the
+  ; failure mode of omitting it here is not an ERROR node but a silent mis-colour: `push_context`
+  ; would highlight as a variable. The `push_context_stmt` node is what makes it a keyword here
+  ; rather than a text predicate — the same node-not-text argument `context` records.
+  "push_context"
 ] @keyword
 
 ; Boolean literals are keywords in Jairs

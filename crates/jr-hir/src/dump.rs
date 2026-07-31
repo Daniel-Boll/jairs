@@ -357,6 +357,13 @@ impl<'a> Dumper<'a> {
                 self.dump_body_stmt(body, inner);
                 self.indent -= 1;
             }
+            Stmt::PushContext(inner, _) => {
+                let inner = *inner;
+                self.line("PushContext");
+                self.indent += 1;
+                self.dump_body_stmt(body, inner);
+                self.indent -= 1;
+            }
             Stmt::Return(expr, _) => {
                 let s = expr
                     .map(|e| self.fmt_body_expr(body, e))

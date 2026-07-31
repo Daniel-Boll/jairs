@@ -141,6 +141,7 @@ ast_node!(NamedArg, NAMED_ARG);
 ast_node!(ForStmt, FOR_STMT);
 ast_node!(RangeExpr, RANGE_EXPR);
 ast_node!(DeferStmt, DEFER_STMT);
+ast_node!(PushContextStmt, PUSH_CONTEXT_STMT);
 ast_node!(LoopLabel, LOOP_LABEL);
 ast_node!(ReturnStmt, RETURN_STMT);
 ast_node!(BreakStmt, BREAK_STMT);
@@ -309,6 +310,8 @@ pub enum Stmt {
     For(ForStmt),
     /// `defer stmt;` (ADR-0049 §3)
     Defer(DeferStmt),
+    /// `push_context { … }` (ADR-0063)
+    PushContext(PushContextStmt),
     /// `label: for …` or `label: while …` (ADR-0049 §2)
     Labelled(LoopLabel),
 }
@@ -328,6 +331,7 @@ impl AstNode for Stmt {
                 | CONTINUE_STMT
                 | FOR_STMT
                 | DEFER_STMT
+                | PUSH_CONTEXT_STMT
                 | LOOP_LABEL
         )
     }
@@ -345,6 +349,7 @@ impl AstNode for Stmt {
             CONTINUE_STMT => Some(Self::Continue(ContinueStmt(node))),
             FOR_STMT => Some(Self::For(ForStmt(node))),
             DEFER_STMT => Some(Self::Defer(DeferStmt(node))),
+            PUSH_CONTEXT_STMT => Some(Self::PushContext(PushContextStmt(node))),
             LOOP_LABEL => Some(Self::Labelled(LoopLabel(node))),
             _ => None,
         }
@@ -363,6 +368,7 @@ impl AstNode for Stmt {
             Self::Continue(n) => n.syntax(),
             Self::For(n) => n.syntax(),
             Self::Defer(n) => n.syntax(),
+            Self::PushContext(n) => n.syntax(),
             Self::Labelled(n) => n.syntax(),
         }
     }
@@ -838,6 +844,16 @@ impl DeferStmt {
     /// `if` body has — and reusing it means a consumer handles both without a second convention.
     pub fn stmt(&self) -> Option<ControlBody> {
         control_body(&self.0)
+    }
+}
+impl PushContextStmt {
+    /// The block whose statements run against a copy of the context (ADR-0063).
+    ///
+    /// A `Block` rather than a [`ControlBody`]: the parser requires braces (a braceless context swap
+    /// reads as a mistake), so there is only ever the one shape and no need for the two-shape helper
+    /// `defer` and `if` share.
+    pub fn block(&self) -> Option<Block> {
+        self.0.children().find_map(Block::cast)
     }
 }
 impl LoopLabel {

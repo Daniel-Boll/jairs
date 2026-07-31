@@ -18,9 +18,11 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after **the allocator protocol** (ADR-0062): `context.allocator` is a procedure pointer a
-program installs in one line, and a callee allocates through it without knowing which — the
-placeholder ADR-0057 left, now real. The fifth feature of **wave W3** after `null` and a memory source
+Last updated after **`push_context`** (ADR-0063): a block gets its own copy of the context, so an
+allocator a callee installs inside it is restored on exit — the isolation ADR-0057 §2 claimed but
+never had. The sixth feature of **wave W3** after the allocator protocol (ADR-0062): `context.allocator`
+is a procedure pointer a program installs in one line, and a callee allocates through it without
+knowing which — the placeholder ADR-0057 left, now real. Both on top of `null` and a memory source
 (ADR-0060/0061), indirect calls (ADR-0059), the implicit `context` (ADR-0057) and the bounds-check
 build setting (ADR-0058, which finished ADR-0003) — on top of
 imported constant values (ADR-0055) and a float-constant codegen fix (ADR-0056), `#scope_module`
@@ -32,7 +34,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 919 workspace tests; six CI gates green on macOS arm64, plus 151 Neovim
+`print_int` (ADR-0037). 919 workspace tests; six CI gates green on macOS arm64, plus 156 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do
@@ -95,7 +97,8 @@ The authoritative version of this list is
 | one trivial `#run` | arbitrary `#run`, RTTI, `#insert`, `#code` (**W4**) |
 | `#import`, `#foreign`, `#system_library` | polymorphs `$T`, `#expand` macros (**W5**) |
 | overflow traps with a source location (ADR-0002, ADR-0020) | backtraces (**W3**) |
-| `context` — a hidden parameter passed by pointer, so a callee reads what its caller wrote; `#c_call` opts out and gets none | `push_context`, so an allocator a callee installs stays installed for its caller; temporary storage (**W3**) |
+| `context` — a hidden parameter passed by pointer, so a callee reads what its caller wrote; `#c_call` opts out and gets none | temporary storage (**W3**) |
+| `push_context { … }` — a block with its own copy of the context, so a write inside it is restored on exit (ADR-0063) | — |
 | `context.allocator` / `.allocator_free` / `.allocator_data` — install an allocator, and a callee allocates through it without knowing which | a *bump* allocator, which needs pointer arithmetic; a `#foreign` procedure installed directly (wrap it) |
 
 ADR-0008 chose Jai's **error model** — several return values plus `#must` — and the first half now
@@ -324,7 +327,7 @@ ignoring the flag a compile error, is owed its own ADR. There is no GC and no RA
 - **ADR-0002's arithmetic has two implementations, not one.** `jr-pool` owns the one
   both *evaluators* share; `jr-codegen-clif` keeps its own because it emits code rather
   than evaluating. The pair is held equal by `differential.rs` and nothing else.
-- **Neovim integration is verified on one machine, not gated.** The 151 checks need an
+- **Neovim integration is verified on one machine, not gated.** The 156 checks need an
   editor, and Neovim is not a build dependency of this workspace, so `cargo test` cannot
   run them. No other editor is packaged for, deliberately (ADR-0036). They also need the
   *installed* parser to be current: `editors/nvim/build.sh` is a separate artefact from the

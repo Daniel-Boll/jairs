@@ -752,6 +752,68 @@ if has_parser then
       buf = vim.api.nvim_get_current_buf()
     end
 
+    -- `push_context` (ADR-0063). The same failure mode as `context` above, and checked the same way:
+    -- `push_context` is a legal identifier, so omitting the grammar rule would not produce an ERROR
+    -- node — it would parse as a `name_expr` followed by a stray block, and the keyword would
+    -- mis-colour as a variable while every gate stayed green. So this asserts the node type
+    -- (`push_context_stmt`), the absence of a `name_expr` reading, and the keyword highlight.
+    local pc_file = root .. "/tests/corpus/valid/051-push-context.jr"
+    if vim.uv.fs_stat(pc_file) then
+      vim.cmd.edit(vim.fn.fnameescape(pc_file))
+      local pc_buf = vim.api.nvim_get_current_buf()
+      local pc_ok, pc_parser = pcall(vim.treesitter.get_parser, pc_buf, "jairs")
+      if pc_ok and pc_parser then
+        local pc_tree = pc_parser:parse()[1]
+        check("the push_context corpus file parses with no ERROR node", not pc_tree:root():has_error())
+
+        local pc_kinds = {}
+        local function pc_walk(node)
+          pc_kinds[node:type()] = (pc_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            pc_walk(child)
+          end
+        end
+        pc_walk(pc_tree:root())
+        -- Exactly one `push_context` block is written in that file (in `main`).
+        check("`push_context` produces a push_context_stmt node", (pc_kinds.push_context_stmt or 0) == 1)
+
+        -- And `push_context` must not have been read as a name — the silent divergence the `context`
+        -- check guards against, here for the keyword introduced this wave.
+        local pc_saw_as_name = false
+        local function pc_name_walk(node)
+          if node:type() == "name_expr"
+            and vim.treesitter.get_node_text(node, pc_buf) == "push_context" then
+            pc_saw_as_name = true
+          end
+          for child in node:iter_children() do
+            pc_name_walk(child)
+          end
+        end
+        pc_name_walk(pc_tree:root())
+        check("`push_context` is not parsed as an ordinary name", not pc_saw_as_name)
+
+        local pc_query_ok, pc_query = pcall(vim.treesitter.query.get, "jairs", "highlights")
+        if pc_query_ok and pc_query then
+          local pc_kw, pc_res = false, false
+          for id, node in pc_query:iter_captures(pc_tree:root(), pc_buf, 0, -1) do
+            local capture = pc_query.captures[id]
+            local text = vim.treesitter.get_node_text(node, pc_buf)
+            if text == "push_context" then
+              if capture == "keyword" then
+                pc_kw = true
+              elseif capture == "keyword.reserved" then
+                pc_res = true
+              end
+            end
+          end
+          check("`push_context` highlights as a keyword", pc_kw)
+          check("`push_context` is not highlighted as reserved", not pc_res)
+        end
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
     -- `#no_abc` (ADR-0058 §3). Two things the drift gate cannot see.
     --
     -- The **ordering** one is why this block exists. `#c_call` and `#no_abc` are legal in either

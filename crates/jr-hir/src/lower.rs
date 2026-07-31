@@ -1106,6 +1106,17 @@ impl<'a> BodyLowerCtx<'a> {
                     .unwrap_or_else(|| self.alloc_stmt(Stmt::Error(span)));
                 self.alloc_stmt(Stmt::Defer(inner, span))
             }
+            // `push_context { … }` (ADR-0063). The body is lowered as an ordinary block — its
+            // statements resolve names and types exactly as they would outside the wrapper — and
+            // `jr-mir` is where the context copy and the pointer swap live. Holding the block rather
+            // than inlining its statements keeps the scope one identity, so the copy happens once.
+            AstStmt::PushContext(p) => {
+                let inner = p
+                    .block()
+                    .map(|b| self.lower_block(&b))
+                    .unwrap_or_else(|| self.alloc_stmt(Stmt::Error(span)));
+                self.alloc_stmt(Stmt::PushContext(inner, span))
+            }
             // `label: for …` — the label is carried *on the loop* rather than in a wrapper
             // statement, so `jr-mir`'s loop stack has it without walking outward for a parent.
             AstStmt::Labelled(l) => {

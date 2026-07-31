@@ -115,3 +115,62 @@ field became a procedure pointer.
 One thing found while implementing that was not a fork: `type-errors/` files are checked with modules
 *unresolved*, so the E0256 refusal file had to move to `imports/invalid/010` — it needs the import
 resolved to reach the case at all. The directory contract caught the misfiling.
+
+---
+
+## Wave: push_context (ADR-0063), 2026-07-31
+
+### What running first revealed (not a fork, but it decided the framing)
+
+Before choosing anything, the standing "verify by running" rule was applied to ADR-0057 §2's claim
+that a callee's context writes do not reach its caller. They **do**: a callee that sets
+`context.allocator_data = 42` leaves it 42 for a caller that set 7, in both engines. So §2's isolation
+half is false, and corpus `050` actually *relies* on the leak (`counting_alloc` accumulates into
+`allocator_data` and `main` reads the total). That reframed the wave: `push_context` is not "more"
+isolation on top of §2, it is the *only* isolation boundary, and the ADR amends §2 rather than
+building on it.
+
+### Fork 1 — which wave
+
+- Options: **`push_context` (taken, recommended)**; traps-with-backtraces; temporary storage; pointer
+  arithmetic.
+- Why: `push_context` is unblocked (it needs only the aggregate-copy and scope-exit machinery that
+  already exist), it is the ADR-0057 §6 gap that turns the just-shipped allocator into a *scoped* one,
+  and temporary storage explicitly wants it (ADR-0062 §5). Temporary storage itself is blocked on a
+  bump allocator, which is blocked on pointer arithmetic — a taller stack, worth doing after. Traps
+  -with-backtraces is independent and equally available, but `push_context` closes a gap the last two
+  waves kept naming, so it is the one that reduces the open list rather than adding a parallel track.
+
+### Fork 2 — the form of the construct
+
+- Options: **`push_context { … }` with no explicit value (taken, recommended)**; Jai's
+  `push_context <expr> { … }`; a narrower `push_allocator(a) { … }`.
+- Why: `Context` is unspellable — naming it is E0212, because it is the first compiler-declared type
+  and has no `DeclId` — so a program has no `Context` value to pass, which makes the value-taking form
+  impossible without first making `Context` nameable (not needed for the slice). `push_allocator` was
+  rejected because it bakes one field into the language, and the context grows fields; scoping the
+  whole context and writing the one field you mean inside the block generalises.
+
+### Fork 3 — the lowering mechanism
+
+- Options: **copy-plus-compile-time-pointer-swap in `jr-mir` (taken, recommended)**; a new MIR
+  statement/terminator; a runtime context stack with save/restore.
+- Why: the swap is which SSA operand `context` resolves to, so leaving the block on any path (fall
+  through, `return`, `break`, `continue`) uses the outer pointer with nothing to run — unlike `defer`,
+  there is no per-exit emission. It needs no new IR node, VM opcode or Cranelift primitive: the copy is
+  the same `Load`/`Store` of an aggregate that `b := a` already lowers. A runtime stack would
+  reintroduce the global ADR-0001 refused, and the context is a parameter, not a global.
+
+### Fork 4 — where a `defer` inside the block frees
+
+- Options: **`defer` runs against the pushed context (taken, recommended)**; against the restored
+  outer context.
+- Why: a `defer context.allocator_free(p)` inside the block should release through the same allocator
+  that allocated `p`. The block's defers are emitted on the fall-through path *before* the pointer is
+  restored — exactly where an ordinary block emits them — so the pushed context is still in scope. This
+  is the one ordering that needed deciding, and it is why restore happens after the block's own defers.
+
+### Resolution
+
+All four forks taken as recommended. ADR-0063 records them and amends ADR-0057 §2. No new diagnostic
+code: a `push_context` in a `#c_call` procedure reuses E0254 (needs a context, has none).

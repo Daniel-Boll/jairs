@@ -695,6 +695,13 @@ pub enum Stmt {
     /// Holds the deferred statement unlowered-in-place: `jr-mir` emits it before *every* terminator
     /// that leaves the enclosing scope, so the same `StmtId` is lowered once per exit path.
     Defer(StmtId, Span),
+    /// `push_context { … }` (ADR-0063) — a block whose statements run against a copy of the context.
+    ///
+    /// Holds the block statement. `jr-mir` copies the context into a fresh slot on entry, points
+    /// `context` at the copy for the block's duration, and restores the outer pointer on exit — a
+    /// lowering-time swap with no new MIR node. A separate variant rather than a flag on
+    /// [`Stmt::Block`], so every exhaustive match decides what a context scope means.
+    PushContext(StmtId, Span),
     /// Error recovery placeholder.
     Error(Span),
 }

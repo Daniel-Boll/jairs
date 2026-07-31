@@ -378,6 +378,7 @@ module.exports = grammar({
         $.while_stmt,
         $.for_stmt,
         $.defer_stmt,
+        $.push_context_stmt,
         $.return_stmt,
         $.break_stmt,
         $.continue_stmt,
@@ -454,6 +455,12 @@ module.exports = grammar({
 
     // `defer stmt;` or `defer { }` (ADR-0049 §3).
     defer_stmt: ($) => seq("defer", field("body", $._single_stmt)),
+
+    // push_context { … } (ADR-0063) — a block with its own copy of the context. The body is a
+    // braced block only, never a braceless single statement: the parser requires the braces so a
+    // context swap has a visible scope.
+    push_context_stmt: ($) =>
+      seq("push_context", field("body", $.block)),
 
     return_stmt: ($) =>
       seq(

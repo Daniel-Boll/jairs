@@ -943,6 +943,10 @@ impl<'a> ResolveCtx<'a> {
             // The deferred statement is resolved once, where it was written — `jr-mir` duplicates
             // its *lowering*, not its identity (ADR-0049 §3).
             Stmt::Defer(inner, _) => self.resolve_body_stmt(body_id, inner),
+            // A `push_context` block resolves like any block: its `context` reads and calls bind to
+            // the same names as outside the wrapper (ADR-0063). The copy that isolates them is a
+            // `jr-mir` concern, invisible to resolution.
+            Stmt::PushContext(inner, _) => self.resolve_body_stmt(body_id, inner),
             Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
         }
     }

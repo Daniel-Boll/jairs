@@ -367,6 +367,7 @@ impl Reach {
                     stmt_work.push(*inner);
                 }
                 Stmt::Defer(inner, _) => stmt_work.push(*inner),
+                Stmt::PushContext(inner, _) => stmt_work.push(*inner),
                 Stmt::Return(value, _) => {
                     if let Some(value) = value {
                         expr_work.push(*value);
@@ -481,6 +482,10 @@ fn scan(
             | Stmt::Break(_, _)
             | Stmt::Continue(_, _)
             | Stmt::For { .. }
+            // Representable: a `push_context` block lowers to an aggregate copy into a fresh slot
+            // and a compile-time swap of which pointer `context` reads — no new MIR node (ADR-0063
+            // §2), so there is nothing here to refuse.
+            | Stmt::PushContext(_, _)
             | Stmt::Defer(_, _) => {}
         }
     }
@@ -1043,6 +1048,7 @@ impl Lower<'_> {
                 label,
                 span: _,
             } => self.for_stmt(value, index, &iterable, reverse, body, label),
+            Stmt::PushContext(inner, _) => self.push_context_stmt(inner),
             // Registered, not lowered: the statements run at every *exit* from the enclosing
             // scope, so `block` emits them before each terminator that leaves (ADR-0049 §3).
             Stmt::Defer(inner, _) => self.defers.push(inner),
@@ -1054,6 +1060,53 @@ impl Lower<'_> {
             Stmt::Continue(label, _) => self.jump(false, label, id),
             Stmt::Error(_) => {}
         }
+    }
+
+    /// Lowers `push_context { body }` (ADR-0063).
+    ///
+    /// A **copy plus a compile-time pointer swap**, and no new MIR node. The current context is one
+    /// object reached by `self.context` (a `*Context`); this copies it into a fresh slot and points
+    /// `context` at the copy for the block, so a write inside the block lands in the copy and the
+    /// caller's context is untouched — which is the isolation ADR-0057 §2 claimed and did not have.
+    ///
+    /// The restore is the swap-back of `self.context`, not a runtime save/restore: because it is
+    /// *which SSA operand* later code reads, leaving the block on any path (fall through, `return`,
+    /// `break`, `continue`) resumes with the outer pointer already in place. The block's own defers
+    /// run against the copy, because `Stmt::Block` emits them before this method restores the pointer
+    /// (ADR-0063 §3) — the fall-through order that puts the copy still in scope when they run.
+    fn push_context_stmt(&mut self, inner: StmtId) {
+        // Sema refused `push_context` in a `#c_call` procedure (E0254), so `None` here would mean the
+        // two disagree — `give_up` says so rather than lowering a swap of a pointer that is not there,
+        // which is ADR-0017 §4's rule and the project's first named failure mode.
+        let Some(outer) = self.context else {
+            self.give_up("`push_context` in a procedure that receives no context");
+            return;
+        };
+
+        // The copy: load the whole `Context` aggregate through the current pointer and store it into
+        // a fresh slot. This is the identical `Load`/`Store` pair that lowers `b := a` for any
+        // aggregate, which both engines already memcpy (ADR-0039 §4a).
+        let ctx_ty = self.pool.context_type();
+        let ctx_ptr_ty = self.pool.context_pointer();
+        let span = MirSpan::Synthetic;
+        let slot = self.mir.push_slot(ctx_ty, None, span);
+        let value = self.define(ctx_ty, Rvalue::Load(Place::deref(outer)), span);
+        self.emit(Statement::Store {
+            place: Place::slot(slot),
+            value,
+            span,
+        });
+        // The block reads `context` as the address of the copy.
+        let inner_ptr = self.define(ctx_ptr_ty, Rvalue::Address(Place::slot(slot)), span);
+        self.context = Some(inner_ptr);
+
+        self.stmt(inner);
+
+        // Restore the outer context for whatever follows on the fall-through path. On a path that
+        // left the block (`self.current` is `None`), there is nothing after it in this scope, so the
+        // restore is harmless — the next statement lowered belongs to an outer scope that reads its
+        // own `self.context` value from before this block anyway.
+        self.context = Some(outer);
     }
 
     /// Lowers `return a, b;` (ADR-0052 §1).

@@ -1044,6 +1044,19 @@ impl Formatter {
                 }
                 self.newline();
             }
+            PUSH_CONTEXT_STMT => {
+                self.emit_indent();
+                self.emit("push_context ");
+                // The body is always a braced block (the parser requires it, ADR-0063 §1), so it is
+                // formatted exactly as a `while`'s block is — `format_block` for the braces and the
+                // indented statements. Emitting nothing for a missing block would drop the whole
+                // construct, which is the formatter-loses-a-statement failure the last waves keep
+                // hitting; this file has no such default, so a `BLOCK` child is found or nothing is.
+                if let Some(body) = node.children().find(|n| n.kind() == BLOCK) {
+                    self.format_block(&body);
+                }
+                self.newline();
+            }
             LOOP_LABEL => {
                 self.emit_indent();
                 if let Some(name) = node.children().find(|n| n.kind() == NAME) {
@@ -1647,6 +1660,7 @@ fn is_stmt_kind(kind: SyntaxKind) -> bool {
             | WHILE_STMT
             | FOR_STMT
             | DEFER_STMT
+            | PUSH_CONTEXT_STMT
             | LOOP_LABEL
             | RETURN_STMT
             | BREAK_STMT

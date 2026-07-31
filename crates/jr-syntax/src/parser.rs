@@ -1460,6 +1460,10 @@ impl<'src> Parser<'src> {
                 self.parse_defer_stmt();
                 true
             }
+            PUSH_CONTEXT_KW => {
+                self.parse_push_context_stmt();
+                true
+            }
             RETURN_KW => {
                 self.parse_return_stmt();
                 true
@@ -1628,6 +1632,24 @@ impl<'src> Parser<'src> {
         if !self.parse_stmt() {
             let span = self.current_span();
             self.error(span, "expected a statement after `defer`", E0127);
+        }
+        self.finish_node();
+    }
+
+    /// Parses `push_context { … }` (ADR-0063).
+    ///
+    /// The body is a **braced block**, not the braceless single statement `parse_body` also allows:
+    /// `push_context` names a scope, and a scope with no braces would be a context swap that lasts
+    /// exactly one statement, which reads as a mistake rather than an intent. Requiring the braces
+    /// makes the scope visible, and it matches Jai, whose `push_context` always takes a block.
+    fn parse_push_context_stmt(&mut self) {
+        self.start_node(PUSH_CONTEXT_STMT);
+        self.bump(); // `push_context`
+        if self.at(L_BRACE) {
+            self.parse_block();
+        } else {
+            let span = self.current_span();
+            self.error(span, "expected `{` after `push_context`", E0116);
         }
         self.finish_node();
     }

@@ -83,3 +83,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0060](0060-null-and-a-memory-source.md) | `null` is a context-typed pointer literal, and `malloc`/`free` reach libc | Accepted |
 | [0061](0061-vm-malloc-from-its-own-region.md) | The VM satisfies `malloc`/`free` from its own region (corrects ADR-0060 §4) | Accepted |
 | [0062](0062-the-allocator-protocol.md) | `context.allocator` is a struct of procedure pointers | Accepted |
+| [0063](0063-push-context.md) | `push_context` gives a block its own copy of the context (amends ADR-0057 §2) | Accepted |

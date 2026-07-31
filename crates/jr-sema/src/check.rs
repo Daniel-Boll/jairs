@@ -285,6 +285,27 @@ impl Ctx<'_> {
             // its lowering across exit paths, not its typing (ADR-0049 §3) — so a type error in a
             // `defer` is reported once rather than once per way out of the scope.
             Stmt::Defer(inner, _) => self.check_stmt(body, inner),
+            // `push_context { … }` copies the context on entry (ADR-0063), so it needs one to copy.
+            // A `#c_call` procedure has none, and this is the same refusal as `context` itself there
+            // — E0254, reused because it means exactly "this needs a context and there isn't one"
+            // (ADR-0063 §4). The message names `push_context` so the diagnostic points at what was
+            // written. The block is checked regardless, so a body error inside it is still reported.
+            Stmt::PushContext(inner, span) => {
+                if self.body_is_c_call(body) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            "`push_context` is not available in a `#c_call` procedure",
+                        )
+                        .with_code(E0254)
+                        .with_note(
+                            "a `#c_call` procedure receives no implicit context to copy (ADR-0057 §3)",
+                        )
+                        .with_help("remove the `#c_call`, or manage the resource explicitly"),
+                    );
+                }
+                self.check_stmt(body, inner);
+            }
             // A label names a *loop*, not a value, so there is nothing to type. Whether the label
             // exists is `jr-mir`'s question, because its loop stack is the only place a loop's
             // identity lives (ADR-0049 §2).
