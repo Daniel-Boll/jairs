@@ -71,16 +71,29 @@ pub fn lower_const(
     file: FileId,
     proc: ProcRef,
     root: ExprId,
+    scope: ExprScope,
     resolve: &ResolveMap,
     types: &TypeMap,
     consts: &ConstValues,
     imports: &ImportedProcs,
     pool: &mut Pool,
 ) -> Result<MirBody, Poisoned> {
-    let ret = expr_type(types, root)?;
+    // The arena `scope` names. A body's expressions live in that body, not in the file (ADR-0069 §2),
+    // and both start at index 0 — so reading the wrong one yields a different expression rather than an
+    // error, which is why the arena travels with the scope rather than being assumed.
+    let exprs: &[Expr] = match scope {
+        ExprScope::TopLevel => &hir.exprs,
+        ExprScope::Body(body) => match hir.bodies.get(body.index()) {
+            Some(b) => &b.exprs,
+            None => return Err(Poisoned::Here("a `#run` in a body that does not exist")),
+        },
+    };
+    let ret = expr_type(types, scope, root)?;
     let mut thunk = Thunk {
         hir,
         file,
+        scope,
+        exprs,
         resolve,
         types,
         consts,
@@ -101,8 +114,8 @@ pub fn lower_const(
 }
 
 /// The type sema gave a file-level expression.
-fn expr_type(types: &TypeMap, expr: ExprId) -> Result<PoolId, Poisoned> {
-    match types.expr_type(ExprScope::TopLevel, expr) {
+fn expr_type(types: &TypeMap, scope: ExprScope, expr: ExprId) -> Result<PoolId, Poisoned> {
+    match types.expr_type(scope, expr) {
         None => Err(Poisoned::Here("a file-level expression was never typed")),
         Some(PoolId::ERROR) => Err(Poisoned::Here("a file-level expression has an error type")),
         Some(ty) => Ok(ty),
@@ -117,18 +130,26 @@ fn expr_type(types: &TypeMap, expr: ExprId) -> Result<PoolId, Poisoned> {
 /// the VM ran uninlined, `PLAN.md` §3.1's invariant would hold only as far as the
 /// inliner is correct. Freezing them makes it hold by construction.
 ///
-/// # Why it walks the whole arena instead of finding the roots
+/// # Why the file arena is walked whole and a body's is not
 ///
 /// `FileHir::exprs` is the file-level expression arena and nothing else — a
 /// procedure body's expressions live in its own `Body::exprs`, which is the
-/// distinction [`ExprScope`] exists to make. So every expression a thunk could ever
-/// be built from is in here, and walking all of it cannot miss a root.
+/// distinction [`ExprScope`] exists to make. So every expression a *file-level* thunk
+/// could be built from is in there, and walking all of it cannot miss a root while
+/// costing "a procedure or two of missed inlining".
+///
+/// **That argument does not transfer to a body** (ADR-0069 §2). A body's arena holds
+/// every expression in the body, not just the comptime-reachable ones, so the same
+/// whole-arena walk froze almost every procedure in the program — it disabled the
+/// bounds-check strip and two `optimized_mir` tests failed immediately. So a body's
+/// roots are found first (its `Expr::Run`s) and only their subtrees are walked, with
+/// `child_exprs` exhaustive so a new `Expr` variant is a compile error rather than a
+/// subtree silently not walked.
 ///
 /// The alternative was to mirror `file_consts`' own notion of what wants
 /// evaluating. That is narrower and it is *drift waiting to happen*: the two would
 /// have to be changed together forever, and the failure mode of forgetting is a
-/// body that comptime runs and the inliner rewrote. Over-approximating here costs a
-/// procedure or two of missed inlining and cannot be unsound.
+/// body that comptime runs and the inliner rewrote.
 ///
 /// This is intentionally the direct callees only. The transitive closure needs
 /// callee *bodies*, which is a cross-body read and therefore the optimized query's
@@ -147,10 +168,64 @@ pub fn const_callees(
         };
         // Resolution failures are simply skipped: a call a thunk cannot resolve is
         // one it refuses to lower, so comptime never runs it either.
-        if let Ok(target) = resolve_callee(hir, file, resolve, imports, *callee)
-            && !out.contains(&target)
+        if let Ok(target) = resolve_callee(
+            hir,
+            file,
+            ExprScope::TopLevel,
+            &hir.exprs,
+            resolve,
+            imports,
+            *callee,
+        ) && !out.contains(&target)
         {
             out.push(target);
+        }
+    }
+    // **And every call inside a body**, because a `#run` may now live in one (ADR-0069 §2). Missing this
+    // would let the inliner rewrite a body that comptime calls, which is exactly the hazard ADR-0021 §2
+    // wrote this function to prevent — and it would be *silent*, since the inlined body is still
+    // correct at run time and only the comptime result would differ.
+    //
+    // Over-approximating deliberately, as the docs above argue: every call in every body, not only those
+    // a `#run` reaches. The cost is a procedure or two of missed inlining and it cannot be unsound.
+    for (index, body) in hir.bodies.iter().enumerate() {
+        let scope = ExprScope::Body(jr_hir::BodyId::from_usize(index));
+        // **Only the calls a `#run` can reach**, not every call in the body — and this is the one place
+        // the whole-arena argument above does *not* transfer. A file-level arena holds only file-level
+        // expressions, so walking all of it costs "a procedure or two of missed inlining". A *body's*
+        // arena holds every expression in that body, so the same walk froze almost every procedure in
+        // the program: it disabled the bounds-check strip and two optimized-MIR tests said so
+        // immediately.
+        //
+        // So the roots are found first — the `#run` expressions — and only their subtrees are walked.
+        for (run_index, run) in body.exprs.iter().enumerate() {
+            if !matches!(run, Expr::Run(_, _)) {
+                continue;
+            }
+            let mut work = vec![ExprId::from_usize(run_index)];
+            let mut seen = vec![false; body.exprs.len()];
+            while let Some(id) = work.pop() {
+                let Some(slot) = seen.get_mut(id.index()) else {
+                    continue;
+                };
+                if *slot {
+                    continue;
+                }
+                *slot = true;
+                let Some(expr) = body.exprs.get(id.index()) else {
+                    continue;
+                };
+                if let Expr::Call { callee, args, .. } = expr {
+                    if let Ok(target) =
+                        resolve_callee(hir, file, scope, &body.exprs, resolve, imports, *callee)
+                        && !out.contains(&target)
+                    {
+                        out.push(target);
+                    }
+                    work.extend(args.iter().copied());
+                }
+                work.extend(child_exprs(expr));
+            }
         }
     }
     out
@@ -168,19 +243,25 @@ pub fn const_callees(
 fn resolve_callee(
     hir: &FileHir,
     file: FileId,
+    scope: ExprScope,
+    exprs: &[Expr],
     resolve: &ResolveMap,
     imports: &ImportedProcs,
     callee: ExprId,
 ) -> Result<ProcRef, Poisoned> {
+    // Read from the arena `scope` names, not from the file's: a `#run` inside a body has its callee
+    // expression in *that body* (ADR-0069 §2), and both arenas start at index 0 — so reading the file's
+    // found a different expression and reported "a file-level call has no named callee" for a perfectly
+    // good call.
     let Some(Expr::Name {
         name: _,
         span: _,
         res,
-    }) = hir.exprs.get(callee.index()).cloned()
+    }) = exprs.get(callee.index()).cloned()
     else {
-        return Err(Poisoned::Here("a file-level call has no named callee"));
+        return Err(Poisoned::Here("a `#run` call has no named callee"));
     };
-    let res = resolve.get(ExprScope::TopLevel, callee).unwrap_or(res);
+    let res = resolve.get(scope, callee).unwrap_or(res);
     match res {
         Res::Item(item) => {
             let ItemKind::Const {
@@ -212,6 +293,15 @@ fn resolve_callee(
 struct Thunk<'a> {
     hir: &'a FileHir,
     file: FileId,
+    /// Which expression arena `exprs` is, so every map lookup keys on the right one.
+    ///
+    /// A `#run` at file scope and one inside a body index **different arenas that both start at 0**
+    /// (ADR-0069 §2), so a `TypeMap` or `ResolveMap` lookup with the wrong scope silently answers about
+    /// a different expression. This was `ExprScope::TopLevel` in six hardwired places before a body
+    /// `#run` existed.
+    scope: ExprScope,
+    /// The arena `scope` names — the file's for a constant, a body's for a `#run` inside one.
+    exprs: &'a [Expr],
     resolve: &'a ResolveMap,
     types: &'a TypeMap,
     consts: &'a ConstValues,
@@ -222,7 +312,7 @@ struct Thunk<'a> {
 
 impl Thunk<'_> {
     fn define(&mut self, ty: PoolId, rvalue: Rvalue, expr: ExprId) -> Operand {
-        let span = MirSpan::Expr(ExprScope::TopLevel, expr);
+        let span = MirSpan::Expr(self.scope, expr);
         let dest = self.mir.push_value(ty, span);
         let entry = self.mir.entry();
         self.mir
@@ -232,9 +322,8 @@ impl Thunk<'_> {
     }
 
     fn expr(&mut self, id: ExprId) -> Result<Operand, Poisoned> {
-        let ty = expr_type(self.types, id)?;
+        let ty = expr_type(self.types, self.scope, id)?;
         let node = self
-            .hir
             .exprs
             .get(id.index())
             .ok_or(Poisoned::Here("a file-level expression is missing"))?
@@ -246,7 +335,7 @@ impl Thunk<'_> {
             // A `#run` whose value is already known folds to it; otherwise evaluating
             // the `#run` *is* evaluating its inner expression, which is what makes a
             // thunk for `COMPUTED :: #run add(2, 3)` compute `add(2, 3)`.
-            Expr::Run(inner, _) => match self.consts.run(ExprScope::TopLevel, id) {
+            Expr::Run(inner, _) => match self.consts.run(self.scope, id) {
                 Some(value) => Ok(Operand::Constant(value)),
                 None => self.expr(inner),
             },
@@ -256,7 +345,7 @@ impl Thunk<'_> {
                 span: _,
                 res,
             } => {
-                let res = self.resolve.get(ExprScope::TopLevel, id).unwrap_or(res);
+                let res = self.resolve.get(self.scope, id).unwrap_or(res);
                 match res {
                     Res::Item(item) => self
                         .consts
@@ -303,7 +392,7 @@ impl Thunk<'_> {
                 operand,
                 span: _,
             } => {
-                let from_ty = expr_type(self.types, operand)?;
+                let from_ty = expr_type(self.types, self.scope, operand)?;
                 let from = crate::mir::NumKind::of(self.pool, from_ty).ok_or(Poisoned::Here(
                     "a cast from a type comptime evaluation cannot reduce to a number",
                 ))?;
@@ -333,6 +422,21 @@ impl Thunk<'_> {
                     let ptr_ty = self.pool.context_pointer();
                     let address = self.define(ptr_ty, Rvalue::Address(Place::slot(slot)), id);
                     operands.push(address);
+                }
+                // **The written arguments must be all of them.** Const-eval runs before the check phase
+                // that fills defaults and reorders named arguments (`consts.rs` argues why, ADR-0018
+                // §3), so a call that omits a defaulted argument arrives here one operand short. Left
+                // unchecked it built a short call and the *interpreter* reported
+                // "internal compiler error: called a procedure taking 3 arguments with 2" — compiler
+                // internals shown for a program whose only fault is a construct const-eval does not
+                // support yet (ADR-0069 §3). Refused here, where the reason can be said plainly.
+                if let Some(declared) = self.declared_param_count(target)
+                    && declared != args.len()
+                {
+                    return Err(Poisoned::Here(
+                        "a `#run` call must pass every argument: a default or named argument needs the \
+                         check phase, which has not run yet",
+                    ));
                 }
                 for arg in &args {
                     operands.push(self.expr(*arg)?);
@@ -420,16 +524,83 @@ impl Thunk<'_> {
     /// same file — so its `c_call`/`foreign` flags are in this HIR, the same two `jr-mir`'s lowering
     /// reads. A cross-file comptime call is refused elsewhere, so `false` for one is harmless.
     fn callee_receives_context(&self, target: ProcRef) -> bool {
-        target.file == self.file
-            && self
+        // A same-file callee is asked of this file's HIR; an **imported** one is asked of
+        // `ImportedProcs`, which records the flag for exactly this reason — the callee's
+        // `#c_call`/`#foreign` status is in its *own* file's HIR, which lowering does not have
+        // (ADR-0057 §3, and `ImportedProc::receives_context`'s own docs).
+        //
+        // **The `target.file == self.file` gate used to be the whole answer**, which was correct only
+        // while a cross-file `#run` was impossible: an imported callee answered `false`, so no context
+        // was passed and the interpreter reported "called a procedure taking 2 arguments with 1". A
+        // silent argument-count mismatch, and the reason ADR-0069 §1 could not stop at putting the
+        // bytecode in the program.
+        if target.file == self.file {
+            return self
                 .hir
                 .procs
                 .get(target.proc.index())
-                .is_some_and(|p| !(p.c_call || p.foreign.is_some()))
+                .is_some_and(|p| !(p.c_call || p.foreign.is_some()));
+        }
+        self.imports.receives_context(target)
+    }
+
+    /// How many parameters `target` declares, for the arity check above.
+    ///
+    /// `None` for a procedure in another file: its parameter list is in its own HIR, which this crate
+    /// does not have (the same limit `ImportedProc::receives_context` exists to work around). A
+    /// cross-file call therefore keeps the old behaviour — the interpreter's arity error — rather than a
+    /// wrong refusal, which is the safe direction.
+    fn declared_param_count(&self, target: ProcRef) -> Option<usize> {
+        (target.file == self.file)
+            .then(|| self.hir.procs.get(target.proc.index()))
+            .flatten()
+            .map(|proc| proc.params.len())
     }
 
     fn callee(&mut self, callee: ExprId) -> Result<ProcRef, Poisoned> {
-        resolve_callee(self.hir, self.file, self.resolve, self.imports, callee)
+        resolve_callee(
+            self.hir,
+            self.file,
+            self.scope,
+            self.exprs,
+            self.resolve,
+            self.imports,
+            callee,
+        )
+    }
+}
+
+/// Every expression one expression directly contains (ADR-0069 §2).
+///
+/// Used to walk a `#run`'s subtree inside a body without walking the whole body — see
+/// [`const_callees`] for why the difference matters. **Exhaustive**, so a new `Expr` variant is a
+/// compile error here rather than a subtree silently not walked, which would leave a comptime-called
+/// body unfrozen and let the inliner rewrite it (ADR-0021 §2's hazard).
+///
+/// A call's *arguments* are handled by the caller, which also needs the callee separately.
+fn child_exprs(expr: &Expr) -> Vec<ExprId> {
+    match expr {
+        Expr::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
+        Expr::Unary { operand, .. } | Expr::Autocast { operand, .. } => vec![*operand],
+        Expr::Cast { operand, .. } => vec![*operand],
+        Expr::Run(inner, _) => vec![*inner],
+        Expr::Field { receiver, .. } => vec![*receiver],
+        Expr::Index { base, index, .. } => vec![*base, *index],
+        Expr::Slice { base, .. } => vec![*base],
+        Expr::Deref(inner, _) => vec![*inner],
+        Expr::Call { callee, args, .. } => {
+            let mut out = vec![*callee];
+            out.extend(args.iter().copied());
+            out
+        }
+        // Leaves: nothing to walk into.
+        Expr::Literal(_, _)
+        | Expr::Name { .. }
+        | Expr::Member { .. }
+        | Expr::Context(_)
+        | Expr::Uninit(_)
+        | Expr::Directive { .. }
+        | Expr::Error(_) => Vec::new(),
     }
 }
 

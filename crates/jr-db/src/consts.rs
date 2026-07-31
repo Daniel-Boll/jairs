@@ -46,6 +46,33 @@ use jr_mir::{ConstValues, ImportedProcs, Poisoned};
 use jr_pool::{Pool, PoolId};
 use jr_vm::{Mode, Routine, Value, Vm, VmError};
 
+/// One imported file's front end, for the comptime program (ADR-0069 §1).
+///
+/// **The MIR is not here, and that is the whole point.** The first attempt held an `Arc<FileMir>` from
+/// `file_mir`, which salsa rejected outright with a dependency-graph cycle:
+///
+/// ```text
+/// file_consts(A) -> file_mir(B) -> imported_values(B) -> file_consts(A)
+/// ```
+///
+/// because `file_mir` folds *imported constants*, which needs the importer's `file_consts`. So this
+/// carries the inputs and the MIR is lowered here instead, with the same empty
+/// `ImportedValues`/`OperatorCalls`/`FilledArgs` this module already passes for its own file — which is
+/// the honest position: const-eval runs before the check phase that fills those, for the importer and
+/// the imported file alike (ADR-0018 §3).
+///
+/// ADR-0069 §1's claim that supplying routines "adds no dependency that was not already there" was
+/// therefore *wrong about `file_mir`* and right about the principle: `imported_procs` and `checked` are
+/// already called from here, and lowering from them introduces nothing new.
+struct ModuleFrontend {
+    id: jr_base::FileId,
+    hir: Arc<FileHir>,
+    resolve: Arc<jr_hir::ResolveMap>,
+    types: Arc<jr_sema::TypeMap>,
+    signatures: Arc<jr_sema::FileSignatures>,
+    imports: Arc<ImportedProcs>,
+}
+
 use crate::{
     Db, SourceFile,
     mir::imported_procs,
@@ -94,18 +121,35 @@ enum Wanted {
     /// A bare top-level `#run f();`, run for its effects. It has no name to key on,
     /// so its value is keyed by the expression.
     Run(ItemId, ExprId),
+    /// A `#run` inside a procedure body (ADR-0069 §2), keyed by the body and the expression.
+    ///
+    /// Its own variant rather than a `Run` with a scope field, so that every match over `Wanted` is
+    /// forced to decide which arena an expression belongs to — a body's expressions and the file's both
+    /// start at index 0, so confusing them reads a different expression rather than failing.
+    ///
+    /// The `ItemId` is the *procedure's* item, used only to place a diagnostic: a body `#run` has no
+    /// item of its own.
+    BodyRun(ItemId, jr_hir::BodyId, ExprId),
 }
 
 impl Wanted {
     const fn expr(self) -> ExprId {
         match self {
-            Self::Item(_, expr) | Self::Run(_, expr) => expr,
+            Self::Item(_, expr) | Self::Run(_, expr) | Self::BodyRun(_, _, expr) => expr,
         }
     }
 
     const fn item(self) -> ItemId {
         match self {
-            Self::Item(item, _) | Self::Run(item, _) => item,
+            Self::Item(item, _) | Self::Run(item, _) | Self::BodyRun(item, _, _) => item,
+        }
+    }
+
+    /// Which expression arena [`Wanted::expr`] indexes (ADR-0069 §2).
+    const fn scope(self) -> ExprScope {
+        match self {
+            Self::Item(_, _) | Self::Run(_, _) => ExprScope::TopLevel,
+            Self::BodyRun(_, body, _) => ExprScope::Body(body),
         }
     }
 }
@@ -136,6 +180,29 @@ fn wanted(hir: &FileHir) -> Vec<Wanted> {
             }
             ItemKind::Run { expr } => out.push(Wanted::Run(id, *expr)),
             ItemKind::Const { .. } | ItemKind::Var { .. } | ItemKind::Import { .. } => {}
+        }
+    }
+    // Then every `#run` inside a body (ADR-0069 §2). Collected in the same query as the file-scope ones
+    // so there is **one** round-robin and one cycle detector: two places evaluating `#run` would be two
+    // chances to disagree about what a `#run` means.
+    for (index, item) in hir.items.iter().enumerate() {
+        let id = ItemId::from_usize(index);
+        let ItemKind::Const {
+            value: ConstValue::Proc(proc),
+        } = &item.kind
+        else {
+            continue;
+        };
+        let Some(body_id) = hir.procs.get(proc.index()).and_then(|p| p.body) else {
+            continue;
+        };
+        let Some(body) = hir.bodies.get(body_id.index()) else {
+            continue;
+        };
+        for (expr_index, expr) in body.exprs.iter().enumerate() {
+            if matches!(expr, jr_hir::Expr::Run(_, _)) {
+                out.push(Wanted::BodyRun(id, body_id, ExprId::from_usize(expr_index)));
+            }
         }
     }
     out
@@ -183,6 +250,37 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     let imports = imported_procs(db, file, search_paths);
     let file_id = crate::queries::resolve_file_id(db, file);
     let interner = db.interner();
+
+    // **Every other reachable file's compiled form**, so a `#run` calling an imported procedure has
+    // that procedure's bytecode (ADR-0069 §1). Without it the interpreter reported
+    // `internal compiler error: no routine for file N proc M` — compiler internals shown to a user who
+    // wrote a reasonable program.
+    //
+    // This is **not** the cross-file dependency this module refuses below: that refusal is about reading
+    // another file's constant *values* (`ImportedValues` stays empty, and the argument is at the
+    // `lower_file` call). A routine is not a value, and `imported_procs` already resolves cross-file
+    // procedures for the ordinary runtime path — so this supplies code for a call sema already agreed
+    // exists, and adds no dependency that was not already there.
+    //
+    // Gathered before the pool is locked, because the lock must never be held across a nested query
+    // call — the same rule `build` and `run_main` follow.
+    let mut modules = Vec::new();
+    for other in crate::run::reachable_files(db, file, search_paths) {
+        if other == file {
+            continue;
+        }
+        if frontend_diagnostics(db, other, search_paths).has_errors() {
+            continue;
+        }
+        modules.push(ModuleFrontend {
+            id: crate::queries::resolve_file_id(db, other),
+            hir: file_hir(db, other),
+            resolve: resolved(db, other, search_paths).map,
+            types: checked(db, other, search_paths).types,
+            signatures: crate::sema::file_signatures(db, other, search_paths).signatures,
+            imports: imported_procs(db, other, search_paths),
+        });
+    }
 
     let mut pool = crate::sema::lock_pool(db);
     let mut values = ConstValues::new();
@@ -250,6 +348,8 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
                 signatures.signatures.as_ref(),
                 imports.as_ref(),
                 &values,
+                &modules,
+                interner,
                 &mut pool,
             ) {
                 Ok(value) => {
@@ -294,6 +394,7 @@ fn known(values: &ConstValues, target: Wanted) -> bool {
     match target {
         Wanted::Item(item, _) => values.item(item).is_some(),
         Wanted::Run(_, expr) => values.run(ExprScope::TopLevel, expr).is_some(),
+        Wanted::BodyRun(_, body, expr) => values.run(ExprScope::Body(body), expr).is_some(),
     }
 }
 
@@ -306,6 +407,7 @@ fn record(values: &mut ConstValues, target: Wanted, value: PoolId) {
             values.set_run(ExprScope::TopLevel, expr, value);
         }
         Wanted::Run(_, expr) => values.set_run(ExprScope::TopLevel, expr, value),
+        Wanted::BodyRun(_, body, expr) => values.set_run(ExprScope::Body(body), expr, value),
     }
 }
 
@@ -328,6 +430,8 @@ fn evaluate(
     signatures: &jr_sema::FileSignatures,
     imports: &ImportedProcs,
     values: &ConstValues,
+    modules: &[ModuleFrontend],
+    interner: &jr_base::Interner,
     pool: &mut Pool,
 ) -> Result<PoolId, String> {
     let thunk_proc = jr_mir::thunk_ref(hir, file_id, target.expr().index());
@@ -336,6 +440,7 @@ fn evaluate(
         file_id,
         thunk_proc,
         target.expr(),
+        target.scope(),
         resolve,
         types,
         values,
@@ -348,12 +453,40 @@ fn evaluate(
     })?;
 
     let ty = types
-        .expr_type(ExprScope::TopLevel, target.expr())
+        .expr_type(target.scope(), target.expr())
         .ok_or_else(|| "the expression was never typed".to_owned())?;
 
     let mut program = jr_vm::comptime_program();
     jr_vm::add_file(&mut program, file_id, hir, mir, signatures, pool)
         .map_err(|e: VmError| e.to_string())?;
+    // Then every imported file, so a cross-file call resolves (ADR-0069 §1). Lowered here rather than
+    // taken from `file_mir`, for the cycle reason `ModuleFrontend` documents — and with the same empty
+    // maps this module passes for its own file, so an imported callee is subject to exactly the same
+    // const-eval restrictions as a local one.
+    for module in modules {
+        let module_mir = jr_mir::lower_file(
+            module.hir.as_ref(),
+            module.resolve.as_ref(),
+            module.types.as_ref(),
+            module.signatures.as_ref(),
+            &ConstValues::new(),
+            module.imports.as_ref(),
+            &jr_mir::ImportedValues::new(),
+            &jr_mir::OperatorCalls::new(),
+            &jr_mir::FilledArgs::new(),
+            interner,
+            pool,
+        );
+        jr_vm::add_file(
+            &mut program,
+            module.id,
+            module.hir.as_ref(),
+            &module_mir,
+            module.signatures.as_ref(),
+            pool,
+        )
+        .map_err(|e: VmError| e.to_string())?;
+    }
     program.insert(Routine::Bytecode(
         jr_vm::compile(&body, pool, program.target()).map_err(|e: VmError| e.to_string())?,
     ));

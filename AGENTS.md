@@ -68,7 +68,7 @@ cd tree-sitter-jairs && npx --yes tree-sitter-cli@0.26.11 generate \
 ```
 
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
-visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928.
+visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930.
 
 ## House style
 

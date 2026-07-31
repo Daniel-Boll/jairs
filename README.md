@@ -18,8 +18,12 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after **`variant`, a tagged union with a checked read** (ADR-0068), which **completes wave
-W4.5 — Pattern matching**: a write sets the tag, reading a different case *traps* instead of
+Last updated after **`#run` across files and in a body** (ADR-0069), which **opens wave W4 — Comptime**,
+the wave PLAN §5 calls the project's top risk and which is therefore delivered in sub-waves. A `#run` may
+now call an imported procedure — the first time this compiler executes a library procedure *while
+compiling* — and appear inside a procedure body, where the body receives the computed value. Two internal
+compiler errors became actionable messages in the process. On top of `variant`, a tagged union with a
+checked read (ADR-0068), which **completed wave W4.5 — Pattern matching**: a write sets the tag, reading a different case *traps* instead of
 reinterpreting bits, and `switch` destructures it by case. `union` is untouched and still reinterprets,
 which is what makes the variant's check a choice rather than a language-wide cost. On top of `switch`
 with exhaustiveness checking (ADR-0067), which **opened W4.5 a wave earlier than planned**: PLAN placed
@@ -48,7 +52,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 928 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
+`print_int` (ADR-0037). 930 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do
@@ -64,7 +68,7 @@ checks that are verified rather than gated.
 | Measure language-server latency | `jr bench file.jr` | Reports min/median/p95 cold, warm and after an edit. **Reports, never judges** — no threshold, not a gate (ADR-0033) |
 | Print a number | `print_int(n)` from `modules/Basic` | Written in Jairs, and still recursive — both the `[N]u8` buffer and the `[]u8` view it wanted now exist, so nothing in the language is missing; converting it is its own change. Traps on the most negative `s64`, which cannot be negated (ADR-0002) |
 | Call libc from Jairs | `#foreign` / `#system_library` | Through libffi at run time (refused at comptime, ADR-0006). `modules/Basic` binds `write`, `exit`, `malloc`, `free`; the VM satisfies `malloc`/`free` from its own region (ADR-0061) so a pointer round-trips there too |
-| Fold a compile-time call | `COMPUTED :: #run add(2, 3)` | One *trivial* `#run`: a call or a constant expression, same file only |
+| Fold a compile-time call | `COMPUTED :: #run add(2, 3)`, or `n := #run add(2, 3)` in a body | Nested calls, arithmetic around a call, a loop in the callee and an **imported** callee all work (ADR-0069). Still refused: a `#foreign` call (ADR-0006), an operator overload, a default or named argument, and reading another file's constant — all because const-eval precedes the check phase |
 | Import a module | `#import "Basic";` | One module = one file, flat imports, cycles legal. Procedures, types, enum members and **constants' values** all cross the boundary; an imported struct's *fields* do not, so `using` on one is refused. `#scope_module` hides a declaration from importers, and `modules/Basic` uses it for its own internals |
 | Edit in Neovim, with highlighting, diagnostics, hover, goto-definition, completion, rename, code actions, signature help and inlay hints | `editors/nvim/` | Two lines in `init.lua` and one build script; no plugin manager. Neovim **0.11+** — every capability is on a stock 0.11 default binding (`K`, `gd`, `gra`, `grn`, `grr`, `gO`, `<C-s>`), so there are no keymaps to add. Works on a standalone `.jr` file too, not only inside a checkout. See [`editors/nvim/README.md`](editors/nvim/README.md) |
 | Use any other LSP editor | `jr lsp` | Speaks LSP 3.17 over stdio. The repository packages for Neovim only and **will not ship a VS Code extension** (ADR-0036) — point your client at the command yourself |
@@ -110,7 +114,7 @@ The authoritative version of this list is
 | integer literals (dec/hex/bin/oct, `_`), string literals + escapes | |
 | float literals: `1.5`, `1e9`, `1.5e-3`, `1_000.5` | float *printing* — `print_int` has no counterpart |
 | nesting block comments; `///` and `//!` doc comments, shown on hover | doc generation (`jr doc`) — nothing consumes docs but the language server |
-| one trivial `#run` | arbitrary `#run`, RTTI, `#insert`, `#code` (**W4**) |
+| `#run` at file scope or in a body, calling local or **imported** procedures, with loops and nested calls | RTTI, `#insert`, `#code`; folding a `#run` result into the arithmetic around it (**W4**, in sub-waves) |
 | `#import`, `#foreign`, `#system_library` | polymorphs `$T`, `#expand` macros (**W5**) |
 | overflow traps with a source location (ADR-0002, ADR-0020), and a **call chain** of the frames that were live (ADR-0066) | a per-frame line number; inlined frames, which have no runtime existence |
 | `context` — a hidden parameter passed by pointer, so a callee reads what its caller wrote; `#c_call` opts out and gets none | — |

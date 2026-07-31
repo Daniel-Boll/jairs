@@ -94,19 +94,19 @@
 #v(0.4em)
 #pill[6/6 gates green]
 #h(4pt)
-#pill[928 tests]
+#pill[930 tests]
 #h(4pt)
-#pill[ADR-0068 latest]
+#pill[ADR-0069 latest]
 #h(4pt)
-#pill(fill: rgb("#e8f5ec"), stroke: good)[W4.5 complete · W4 comptime next]
+#pill(fill: rgb("#fdf2e6"), stroke: warn)[W4 open · sub-wave 1 of 4 done]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "928", "workspace, all passing"),
-  metric("Corpus", "155", "jr files, both engines"),
-  metric("ADRs", "68", "0001 to 0068, immutable"),
+  metric("Tests", "930", "workspace, all passing"),
+  metric("Corpus", "157", "jr files, both engines"),
+  metric("ADRs", "69", "0001 to 0069, immutable"),
   metric("Diagnostics", "91", "codes, E0261 next free"),
   metric("Editor checks", "166", "Neovim, verified not gated"),
 )
@@ -151,16 +151,16 @@
         itself.
       ]
     - #text(size: 7.4pt)[
-        *A new enum variant only asks the question; answering it is still manual.* `AggregateKind` and
-        `TagCheck` each turned every match site into a compile error, which is what *found* the sites —
-        but a compile error only asks "which group does this belong to", and this wave answered two of
-        them wrongly. Both were silent: DCE deleted a variant's stores, and the slot-liveness collector
-        panicked. Running found them; no verifier would have.
+        *A handoff can undersell as well as oversell.* §7 said for waves that the compiler had "one
+        trivial `#run`: a call or a constant expression, same file only". Nested calls, arithmetic around
+        a call and a loop in the callee all already worked — two of those three qualifiers were false, and
+        typing three programs is what showed it.
       ]
     - #text(size: 7.4pt, fill: warn)[
-        *The formatter destroyed a declaration, again.* A two-way `if` whose `else` meant "struct" turned
-        every `variant` into a `struct` — the exact mistake that function's own docs already warned about
-        for `enum_flags`, made again one form later. Thirteenth wave in fifteen.
+        *A test naming an unimplemented thing has a one-wave shelf life.* The refused-body test has now
+        had its construct replaced twice, both times because the wave after it implemented the gap it
+        named. It uses something refused *by design* now. And one of this wave's own new tests passed
+        vacuously until it was teeth-checked.
       ]
   ],
 )
@@ -185,7 +185,7 @@
   ("switch with exhaustiveness checking over an enum; else", "patterns, ranges, guards; a jump table"),
   ("Multiple returns, named args, literal defaults", "#must; a multi-result call in a return"),
   ("import, foreign, system_library, #scope_module", "polymorphs, macros (W5)"),
-  ("One trivial compile-time run, folded", "arbitrary run, RTTI, insert (W4)"),
+  ("Compile-time run at file scope or in a body, across files", "RTTI, insert, Code; folding into surrounding arithmetic"),
   ("Traps name their source line and the live call chain", "a per-frame line; inlined frames (none exist)"),
   ("Bounds checks, strippable by build setting or #no_abc", "a per-index #no_abc; any other build setting"),
   ("context, a hidden parameter passed by pointer", ""),
@@ -286,8 +286,8 @@
     "context (ADR-0057), the bounds-check build setting (ADR-0058, finishing ADR-0003), indirect calls (ADR-0059), null plus a memory source (ADR-0060/0061), the allocator protocol (ADR-0062), push_context (ADR-0063), pointer arithmetic (ADR-0064), temporary storage (ADR-0065), and traps with backtraces (ADR-0066) — a trap names the frames that were live, byte-identically in both engines. Closed by ADR-0066; a source-level backtrace with inlined frames is deferred, because inlined frames have no runtime existence.",
   ),
   (
-    "W4 Comptime", "not started",
-    "Arbitrary compile-time execution, RTTI and Type values, insert, code. PLAN section 5 names this the project's top risk: sema and comptime become mutually recursive.",
+    "W4 Comptime", "in progress",
+    "Delivered in sub-waves, because a 10-14 week wave cannot be verified the way a one-ADR wave can. Sub-wave 1 is done (ADR-0069): a #run may call an imported procedure and appear in a body, which turned two internal compiler errors into working programs. Remaining: aggressive const folding, then RTTI and Type values, then insert and Code. PLAN section 5 names this the project's top risk — sema and comptime become mutually recursive.",
   ),
   (
     "W4.5 Pattern matching", "done",
@@ -345,21 +345,21 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[Twenty waves shipped]
+    #sub[Twenty-one waves shipped]
     #text(size: 7.4pt)[
-      ADR-0049 through 0068: for and defer, using, aggregate returns, multiple returns, named and
+      ADR-0049 through 0069: for and defer, using, aggregate returns, multiple returns, named and
       default arguments, scope visibility, imported constants, float constants, context, the
       bounds-check build setting, indirect calls, null plus a memory source, the allocator
-      protocol, push_context, pointer arithmetic, temporary storage, trap backtraces, switch, and
-      tagged variants.
+      protocol, push_context, pointer arithmetic, temporary storage, trap backtraces, switch,
+      tagged variants, and compile-time run across files and in a body.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 928. Corpus 116 to 155 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
-      closed* — W4.5 a wave early, because its stated dependency on comptime turned out not to exist. A
-      switch over an enum or a tagged variant is exhaustiveness-checked, and a wrong-case read traps.
-      What remains is W4 — comptime, the project's top risk.
+      Test count 900 to 930. Corpus 116 to 157 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
+      closed* — W4.5 a wave early, because its stated dependency on comptime turned out not to exist —
+      and *W4 is open*, delivered in sub-waves with the first done: a `#run` now reaches across files and
+      into a body. Remaining there: const folding, RTTI, and insert.
     ]
 
     #v(0.3em)

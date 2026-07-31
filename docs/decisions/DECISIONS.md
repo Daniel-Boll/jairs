@@ -498,3 +498,82 @@ interesting part of the diff, which the ADR says so a reviewer reads its shape r
   (ADR-0046's "the context supplies what the source omits"), so accepting a *variant* there is a smaller
   change than a new resolution rule — and it makes `case .i` read exactly like an enum switch's
   `case .RED`. ADR-0068 §5 is corrected to record this rather than left describing a form that fails.
+
+---
+
+## Wave: `#run` across files and in a body (ADR-0069), 2026-07-31 — W4 sub-wave 1
+
+### What running first established, and what it corrected
+
+§7 has said for waves that the compiler has "one *trivial* `#run`: a call or a constant expression, same
+file only". Running it showed **two of those three qualifiers were wrong**: nested calls
+(`#run add(add(1,2),3)`), arithmetic around a call (`#run add(1,2) * 10`) and a `while` loop in the
+callee (`#run sum(5)`) all already evaluate. The handoff was *underselling* the compiler — the mirror of
+the rot §7 warns about, and worth correcting in the same breath, because a handoff that undersells is as
+untrustworthy as one that oversells.
+
+Two things genuinely do not work, and the first is worse than an absence: a `#run` calling an *imported*
+procedure reports `internal compiler error: no routine for file 1 proc 11` — compiler internals shown to
+a user who wrote a reasonable program. The cause is one line: `file_consts` calls `add_file` for the file
+being evaluated and no other. The second: a `#run` in a *body* does not lower at all.
+
+### Fork 1 — how to take on W4 at all
+
+- Options: **split it into four sub-waves, each its own ADR and each shippable (taken, recommended)**;
+  attempt the wave whole; reorder W4 behind W5.
+- Why: every other wave here has been one ADR and one branch. A 10–14 week wave attempted whole cannot be
+  verified the way the others were — the handoff at the end would be a claim nobody could re-run in a
+  sitting, which is precisely how §7 "rots toward *what remains is small*". The sub-waves are numbered so
+  a later one can be reordered on evidence (as ADR-0067 §0 reordered W4.5), not as a commitment.
+
+### Fork 2 — the cross-file ICE
+
+- Options: **add every reachable file's bytecode to the comptime program (taken, recommended)**; refuse
+  cross-file `#run` with a new actionable diagnostic; leave it.
+- Why: the refusal was the other honest answer and was seriously considered — a code saying "a `#run`
+  cannot call an imported procedure yet" would at least stop leaking internals. Rejected because the
+  limitation is not real: the call resolves, the callee has MIR, and the only thing missing was that
+  nobody put it in the program. A diagnostic explaining a limitation the compiler does not have is worse
+  than none. And this is *not* the cross-file dependency `consts.rs` refuses at length — that refusal is
+  about reading another file's constant **values** (`ImportedValues` stays empty); a routine is not a
+  value, and `imported_procs` already resolves cross-file procedures acyclically today.
+
+### Fork 3 — what a body `#run` lowers to
+
+- Options: **the constant const-eval computed, evaluated in `file_consts` (taken, recommended)**; a call
+  into the VM at run time; keep it refused.
+- Why: `#run` runs at *compile* time and the body gets a value — that is what the construct means, and
+  ADR-0016 §4 already arranged it for file-scope constants. Lowering it as a runtime VM call would
+  reverse that and make a `#run` in a hot loop a per-iteration interpreter call. Evaluating it in
+  `file_consts` rather than a second place keeps one round-robin and one cycle detector: two evaluators
+  would be two chances to disagree about what a `#run` means.
+
+### Fork 4 — whether the existing refusals move
+
+- Options: **unchanged, and stated (taken, recommended)**; lift some for a body `#run`.
+- Why: an operator overload, a default or named argument, and an imported constant are refused inside a
+  `#run` because const-eval runs before the check phase that resolves them (ADR-0018 §3's cycle). The
+  *position* changing does not change the phase ordering, so the rules are identical — stated explicitly
+  because a new position might suggest otherwise.
+
+### Resolution
+
+All four forks taken as recommended. ADR-0069 records them. **No new diagnostic code** (§1 removes a
+failure, §2 lifts a refusal — E0261 still first free), and §7's "one trivial `#run`" claim is corrected in
+both directions.
+
+### Fork 2a — where the imported file's MIR comes from (forced mid-wave)
+
+- Options: **lower it inside `file_consts` from the front-end queries (taken, recommended)**; take it
+  from `file_mir`; give `file_consts` a salsa cycle-recovery function.
+- Why: taking it from `file_mir` is the obvious implementation and salsa rejected it outright —
+  `file_consts(A) → file_mir(B) → imported_values(B) → file_consts(A)`, because `file_mir` folds imported
+  constants — and three corpus tests failed with a cycle panic. Lowering it here from `imported_procs`,
+  `checked` and `resolved` (all already called from this module) with the same empty
+  `ImportedValues`/`OperatorCalls`/`FilledArgs` this module already uses for its own file is not a
+  workaround but the honest position: const-eval precedes the check phase for an imported file exactly as
+  for the local one, so an imported callee gets precisely the same restrictions. A cycle-recovery function
+  would have made the *fixpoint* the answer to a question that has a direct one.
+- **ADR-0069 §1's claim that this "adds no dependency that was not already there" was wrong about
+  `file_mir`** and is corrected in the ADR rather than quietly patched, because the obvious
+  implementation hits the same cycle.
