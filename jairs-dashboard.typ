@@ -96,17 +96,17 @@
 #h(4pt)
 #pill[919 tests]
 #h(4pt)
-#pill[ADR-0064 latest]
+#pill[ADR-0065 latest]
 #h(4pt)
-#pill(fill: rgb("#fdf2e6"), stroke: warn)[W3 in progress · temporary storage + backtraces left]
+#pill(fill: rgb("#fdf2e6"), stroke: warn)[W3 in progress · backtraces the last feature]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
   metric("Tests", "919", "workspace, all passing"),
-  metric("Corpus", "148", "jr files, both engines"),
-  metric("ADRs", "64", "0001 to 0064, immutable"),
+  metric("Corpus", "149", "jr files, both engines"),
+  metric("ADRs", "65", "0001 to 0065, immutable"),
   metric("Diagnostics", "88", "codes, E0258 next free"),
   metric("Editor checks", "156", "Neovim, verified not gated"),
 )
@@ -144,22 +144,20 @@
         one shared formatter.
       ]
     - #text(size: 7.4pt)[
-        *MIR snapshots pin the exact instruction sequence.* This wave the pointer-arithmetic file
-        shows `p + n` as a slot holding the pointer, indexed — the same load-then-scale a view's
-        `data` word takes, so both back ends scale by the element stride and no size appears in the
-        mid-end.
+        *MIR snapshots pin the exact instruction sequence.* This wave the basic-module snapshot shows
+        `talloc` reading the two new context fields and bumping the cursor with pointer arithmetic —
+        the whole allocator, and no new MIR node, because it is three prior waves composed.
       ]
     - #text(size: 7.4pt)[
-        *The differential harness catches regressions the wave did not aim at.* Typing pointer
-        operands with no expectation broke `sum: s64 = xx tiny + 1;` — the autocast lost its `s64`
-        context. A guard that skips the pointer probe when a numeric type is expected fixed it; the
-        harness found it because a passing corpus file suddenly failed to compile.
+        *A feature that adds no machinery is the payoff of the ones that did.* Temporary storage is a
+        `malloc`'d region, a cursor moved by pointer arithmetic, and two context fields — the compiler
+        change is two entries in one array, and everything else is Basic code. That is what the
+        allocator and pointer-arithmetic waves were building toward.
       ]
     - #text(size: 7.4pt, fill: warn)[
-        *How a feature lowers can narrow its scope.* `p - q`, the pointer difference, read as obviously
-        part of "pointer arithmetic" until the lowering showed its element-count result needs the
-        stride — layout the mid-end deliberately does not carry. Cut mid-wave and deferred, rather than
-        smuggled in with a layout query `jr-mir` lacks.
+        *A limit stated is better than a limit faked.* `talloc` returns a `*u8`, so an arena hands out
+        byte buffers only — storing a wider type needs a pointer cast the language does not have yet.
+        The corpus stores bytes and says so, rather than pretending a wider store works.
       ]
   ],
 )
@@ -185,12 +183,13 @@
   ("One trivial compile-time run, folded", "arbitrary run, RTTI, insert (W4)"),
   ("Traps name their source line", "backtraces (W3)"),
   ("Bounds checks, strippable by build setting or #no_abc", "a per-index #no_abc; any other build setting"),
-  ("context, a hidden parameter passed by pointer", "temp storage (W3)"),
+  ("context, a hidden parameter passed by pointer", ""),
   ("Procedures as values: call, pass, return, struct field", "a cross-file or foreign proc value; comparing one"),
-  ("null, a context-typed pointer literal; malloc and free", "pointer arithmetic; cast to a pointer"),
-  ("An allocator in the context, installed and called through", "temp storage (W3)"),
+  ("null, a context-typed pointer literal; malloc and free", "cast to a pointer"),
+  ("An allocator in the context, installed and called through", ""),
   ("Pointer offset p + n, n + p, p - n — element-scaled, unchecked", "the difference p - q; p[n]; ordering"),
   ("push_context, a block with its own copy of the context", ""),
+  ("talloc / reset_temporary_storage — a per-context bump arena", "hands out *u8 only; alignment; a growable region"),
 )
 
 #table(
@@ -279,7 +278,7 @@
   ),
   (
     "W3 Runtime core", "in progress",
-    "Seven of eight done. context (ADR-0057), the bounds-check build setting (ADR-0058, finishing ADR-0003), indirect calls (ADR-0059), null plus a memory source (ADR-0060/0061), the allocator protocol (ADR-0062), push_context (ADR-0063), and pointer arithmetic (ADR-0064) — p + n on a *T, element-scaled and unchecked, so a bump allocator can advance a pointer. Remaining: temporary storage (now unblocked — the bump allocator it needed is writable) and traps with backtraces.",
+    "Data structures done; one feature left. context (ADR-0057), the bounds-check build setting (ADR-0058, finishing ADR-0003), indirect calls (ADR-0059), null plus a memory source (ADR-0060/0061), the allocator protocol (ADR-0062), push_context (ADR-0063), pointer arithmetic (ADR-0064), and temporary storage (ADR-0065) — talloc hands out bytes from a per-context bump arena, W3's last data structure and one that composes the previous three waves rather than adding machinery. Remaining: traps with backtraces, the only W3 feature left.",
   ),
   (
     "W4 Comptime", "not started",
@@ -341,19 +340,19 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[Sixteen waves shipped]
+    #sub[Seventeen waves shipped]
     #text(size: 7.4pt)[
-      ADR-0049 through 0064: for and defer, using, aggregate returns, multiple returns, named and
+      ADR-0049 through 0065: for and defer, using, aggregate returns, multiple returns, named and
       default arguments, scope visibility, imported constants, float constants, context, the
       bounds-check build setting, indirect calls, null plus a memory source, the allocator
-      protocol, push_context, and pointer arithmetic.
+      protocol, push_context, pointer arithmetic, and temporary storage.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 919. Corpus 116 to 148 files. Neovim checks 103 to 156. W2 closed; W3 opened
-      and seven of its eight features landed. A program can install an allocator in the context, scope
-      it with push_context, and advance a raw pointer — so a bump allocator is finally writable.
+      Test count 900 to 919. Corpus 116 to 149 files. Neovim checks 103 to 156. W2 closed; W3 opened
+      and all its data structures landed — an allocator in the context, push_context to scope it, raw
+      pointer arithmetic, and a temporary-storage arena built from all three. Only backtraces remain.
     ]
 
     #v(0.3em)

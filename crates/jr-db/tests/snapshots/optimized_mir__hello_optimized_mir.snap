@@ -20,7 +20,7 @@ proc main -> void {
     store s0 <- 9_s64
     goto bb1()
   bb1():
-    discard call extern proc4(v0, "hello from Jairs\n")
+    discard call extern proc6(v0, "hello from Jairs\n")
     goto bb2()
   bb2():
     goto bb3(0_s64)
@@ -38,7 +38,7 @@ proc main -> void {
     v11: bool = v10 == 9_s64
     branch v11 ? bb7() : bb8()
   bb7():
-    discard call extern proc6(v0, "arithmetic and pointers agree")
+    discard call extern proc8(v0, "arithmetic and pointers agree")
     goto bb9()
   bb8():
     goto bb9()

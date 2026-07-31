@@ -2,6 +2,53 @@
 source: crates/jr-db/tests/mir_corpus.rs
 expression: "dump_mir(&db, file, search)"
 ---
+proc talloc -> *u8 {
+  params: v0: *Context, v1: s64
+  slots:
+    s0: *u8  // temporary
+  bb0(v0: *Context, v1: s64):
+    v2: *u8 = load (v0).*.3
+    v3: bool = v2 == 0_*u8
+    branch v3 ? bb1() : bb2()
+  bb1():
+    v4: *u8 = call proc2(65536_s64)
+    store (v0).*.3 <- v4
+    v5: *u8 = load (v0).*.3
+    v6: bool = v5 == 0_*u8
+    branch v6 ? bb4() : bb5()
+  bb4():
+    return 0_*u8
+  bb5():
+    goto bb6()
+  bb6():
+    goto bb3()
+  bb2():
+    goto bb3()
+  bb3():
+    v7: s64 = load (v0).*.4
+    v8: s64 = v7 + v1
+    v9: bool = v8 > 65536_s64
+    branch v9 ? bb7() : bb8()
+  bb7():
+    return 0_*u8
+  bb8():
+    goto bb9()
+  bb9():
+    v10: *u8 = load (v0).*.3
+    v11: s64 = load (v0).*.4
+    store s0 <- v10
+    v12: *u8 = addr s0[v11]
+    v13: s64 = load (v0).*.4
+    v14: s64 = v13 + v1
+    store (v0).*.4 <- v14
+    return v12
+}
+proc reset_temporary_storage -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    store (v0).*.4 <- 0_s64
+    return
+}
 proc print -> void {
   params: v0: *Context, v1: string
   slots:
@@ -30,8 +77,8 @@ proc print_line -> void {
     s0: string  // temporary
   bb0(v0: *Context, v1: string):
     store s0 <- v1
-    discard call proc4(v0, v1)
-    discard call proc4(v0, "\n")
+    discard call proc6(v0, v1)
+    discard call proc6(v0, "\n")
     return
 }
 proc put_byte -> void {
@@ -51,7 +98,7 @@ proc print_digits -> void {
     branch v2 ? bb1() : bb2()
   bb1():
     v3: s64 = v1 / 10_s64
-    discard call proc8(v0, v3)
+    discard call proc10(v0, v3)
     goto bb3()
   bb2():
     goto bb3()
@@ -59,7 +106,7 @@ proc print_digits -> void {
     v4: s64 = v1 % 10_s64
     v5: s64 = v4 + 48_s64
     v6: u8 = convert v5 from s64
-    discard call proc7(v0, v6)
+    discard call proc9(v0, v6)
     return
 }
 proc print_int -> void {
@@ -68,12 +115,12 @@ proc print_int -> void {
     v2: bool = v1 < 0_s64
     branch v2 ? bb1() : bb2()
   bb1():
-    discard call proc4(v0, "-")
+    discard call proc6(v0, "-")
     v3: s64 = -v1
-    discard call proc8(v0, v3)
+    discard call proc10(v0, v3)
     goto bb3()
   bb2():
-    discard call proc8(v0, v1)
+    discard call proc10(v0, v1)
     goto bb3()
   bb3():
     return

@@ -1,0 +1,88 @@
+// Temporary storage (ADR-0065) — W3's last data structure, and the one that assembles the previous
+// three waves rather than adding machinery.
+//
+// `talloc(n)` hands out `n` bytes from a per-context bump arena that stays valid until the next
+// `reset_temporary_storage()`, with no per-piece free. It is `malloc` for the region (ADR-0060), a
+// cursor advanced with pointer arithmetic (ADR-0064), and two context fields to hold them (ADR-0057)
+// — nothing new lowered, which is the point.
+//
+// Five things here are worth checking rather than assuming, and the `exit` at the end gives each teeth
+// under the differential harness — a shared cursor that did not bump, a reset that did not rewind, or
+// a callee that allocated its own region would each be a different exit status:
+//
+//   * successive `talloc`s return **distinct** cells — the cursor bumps, so `a` and `b` do not alias
+//     and writing one does not disturb the other;
+//   * the arena **travels with the context** (ADR-0057 §2): `fill_via_talloc` never allocated a region
+//     of its own, it read `context.temp_data` and got the one `main` created — which is the whole
+//     argument for a context;
+//   * `reset_temporary_storage()` **rewinds** the cursor rather than freeing the region, so the next
+//     `talloc` reuses the same memory — `a` and the post-reset `c` alias;
+//   * overflow returns **null**, not a trap (ADR-0065 §3): asking for more than the 64 KiB region
+//     holds fails the way `malloc` does, so a program can check and recover;
+//   * both engines agree, though the region comes from the VM's own `malloc` region and native's libc
+//     (ADR-0061). The bytes written and read back are what is compared.
+#import "Basic";
+
+/// Allocates from the temporary arena **without having created it** — it reads the context and gets
+/// whatever region its caller set up. This is the procedure that proves the arena travels with the
+/// call, the same way `alloc_through_context` proved it for the allocator in `050`.
+///
+/// `talloc` returns a `*u8` — a byte buffer — so it stores a `u8`. Storing a wider type would need a
+/// pointer cast, which the language does not have yet (ADR-0046 §2); a byte arena holding bytes is the
+/// shape available now, and it exercises the arena all the same.
+fill_via_talloc :: (value: u8) -> *u8 {
+    p := talloc(8);
+    if p == null {
+        return null;
+    }
+    p.* = value;
+    return p;
+}
+
+main :: () {
+    n := 0;
+
+    // First allocation creates the region (it was null in main's zeroed context).
+    a := talloc(8);
+    if a == null {
+        exit(1);
+    }
+    a.* = 11;
+
+    // A callee allocates from the same arena — it never saw the region created.
+    b := fill_via_talloc(22);
+    if b == null {
+        exit(1);
+    }
+
+    // Distinct cells: writing `b` did not disturb `a`.
+    if a.* == 11 {
+        n = n + 1;
+    }
+    if b.* == 22 {
+        n = n + 2;
+    }
+
+    // Reset rewinds the cursor; the region is reused, so the next `talloc` aliases `a`.
+    reset_temporary_storage();
+    c := talloc(8);
+    if c == null {
+        exit(1);
+    }
+    c.* = 33;
+    if a.* == 33 {
+        n = n + 4;
+    }
+
+    // Overflow returns null rather than trapping: one byte past the region is refused.
+    big := talloc(TEMP_REGION_SIZE + 1);
+    if big == null {
+        n = n + 8;
+    }
+
+    // Every assertion: 15.
+    if n == 15 {
+        exit(0);
+    }
+    exit(1);
+}

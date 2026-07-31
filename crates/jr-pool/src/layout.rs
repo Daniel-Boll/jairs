@@ -492,18 +492,35 @@ fn struct_layout_at_depth(
 
 /// The field types of [`Item::ContextType`], in order (ADR-0057 §1).
 ///
-/// One field today. A `const` rather than a function so that layout, field lookup and both engines
-/// read the *same* list — three copies of "what fields does a context have" would be three chances to
-/// disagree, which is the duplication ADR-0052 found for field types across three crates.
-pub const CONTEXT_FIELD_TYPES: &[PoolId] = &[PoolId::ALLOC_FN, PoolId::FREE_FN, PoolId::S64];
+/// A `const` rather than a function so that layout, field lookup and both engines read the *same*
+/// list — three copies of "what fields does a context have" would be three chances to disagree, which
+/// is the duplication ADR-0052 found for field types across three crates.
+///
+/// The two temporary-storage fields (ADR-0065) cost no new well-known id: `temp_data` is
+/// [`PoolId::PTR_U8`] and `temp_mark` is [`PoolId::S64`], both already well-known — unlike the
+/// allocator's proc-pointer types, which had to be pre-interned. So `WELL_KNOWN_COUNT` does not move.
+pub const CONTEXT_FIELD_TYPES: &[PoolId] = &[
+    PoolId::ALLOC_FN,
+    PoolId::FREE_FN,
+    PoolId::S64,
+    PoolId::PTR_U8,
+    PoolId::S64,
+];
 
 /// The field *names* of [`Item::ContextType`], parallel to [`CONTEXT_FIELD_TYPES`].
 ///
-/// Three fields as of ADR-0062 §2: the two halves of an allocator and its own state word. Flattened
-/// into the context rather than nested in an `Allocator` struct, because a nested struct type would
-/// need a `DeclId` a compiler-declared type has not got — the same problem ADR-0057 §1 met and solved
-/// by going structural.
-pub const CONTEXT_FIELD_NAMES: &[&str] = &["allocator", "allocator_free", "allocator_data"];
+/// Five fields: the two halves of an allocator and its state word (ADR-0062 §2), then the temporary
+/// storage arena's region pointer and bump cursor (ADR-0065). Flattened into the context rather than
+/// nested, because a nested struct type would need a `DeclId` a compiler-declared type has not got —
+/// the same problem ADR-0057 §1 met and solved by going structural. `temp_mark` is a *byte count*
+/// (the next allocation is at `temp_data + temp_mark`), so a reset is one integer store.
+pub const CONTEXT_FIELD_NAMES: &[&str] = &[
+    "allocator",
+    "allocator_free",
+    "allocator_data",
+    "temp_data",
+    "temp_mark",
+];
 
 /// The layout of a sequence of fields laid out in order, C-style.
 ///

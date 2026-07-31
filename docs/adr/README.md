@@ -85,3 +85,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0062](0062-the-allocator-protocol.md) | `context.allocator` is a struct of procedure pointers | Accepted |
 | [0063](0063-push-context.md) | `push_context` gives a block its own copy of the context (amends ADR-0057 §2) | Accepted |
 | [0064](0064-pointer-arithmetic.md) | Pointer offset (`p + n`, `p - n`) is element-scaled, unchecked, and lowers to an indexed address | Accepted |
+| [0065](0065-temporary-storage.md) | Temporary storage is a lazily-allocated bump arena in two context fields | Accepted |

@@ -230,3 +230,52 @@ All four forks taken as recommended, with Fork 2 narrowed mid-wave to `p ± int`
 deferred). ADR-0064 records them and lifts the refusal ADR-0060 §5 deferred. No new diagnostic code
 (E0258 still first free), no new MIR node: the type rules are new `check_binary` arms and the lowering
 builds an indexed address, which both back ends already scale by element stride.
+
+---
+
+## Wave: temporary storage (ADR-0065), 2026-07-31
+
+### What running first confirmed (not a fork)
+
+Before designing, a program that `malloc`s a region and bumps a cursor through it with pointer
+arithmetic (`p + off`, storing and reading back) was run in both engines and gave the expected result.
+So temporary storage is not new machinery — it is `malloc` + pointer arithmetic + context fields, all
+of which already lower. That decided the wave's shape: two context fields plus Basic code.
+
+### Fork 1 — representation
+
+- Options: **two flattened fields `temp_data: *u8`, `temp_mark: s64` (taken, recommended)**; a nested
+  arena struct; a single packed field.
+- Why: flat matches ADR-0062's allocator choice and costs nothing here — both `PTR_U8` and `S64` are
+  already well-known pool ids, so `CONTEXT_FIELD_TYPES` references them with no new interning and
+  `WELL_KNOWN_COUNT` does not move. A nested struct would need a `DeclId` a compiler-declared type has
+  not got. `temp_mark` is a byte count (offset), not a pointer, so reset is one integer store.
+
+### Fork 2 — backing memory
+
+- Options: **fixed region, lazily `malloc`'d on first `talloc` (taken, recommended)**; allocate it in
+  the entry stub; a growable region.
+- Why: lazy means a program that never uses temporary storage never allocates it, and — deciding —
+  the entry stub stays free of `malloc`, so `modules/Basic` is not a runtime dependency (ADR-0062 §4's
+  argument, reused). Growable means either a `realloc` that moves the arena (invalidating every pointer
+  already handed out) or a block list — more than W3 needs. Fixed + null-on-overflow is honest.
+
+### Fork 3 — overflow behaviour
+
+- Options: **return null like `malloc` (taken, recommended)**; trap.
+- Why: running out of scratch space is a resource condition a caller may handle (fall back, or reset
+  and retry), not a bug that should end the process. One failure convention shared with `malloc`.
+
+### Fork 4 — where the code lives
+
+- Options: **`talloc`/`reset_temporary_storage` in Basic (taken, recommended)**; in the language.
+- Why: this is the *opposite* call from ADR-0062 §5, which kept the allocator *protocol* out of Basic.
+  The protocol is a language mechanism (how a callee reaches its caller's allocator); temporary storage
+  is a *concrete allocator* with one policy, which is exactly what a library provides. It still travels
+  with the context (it reads `context.temp_*`), but the code is a library's.
+
+### Resolution
+
+All four forks taken as recommended. ADR-0065 records them. No new pool id, no new diagnostic code
+(E0258 still first free), no new MIR node — two context fields plus Basic code from `malloc`, pointer
+arithmetic and field access, all of which already lower.

@@ -334,7 +334,7 @@ proc main -> void {
 proc main -> void {
   params: v0: *Context
   bb0(v0: *Context):
-    discard call extern proc4(v0, "imported\n")
+    discard call extern proc6(v0, "imported\n")
     return
 }
 
@@ -435,7 +435,7 @@ proc main -> void {
     v5: bool = v4 > 5_s64
     branch v5 ? bb1() : bb2()
   bb1():
-    discard call extern proc4(v0, "hello from Jairs\n")
+    discard call extern proc6(v0, "hello from Jairs\n")
     goto bb3()
   bb2():
     goto bb3()
@@ -455,7 +455,7 @@ proc main -> void {
     v11: bool = v10 == 9_s64
     branch v11 ? bb8() : bb9()
   bb8():
-    discard call extern proc6(v0, "arithmetic and pointers agree")
+    discard call extern proc8(v0, "arithmetic and pointers agree")
     goto bb10()
   bb9():
     goto bb10()
@@ -508,7 +508,7 @@ proc main -> void {
     v4: bool = v3 == 7_s64
     branch v4 ? bb1() : bb2()
   bb1():
-    discard call extern proc4(v0, "doc comments are trivia\n")
+    discard call extern proc6(v0, "doc comments are trivia\n")
     goto bb3()
   bb2():
     goto bb3()
@@ -4560,6 +4560,105 @@ proc main -> void {
   bb2():
     goto bb3()
   bb3():
+    discard call extern proc1(1_s64)
+    return
+}
+
+========================================
+053-temporary-storage.jr
+========================================
+proc fill_via_talloc -> *u8 {
+  params: v0: *Context, v1: u8
+  bb0(v0: *Context, v1: u8):
+    v2: *u8 = call extern proc4(v0, 8_s64)
+    v3: bool = v2 == 0_*u8
+    branch v3 ? bb1() : bb2()
+  bb1():
+    return 0_*u8
+  bb2():
+    goto bb3()
+  bb3():
+    store (v2).* <- v1
+    return v2
+}
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: *u8 = call extern proc4(v0, 8_s64)
+    v2: bool = v1 == 0_*u8
+    branch v2 ? bb1() : bb2()
+  bb1():
+    discard call extern proc1(1_s64)
+    goto bb3()
+  bb2():
+    goto bb3()
+  bb3():
+    store (v1).* <- 11_u8
+    v4: *u8 = call proc0(v0, 22_u8)
+    v5: bool = v4 == 0_*u8
+    branch v5 ? bb4() : bb5()
+  bb4():
+    discard call extern proc1(1_s64)
+    goto bb6()
+  bb5():
+    goto bb6()
+  bb6():
+    v7: u8 = load (v1).*
+    v8: bool = v7 == 11_u8
+    branch v8 ? bb7() : bb8()
+  bb7():
+    v11: s64 = 0_s64 + 1_s64
+    goto bb9(v11)
+  bb8():
+    goto bb9(0_s64)
+  bb9(v16: s64):
+    v14: u8 = load (v4).*
+    v15: bool = v14 == 22_u8
+    branch v15 ? bb10() : bb11()
+  bb10():
+    v17: s64 = v16 + 2_s64
+    goto bb12(v17)
+  bb11():
+    goto bb12(v16)
+  bb12(v27: s64):
+    discard call extern proc5(v0)
+    v18: *u8 = call extern proc4(v0, 8_s64)
+    v19: bool = v18 == 0_*u8
+    branch v19 ? bb13() : bb14()
+  bb13():
+    discard call extern proc1(1_s64)
+    goto bb15()
+  bb14():
+    goto bb15()
+  bb15():
+    store (v18).* <- 33_u8
+    v24: u8 = load (v1).*
+    v25: bool = v24 == 33_u8
+    branch v25 ? bb16() : bb17()
+  bb16():
+    v28: s64 = v27 + 4_s64
+    goto bb18(v28)
+  bb17():
+    goto bb18(v27)
+  bb18(v32: s64):
+    v29: s64 = 65536_s64 + 1_s64
+    v30: *u8 = call extern proc4(v0, v29)
+    v31: bool = v30 == 0_*u8
+    branch v31 ? bb19() : bb20()
+  bb19():
+    v33: s64 = v32 + 8_s64
+    goto bb21(v33)
+  bb20():
+    goto bb21(v32)
+  bb21(v34: s64):
+    v35: bool = v34 == 15_s64
+    branch v35 ? bb22() : bb23()
+  bb22():
+    discard call extern proc1(0_s64)
+    goto bb24()
+  bb23():
+    goto bb24()
+  bb24():
     discard call extern proc1(1_s64)
     return
 }
