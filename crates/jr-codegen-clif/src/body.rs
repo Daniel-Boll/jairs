@@ -78,6 +78,17 @@ pub struct Context<'a> {
     pub trap_helper: FuncRef,
     /// How to render a trap's source location (ADR-0020 §3).
     pub locations: &'a dyn TrapLocations,
+    /// The shadow call stack the trap helper walks (ADR-0066 §1), and its live depth.
+    ///
+    /// A caller writes `(name, len)` for its callee at the depth's index and increments; the callee's
+    /// return decrements. Held here rather than looked up per call, because both are one object for the
+    /// whole module.
+    pub shadow: (DataId, DataId),
+    /// The read-only name string and its length for each procedure, for a backtrace frame.
+    ///
+    /// Absent for a procedure whose name is unknown — an anonymous one — and such a frame is simply not
+    /// pushed, which is the same "omit rather than placeholder" rule the VM's renderer follows.
+    pub names: &'a FxHashMap<ProcRef, (DataId, usize)>,
 }
 
 /// Translates one body into the function `builder` is building.
@@ -953,6 +964,14 @@ impl Translator<'_, '_> {
                 values.push(value);
             }
         }
+        // **The shadow-stack push, before the call** (ADR-0066 §1), matching the VM, which pushes in
+        // `Vm::call`. Only a *direct* call can be pushed: an indirect one's target is a runtime pointer,
+        // and the name to push is a compile-time constant — so an indirect frame is absent, exactly as
+        // an inlined one is, and for the same honest reason.
+        let pushed = match callee {
+            Callee::Direct(target) => self.push_frame(*target)?,
+            Callee::Indirect(_) => false,
+        };
         let inst = match callee {
             Callee::Direct(target) => {
                 let func = *self
@@ -973,6 +992,12 @@ impl Translator<'_, '_> {
                 self.builder.ins().call_indirect(sig_ref, pointer, &values)
             }
         };
+        // The pop, after the call returns. A callee that traps never returns here — the helper calls
+        // `exit` — so the depth it left behind is exactly the chain the trap should report, which is why
+        // the pop being skipped on that path is correct rather than a leak.
+        if pushed {
+            self.pop_frame();
+        }
         // An `sret` call returns nothing; the result *is* the slot, and an aggregate value
         // is represented by a pointer to its bytes, so the address is the value.
         if let Some(address) = result_slot {
@@ -980,6 +1005,96 @@ impl Translator<'_, '_> {
         }
         let results = self.builder.inst_results(inst);
         Ok(results.first().copied())
+    }
+
+    /// Writes `target`'s name onto the shadow call stack and increments the depth (ADR-0066 §1).
+    ///
+    /// Returns whether anything was pushed: `false` for a procedure with no known name, whose frame is
+    /// omitted rather than rendered as a placeholder.
+    ///
+    /// **Bounds-checked**, because a static array written past its end is memory corruption that would
+    /// be blamed on the program rather than on the compiler. Past `SHADOW_CAPACITY` the push is skipped
+    /// and the depth still rises, so the *count* stays honest while the entries stop — and the pop is
+    /// symmetric, so nothing drifts.
+    fn push_frame(&mut self, target: ProcRef) -> Result<bool, CodegenError> {
+        let Some((name_id, name_len)) = self.ctx.names.get(&target).copied() else {
+            return Ok(false);
+        };
+        let pointer = pointer_type(self.ctx.target);
+        let width = i64::from(self.ctx.target.pointer_size);
+
+        let (stack_id, depth_id) = self.ctx.shadow;
+        let stack_global = self
+            .module
+            .declare_data_in_func(stack_id, self.builder.func);
+        let depth_global = self
+            .module
+            .declare_data_in_func(depth_id, self.builder.func);
+        let name_global = self.module.declare_data_in_func(name_id, self.builder.func);
+
+        let stack_base = self.builder.ins().symbol_value(pointer, stack_global);
+        let depth_addr = self.builder.ins().symbol_value(pointer, depth_global);
+        let depth = self
+            .builder
+            .ins()
+            .load(pointer, MemFlagsData::new(), depth_addr, 0);
+
+        // Only write the entry when it is in range; the depth is bumped either way.
+        let in_range = self.builder.ins().icmp_imm_s(
+            cranelift_codegen::ir::condcodes::IntCC::SignedLessThan,
+            depth,
+            i64::try_from(crate::SHADOW_CAPACITY).unwrap_or(i64::MAX),
+        );
+        let write_block = self.builder.create_block();
+        let after = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(in_range, write_block, &[], after, &[]);
+
+        self.builder.switch_to_block(write_block);
+        let offset = self.builder.ins().imul_imm_s(depth, width * 2);
+        let entry = self.builder.ins().iadd(stack_base, offset);
+        let name = self.builder.ins().symbol_value(pointer, name_global);
+        let len = self
+            .builder
+            .ins()
+            .iconst(pointer, i64::try_from(name_len).unwrap_or(0));
+        self.builder
+            .ins()
+            .store(MemFlagsData::new(), name, entry, 0);
+        self.builder.ins().store(
+            MemFlagsData::new(),
+            len,
+            entry,
+            i32::try_from(width).unwrap_or(8),
+        );
+        self.builder.ins().jump(after, &[]);
+        self.builder.seal_block(write_block);
+
+        self.builder.switch_to_block(after);
+        let bumped = self.builder.ins().iadd_imm_s(depth, 1);
+        self.builder
+            .ins()
+            .store(MemFlagsData::new(), bumped, depth_addr, 0);
+        Ok(true)
+    }
+
+    /// Decrements the shadow call stack's depth, undoing one [`Self::push_frame`].
+    fn pop_frame(&mut self) {
+        let pointer = pointer_type(self.ctx.target);
+        let (_, depth_id) = self.ctx.shadow;
+        let depth_global = self
+            .module
+            .declare_data_in_func(depth_id, self.builder.func);
+        let depth_addr = self.builder.ins().symbol_value(pointer, depth_global);
+        let depth = self
+            .builder
+            .ins()
+            .load(pointer, MemFlagsData::new(), depth_addr, 0);
+        let dropped = self.builder.ins().iadd_imm_s(depth, -1);
+        self.builder
+            .ins()
+            .store(MemFlagsData::new(), dropped, depth_addr, 0);
     }
 
     /// The Cranelift signature for a call through a procedure pointer (ADR-0059 §4).
@@ -1447,7 +1562,7 @@ impl Translator<'_, '_> {
     /// exactly, and `differential.rs` compares them (ADR-0020 §2).
     fn report(&mut self, kind: TrapKind) -> Result<(), CodegenError> {
         let location = self.ctx.locations.location(self.current);
-        let message = jr_base::trap_message(kind.reason(), location.as_deref());
+        let message = jr_base::trap_message(kind.reason(), location.as_deref(), &[]);
         let data = self.message_data(&message)?;
 
         let pointer = pointer_type(self.ctx.target);

@@ -176,6 +176,18 @@ pub struct FileInput<'a> {
     /// The file's signatures, which carry parameter and return types and the
     /// resolved `#foreign` library (ADR-0019 §4).
     pub signatures: &'a FileSignatures,
+    /// Each procedure's **source** name, for a backtrace frame (ADR-0066 §3), indexed by
+    /// [`jr_hir::ProcId`]'s own index.
+    ///
+    /// Supplied by the caller rather than read from `hir` here, because resolving a `Symbol` to text
+    /// needs the interner and this crate has no database to ask — the same split that puts a trap's
+    /// *location* on the caller's side (ADR-0020 §3).
+    ///
+    /// A slice rather than a map, because [`plan::declarations`] already walks `0..hir.procs.len()` and
+    /// a parallel slice is the shape that cannot disagree about which procedure an entry describes. An
+    /// entry is `None` for a procedure no item binds; its frame is omitted rather than given a
+    /// placeholder.
+    pub names: &'a [Option<String>],
 }
 
 /// The type of a procedure's parameter or result, as a back end sees it.

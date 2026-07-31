@@ -34,9 +34,10 @@ mod trap;
 pub use trap::{TRAP_HELPER, TrapKind};
 
 use cranelift_codegen::Context;
+use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{
     AbiParam, Function, InstBuilder as _, MemFlagsData, StackSlotData, StackSlotKind, TrapCode,
-    UserFuncName, types,
+    UserFuncName, Value as ClifValue, types,
 };
 use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings::{self, Configurable as _};
@@ -68,7 +69,30 @@ pub struct ClifBackend {
     /// entry shim (built in `finalise`, which has no pool) can size the slot it allocates for
     /// `main`'s context (ADR-0057 §5). `None` when `main` takes none.
     entry_context: Option<(Layout, TargetLayout)>,
+    /// The shadow call stack a trap reports (ADR-0066 §1): `SHADOW_CAPACITY` name pointers.
+    ///
+    /// **The first mutable data object this back end emits** — every other one is a read-only string
+    /// or message — which is why it is worth naming here rather than declaring inline. A caller writes
+    /// its callee's name pointer at `shadow_depth` and increments; the trap helper walks the entries
+    /// below the depth.
+    shadow_stack: DataId,
+    /// How many entries of [`Self::shadow_stack`] are live: one pointer-sized counter.
+    shadow_depth: DataId,
+    /// The read-only string holding each procedure's source name, for the backtrace (ADR-0066 §3).
+    ///
+    /// Per *procedure* rather than per trap site, because a name is a property of the procedure — so a
+    /// procedure called from twenty places has one string, and the shadow stack stores its address.
+    /// The length rides along because the string is not NUL-terminated and the helper has no `strlen`.
+    names: FxHashMap<ProcRef, (DataId, usize)>,
 }
+
+/// How many frames the shadow call stack holds (ADR-0066 §1).
+///
+/// The VM's `MAX_DEPTH` is 256 and this matches it, so a program that recurses to the VM's limit gets
+/// the same backtrace natively. A deeper native recursion overflows the *machine* stack long before
+/// this fills; the push is guarded regardless, because a silently out-of-bounds write into a static
+/// array is the kind of memory corruption that would be blamed on the program.
+const SHADOW_CAPACITY: usize = 256;
 
 impl ClifBackend {
     /// Creates a back end targeting the host.
@@ -108,6 +132,28 @@ impl ClifBackend {
             .declare_function(TRAP_HELPER, Linkage::Local, &trap_signature(&module))
             .map_err(|e| CodegenError::Internal(format!("cannot declare {TRAP_HELPER}: {e}")))?;
 
+        // The shadow call stack and its depth (ADR-0066 §1), both **writable** — the only mutable data
+        // this back end emits. Zero-initialised, so a program that never calls anything has a depth of
+        // 0 and the helper walks nothing.
+        let pointer_size = usize::from(module.target_config().pointer_bytes());
+        let shadow_stack = module
+            .declare_data("jr$shadow$stack", Linkage::Local, true, false)
+            .map_err(|e| CodegenError::Internal(format!("cannot declare the shadow stack: {e}")))?;
+        let mut stack_data = DataDescription::new();
+        stack_data.define_zeroinit(SHADOW_CAPACITY * pointer_size);
+        module
+            .define_data(shadow_stack, &stack_data)
+            .map_err(|e| CodegenError::Internal(format!("cannot define the shadow stack: {e}")))?;
+
+        let shadow_depth = module
+            .declare_data("jr$shadow$depth", Linkage::Local, true, false)
+            .map_err(|e| CodegenError::Internal(format!("cannot declare the shadow depth: {e}")))?;
+        let mut depth_data = DataDescription::new();
+        depth_data.define_zeroinit(pointer_size);
+        module
+            .define_data(shadow_depth, &depth_data)
+            .map_err(|e| CodegenError::Internal(format!("cannot define the shadow depth: {e}")))?;
+
         let mut backend = Self {
             module,
             ids: FxHashMap::default(),
@@ -117,6 +163,9 @@ impl ClifBackend {
             libraries: Vec::new(),
             entry: None,
             entry_context: None,
+            shadow_stack,
+            shadow_depth,
+            names: FxHashMap::default(),
         };
         backend.emit_strings(pool)?;
         backend.define_trap_helper()?;
@@ -131,6 +180,49 @@ impl ClifBackend {
     #[must_use]
     pub fn libraries(&self) -> &[String] {
         &self.libraries
+    }
+
+    /// The two literals a backtrace line is built from, as `(prefix, prefix_len, newline, 1)`.
+    ///
+    /// `"  in "` and `"\n"` are the only punctuation the chain needs, and they are the *same* bytes
+    /// `jr_base::trap_message` writes — which is the coupling ADR-0020 §2 accepts deliberately: the
+    /// format lives in one function, and this is that function's output assembled a piece at a time
+    /// because the helper has no allocator to build a whole line in.
+    ///
+    /// # Errors
+    /// [`CodegenError::Internal`] when the object module rejects a declaration.
+    fn frame_prefix_data(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        pointer: types::Type,
+        _write: cranelift_codegen::ir::FuncRef,
+    ) -> Result<(ClifValue, ClifValue, ClifValue, ClifValue), CodegenError> {
+        let prefix_id = self.literal_data("jr$frame$prefix", b"  in ")?;
+        let newline_id = self.literal_data("jr$frame$newline", b"\n")?;
+        let prefix_global = self.module.declare_data_in_func(prefix_id, builder.func);
+        let newline_global = self.module.declare_data_in_func(newline_id, builder.func);
+        let prefix = builder.ins().symbol_value(pointer, prefix_global);
+        let prefix_len = builder.ins().iconst(pointer, 5);
+        let newline = builder.ins().symbol_value(pointer, newline_global);
+        let newline_len = builder.ins().iconst(pointer, 1);
+        Ok((prefix, prefix_len, newline, newline_len))
+    }
+
+    /// A read-only data object holding `bytes`, declared once under `symbol`.
+    ///
+    /// # Errors
+    /// [`CodegenError::Internal`] when the object module rejects the declaration.
+    fn literal_data(&mut self, symbol: &str, bytes: &[u8]) -> Result<DataId, CodegenError> {
+        let id = self
+            .module
+            .declare_data(symbol, Linkage::Local, false, false)
+            .map_err(|e| CodegenError::Internal(format!("cannot declare {symbol}: {e}")))?;
+        let mut description = DataDescription::new();
+        description.define(bytes.to_vec().into_boxed_slice());
+        self.module
+            .define_data(id, &description)
+            .map_err(|e| CodegenError::Internal(format!("cannot define {symbol}: {e}")))?;
+        Ok(id)
     }
 
     /// Generates the body of the trap helper.
@@ -189,6 +281,61 @@ impl ClifBackend {
 
         let stderr = builder.ins().iconst(pointer, 2);
         builder.ins().call(write_ref, &[stderr, message, length]);
+
+        // **The backtrace** (ADR-0066 §2). The message written above already carries the reason and the
+        // location, both compile-time constants; the chain is the part only run time knows, so it is
+        // written here by walking the shadow stack downward — innermost frame first, which is the order
+        // the VM renders and `trap_message`'s tests pin.
+        //
+        // Each entry is a pointer to a NUL-free name string plus its length, stored as a pair, so the
+        // loop needs no strlen: three `write` calls per frame ("  in ", the name, "\n"). Assembling one
+        // buffer instead would need an allocator, which a trap handler must not use.
+        let stack_global = self
+            .module
+            .declare_data_in_func(self.shadow_stack, builder.func);
+        let depth_global = self
+            .module
+            .declare_data_in_func(self.shadow_depth, builder.func);
+        let stack_base = builder.ins().symbol_value(pointer, stack_global);
+        let depth_addr = builder.ins().symbol_value(pointer, depth_global);
+        let depth = builder
+            .ins()
+            .load(pointer, MemFlagsData::new(), depth_addr, 0);
+
+        let prefix = self.frame_prefix_data(&mut builder, pointer, write_ref)?;
+
+        // `index` counts down from `depth`, so entry `depth - 1` (the innermost frame) is written first.
+        let header = builder.create_block();
+        let body_block = builder.create_block();
+        let done = builder.create_block();
+        builder.append_block_param(header, pointer);
+        builder.ins().jump(header, &[depth.into()]);
+
+        builder.switch_to_block(header);
+        let index = builder.block_params(header)[0];
+        let more = builder.ins().icmp_imm_s(IntCC::SignedGreaterThan, index, 0);
+        builder.ins().brif(more, body_block, &[], done, &[]);
+
+        builder.switch_to_block(body_block);
+        let next = builder.ins().iadd_imm_s(index, -1);
+        // Each frame occupies two pointer-sized words: the name's address, then its length.
+        let stride = i64::from(self.module.target_config().pointer_bytes()) * 2;
+        let offset = builder.ins().imul_imm_s(next, stride);
+        let entry = builder.ins().iadd(stack_base, offset);
+        let name = builder.ins().load(pointer, MemFlagsData::new(), entry, 0);
+        let name_len = builder.ins().load(
+            pointer,
+            MemFlagsData::new(),
+            entry,
+            i32::from(self.module.target_config().pointer_bytes()),
+        );
+        builder.ins().call(write_ref, &[stderr, prefix.0, prefix.1]);
+        builder.ins().call(write_ref, &[stderr, name, name_len]);
+        builder.ins().call(write_ref, &[stderr, prefix.2, prefix.3]);
+        builder.ins().jump(header, &[next.into()]);
+
+        builder.switch_to_block(done);
+
         let status = builder
             .ins()
             .iconst(pointer, i64::from(TrapKind::EXIT_STATUS));
@@ -282,6 +429,40 @@ impl ClifBackend {
                 MemFlagsData::new(),
             );
             call_args.push(address);
+        }
+        // **`main`'s own frame** (ADR-0066 §1). Every other frame is pushed by its caller, and `main`'s
+        // caller is this shim — so without this the native backtrace ends one frame short of the VM's,
+        // whose `run_main` calls `main` through `Vm::call` and therefore pushes it. That asymmetry is
+        // exactly what the differential harness compares, and it showed up as a missing `  in main`.
+        //
+        // Never popped: `main` returning means the program is over, and the shim `return`s straight
+        // after, so nothing can observe the depth again.
+        if let Some((name_id, name_len)) = self.names.get(&entry).copied() {
+            let pointer = self.module.target_config().pointer_type();
+            let stack_global = self
+                .module
+                .declare_data_in_func(self.shadow_stack, builder.func);
+            let depth_global = self
+                .module
+                .declare_data_in_func(self.shadow_depth, builder.func);
+            let name_global = self.module.declare_data_in_func(name_id, builder.func);
+            let stack_base = builder.ins().symbol_value(pointer, stack_global);
+            let depth_addr = builder.ins().symbol_value(pointer, depth_global);
+            let name = builder.ins().symbol_value(pointer, name_global);
+            let len = builder
+                .ins()
+                .iconst(pointer, i64::try_from(name_len).unwrap_or(0));
+            let width = i32::from(self.module.target_config().pointer_bytes());
+            // Depth is 0 here — this is the first frame — so the entry goes at offset 0 and the
+            // bounds check the per-call push needs is unnecessary.
+            builder
+                .ins()
+                .store(MemFlagsData::new(), name, stack_base, 0);
+            builder
+                .ins()
+                .store(MemFlagsData::new(), len, stack_base, width);
+            let one = builder.ins().iconst(pointer, 1);
+            builder.ins().store(MemFlagsData::new(), one, depth_addr, 0);
         }
         let call = builder.ins().call(callee_ref, &call_args);
         let results = builder.inst_results(call).to_vec();
@@ -405,6 +586,19 @@ impl Backend for ClifBackend {
             .map_err(|e| CodegenError::Internal(format!("cannot declare {name}: {e}")))?;
         self.ids.insert(decl.proc, id);
         self.foreign.insert(decl.proc, foreign);
+        // The read-only string a backtrace frame names (ADR-0066 §3), one per procedure. The *source*
+        // name, not the mangled symbol: a reader wants `countdown`, not `jr$0$3`. Emitted at declare
+        // time so a call site in any body can reference it, and skipped for a procedure with no name —
+        // whose frame is then omitted rather than printed as a placeholder.
+        if let Some(source_name) = &decl.name {
+            let symbol = format!(
+                "jr$name${}${}",
+                decl.proc.file.index(),
+                decl.proc.proc.index()
+            );
+            let data = self.literal_data(&symbol, source_name.as_bytes())?;
+            self.names.insert(decl.proc, (data, source_name.len()));
+        }
         if matches!(decl.kind, ProcKind::Local { entry: true, .. }) {
             self.entry = Some((decl.proc, decl.ret, decl.receives_context));
             if decl.receives_context {
@@ -465,6 +659,8 @@ impl Backend for ClifBackend {
             strings: &self.strings,
             trap_helper,
             locations,
+            shadow: (self.shadow_stack, self.shadow_depth),
+            names: &self.names,
         };
         body::translate(&mut builder, &mut self.module, &ctx, proc, mir)?;
         builder.finalize(self.module.target_config());

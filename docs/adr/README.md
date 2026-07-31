@@ -86,3 +86,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0063](0063-push-context.md) | `push_context` gives a block its own copy of the context (amends ADR-0057 §2) | Accepted |
 | [0064](0064-pointer-arithmetic.md) | Pointer offset (`p + n`, `p - n`) is element-scaled, unchecked, and lowers to an indexed address | Accepted |
 | [0065](0065-temporary-storage.md) | Temporary storage is a lazily-allocated bump arena in two context fields | Accepted |
+| [0066](0066-trap-backtraces.md) | A trap reports the call chain of the frames that still exist | Accepted |

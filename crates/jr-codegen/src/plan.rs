@@ -35,6 +35,16 @@ pub struct ProcDecl {
     pub receives_context: bool,
     /// Whether it is defined here or imported.
     pub kind: ProcKind,
+    /// The procedure's **source** name, for a backtrace frame (ADR-0066 §3).
+    ///
+    /// Distinct from [`ProcKind::Local::symbol`], which is the mangled `jr$<file>$<proc>` a linker
+    /// sees: a reader of a backtrace wants `countdown`, not `jr$0$3`. A procedure carries no name of
+    /// its own (ADR-0012), so this is the name of the *item* that binds it — found here, where the HIR
+    /// is at hand, rather than by a back end that has no HIR to ask.
+    ///
+    /// `None` for a procedure no item binds, whose frame is then omitted from a backtrace rather than
+    /// printed as a placeholder.
+    pub name: Option<String>,
 }
 
 /// Whether a procedure is defined in this program or imported from a library.
@@ -133,6 +143,9 @@ pub fn declarations(input: &FileInput<'_>, pool: &Pool, entry: Option<ProcId>) -
             // procedure takes no context (ADR-0057 §3).
             receives_context: !(data.c_call || data.foreign.is_some()),
             kind,
+            // The source name for a backtrace frame (ADR-0066 §3), resolved by the caller because
+            // turning a `Symbol` into text needs the interner.
+            name: input.names.get(index).cloned().flatten(),
         });
     }
     out

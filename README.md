@@ -18,14 +18,17 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after **temporary storage** (ADR-0065): `talloc(n)` hands out bytes from a per-context
-bump arena, valid until `reset_temporary_storage()` — W3's last data structure, and one that composes
-the previous three waves (a `malloc`'d region, a cursor advanced by pointer arithmetic, two context
-fields) rather than adding machinery. The eighth feature of **wave W3** after pointer arithmetic
-(ADR-0064): `p + n`, `n + p` and `p - n` on a `*T`, element-scaled and unchecked. Both on top of
-`push_context` (ADR-0063): a block gets its own copy of the context, restored on exit — the isolation
-ADR-0057 §2 claimed but never had. And the allocator protocol (ADR-0062): `context.allocator` is a
-procedure pointer a program installs in one line, and a callee allocates through it without knowing
+Last updated after **traps with backtraces** (ADR-0066), which **completes wave W3 — Runtime core**: a
+trap now names the procedure frames that were live beneath it, innermost first, and both engines emit
+byte-identical bytes — the VM from a shadow stack it resolves against the HIR, native from name pointers
+its generated helper walks at trap time. Inlined frames do not appear, because at run time they did not
+exist, and ADR-0066 §4 says so rather than reconstructing them. On top of temporary storage (ADR-0065):
+`talloc(n)` hands out bytes from a per-context bump arena, valid until `reset_temporary_storage()` — a
+feature that composes three prior waves rather than adding machinery. And pointer arithmetic
+(ADR-0064): `p + n`, `n + p` and `p - n` on a `*T`, element-scaled and unchecked. And `push_context`
+(ADR-0063): a block gets its own copy of the context, restored on exit — the isolation ADR-0057 §2
+claimed but never had. And the allocator protocol (ADR-0062): `context.allocator` is a procedure
+pointer a program installs in one line, and a callee allocates through it without knowing
 which. All on top of `null` and a memory source
 (ADR-0060/0061), indirect calls (ADR-0059), the implicit `context` (ADR-0057) and the bounds-check
 build setting (ADR-0058, which finished ADR-0003) — on top of
@@ -38,7 +41,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 919 workspace tests; six CI gates green on macOS arm64, plus 156 Neovim
+`print_int` (ADR-0037). 924 workspace tests; six CI gates green on macOS arm64, plus 156 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do
@@ -100,12 +103,12 @@ The authoritative version of this list is
 | nesting block comments; `///` and `//!` doc comments, shown on hover | doc generation (`jr doc`) — nothing consumes docs but the language server |
 | one trivial `#run` | arbitrary `#run`, RTTI, `#insert`, `#code` (**W4**) |
 | `#import`, `#foreign`, `#system_library` | polymorphs `$T`, `#expand` macros (**W5**) |
-| overflow traps with a source location (ADR-0002, ADR-0020) | backtraces (**W3**) |
+| overflow traps with a source location (ADR-0002, ADR-0020), and a **call chain** of the frames that were live (ADR-0066) | a per-frame line number; inlined frames, which have no runtime existence |
 | `context` — a hidden parameter passed by pointer, so a callee reads what its caller wrote; `#c_call` opts out and gets none | — |
 | `push_context { … }` — a block with its own copy of the context, so a write inside it is restored on exit (ADR-0063) | — |
 | `context.allocator` / `.allocator_free` / `.allocator_data` — install an allocator, and a callee allocates through it without knowing which | a `#foreign` procedure installed directly (wrap it) |
 | `p + n`, `n + p`, `p - n` on a `*T` — element-scaled, unchecked; a bump allocator advances a pointer (ADR-0064) | `p - q` (deferred); `p[n]` sugar; pointer ordering `< >` |
-| `talloc(n)` / `reset_temporary_storage()` — a per-context bump arena, valid until reset, no per-piece free (ADR-0065) | hands out `*u8` only (a wider store needs a pointer cast); backtraces (**W3**) |
+| `talloc(n)` / `reset_temporary_storage()` — a per-context bump arena, valid until reset, no per-piece free (ADR-0065) | hands out `*u8` only (a wider store needs a pointer cast) |
 
 ADR-0008 chose Jai's **error model** — several return values plus `#must` — and the first half now
 exists: a procedure returns a value and a flag, and the caller must name both. `#must`, which makes

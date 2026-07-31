@@ -94,19 +94,19 @@
 #v(0.4em)
 #pill[6/6 gates green]
 #h(4pt)
-#pill[919 tests]
+#pill[924 tests]
 #h(4pt)
-#pill[ADR-0065 latest]
+#pill[ADR-0066 latest]
 #h(4pt)
-#pill(fill: rgb("#fdf2e6"), stroke: warn)[W3 in progress · backtraces the last feature]
+#pill(fill: rgb("#e8f5ec"), stroke: good)[W3 complete · W4 comptime next]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "919", "workspace, all passing"),
+  metric("Tests", "924", "workspace, all passing"),
   metric("Corpus", "149", "jr files, both engines"),
-  metric("ADRs", "65", "0001 to 0065, immutable"),
+  metric("ADRs", "66", "0001 to 0066, immutable"),
   metric("Diagnostics", "88", "codes, E0258 next free"),
   metric("Editor checks", "156", "Neovim, verified not gated"),
 )
@@ -144,20 +144,21 @@
         one shared formatter.
       ]
     - #text(size: 7.4pt)[
-        *MIR snapshots pin the exact instruction sequence.* This wave the basic-module snapshot shows
-        `talloc` reading the two new context fields and bumping the cursor with pointer arithmetic —
-        the whole allocator, and no new MIR node, because it is three prior waves composed.
+        *The differential harness compares a failing program too.* A trap's whole stderr — reason,
+        location and now the call chain — must match byte for byte, which is the only thing holding two
+        very different mechanisms together: the VM pushes a `ProcRef` and resolves names from the HIR,
+        while native writes name pointers into a mutable global its generated helper walks at trap time.
       ]
     - #text(size: 7.4pt)[
-        *A feature that adds no machinery is the payoff of the ones that did.* Temporary storage is a
-        `malloc`'d region, a cursor moved by pointer arithmetic, and two context fields — the compiler
-        change is two entries in one array, and everything else is Basic code. That is what the
-        allocator and pointer-arithmetic waves were building toward.
+        *It found a real asymmetry.* `main`'s frame is pushed by its caller, and native's caller is the C
+        entry shim while the VM's is `run_main` — so native printed one frame fewer until the shim
+        learned to push it. Nothing but the byte comparison would have noticed.
       ]
     - #text(size: 7.4pt, fill: warn)[
-        *A limit stated is better than a limit faked.* `talloc` returns a `*u8`, so an arena hands out
-        byte buffers only — storing a wider type needs a pointer cast the language does not have yet.
-        The corpus stores bytes and says so, rather than pretending a wider store works.
+        *An ADR can be wrong about its own example.* This wave's draft predicted two callees would both
+        be inlined away; running it showed only leaves inline, so one survived with a real frame. The
+        forks were sound, the illustration was not — and running the example while writing the ADR, not
+        after, is what caught it.
       ]
   ],
 )
@@ -181,7 +182,7 @@
   ("Multiple returns, named args, literal defaults", "#must; a multi-result call in a return"),
   ("import, foreign, system_library, #scope_module", "polymorphs, macros (W5)"),
   ("One trivial compile-time run, folded", "arbitrary run, RTTI, insert (W4)"),
-  ("Traps name their source line", "backtraces (W3)"),
+  ("Traps name their source line and the live call chain", "a per-frame line; inlined frames (none exist)"),
   ("Bounds checks, strippable by build setting or #no_abc", "a per-index #no_abc; any other build setting"),
   ("context, a hidden parameter passed by pointer", ""),
   ("Procedures as values: call, pass, return, struct field", "a cross-file or foreign proc value; comparing one"),
@@ -277,8 +278,8 @@
     "for with it and it_index, labelled break, defer, using, multiple returns, named and default arguments, #scope_module. Closed by ADR-0054; ADR-0055 then closed a gap six corpus files had carried for eleven waves.",
   ),
   (
-    "W3 Runtime core", "in progress",
-    "Data structures done; one feature left. context (ADR-0057), the bounds-check build setting (ADR-0058, finishing ADR-0003), indirect calls (ADR-0059), null plus a memory source (ADR-0060/0061), the allocator protocol (ADR-0062), push_context (ADR-0063), pointer arithmetic (ADR-0064), and temporary storage (ADR-0065) — talloc hands out bytes from a per-context bump arena, W3's last data structure and one that composes the previous three waves rather than adding machinery. Remaining: traps with backtraces, the only W3 feature left.",
+    "W3 Runtime core", "done",
+    "context (ADR-0057), the bounds-check build setting (ADR-0058, finishing ADR-0003), indirect calls (ADR-0059), null plus a memory source (ADR-0060/0061), the allocator protocol (ADR-0062), push_context (ADR-0063), pointer arithmetic (ADR-0064), temporary storage (ADR-0065), and traps with backtraces (ADR-0066) — a trap names the frames that were live, byte-identically in both engines. Closed by ADR-0066; a source-level backtrace with inlined frames is deferred, because inlined frames have no runtime existence.",
   ),
   (
     "W4 Comptime", "not started",
@@ -340,19 +341,20 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[Seventeen waves shipped]
+    #sub[Eighteen waves shipped]
     #text(size: 7.4pt)[
-      ADR-0049 through 0065: for and defer, using, aggregate returns, multiple returns, named and
+      ADR-0049 through 0066: for and defer, using, aggregate returns, multiple returns, named and
       default arguments, scope visibility, imported constants, float constants, context, the
       bounds-check build setting, indirect calls, null plus a memory source, the allocator
-      protocol, push_context, pointer arithmetic, and temporary storage.
+      protocol, push_context, pointer arithmetic, temporary storage, and trap backtraces.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 919. Corpus 116 to 149 files. Neovim checks 103 to 156. W2 closed; W3 opened
-      and all its data structures landed — an allocator in the context, push_context to scope it, raw
-      pointer arithmetic, and a temporary-storage arena built from all three. Only backtraces remain.
+      Test count 900 to 924. Corpus 116 to 149 files. Neovim checks 103 to 156. *W2 and W3 both
+      closed*: an allocator in the context, push_context to scope it, raw pointer arithmetic, a
+      temporary-storage arena built from all three, and a trap that names the frames that were live.
+      W4 — comptime, the project's top risk — is next.
     ]
 
     #v(0.3em)

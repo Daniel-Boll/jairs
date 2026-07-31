@@ -279,3 +279,70 @@ of which already lower. That decided the wave's shape: two context fields plus B
 All four forks taken as recommended. ADR-0065 records them. No new pool id, no new diagnostic code
 (E0258 still first free), no new MIR node — two context fields plus Basic code from `malloc`, pointer
 arithmetic and field access, all of which already lower.
+
+---
+
+## Wave: traps with backtraces (ADR-0066), 2026-07-31
+
+### What running first established (this decided the whole scope)
+
+Five constraints, each verified rather than assumed, and together they define what a backtrace can be:
+
+1. **Native embeds a fixed message string per trap site at compile time** (`report` in
+   `jr-codegen-clif/src/body.rs` writes a read-only data object) — a linked binary has no source map.
+2. **There is no runtime object at all**: `jr-link`'s docs say the trap helper is *generated into the
+   object* by codegen, so no unwinder and no symbol table exist for a stack walk.
+3. **The differential harness compares a trapping program's stderr byte for byte**, so both engines
+   must produce *identical* backtraces — ruling out "native uses the platform unwinder, VM uses frames".
+4. **Inlining erases callee frames on purpose**: both engines consume `optimized_file_mir` (VM at
+   `jr-db/src/run.rs:81`, native at `build.rs:66`), and ADR-0021 §3 rewrites every copied span to the
+   call site because a callee `MirSpan` names the callee file's arenas. `Splice::span` takes no
+   argument, so this is structural.
+5. **Neither engine records who called whom.** The VM's `Frame` holds only `regs`/`slots`; a four-deep
+   *recursive* chain (which the inliner cannot flatten) still printed one line. So the gap is real
+   bookkeeping, not an inlining artefact.
+
+A correction worth recording: a first grep suggested `optimized_file_mir` had *no* production consumer
+(only tests), which would have meant inlining was not in the trap path at all. That was wrong — the
+grep searched `jr-cli` while the consumers are in `jr-db/src/run.rs` and `build.rs`. Checked again
+before relying on it, because the whole scope turned on it.
+
+### Fork 1 — how deep to go
+
+- Options: **a shadow call stack with per-frame *names* (taken, recommended)**; a full source-level
+  backtrace with an inline-provenance chain in every `MirSpan`; leave traps as one line.
+- Why: the full version is what rustc/LLVM do (`SourceScope`, `DILocation` inline-at chains) and is the
+  right long-term answer, but it means every `MirSpan` gains a field every pass must maintain, replacing
+  ADR-0021 §3's *structural* guarantee with a discipline no verifier can check — precisely the "a flag
+  some passes ignored" shape PLAN.md §5's first failure mode names. Leaving traps as one line abandons a
+  W3 feature. The shadow stack delivers "how did I get here" honestly at a wave's size.
+
+### Fork 2 — which stack
+
+- Options: **a shadow stack both engines maintain identically (taken, recommended)**; the platform
+  stack via an unwinder.
+- Why: constraint 2 says no unwinder or symbol table exists, and constraint 3 says native's output would
+  have to match the VM's byte for byte regardless. A shadow stack is the only mechanism *both* engines
+  can implement the same way, which makes agreement structural instead of something the harness must
+  catch after the fact.
+
+### Fork 3 — what each frame shows
+
+- Options: **the procedure's name (taken, recommended)**; name plus the call site's line; just a count.
+- Why: a per-frame line needs a return-address-to-span table embedded in the binary — the subsystem
+  Fork 1 declined. The innermost frame's line, the one a reader actually wants, is already there from
+  ADR-0020. A name answers the question the chain exists to answer.
+
+### Fork 4 — inlined frames
+
+- Options: **omit them, and say so (taken, recommended)**; reconstruct them from source.
+- Why: a frame the inliner removed has no runtime existence — there was no call, so there is nothing to
+  push, and both engines agree because the pass is deterministic (fixed 24-statement threshold, same
+  `Callees`). Reconstructing them would describe the *source* rather than the *execution*; ADR-0020 §4
+  already held that reporting no location beats reporting a neighbouring one, and the same applies to a
+  frame. Stated explicitly in ADR-0066 §4 because a reader comparing against their source will notice.
+
+### Resolution
+
+All four forks taken as recommended. ADR-0066 records them and bounds ADR-0020. No new diagnostic code
+(a backtrace is a runtime message, not a diagnostic; E0258 still first free).
