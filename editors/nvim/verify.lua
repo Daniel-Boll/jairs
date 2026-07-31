@@ -879,6 +879,48 @@ if has_parser then
       buf = vim.api.nvim_get_current_buf()
     end
 
+    -- `variant` (ADR-0068). A legal identifier like `switch`, `context` and `push_context` before it,
+    -- so omitting the grammar rule would mis-colour it rather than produce an ERROR node. This also
+    -- pins that a `variant` and a `union` produce *different* node kinds: they are structurally
+    -- identical in the syntax and only the keyword distinguishes them, so a shared rule would make a
+    -- tagged type indistinguishable from an untagged one in an editor.
+    local va_file = root .. "/tests/corpus/valid/055-variant.jr"
+    if vim.uv.fs_stat(va_file) then
+      vim.cmd.edit(vim.fn.fnameescape(va_file))
+      local va_buf = vim.api.nvim_get_current_buf()
+      local va_ok, va_parser = pcall(vim.treesitter.get_parser, va_buf, "jairs")
+      if va_ok and va_parser then
+        local va_tree = va_parser:parse()[1]
+        check("the variant corpus file parses with no ERROR node", not va_tree:root():has_error())
+
+        local va_kinds = {}
+        local function va_walk(node)
+          va_kinds[node:type()] = (va_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            va_walk(child)
+          end
+        end
+        va_walk(va_tree:root())
+        check("tree-sitter produces variant_type", (va_kinds.variant_type or 0) == 1)
+        -- The same file declares a union, and the two must not collapse into one kind.
+        check("a union in the same file stays a union_type", (va_kinds.union_type or 0) == 1)
+
+        local va_q_ok, va_q = pcall(vim.treesitter.query.get, "jairs", "highlights")
+        if va_q_ok and va_q then
+          local saw = false
+          for id, node in va_q:iter_captures(va_tree:root(), va_buf, 0, -1) do
+            if va_q.captures[id] == "keyword"
+              and vim.treesitter.get_node_text(node, va_buf) == "variant" then
+              saw = true
+            end
+          end
+          check("`variant` highlights as a keyword", saw)
+        end
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
     -- `#no_abc` (ADR-0058 §3). Two things the drift gate cannot see.
     --
     -- The **ordering** one is why this block exists. `#c_call` and `#no_abc` are legal in either

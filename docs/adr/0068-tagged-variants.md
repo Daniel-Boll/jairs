@@ -119,12 +119,19 @@ program that wants no check writes `union`.
 
 ```jr
 switch v {
-    case i; print("an integer");
-    case f; print("a float");
+    case .i; print("an integer");
+    case .f; print("a float");
 }
 ```
 
-An arm names a **field**, and the `switch` compares the tag. Exhaustiveness is the same check ADR-0067
+An arm names a **case**, spelled as a bare `.member` — and that spelling is not a new rule but the one
+ADR-0046 already built: a bare `.` member asks the *context* for a namespace to resolve a name in, which
+for a `switch` arm is the scrutinee's type. Writing `case i;` was this ADR's first draft and it is wrong:
+a bare `i` goes through ordinary name resolution and reports E0201 for a name nothing declared, which is
+what running it showed. Extending `check_bare_member` to accept a variant is a smaller change than a new
+resolution rule would be, and it makes `case .i` read exactly like the `case .RED` of an enum `switch`.
+
+The `switch` compares the tag. Exhaustiveness is the same check ADR-0067
 §3 applies to an enum, over the variant's fields instead of an enum's members — so E0258 lists the
 missing cases and E0260 still refuses an `else` on a complete match. That reuses the wave that just
 shipped rather than adding a second matching mechanism, which is the whole reason this wave follows that

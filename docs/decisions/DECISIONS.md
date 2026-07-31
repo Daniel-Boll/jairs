@@ -487,3 +487,14 @@ All five forks taken as recommended. ADR-0068 records them and follows ADR-0045 
 than reversing it. One new keyword (`variant`), one new pool item, one new `TrapKind`, **no new
 diagnostic code** (E0261 still first free). The `is_union` → `kind` change is the largest and least
 interesting part of the diff, which the ADR says so a reviewer reads its shape rather than each line.
+
+### Fork 5a — the case spelling, corrected mid-wave
+
+- Options: **a bare `.member`, reusing ADR-0046 (taken, recommended)**; a bare `member` name as ADR-0068
+  §5's draft wrote it; a `case v.i;` path form.
+- Why: writing `case i;` looked natural but does not work, and running it said so — a bare `i` goes
+  through ordinary name resolution and reports E0201 for a name nothing declared. A bare `.i` already
+  parses and already arrives at `check_bare_member` with the scrutinee's type as its expected type
+  (ADR-0046's "the context supplies what the source omits"), so accepting a *variant* there is a smaller
+  change than a new resolution rule — and it makes `case .i` read exactly like an enum switch's
+  `case .RED`. ADR-0068 §5 is corrected to record this rather than left describing a form that fails.

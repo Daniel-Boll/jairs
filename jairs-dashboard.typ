@@ -94,21 +94,21 @@
 #v(0.4em)
 #pill[6/6 gates green]
 #h(4pt)
-#pill[924 tests]
+#pill[928 tests]
 #h(4pt)
-#pill[ADR-0067 latest]
+#pill[ADR-0068 latest]
 #h(4pt)
-#pill(fill: rgb("#fdf2e6"), stroke: warn)[W4.5 open early · tagged variant next]
+#pill(fill: rgb("#e8f5ec"), stroke: good)[W4.5 complete · W4 comptime next]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "924", "workspace, all passing"),
-  metric("Corpus", "153", "jr files, both engines"),
-  metric("ADRs", "67", "0001 to 0067, immutable"),
+  metric("Tests", "928", "workspace, all passing"),
+  metric("Corpus", "155", "jr files, both engines"),
+  metric("ADRs", "68", "0001 to 0068, immutable"),
   metric("Diagnostics", "91", "codes, E0261 next free"),
-  metric("Editor checks", "162", "Neovim, verified not gated"),
+  metric("Editor checks", "166", "Neovim, verified not gated"),
 )
 
 // ---------------------------------------------------------------------------
@@ -151,15 +151,16 @@
         itself.
       ]
     - #text(size: 7.4pt)[
-        *MIR snapshots prove properties, not just stability.* `describe` and `describe_qualified` lower
-        to *identical* MIR, which is how the corpus shows `case .RED` and `case Colour.RED` are two
-        spellings of one member; and `from_call` shows one `call` before the first comparison, proving the
-        scrutinee is evaluated once rather than per arm.
+        *A new enum variant only asks the question; answering it is still manual.* `AggregateKind` and
+        `TagCheck` each turned every match site into a compile error, which is what *found* the sites —
+        but a compile error only asks "which group does this belong to", and this wave answered two of
+        them wrongly. Both were silent: DCE deleted a variant's stores, and the slot-liveness collector
+        panicked. Running found them; no verifier would have.
       ]
     - #text(size: 7.4pt, fill: warn)[
-        *The formatter deleted a whole statement, again.* A kind absent from `is_stmt_kind` is silently
-        dropped, so the first formatted run lost all four switches in the corpus file. Twelfth wave in
-        fourteen. The ADR predicted it, which is why the fix and the node arrived together.
+        *The formatter destroyed a declaration, again.* A two-way `if` whose `else` meant "struct" turned
+        every `variant` into a `struct` — the exact mistake that function's own docs already warned about
+        for `enum_flags`, made again one form later. Thirteenth wave in fifteen.
       ]
   ],
 )
@@ -174,7 +175,8 @@
   ("Full integer tower, bool, string, pointers", "pointer difference p - q, deferred"),
   ("float32 and float64, plain IEEE-754, no traps", "percent on floats, is_nan, math (W7)"),
   ("struct, nominal, one level", ""),
-  ("union, nominal, untagged, fields at offset 0", "a tagged variant type (W4.5, next)"),
+  ("union, nominal, untagged — a cross-field read reinterprets", ""),
+  ("variant — a tagged union: a wrong-case read traps, switch destructures", "a recursive variant; eliding the check in an arm"),
   ("enum and enum_flags, namespaced, bare dot-member, switch cases", "an explicit backing type"),
   ("Fixed arrays and views, bounds-checked, returnable", "array literals, sub-slicing"),
   ("cast and xx from context; operator overloading", "unary, index and call overloading"),
@@ -240,7 +242,7 @@
   ("Cranelift back end", "works", "Aggregate returns via sret; indirect calls via func_addr"),
   ("LLVM back end", "not started", "W8 owns it"),
   ("Language server", "12 caps", "Diagnostics, hover, goto, completion, rename, actions, hints"),
-  ("Neovim integration", "works", "Runtimepath dir, no plugin manager; 162 checks"),
+  ("Neovim integration", "works", "Runtimepath dir, no plugin manager; 166 checks"),
   ("Driver", "stub", "Should consume the workspace notion that now exists"),
 )
 
@@ -288,8 +290,8 @@
     "Arbitrary compile-time execution, RTTI and Type values, insert, code. PLAN section 5 names this the project's top risk: sema and comptime become mutually recursive.",
   ),
   (
-    "W4.5 Pattern matching", "in progress",
-    "switch with exhaustiveness checking and a bare dot-member as a case both landed (ADR-0067), which also settles ADR-0041 §2 step 5. Reordered ahead of W4 after checking showed its stated dependency on comptime was a want rather than a need. Remaining: a tagged variant type beside union — the other half of ADR-0045 §1, now unblocked because switch is what makes a tag worth reading.",
+    "W4.5 Pattern matching", "done",
+    "switch with exhaustiveness checking, a bare dot-member as a case (settling ADR-0041 §2 step 5), and a tagged variant type (ADR-0067, ADR-0068). Reordered ahead of W4 after checking showed its stated dependency on comptime was a want rather than a need. The variant follows ADR-0045 §1's own instruction — a different declaration form, not a change to union — and union is untouched, still untagged and still one word smaller.",
   ),
   (
     "W5 Polymorphism", "not started",
@@ -343,20 +345,21 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[Nineteen waves shipped]
+    #sub[Twenty waves shipped]
     #text(size: 7.4pt)[
-      ADR-0049 through 0067: for and defer, using, aggregate returns, multiple returns, named and
+      ADR-0049 through 0068: for and defer, using, aggregate returns, multiple returns, named and
       default arguments, scope visibility, imported constants, float constants, context, the
       bounds-check build setting, indirect calls, null plus a memory source, the allocator
-      protocol, push_context, pointer arithmetic, temporary storage, trap backtraces, and switch.
+      protocol, push_context, pointer arithmetic, temporary storage, trap backtraces, switch, and
+      tagged variants.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 924. Corpus 116 to 153 files. Neovim checks 103 to 162. *W2 and W3 both
-      closed*, and *W4.5 opened a wave early* — its stated dependency on comptime turned out not to
-      exist. A switch over an enum is now exhaustiveness-checked, which leaves one deliverable (a tagged
-      variant type) before W4 — comptime, the project's top risk.
+      Test count 900 to 928. Corpus 116 to 155 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
+      closed* — W4.5 a wave early, because its stated dependency on comptime turned out not to exist. A
+      switch over an enum or a tagged variant is exhaustiveness-checked, and a wrong-case read traps.
+      What remains is W4 — comptime, the project's top risk.
     ]
 
     #v(0.3em)

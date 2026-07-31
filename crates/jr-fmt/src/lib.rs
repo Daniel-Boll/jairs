@@ -354,7 +354,7 @@ impl Formatter {
                     self.format_proc(&child);
                     return;
                 }
-                STRUCT_TYPE | UNION_TYPE => {
+                STRUCT_TYPE | UNION_TYPE | VARIANT_TYPE => {
                     self.format_struct_type(&child);
                     return;
                 }
@@ -580,10 +580,13 @@ impl Formatter {
     /// overlapping fields turned into non-overlapping ones, which is precisely the mistake
     /// ADR-0043 caught when a literal `"enum"` rewrote an `enum_flags` (§7's standing trap).
     fn format_struct_type(&mut self, node: &SyntaxNode) {
-        self.emit(if node.kind() == UNION_TYPE {
-            "union {"
-        } else {
-            "struct {"
+        // A **match on the kind**, not a two-way `if`: the third form arrived (ADR-0068) and an
+        // `else` branch meaning "struct" turned every `variant` into a `struct` — which is exactly the
+        // mistake this function's own docs warn about for `enum_flags`, made again one form later.
+        self.emit(match node.kind() {
+            UNION_TYPE => "union {",
+            VARIANT_TYPE => "variant {",
+            _ => "struct {",
         });
         if let Some(field_list) = node.children().find(|n| n.kind() == FIELD_LIST) {
             let has_fields = field_list.children().any(|n| n.kind() == FIELD);
@@ -837,7 +840,7 @@ impl Formatter {
                     self.format_type(&elem);
                 }
             }
-            STRUCT_TYPE | UNION_TYPE => {
+            STRUCT_TYPE | UNION_TYPE | VARIANT_TYPE => {
                 self.format_struct_type(node);
             }
             ENUM_TYPE => {
@@ -1680,6 +1683,7 @@ fn is_type_kind(kind: SyntaxKind) -> bool {
             | POINTER_TYPE
             | STRUCT_TYPE
             | UNION_TYPE
+            | VARIANT_TYPE
             | ARRAY_TYPE
             | VIEW_TYPE
             | ENUM_TYPE

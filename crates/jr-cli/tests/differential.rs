@@ -848,6 +848,81 @@ fn a_trap_with_no_jairs_caller_names_only_main() {
 }
 
 // ---------------------------------------------------------------------------
+// Tagged variants (ADR-0068)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reading_the_wrong_variant_case_traps_identically_in_both_engines() {
+    // The whole point of the `variant` form, and a corpus program cannot check it: the trap ends the
+    // program, and a file in `valid/` must run to completion. So the trap lives here, where both
+    // engines' stderr is compared byte for byte (ADR-0020 §2).
+    //
+    // Two cases of the *same* type, deliberately: if the tag were ignored, reading `f` after writing
+    // `i` would quietly return 7, which same-typed cases make indistinguishable from a correct read.
+    // So this shape is the one that can only pass if the tag is really consulted.
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("wrongcase.jr");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  V :: variant {\n\
+                  \x20   i: s64;\n\
+                  \x20   f: s64;\n\
+                  }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   v: V;\n\
+                  \x20   v.i = 7;\n\
+                  \x20   exit(v.f);\n\
+                  }\n";
+    std::fs::write(&path, source).expect("a writable temporary directory");
+
+    let vm = run_in_vm(&path);
+    let native = run_natively(&path, dir.path());
+
+    let expected = format!(
+        "error: read the wrong variant case\n  --> {}:11:10\n  in main\n",
+        path.display()
+    );
+    assert_eq!(vm.stderr, expected, "the VM's wrong-case trap changed");
+    assert_eq!(
+        native.stderr, expected,
+        "native disagrees with the VM about a wrong-case read"
+    );
+    assert_eq!(vm.status, 4);
+    assert_eq!(native.status, 4);
+}
+
+#[test]
+fn the_same_program_written_with_a_union_reinterprets_instead_of_trapping() {
+    // The negative control, and what makes the test above mean something: `union` is *unchanged* by
+    // ADR-0068 (ADR-0045 §1's bargain still stands), so the identical program with `union` returns the
+    // bits and never traps. If this ever traps, `union` has silently become a `variant`.
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("reinterpret.jr");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  U :: union {\n\
+                  \x20   i: s64;\n\
+                  \x20   f: s64;\n\
+                  }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   u: U;\n\
+                  \x20   u.i = 7;\n\
+                  \x20   exit(u.f);\n\
+                  }\n";
+    std::fs::write(&path, source).expect("a writable temporary directory");
+
+    let vm = run_in_vm(&path);
+    let native = run_natively(&path, dir.path());
+
+    assert_eq!(vm.stderr, "", "a union read must not trap");
+    assert_eq!(native.stderr, "");
+    assert_eq!(vm.status, 7, "a union reinterprets the bits it was given");
+    assert_eq!(native.status, 7);
+}
+
+// ---------------------------------------------------------------------------
 // DCE and const-prop (ADR-0022)
 // ---------------------------------------------------------------------------
 

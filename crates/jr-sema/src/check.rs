@@ -1089,8 +1089,30 @@ impl Ctx<'_> {
             return PoolId::ERROR;
         }
 
-        // A context that is not an enum is a *different* problem from having none, so it gets
-        // its own wording with the type named — conflating them would misdirect the reader
+        // **A bare member against a `variant` names one of its cases** (ADR-0068 §5). The same idea
+        // ADR-0046 built this for — the context supplies the namespace the source omitted — with a
+        // variant's case list as the namespace instead of an enum's members. Handled before the enum
+        // gate below so that a `switch v { case .i; … }` resolves rather than being told it needs an
+        // enum, and the *type* is the variant, because that is what the arm is compared against.
+        if let Item::VariantType { decl } = *self.pool.item(target) {
+            let known = self
+                .pool
+                .struct_fields(decl)
+                .is_some_and(|cases| cases.iter().any(|case| case.name == name));
+            if known {
+                return target;
+            }
+            let text = self.interner.resolve(name).to_owned();
+            let ty_text = self.describe(target);
+            self.diags.push(
+                Diagnostic::error(name_span, format!("`{ty_text}` has no case `{text}`"))
+                    .with_code(E0244),
+            );
+            return PoolId::ERROR;
+        }
+
+        // A context that is neither an enum nor a variant is a *different* problem from having none,
+        // so it gets its own wording with the type named — conflating them would misdirect the reader
         // (ADR-0046 §4).
         let Item::EnumType { decl, flags } = *self.pool.item(target) else {
             let text = self.describe(target);
@@ -1711,6 +1733,21 @@ impl Ctx<'_> {
             Item::EnumType { decl, flags } => Some((*decl, *flags)),
             _ => None,
         };
+        // **A variant is exhaustible too**, over its *cases* rather than an enum's members (ADR-0068
+        // §5). Its case names come from the struct side table, so the same set-judgement below serves
+        // both — which is why this wave adds no diagnostic: E0258 and E0260 already say the right
+        // things about "handles every member of".
+        let variant_cases: Option<Vec<Symbol>> = match self.pool.item(scrutinee) {
+            Item::VariantType { decl } => Some(
+                self.pool
+                    .struct_fields(*decl)
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|case| case.name)
+                    .collect(),
+            ),
+            _ => None,
+        };
 
         // Members named so far, and their arms' spans, so a duplicate is reported against the *later*
         // arm — the earlier one is the one that works.
@@ -1738,7 +1775,7 @@ impl Ctx<'_> {
                     // For an enum, remember *which* member so exhaustiveness and duplicate detection
                     // have something to compare. A case whose member cannot be named — a computed
                     // value, or an error — contributes nothing rather than a wrong entry.
-                    if enum_decl.is_some()
+                    if (enum_decl.is_some() || variant_cases.is_some())
                         && let Some(name) = self.case_member_name(body, case)
                     {
                         if seen_members.contains(&name) {
@@ -1758,6 +1795,43 @@ impl Ctx<'_> {
                 }
             }
             self.check_stmt(body, arm.body);
+        }
+
+        // A variant's set judgement, the same shape as the enum one below but over its cases
+        // (ADR-0068 §5). Written out rather than folded into one generic pass because the two get their
+        // names from different tables, and a shared helper taking `Vec<Symbol>` would hide which.
+        if let Some(cases) = &variant_cases {
+            let missing: Vec<String> = cases
+                .iter()
+                .filter(|name| !seen_members.contains(name))
+                .map(|name| self.interner.resolve(*name).to_owned())
+                .collect();
+            let text = self.describe(scrutinee);
+            match (missing.is_empty(), seen_else) {
+                (true, Some(else_span)) => {
+                    self.diags.push(
+                        Diagnostic::error(
+                            else_span,
+                            format!("this `else` can never run: every case of `{text}` is handled"),
+                        )
+                        .with_code(E0260)
+                        .with_help("remove the `else`"),
+                    );
+                }
+                (false, None) => {
+                    let list = missing.join("`, `");
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            format!("this `switch` does not handle every case of `{text}`"),
+                        )
+                        .with_code(E0258)
+                        .with_note(format!("missing: `{list}`"))
+                        .with_help("add a `case` for each, or an `else` arm"),
+                    );
+                }
+                (true, None) | (false, Some(_)) => {}
+            }
         }
 
         // The set judgement. Only for an enum: §3 restricts exhaustiveness to the type whose member set

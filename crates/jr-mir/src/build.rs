@@ -1649,6 +1649,16 @@ impl Lower<'_> {
     /// comparisons all fail falls through to the join, which is what an unmatched non-enum `switch`
     /// does — and an enum one cannot get there, because sema proved the members are covered (§3).
     fn switch_stmt(&mut self, value: ExprId, arms: &[jr_hir::SwitchArm]) {
+        // **A variant switches on its tag, not on its value** (ADR-0068 §5): a variant is an aggregate
+        // and has no comparable value, so what the arms distinguish is which case is live — which is
+        // exactly what the tag holds. Each arm's case becomes that case's *index*, so the chain is the
+        // same `==` tests an enum switch builds and neither back end learns anything new.
+        if self.pointee(self.ty(value)).is_none()
+            && matches!(self.pool.item(self.ty(value)), Item::VariantType { .. })
+        {
+            self.variant_switch(value, arms);
+            return;
+        }
         // Evaluated once, before any test (see above).
         let scrutinee = self.expr(value);
         let Some(mut current) = self.current else {
@@ -1722,6 +1732,119 @@ impl Lower<'_> {
 
         self.ssa.seal_block(&mut self.mir, join);
         self.current = any_fell_through.then_some(join);
+    }
+
+    /// Lowers `switch v { case .i; … }` over a variant, comparing the **tag** (ADR-0068 §5).
+    ///
+    /// Structurally the same chain [`Self::switch_stmt`] builds, with two differences: the scrutinee is
+    /// the tag loaded once from the variant's place, and each arm's value is the *case index* the arm
+    /// names rather than an expression it evaluates — a case is a name in the variant's namespace, not
+    /// a value (ADR-0067 §2's rule, applied to a different namespace).
+    ///
+    /// No `TagCheck` is emitted for the comparison itself: reading the tag is not reading a case, so
+    /// there is nothing for a check to be right or wrong about.
+    fn variant_switch(&mut self, value: ExprId, arms: &[jr_hir::SwitchArm]) {
+        let Some((place, ty)) = self.place(value) else {
+            self.give_up("a `switch` over a variant that has no place");
+            return;
+        };
+        let Item::VariantType { decl } = *self.pool.item(ty) else {
+            self.give_up("a variant `switch` on a non-variant");
+            return;
+        };
+        let cases = match self.pool.struct_fields(decl) {
+            Some(cases) => cases.to_vec(),
+            None => {
+                self.give_up("a variant whose cases were never resolved");
+                return;
+            }
+        };
+        let span = self.span(value);
+        // The tag, loaded once — the same single-evaluation property `switch_stmt` has, and for the
+        // same reason: a per-arm load would re-read a tag the arms cannot change.
+        let tag = self.define(
+            PoolId::U8,
+            Rvalue::Load(place.project(Projection::VariantTag)),
+            span,
+        );
+        let Some(mut current) = self.current else {
+            return;
+        };
+
+        let join = self.mir.push_block();
+        let mut any_fell_through = false;
+        let mut fallback: Option<StmtId> = None;
+
+        for arm in arms {
+            let Some(case) = arm.value else {
+                if fallback.is_none() {
+                    fallback = Some(arm.body);
+                }
+                continue;
+            };
+            // Which case the arm names. `None` means sema let through something that is not a case
+            // name, which `give_up` refuses rather than lowering as a comparison against a value.
+            let Some(index) = self
+                .switch_case_name(case)
+                .and_then(|name| cases.iter().position(|c| c.name == name))
+            else {
+                self.give_up("a variant `switch` arm that names no case");
+                return;
+            };
+            let index = u32::try_from(index).unwrap_or(u32::MAX);
+
+            self.current = Some(current);
+            let Some(test) = self.current else { return };
+            let body_bb = self.mir.push_block();
+            let next_bb = self.mir.push_block();
+
+            let wanted = self.pool.int_value(PoolId::U8, u64::from(index));
+            let cond = self.define(
+                PoolId::BOOL,
+                Rvalue::Binary {
+                    op: BinOp::Eq,
+                    lhs: tag,
+                    rhs: Operand::Constant(wanted),
+                },
+                span,
+            );
+            self.mir.set_terminator(
+                test,
+                Terminator::Branch {
+                    cond,
+                    then_: Target::new(body_bb),
+                    else_: Target::new(next_bb),
+                },
+            );
+            self.ssa.seal_block(&mut self.mir, body_bb);
+            self.ssa.seal_block(&mut self.mir, next_bb);
+
+            self.current = Some(body_bb);
+            self.stmt(arm.body);
+            any_fell_through |= self.goto(join);
+
+            current = next_bb;
+        }
+
+        self.current = Some(current);
+        if let Some(body) = fallback {
+            self.stmt(body);
+        }
+        any_fell_through |= self.goto(join);
+        self.ssa.seal_block(&mut self.mir, join);
+        self.current = any_fell_through.then_some(join);
+    }
+
+    /// The case name a variant `switch` arm writes, if it writes one (ADR-0068 §5).
+    ///
+    /// A bare `.i` is an [`Expr::Member`]; a qualified `V.i` is an [`Expr::Field`]. Anything else names
+    /// no case, and the caller refuses rather than comparing against a value.
+    fn switch_case_name(&self, case: ExprId) -> Option<Symbol> {
+        match self.body.expr(case) {
+            Expr::Member { name, .. } => Some(*name),
+            Expr::Field { name, .. } => Some(*name),
+            _ => None,
+        }
     }
 
     fn while_stmt(&mut self, cond: ExprId, body: StmtId, label: Option<Symbol>) {

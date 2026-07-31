@@ -1,0 +1,106 @@
+// `variant` — a tagged union with a checked read (ADR-0068), and the feature that **completes wave
+// W4.5**.
+//
+// ADR-0045 §1 rejected a tagged `union` on three grounds and said what to do instead, in as many words:
+// "a *tagged* variant type becomes worth having — and it should be a **different declaration form**
+// then, the way `enum_flags` is different from `enum`, rather than a silent change to what `union`
+// means." Two of its three grounds have since gone away — Jairs has pattern matching now (ADR-0067) and
+// therefore a way to *ask* which case is live — and the third stands, which is exactly why this is a new
+// form: a variant is bigger than the equivalent union, and that cost is a choice a program makes.
+//
+// Six things here are worth checking rather than assuming, and the `exit` at the end gives each teeth
+// under the differential harness:
+//
+//   * a write **sets the tag**, and reading the same case reads what was written;
+//   * `switch` over a variant compares the **tag**, so `case .i` runs exactly when `i` is live — the
+//     bare `.i` being the spelling ADR-0046 already built, not a new resolution rule (ADR-0068 §5);
+//   * a `switch` is **exhaustive over the cases**: omitting one is E0258 (`type-errors/062`) with no new
+//     diagnostic code, which is the evidence reusing ADR-0067's machinery was the right shape;
+//   * writing a second case **moves the tag**, so a later `switch` takes the other arm — the tag is read
+//     each time rather than folded once;
+//   * a `union` in the same file **still reinterprets** and never traps, which is what makes the
+//     variant's check a choice rather than a language-wide cost (ADR-0045 §1 unchanged);
+//   * both engines agree, including on the trap's wording — `imports/invalid` has no variant case
+//     because the wrong-case *trap* is a runtime event, checked by `differential.rs` rather than here.
+//
+// What this file deliberately does **not** do is read the wrong case: that traps, and a corpus program
+// must run to completion. The trap is exercised in `differential.rs`, where both engines' stderr is
+// compared byte for byte.
+#import "Basic";
+
+/// A variant with two cases of the same type, deliberately: if the tag were ignored, reading `f` after
+/// writing `i` would return 7 rather than trapping, and same-typed cases are what make that
+/// indistinguishable from a correct read. So this shape is the one that can only work if the tag works.
+V :: variant {
+    i: s64;
+    f: s64;
+}
+
+/// A union of the same two cases, for contrast. Reading `f` after writing `i` **reinterprets** here and
+/// returns the bits — no trap, no tag, and one word smaller. That is ADR-0045's bargain, still on offer.
+U :: union {
+    i: s64;
+    f: s64;
+}
+
+/// Which case is live, as a number — the question a `switch` over a variant answers (ADR-0068 §5).
+///
+/// The arms compare the *tag*, not the value: a variant is an aggregate with no comparable value, so
+/// what the arms distinguish is which case was last written.
+which :: (v: V) -> s64 {
+    r := 0;
+    switch v {
+        case .i;
+            r = 1;
+        case .f;
+            r = 2;
+    }
+    return r;
+}
+
+main :: () {
+    n := 0;
+
+    // A write sets the tag; reading the same case reads the value back.
+    a: V;
+    a.i = 7;
+    if a.i == 7 {
+        n = n + 1;
+    }
+
+    // The `switch` sees `i` as live.
+    if which(a) == 1 {
+        n = n + 2;
+    }
+
+    // Writing the other case **moves** the tag, so the same `switch` now takes the other arm. This is
+    // what proves the tag is read at each switch rather than folded once at the first.
+    a.f = 9;
+    if a.f == 9 {
+        n = n + 4;
+    }
+    if which(a) == 2 {
+        n = n + 8;
+    }
+
+    // A second variant, to show the tag belongs to the *object* rather than to the type.
+    b: V;
+    b.i = 1;
+    if which(b) == 1 && which(a) == 2 {
+        n = n + 16;
+    }
+
+    // The union still reinterprets: writing `i` and reading `f` gives the bits back with no trap. If
+    // this ever traps, `union` has silently become a `variant` and ADR-0045's bargain is gone.
+    u: U;
+    u.i = 5;
+    if u.f == 5 {
+        n = n + 32;
+    }
+
+    // Every assertion: 63.
+    if n == 63 {
+        exit(0);
+    }
+    exit(1);
+}

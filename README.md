@@ -18,11 +18,13 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after **`switch` with exhaustiveness checking** (ADR-0067), which **opens wave W4.5 —
-Pattern matching, a wave earlier than planned**: `switch` over an enum must name every member or say
-`else`, a missing one is an error that *lists* what is missing, and a bare `.RED` works as a case.
-PLAN placed W4.5 after W4 "because exhaustiveness diagnostics want comptime type info" — checking showed
-that was a want rather than a need, so the wave moved forward and §2.1 records the amendment. On top of
+Last updated after **`variant`, a tagged union with a checked read** (ADR-0068), which **completes wave
+W4.5 — Pattern matching**: a write sets the tag, reading a different case *traps* instead of
+reinterpreting bits, and `switch` destructures it by case. `union` is untouched and still reinterprets,
+which is what makes the variant's check a choice rather than a language-wide cost. On top of `switch`
+with exhaustiveness checking (ADR-0067), which **opened W4.5 a wave earlier than planned**: PLAN placed
+it after W4 "because exhaustiveness diagnostics want comptime type info" — checking showed that was a
+want rather than a need, so the wave moved forward and §2.1 records the amendment. And on top of
 traps with backtraces (ADR-0066), which **completed wave W3 — Runtime core**: a
 trap now names the procedure frames that were live beneath it, innermost first, and both engines emit
 byte-identical bytes — the VM from a shadow stack it resolves against the HIR, native from name pointers
@@ -46,7 +48,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 924 workspace tests; six CI gates green on macOS arm64, plus 162 Neovim
+`print_int` (ADR-0037). 928 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do
@@ -81,7 +83,8 @@ The authoritative version of this list is
 | `float32`, `float64` — plain IEEE-754, no traps | `%` on floats, `is_nan`, math intrinsics (**W7**) |
 | `cast(T, x)` between any two numeric types, and `xx` where the context gives the type | pointer conversions — `xx` is no more powerful than `cast` |
 | `struct { … }`, one level, nominal | |
-| `union { … }`, nominal, **untagged** — every field at offset 0 | a *tagged* variant type (**W4.5**, now unblocked by `switch`) |
+| `union { … }`, nominal, **untagged** — every field at offset 0, so a cross-field read reinterprets | |
+| `variant { … }` — a tagged union: a write sets the tag, reading another case **traps**, `switch` destructures it (ADR-0068) | a recursive variant; one in a `#foreign` signature; eliding the check inside a matching arm |
 | `enum { RED; GREEN :: 5; }`, nominal, namespaced members, and bare `.RED` from context — including as a `switch` case (ADR-0067) | |
 | `enum_flags { READ; WRITE; }` — powers of two, combines with `& \| ^ ~` | building one from a computed integer (`cast(Perm, 3)` is refused) |
 | procedures, one result or several: `-> (s64, bool)`, `q, ok := f();`, `_` to discard | `#must` (its own ADR); a multi-result call as a `return` operand |
@@ -341,7 +344,7 @@ ignoring the flag a compile error, is owed its own ADR. There is no GC and no RA
 - **ADR-0002's arithmetic has two implementations, not one.** `jr-pool` owns the one
   both *evaluators* share; `jr-codegen-clif` keeps its own because it emits code rather
   than evaluating. The pair is held equal by `differential.rs` and nothing else.
-- **Neovim integration is verified on one machine, not gated.** The 162 checks need an
+- **Neovim integration is verified on one machine, not gated.** The 166 checks need an
   editor, and Neovim is not a build dependency of this workspace, so `cargo test` cannot
   run them. No other editor is packaged for, deliberately (ADR-0036). They also need the
   *installed* parser to be current: `editors/nvim/build.sh` is a separate artefact from the
