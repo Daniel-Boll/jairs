@@ -90,3 +90,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0067](0067-switch-and-exhaustiveness.md) | `switch` with exhaustiveness from the pool, and W4.5 moves before W4 (amends §2.1's order) | Accepted |
 | [0068](0068-tagged-variants.md) | `variant` is a tagged union with a checked read, destructured by `switch` (completes W4.5) | Accepted |
 | [0069](0069-run-across-files-and-in-a-body.md) | A `#run` may call an imported procedure and appear in a body; W4 is split into sub-waves | Accepted |
+| [0070](0070-array-length-from-a-constant.md) | An array length may name a literal-valued constant (amends ADR-0039 §3a) | Accepted |

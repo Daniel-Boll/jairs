@@ -1,0 +1,81 @@
+// An array length that **names a constant** (ADR-0070) — W4's second sub-wave, and an amendment to
+// ADR-0039 §3a rather than a reversal of it.
+//
+// ADR-0039 §3a refused `[COUNT]u8` with one argument: const-eval lives in `jr-db` over the bytecode VM,
+// *downstream* of where a type annotation is resolved, so "`jr-sema` cannot ask for `COUNT`'s value
+// without inverting that dependency". That is right about a length needing **evaluation** and too broad
+// about constants: for `N :: 4` there is nothing to evaluate — the literal is already in the HIR, and
+// sema already resolves type *names* against the file scope. `jr-sema` still depends on neither `jr-db`
+// nor `jr-vm`, which was checked rather than assumed.
+//
+// Five things here are worth checking rather than assuming, and the `exit` gives each teeth:
+//
+//   * `[N]s64` with `N :: 4` **is an array of four**, indexable to 3 and no further;
+//   * the same constant names the length of **two different element types**, so the length is resolved
+//     per use rather than baked into one type;
+//   * a **nested** `[N][M]s64` resolves, because the element type takes the same path;
+//   * the length still reaches the pool as a plain `u64` — nothing downstream can tell how it was
+//     written, which is the evidence this belongs in type resolution and not later;
+//   * `.count` on such an array is the same constant it would be for a literal length (ADR-0039 §5).
+//
+// What is **not** here is a length needing a value — arithmetic, a `#run`, or a constant naming another
+// constant — all still E0233 (`type-errors/023`), because sema runs before the evaluator. That line, not
+// "is it a literal", is what ADR-0070 §2 draws.
+#import "Basic";
+
+/// The length, as a plain literal-valued constant. This is the whole feature: one place to change a
+/// size that several declarations share.
+N :: 4;
+
+/// A second one, so the nested case has two distinct lengths and a transposed index would be visible.
+M :: 2;
+
+/// Sums an `[N]s64` **by name**, so the parameter type also resolves through the constant — a length is
+/// not only usable on a local.
+total :: (xs: [N]s64) -> s64 {
+    t := 0;
+    for x: xs {
+        t = t + x;
+    }
+    return t;
+}
+
+main :: () {
+    n := 0;
+
+    // Four elements, filled to the last index the length allows.
+    buf: [N]s64;
+    buf[0] = 1;
+    buf[1] = 2;
+    buf[2] = 3;
+    buf[3] = 4;
+    if total(buf) == 10 {
+        n = n + 1;
+    }
+
+    // `.count` is the constant, exactly as for a literal length.
+    if buf.count == 4 {
+        n = n + 2;
+    }
+
+    // The same constant naming the length of a **different element type**, so the length is resolved per
+    // use rather than tied to the first type that used it.
+    flags: [N]bool;
+    flags[3] = true;
+    if flags[3] {
+        n = n + 4;
+    }
+
+    // Nested, with two different constants: a transposed index would put 7 somewhere else.
+    grid: [N][M]s64;
+    grid[3][1] = 7;
+    if grid[3][1] == 7 {
+        n = n + 8;
+    }
+
+    // Every assertion: 15.
+    if n == 15 {
+        exit(0);
+    }
+    exit(1);
+}

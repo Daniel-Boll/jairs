@@ -18,7 +18,12 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after **`#run` across files and in a body** (ADR-0069), which **opens wave W4 — Comptime**,
+Last updated after **an array length that names a constant** (ADR-0070): `N :: 4;  buf: [N]s64;` now
+resolves, which ADR-0039 refused for thirty ADRs on an argument that turned out to cover only *part* of
+what it forbade — a length needing evaluation still waits for the comptime sub-wave, but one that is
+already a literal one name away needs none. That sub-wave's scheduled work, "aggressive const folding",
+was found already delivered by const-prop. On top of **`#run` across files and in a body** (ADR-0069),
+which **opened wave W4 — Comptime**,
 the wave PLAN §5 calls the project's top risk and which is therefore delivered in sub-waves. A `#run` may
 now call an imported procedure — the first time this compiler executes a library procedure *while
 compiling* — and appear inside a procedure body, where the body receives the computed value. Two internal
@@ -109,7 +114,7 @@ The authoritative version of this list is
 | `=` and compound `+= -= *= /= %= +%= -%= *%= &= \|= ^= <<= >>=` | |
 | `a.b.c` field access, auto-deref through pointers | dynamic arrays `[..]T` (**a later wave**) |
 | `[]T` views: `buf[]`, `xs[i]`, `xs.count`, writes through to the array, **returned from a procedure** | sub-slicing `buf[1..3]`, `==` on views |
-| `[N]T` fixed arrays: `a[i]`, `.count`, zeroed by default, bounds-checked — and `#no_abc` or `--no-bounds-check` to stop checking | array literals `[1, 2, 3]` (**a later wave**); a per-*index* `#no_abc` |
+| `[N]T` fixed arrays: `a[i]`, `.count`, zeroed by default, bounds-checked — and `#no_abc` or `--no-bounds-check` to stop checking. `N` may be a literal or a **named constant** (ADR-0070) | a length needing evaluation — arithmetic, `#run`, a chain, or another file's constant; array literals `[1, 2, 3]`; a per-*index* `#no_abc` |
 | calls, nested; a discarded call is a statement | |
 | integer literals (dec/hex/bin/oct, `_`), string literals + escapes | |
 | float literals: `1.5`, `1e9`, `1.5e-3`, `1_000.5` | float *printing* — `print_int` has no counterpart |

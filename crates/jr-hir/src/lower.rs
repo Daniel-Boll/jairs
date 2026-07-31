@@ -219,6 +219,7 @@ impl<'a> LowerCtx<'a> {
                 self.alloc_top_type_ref(TypeRef::Array {
                     elem,
                     len,
+                    len_name: lower_array_len_name(a, self.interner),
                     len_span,
                 })
             }
@@ -1054,6 +1055,7 @@ impl<'a> BodyLowerCtx<'a> {
                 self.alloc_type_ref(TypeRef::Array {
                     elem,
                     len,
+                    len_name: lower_array_len_name(a, self.interner),
                     len_span,
                 })
             }
@@ -1941,6 +1943,20 @@ fn lower_assign_op(kind: SyntaxKind) -> AssignOp {
 /// Shared by the top-level and body type-lowering paths so that `[COUNT]u8` behaves
 /// identically wherever it is written; the two paths have separate arenas and had already
 /// drifted once for pointers.
+/// The bare **name** an array length was written as, if it was one (ADR-0070 §1).
+///
+/// `None` for a literal (which `lower_array_len` reads) and for anything else — `[2 + 2]u8` names nothing
+/// to look up, so sema reports it rather than this guessing.
+///
+/// Lowering only *reads* the name; whether it resolves to a usable constant is a semantic judgement and
+/// therefore sema's, which is the same split ADR-0039 §3a drew for the literal.
+fn lower_array_len_name(ty: &ArrayType, interner: &Interner) -> Option<Symbol> {
+    let AstExpr::Name(name) = ty.len()? else {
+        return None;
+    };
+    Some(interner.intern(name.name_token()?.text()))
+}
+
 fn lower_array_len(
     ty: &ArrayType,
     len_span: Span,

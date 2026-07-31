@@ -99,6 +99,17 @@ pub enum TypeRef {
         /// report a lowering error, which `tests/corpus/type-errors/` explicitly forbids
         /// its files from doing (ADR-0039 §3a).
         len: Option<u64>,
+        /// The **name** the length was written as, when it was a bare name rather than a literal
+        /// (ADR-0070 §1).
+        ///
+        /// Carried so that `jr-sema` can resolve it to a constant and read that constant's literal — a
+        /// lookup needing no evaluation and therefore no dependency on `jr-db` or `jr-vm`, which is what
+        /// makes `[N]s64` resolvable a sub-wave before `[2 + 2]s64` (ADR-0039 §3a is amended here rather
+        /// than reversed).
+        ///
+        /// `None` when the length was a literal (then `len` is `Some`) or an expression that is neither —
+        /// `[2 + 2]u8` names nothing to look up, and sema reports it.
+        len_name: Option<Symbol>,
         /// Span of the length expression, for the diagnostic sema raises.
         ///
         /// Carried because a `TypeRef` has no span of its own (ADR-0013), so without this

@@ -284,15 +284,23 @@ impl<'a> Ctx<'a> {
             TypeRef::Array {
                 elem,
                 len,
+                len_name,
                 len_span,
             } => {
                 let element = self.resolve_type(scope, elem, span);
-                let Some(n) = len else {
-                    // Lowering reached the length *token* and found it was not a usable
-                    // literal, but says nothing (ADR-0039 §3a). This is where it is
-                    // reported, because rejecting a type is a semantic judgement and
-                    // because `type-errors/` files must lower cleanly.
-                    self.array_length_not_literal(len_span);
+                // A literal length is already known; otherwise the length may still be a **name** that
+                // resolves to a literal-valued constant (ADR-0070 §1), which needs a HIR lookup rather
+                // than an evaluation — so it happens here without inverting ADR-0018 §3's phase order.
+                let resolved_len = match len {
+                    Some(n) => Some(n),
+                    None => len_name.and_then(|name| self.constant_array_length(name)),
+                };
+                let Some(n) = resolved_len else {
+                    // Lowering reached the length *token* and found it was neither a usable
+                    // literal nor a name resolving to one, but says nothing (ADR-0039 §3a).
+                    // This is where it is reported, because rejecting a type is a semantic
+                    // judgement and because `type-errors/` files must lower cleanly.
+                    self.array_length_not_literal(len_name.is_some(), len_span);
                     return PoolId::ERROR;
                 };
                 // Flat poison, for the same reason `*<unknown>` is flat above: one
@@ -673,21 +681,66 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// The length a name denotes, when it names a constant whose initialiser is an integer literal
+    /// (ADR-0070 §1).
+    ///
+    /// **No evaluation happens here**, which is the whole reason this is available a sub-wave before
+    /// `[2 + 2]u8` is: the literal is already in the HIR, and this crate depends on neither `jr-db` nor
+    /// `jr-vm` (ADR-0039 §3a's constraint, still honoured). A length that needs a *value* — arithmetic, a
+    /// `#run`, or a constant in another file — answers `None` here and is refused.
+    ///
+    /// One level of indirection only: `B :: A` where `A :: 4` answers `None` rather than following the
+    /// chain, because a chain needs a fixpoint and a cycle check, which is the evaluation machinery this
+    /// deliberately avoids (ADR-0070 §4).
+    fn constant_array_length(&self, name: Symbol) -> Option<u64> {
+        let item = self.hir.scope.get(name)?;
+        let jr_hir::ItemKind::Const {
+            value: jr_hir::ConstValue::Expr(expr),
+        } = &self.hir.items.get(item.index())?.kind
+        else {
+            return None;
+        };
+        let jr_hir::Expr::Literal(jr_hir::Literal::Int { value, .. }, _) =
+            self.hir.exprs.get(expr.index())?
+        else {
+            return None;
+        };
+        // A negative length, or one past `u64`, fails here exactly as a negative *literal* length does —
+        // the value takes the same path once known, so ADR-0039 §3's checks are unchanged.
+        u64::try_from(*value).ok()
+    }
+
     /// Reports an array length that is not a usable integer literal (ADR-0039 §3a).
     ///
     /// The message does not name the offending text: a `TypeRef` carries no way back to
     /// the source, and the span already points at it. Naming the *reason* is what matters,
     /// because "write a literal" is not obvious advice unless you know why.
-    fn array_length_not_literal(&mut self, span: Span) {
-        self.diags.push(
-            Diagnostic::error(span, "an array length must be an integer literal")
+    fn array_length_not_literal(&mut self, was_a_name: bool, span: Span) {
+        // **The message names which side of the line the reader is on** (ADR-0070 §3). A
+        // literal-valued constant is accepted now, so "must be an integer literal" would be simply
+        // false — and a reader told a rule that is no longer true cannot act on it.
+        let diag = if was_a_name {
+            Diagnostic::error(span, "this array length is not a usable constant")
                 .with_code(E0233)
                 .with_note(
-                    "a named constant or a computed length needs the compile-time \
-                     evaluator, which arrives with full `#run` in wave W4",
+                    "a length may be an integer literal, or a name for a constant whose value is \
+                     one — a computed constant, a `#run`, or one from another file needs the \
+                     compile-time evaluator, which sema runs before",
                 )
-                .with_help("write the length as a literal, e.g. `[20]u8`"),
-        );
+                .with_help("give the constant a literal value, e.g. `N :: 20;`")
+        } else {
+            Diagnostic::error(
+                span,
+                "an array length must be a literal or a named constant",
+            )
+            .with_code(E0233)
+            .with_note(
+                "an arithmetic or `#run` length needs the compile-time evaluator, which sema \
+                     runs before (ADR-0018 §3)",
+            )
+            .with_help("write the length as a literal, e.g. `[20]u8`, or name a constant")
+        };
+        self.diags.push(diag);
     }
 
     /// The element type and length of `ty`, if it is an array.

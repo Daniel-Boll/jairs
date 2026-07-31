@@ -577,3 +577,65 @@ both directions.
 - **ADR-0069 §1's claim that this "adds no dependency that was not already there" was wrong about
   `file_mir`** and is corrected in the ADR rather than quietly patched, because the obvious
   implementation hits the same cycle.
+
+---
+
+## Wave: an array length from a constant (ADR-0070), 2026-07-31 — W4 sub-wave 2, rescoped
+
+### What probing established, and why the wave changed shape
+
+ADR-0069 §0 scheduled "aggressive const folding" here, and ADR-0069 §4 plus §7 both said a `#run` result
+"reaches the body as a constant, but the arithmetic around it is not re-folded". **All of that is wrong
+about the optimized MIR**, which is what both engines consume. The built MIR does show
+`v1: s64 = 5_s64 * 10_s64`, which is what the claim was looking at — but the optimized body for
+`m := n * 10 + 7; return sink(m);` is a single `Return(Some(Constant(...)))`, and the program exits 57.
+ADR-0022's const-prop folds through a `#run` result exactly as through any other constant, because by the
+time it runs the `#run` *is* one.
+
+Seeing this took a probe of the *optimized* body: the corpus snapshots the **built** query, so the
+distinction was invisible in everything the tests display. That is the second time this session a
+scheduled dependency turned out not to exist (ADR-0067 §0 was the first), which makes it a pattern worth
+naming rather than a coincidence.
+
+### Fork 1 — what to do with a sub-wave whose work is already done
+
+- Options: **rescope it to a real gap (taken, recommended)**; implement folding in the *built* MIR anyway;
+  skip to sub-wave 3.
+- Why: folding the built MIR would be work for a claim rather than a capability — the engines consume the
+  optimized query, and duplicating const-prop into the builder would give two answers to "what does
+  `2 + 2` mean". Skipping ahead would leave §7 asserting something false. Rescoping keeps the sub-wave
+  and records the correction.
+
+### Fork 2 — which gap
+
+- Options: **`[N]T` where `N` names a literal-valued constant (taken, recommended)**; a `#must` ADR; the
+  three cross-file gaps; `p - q`.
+- Why: ADR-0039 §3a deferred `[COUNT]u8` explicitly and it is the most-felt absence — `modules/Basic`'s
+  `print_int` still owes a `[20]u8` buffer and cannot name its size. It is also the one that turns out
+  **not** to need the sema↔comptime recursion ADR-0039 assumed, which makes it available now.
+
+### Fork 3 — how far to go without inverting the phase order
+
+- Options: **a length that is already a literal one name away (taken, recommended)**; fold arithmetic in
+  sema too; thread `ConstValues` into sema.
+- Why: for `N :: 4` nothing needs evaluating — the literal is in the HIR, and `Ctx` already holds `hir`
+  and `resolve` and already resolves type names against the file scope. Verified rather than assumed:
+  `jr-sema`'s `Cargo.toml` depends on neither `jr-vm` nor `jr-db`, and still does. Folding arithmetic
+  would mean a *second* constant folder beside ADR-0022's — the duplication ADR-0018 §2 refuses for layout
+  and ADR-0020 §2 for trap messages. Threading `ConstValues` in is the dependency inversion ADR-0039 §3a
+  named and it stays refused.
+- So ADR-0039 §3a is **half amended**: the literal-valued case arrives now, and every case needing an
+  actual *value* — arithmetic, `#run`, a cross-file constant — still waits for the RTTI sub-wave.
+
+### Fork 4 — the diagnostic
+
+- Options: **reword E0233 to name what was found (taken, recommended)**; keep the message; add a code.
+- Why: after Fork 3 the current text — "an array length must be an integer literal" — is simply false; a
+  literal-valued *constant* is now accepted. A reader should learn which side of the line they are on. No
+  new code, because E0233 already means "this length is not usable" (E0261 stays first free).
+
+### Resolution
+
+All four forks taken as recommended. ADR-0070 records them and amends ADR-0039 §3a. No new diagnostic
+code, no new pool item, no MIR change — after this, nothing downstream can tell how the length was
+written, which is the evidence it belongs where it was put.

@@ -96,17 +96,17 @@
 #h(4pt)
 #pill[930 tests]
 #h(4pt)
-#pill[ADR-0069 latest]
+#pill[ADR-0070 latest]
 #h(4pt)
-#pill(fill: rgb("#fdf2e6"), stroke: warn)[W4 open · sub-wave 1 of 4 done]
+#pill(fill: rgb("#fdf2e6"), stroke: warn)[W4 open · 2 of 4 sub-waves done]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
   metric("Tests", "930", "workspace, all passing"),
-  metric("Corpus", "157", "jr files, both engines"),
-  metric("ADRs", "69", "0001 to 0069, immutable"),
+  metric("Corpus", "158", "jr files, both engines"),
+  metric("ADRs", "70", "0001 to 0070, immutable"),
   metric("Diagnostics", "91", "codes, E0261 next free"),
   metric("Editor checks", "166", "Neovim, verified not gated"),
 )
@@ -151,10 +151,10 @@
         itself.
       ]
     - #text(size: 7.4pt)[
-        *A handoff can undersell as well as oversell.* §7 said for waves that the compiler had "one
-        trivial `#run`: a call or a constant expression, same file only". Nested calls, arithmetic around
-        a call and a loop in the callee all already worked — two of those three qualifiers were false, and
-        typing three programs is what showed it.
+        *Check the query a claim is about.* "The arithmetic around a `#run` is not folded" was true of the
+        *built* MIR and false of the *optimized* one — and the corpus only ever snapshots the built
+        query, so nothing the tests display would have shown it. A claim about optimisation needs a probe
+        of the optimized body.
       ]
     - #text(size: 7.4pt, fill: warn)[
         *A test naming an unimplemented thing has a one-wave shelf life.* The refused-body test has now
@@ -178,7 +178,7 @@
   ("union, nominal, untagged — a cross-field read reinterprets", ""),
   ("variant — a tagged union: a wrong-case read traps, switch destructures", "a recursive variant; eliding the check in an arm"),
   ("enum and enum_flags, namespaced, bare dot-member, switch cases", "an explicit backing type"),
-  ("Fixed arrays and views, bounds-checked, returnable", "array literals, sub-slicing"),
+  ("Fixed arrays and views, bounds-checked; a length may name a constant", "a length needing evaluation; array literals"),
   ("cast and xx from context; operator overloading", "unary, index and call overloading"),
   ("Trapping arithmetic, wrapping variants, bitwise", "transmute; float printing"),
   ("if, else, while, for, break, continue, defer, using", ""),
@@ -287,7 +287,7 @@
   ),
   (
     "W4 Comptime", "in progress",
-    "Delivered in sub-waves, because a 10-14 week wave cannot be verified the way a one-ADR wave can. Sub-wave 1 is done (ADR-0069): a #run may call an imported procedure and appear in a body, which turned two internal compiler errors into working programs. Remaining: aggressive const folding, then RTTI and Type values, then insert and Code. PLAN section 5 names this the project's top risk — sema and comptime become mutually recursive.",
+    "Delivered in sub-waves, because a 10-14 week wave cannot be verified the way a one-ADR wave can. Two of four are done: a #run may call an imported procedure and appear in a body (ADR-0069), turning two internal compiler errors into working programs; and an array length may name a constant (ADR-0070), which replaced the scheduled aggressive const folding after probing showed const-prop already did it. Remaining: RTTI and Type values, then insert and Code. PLAN section 5 names this the project's top risk — sema and comptime become mutually recursive.",
   ),
   (
     "W4.5 Pattern matching", "done",
@@ -345,21 +345,22 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[Twenty-one waves shipped]
+    #sub[Twenty-two waves shipped]
     #text(size: 7.4pt)[
       ADR-0049 through 0069: for and defer, using, aggregate returns, multiple returns, named and
       default arguments, scope visibility, imported constants, float constants, context, the
       bounds-check build setting, indirect calls, null plus a memory source, the allocator
       protocol, push_context, pointer arithmetic, temporary storage, trap backtraces, switch,
-      tagged variants, and compile-time run across files and in a body.
+      tagged variants, compile-time run across files and in a body, and an array length from a
+      constant.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 930. Corpus 116 to 157 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
-      closed* — W4.5 a wave early, because its stated dependency on comptime turned out not to exist —
-      and *W4 is open*, delivered in sub-waves with the first done: a `#run` now reaches across files and
-      into a body. Remaining there: const folding, RTTI, and insert.
+      Test count 900 to 930. Corpus 116 to 158 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
+      closed*, and *W4 is open* with two of four sub-waves done: a `#run` reaches across files and into a
+      body, and an array length may name a constant. *Twice now* a scheduled dependency turned out not
+      to exist — W4.5's on comptime, and sub-wave 2's folding work. Remaining: RTTI, then insert.
     ]
 
     #v(0.3em)
