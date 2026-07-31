@@ -121,6 +121,7 @@ ast_node!(ProcType, PROC_TYPE);
 ast_node!(ProcTypeParams, PROC_TYPE_PARAMS);
 ast_node!(StructType, STRUCT_TYPE);
 ast_node!(UnionType, UNION_TYPE);
+ast_node!(VariantType, VARIANT_TYPE);
 ast_node!(EnumType, ENUM_TYPE);
 ast_node!(MemberList, MEMBER_LIST);
 ast_node!(Member, MEMBER);
@@ -236,6 +237,8 @@ pub enum TypeExpr {
     Struct(StructType),
     /// `union { ... }` (ADR-0045)
     Union(UnionType),
+    /// `variant { … }` (ADR-0068 §1)
+    Variant(VariantType),
     /// `enum { ... }`
     Enum(EnumType),
 }
@@ -251,6 +254,7 @@ impl AstNode for TypeExpr {
                 | NAME_TYPE
                 | STRUCT_TYPE
                 | UNION_TYPE
+                | VARIANT_TYPE
                 | ENUM_TYPE
         )
     }
@@ -264,6 +268,7 @@ impl AstNode for TypeExpr {
             NAME_TYPE => Some(Self::Name(NameType(node))),
             STRUCT_TYPE => Some(Self::Struct(StructType(node))),
             UNION_TYPE => Some(Self::Union(UnionType(node))),
+            VARIANT_TYPE => Some(Self::Variant(VariantType(node))),
             ENUM_TYPE => Some(Self::Enum(EnumType(node))),
             _ => None,
         }
@@ -278,6 +283,7 @@ impl AstNode for TypeExpr {
             Self::Name(n) => n.syntax(),
             Self::Struct(n) => n.syntax(),
             Self::Union(n) => n.syntax(),
+            Self::Variant(n) => n.syntax(),
             Self::Enum(n) => n.syntax(),
         }
     }
@@ -535,6 +541,11 @@ impl ConstDecl {
 
     /// The `union { … }` value, if this declaration is a union type (ADR-0045).
     pub fn union_type(&self) -> Option<UnionType> {
+        child_node(&self.0)
+    }
+
+    /// The variant value, if this constant is a variant type (ADR-0068 §1).
+    pub fn variant_type(&self) -> Option<VariantType> {
         child_node(&self.0)
     }
 
@@ -962,6 +973,16 @@ impl UnionType {
     ///
     /// The *same* `FieldList` node a struct has, because a union's fields are a struct's
     /// fields — only the layout differs (ADR-0045 §5).
+    pub fn field_list(&self) -> Option<FieldList> {
+        child_node(&self.0)
+    }
+}
+impl VariantType {
+    /// The field list — a variant's *cases*.
+    ///
+    /// The same `FieldList` node the other two forms have, because a case is written like a field.
+    /// What differs is the layout (a leading tag, ADR-0068 §3) and the check on a read (§4), neither of
+    /// which is visible in the syntax.
     pub fn field_list(&self) -> Option<FieldList> {
         child_node(&self.0)
     }

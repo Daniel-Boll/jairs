@@ -618,6 +618,7 @@ impl Verifier<'_> {
             | Item::EnumType { .. }
             | Item::StructType { .. }
             | Item::UnionType { .. }
+            | Item::VariantType { .. }
             | Item::ProcType { .. }
             | Item::VoidValue
             | Item::BoolValue(_)
@@ -671,6 +672,7 @@ impl Verifier<'_> {
             | Item::EnumType { .. }
             | Item::StructType { .. }
             | Item::UnionType { .. }
+            | Item::VariantType { .. }
             | Item::ProcType { .. }
             | Item::VoidValue
             | Item::BoolValue(_)

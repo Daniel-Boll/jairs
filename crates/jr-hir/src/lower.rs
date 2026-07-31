@@ -30,9 +30,10 @@ use jr_syntax::{
 };
 
 use crate::hir::{
-    AssignOp, BinOp, Body, BodyId, ConstValue, Enum, EnumId, EnumMember, Expr, ExprId, Field,
-    FileHir, ForIterable, ForeignInfo, Item, ItemId, ItemKind, ItemScope, Literal, Local, LocalId,
-    Param, ParamId, Proc, ProcId, Res, Stmt, StmtId, Struct, StructId, TypeRef, TypeRefId, UnOp,
+    AggregateKind, AssignOp, BinOp, Body, BodyId, ConstValue, Enum, EnumId, EnumMember, Expr,
+    ExprId, Field, FileHir, ForIterable, ForeignInfo, Item, ItemId, ItemKind, ItemScope, Literal,
+    Local, LocalId, Param, ParamId, Proc, ProcId, Res, Stmt, StmtId, Struct, StructId, TypeRef,
+    TypeRefId, UnOp,
 };
 
 // ---------------------------------------------------------------------------
@@ -243,6 +244,10 @@ impl<'a> LowerCtx<'a> {
                 let union_id = self.lower_union_type(u);
                 self.alloc_top_type_ref(TypeRef::Union(union_id))
             }
+            TypeExpr::Variant(v) => {
+                let variant_id = self.lower_variant_type(v);
+                self.alloc_top_type_ref(TypeRef::Variant(variant_id))
+            }
             TypeExpr::Enum(e) => {
                 let enum_id = self.lower_enum_type(e);
                 self.alloc_top_type_ref(TypeRef::Enum(enum_id))
@@ -254,26 +259,36 @@ impl<'a> LowerCtx<'a> {
 
     fn lower_struct_type(&mut self, s: &StructType) -> StructId {
         let span = self.span_of_node(s.syntax());
-        self.lower_fields_into_struct(span, s.field_list(), false)
+        self.lower_fields_into_struct(span, s.field_list(), AggregateKind::Struct)
     }
 
     /// Lowers `union { i: s64; f: float64; }` (ADR-0045).
     ///
-    /// Allocates into the **same arena** `lower_struct_type` does, with `is_union` set. That is
+    /// Allocates into the **same arena** `lower_struct_type` does, with the kind set. That is
     /// not a shortcut: a `DeclId` is an index within its arena and does not record which arena
     /// (ADR-0041 §4a), and unions share `Pool::struct_fields` with structs — so two arenas would
-    /// let a struct and a union at the same index overwrite each other's field lists.
+    /// let a struct and a union at the same index overwrite each other's field lists. `variant`
+    /// joined the same arena for the same reason (ADR-0068 §2).
     fn lower_union_type(&mut self, u: &jr_syntax::ast::UnionType) -> StructId {
         let span = self.span_of_node(u.syntax());
-        self.lower_fields_into_struct(span, u.field_list(), true)
+        self.lower_fields_into_struct(span, u.field_list(), AggregateKind::Union)
     }
 
-    /// The field loop both aggregate forms share.
+    /// Lowers `variant { i: s64; f: float64; }` (ADR-0068 §1).
+    ///
+    /// The same arena and the same field loop as the other two forms; only the kind differs, which is
+    /// what makes the tag a *layout* question (ADR-0068 §3) rather than a different HIR shape.
+    fn lower_variant_type(&mut self, v: &jr_syntax::ast::VariantType) -> StructId {
+        let span = self.span_of_node(v.syntax());
+        self.lower_fields_into_struct(span, v.field_list(), AggregateKind::Variant)
+    }
+
+    /// The field loop all three aggregate forms share.
     fn lower_fields_into_struct(
         &mut self,
         span: jr_base::Span,
         field_list: Option<jr_syntax::ast::FieldList>,
-        is_union: bool,
+        kind: AggregateKind,
     ) -> StructId {
         let mut fields = Vec::new();
 
@@ -299,7 +314,7 @@ impl<'a> LowerCtx<'a> {
         }
 
         self.alloc_struct(Struct {
-            is_union,
+            kind,
             fields,
             span,
             type_refs: Vec::new(),
@@ -799,6 +814,11 @@ impl<'a> LowerCtx<'a> {
             ItemKind::Const {
                 value: ConstValue::Union(union_id),
             }
+        } else if let Some(va) = cd.variant_type() {
+            let variant_id = self.lower_variant_type(&va);
+            ItemKind::Const {
+                value: ConstValue::Variant(variant_id),
+            }
         } else if let Some(en) = cd.enum_type() {
             let enum_id = self.lower_enum_type(&en);
             ItemKind::Const {
@@ -1050,7 +1070,7 @@ impl<'a> BodyLowerCtx<'a> {
                 let ret = p.ret().map(|t| self.lower_type_expr(&t));
                 self.alloc_type_ref(TypeRef::Proc { params, ret })
             }
-            TypeExpr::Struct(_) | TypeExpr::Union(_) | TypeExpr::Enum(_) => {
+            TypeExpr::Struct(_) | TypeExpr::Union(_) | TypeExpr::Variant(_) | TypeExpr::Enum(_) => {
                 // An inline aggregate type inside a body is unusual, and both arenas would
                 // have to agree about where it lives; refused rather than half-lowered.
                 self.alloc_type_ref(TypeRef::Error)

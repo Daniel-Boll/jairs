@@ -722,6 +722,10 @@ impl<'src> Parser<'src> {
             UNION_KW => {
                 self.parse_union_type();
             }
+            // `variant { ... }` — a union's shape with a tag (ADR-0068 §1).
+            VARIANT_KW => {
+                self.parse_variant_type();
+            }
             L_PAREN => {
                 // Genuinely ambiguous: after `::`, a `(` may open a procedure's
                 // parameter list (`add :: (a: s64) -> s64 { ... }`) or a
@@ -1191,6 +1195,9 @@ impl<'src> Parser<'src> {
             UNION_KW => {
                 self.parse_union_type();
             }
+            VARIANT_KW => {
+                self.parse_variant_type();
+            }
             L_PAREN => {
                 self.parse_proc_type();
             }
@@ -1300,6 +1307,32 @@ impl<'src> Parser<'src> {
         self.expect(R_BRACE);
         self.finish_node(); // FIELD_LIST
         self.finish_node(); // UNION_TYPE
+    }
+
+    /// Parses `variant { i: s64; f: float64; }` (ADR-0068 §1).
+    ///
+    /// The **same loop** a union's fields take, because a case is written like a field — what differs
+    /// is the layout (a leading tag, §3) and the check on a read (§4), neither of which is syntax. Its
+    /// own node kind only so that lowering can tell the two apart.
+    fn parse_variant_type(&mut self) {
+        self.start_node(VARIANT_TYPE);
+        self.bump(); // `variant`
+        self.start_node(FIELD_LIST);
+        self.expect(L_BRACE);
+        while !self.at(R_BRACE) && !self.at(EOF) {
+            if self.at(IDENT) || self.at(USING_KW) {
+                self.parse_field();
+            } else {
+                let before = self.pos;
+                let span = self.current_span();
+                self.error(span, "expected a field name", E0112);
+                self.recover_until(TokenSet::new(&[IDENT, R_BRACE]), true);
+                self.force_progress(before);
+            }
+        }
+        self.expect(R_BRACE);
+        self.finish_node(); // FIELD_LIST
+        self.finish_node(); // VARIANT_TYPE
     }
 
     /// Parses `enum { RED; GREEN :: 10; }` (ADR-0041 §3).
@@ -2112,6 +2145,13 @@ impl<'src> Parser<'src> {
             // `union` joined `enum` here when ADR-0045 landed: it is real syntax and a
             // *type*, so in expression position the message must say which kind rather than
             // claiming a feature the user is using has not arrived.
+            VARIANT_KW => {
+                let span = self.current_span();
+                self.error(span, "`variant` is a type, not an expression", E0121);
+                self.start_node(ERROR);
+                self.bump();
+                self.finish_node();
+            }
             UNION_KW => {
                 let span = self.current_span();
                 self.error(span, "`union` is a type, not an expression", E0121);
@@ -2228,7 +2268,7 @@ impl<'src> Parser<'src> {
 /// a type" at the `(` and the whole declaration collapsed, exactly as `#c_call` and the array
 /// keywords did before their entries were added.
 const TYPE_START: TokenSet = TokenSet::new(&[
-    STAR, IDENT, STRUCT_KW, ENUM_KW, FLAGS_KW, UNION_KW, L_BRACK, L_PAREN,
+    STAR, IDENT, STRUCT_KW, ENUM_KW, FLAGS_KW, UNION_KW, VARIANT_KW, L_BRACK, L_PAREN,
 ]);
 
 /// The operators ADR-0048 §2 permits an overload for.

@@ -564,6 +564,7 @@ impl<'a> Vm<'a> {
             | Item::ViewType { .. }
             | Item::StructType { .. }
             | Item::UnionType { .. }
+            | Item::VariantType { .. }
             | Item::ProcType { .. } => Err(VmError::internal(
                 "a type was used where a value constant belongs",
             )),

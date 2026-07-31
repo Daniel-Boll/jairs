@@ -373,6 +373,13 @@ impl<'a> Ctx<'a> {
                 self.resolve_struct_body(sid, ty, span);
                 ty
             }
+            TypeRef::Variant(sid) => {
+                let ty = self.variant_type(sid);
+                // The same body resolution again: a variant's *cases* are a field list, so they live
+                // in the same side table (ADR-0068 §1). Only the layout and the read check differ.
+                self.resolve_struct_body(sid, ty, span);
+                ty
+            }
             TypeRef::Enum(eid) => {
                 let ty = self.enum_type(eid);
                 self.resolve_enum_body(eid, span);
@@ -502,6 +509,15 @@ impl<'a> Ctx<'a> {
     pub(crate) fn union_type(&mut self, sid: StructId) -> PoolId {
         let decl = DeclId::new(self.file, sid.as_u32());
         self.pool.union_type(decl)
+    }
+
+    /// The interned type of the variant declared at `sid` (ADR-0068 §1).
+    ///
+    /// Takes a [`StructId`] because all three aggregate forms share the struct arena — see
+    /// `Struct::kind` for why that sharing is load-bearing.
+    pub(crate) fn variant_type(&mut self, sid: StructId) -> PoolId {
+        let decl = DeclId::new(self.file, sid.as_u32());
+        self.pool.variant_type(decl)
     }
 
     /// The interned type of the enum declared at `eid`.
@@ -717,6 +733,9 @@ impl<'a> Ctx<'a> {
             Item::UnionType { .. } => self
                 .type_name(ty)
                 .map_or_else(|| "union".to_owned(), str::to_owned),
+            Item::VariantType { .. } => self
+                .type_name(ty)
+                .map_or_else(|| "variant".to_owned(), str::to_owned),
             // The declared name, from the same source the struct case reads, so a hover and
             // a diagnostic cannot disagree about what a nominal type is called.
             Item::EnumType { .. } => self
@@ -877,7 +896,7 @@ impl<'a> Ctx<'a> {
             SigKind::Operator => "an operator overload",
             // Unreachable while `type_value` is `Some` for exactly these kinds,
             // but spelled out so that adding a kind is a compile error.
-            SigKind::Struct | SigKind::Union | SigKind::Enum => "a type",
+            SigKind::Struct | SigKind::Union | SigKind::Variant | SigKind::Enum => "a type",
         };
         self.diags.push(
             Diagnostic::error(span, format!("`{name}` is {what}, not a type")).with_code(E0213),

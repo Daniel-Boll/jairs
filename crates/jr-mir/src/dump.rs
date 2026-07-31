@@ -555,6 +555,7 @@ impl Dumper<'_> {
             | Item::PointerType(_)
             | Item::StructType { .. }
             | Item::UnionType { .. }
+            | Item::VariantType { .. }
             | Item::ProcType { .. } => format!("type({})", self.ty(id)),
         }
     }
@@ -610,6 +611,12 @@ impl Dumper<'_> {
             Item::UnionType { decl } => match self.signatures.type_name(id) {
                 Some(name) => name.to_owned(),
                 None => format!("union{decl:?}"),
+            },
+            // Likewise prints `variant`, so a dump cannot make one look like a union — the two differ
+            // in the tag, which is exactly the thing a wrong offset would hide (ADR-0068 §3).
+            Item::VariantType { decl } => match self.signatures.type_name(id) {
+                Some(name) => name.to_owned(),
+                None => format!("variant{decl:?}"),
             },
             Item::StructType { decl } => match self.signatures.type_name(id) {
                 Some(name) => name.to_owned(),

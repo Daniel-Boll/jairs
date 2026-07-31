@@ -277,14 +277,28 @@ fn participating_slot(place: &Place) -> Option<SlotId> {
     Some(slot)
 }
 
-/// Whether `ty` is a union, whose fields all share offset 0 (ADR-0045 §3).
-fn is_union(ty: PoolId, pool: &Pool) -> bool {
-    ty.index() < pool.len() && matches!(pool.item(ty), Item::UnionType { .. })
+/// Whether `ty` is a union *or a variant*, whose fields all share one offset (ADR-0045 §3,
+/// ADR-0068 §3).
+///
+/// **A variant must answer `true` here**, and getting it wrong would be a silent miscompile rather
+/// than an error: a variant's cases overlap exactly as a union's do — they share the payload offset —
+/// so two reads of *different* cases alias. Answering `false` would let forwarding treat `v.i` and
+/// `v.f` as disjoint and forward a stale store across them, which is the "well-typed placeholder"
+/// class of bug PLAN §5 names, reached through an omitted match arm instead.
+///
+/// A variant's leading tag does not change this: the tag is not a case, and no `Projection::Field`
+/// names it (ADR-0068 §5 keeps it unspellable).
+fn is_overlapping_aggregate(ty: PoolId, pool: &Pool) -> bool {
+    ty.index() < pool.len()
+        && matches!(
+            pool.item(ty),
+            Item::UnionType { .. } | Item::VariantType { .. }
+        )
 }
 
 /// The type one projection step lands on, for tracking the receiver type along a path.
 ///
-/// Conservative: an unresolvable step yields [`PoolId::ERROR`], which `is_union` answers
+/// Conservative: an unresolvable step yields [`PoolId::ERROR`], which `is_overlapping_aggregate` answers
 /// `false` for — so a path this cannot follow falls back to the struct rule. That is the safe
 /// direction only because a *later* unequal pair on an unknown type is then treated as
 /// disjoint, which is why this walks every step rather than only the ones before a difference.
@@ -294,10 +308,11 @@ fn step_type(ty: PoolId, step: &Projection, pool: &Pool) -> PoolId {
     }
     match step {
         Projection::Field(index) => match pool.item(ty) {
-            Item::StructType { decl } | Item::UnionType { decl } => pool
-                .struct_fields(*decl)
-                .and_then(|fields| fields.get(*index as usize))
-                .map_or(PoolId::ERROR, |field| field.ty),
+            Item::StructType { decl } | Item::UnionType { decl } | Item::VariantType { decl } => {
+                pool.struct_fields(*decl)
+                    .and_then(|fields| fields.get(*index as usize))
+                    .map_or(PoolId::ERROR, |field| field.ty)
+            }
             _ => PoolId::ERROR,
         },
         Projection::Index(_) => match pool.item(ty) {
@@ -358,7 +373,7 @@ fn compare_paths(store: &[Projection], load: &[Projection], root: PoolId, pool: 
             // answer — the corpus program read 0 where 7 was written — and it is the same
             // shape as the index case above: storage shared, extent unknown, so `Partial`
             // refuses rather than deciding.
-            (Projection::Field(_), Projection::Field(_)) if is_union(ty, pool) => {
+            (Projection::Field(_), Projection::Field(_)) if is_overlapping_aggregate(ty, pool) => {
                 return Overlap::Partial;
             }
             _ => return Overlap::Disjoint,

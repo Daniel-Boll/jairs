@@ -248,6 +248,22 @@ impl Ctx<'_> {
                         item,
                     })
                 }
+                // The same shape a third time (ADR-0068 §1): a variant's cases are a field list, so
+                // the body resolution and the recorded name are a union's. `SigKind::Variant` is what
+                // makes a consumer able to tell them apart without a second lookup.
+                ConstValue::Variant(sid) => {
+                    let ty = self.variant_type(sid);
+                    let interner = self.interner;
+                    self.sigs
+                        .insert_type_name(ty, interner.resolve(name).to_owned());
+                    self.resolve_struct_body(sid, ty, span);
+                    Some(SigEntry {
+                        ty: PoolId::TYPE,
+                        type_value: Some(ty),
+                        kind: SigKind::Variant,
+                        item,
+                    })
+                }
                 // The same shape as the struct arm, and for the same reasons: the type name is
                 // recorded so a diagnostic can spell it, and the body is resolved *after* the
                 // type has an ID (ADR-0041 §4).

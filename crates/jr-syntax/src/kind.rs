@@ -152,6 +152,12 @@ pub enum SyntaxKind {
     /// *token* the grammar can key on. Matching text would make a variable called `case` silently start
     /// an arm — the trap `context` walked into from the other side (ADR-0057).
     CASE_KW,
+    /// `variant` — real syntax as of ADR-0068, the tagged aggregate form.
+    ///
+    /// Its own keyword rather than an attribute on `union`, because the two differ in *semantics* —
+    /// a variant carries a tag, costs a check per read and is bigger — and ADR-0045 §1 instructed
+    /// exactly this, "the way `enum_flags` is different from `enum`".
+    VARIANT_KW,
 
     // ---- delimiters ------------------------------------------------------
     /// `(`
@@ -357,6 +363,11 @@ pub enum SyntaxKind {
     /// two differ in *layout*, and every consumer that computes an offset must branch on it.
     /// It shares `FIELD_LIST`/`FIELD`, because a union's fields *are* a struct's fields.
     UNION_TYPE,
+    /// `variant { … }` (ADR-0068 §1) — a tagged aggregate.
+    ///
+    /// Structurally identical to `UNION_TYPE`; the difference is entirely in what the tag makes the
+    /// compiler emit, so the node kinds differ only so that lowering can tell them apart.
+    VARIANT_TYPE,
     /// `enum { RED; GREEN; }` (ADR-0041).
     ///
     /// A *type*, like `STRUCT_TYPE`, because ADR-0012 makes `Colour :: enum { … }` an
@@ -645,6 +656,7 @@ impl SyntaxKind {
             "push_context" => Self::PUSH_CONTEXT_KW,
             "switch" => Self::SWITCH_KW,
             "case" => Self::CASE_KW,
+            "variant" => Self::VARIANT_KW,
             "union" => Self::UNION_KW,
             "for" => Self::FOR_KW,
             "defer" => Self::DEFER_KW,
@@ -679,6 +691,7 @@ impl SyntaxKind {
             Self::PUSH_CONTEXT_KW => "push_context",
             Self::SWITCH_KW => "switch",
             Self::CASE_KW => "case",
+            Self::VARIANT_KW => "variant",
             Self::UNION_KW => "union",
             Self::FOR_KW => "for",
             Self::DEFER_KW => "defer",

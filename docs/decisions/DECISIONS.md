@@ -417,3 +417,73 @@ new diagnostic codes — E0258 non-exhaustive, E0259 duplicate `case`/second `el
 `else` — so **E0261 becomes the first free code**, the first wave in five to add any. No new MIR node:
 the lowering is the `if`/`else if` branch chain that already exists. The tagged variant type, W4.5's
 third deliverable, stays for its own wave (§7) and is now unblocked by this one.
+
+---
+
+## Wave: tagged variants (ADR-0068), 2026-07-31 — closes W4.5
+
+### What reading first established
+
+ADR-0045 §1 rejected a tagged `union` on three grounds, and **two of them have since gone away**:
+"Jairs has no pattern matching" (ADR-0067 shipped `switch` last wave — the ground that ADR called
+decisive) and "a program has no way to *ask* which field is live" (a `switch` over the tag is that
+question). The third stands — a tag makes the type bigger than its largest field — which is exactly why
+ADR-0045 said the tagged thing should be **a different declaration form**, "the way `enum_flags` is
+different from `enum`", rather than a change to `union`. This wave follows that instruction.
+
+A second constraint was found by reading `Struct::is_union`'s own doc: the struct/union arena is shared
+**deliberately**, because a `DeclId` names an index but not an arena, so a separate `unions` arena would
+collide with structs while both share `Pool::struct_fields`. A third form therefore cannot be a third
+arena — and a `bool` cannot express three kinds, so the flag has to become an enum.
+
+### Fork 1 — the declaration form
+
+- Options: **a new `variant { … }` keyword (taken, recommended)**; `#tagged union { … }`; reuse `union`
+  with an optional tag.
+- Why: ADR-0045 §1 instructed exactly this, and the reason holds — the tagged thing has a different size
+  and a different access cost, so it is a different *type*, not a `union` with a flag. An attribute reads
+  as a modifier on a union; reusing `union` is the "silent change to what `union` means" that ADR forbade.
+
+### Fork 2 — how three forms share one arena
+
+- Options: **`Struct::is_union: bool` becomes `kind: AggregateKind` (taken, recommended)**; a second bool;
+  a separate arena.
+- Why: a separate arena is *unrepresentable* (colliding `DeclId`s, per the field's own doc). Two bools
+  would allow the nonsense state "union and variant". An enum makes each of the nine readers an
+  exhaustive match, so a fourth form would be a compile error at every site that must decide rather than
+  a `false` silently meaning "struct" — the project's first named failure mode applied to a flag.
+
+### Fork 3 — where the tag lives and how wide it is
+
+- Options: **a leading `u8` field (taken, recommended)**; trailing; the case's own index type.
+- Why: leading means offset 0 regardless of what follows, so nothing computes a position from the case
+  count — the same argument ADR-0057 §4 used for the context parameter. A trailing tag sits at an offset
+  derived from the largest case, which every reader would re-derive. `u8` because no expressible variant
+  has more than 256 cases, and padding usually absorbs the byte. Layout stays the existing
+  `sequential_layout` over `[tag, union-of-cases]`, so no new layout algorithm.
+
+### Fork 4 — what a wrong-field read does
+
+- Options: **trap at run time (taken, recommended)**; a static diagnostic; return garbage as `union` does.
+- Why: which field is live is not statically decidable — ADR-0045 §1 settled that when it rejected a
+  static cross-field check as "either unsound or maddening". The tag makes the *runtime* answer available,
+  which converts an undetectable bit reinterpretation into a located trap. Not strippable by
+  `--no-bounds-check`: that setting removes a check redundant with a proof the programmer has, whereas a
+  variant's tag is the only thing that knows which field is live — removing it removes the type's meaning.
+  A program that wants no check writes `union`, which still costs nothing.
+
+### Fork 5 — how `switch` destructures it
+
+- Options: **an arm names a *field*, exhaustiveness over the cases, reusing ADR-0067 (taken,
+  recommended)**; a binding form `case i => n;`; a separate `match` construct.
+- Why: reusing last wave's arms means one matching mechanism rather than two, and exhaustiveness falls out
+  — E0258 lists missing cases and E0260 still refuses a redundant `else`, with **no new diagnostic code**,
+  which is the evidence the shapes fit. A binding form is the pattern surface ADR-0067 §2 declined, and
+  adding it here would take that decision sideways.
+
+### Resolution
+
+All five forks taken as recommended. ADR-0068 records them and follows ADR-0045 §1's instruction rather
+than reversing it. One new keyword (`variant`), one new pool item, one new `TrapKind`, **no new
+diagnostic code** (E0261 still first free). The `is_union` → `kind` change is the largest and least
+interesting part of the diff, which the ADR says so a reviewer reads its shape rather than each line.

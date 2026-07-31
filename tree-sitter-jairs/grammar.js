@@ -182,6 +182,7 @@ module.exports = grammar({
       choice(
         $.struct_type,
         $.union_type,
+        $.variant_type,
         $.enum_type,
         $.proc,
         seq($._expr, ";"),
@@ -268,6 +269,7 @@ module.exports = grammar({
         $.name_type,
         $.struct_type,
         $.union_type,
+        $.variant_type,
         $.enum_type,
         $.proc_type,
       ),
@@ -357,6 +359,14 @@ module.exports = grammar({
     union_type: ($) =>
       seq(
         "union",
+        field("fields", $.field_list),
+      ),
+
+    // variant { … } (ADR-0068 §1) — a union's shape plus a tag. The tag is layout, not syntax, so
+    // this differs from `union_type` only in the keyword and the node name.
+    variant_type: ($) =>
+      seq(
+        "variant",
         field("fields", $.field_list),
       ),
 

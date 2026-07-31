@@ -75,8 +75,8 @@ pub use float::{
 };
 pub use item::{ContextKind, DeclId, EffectRow, EnumMember, Field, Item, PoolId, StrId};
 pub use layout::{
-    CONTEXT_FIELD_NAMES, CONTEXT_FIELD_TYPES, Layout, LayoutError, TargetLayout, align_up,
-    field_offset, layout_of, pair_count, pair_data, pair_layout, string_count, string_data,
-    string_layout,
+    CONTEXT_FIELD_NAMES, CONTEXT_FIELD_TYPES, Layout, LayoutError, TAG_ALIGN, TAG_SIZE,
+    TargetLayout, align_up, field_offset, layout_of, pair_count, pair_data, pair_layout,
+    string_count, string_data, string_layout, variant_payload_offset,
 };
 pub use pool::Pool;

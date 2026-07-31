@@ -21,8 +21,8 @@
 use jr_base::Interner;
 
 use crate::hir::{
-    AssignOp, BinOp, Body, BodyId, ConstValue, Expr, ExprId, FileHir, ForIterable, ItemKind,
-    Literal, Res, Stmt, StmtId, TypeRef, TypeRefId, UnOp,
+    AggregateKind, AssignOp, BinOp, Body, BodyId, ConstValue, Expr, ExprId, FileHir, ForIterable,
+    ItemKind, Literal, Res, Stmt, StmtId, TypeRef, TypeRefId, UnOp,
 };
 
 /// Produces a human-readable dump of the HIR for one file.
@@ -128,9 +128,16 @@ impl<'a> Dumper<'a> {
                             self.indent -= 1;
                         }
                     }
-                    ConstValue::Struct(sid) | ConstValue::Union(sid) => {
+                    ConstValue::Struct(sid) | ConstValue::Union(sid) | ConstValue::Variant(sid) => {
                         let s = &self.hir.structs[sid.index()];
-                        let keyword = if s.is_union { "Union" } else { "Struct" };
+                        // One arm for all three forms, reading the keyword from `kind` — a match
+                        // rather than a chain of ifs, so a fourth form is a compile error here
+                        // (ADR-0068 §2).
+                        let keyword = match s.kind {
+                            AggregateKind::Struct => "Struct",
+                            AggregateKind::Union => "Union",
+                            AggregateKind::Variant => "Variant",
+                        };
                         self.line(&format!("Item[{i}] Const {name} :: {keyword} {{"));
                         self.indent += 1;
                         for f in &s.fields {
@@ -548,6 +555,7 @@ fn fmt_type_ref_impl(
         TypeRef::Proc { params, .. } => format!("({} params) -> _", params.len()),
         TypeRef::Struct(sid) => format!("struct#{}", sid.index()),
         TypeRef::Union(sid) => format!("union#{}", sid.index()),
+        TypeRef::Variant(sid) => format!("variant#{}", sid.index()),
         TypeRef::Enum(eid) => format!("enum#{}", eid.index()),
         TypeRef::Error => "<error>".to_owned(),
     }

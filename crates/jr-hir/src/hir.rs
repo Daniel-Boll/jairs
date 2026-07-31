@@ -140,8 +140,12 @@ pub enum TypeRef {
     Struct(StructId),
     /// An inline union type `union { ... }` (ADR-0045).
     ///
-    /// Indexes the same arena `TypeRef::Struct` does — see `Struct::is_union`.
+    /// Indexes the same arena `TypeRef::Struct` does — see `Struct::kind`.
     Union(StructId),
+    /// An inline variant type `variant { ... }` (ADR-0068 §1).
+    ///
+    /// The same arena again, for the reason `Struct::kind` documents.
+    Variant(StructId),
     /// An inline enum type `enum { ... }` (ADR-0041).
     Enum(EnumId),
     /// A type that could not be lowered (error recovery).
@@ -897,16 +901,46 @@ pub struct ForeignInfo {
 // ---------------------------------------------------------------------------
 
 /// A struct type definition.
+/// Which aggregate form a [`Struct`] node is (ADR-0068 §2).
+///
+/// All three share one arena, for the reason [`Struct::kind`] documents. They differ in *semantics*
+/// rather than in a detail, which is why each has its own keyword rather than an attribute on one form
+/// (ADR-0068 §1, following ADR-0043 §1's precedent for `enum_flags`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateKind {
+    /// `struct { … }` — fields at increasing offsets.
+    Struct,
+    /// `union { … }` — every field at offset 0, **untagged**, so reading a field other than the one
+    /// last written reinterprets bits (ADR-0045 §1). Costs nothing and checks nothing.
+    Union,
+    /// `variant { … }` — a leading tag plus the union of the cases (ADR-0068 §3).
+    ///
+    /// A write sets the tag and a read checks it, so reading the wrong field traps rather than
+    /// reinterpreting. Bigger than the equivalent `union` by the tag, and that size cost is the
+    /// choice a program makes by writing this form (ADR-0045 §1's surviving objection).
+    Variant,
+}
+
+/// A struct, union or variant type definition.
+///
+/// One node for all three forms, distinguished by [`Struct::kind`] — see that field for why the
+/// sharing is load-bearing rather than a convenience.
 #[derive(Debug, Clone)]
 pub struct Struct {
-    /// Whether this is a `union` rather than a `struct` (ADR-0045 §4).
+    /// Which of the three aggregate forms this is (ADR-0045 §4, ADR-0068 §2).
     ///
     /// A field on the shared node rather than a second arena, and that is **load-bearing**: a
     /// `DeclId` is `(file, index-within-its-arena)` and says nothing about *which* arena
     /// (ADR-0041 §4a). A separate `unions: Vec<Union>` would make a struct at index 0 and a
     /// union at index 0 the same `DeclId`, and they share `Pool::struct_fields` — so the two
-    /// field lists would silently overwrite each other. One arena makes that unrepresentable.
-    pub is_union: bool,
+    /// field lists would silently overwrite each other. One arena makes that unrepresentable,
+    /// which is why `variant` joined the same arena rather than getting a third.
+    ///
+    /// An **enum rather than the `is_union: bool` it replaced** (ADR-0068 §2): three forms do not
+    /// fit in a bool, and two bools would admit the nonsense "union and variant". Every reader
+    /// becomes an exhaustive match, so a fourth form is a compile error at each site that must
+    /// decide rather than a `false` silently meaning "struct".
+    pub kind: AggregateKind,
     /// The fields.
     pub fields: Vec<Field>,
     /// Span of the whole struct.
@@ -1012,9 +1046,14 @@ pub enum ConstValue {
     /// A union type: `name :: union { fields }` (ADR-0045).
     ///
     /// Its own `ConstValue` variant even though it indexes the *same* arena `Struct` does,
-    /// because a consumer deciding what to intern needs to know which — and `Struct::is_union`
+    /// because a consumer deciding what to intern needs to know which — and `Struct::kind`
     /// would make that a second lookup rather than a match.
     Union(StructId),
+    /// A variant type: `name :: variant { fields }` (ADR-0068 §1).
+    ///
+    /// Its own variant for the reason `Union` has one: what a consumer interns differs, and a match
+    /// says so where a field lookup would not.
+    Variant(StructId),
     /// An operator overload: `operator + :: (a: T, b: T) -> T { … }` (ADR-0048 §1).
     ///
     /// A `ProcId` like [`ConstValue::Proc`], because an overload **is** an ordinary procedure —

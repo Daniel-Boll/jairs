@@ -1476,10 +1476,11 @@ impl Ctx<'_> {
         while let Some(inner) = self.pointee(ty) {
             ty = inner;
         }
-        // Only a struct, deliberately: `Item::UnionType` is *not* matched here even though
-        // `check_field` treats the two alike, because ADR-0050 §5 refuses `using` on a union and
-        // resolution has already reported it. Accepting one here would give a value to a promotion
-        // that was supposed to have been refused.
+        // Only a struct, deliberately: `Item::UnionType` and `Item::VariantType` are *not* matched
+        // here even though `check_field` treats all three alike, because ADR-0050 §5 refuses `using`
+        // on a union — and a variant is refused for the same reason plus a stronger one: promoting a
+        // case into scope would make a name read a field the tag may say is not live. Resolution has
+        // already reported it; accepting one here would give a value to a promotion that was refused.
         let decl = match self.pool.item(ty) {
             Item::StructType { decl } => *decl,
             _ => return PoolId::ERROR,
@@ -2475,8 +2476,12 @@ impl Ctx<'_> {
         let receiver_kind = match self.pool.item(ty) {
             Item::StringType => ReceiverKind::Str,
             // A union's field access *is* a struct's: same field list, same side table, same
-            // diagnostics. Only the offsets differ, and those are `jr-pool`'s (ADR-0045 §5).
-            Item::StructType { decl } | Item::UnionType { decl } => ReceiverKind::Struct(*decl),
+            // diagnostics. Only the offsets differ, and those are `jr-pool`'s (ADR-0045 §5). A
+            // variant's cases are a field list too (ADR-0068 §1), so it joins them — what differs is
+            // the tag check MIR emits on the *read*, which is not a typing question.
+            Item::StructType { decl } | Item::UnionType { decl } | Item::VariantType { decl } => {
+                ReceiverKind::Struct(*decl)
+            }
             // The context's fields are the compiler's, not a side table's — there is no `DeclId` to
             // key one on (ADR-0057 §1), so this is its own receiver kind rather than a `Struct`.
             Item::ContextType => ReceiverKind::Context,
@@ -2799,13 +2804,14 @@ impl Ctx<'_> {
             // Only `count`. Listing `data` would suggest a pseudo-field arrays do not have
             // (ADR-0039 §5), which is worse than no suggestion.
             Item::ArrayType { .. } | Item::ViewType { .. } => vec![String::from("count")],
-            Item::StructType { decl } | Item::UnionType { decl } => self
-                .pool
-                .struct_fields(*decl)
-                .unwrap_or(&[])
-                .iter()
-                .map(|f| self.interner.resolve(f.name).to_owned())
-                .collect(),
+            Item::StructType { decl } | Item::UnionType { decl } | Item::VariantType { decl } => {
+                self.pool
+                    .struct_fields(*decl)
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|f| self.interner.resolve(f.name).to_owned())
+                    .collect()
+            }
             _ => Vec::new(),
         };
 

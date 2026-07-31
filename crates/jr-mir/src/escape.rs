@@ -164,6 +164,7 @@ pub(crate) fn is_register_representable(pool: &Pool, ty: PoolId) -> bool {
         | Item::ResultsType { .. }
         | Item::ContextType
         | Item::StructType { .. }
+        | Item::VariantType { .. }
         | Item::UnionType { .. }
         | Item::ProcType { .. }
         | Item::VoidValue

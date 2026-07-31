@@ -345,7 +345,10 @@ fn item_completion(
         // One arm for both aggregates: the protocol has no `UNION`, and `STRUCT` is the
         // nearest true thing — an aggregate with named fields.
         ItemKind::Const {
-            value: jr_hir::ConstValue::Struct(_) | jr_hir::ConstValue::Union(_),
+            value:
+                jr_hir::ConstValue::Struct(_)
+                | jr_hir::ConstValue::Union(_)
+                | jr_hir::ConstValue::Variant(_),
         } => (CompletionItemKind::STRUCT, None, None),
         ItemKind::Const {
             value: jr_hir::ConstValue::Enum(_),

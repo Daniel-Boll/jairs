@@ -432,6 +432,7 @@ fn layout_at_depth(
         // engines would be *invisible*, since both would read plausible bits from the wrong
         // place rather than crashing.
         Item::UnionType { decl } => union_layout_at_depth(pool, target, *decl, depth),
+        Item::VariantType { decl } => variant_layout_at_depth(pool, target, *decl, depth),
 
         Item::VoidValue
         | Item::BoolValue(_)
@@ -473,6 +474,58 @@ fn union_layout_at_depth(
         align,
     })
 }
+
+/// The layout of a `variant`: a leading tag byte, then the union of its cases (ADR-0068 §3).
+///
+/// Built from the *existing* pieces rather than a new algorithm — the cases' union is
+/// [`union_layout_at_depth`], and the tag is one byte before it — so this crate gains a case and no new
+/// layout rule. The tag sits at offset **0** (§3): a leading field's offset does not depend on what
+/// follows, so nothing has to derive a position from the case count.
+///
+/// The whole thing takes the cases' alignment, so the payload starts at that alignment and the tag's
+/// byte is usually absorbed by the padding the union needed anyway — which is why the size cost
+/// ADR-0045 §1 warned about is real but small.
+fn variant_layout_at_depth(
+    pool: &Pool,
+    target: TargetLayout,
+    decl: DeclId,
+    depth: u32,
+) -> Result<Layout, LayoutError> {
+    let cases = union_layout_at_depth(pool, target, decl, depth)?;
+    // The payload begins after the tag, rounded up to the payload's own alignment.
+    let align = cases.align.max(TAG_ALIGN);
+    let payload_at = align_up(u64::from(TAG_SIZE), align);
+    Ok(Layout {
+        size: align_up(payload_at + cases.size, align),
+        align,
+    })
+}
+
+/// The byte offset a `variant`'s payload starts at (ADR-0068 §3).
+///
+/// Every case shares it, because a variant is a tag plus a *union* — so this is the one number both
+/// engines need to reach a case, and it is computed here rather than in either of them (ADR-0018 §2).
+///
+/// # Errors
+/// [`LayoutError`] when the variant's cases have no layout.
+pub fn variant_payload_offset(
+    pool: &Pool,
+    target: TargetLayout,
+    decl: DeclId,
+) -> Result<u64, LayoutError> {
+    let cases = union_layout_at_depth(pool, target, decl, 0)?;
+    let align = cases.align.max(TAG_ALIGN);
+    Ok(align_up(u64::from(TAG_SIZE), align))
+}
+
+/// The size of a `variant`'s tag, in bytes (ADR-0068 §3).
+///
+/// One byte: no variant the language can express has more than 256 cases, and a wider tag would cost
+/// size for a range nothing reaches.
+pub const TAG_SIZE: u8 = 1;
+
+/// The alignment of a `variant`'s tag — one byte, like its size.
+pub const TAG_ALIGN: u32 = 1;
 
 fn struct_layout_at_depth(
     pool: &Pool,

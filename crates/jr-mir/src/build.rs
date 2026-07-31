@@ -861,6 +861,7 @@ impl Lower<'_> {
             | Item::EnumType { .. }
             | Item::StructType { .. }
             | Item::UnionType { .. }
+            | Item::VariantType { .. }
             | Item::ProcType { .. }
             | Item::VoidValue
             | Item::BoolValue(_)
@@ -1353,7 +1354,8 @@ impl Lower<'_> {
             | Item::ResultsType { .. }
             | Item::ContextType
             | Item::StructType { .. }
-            | Item::UnionType { .. }
+        | Item::UnionType { .. }
+        | Item::VariantType { .. }
             | Item::ProcType { .. }
             | Item::VoidValue
             | Item::BoolValue(_)
@@ -3237,7 +3239,11 @@ impl Lower<'_> {
             return Some((place.project(Projection::Field(index)), field_ty));
         }
         let decl = match self.pool.item(ty) {
-            Item::StructType { decl } | Item::UnionType { decl } => *decl,
+            // All three aggregate forms keep their fields in one side table (ADR-0068 §2), so a
+            // field lookup reaches them the same way.
+            Item::StructType { decl } | Item::UnionType { decl } | Item::VariantType { decl } => {
+                *decl
+            }
             _ => return None,
         };
         let fields = self.pool.struct_fields(decl)?.to_vec();

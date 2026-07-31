@@ -81,6 +81,10 @@
   ; keywords here rather than a text predicate.
   "switch"
   "case"
+  ; `variant`, real as of ADR-0068 and never reserved. A legal identifier, so omitting it here is a
+  ; silent mis-colour rather than an ERROR node — the trap `context`, `push_context` and `switch` each
+  ; record. The `variant_type` node is what makes it a keyword rather than a text predicate.
+  "variant"
 ] @keyword
 
 ; Boolean literals are keywords in Jairs

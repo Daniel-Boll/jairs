@@ -534,6 +534,7 @@ impl<'a> ResolveCtx<'a> {
                 | crate::hir::TypeRef::Proc { .. }
                 | crate::hir::TypeRef::Struct(_)
                 | crate::hir::TypeRef::Union(_)
+                | crate::hir::TypeRef::Variant(_)
                 | crate::hir::TypeRef::Enum(_)
                 | crate::hir::TypeRef::Error => return None,
             }

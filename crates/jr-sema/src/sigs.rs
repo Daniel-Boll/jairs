@@ -45,6 +45,12 @@ pub enum SigKind {
     /// calling a union a struct would be wrong in a way the reader cannot correct, and the two
     /// differ in a way that matters to anyone reading it — a union's fields overlap.
     Union,
+    /// `name :: variant { … }` (ADR-0068 §1).
+    ///
+    /// Distinct from [`SigKind::Union`] for the same reason that one is distinct from `Struct`: a
+    /// variant carries a tag, so its size and its access cost differ, and a diagnostic that called it
+    /// a union would be wrong about both.
+    Variant,
     /// `operator + :: (…) -> T { … }` (ADR-0048 §1).
     ///
     /// Distinct from [`SigKind::Proc`] so a diagnostic can say "`+` is an operator, not a
@@ -96,6 +102,7 @@ impl SigEntry {
             | SigKind::Operator
             | SigKind::Struct
             | SigKind::Union
+            | SigKind::Variant
             | SigKind::Enum => false,
         }
     }

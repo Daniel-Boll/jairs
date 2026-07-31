@@ -88,3 +88,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0065](0065-temporary-storage.md) | Temporary storage is a lazily-allocated bump arena in two context fields | Accepted |
 | [0066](0066-trap-backtraces.md) | A trap reports the call chain of the frames that still exist | Accepted |
 | [0067](0067-switch-and-exhaustiveness.md) | `switch` with exhaustiveness from the pool, and W4.5 moves before W4 (amends §2.1's order) | Accepted |
+| [0068](0068-tagged-variants.md) | `variant` is a tagged union with a checked read, destructured by `switch` (completes W4.5) | Accepted |
