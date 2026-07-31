@@ -333,7 +333,11 @@ fn declaration_card(
         // A parameter or a local has no documentation and no container of its own, so
         // its card is its declared type. Better than the type alone: the name confirms
         // which binding the cursor found, which matters where one shadows another.
-        Res::Param(_) | Res::Local(_) => {
+        // A promoted name hovers as its own type, like any other binding (ADR-0050 §2). Sharing
+        // this arm is right rather than convenient: what the reader wants is the type of the
+        // *name under the cursor*, and `expr_type` already answers that for a promoted name
+        // because sema typed it through its base.
+        Res::Param(_) | Res::Local(_) | Res::Promoted { .. } => {
             let types = jr_db::checked(db, file, search_paths).types;
             let ty = types.expr_type(found.scope, found.expr)?;
             let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
@@ -491,6 +495,29 @@ pub fn goto_definition(
         }
         Res::Imported(import, name) => {
             imported(db, hir.as_ref(), search_paths, encoding, import, name)
+        }
+        // Highlighting a promoted name highlights the binding it reaches through, matching where
+        // goto-definition sends the reader — the two must agree or the editor contradicts itself.
+        Res::Promoted { .. } => {
+            let mut target = &res;
+            while let Res::Promoted { base, .. } = target {
+                target = base;
+            }
+            let ExprScope::Body(body) = found.scope else {
+                return None;
+            };
+            match target {
+                Res::Local(local) => {
+                    let span = local_name_span(hir.bodies.get(body.index())?, *local)?;
+                    Some(here(db, file, &positions, span))
+                }
+                Res::Param(param) => {
+                    let proc = owner_of(hir.as_ref(), body)?;
+                    let span = param_name_span(hir.as_ref(), proc, *param)?;
+                    Some(here(db, file, &positions, span))
+                }
+                Res::Item(_) | Res::Imported(_, _) | Res::Promoted { .. } | Res::Error => None,
+            }
         }
         Res::Error => None,
     }

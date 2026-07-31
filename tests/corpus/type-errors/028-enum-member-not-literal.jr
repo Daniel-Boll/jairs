@@ -1,0 +1,12 @@
+// EXPECT: E0237 — an enum member's value must be an integer literal (ADR-0041 §3)
+// Same reason an array length must be one (ADR-0039 §3a): evaluating a constant expression
+// needs the compile-time evaluator, which ADR-0018 §3 puts in `jr-db` over the bytecode VM —
+// downstream of where a type is resolved.
+COUNT :: 3;
+
+Bad :: enum {
+    X :: COUNT;
+}
+
+main :: () {
+}

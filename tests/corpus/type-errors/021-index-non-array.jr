@@ -1,0 +1,7 @@
+// EXPECT: E0234 — indexing something that is not an array (ADR-0039 §5)
+// Only `[N]T` is indexable in this wave. A pointer is deliberately *not*: allowing
+// `p[i]` would be pointer arithmetic, which is in no wave's list.
+main :: () {
+    n: s64 = 3;
+    x := n[0];
+}

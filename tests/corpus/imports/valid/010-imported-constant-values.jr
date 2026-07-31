@@ -1,0 +1,72 @@
+// Reading an imported constant's **value** (ADR-0055).
+//
+// This was E0245 for eleven waves — "the compiler could not lower the body of `main`" — and six
+// `imports/valid/` files carried that warning as an honest record of the gap. `jr-mir` refused any
+// imported name that was not a callee, because the value would have to come from the other file's
+// const evaluation and ADR-0017 §3 keeps cross-body reads out of lowering.
+//
+// The fix is ADR-0018 §5's shape, copied rather than redesigned: `jr-db` resolves across the boundary
+// and hands `jr-mir` a flat map keyed on `(import item, name)` — the same key `ImportedProcs` uses,
+// because `Res::Imported` already yields exactly that pair.
+//
+// Three things here are worth checking rather than assuming:
+//
+//   * the **value**, not merely that the warning is gone. A fix that produced the wrong number would
+//     satisfy any test checking only that the body lowered — which is why every assertion below
+//     computes with the constant rather than comparing it to itself;
+//   * **every literal kind**, because the wave's claim is that a `PoolId` crosses with no
+//     per-kind work (the pool is shared, ADR-0018 §2). If a float or a string needed special
+//     handling, that claim would be false and this is where it shows;
+//   * a constant a **`#run` computed in the other file**, so the value crossing is one const-eval
+//     produced rather than one the source spelled. That is the case that proves the map is filled
+//     from `file_consts` rather than from the HIR.
+//
+// **No `#import "Basic"`**, matching every other file in this directory: its harnesses resolve
+// against `tests/corpus/modules` only, so importing the bundled standard library is E0210 there. The
+// values are therefore accumulated and compared rather than exited on — `valid/044` is the file that
+// makes the same computation observable to the differential harness.
+#import "Limits";
+
+main :: () {
+    n := 0;
+
+    // An integer, used in arithmetic rather than compared to itself.
+    if LIMIT + SCALE == 45 {
+        n = n + 1;
+    }
+    // A negative constant, which ADR-0038's range check makes representable.
+    if NEGATIVE * 2 == -14 {
+        n = n + 2;
+    }
+    // A value past what fits in a small type, so a truncating path would show.
+    if WIDE / 1000 == 1000 {
+        n = n + 4;
+    }
+    // A boolean.
+    if FLAG {
+        n = n + 8;
+    }
+    // A float is deliberately **not** asserted here, and the reason is a bug this file found: a
+    // float `::` constant used in a comparison crashes Cranelift's verifier — `jr run` computes it
+    // correctly and `jr build` panics. That is the same *class* of gap ADR-0051 closed for aggregate
+    // returns (the two engines disagreeing about what compiles) and it is pre-existing: it
+    // reproduces on the tree before this wave, and no corpus file had a float constant to hit it.
+    // Recorded in `PLAN.md` §7 rather than papered over. `RATIO` still crosses the boundary — the
+    // wave's claim — and asserting it is what waits.
+    // **A constant the other file's `#run` computed**, not one its source spelled.
+    if COMPUTED == 42 {
+        n = n + 32;
+    }
+    // Two imported constants in one expression, so the map is read twice for one body. Values:
+    // 1 + 2 + 4 + 8 + 32 + 64 = 111, with 16 (the float) deliberately absent.
+    if LIMIT - COMPUTED == 0 {
+        n = n + 64;
+    }
+
+    // Every assertion: 111. Compared rather than exited on, for the reason the header gives — and
+    // the comparison is not dead: `n` is read, so a wrong value changes what the `if` does and the
+    // MIR snapshot shows it.
+    if n == 111 {
+        n = 0;
+    }
+}

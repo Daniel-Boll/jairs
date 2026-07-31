@@ -26,7 +26,7 @@ use jr_mir::ProcRef;
 use jr_vm::{Mode, Program, Value, Vm, VmError};
 
 use crate::{
-    Db, SourceFile,
+    BuildConfig, Db, SourceFile,
     mir::optimized_file_mir,
     module_loader::{ModuleSearchPaths, file_hir, imports_of, module_file},
 };
@@ -63,8 +63,34 @@ pub fn run_main(
     db: &dyn Db,
     root: SourceFile,
     search_paths: ModuleSearchPaths,
+    config: BuildConfig,
 ) -> Result<RunOutcome, String> {
     let entry = main_of(db, root).ok_or_else(|| "the file declares no `main`".to_owned())?;
+
+    // **The entry point must have lowered.** E0245 warns about a refused body at check time,
+    // because one nobody calls does not stop the program — but `main` is called by definition,
+    // and skipping it used to reach the interpreter's own lookup as
+    // `internal compiler error: no routine for file 0 proc 0` on a program `jr check` called
+    // clean. Checked here rather than left to that lookup, so the failure names the procedure
+    // and says whose fault it is (ADR-0047 §2).
+    //
+    // Only `main` is checked, not every reachable body: a refused body deeper in the program is
+    // only a problem if it is *reached*, and deciding that statically is the call graph this
+    // query deliberately does not build.
+    {
+        let mir = optimized_file_mir(db, root, search_paths, config);
+        if let Some(Err(reason)) = mir
+            .mir
+            .iter()
+            .find(|(proc, _)| *proc == entry.proc)
+            .map(|(_, outcome)| outcome)
+        {
+            return Err(format!(
+                "the compiler could not lower `main` ({reason:?}); this program is legal and \
+                 this compiler has a gap — please report it"
+            ));
+        }
+    }
 
     let files = reachable_files(db, root, search_paths);
 
@@ -72,7 +98,7 @@ pub fn run_main(
     // across a nested query call, which is the rule the rest of this crate follows.
     let mut inputs = Vec::with_capacity(files.len());
     for file in files {
-        let mir = optimized_file_mir(db, file, search_paths);
+        let mir = optimized_file_mir(db, file, search_paths, config);
         if mir.gated {
             continue;
         }
@@ -99,7 +125,31 @@ pub fn run_main(
     }
 
     let mut vm = Vm::new(&program, &pool, Mode::Runtime).map_err(|e: VmError| e.to_string())?;
-    Ok(match vm.call(entry, Vec::new()) {
+    // **`main`'s context is created here** (ADR-0057 §5), because `main` has no Jairs caller to have
+    // passed one. Zeroed, so `context.allocator` reads 0 in a program that never sets it.
+    //
+    // Only when `main` receives one: a `#c_call main` takes no hidden parameter, and passing one
+    // anyway would be the argument shift ADR-0053 §1 recorded — "called a procedure taking 1
+    // arguments with 0" is what the VM said before this existed, from the other direction.
+    let args = if main_receives_context(db, root) {
+        // **From the guard this function already holds**, not a fresh lock. The mutex is not
+        // reentrant, so `lock_pool` here deadlocked — the program hung rather than failing, which is
+        // the same self-deadlock the completion wave hit and `jr-lsp` records: gather everything
+        // before locking, never lock twice.
+        //
+        // The context type is interned by *sema* long before this, so reading it needs no `&mut`.
+        let context = jr_pool::Pool::find_context(&pool)
+            .ok_or_else(|| "the context type was never interned".to_owned())?;
+        let layout = jr_pool::layout_of(&pool, jr_pool::TargetLayout::LP64, context)
+            .map_err(|e| format!("the context has no layout: {e:?}"))?;
+        vec![
+            vm.new_context(layout.size, layout.align)
+                .map_err(|e: VmError| e.to_string())?,
+        ]
+    } else {
+        Vec::new()
+    };
+    Ok(match vm.call(entry, args) {
         Ok(Value::Void | Value::Scalar(_) | Value::Aggregate(_) | Value::Undefined) => {
             RunOutcome::Completed
         }
@@ -207,4 +257,19 @@ fn trap_location(db: &dyn Db, inputs: &[FileInput], site: jr_vm::TrapSite) -> Op
         .and_then(|id| hir.bodies.get(id.index()));
     let span = jr_mir::resolve_span(hir, body, site.span)?;
     Some(jr_base::render_location(&db.source_map(), span))
+}
+
+/// Whether the `main` of `root` receives the implicit context (ADR-0057 §3).
+///
+/// Reads the same two fields `jr-mir` does — `c_call` or `#foreign` — rather than the interned
+/// `ContextKind`, so the caller and the callee cannot disagree about whether a hidden parameter
+/// exists. Two answers to that question is the argument shift ADR-0053 §1 recorded.
+fn main_receives_context(db: &dyn Db, root: SourceFile) -> bool {
+    let Some(entry) = main_of(db, root) else {
+        return false;
+    };
+    let hir = crate::module_loader::file_hir(db, root);
+    hir.procs
+        .get(entry.proc.index())
+        .is_some_and(|proc| !(proc.c_call || proc.foreign.is_some()))
 }

@@ -37,7 +37,7 @@
 //! `aggregate()` trap, `Move` clones — without needing a poison value Cranelift
 //! does not have.
 
-use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
     Block, BlockArg, FuncRef, InstBuilder, MemFlagsData, StackSlotData, StackSlotKind, TrapCode,
     Type, Value as ClifValue,
@@ -46,15 +46,15 @@ use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataDescription, DataId, Linkage, Module};
 use jr_codegen::{CodegenError, TrapLocations};
 use jr_mir::{
-    BinOp, BlockId, Callee, MirBody, MirSpan, Operand, Place, PlaceBase, ProcRef, Projection,
-    Rvalue, Statement, Target, Terminator, UnOp, Unreachable, ValueId,
+    BinOp, BlockId, Callee, MirBody, MirSpan, NumKind, Operand, Place, PlaceBase, ProcRef,
+    Projection, Rvalue, Statement, Target, Terminator, UnOp, Unreachable, ValueId,
 };
 use jr_pool::{
     Item, Pool, PoolId, TargetLayout, field_offset, layout_of, string_count, string_data,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::repr::{Repr, pointer_type};
+use crate::repr::{self, Repr, pointer_type};
 use crate::trap::TrapKind;
 
 /// What a translated MIR value is, once `void` is accounted for.
@@ -104,6 +104,7 @@ pub fn translate(
         slots: Vec::new(),
         current: MirSpan::Synthetic,
         messages: FxHashMap::default(),
+        sret: None,
     };
     translator.run()
 }
@@ -127,6 +128,14 @@ struct Translator<'a, 'b> {
     current: MirSpan,
     /// Data objects for messages already emitted, keyed by their bytes.
     messages: FxHashMap<String, DataId>,
+    /// The caller-allocated result pointer, for a procedure returning an aggregate
+    /// (ADR-0051 §1).
+    ///
+    /// `Some` exactly when [`repr::returns_via_sret`] says so, and read only by
+    /// `Terminator::Return`. Held on the translator rather than looked up again at the
+    /// return, because the *presence* of this parameter shifts every other parameter's
+    /// position by one — deciding it twice would be two chances to disagree.
+    sret: Option<ClifValue>,
 }
 
 impl Translator<'_, '_> {
@@ -144,6 +153,14 @@ impl Translator<'_, '_> {
         // signature rather than from `append_block_param`.
         let entry = self.block(self.body.entry())?;
         self.builder.append_block_params_for_function_params(entry);
+        // The `sret` pointer is the *leading* parameter, so it must be taken before the
+        // ordinary ones are bound — `bind_entry_params` walks the Cranelift list with its
+        // own cursor and would otherwise bind the result pointer to the first real
+        // parameter, shifting every argument by one.
+        if repr::returns_via_sret(self.ctx.pool, self.ctx.target, self.body.ret())? {
+            let params = self.builder.block_params(entry);
+            self.sret = params.first().copied();
+        }
         self.bind_entry_params(entry)?;
 
         // Every other block's parameters are MIR's own, which map one-for-one onto
@@ -222,7 +239,11 @@ impl Translator<'_, '_> {
     /// walked with independent cursors rather than zipped.
     fn bind_entry_params(&mut self, entry: Block) -> Result<(), CodegenError> {
         let clif: Vec<ClifValue> = self.builder.block_params(entry).to_vec();
-        let mut next = 0usize;
+        // Skip the hidden result pointer, which occupies position 0 when it exists
+        // (ADR-0051 §1). Starting at 0 regardless bound the *result* pointer to the first
+        // declared parameter and shifted every argument by one — a silent miscompile, and
+        // the reason `sret` is decided by one shared predicate.
+        let mut next = usize::from(self.sret.is_some());
         for value in self.body.params() {
             let ty = self.body.value(*value).ty;
             let repr = Repr::of(self.ctx.pool, self.ctx.target, ty)?;
@@ -269,6 +290,35 @@ impl Translator<'_, '_> {
                 self.rvalue(rvalue, None)?;
                 Ok(())
             }
+            // ADR-0039 §4a: the zeroing the VM got for free from a fresh frame and
+            // native code never did at all. `emit_small_memset` rather than a loop,
+            // because Cranelift already knows how to pick between a store sequence and a
+            // `memset` call for a given size.
+            Statement::Zero { place, .. } => {
+                let ty = self.place_type(place)?;
+                // Straight from `layout_of` rather than from `Repr`, which carries a size
+                // only for an aggregate — and `Statement::Zero` is emitted for a scalar
+                // slot too, wherever one needs a place.
+                let layout = jr_pool::layout_of(self.ctx.pool, self.ctx.target, ty)
+                    .map_err(|reason| CodegenError::NoLayout { ty, reason })?;
+                let address = self.address(place)?;
+                self.memset_zero(address, layout.size, layout.align);
+                Ok(())
+            }
+            // ADR-0003's check. An **unsigned** compare, so a negative index — which is a
+            // huge unsigned value — fails the same test that catches one past the end.
+            Statement::BoundsCheck { index, len, .. } => {
+                let index = self.read_scalar(*index)?;
+                let len = self.read_scalar(*len)?;
+                // Phrased as `index >= len` so that `trap_if` — the existing helper, whose
+                // trap block is marked cold — can be reused rather than gaining an inverted
+                // twin that could drift from it.
+                let out_of_range =
+                    self.builder
+                        .ins()
+                        .icmp(IntCC::UnsignedGreaterThanOrEqual, index, len);
+                self.trap_if(out_of_range, TrapKind::IndexOutOfBounds)
+            }
             Statement::Nop => Ok(()),
         }
     }
@@ -288,7 +338,8 @@ impl Translator<'_, '_> {
             }
             Rvalue::Binary { op, lhs, rhs } => self.binary(*op, *lhs, *rhs),
             Rvalue::Unary { op, operand } => self.unary(*op, *operand),
-            Rvalue::Call { callee, args } => self.call(callee, args),
+            Rvalue::Convert { operand, from } => self.convert(*operand, *from, dest),
+            Rvalue::Call { callee, args } => self.call(callee, args, dest),
             Rvalue::Load(place) => self.load(place),
             Rvalue::Address(place) => {
                 let address = self.address(place)?;
@@ -302,9 +353,22 @@ impl Translator<'_, '_> {
                 // read, because every reading site checks `undef` first.
                 let ty = dest.map_or(PoolId::VOID, |id| self.body.value(id).ty);
                 let repr = Repr::of(self.ctx.pool, self.ctx.target, ty)?;
-                Ok(repr
-                    .clif_type(self.ctx.target)
-                    .map(|clif| self.builder.ins().iconst(clif, 0)))
+                // **The placeholder's instruction must match the register class**, not just the
+                // width: `iconst` on an `F32`/`F64` is what Cranelift's `iconst_bounds` verifier
+                // rejects, and it panics with "entered unreachable code" nowhere near here.
+                //
+                // Not the cause of the float-constant crash `PLAN.md` §7 records — that reproduces
+                // with this fixed — but wrong on its own terms, and reachable the moment a float
+                // local goes uninitialised. Fixed while looking for the other bug.
+                Ok(repr.clif_type(self.ctx.target).map(|clif| {
+                    if clif == cranelift_codegen::ir::types::F32 {
+                        self.builder.ins().f32const(0.0)
+                    } else if clif == cranelift_codegen::ir::types::F64 {
+                        self.builder.ins().f64const(0.0)
+                    } else {
+                        self.builder.ins().iconst(clif, 0)
+                    }
+                }))
             }
         }
     }
@@ -373,10 +437,50 @@ impl Translator<'_, '_> {
                 // sign-agnostic bit pattern, so it is passed through unchanged.
                 Ok(Some(self.builder.ins().iconst(clif, bits as i64)))
             }
+            Item::FloatValue { ty, bits } => {
+                // `f32const`/`f64const` take a typed immediate, so the stored bits are
+                // reinterpreted at the right width. A `float32`'s bits are its low 32 —
+                // `FloatKind::encode` put them there — so truncating is reading them, not
+                // losing them.
+                let clif = match jr_pool::FloatKind::of(self.ctx.pool, ty) {
+                    Some(kind) if kind.bits == 32 => {
+                        let value = f32::from_bits(bits as u32);
+                        self.builder.ins().f32const(value)
+                    }
+                    Some(_) => {
+                        let value = f64::from_bits(bits);
+                        self.builder.ins().f64const(value)
+                    }
+                    None => {
+                        return Err(CodegenError::Internal(String::from(
+                            "a float constant whose type is not a float",
+                        )));
+                    }
+                };
+                Ok(Some(clif))
+            }
             Item::StrValue(str_id) => self.string_constant(str_id).map(Some),
+            // A **procedure value** is the code address of its target (ADR-0059 §4). Native uses a
+            // real function pointer — unlike the VM's encoded handle — because `call_indirect` takes
+            // an address, and nothing observes the bits so the two engines need not agree on them.
+            // `funcs` already holds a `FuncRef` for every reachable procedure, imported into this
+            // function; `func_addr` turns one into a pointer value.
+            Item::ProcValue { ty: _, decl } => {
+                let target = ProcRef::new(decl.file, jr_hir::ProcId::from_u32(decl.index));
+                let func = *self.ctx.funcs.get(&target).ok_or_else(|| {
+                    // A cross-file procedure value is refused in `scan` (ADR-0059 §1), and a
+                    // `#foreign` one is E0256 from sema, so a missing entry is a compiler bug
+                    // rather than a user error.
+                    CodegenError::Internal(format!(
+                        "no function declared for a procedure value {target:?}"
+                    ))
+                })?;
+                let pointer = pointer_type(self.ctx.target);
+                Ok(Some(self.builder.ins().func_addr(pointer, func)))
+            }
             _ => Err(CodegenError::Unsupported {
                 proc: self.proc,
-                what: "a type, procedure or library used as a runtime value".to_owned(),
+                what: "a type or library used as a runtime value".to_owned(),
             }),
         }
     }
@@ -446,6 +550,49 @@ impl Translator<'_, '_> {
             Repr::Scalar { signed: true, .. }
         );
 
+        // Floats first and separately, because every instruction differs: `fadd` not `iadd`,
+        // `fcmp` not `icmp`, and — the point of ADR-0040 §1 — **no overflow check at all**.
+        // Routing a float through the integer path below would emit `sadd_overflow` on a
+        // float register, which Cranelift rejects, so this is a hard failure rather than a
+        // silent one; the separation is for clarity, not safety.
+        if jr_pool::FloatKind::of(self.ctx.pool, ty).is_some() {
+            let value = match op {
+                BinOp::Add => self.builder.ins().fadd(left, right),
+                BinOp::Sub => self.builder.ins().fsub(left, right),
+                BinOp::Mul => self.builder.ins().fmul(left, right),
+                // No zero check: `x / 0.0` is `inf` and `0.0 / 0.0` is `NaN`, which
+                // ADR-0040 §1 makes values rather than failures.
+                BinOp::Div => self.builder.ins().fdiv(left, right),
+                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                    // `fcmp` implements IEEE-754's ordering, which is why `NaN == NaN` comes
+                    // out false and `0.0 == -0.0` comes out true without either being special
+                    // -cased here. A raw bit compare would get both backwards.
+                    let cc = float_condition(op).ok_or_else(|| {
+                        CodegenError::Internal(String::from(
+                            "a comparison with no float condition code",
+                        ))
+                    })?;
+                    self.builder.ins().fcmp(cc, left, right)
+                }
+                // Refused by sema (ADR-0040 §7 for `%`, ADR-0042 §5 for the bitwise forms);
+                // reaching here means sema and this back end disagree about what was checked.
+                BinOp::Rem
+                | BinOp::WrapAdd
+                | BinOp::WrapSub
+                | BinOp::WrapMul
+                | BinOp::BitAnd
+                | BinOp::BitOr
+                | BinOp::BitXor
+                | BinOp::Shl
+                | BinOp::Shr => {
+                    return Err(CodegenError::Internal(format!(
+                        "{op:?} is not defined on a floating-point operand"
+                    )));
+                }
+            };
+            return Ok(Some(value));
+        }
+
         let value = match op {
             // ADR-0002: `+`, `-`, `*` trap rather than wrap. Cranelift's overflow
             // instructions are defined on the *operand width*, which is why
@@ -460,6 +607,14 @@ impl Translator<'_, '_> {
             BinOp::WrapSub => self.builder.ins().isub(left, right),
             BinOp::WrapMul => self.builder.ins().imul(left, right),
             BinOp::Div | BinOp::Rem => self.division(op, signed, left, right)?,
+            // Cranelift has all three natively and none can trap.
+            BinOp::BitAnd => self.builder.ins().band(left, right),
+            BinOp::BitOr => self.builder.ins().bor(left, right),
+            BinOp::BitXor => self.builder.ins().bxor(left, right),
+            // `sshr` for a signed type and `ushr` otherwise, which is what makes `>>`
+            // arithmetic for `s8` and logical for `u8` (ADR-0042 §2) — the same
+            // signedness-driven choice `division` makes between `sdiv` and `udiv`.
+            BinOp::Shl | BinOp::Shr => self.shift(op, signed, left, right)?,
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                 let cc = condition(op, signed);
                 let bit = self.builder.ins().icmp(cc, left, right);
@@ -469,6 +624,41 @@ impl Translator<'_, '_> {
             }
         };
         Ok(Some(value))
+    }
+
+    /// Emits a shift, checking the count first (ADR-0042 §3).
+    ///
+    /// **Cranelift masks the shift count** — `ishl` on an `I8` uses the low 3 bits — so
+    /// without this check `x << 8` would silently become `x << 0`, which is precisely the
+    /// behaviour ADR-0042 §3 rejected. The check is a compare-and-trap into the *existing*
+    /// cold trap block, so it reuses `trap_if` rather than adding a mechanism.
+    ///
+    /// The count is compared **unsigned** against the width, which catches a negative count
+    /// in the same comparison: a negative count reinterpreted as unsigned is enormous. That
+    /// is the same one-comparison trick `Statement::BoundsCheck` uses (ADR-0039 §1).
+    fn shift(
+        &mut self,
+        op: BinOp,
+        signed: bool,
+        left: ClifValue,
+        right: ClifValue,
+    ) -> Result<ClifValue, CodegenError> {
+        let width = i64::from(self.builder.func.dfg.value_type(left).bits());
+        let out_of_range =
+            self.builder
+                .ins()
+                .icmp_imm_s(IntCC::UnsignedGreaterThanOrEqual, right, width);
+        self.trap_if(out_of_range, TrapKind::ShiftOutOfRange)?;
+        Ok(match (op, signed) {
+            (BinOp::Shl, _) => self.builder.ins().ishl(left, right),
+            (BinOp::Shr, true) => self.builder.ins().sshr(left, right),
+            (BinOp::Shr, false) => self.builder.ins().ushr(left, right),
+            _ => {
+                return Err(CodegenError::Internal(
+                    "shift called for a non-shift operator".to_owned(),
+                ));
+            }
+        })
     }
 
     /// Emits a checked add, subtract or multiply.
@@ -533,6 +723,130 @@ impl Translator<'_, '_> {
     }
 
     /// Translates a unary operation.
+    /// Translates a `cast(T, x)` (ADR-0037 §2).
+    ///
+    /// Three cases, and Cranelift insists on the distinction: `ireduce` requires the
+    /// destination to be strictly *narrower*, `uextend`/`sextend` strictly *wider*, and
+    /// neither accepts equal widths — passing one an equal type is a panic inside the builder
+    /// rather than a compile error here. So an equal-width cast is a pass-through, which is
+    /// also what makes `cast(s64, some_s64)` free.
+    ///
+    /// Widening uses `sextend` for a **signed source** and `uextend` otherwise, mirroring the
+    /// VM's `value.as_int(from)`: `from` is the source kind precisely because sign extension
+    /// cannot be decided from the destination.
+    ///
+    /// Never traps, matching ADR-0037 §2 and the interpreter. This is the one place where the
+    /// two engines could silently disagree about a number, which is why `differential.rs`
+    /// carries a case per direction.
+    fn convert(
+        &mut self,
+        operand: Operand,
+        from: NumKind,
+        dest: Option<ValueId>,
+    ) -> Result<Slot, CodegenError> {
+        let value = self.read_scalar(operand)?;
+        let source = self.builder.func.dfg.value_type(value);
+        let target_ty = match dest {
+            Some(dest) => self.body.value(dest).ty,
+            // No destination means nothing reads the result; the conversion is then a no-op
+            // rather than a guess at a width.
+            None => return Ok(Some(value)),
+        };
+        let to = NumKind::of(self.ctx.pool, target_ty)
+            .ok_or_else(|| CodegenError::Internal(String::from("a cast to a non-numeric type")))?;
+        let Some(target) =
+            Repr::of(self.ctx.pool, self.ctx.target, target_ty)?.clif_type(self.ctx.target)
+        else {
+            return Err(CodegenError::Internal(String::from(
+                "a cast to a type with no register representation",
+            )));
+        };
+
+        // Four directions (ADR-0040 §3), and each needs a different Cranelift instruction
+        // family. The pairing is what `from` is recorded for: sign extension cannot be
+        // decided from the destination, and neither can whether to emit an `fcvt` or an
+        // `sextend`.
+        let result = match (from, to) {
+            (NumKind::Int(from), NumKind::Int(_)) => {
+                // Cranelift insists on the distinction: `ireduce` requires the destination to
+                // be strictly narrower, `uextend`/`sextend` strictly wider, and neither
+                // accepts equal widths — passing one an equal type panics inside the builder.
+                match target.bits().cmp(&source.bits()) {
+                    std::cmp::Ordering::Less => self.builder.ins().ireduce(target, value),
+                    std::cmp::Ordering::Equal => value,
+                    std::cmp::Ordering::Greater => {
+                        if from.signed {
+                            self.builder.ins().sextend(target, value)
+                        } else {
+                            self.builder.ins().uextend(target, value)
+                        }
+                    }
+                }
+            }
+            (NumKind::Int(from), NumKind::Float(_)) => {
+                if from.signed {
+                    self.builder.ins().fcvt_from_sint(target, value)
+                } else {
+                    self.builder.ins().fcvt_from_uint(target, value)
+                }
+            }
+            (NumKind::Float(_), NumKind::Int(to)) => {
+                // The **saturating** forms, matching `jr_pool::float_to_int` and ADR-0040 §4:
+                // `fcvt_to_sint` *traps* on an out-of-range value, which would put a trap back
+                // on a path §1 just made trap-free and would disagree with the VM. `_sat`
+                // clamps and maps `NaN` to 0, which is exactly what the interpreter does.
+                //
+                // Cranelift's `_sat` instructions produce at least `I32`, so a narrower
+                // destination needs an `ireduce` afterwards.
+                let wide = if to.bits <= 32 {
+                    cranelift_codegen::ir::types::I32
+                } else {
+                    cranelift_codegen::ir::types::I64
+                };
+                let converted = if to.signed {
+                    self.builder.ins().fcvt_to_sint_sat(wide, value)
+                } else {
+                    self.builder.ins().fcvt_to_uint_sat(wide, value)
+                };
+                if target.bits() < wide.bits() {
+                    // Narrowing here *truncates* rather than saturating a second time — but
+                    // the value is already clamped to `wide`, and `jr_pool::float_to_int`
+                    // clamps to the destination's own range, so the two would disagree for
+                    // e.g. `cast(s8, 1000.0)`: this would give 1000 truncated to -24 while
+                    // the VM gives 127. So clamp explicitly before narrowing.
+                    let min = to.min() as i64;
+                    let max = to.max() as i64;
+                    let too_small =
+                        self.builder
+                            .ins()
+                            .icmp_imm_s(IntCC::SignedLessThan, converted, min);
+                    let min_v = self.builder.ins().iconst(wide, min);
+                    let clamped_low = self.builder.ins().select(too_small, min_v, converted);
+                    let too_big =
+                        self.builder
+                            .ins()
+                            .icmp_imm_s(IntCC::SignedGreaterThan, clamped_low, max);
+                    let max_v = self.builder.ins().iconst(wide, max);
+                    let clamped = self.builder.ins().select(too_big, max_v, clamped_low);
+                    self.builder.ins().ireduce(target, clamped)
+                } else {
+                    converted
+                }
+            }
+            (NumKind::Float(_), NumKind::Float(_)) => {
+                match target.bits().cmp(&source.bits()) {
+                    // `float64` → `float32` rounds to nearest and saturates to `inf`
+                    // (ADR-0040 §4), which is what `fdemote` does.
+                    std::cmp::Ordering::Less => self.builder.ins().fdemote(target, value),
+                    std::cmp::Ordering::Equal => value,
+                    // `float32` → `float64` is exact, always.
+                    std::cmp::Ordering::Greater => self.builder.ins().fpromote(target, value),
+                }
+            }
+        };
+        Ok(Some(result))
+    }
+
     fn unary(&mut self, op: UnOp, operand: Operand) -> Result<Slot, CodegenError> {
         let value = self.read_scalar(operand)?;
         let ty = self.operand_type(operand);
@@ -540,6 +854,19 @@ impl Translator<'_, '_> {
             Repr::of(self.ctx.pool, self.ctx.target, ty)?,
             Repr::Scalar { signed: true, .. }
         );
+        // A float negation flips the sign bit and cannot fail, which is exactly where it
+        // differs from an integer's: `-MIN` is one past the maximum and traps (ADR-0002),
+        // while `-0.0` is a real value (ADR-0040 §1). `fneg` rather than a subtract from
+        // zero, because `0.0 - 0.0` is `+0.0` and would lose the sign.
+        if jr_pool::FloatKind::of(self.ctx.pool, ty).is_some() {
+            return match op {
+                UnOp::Neg => Ok(Some(self.builder.ins().fneg(value))),
+                UnOp::Not | UnOp::BitNot => Err(CodegenError::Internal(String::from(
+                    "`!` or `~` on a floating-point operand",
+                ))),
+            };
+        }
+
         let result = match op {
             UnOp::Neg => {
                 if signed {
@@ -556,6 +883,10 @@ impl Translator<'_, '_> {
             // `bool` is stored as 0 or 1, so `!` is a comparison against zero
             // rather than a bitwise complement, which would produce 0xFE.
             UnOp::Not => self.builder.ins().icmp_imm_s(IntCC::Equal, value, 0),
+            // `~` *is* the bitwise complement `!` must not be. `bnot` works on the operand's
+            // own width, so a `u8` complements within 8 bits — matching `int_not`'s
+            // normalisation rather than complementing at 64 and truncating (ADR-0042 §4).
+            UnOp::BitNot => self.builder.ins().bnot(value),
         };
         Ok(Some(result))
     }
@@ -565,33 +896,129 @@ impl Translator<'_, '_> {
     // -----------------------------------------------------------------------
 
     /// Translates a call.
-    fn call(&mut self, callee: &Callee, args: &[Operand]) -> Result<Slot, CodegenError> {
-        let target = match callee {
-            Callee::Direct(proc) => *proc,
-            // Nothing maps a procedure value to a `ProcRef` yet, which is the same
-            // gap the VM reports; refusing names it rather than miscompiling it.
-            Callee::Indirect(_) => {
-                return Err(CodegenError::Unsupported {
-                    proc: self.proc,
-                    what: "a call through a procedure pointer".to_owned(),
-                });
-            }
-        };
-        let func = *self
-            .ctx
-            .funcs
-            .get(&target)
-            .ok_or(CodegenError::Undeclared(target))?;
+    /// Emits a call, allocating the result slot when the callee returns an aggregate.
+    ///
+    /// `dest` gives the result's type, which is what decides whether the hidden `sret`
+    /// pointer is passed — the *same* `Repr::is_aggregate` question the callee's signature
+    /// asked, via the shared `repr::returns_via_sret`, so caller and callee cannot disagree
+    /// about the parameter count (ADR-0051 §1).
+    fn call(
+        &mut self,
+        callee: &Callee,
+        args: &[Operand],
+        dest: Option<ValueId>,
+    ) -> Result<Slot, CodegenError> {
+        // The `sret` slot, the argument reads and the result placement are identical whether the
+        // callee is direct or indirect — only the call *instruction* differs (`call` against a
+        // `FuncRef` versus `call_indirect` against an imported signature and a pointer value). So
+        // the callee is resolved to a closure that emits the one instruction, and everything around
+        // it is shared. Duplicating the slot logic per callee kind is how the two would drift about
+        // whether an aggregate return is placed the same way.
 
-        let mut values = Vec::with_capacity(args.len());
+        // The result type, from the value this call assigns to. A discarded call has no
+        // destination and therefore no aggregate to place — `Statement::Discard` on an
+        // aggregate-returning procedure would need a slot with no reader, and MIR does not
+        // produce one because a discarded call's `dest` is `None` only for `void`.
+        let ret_ty = dest.map_or(PoolId::VOID, |id| self.body.value(id).ty);
+        let via_sret = repr::returns_via_sret(self.ctx.pool, self.ctx.target, ret_ty)?;
+
+        let mut values = Vec::with_capacity(args.len() + usize::from(via_sret));
+        // A **fresh** slot per call, copied out of afterwards rather than passing the
+        // destination's own address (ADR-0051 §2). One extra copy, deliberately: passing the
+        // destination directly would let a callee that traps halfway leave the caller's
+        // variable half-assigned, and ADR-0002's traps are real control flow.
+        let result_slot = if via_sret {
+            let layout = layout_of(self.ctx.pool, self.ctx.target, ret_ty)
+                .map_err(|reason| CodegenError::NoLayout { ty: ret_ty, reason })?;
+            let size = u32::try_from(layout.size.max(1)).map_err(|_| {
+                CodegenError::Internal("a call result is larger than a u32".to_owned())
+            })?;
+            let data = StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                size,
+                layout.align.trailing_zeros().try_into().unwrap_or(0),
+            );
+            let handle = self.builder.create_sized_stack_slot(data);
+            let pointer = pointer_type(self.ctx.target);
+            let address = self.builder.ins().stack_addr(pointer, handle, 0);
+            // Leading, matching the signature.
+            values.push(address);
+            Some(address)
+        } else {
+            None
+        };
+
         for arg in args {
             if let Some(value) = self.read(*arg)? {
                 values.push(value);
             }
         }
-        let inst = self.builder.ins().call(func, &values);
+        let inst = match callee {
+            Callee::Direct(target) => {
+                let func = *self
+                    .ctx
+                    .funcs
+                    .get(target)
+                    .ok_or(CodegenError::Undeclared(*target))?;
+                self.builder.ins().call(func, &values)
+            }
+            // A pointer value plus an imported signature (ADR-0059 §4). The signature is built
+            // from the callee operand's *type* — a `ProcType` sema resolved — with the same
+            // convention a direct Jairs call uses: `CallConv::Fast`, receives the context, never a
+            // `#foreign` one (a `#foreign` procedure cannot be an indirect target, ADR-0059 §5).
+            Callee::Indirect(operand) => {
+                let sig = self.indirect_signature(*operand)?;
+                let sig_ref = self.builder.import_signature(sig);
+                let pointer = self.read_scalar(*operand)?;
+                self.builder.ins().call_indirect(sig_ref, pointer, &values)
+            }
+        };
+        // An `sret` call returns nothing; the result *is* the slot, and an aggregate value
+        // is represented by a pointer to its bytes, so the address is the value.
+        if let Some(address) = result_slot {
+            return Ok(Some(address));
+        }
         let results = self.builder.inst_results(inst);
         Ok(results.first().copied())
+    }
+
+    /// The Cranelift signature for a call through a procedure pointer (ADR-0059 §4).
+    ///
+    /// Built from the callee operand's `Item::ProcType` — its parameter and return types — with the
+    /// convention a direct Jairs call uses: `CallConv::Fast`, and the implicit context as a leading
+    /// hidden parameter. A proc-pointer type is always Jairs-convention this wave (ADR-0059 §3), so
+    /// `receives_context` is always true and `foreign` always false; there is no `#c_call`
+    /// proc-pointer type to vary them.
+    ///
+    /// The signature must match the callee's *declared* one exactly — the same `repr::signature`
+    /// builds both — or the two disagree about the parameter count, which is the silent-shift
+    /// failure `repr::returns_via_sret` exists to prevent (ADR-0051 §1).
+    fn indirect_signature(
+        &self,
+        operand: Operand,
+    ) -> Result<cranelift_codegen::ir::Signature, CodegenError> {
+        let proc_ty = self.operand_type(operand);
+        let Item::ProcType { params, ret, .. } = self.ctx.pool.item(proc_ty) else {
+            return Err(CodegenError::Internal(
+                "an indirect call whose callee is not of procedure type".to_owned(),
+            ));
+        };
+        let params = params.clone();
+        let ret = *ret;
+        let proc = self.proc;
+        repr::signature(
+            self.ctx.pool,
+            self.ctx.target,
+            &params,
+            ret,
+            cranelift_codegen::isa::CallConv::Fast,
+            false,
+            true,
+            &|what: &str| CodegenError::Unsupported {
+                proc,
+                what: what.to_owned(),
+            },
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -632,6 +1059,37 @@ impl Translator<'_, '_> {
                     address = self.offset(address, offset);
                     ty = self.field_type(ty, *index)?;
                 }
+                Projection::Index(index) => {
+                    // An array place is indexed in place; a **pointer** place — a view's
+                    // `data` word — is loaded first and then indexed. The VM's `plan` has the
+                    // same two shapes in one arm, deliberately: one stride computation for
+                    // both, so an array element and a view element cannot land at different
+                    // addresses in the two engines.
+                    let elem = self.index_elem(ty)?;
+                    if let Item::PointerType(_) = self.ctx.pool.item(ty) {
+                        address = self
+                            .builder
+                            .ins()
+                            .load(pointer, MemFlagsData::new(), address, 0);
+                    }
+                    // The stride is the element size rounded up to its alignment, the same
+                    // computation `jr-pool`'s `layout_of` uses for the array's total size —
+                    // so an element address here and the array's size there are derived
+                    // from one rule rather than two (ADR-0018 §2).
+                    let layout = jr_pool::layout_of(self.ctx.pool, self.ctx.target, elem)
+                        .map_err(|reason| CodegenError::NoLayout { ty: elem, reason })?;
+                    let stride = layout.size.next_multiple_of(u64::from(layout.align));
+                    let index = self.read_scalar(*index)?;
+                    // The index is an `s64` and a pointer is 64-bit on both targets, so no
+                    // conversion is needed. `imul_imm` then `iadd`, wrapping — an index that
+                    // could wrap has already failed the bounds check emitted before this.
+                    let scaled = self
+                        .builder
+                        .ins()
+                        .imul_imm_s(index, i64::try_from(stride).unwrap_or(i64::MAX));
+                    address = self.builder.ins().iadd(address, scaled);
+                    ty = elem;
+                }
                 Projection::Deref => {
                     address = self
                         .builder
@@ -646,6 +1104,29 @@ impl Translator<'_, '_> {
                 }
                 Projection::StringCount => {
                     let (offset, _) = string_count(self.ctx.target);
+                    address = self.offset(address, offset);
+                    ty = PoolId::S64;
+                }
+                // The same offsets a string's two words have — one shared computation, so the
+                // VM and Cranelift cannot disagree about a view's layout (ADR-0044 §1). The
+                // result *type* differs: `*T`, not `*u8`, which is what gives an index into
+                // the view the right stride.
+                Projection::ViewData => {
+                    let elem = self.view_elem(ty)?;
+                    let (offset, _) = jr_pool::pair_data(self.ctx.target);
+                    address = self.offset(address, offset);
+                    ty = self
+                        .ctx
+                        .pool
+                        .find(&Item::PointerType(elem))
+                        .ok_or_else(|| {
+                            CodegenError::Internal(
+                                "a view's element pointer type was never interned".to_owned(),
+                            )
+                        })?;
+                }
+                Projection::ViewCount => {
+                    let (offset, _) = jr_pool::pair_count(self.ctx.target);
                     address = self.offset(address, offset);
                     ty = PoolId::S64;
                 }
@@ -674,9 +1155,22 @@ impl Translator<'_, '_> {
         for step in &place.projection {
             ty = match step {
                 Projection::Field(index) => self.field_type(ty, *index)?,
+                Projection::Index(_) => self.index_elem(ty)?,
                 Projection::Deref => self.pointee(ty)?,
                 Projection::StringData => PoolId::PTR_U8,
                 Projection::StringCount => PoolId::S64,
+                Projection::ViewData => {
+                    let elem = self.view_elem(ty)?;
+                    self.ctx
+                        .pool
+                        .find(&Item::PointerType(elem))
+                        .ok_or_else(|| {
+                            CodegenError::Internal(
+                                "a view's element pointer type was never interned".to_owned(),
+                            )
+                        })?
+                }
+                Projection::ViewCount => PoolId::S64,
             };
         }
         Ok(ty)
@@ -748,6 +1242,51 @@ impl Translator<'_, '_> {
     }
 
     /// Copies `size` bytes, which is what an aggregate assignment is.
+    /// Sets `size` bytes at `address` to zero.
+    ///
+    /// `emit_small_memset` rather than a hand-rolled store loop: Cranelift already
+    /// decides between an inline store sequence and a `memset` call based on the size,
+    /// which is the same judgement [`Self::copy`] delegates for a byte copy.
+    fn memset_zero(&mut self, address: ClifValue, size: u64, align: u32) {
+        if size == 0 {
+            return;
+        }
+        let config = self.module.target_config();
+        let align = u8::try_from(align).unwrap_or(1);
+        // The fill byte is a plain `u8` immediate, not a Cranelift value.
+        self.builder
+            .emit_small_memset(config, address, 0, size, align, MemFlagsData::new());
+    }
+
+    /// The element type of an array type.
+    /// The element type an `Projection::Index` step lands on.
+    ///
+    /// Accepts an array *or* a pointer, because a view's element place is its `data` word
+    /// indexed directly — so this replaced a stricter array-only helper rather than sitting
+    /// beside one, which would have left two answers to one question.
+    fn index_elem(&self, ty: PoolId) -> Result<PoolId, CodegenError> {
+        match self.ctx.pool.item(ty) {
+            Item::ArrayType { elem, .. } | Item::PointerType(elem) => Ok(*elem),
+            _ => Err(CodegenError::Internal(
+                "an index projection on neither an array nor a pointer".to_owned(),
+            )),
+        }
+    }
+
+    /// The element type of a view, for the two `Projection::View*` steps.
+    ///
+    /// Separate from [`Self::array_elem`] rather than one function accepting either: the two
+    /// projections that reach here are already distinct, and a shared helper would let a
+    /// `ViewData` step on an array type pass silently.
+    fn view_elem(&self, ty: PoolId) -> Result<PoolId, CodegenError> {
+        match self.ctx.pool.item(ty) {
+            Item::ViewType { elem } => Ok(*elem),
+            _ => Err(CodegenError::Internal(
+                "a view projection on a non-view type".to_owned(),
+            )),
+        }
+    }
+
     fn copy(&mut self, dest: ClifValue, src: ClifValue, size: u64, align: u32) {
         if size == 0 {
             return;
@@ -788,6 +1327,23 @@ impl Translator<'_, '_> {
                 Ok(())
             }
             Terminator::Return(operand) => {
+                // **An aggregate result is copied into the caller's slot, and nothing is
+                // returned** (ADR-0051 §1). The operand holds a *pointer* to the callee's
+                // own storage — `Repr::Aggregate` travels as one — so returning it
+                // directly would hand back the address of a frame about to be destroyed.
+                // That dangling pointer is why the refusal this replaces existed.
+                if let Some(dest) = self.sret {
+                    if let Some(operand) = operand {
+                        let ty = self.operand_type(*operand);
+                        if let Some(src) = self.read(*operand)? {
+                            let layout = layout_of(self.ctx.pool, self.ctx.target, ty)
+                                .map_err(|reason| CodegenError::NoLayout { ty, reason })?;
+                            self.copy(dest, src, layout.size, layout.align);
+                        }
+                    }
+                    self.builder.ins().return_(&[]);
+                    return Ok(());
+                }
                 match operand {
                     Some(operand) => {
                         // The VM traps rather than returning an undefined value,
@@ -966,8 +1522,27 @@ impl Translator<'_, '_> {
 
     /// A struct field's type.
     fn field_type(&self, ty: PoolId, index: u32) -> Result<PoolId, CodegenError> {
-        let Item::StructType { decl } = self.ctx.pool.item(ty) else {
-            return Err(CodegenError::Internal("a field of a non-struct".to_owned()));
+        // A results aggregate carries its element list directly (ADR-0052 §1), so there is no
+        // `DeclId` and no side table — the **third** field-type walk this wave had to teach, after
+        // `jr-pool`'s `field_offset` and `jr-vm`'s. Three copies of "what type is field N" is the
+        // duplication ADR-0018 §2 warns about; consolidating them is owed and recorded in §7.
+        // The context's fields, from the same list (ADR-0057 §1).
+        if matches!(self.ctx.pool.item(ty), Item::ContextType) {
+            return jr_pool::Pool::context_field_type(index)
+                .ok_or_else(|| CodegenError::Internal(format!("no context field {index}")));
+        }
+        if let Item::ResultsType { elems } = self.ctx.pool.item(ty) {
+            return elems
+                .get(index as usize)
+                .copied()
+                .ok_or_else(|| CodegenError::Internal(format!("no result {index}")));
+        }
+        // Accepts a union as well as a struct: the field *list* is shared and only the
+        // offsets differ (ADR-0045 §5).
+        let (Item::StructType { decl } | Item::UnionType { decl }) = self.ctx.pool.item(ty) else {
+            return Err(CodegenError::Internal(
+                "a field of a non-aggregate".to_owned(),
+            ));
         };
         self.ctx
             .pool
@@ -1004,6 +1579,37 @@ impl Arith {
 }
 
 /// The Cranelift condition for a comparison operator.
+/// The IEEE-754 condition code a comparison becomes.
+///
+/// The **ordered** forms for `<`, `<=`, `>`, `>=`, and `Equal`/`NotEqual` for `==`/`!=`.
+/// That pairing is what gives `NaN` its two surprising answers without a special case:
+/// `NaN < x` is false because `NaN` is unordered with everything, and `NaN != NaN` is true
+/// because Cranelift's `NotEqual` is the *unordered-or-not-equal* form — the negation of
+/// `Equal` rather than its own ordered predicate, exactly as Rust's `!=` on `f64` is.
+fn float_condition(op: BinOp) -> Option<FloatCC> {
+    match op {
+        BinOp::Eq => Some(FloatCC::Equal),
+        BinOp::Ne => Some(FloatCC::NotEqual),
+        BinOp::Lt => Some(FloatCC::LessThan),
+        BinOp::Le => Some(FloatCC::LessThanOrEqual),
+        BinOp::Gt => Some(FloatCC::GreaterThan),
+        BinOp::Ge => Some(FloatCC::GreaterThanOrEqual),
+        BinOp::Add
+        | BinOp::Sub
+        | BinOp::Mul
+        | BinOp::Div
+        | BinOp::Rem
+        | BinOp::WrapAdd
+        | BinOp::WrapSub
+        | BinOp::WrapMul
+        | BinOp::BitAnd
+        | BinOp::BitOr
+        | BinOp::BitXor
+        | BinOp::Shl
+        | BinOp::Shr => None,
+    }
+}
+
 fn condition(op: BinOp, signed: bool) -> IntCC {
     match op {
         BinOp::Eq => IntCC::Equal,
@@ -1024,7 +1630,12 @@ fn condition(op: BinOp, signed: bool) -> IntCC {
         | BinOp::Rem
         | BinOp::WrapAdd
         | BinOp::WrapSub
-        | BinOp::WrapMul => IntCC::Equal,
+        | BinOp::WrapMul
+        | BinOp::BitAnd
+        | BinOp::BitOr
+        | BinOp::BitXor
+        | BinOp::Shl
+        | BinOp::Shr => IntCC::Equal,
     }
 }
 
@@ -1054,7 +1665,9 @@ fn statement_span(stmt: &Statement) -> MirSpan {
     match stmt {
         Statement::Assign { span, .. }
         | Statement::Store { span, .. }
-        | Statement::Discard { span, .. } => *span,
+        | Statement::Discard { span, .. }
+        | Statement::Zero { span, .. }
+        | Statement::BoundsCheck { span, .. } => *span,
         Statement::Nop => MirSpan::Synthetic,
     }
 }

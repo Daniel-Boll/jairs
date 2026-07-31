@@ -1,0 +1,24 @@
+// Every integer width Jairs has (ADR-0037 §1). The tower is a *naming* change:
+// `jr-pool`'s `IntKind` was already generic over width and signedness, and both
+// back ends already read it that way, so nothing here needed a new representation.
+//
+// Each declaration sits at its type's **boundary** -- the minimum for signed, the
+// maximum for unsigned -- so a width that silently resolved to the wrong one fails
+// the literal fit check rather than passing quietly.
+//
+// The signed minimums are the interesting half. They were unwritable until
+// ADR-0038: `-128` was lowered as `Neg` applied to the *magnitude* 128, which was
+// then tested against `s8`'s maximum of 127 and rejected by a diagnostic that
+// printed "the range of `s8` is -128 to 127". This file used to sit one step above
+// each minimum with a comment explaining why.
+main :: () {
+    a: s8 = -128;
+    b: s16 = -32768;
+    c: s32 = -2147483648;
+    d: s64 = -9223372036854775808;
+
+    e: u8 = 255;
+    f: u16 = 65535;
+    g: u32 = 4294967295;
+    h: u64 = 18446744073709551615;
+}

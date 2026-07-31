@@ -1,0 +1,14 @@
+// EXPECT: E0218 — a field a union does not have (ADR-0045 §5)
+// A union's field access is a struct's, identically: the same lookup, the same diagnostic, and
+// the same near-name suggestion. Only the offsets differ, and those are `jr-pool`'s. This file
+// exists to prove the sharing rather than to test a new rule — a union that reported a
+// *different* message here would mean the two paths had diverged.
+Value :: union {
+    signed: s64;
+    unsigned: u64;
+}
+
+main :: () {
+    v: Value;
+    n := v.singed;
+}

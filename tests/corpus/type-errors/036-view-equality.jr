@@ -1,0 +1,13 @@
+// EXPECT: E0241 — `==` on two views (ADR-0044 §5)
+// Two views could compare as "the same storage" or as "the same contents". Both readings are
+// plausible, so neither is chosen: picking one silently would make the other reading a bug
+// that looks like working code. The help names what to compare instead.
+same :: (a: []s64, b: []s64) -> bool {
+    return a == b;
+}
+
+main :: () {
+    one: [2]s64;
+    two: [2]s64;
+    r := same(one[], two[]);
+}

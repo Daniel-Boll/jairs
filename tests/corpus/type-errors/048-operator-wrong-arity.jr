@@ -1,0 +1,14 @@
+// EXPECT: E0246 — an overload that does not take exactly two operands (ADR-0048 §2, §6)
+// Unary operator overloading is out of scope: `operator -` with one parameter would collide with
+// the binary form's name, and that ambiguity deserves its own decision rather than being resolved
+// by parameter count.
+Vec2 :: struct {
+    x: s64;
+}
+
+operator - :: (a: Vec2) -> s64 {
+    return a.x;
+}
+
+main :: () {
+}

@@ -1,0 +1,7 @@
+// EXPECT: E0244 — a bare `.` member whose context is not an enum (ADR-0046 §3)
+// A *different* problem from having no context at all, so it gets its own wording with the type
+// named: "expected `s64`, and a bare `.` member needs an enum". Conflating the two would tell a
+// reader to add an annotation they already have.
+main :: () {
+    n: s64 = .RED;
+}

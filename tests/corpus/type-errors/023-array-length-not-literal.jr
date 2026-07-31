@@ -1,0 +1,10 @@
+// EXPECT: E0233 — an array length that is not an integer literal (ADR-0039 §3a)
+// `jr-sema` has no constant evaluator: ADR-0018 §3 puts const-eval in `jr-db` over the
+// bytecode VM, which is *downstream* of where a type annotation is resolved. So the
+// length is read during lowering and only a literal is accepted. `[COUNT]u8` becomes
+// possible in the wave that makes sema and comptime mutually recursive (W4).
+COUNT :: 4;
+
+main :: () {
+    buf: [COUNT]u8;
+}

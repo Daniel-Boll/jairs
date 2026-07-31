@@ -105,7 +105,18 @@ impl Decl<'_> {
         match &item.kind {
             ItemKind::Const { value } => match value {
                 ConstValue::Proc(proc) => Some(self.proc_signature(&name, *proc)),
-                ConstValue::Struct(_) => Some(self.struct_signature(&name)),
+                // Rendered as `operator + :: (…)` — the *source* form, not the synthetic name,
+                // because a hover card showing `operator+` would display something the user
+                // cannot write (ADR-0048 §1).
+                ConstValue::Operator(proc, op) => {
+                    let rendered = self.proc_signature(&name, *proc);
+                    let spelled =
+                        rendered.replacen(&name, &format!("operator {}", op_text(*op)), 1);
+                    Some(spelled)
+                }
+                ConstValue::Struct(_) => Some(self.struct_signature(&name, "struct")),
+                ConstValue::Union(_) => Some(self.struct_signature(&name, "union")),
+                ConstValue::Enum(id) => Some(self.enum_signature(&name, *id)),
                 ConstValue::Expr(_) => Some(self.const_signature(&name, item_id)),
             },
             ItemKind::Var { .. } => Some(format!("{name}: {}", self.declared_type(&name))),
@@ -164,14 +175,21 @@ impl Decl<'_> {
     /// Fields come from the pool rather than from HIR, because the pool holds them
     /// *typed*: `jr-hir`'s `Field::ty` is a `TypeRefId` that still has to be resolved,
     /// and resolving it here would be a second implementation of what `jr-sema` did.
-    fn struct_signature(&self, name: &str) -> String {
+    /// Renders `name :: struct { … }` or `name :: union { … }`.
+    ///
+    /// `keyword` is a parameter rather than a literal, because a hover card that called a union
+    /// a struct would misdescribe a type whose fields *overlap* — the same class of mistake as
+    /// the formatter emitting a literal `"enum"` for an `enum_flags` (ADR-0043).
+    fn struct_signature(&self, name: &str, keyword: &str) -> String {
         let fields = self
             .interner
             .get(name)
             .and_then(|sym| self.sigs.lookup(sym))
             .and_then(|entry| entry.type_value)
             .and_then(|ty| match self.pool.item(ty) {
-                Item::StructType { decl } => self.pool.struct_fields(*decl),
+                Item::StructType { decl } | Item::UnionType { decl } => {
+                    self.pool.struct_fields(*decl)
+                }
                 _ => None,
             });
 
@@ -187,11 +205,52 @@ impl Decl<'_> {
                         )
                     })
                     .collect();
-                format!("{name} :: struct {{ {} }}", body.join("; "))
+                format!("{name} :: {keyword} {{ {} }}", body.join("; "))
             }
-            // An empty or unresolved struct still renders as a struct, because that is
-            // what the source says.
-            _ => format!("{name} :: struct {{}}"),
+            // An empty or unresolved aggregate still renders with its keyword, because that
+            // is what the source says.
+            _ => format!("{name} :: {keyword} {{}}"),
+        }
+    }
+
+    /// `Colour :: enum { RED = 0; GREEN = 1; }` — with the *resolved* numbers.
+    ///
+    /// The values are what a hover card can say that the source cannot: auto-numbering is
+    /// invisible in `enum { RED; GREEN; }`, and the whole point of showing a member list is
+    /// to answer "what number is `GREEN`". Read from the pool, which is where `jr-sema`
+    /// recorded them, so the card cannot disagree with the compiler about a value.
+    fn enum_signature(&self, name: &str, id: jr_hir::EnumId) -> String {
+        let denoted = self
+            .interner
+            .get(name)
+            .and_then(|sym| self.sigs.lookup(sym))
+            .and_then(|entry| entry.type_value);
+        // The *form* matters on a card as much as the values do: `enum` and `enum_flags`
+        // number differently and accept different operators (ADR-0043), so showing one as the
+        // other would misdescribe the type.
+        let keyword = match denoted.map(|ty| self.pool.item(ty)) {
+            Some(Item::EnumType { flags: true, .. }) => "enum_flags",
+            _ => "enum",
+        };
+        let members = denoted.and_then(|ty| match self.pool.item(ty) {
+            Item::EnumType { decl, .. } => self.pool.enum_members(*decl),
+            _ => None,
+        });
+
+        match members {
+            Some(members) if !members.is_empty() => {
+                let body: Vec<String> = members
+                    .iter()
+                    .map(|m| format!("{} = {}", self.interner.resolve(m.name), m.value))
+                    .collect();
+                format!("{name} :: {keyword} {{ {} }}", body.join("; "))
+            }
+            // `id` is unused for well-formed input; keeping the parameter means a future
+            // per-member rendering has the HIR to reach for without changing the caller.
+            _ => {
+                let _ = id;
+                format!("{name} :: {keyword} {{}}")
+            }
         }
     }
 
@@ -219,12 +278,14 @@ impl Decl<'_> {
             .map_or_else(
                 || String::from("<unknown>"),
                 |entry| match entry.kind {
-                    // A struct name used as a value has type `type` (ADR-0012), which
-                    // is not what a reader wants to see on its own declaration.
-                    SigKind::Struct => entry
+                    // A struct or enum name used as a value has type `type` (ADR-0012),
+                    // which is not what a reader wants to see on its own declaration.
+                    SigKind::Struct | SigKind::Union | SigKind::Enum => entry
                         .type_value
                         .map_or_else(|| String::from("type"), |ty| self.type_name_of(ty)),
-                    SigKind::Const | SigKind::Var | SigKind::Proc => self.type_name_of(entry.ty),
+                    SigKind::Const | SigKind::Var | SigKind::Proc | SigKind::Operator => {
+                        self.type_name_of(entry.ty)
+                    }
                 },
             )
     }
@@ -257,6 +318,11 @@ impl Decl<'_> {
                 IntKind::of(self.pool, *ty).map(|kind| kind.decode(*bits).to_string())
             }
             Item::BoolValue(value) => Some(value.to_string()),
+            // A results aggregate is a transport, never a constant (ADR-0052 §4).
+            Item::ContextType | Item::ResultsType { .. } => None,
+            // `{:?}` so `1.0` does not render as `1` on a hover card and read as an integer.
+            Item::FloatValue { ty, bits } => jr_pool::FloatKind::of(self.pool, *ty)
+                .map(|kind| format!("{:?}", kind.decode(*bits))),
             Item::StrValue(id) => Some(format!("\"{}\"", escape(self.pool.resolve_str(*id)))),
             Item::VoidValue
             | Item::TypeValue(_)
@@ -265,12 +331,19 @@ impl Decl<'_> {
             | Item::VoidType
             | Item::BoolType
             | Item::IntType { .. }
+            | Item::FloatType { .. }
             | Item::StringType
             | Item::TypeType
             | Item::ErrorType
             | Item::ForeignLibraryType
             | Item::PointerType(_)
+            // An array constant would need the layout rules to print, which is exactly
+            // the narrowness this function's doc comment claims.
+            | Item::ArrayType { .. }
+            | Item::ViewType { .. }
+            | Item::EnumType { .. }
             | Item::StructType { .. }
+            | Item::UnionType { .. }
             | Item::ProcType { .. } => None,
         }
     }
@@ -343,13 +416,34 @@ pub fn type_name(pool: &Pool, signatures: &FileSignatures, ty: PoolId) -> String
         Item::BoolType => String::from("bool"),
         Item::IntType { signed, bits } => format!("{}{bits}", if *signed { 's' } else { 'u' }),
         Item::StringType => String::from("string"),
+        Item::FloatType { bits } => format!("float{bits}"),
+        Item::EnumType { decl, .. } => signatures
+            .type_name(ty)
+            .map_or_else(|| format!("enum{decl:?}"), ToOwned::to_owned),
         Item::TypeType => String::from("type"),
         Item::ErrorType => String::from("<unknown>"),
         Item::ForeignLibraryType => String::from("#system_library"),
         Item::PointerType(pointee) => format!("*{}", type_name(pool, signatures, *pointee)),
+        Item::ArrayType { elem, len } => {
+            format!("[{len}]{}", type_name(pool, signatures, *elem))
+        }
+        Item::ViewType { elem } => format!("[]{}", type_name(pool, signatures, *elem)),
+        // Spelled as written, so hovering a multi-result procedure shows `-> (s64, bool)` rather
+        // than a name the user never typed (ADR-0052 §1).
+        Item::ContextType => "Context".to_owned(),
+        Item::ResultsType { elems } => {
+            let parts: Vec<String> = elems
+                .iter()
+                .map(|ty| type_name(pool, signatures, *ty))
+                .collect();
+            format!("({})", parts.join(", "))
+        }
         Item::StructType { decl } => signatures
             .type_name(ty)
             .map_or_else(|| format!("struct{decl:?}"), ToOwned::to_owned),
+        Item::UnionType { decl } => signatures
+            .type_name(ty)
+            .map_or_else(|| format!("union{decl:?}"), ToOwned::to_owned),
         Item::ProcType {
             params,
             ret,
@@ -372,6 +466,7 @@ pub fn type_name(pool: &Pool, signatures: &FileSignatures, ty: PoolId) -> String
         Item::VoidValue
         | Item::BoolValue(_)
         | Item::IntValue { .. }
+        | Item::FloatValue { .. }
         | Item::StrValue(_)
         | Item::TypeValue(_)
         | Item::ProcValue { .. }
@@ -413,6 +508,37 @@ fn escape(text: &str) -> String {
 #[must_use]
 pub fn symbol_of(interner: &Interner, name: &str) -> Option<Symbol> {
     interner.get(name)
+}
+
+/// The source spelling of a binary operator, for an overload's hover card.
+///
+/// A local copy rather than an export from `jr-sema`, whose `bin_op_text` is `pub(crate)`:
+/// widening that crate's API to hand out a formatting choice would make it part of the public
+/// contract, which is the same argument `jr-mir`'s dump makes for having its own `ty`.
+fn op_text(op: jr_hir::BinOp) -> &'static str {
+    match op {
+        jr_hir::BinOp::Add => "+",
+        jr_hir::BinOp::Sub => "-",
+        jr_hir::BinOp::Mul => "*",
+        jr_hir::BinOp::Div => "/",
+        jr_hir::BinOp::Rem => "%",
+        jr_hir::BinOp::WrapAdd => "+%",
+        jr_hir::BinOp::WrapSub => "-%",
+        jr_hir::BinOp::WrapMul => "*%",
+        jr_hir::BinOp::Eq => "==",
+        jr_hir::BinOp::Ne => "!=",
+        jr_hir::BinOp::Lt => "<",
+        jr_hir::BinOp::Le => "<=",
+        jr_hir::BinOp::Gt => ">",
+        jr_hir::BinOp::Ge => ">=",
+        jr_hir::BinOp::And => "&&",
+        jr_hir::BinOp::Or => "||",
+        jr_hir::BinOp::BitAnd => "&",
+        jr_hir::BinOp::BitOr => "|",
+        jr_hir::BinOp::BitXor => "^",
+        jr_hir::BinOp::Shl => "<<",
+        jr_hir::BinOp::Shr => ">>",
+    }
 }
 
 #[cfg(test)]

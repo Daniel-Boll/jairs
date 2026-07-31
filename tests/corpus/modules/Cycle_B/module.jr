@@ -1,5 +1,22 @@
+// The other half of the cycle: `Cycle_A` imports this and this imports `Cycle_A`.
+// ADR-0014 §4 makes that legal, and proving it is this fixture's whole job.
+//
+// `b_value` deliberately returns a literal rather than `A_VALUE` from the other module.
+// It used to return the imported constant, which `jr-mir` still refuses to lower — its
+// value would have to come from another file's const evaluation, the cross-body read
+// ADR-0017 §3 keeps out. That made this fixture silently unlowerable for as long as it
+// has existed: nothing noticed, because a refused body is skipped and nothing called it.
+// E0245 (ADR-0047 §2) is what surfaced it. The *cycle* is what this file exists to test,
+// and the cycle is unaffected by where the number comes from.
 #import "Cycle_A";
 
 b_value :: () -> s64 {
-    return A_VALUE;
+    return 1;
+}
+
+/// The import must be *used*, or E0231 warns about it — and the import is the whole point of
+/// this fixture. A **call** across the cycle is the use, which ADR-0018 §5 made lowerable
+/// where an imported constant's *value* still is not.
+b_calls_a :: () -> s64 {
+    return a_calls_b();
 }

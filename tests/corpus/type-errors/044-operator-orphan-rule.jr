@@ -1,0 +1,11 @@
+// EXPECT: E0246 — an overload for two types this file does not own (ADR-0048 §3)
+// The orphan rule: at least one operand must be a struct, union or enum declared *here*. Without
+// it an `#import` could silently change what `+` means for `s64`, which is the action-at-a-distance
+// ADR-0014 §3 already refused when it made import order stop deciding behaviour. It would also make
+// two modules overloading the same builtin pair a conflict with no principled winner.
+operator + :: (a: s64, b: s64) -> s64 {
+    return a;
+}
+
+main :: () {
+}

@@ -1,0 +1,19 @@
+// A module declaring an `enum`, so that a member can be used across a file boundary
+// (ADR-0047 §1). Kept apart from `Colors.jr` because that module's names are already
+// used by three corpus files, and adding an enum to it would change what they import.
+Shade :: enum {
+    DARK;
+    MID;
+    LIGHT;
+}
+
+/// A flags enum too, since a bare member must work for both declaration forms.
+Style :: enum_flags {
+    BOLD;
+    ITALIC;
+}
+
+/// Takes the enum by value, so a caller in another file must be able to name a member.
+level :: (s: Shade) -> s64 {
+    return cast(s64, s);
+}

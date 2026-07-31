@@ -139,7 +139,12 @@ pub fn signature_help(
         }
         // A local, a parameter or an unresolved name: Jairs-0 has no procedure values, so
         // there is no signature to show rather than a signature this cannot find.
-        jr_hir::Res::Local(_) | jr_hir::Res::Param(_) | jr_hir::Res::Error => return None,
+        // A promoted name joins them: a field cannot hold a procedure in Jairs, so a promoted
+        // callee has no signature to show either.
+        jr_hir::Res::Local(_)
+        | jr_hir::Res::Param(_)
+        | jr_hir::Res::Promoted { .. }
+        | jr_hir::Res::Error => return None,
     };
 
     let hir = jr_db::file_hir(db, target);

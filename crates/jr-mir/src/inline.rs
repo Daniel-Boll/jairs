@@ -94,8 +94,8 @@ use rustc_hash::FxHashMap;
 use jr_pool::Pool;
 
 use crate::mir::{
-    BlockId, Callee, MirBody, MirSpan, Operand, Place, PlaceBase, ProcRef, Rvalue, SlotId,
-    Statement, Target, Terminator, ValueId,
+    BlockId, Callee, MirBody, MirSpan, Operand, Place, PlaceBase, ProcRef, Projection, Rvalue,
+    SlotId, Statement, Target, Terminator, ValueId,
 };
 use crate::verify;
 
@@ -187,7 +187,11 @@ pub fn is_inlinable(callee: &MirBody) -> bool {
                     }
                     statements += 1;
                 }
-                Statement::Store { .. } => statements += 1,
+                // Both are real work and neither contains a call, so they count toward the
+                // size budget without needing to be inspected.
+                Statement::Store { .. }
+                | Statement::Zero { .. }
+                | Statement::BoundsCheck { .. } => statements += 1,
             }
         }
     }
@@ -205,6 +209,7 @@ fn contains_call(rvalue: &Rvalue) -> bool {
         Rvalue::Use(_)
         | Rvalue::Binary { .. }
         | Rvalue::Unary { .. }
+        | Rvalue::Convert { .. }
         | Rvalue::Load(_)
         | Rvalue::Address(_)
         | Rvalue::Undef => false,
@@ -267,7 +272,10 @@ fn next_site(body: &MirBody, block: BlockId, callees: &Callees<'_>) -> Option<Si
         let (rvalue, dest, span) = match stmt {
             Statement::Assign { dest, rvalue, span } => (rvalue, Some(*dest), *span),
             Statement::Discard { rvalue, span } => (rvalue, None, *span),
-            Statement::Store { .. } | Statement::Nop => continue,
+            Statement::Store { .. }
+            | Statement::Zero { .. }
+            | Statement::BoundsCheck { .. }
+            | Statement::Nop => continue,
         };
         let Rvalue::Call {
             callee: Callee::Direct(proc),
@@ -433,9 +441,24 @@ impl Splice {
                 PlaceBase::Slot(slot) => PlaceBase::Slot(self.slots[slot]),
                 PlaceBase::Deref(operand) => PlaceBase::Deref(self.operand(operand)),
             },
-            // A projection is a field index or a deref step, neither of which names
-            // anything body-local (ADR-0017 §5 keeps offsets out of MIR).
-            projection: place.projection.clone(),
+            // A projection used to be only a field index or a deref step, neither of
+            // which names anything body-local — so cloning the path was correct.
+            // `Projection::Index` carries an `Operand`, which *is* body-local: cloning it
+            // would leave the callee's `ValueId` in the caller's body, where it means a
+            // different value or none at all. Remapped like every other operand.
+            projection: place
+                .projection
+                .iter()
+                .map(|step| match step {
+                    Projection::Index(operand) => Projection::Index(self.operand(operand)),
+                    Projection::Field(_)
+                    | Projection::Deref
+                    | Projection::StringData
+                    | Projection::StringCount
+                    | Projection::ViewData
+                    | Projection::ViewCount => *step,
+                })
+                .collect(),
         }
     }
 
@@ -446,6 +469,10 @@ impl Splice {
                 op: *op,
                 lhs: self.operand(lhs),
                 rhs: self.operand(rhs),
+            },
+            Rvalue::Convert { operand, from } => Rvalue::Convert {
+                operand: self.operand(operand),
+                from: *from,
             },
             Rvalue::Unary { op, operand } => Rvalue::Unary {
                 op: *op,
@@ -485,6 +512,19 @@ impl Splice {
             } => Statement::Store {
                 place: self.place(place),
                 value: self.operand(value),
+                span: self.span(),
+            },
+            Statement::Zero { place, span: _ } => Statement::Zero {
+                place: self.place(place),
+                span: self.span(),
+            },
+            Statement::BoundsCheck {
+                index,
+                len,
+                span: _,
+            } => Statement::BoundsCheck {
+                index: self.operand(index),
+                len: self.operand(len),
                 span: self.span(),
             },
             Statement::Discard { rvalue, span: _ } => Statement::Discard {

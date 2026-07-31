@@ -258,6 +258,26 @@ impl Compiler<'_> {
                 });
                 Ok(())
             }
+            // `PlacePlan::size` is already the byte count of the value at the place, so
+            // the size comes from the plan rather than from a second layout walk that
+            // could disagree with it.
+            Statement::Zero { place, span: _ } => {
+                let plan = self.plan(place)?;
+                let size = plan.size;
+                self.emit(Instr::Zero { place: plan, size });
+                Ok(())
+            }
+            Statement::BoundsCheck {
+                index,
+                len,
+                span: _,
+            } => {
+                self.emit(Instr::BoundsCheck {
+                    index: *index,
+                    len: *len,
+                });
+                Ok(())
+            }
             // A discarded rvalue must still be *evaluated*: ADR-0002 makes overflow
             // trap, so `a + b;` in statement position is observable even though
             // nothing reads the sum. Only a call has effects beyond that, but
@@ -290,6 +310,13 @@ impl Compiler<'_> {
                 self.emit(Instr::Move {
                     dest,
                     src: *operand,
+                });
+            }
+            Rvalue::Convert { operand, from } => {
+                self.emit(Instr::Convert {
+                    dest,
+                    operand: *operand,
+                    from: *from,
                 });
             }
             Rvalue::Binary { op, lhs, rhs } => {
@@ -449,9 +476,15 @@ impl Compiler<'_> {
             Rvalue::Use(operand) => self.operand_ty(*operand),
             Rvalue::Binary { lhs, .. } => self.operand_ty(*lhs),
             Rvalue::Unary { operand, .. } => self.operand_ty(*operand),
-            Rvalue::Call { .. } | Rvalue::Load(_) | Rvalue::Address(_) | Rvalue::Undef => {
-                PoolId::VOID
-            }
+            // Deliberately *not* the operand's type: a conversion's whole point is that the
+            // destination differs from the source, and the destination's width is what the
+            // interpreter masks with. `Convert` carries no destination type, so the caller's
+            // `dest` type is authoritative and this fallback must not guess the source's.
+            Rvalue::Convert { .. }
+            | Rvalue::Call { .. }
+            | Rvalue::Load(_)
+            | Rvalue::Address(_)
+            | Rvalue::Undef => PoolId::VOID,
         }
     }
 
@@ -494,6 +527,38 @@ impl Compiler<'_> {
                     }
                     ty = self.field_type(ty, *index)?;
                 }
+                Projection::Index(index) => {
+                    // Two shapes reach here. An **array** place is indexed in place. A
+                    // **pointer** place — which is what a view's `data` word is — is read
+                    // through first, exactly as a `Deref` step would, and then indexed. One
+                    // arm rather than two projections, so an array element and a view element
+                    // are scaled by the same stride computation and cannot drift.
+                    let elem = match self.pool.item(ty) {
+                        Item::ArrayType { elem, .. } => *elem,
+                        Item::PointerType(pointee) => {
+                            let pointee = *pointee;
+                            steps.push(PlaceStep::Indirect {
+                                size: u64::from(self.target.pointer_size),
+                            });
+                            pointee
+                        }
+                        _ => {
+                            return Err(VmError::internal("an index into a non-array"));
+                        }
+                    };
+                    // The stride is the element size rounded up to its alignment — the
+                    // same computation `jr-pool`'s `layout_of` uses for the array's total
+                    // size, so an element's address here and the array's size there cannot
+                    // disagree.
+                    let elem_layout = jr_pool::layout_of(self.pool, self.target, elem)
+                        .map_err(|e| VmError::internal(format!("array element: {e}")))?;
+                    let stride = elem_layout.size.next_multiple_of(elem_layout.align.into());
+                    steps.push(PlaceStep::ScaledIndex {
+                        index: *index,
+                        stride,
+                    });
+                    ty = elem;
+                }
                 Projection::Deref => {
                     steps.push(PlaceStep::Indirect {
                         size: u64::from(self.target.pointer_size),
@@ -516,6 +581,30 @@ impl Compiler<'_> {
                     }
                     ty = PoolId::S64;
                 }
+                // A view's two words are at the same offsets a string's are — one shared
+                // computation, so the layouts cannot drift (ADR-0044 §1). What differs is the
+                // *type* the step lands on: `*T` rather than `*u8`, which is what makes
+                // indexing the view use the right stride.
+                Projection::ViewData => {
+                    let Item::ViewType { elem } = self.pool.item(ty) else {
+                        return Err(VmError::internal("a view projection of a non-view"));
+                    };
+                    let elem = *elem;
+                    let (offset, _) = jr_pool::pair_data(self.target);
+                    if offset != 0 {
+                        steps.push(PlaceStep::Offset(offset));
+                    }
+                    ty = self.pool.find(&Item::PointerType(elem)).ok_or_else(|| {
+                        VmError::internal("a view's element pointer type was never interned")
+                    })?;
+                }
+                Projection::ViewCount => {
+                    let (offset, _) = jr_pool::pair_count(self.target);
+                    if offset != 0 {
+                        steps.push(PlaceStep::Offset(offset));
+                    }
+                    ty = PoolId::S64;
+                }
             }
         }
 
@@ -530,8 +619,26 @@ impl Compiler<'_> {
     }
 
     fn field_type(&self, ty: PoolId, index: u32) -> Result<PoolId, VmError> {
-        let Item::StructType { decl } = self.pool.item(ty) else {
-            return Err(VmError::internal("a field of a non-struct"));
+        // A results aggregate's element list *is* its field list (ADR-0052 §1), so it is read
+        // directly rather than through the struct side table — there is no `DeclId` to key one on.
+        // The context's fields are the compiler's list (ADR-0057 §1) — the **third** consumer of
+        // "what type is field N", after `jr-pool`'s `field_offset` and `jr-codegen-clif`'s. ADR-0052
+        // recorded that duplication as owed and this wave adds a fourth aggregate kind to all three,
+        // which is the cost it predicted.
+        if matches!(self.pool.item(ty), Item::ContextType) {
+            return jr_pool::Pool::context_field_type(index)
+                .ok_or_else(|| VmError::internal(format!("no context field {index}")));
+        }
+        if let Item::ResultsType { elems } = self.pool.item(ty) {
+            return elems
+                .get(index as usize)
+                .copied()
+                .ok_or_else(|| VmError::internal(format!("no result {index}")));
+        }
+        // A union's field list is a struct's, so this accepts both; only `field_offset`
+        // distinguishes them, and that is `jr-pool`'s (ADR-0045 §5).
+        let (Item::StructType { decl } | Item::UnionType { decl }) = self.pool.item(ty) else {
+            return Err(VmError::internal("a field of a non-aggregate"));
         };
         self.pool
             .struct_fields(*decl)
@@ -548,18 +655,37 @@ impl Compiler<'_> {
     fn shape(&self, ty: PoolId) -> Shape {
         match self.pool.item(ty) {
             Item::VoidType => Shape::Void,
+            // A float is a scalar: fixed, small, register-sized. Which *interpretation* its
+            // bits carry comes from the type, which every consumer already has.
+            // An enum is its backing integer at run time (ADR-0041 §3).
             Item::BoolType
             | Item::IntType { .. }
+            | Item::FloatType { .. }
+            | Item::EnumType { .. }
             | Item::PointerType(_)
             | Item::ProcType { .. } => Shape::Scalar,
+            // A view is two words, so it reads as an aggregate — the same classification
+            // `StringType` gets, and for the same reason (ADR-0044 §1).
             Item::StringType
+            | Item::ArrayType { .. }
+            | Item::ViewType { .. }
             | Item::StructType { .. }
+            | Item::UnionType { .. }
+            // A results aggregate is bytes laid out like a struct's (ADR-0052 §1), so it reads as
+            // one. Classifying it as a scalar would read one word where several live — a wrong
+            // number of bytes rather than a failure, which is what this match is exhaustive to
+            // prevent.
+            | Item::ResultsType { .. }
+            // A context is an aggregate: its fields live in memory and it is reached through a
+            // pointer (ADR-0057 §2).
+            | Item::ContextType
             | Item::TypeType
             | Item::ErrorType
             | Item::ForeignLibraryType
             | Item::VoidValue
             | Item::BoolValue(_)
             | Item::IntValue { .. }
+            | Item::FloatValue { .. }
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
@@ -589,7 +715,9 @@ fn statement_span(stmt: &Statement) -> MirSpan {
     match stmt {
         Statement::Assign { span, .. }
         | Statement::Store { span, .. }
-        | Statement::Discard { span, .. } => *span,
+        | Statement::Discard { span, .. }
+        | Statement::Zero { span, .. }
+        | Statement::BoundsCheck { span, .. } => *span,
         Statement::Nop => MirSpan::Synthetic,
     }
 }

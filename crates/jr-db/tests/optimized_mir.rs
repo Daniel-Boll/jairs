@@ -30,6 +30,14 @@ fn database() -> (JairsDatabase, ModuleSearchPaths) {
     (db, search)
 }
 
+/// The default build settings: bounds checks **on**.
+///
+/// Every test here but the two named for ADR-0058 wants the program as written, so the default
+/// is spelled once rather than at each call.
+fn checked(db: &mut JairsDatabase) -> jr_db::BuildConfig {
+    db.set_build_config(true)
+}
+
 fn add_file(db: &mut JairsDatabase, path: &str, text: &str) -> SourceFile {
     db.set_file_text(path, text);
     db.source_file(path)
@@ -37,11 +45,23 @@ fn add_file(db: &mut JairsDatabase, path: &str, text: &str) -> SourceFile {
 }
 
 /// Loads one source string as `main.jr` with `modules/` on the search path.
-fn program(text: &str) -> (JairsDatabase, ModuleSearchPaths, SourceFile) {
+///
+/// Returns the build settings too, with bounds checks **on** — the program as written, which is
+/// what every test here but the two named for ADR-0058 wants. Returned rather than looked up per
+/// test so that a test which needs them *off* has to say so.
+fn program(
+    text: &str,
+) -> (
+    JairsDatabase,
+    ModuleSearchPaths,
+    SourceFile,
+    jr_db::BuildConfig,
+) {
     let (mut db, search) = database();
     let file = add_file(&mut db, "main.jr", text);
     db.load_modules_transitively(file);
-    (db, search, file)
+    let config = checked(&mut db);
+    (db, search, file, config)
 }
 
 /// How many call rvalues a named procedure still performs after optimisation.
@@ -49,9 +69,10 @@ fn calls_left(
     db: &JairsDatabase,
     file: SourceFile,
     search: ModuleSearchPaths,
+    config: jr_db::BuildConfig,
     name: &str,
 ) -> usize {
-    let mir = optimized_file_mir(db, file, search).mir;
+    let mir = optimized_file_mir(db, file, search, config).mir;
     let proc = proc_named(db, file, name);
     let Some(Ok(body)) = mir.get(proc) else {
         panic!("`{name}` has no lowered body");
@@ -62,7 +83,10 @@ fn calls_left(
             let rvalue = match stmt {
                 jr_mir::Statement::Assign { rvalue, .. }
                 | jr_mir::Statement::Discard { rvalue, .. } => rvalue,
-                jr_mir::Statement::Store { .. } | jr_mir::Statement::Nop => continue,
+                jr_mir::Statement::Store { .. }
+                | jr_mir::Statement::Zero { .. }
+                | jr_mir::Statement::BoundsCheck { .. }
+                | jr_mir::Statement::Nop => continue,
             };
             if matches!(rvalue, jr_mir::Rvalue::Call { .. }) {
                 count += 1;
@@ -93,10 +117,16 @@ fn proc_named(db: &JairsDatabase, file: SourceFile, name: &str) -> jr_hir::ProcI
 }
 
 /// Whether a named procedure's optimized body is byte-identical to its built one.
-fn unchanged(db: &JairsDatabase, file: SourceFile, search: ModuleSearchPaths, name: &str) -> bool {
+fn unchanged(
+    db: &JairsDatabase,
+    file: SourceFile,
+    search: ModuleSearchPaths,
+    config: jr_db::BuildConfig,
+    name: &str,
+) -> bool {
     let proc = proc_named(db, file, name);
     let built = file_mir(db, file, search).mir;
-    let optimized = optimized_file_mir(db, file, search).mir;
+    let optimized = optimized_file_mir(db, file, search, config).mir;
     built.get(proc) == optimized.get(proc)
 }
 
@@ -114,6 +144,7 @@ fn the_exit_criterion_file_inlines_its_one_leaf_call() {
         .expect("the exit criterion's file must exist");
     let file = add_file(&mut db, "024-hello.jr", &text);
     db.load_modules_transitively(file);
+    let config = checked(&mut db);
 
     let before = {
         let mir = file_mir(&db, file, search).mir;
@@ -124,7 +155,7 @@ fn the_exit_criterion_file_inlines_its_one_leaf_call() {
         body.block_count()
     };
     let after = {
-        let mir = optimized_file_mir(&db, file, search).mir;
+        let mir = optimized_file_mir(&db, file, search, config).mir;
         let main = proc_named(&db, file, "main");
         let Some(Ok(body)) = mir.get(main) else {
             panic!("`main` has no lowered body");
@@ -136,7 +167,7 @@ fn the_exit_criterion_file_inlines_its_one_leaf_call() {
         "`main` must have grown by the copy of `add` plus a continuation"
     );
     assert!(
-        unchanged(&db, file, search, "add"),
+        unchanged(&db, file, search, config, "add"),
         "`add` is a `#run` root, so ADR-0021 §2 freezes its own body"
     );
 }
@@ -159,6 +190,7 @@ fn a_cross_file_leaf_is_inlined_through_the_import() {
         "#import \"Leaf\";\n\nmain :: () -> s64 { return twice(21); }\n",
     );
     db.load_modules_transitively(file);
+    let config = checked(&mut db);
 
     // Skipped rather than failed when the module could not be resolved: this test is
     // about inlining, and a search-path problem is a different failure with a
@@ -168,7 +200,7 @@ fn a_cross_file_leaf_is_inlined_through_the_import() {
         return;
     }
     assert_eq!(
-        calls_left(&db, file, search, "main"),
+        calls_left(&db, file, search, config, "main"),
         0,
         "a leaf in an imported module must inline like any other"
     );
@@ -191,17 +223,17 @@ fn a_body_the_run_closure_reaches_is_left_byte_identical() {
     // it from its own lowering; if the back end were handed an inlined version, the
     // two engines would be running different MIR and §3.1's invariant would hold only
     // as far as the inliner is correct.
-    let (db, search, file) = program(FROZEN_AND_FREE);
+    let (db, search, file, config) = program(FROZEN_AND_FREE);
     assert!(
         !file_mir(&db, file, search).gated,
         "the program must check, or the test proves nothing"
     );
     assert!(
-        unchanged(&db, file, search, "comptime"),
+        unchanged(&db, file, search, config, "comptime"),
         "a `#run` root must not be rewritten"
     );
     assert_eq!(
-        calls_left(&db, file, search, "comptime"),
+        calls_left(&db, file, search, config, "comptime"),
         1,
         "and its call must still be a call"
     );
@@ -212,8 +244,8 @@ fn the_closure_is_transitive() {
     // `leaf` is not a root; it is reached *through* `comptime`. A closure that took
     // only the direct callees would leave `leaf` free to be rewritten, and comptime
     // executes it.
-    let (db, search, file) = program(FROZEN_AND_FREE);
-    assert!(unchanged(&db, file, search, "leaf"));
+    let (db, search, file, config) = program(FROZEN_AND_FREE);
+    assert!(unchanged(&db, file, search, config, "leaf"));
 }
 
 #[test]
@@ -221,9 +253,9 @@ fn a_body_outside_the_closure_still_inlines_the_same_callee() {
     // The exclusion must be targeted, not a blanket "stop optimising this file". Same
     // callee, same threshold, different caller: `runtime` is not reachable from any
     // `#run`, so it gets the inlined version.
-    let (db, search, file) = program(FROZEN_AND_FREE);
+    let (db, search, file, config) = program(FROZEN_AND_FREE);
     assert_eq!(
-        calls_left(&db, file, search, "runtime"),
+        calls_left(&db, file, search, config, "runtime"),
         0,
         "a caller outside the closure must be optimised normally"
     );
@@ -248,7 +280,7 @@ fn a_cross_file_run_is_still_refused() {
     // So if this test starts failing because a cross-file `#run` now works, the fix
     // is not to delete the assertion. It is either a cross-file closure or the
     // body-grain key that lets both engines share one optimized query.
-    let (db, _search, file) =
+    let (db, _search, file, _config) =
         program("#import \"Basic\";\n\nSIDE :: #run print(\"from comptime\");\n\nmain :: () { }\n");
     let diagnostics = jr_db::file_diagnostics(&db, file, _search);
     assert!(
@@ -275,7 +307,11 @@ fn the_optimized_dump_is_stable() {
         .expect("the exit criterion's file must exist");
     let file = add_file(&mut db, "024-hello.jr", &text);
     db.load_modules_transitively(file);
-    insta::assert_snapshot!("hello_optimized_mir", dump_optimized_mir(&db, file, search));
+    let config = checked(&mut db);
+    insta::assert_snapshot!(
+        "hello_optimized_mir",
+        dump_optimized_mir(&db, file, search, config)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -296,9 +332,10 @@ fn print_line_loses_the_spill_slot_it_never_reads() {
         .expect("the Basic module must exist");
     let module = add_file(&mut db, "modules/Basic/module.jr", &text);
     db.load_modules_transitively(module);
+    let config = checked(&mut db);
 
     let built = file_mir(&db, module, search).mir;
-    let optimized = optimized_file_mir(&db, module, search).mir;
+    let optimized = optimized_file_mir(&db, module, search, config).mir;
     let proc = proc_named(&db, module, "print_line");
 
     let Some(Ok(before)) = built.get(proc) else {
@@ -316,5 +353,141 @@ fn print_line_loses_the_spill_slot_it_never_reads() {
         after.slot_count(),
         0,
         "a slot that is only ever written must not reach either engine"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0058: the bounds-check build setting
+// ---------------------------------------------------------------------------
+
+/// How many `BoundsCheck` statements a named procedure's optimized body still holds.
+fn checks_left(
+    db: &JairsDatabase,
+    file: SourceFile,
+    search: ModuleSearchPaths,
+    config: jr_db::BuildConfig,
+    name: &str,
+) -> usize {
+    let mir = optimized_file_mir(db, file, search, config).mir;
+    let proc = proc_named(db, file, name);
+    let body = match mir.get(proc) {
+        Some(Ok(body)) => body,
+        other => panic!("`{name}` has no lowered body: {other:?}"),
+    };
+    body.blocks()
+        .iter()
+        .flat_map(|block| &block.stmts)
+        .filter(|stmt| matches!(stmt, jr_mir::Statement::BoundsCheck { .. }))
+        .count()
+}
+
+/// A program with one index the mid-end cannot prove in range.
+///
+/// The index comes from a **parameter**, deliberately. A constant index is exactly what
+/// const-prop deletes the check for — which is ADR-0003's other half working — so a test using
+/// `buf[2]` would find zero checks under both settings and prove nothing about the pass.
+const INDEXED: &str = "read :: (buf: [4]s64, i: s64) -> s64 {\n    return buf[i];\n}\n\nmain :: () {\n    xs: [4]s64;\n    xs[1] = 5;\n    if read(xs, 1) == 5 {\n        return;\n    }\n}\n";
+
+#[test]
+fn the_check_is_there_by_default() {
+    // The control. Every other test in this group would also pass if the pass always stripped, or
+    // if lowering had quietly stopped emitting a check at all — so the *presence* of one under the
+    // default settings is what the rest of the group rests on.
+    let (db, search, file, config) = program(INDEXED);
+    assert_eq!(
+        checks_left(&db, file, search, config, "read"),
+        1,
+        "an index the mid-end cannot prove in range must keep its check"
+    );
+}
+
+#[test]
+fn no_bounds_check_strips_it() {
+    let (mut db, search) = database();
+    let file = add_file(&mut db, "main.jr", INDEXED);
+    db.load_modules_transitively(file);
+    let unchecked = db.set_build_config(false);
+    assert_eq!(
+        checks_left(&db, file, search, unchecked, "read"),
+        0,
+        "`--no-bounds-check` must leave no check for either engine to run"
+    );
+}
+
+#[test]
+fn toggling_the_setting_re_runs_the_query() {
+    // The reason ADR-0058 §2 made this a salsa input rather than a parameter a caller remembers to
+    // pass. Both answers are asked of *one* database, in sequence, so a stale memo would return
+    // the first answer twice — which is precisely what a non-input configuration would do, and it
+    // would look like the flag having no effect.
+    let (mut db, search) = database();
+    let file = add_file(&mut db, "main.jr", INDEXED);
+    db.load_modules_transitively(file);
+
+    let checked_config = db.set_build_config(true);
+    assert_eq!(checks_left(&db, file, search, checked_config, "read"), 1);
+
+    let unchecked = db.set_build_config(false);
+    assert_eq!(
+        checks_left(&db, file, search, unchecked, "read"),
+        0,
+        "the second answer must reflect the new setting, not a memo of the first"
+    );
+
+    // And back, because an input that invalidated in one direction only would pass the assertion
+    // above while being broken.
+    let rechecked = db.set_build_config(true);
+    assert_eq!(
+        checks_left(&db, file, search, rechecked, "read"),
+        1,
+        "turning checks back on must restore them"
+    );
+}
+
+#[test]
+fn no_abc_strips_one_procedure_and_leaves_the_others() {
+    // ADR-0058 §3's granularity, asserted in both directions at once. A test that only checked
+    // the `#no_abc` procedure would pass if the flag had been read as a *file*-level setting.
+    let source = "raw :: (buf: [4]s64, i: s64) -> s64 #no_abc {\n    return buf[i];\n}\n\nsafe :: (buf: [4]s64, i: s64) -> s64 {\n    return buf[i];\n}\n\nmain :: () {\n    xs: [4]s64;\n    xs[1] = 5;\n    if raw(xs, 1) == safe(xs, 1) {\n        return;\n    }\n}\n";
+    let (db, search, file, config) = program(source);
+    assert_eq!(
+        checks_left(&db, file, search, config, "raw"),
+        0,
+        "`#no_abc` must suppress the check whatever the build says"
+    );
+    assert_eq!(
+        checks_left(&db, file, search, config, "safe"),
+        1,
+        "a procedure without the directive keeps its check"
+    );
+}
+
+#[test]
+fn comptime_keeps_its_checks_under_the_flag() {
+    // ADR-0058 §4, and the reason it is a *decision* rather than an accident worth hiding: a trap
+    // at compile time is a diagnostic, and folding an out-of-range read into a constant would be a
+    // well-typed garbage value — this project's first named failure mode.
+    //
+    // The **message** is asserted, not merely the presence of an error. The first version of this
+    // test used `#run read(---, 9)` and passed while proving nothing: the error was "`---` has no
+    // value", raised before any index was evaluated, so the test would have stayed green with the
+    // check stripped. A test that passes for the wrong reason is the thing ADR-0058 §5 is about.
+    let (mut db, search) = database();
+    let file = add_file(
+        &mut db,
+        "main.jr",
+        "oob :: () -> s64 {\n    buf: [4]s64;\n    i := 9;\n    return buf[i];\n}\n\nBAD :: #run oob();\n\nmain :: () { }\n",
+    );
+    db.load_modules_transitively(file);
+    // Set, and deliberately not passed to anything: the point is that no setting reaches
+    // `file_consts`, which lowers its own MIR and never calls `optimize` (ADR-0058 §4).
+    let _unchecked = db.set_build_config(false);
+
+    let diagnostics = jr_db::file_diagnostics(&db, file, search);
+    let messages: Vec<String> = diagnostics.iter().map(|d| d.message.clone()).collect();
+    assert!(
+        messages.iter().any(|m| m.contains("index out of bounds")),
+        "an out-of-range comptime index must trap even under `--no-bounds-check`, and for that \
+         reason rather than another: {messages:?}"
     );
 }

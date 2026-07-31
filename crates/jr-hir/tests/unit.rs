@@ -149,17 +149,21 @@ fn max_s64_integer_literal() {
     else {
         panic!("expected int literal");
     };
-    assert_eq!(*value, i64::MAX as u64);
+    assert_eq!(*value, i128::from(i64::MAX));
     assert!(!overflowed);
 }
 
 #[test]
-fn overflow_s64_integer_literal_is_flagged_but_not_reported_here() {
-    // 9223372036854775808 = i64::MAX + 1.
+fn a_literal_past_s64_is_kept_verbatim_and_not_judged_here() {
+    // 9223372036854775808 = i64::MAX + 1, and a perfectly legal `u64`.
     //
-    // Lowering records that the value does not fit `s64` and says nothing:
-    // under ADR-0016 §1 the literal's type comes from its *context*, which
-    // lowering cannot see, so the diagnostic (still E0204) belongs to `jr-sema`.
+    // Lowering says nothing: under ADR-0016 §1 the literal's type comes from its *context*,
+    // which lowering cannot see, so E0204 belongs to `jr-sema`.
+    //
+    // `overflowed` is deliberately **false** here. It used to be `value > i64::MAX`, which
+    // condemned this value for every type including the one that holds it; since ADR-0038 §2
+    // it means "fits no Jairs integer type at all", and this one fits `u64`. Verified against
+    // the real compiler: rejected as `s64`, accepted as `u64`.
     let (hir, diags, _) = lower("X :: 9223372036854775808;");
     assert!(
         diags.is_empty(),
@@ -173,10 +177,58 @@ fn overflow_s64_integer_literal_is_flagged_but_not_reported_here() {
     else {
         panic!("expected const expr");
     };
-    let Expr::Literal(Literal::Int { overflowed, .. }, _) = &hir.exprs[eid.index()] else {
+    let Expr::Literal(
+        Literal::Int {
+            value, overflowed, ..
+        },
+        _,
+    ) = &hir.exprs[eid.index()]
+    else {
         panic!("expected int literal");
     };
-    assert!(overflowed);
+    assert_eq!(*value, i128::from(i64::MAX) + 1);
+    assert!(!overflowed, "it fits `u64`, so it overflows nothing");
+}
+
+#[test]
+fn a_leading_minus_is_folded_into_the_literal() {
+    // ADR-0038 §1: `-128` is one literal, not `Neg` applied to 128 — which is what makes a
+    // signed minimum expressible, since negating 128 in an `s8` overflows.
+    let (hir, diags, _) = lower("X :: -128;");
+    assert!(diags.is_empty(), "{diags:?}");
+    let ItemKind::Const {
+        value: ConstValue::Expr(eid),
+    } = &hir.items[0].kind
+    else {
+        panic!("expected const expr");
+    };
+    let Expr::Literal(Literal::Int { value, .. }, _) = &hir.exprs[eid.index()] else {
+        panic!(
+            "a folded `-` must leave a literal, not a Unary: {:?}",
+            hir.exprs[eid.index()]
+        );
+    };
+    assert_eq!(*value, -128);
+}
+
+#[test]
+fn a_minus_on_a_non_literal_is_still_a_negation() {
+    // §3 keeps the fold one level deep and syntactic: `-x` must still lower to `Unary(Neg, ..)`
+    // so ADR-0002's trapping negation applies to it.
+    let (hir, diags, _) = lower("f :: (a: s64) -> s64 { return -a; }");
+    assert!(diags.is_empty(), "{diags:?}");
+    let body = &hir.bodies[0];
+    assert!(
+        body.exprs.iter().any(|e| matches!(
+            e,
+            Expr::Unary {
+                op: jr_hir::UnOp::Neg,
+                ..
+            }
+        )),
+        "expected a Unary(Neg): {:?}",
+        body.exprs
+    );
 }
 
 #[test]
@@ -1064,7 +1116,8 @@ fn empty_imports_slice_behaves_as_before() {
 
 #[test]
 fn export_scope_contains_all_file_level_names() {
-    // FileHir::export_scope() must return the full file scope (W1 over-share).
+    // With no `#scope_module` marker, every file-level name is exported — export is the default
+    // (ADR-0054 §1), which is what keeps every existing module meaning what it did.
     let source = "A :: 1;\nB :: 2;\nmain :: () {}";
     let interner = Interner::new();
     let f = file();

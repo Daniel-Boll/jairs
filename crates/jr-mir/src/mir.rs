@@ -183,6 +183,16 @@ pub enum BinOp {
     WrapSub,
     /// Wrapping multiplication (`*%`).
     WrapMul,
+    /// Bitwise and (ADR-0042). Cannot trap.
+    BitAnd,
+    /// Bitwise or. Cannot trap.
+    BitOr,
+    /// Bitwise xor. Cannot trap.
+    BitXor,
+    /// Left shift. Traps on an out-of-range count (ADR-0042 §3).
+    Shl,
+    /// Right shift, arithmetic for a signed type (ADR-0042 §2). Traps on an out-of-range count.
+    Shr,
     /// Equality.
     Eq,
     /// Inequality.
@@ -220,7 +230,75 @@ impl BinOp {
             Self::WrapAdd => Some(IntOp::WrapAdd),
             Self::WrapSub => Some(IntOp::WrapSub),
             Self::WrapMul => Some(IntOp::WrapMul),
+            Self::BitAnd => Some(IntOp::BitAnd),
+            Self::BitOr => Some(IntOp::BitOr),
+            Self::BitXor => Some(IntOp::BitXor),
+            Self::Shl => Some(IntOp::Shl),
+            Self::Shr => Some(IntOp::Shr),
             Self::Eq | Self::Ne | Self::Lt | Self::Le | Self::Gt | Self::Ge => None,
+        }
+    }
+
+    /// The float arithmetic operation this is, if floats have one for it (ADR-0040 §7).
+    ///
+    /// `None` for `Rem` and the three wrapping forms — deliberately, and this is where that
+    /// refusal is enforced rather than merely documented. `%` on floats is a language
+    /// decision Jairs has not taken, and the wrapping operators opt out of ADR-0002's
+    /// *integer* overflow trap, which floating-point arithmetic does not have.
+    #[must_use]
+    pub const fn as_float_op(self) -> Option<jr_pool::FloatOp> {
+        match self {
+            Self::Add => Some(jr_pool::FloatOp::Add),
+            Self::Sub => Some(jr_pool::FloatOp::Sub),
+            Self::Mul => Some(jr_pool::FloatOp::Mul),
+            Self::Div => Some(jr_pool::FloatOp::Div),
+            // Bitwise operators and shifts have no float form: ADR-0042 §5 makes them
+            // integers only, so a float reaching here means sema and the VM disagree.
+            Self::Rem
+            | Self::WrapAdd
+            | Self::WrapSub
+            | Self::WrapMul
+            | Self::BitAnd
+            | Self::BitOr
+            | Self::BitXor
+            | Self::Shl
+            | Self::Shr
+            | Self::Eq
+            | Self::Ne
+            | Self::Lt
+            | Self::Le
+            | Self::Gt
+            | Self::Ge => None,
+        }
+    }
+
+    /// The float comparison this is, if it is one. See [`Self::as_float_op`].
+    ///
+    /// Every comparison has a float form, unlike the arithmetic — IEEE-754 defines all six,
+    /// including the two that surprise people: `NaN == NaN` is false and `0.0 == -0.0` is
+    /// true.
+    #[must_use]
+    pub const fn as_float_cmp(self) -> Option<jr_pool::FloatCmp> {
+        match self {
+            Self::Eq => Some(jr_pool::FloatCmp::Eq),
+            Self::Ne => Some(jr_pool::FloatCmp::Ne),
+            Self::Lt => Some(jr_pool::FloatCmp::Lt),
+            Self::Le => Some(jr_pool::FloatCmp::Le),
+            Self::Gt => Some(jr_pool::FloatCmp::Gt),
+            Self::Ge => Some(jr_pool::FloatCmp::Ge),
+            Self::Add
+            | Self::Sub
+            | Self::Mul
+            | Self::Div
+            | Self::Rem
+            | Self::WrapAdd
+            | Self::WrapSub
+            | Self::WrapMul
+            | Self::BitAnd
+            | Self::BitOr
+            | Self::BitXor
+            | Self::Shl
+            | Self::Shr => None,
         }
     }
 
@@ -241,7 +319,12 @@ impl BinOp {
             | Self::Rem
             | Self::WrapAdd
             | Self::WrapSub
-            | Self::WrapMul => None,
+            | Self::WrapMul
+            | Self::BitAnd
+            | Self::BitOr
+            | Self::BitXor
+            | Self::Shl
+            | Self::Shr => None,
         }
     }
 
@@ -254,8 +337,16 @@ impl BinOp {
     #[must_use]
     pub const fn can_trap(self) -> bool {
         match self {
-            Self::Add | Self::Sub | Self::Mul | Self::Div | Self::Rem => true,
-            Self::WrapAdd
+            // A shift joins the trapping set: an out-of-range count traps (ADR-0042 §3), so
+            // DCE may not delete a dead shift any more than a dead add.
+            Self::Add | Self::Sub | Self::Mul | Self::Div | Self::Rem | Self::Shl | Self::Shr => {
+                true
+            }
+            // `& | ^` cannot trap: there is no input for which they have no answer.
+            Self::BitAnd
+            | Self::BitOr
+            | Self::BitXor
+            | Self::WrapAdd
             | Self::WrapSub
             | Self::WrapMul
             | Self::Eq
@@ -281,6 +372,8 @@ pub enum UnOp {
     Neg,
     /// Logical negation of a `bool`.
     Not,
+    /// Bitwise complement (`~`, ADR-0042 §4). Cannot trap.
+    BitNot,
 }
 
 impl UnOp {
@@ -291,7 +384,7 @@ impl UnOp {
     pub const fn can_trap(self) -> bool {
         match self {
             Self::Neg => true,
-            Self::Not => false,
+            Self::Not | Self::BitNot => false,
         }
     }
 }
@@ -339,6 +432,17 @@ pub enum PlaceBase {
 pub enum Projection {
     /// A struct field, by index into [`jr_pool::Pool::struct_fields`].
     Field(u32),
+    /// An array element, at a runtime index (ADR-0039 §1).
+    ///
+    /// The index is in *elements*, not bytes — turning it into an offset needs the
+    /// element stride, which is layout, which ADR-0017 §5 keeps out of this crate for
+    /// the same reason [`Projection::Field`] carries a position rather than an offset.
+    ///
+    /// Carries **no bounds check of its own.** The check is a separate
+    /// [`Statement::BoundsCheck`] emitted before the access, so that a build-config pass
+    /// can strip it as a unit and const-prop can delete one it proves redundant
+    /// (ADR-0003). A projection that checked implicitly could do neither.
+    Index(Operand),
     /// A further dereference (ADR-0011's postfix `.*`).
     Deref,
     /// `string`'s `.data` pseudo-field, of type `*u8`.
@@ -351,6 +455,55 @@ pub enum Projection {
     StringData,
     /// `string`'s `.count` pseudo-field, of type `s64`.
     StringCount,
+    /// A view's `data` word, of type `*T` where `T` is the view's element (ADR-0044 §4).
+    ///
+    /// **Not** [`Projection::StringData`], even though the two are the same byte offset. The
+    /// projections differ in their *result type* — `*T` against `*u8` — and both engines
+    /// derive a place's type from the projection alone, so sharing the variant would type
+    /// every view's data word as `*u8` and index it with the wrong stride.
+    ViewData,
+    /// A view's `count` word, of type `s64` (ADR-0044 §4).
+    ///
+    /// This is a **load**, where an array's `.count` is a constant folded from its type
+    /// (ADR-0039 §5). That difference is the whole point of a view, which is why it needs a
+    /// projection at all.
+    ViewCount,
+}
+
+/// The kind of a numeric value: an integer or a float (ADR-0040 §3).
+///
+/// Exists because [`Rvalue::Convert`] must record what it is converting *from*, and with
+/// floats there are two families rather than one. Deliberately not a third variant for
+/// "pointer": a pointer is not numeric in Jairs, and `cast` refuses one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NumKind {
+    /// An integer of some width and signedness.
+    Int(jr_pool::IntKind),
+    /// A `float32` or `float64`.
+    Float(jr_pool::FloatKind),
+}
+
+impl NumKind {
+    /// The numeric kind of `ty`, if it has one.
+    ///
+    /// Asks `IntKind` first and `FloatKind` second; a type is never both, so the order is
+    /// arbitrary and fixed only so that reading the code twice gives the same answer.
+    #[must_use]
+    pub fn of(pool: &jr_pool::Pool, ty: jr_pool::PoolId) -> Option<Self> {
+        if let Some(kind) = jr_pool::IntKind::of(pool, ty) {
+            return Some(Self::Int(kind));
+        }
+        jr_pool::FloatKind::of(pool, ty).map(Self::Float)
+    }
+
+    /// How this kind is spelled, for a dump.
+    #[must_use]
+    pub fn name(self) -> String {
+        match self {
+            Self::Int(kind) => kind.name(),
+            Self::Float(kind) => kind.name(),
+        }
+    }
 }
 
 /// A memory location: a base plus a chain of projections.
@@ -442,6 +595,32 @@ pub enum Rvalue {
     Load(Place),
     /// The address of a place — the lowering of ADR-0011's prefix `*`.
     Address(Place),
+    /// An integer conversion: the lowering of `cast(T, x)` (ADR-0037 §2).
+    ///
+    /// Carries the *source* kind as well as the operand, because the destination type is
+    /// already on the defining `ValueId` and a narrowing conversion needs both to know
+    /// whether to sign- or zero-extend. Reading the source type back out of the operand would
+    /// work for a `ValueId` and not for a constant, so it is recorded rather than recovered.
+    ///
+    /// Truncating and extending are one op rather than two, because the decision is a
+    /// comparison of two widths that every consumer would otherwise repeat — and a consumer
+    /// that got it backwards would produce a wrong *value* rather than a compile error, which
+    /// is the failure mode `PLAN.md` §5 names.
+    Convert {
+        /// The value being converted.
+        operand: Operand,
+        /// The numeric kind being converted *from* (ADR-0040 §3).
+        ///
+        /// The kind converted *to* is the type of the `ValueId` this rvalue defines, so one
+        /// field determines which of the four directions this is: int→int, int→float,
+        /// float→int, float→float.
+        ///
+        /// Widened from an `IntKind` when floats landed. Recording the source rather than
+        /// recovering it is what lets the verifier assert the two agree — the check that
+        /// catches a sign-extend where a zero-extend belonged, and now also an `fcvt` where
+        /// an `sextend` belonged.
+        from: NumKind,
+    },
     /// A value that was never assigned.
     ///
     /// Produced when SSA construction reaches the entry block still looking for a
@@ -484,6 +663,57 @@ pub enum Statement {
         /// The rvalue to evaluate.
         rvalue: Rvalue,
         /// Where it came from.
+        span: MirSpan,
+    },
+    /// Sets every byte of `place` to zero.
+    ///
+    /// This is how a default-initialised aggregate gets its value. A scalar uses
+    /// [`Statement::Store`] with the type's zero constant instead; an aggregate has no
+    /// such constant, because `jr-pool` interns no zero for a struct or an array.
+    ///
+    /// **This exists because its absence was a miscompile.** `build.rs` used to emit
+    /// nothing for `p: Point;` and carried a comment saying the zeroing "is codegen's
+    /// job". The VM zeroes a freshly allocated frame, so it looked right there; Cranelift's
+    /// `ExplicitSlot` is uninitialised stack, so native code read whatever was left on the
+    /// stack. The two engines disagreed about a legal program, silently, and
+    /// `differential.rs` did not catch it because no corpus program observed a
+    /// default-initialised aggregate (ADR-0039 §4a).
+    ///
+    /// No size is carried: the byte count is layout, which ADR-0017 §5 keeps out of this
+    /// crate. Both back ends already know the slot's type.
+    Zero {
+        /// The location to clear.
+        place: Place,
+        /// Where it came from.
+        span: MirSpan,
+    },
+    /// Traps unless `index` is less than `len` (ADR-0003, ADR-0039 §1).
+    ///
+    /// An explicit statement rather than a side effect of [`Projection::Index`], which is
+    /// ADR-0003's decision and the reason it is worth the extra variant: the check can be
+    /// stripped as a unit for a build that disables bounds checking, and deleted
+    /// individually by a pass that proves the index in range.
+    ///
+    /// The comparison is **unsigned**: a negative index reinterpreted as an unsigned
+    /// value is enormous and so fails the same `index < len` test, which means one
+    /// comparison covers both ends of the range. `jr-sema` also rejects a negative
+    /// *literal* index outright (E0236), so this is the runtime half of a check whose
+    /// decidable cases are already gone.
+    ///
+    /// Produces no value. It is therefore *not* deletable by DCE — its whole effect is a
+    /// possible trap, which makes it exactly as undeletable as a trapping `Add`
+    /// (ADR-0022's `can_trap`).
+    BoundsCheck {
+        /// The index being checked.
+        index: Operand,
+        /// The number of elements.
+        ///
+        /// An [`Operand`] rather than a `u64` field: for a `[N]T` this is always a
+        /// constant, but `[]T` views and `[..]T` dynamic arrays arrive in later waves with
+        /// a length loaded from the value, and a check whose length was a constant field
+        /// would have to be replaced rather than extended (ADR-0039 §1).
+        len: Operand,
+        /// Where it came from — the span of the *index*, so the trap names it.
         span: MirSpan,
     },
     /// A statement that has been removed.
@@ -1055,6 +1285,11 @@ impl MirBody {
                         remap_place_slots(place, &remap);
                         remap_operand_slots(value, &remap);
                     }
+                    Statement::Zero { place, .. } => remap_place_slots(place, &remap),
+                    Statement::BoundsCheck { index, len, .. } => {
+                        remap_operand_slots(index, &remap);
+                        remap_operand_slots(len, &remap);
+                    }
                     Statement::Nop => {}
                 }
             }
@@ -1159,6 +1394,18 @@ fn remap_place_slots(place: &mut Place, remap: &[Option<SlotId>]) {
         }
         PlaceBase::Deref(operand) => remap_operand_slots(operand, remap),
     }
+    // `Projection::Index` carries an operand, and an operand can name a slot address.
+    for projection in &mut place.projection {
+        match projection {
+            Projection::Index(operand) => remap_operand_slots(operand, remap),
+            Projection::Field(_)
+            | Projection::Deref
+            | Projection::StringData
+            | Projection::StringCount
+            | Projection::ViewData
+            | Projection::ViewCount => {}
+        }
+    }
 }
 
 fn remap_rvalue_slots(rvalue: &mut Rvalue, remap: &[Option<SlotId>]) {
@@ -1169,6 +1416,7 @@ fn remap_rvalue_slots(rvalue: &mut Rvalue, remap: &[Option<SlotId>]) {
             remap_operand_slots(rhs, remap);
         }
         Rvalue::Unary { op: _, operand } => remap_operand_slots(operand, remap),
+        Rvalue::Convert { operand, from: _ } => remap_operand_slots(operand, remap),
         Rvalue::Call { callee, args } => {
             match callee {
                 Callee::Direct(_) => {}

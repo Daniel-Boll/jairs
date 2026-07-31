@@ -46,8 +46,8 @@ use jr_sema::TypeMap;
 
 use crate::inputs::{ConstValues, ImportedProcs};
 use crate::mir::{
-    BinOp, Callee, MirBody, MirSpan, Operand, Poisoned, ProcRef, Rvalue, Statement, Terminator,
-    UnOp,
+    BinOp, Callee, MirBody, MirSpan, Operand, Place, Poisoned, ProcRef, Rvalue, Statement,
+    Terminator, UnOp,
 };
 use crate::verify;
 
@@ -200,7 +200,10 @@ fn resolve_callee(
         Res::Imported(import, name) => imports.get(import, name).ok_or(Poisoned::Here(
             "a cross-file call needs the callee's signatures",
         )),
-        Res::Local(_) | Res::Param(_) | Res::Error => {
+        // A promoted name cannot occur at file scope: `using` prefixes a local or a parameter, and
+        // neither exists outside a body. Listed rather than `_`-armed so a future `Res` variant is
+        // a compile error here rather than silently taking this branch.
+        Res::Local(_) | Res::Param(_) | Res::Promoted { .. } | Res::Error => {
             Err(Poisoned::Here("a name failed to resolve at file scope"))
         }
     }
@@ -263,7 +266,8 @@ impl Thunk<'_> {
                     Res::Imported(_, _) => {
                         Err(Poisoned::Here("an imported constant has no value here"))
                     }
-                    Res::Local(_) | Res::Param(_) | Res::Error => {
+                    // Same as above: no `using` binding exists at file scope.
+                    Res::Local(_) | Res::Param(_) | Res::Promoted { .. } | Res::Error => {
                         Err(Poisoned::Here("a name failed to resolve at file scope"))
                     }
                 }
@@ -291,13 +295,45 @@ impl Thunk<'_> {
                 Ok(self.define(ty, Rvalue::Unary { op, operand }, id))
             }
 
+            // A `cast` inside a `#run` is evaluated, not skipped: `COMPUTED :: #run
+            // cast(u8, 65)` must fold in the VM exactly as it would at runtime, which is
+            // PLAN.md §3.1's same-MIR invariant applied to this wave's new rvalue.
+            Expr::Cast {
+                ty: _,
+                operand,
+                span: _,
+            } => {
+                let from_ty = expr_type(self.types, operand)?;
+                let from = crate::mir::NumKind::of(self.pool, from_ty).ok_or(Poisoned::Here(
+                    "a cast from a type comptime evaluation cannot reduce to a number",
+                ))?;
+                let operand = self.expr(operand)?;
+                Ok(self.define(ty, Rvalue::Convert { operand, from }, id))
+            }
+
             Expr::Call {
                 callee,
                 args,
+                arg_names: _,
                 span: _,
             } => {
                 let target = self.callee(callee)?;
-                let mut operands = Vec::with_capacity(args.len());
+                let mut operands = Vec::with_capacity(args.len() + 1);
+                // **A comptime call passes a context too** (ADR-0057 §2), because the callee's
+                // signature takes one — a thunk is a `#c_call`-shaped entry with no context of its
+                // own, so it allocates a fresh zeroed one per call. Without this the callee was
+                // "called a procedure taking 3 arguments with 2", the shift ADR-0053 §1 records.
+                //
+                // The context need not persist between calls: const-eval reads only a constant's
+                // *result*, and nothing at file scope observes a mutation (E0254 refuses `context`
+                // there). A fresh slot each time is therefore correct and simplest.
+                if self.callee_receives_context(target) {
+                    let ctx_ty = self.pool.context_type();
+                    let slot = self.mir.push_slot(ctx_ty, None, MirSpan::Synthetic);
+                    let ptr_ty = self.pool.context_pointer();
+                    let address = self.define(ptr_ty, Rvalue::Address(Place::slot(slot)), id);
+                    operands.push(address);
+                }
                 for arg in &args {
                     operands.push(self.expr(*arg)?);
                 }
@@ -313,9 +349,28 @@ impl Thunk<'_> {
 
             // Each of these is argued in the module docs.
             Expr::Directive { .. } => Err(Poisoned::Here("a directive has no runtime value")),
-            Expr::Field { .. } | Expr::Deref(_, _) => {
+            // An index needs a place for the same reason a field access does — and a
+            // file-level expression has none. `[N]u8` cannot appear in a `::` constant
+            // anyway, since there is no array literal to initialise one with (ADR-0039 §6).
+            Expr::Field { .. } | Expr::Index { .. } | Expr::Deref(_, _) => {
                 Err(Poisoned::Here("a file-level expression has no place"))
             }
+            // `buf[]` needs the *address* of a local's storage, and a file-level expression
+            // has no frame to take one in. Refused rather than half-built.
+            Expr::Slice { .. } => Err(Poisoned::Here("`[]` has no place at file level")),
+            // Both are legal at file level in principle, and neither is reachable: a `::`
+            // constant's initialiser is typed with no expectation, so sema has already refused
+            // `X :: xx 1;` (E0242) and `X :: .RED;` (E0244) before a thunk is built. Refused
+            // here rather than lowered, because a thunk that guessed a target type would be
+            // inventing the very thing the diagnostic says is missing.
+            Expr::Autocast { .. } => Err(Poisoned::Here("`xx` has no context at file level")),
+            Expr::Member { .. } => Err(Poisoned::Here(
+                "a bare enum member has no context at file level",
+            )),
+            // `context` at file scope is refused by sema (E0254, ADR-0057 §3): a constant's value is
+            // computed before any call, so no context has been passed. Reaching here means sema and
+            // const-eval disagree, which is a poison rather than a placeholder.
+            Expr::Context(_) => Err(Poisoned::Here("`context` has no value at file scope")),
             Expr::Uninit(_) => Err(Poisoned::Here("`---` has no value")),
             Expr::Error(_) => Err(Poisoned::Here("the expression contains recovered syntax")),
         }
@@ -323,15 +378,54 @@ impl Thunk<'_> {
 
     fn literal(&mut self, literal: &Literal, ty: PoolId) -> PoolId {
         match literal {
-            // `value` is a magnitude: `-1` is `Neg` applied to `1`.
+            // Wrapped into the destination's kind, because `int_value` takes raw bits and a
+            // negative literal's bits are its two's-complement encoding. The same
+            // `IntKind::wrap` the interpreter and `constprop` use, so a constant folded here
+            // and one computed at run time cannot differ (ADR-0038 §2).
+            //
+            // A literal whose type is not an integer — which sema has already rejected —
+            // interns its low 64 bits rather than panicking, since lowering must not
+            // introduce a second refusal path.
             Literal::Int {
                 value,
                 radix: _,
                 overflowed: _,
-            } => self.pool.int_value(ty, *value),
+            } => {
+                let bits = jr_pool::IntKind::of(self.pool, ty)
+                    .map_or(*value as u64, |kind| kind.wrap(*value));
+                self.pool.int_value(ty, bits)
+            }
+            // Re-encoded into the destination width, exactly as `build.rs`'s `constant` does
+            // — the two must agree, because a `#run` folds through this path and the same
+            // literal at run time folds through that one (PLAN.md §3.1).
+            Literal::Float { bits, malformed: _ } => {
+                let value = f64::from_bits(*bits);
+                let encoded =
+                    jr_pool::FloatKind::of(self.pool, ty).map_or(*bits, |kind| kind.encode(value));
+                self.pool.float_value(ty, encoded)
+            }
             Literal::Bool(value) => self.pool.bool_value(*value),
             Literal::Str(text) => self.pool.str_value(text),
+            // `null` is the zero pointer of `ty` (ADR-0060 §1), the same `int_value(ty, 0)`
+            // `build.rs` folds — the two must agree because a `#run` folds through here and the
+            // same literal at run time folds through there (PLAN.md §3.1). A comptime `null` is
+            // fine; it is a comptime *`malloc`* that ADR-0006 refuses, not a null pointer.
+            Literal::Null => self.pool.int_value(ty, 0),
         }
+    }
+
+    /// Whether a comptime callee receives the implicit context (ADR-0057 §3).
+    ///
+    /// Only a *local* callee is reachable in a thunk — file-level const-eval calls procedures in the
+    /// same file — so its `c_call`/`foreign` flags are in this HIR, the same two `jr-mir`'s lowering
+    /// reads. A cross-file comptime call is refused elsewhere, so `false` for one is harmless.
+    fn callee_receives_context(&self, target: ProcRef) -> bool {
+        target.file == self.file
+            && self
+                .hir
+                .procs
+                .get(target.proc.index())
+                .is_some_and(|p| !(p.c_call || p.foreign.is_some()))
     }
 
     fn callee(&mut self, callee: ExprId) -> Result<ProcRef, Poisoned> {
@@ -354,6 +448,11 @@ fn bin_op(op: jr_hir::BinOp) -> Result<BinOp, Poisoned> {
         jr_hir::BinOp::WrapAdd => BinOp::WrapAdd,
         jr_hir::BinOp::WrapSub => BinOp::WrapSub,
         jr_hir::BinOp::WrapMul => BinOp::WrapMul,
+        jr_hir::BinOp::BitAnd => BinOp::BitAnd,
+        jr_hir::BinOp::BitOr => BinOp::BitOr,
+        jr_hir::BinOp::BitXor => BinOp::BitXor,
+        jr_hir::BinOp::Shl => BinOp::Shl,
+        jr_hir::BinOp::Shr => BinOp::Shr,
         jr_hir::BinOp::Eq => BinOp::Eq,
         jr_hir::BinOp::Ne => BinOp::Ne,
         jr_hir::BinOp::Lt => BinOp::Lt,
@@ -372,6 +471,7 @@ fn un_op(op: jr_hir::UnOp) -> Result<UnOp, Poisoned> {
     Ok(match op {
         jr_hir::UnOp::Neg => UnOp::Neg,
         jr_hir::UnOp::Not => UnOp::Not,
+        jr_hir::UnOp::BitNot => UnOp::BitNot,
         // Prefix `*` needs a place, and a file-level expression has none.
         jr_hir::UnOp::AddrOf => {
             return Err(Poisoned::Here("a file-level expression has no place"));

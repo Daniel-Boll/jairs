@@ -1,0 +1,9 @@
+// EXPECT: E0242 — `xx` where nothing supplies a target type (ADR-0046 §2)
+// A `:=` declaration infers its type *from* the initialiser, so there is no context to convert
+// to. Deliberately not defaulted: an `xx` that picked a type would convert to something nobody
+// wrote, which is the opposite of what a conversion is for. The help names `cast(T, x)`, because
+// an explicit form exists and always will.
+main :: () {
+    n := 300;
+    m := xx n;
+}

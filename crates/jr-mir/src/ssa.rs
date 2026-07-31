@@ -359,6 +359,17 @@ impl SsaBuilder {
                         replace_in_place(place, old, replacement);
                         replace_operand(value, old, replacement);
                     }
+                    Statement::Zero { place, span: _ } => {
+                        replace_in_place(place, old, replacement);
+                    }
+                    Statement::BoundsCheck {
+                        index,
+                        len,
+                        span: _,
+                    } => {
+                        replace_operand(index, old, replacement);
+                        replace_operand(len, old, replacement);
+                    }
                     Statement::Nop => {}
                 }
             }
@@ -499,6 +510,21 @@ fn replace_in_place(place: &mut crate::mir::Place, old: Operand, new: Operand) {
         crate::mir::PlaceBase::Slot(_) => {}
         crate::mir::PlaceBase::Deref(operand) => replace_operand(operand, old, new),
     }
+    // A projection held no operands before `Projection::Index`, so this walk did not
+    // exist. Missing it here would be worse than in the other walkers: this one runs
+    // during SSA construction, when a redundant block parameter is removed, so an
+    // un-rewritten index would keep naming a value that no longer exists.
+    for projection in &mut place.projection {
+        match projection {
+            crate::mir::Projection::Index(operand) => replace_operand(operand, old, new),
+            crate::mir::Projection::Field(_)
+            | crate::mir::Projection::Deref
+            | crate::mir::Projection::StringData
+            | crate::mir::Projection::StringCount
+            | crate::mir::Projection::ViewData
+            | crate::mir::Projection::ViewCount => {}
+        }
+    }
 }
 
 fn replace_in_rvalue(rvalue: &mut Rvalue, old: Operand, new: Operand) {
@@ -509,6 +535,7 @@ fn replace_in_rvalue(rvalue: &mut Rvalue, old: Operand, new: Operand) {
             replace_operand(rhs, old, new);
         }
         Rvalue::Unary { op: _, operand } => replace_operand(operand, old, new),
+        Rvalue::Convert { operand, from: _ } => replace_operand(operand, old, new),
         Rvalue::Call { callee, args } => {
             match callee {
                 crate::mir::Callee::Direct(_) => {}

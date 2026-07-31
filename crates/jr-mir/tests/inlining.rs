@@ -34,7 +34,9 @@ fn spans(body: &MirBody) -> Vec<MirSpan> {
             match stmt {
                 Statement::Assign { span, .. }
                 | Statement::Store { span, .. }
-                | Statement::Discard { span, .. } => out.push(*span),
+                | Statement::Discard { span, .. }
+                | Statement::Zero { span, .. }
+                | Statement::BoundsCheck { span, .. } => out.push(*span),
                 Statement::Nop => {}
             }
         }
@@ -49,7 +51,10 @@ fn calls(body: &MirBody) -> usize {
         for stmt in &block.stmts {
             let rvalue = match stmt {
                 Statement::Assign { rvalue, .. } | Statement::Discard { rvalue, .. } => rvalue,
-                Statement::Store { .. } | Statement::Nop => continue,
+                Statement::Store { .. }
+                | Statement::Zero { .. }
+                | Statement::BoundsCheck { .. }
+                | Statement::Nop => continue,
             };
             if matches!(rvalue, Rvalue::Call { .. }) {
                 count += 1;
@@ -161,15 +166,25 @@ fn the_calls_result_becomes_a_block_parameter_rather_than_a_copy() {
         panic!("the call's block must end in an unconditional edge into the callee");
     };
     assert_eq!(target.block, copied_entry);
-    assert_eq!(target.args.len(), 2, "two arguments, two entry parameters");
+    // **Three arguments now, not two**: the implicit context leads (ADR-0057 §4), then `add(2, 3)`'s
+    // two constants. Both procedures are ordinary Jairs ones, so both take a context — this is the
+    // ABI change, and the test moved with it rather than being weakened.
+    assert_eq!(
+        target.args.len(),
+        3,
+        "the context plus two arguments, matching three entry parameters"
+    );
     assert!(
-        target
-            .args
+        matches!(target.args[0], Operand::Value(_)),
+        "the leading argument is the caller's context, a value not a constant"
+    );
+    assert!(
+        target.args[1..]
             .iter()
             .all(|arg| matches!(arg, Operand::Constant(_))),
-        "`add(2, 3)` passes two constants"
+        "`add(2, 3)` passes two constants after the context"
     );
-    assert_eq!(caller.block(copied_entry).params.len(), 2);
+    assert_eq!(caller.block(copied_entry).params.len(), 3);
 }
 
 #[test]

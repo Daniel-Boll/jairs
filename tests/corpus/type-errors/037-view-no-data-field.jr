@@ -1,0 +1,13 @@
+// EXPECT: E0218 — a view has no `.data` (ADR-0044 §4)
+// Deliberately absent, for the reason `[N]T`'s is (ADR-0039 §5): it would hand out an
+// unbounded `*T` one wave after the bounds check was added, and there is no pointer arithmetic
+// to use it with. `string.data` exists only because ADR-0004 fixed that layout for the FFI
+// boundary, which a view does not cross.
+first :: (xs: []u8) -> *u8 {
+    return xs.data;
+}
+
+main :: () {
+    buf: [3]u8;
+    p := first(buf[]);
+}

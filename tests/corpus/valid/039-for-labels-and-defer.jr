@@ -1,0 +1,186 @@
+// `for`, labelled `break`/`continue`, and `defer` (ADR-0049) — W2's control-flow block.
+//
+// These three share one ADR because they share one question: **what is a scope exit?** `defer`
+// needs the answer, `break` and `continue` need it, and a label changes which scope they leave.
+//
+// Four things here are worth checking rather than assuming, and each was got wrong first:
+//
+//   * the induction variable must be **distinct from** the element variable. Sharing them meant
+//     writing the element overwrote the counter, which was an infinite loop rather than a wrong
+//     answer;
+//   * `continue` must run the **step**, so the step gets its own block that `continue` targets.
+//     Emitting it at the end of the body meant `continue` bypassed it and the loop hung;
+//   * the header must be sealed **before** the step block, because the step's reads resolve through
+//     the header's phis — the wrong order reported a definite-assignment false positive on a
+//     variable assigned two lines above;
+//   * a `defer` must run on the **`break`** path, not only on fall-through. A `defer` that only ran
+//     at the closing brace would look correct in any program that never breaks.
+//
+// The `exit` at the end is what gives this file teeth under the differential harness: only two
+// corpus programs print, so a computation has to be made observable through an exit status or the
+// comparison is silence against silence.
+#import "Basic";
+
+/// A view parameter, so the loop's length comes from a **load** of `.count` rather than a constant
+/// from a type — the two shapes `Statement::BoundsCheck` was built to share (ADR-0039 §1).
+sum_view :: (xs: []s64) -> s64 {
+    t := 0;
+    for x: xs {
+        t = t + x;
+    }
+    return t;
+}
+
+main :: () {
+    n := 0;
+
+    buf: [4]s64;
+    buf[0] = 1;
+    buf[1] = 2;
+    buf[2] = 4;
+    buf[3] = 8;
+
+    // ---- the four iteration forms -------------------------------------------------------
+
+    // An array. The element is a *copy*, so assigning to it would not touch `buf`.
+    total := 0;
+    for x: buf {
+        total = total + x;
+    }
+    if total == 15 {
+        n = n + 1;
+    }
+
+    // A range, half-open: `0..4` runs four times and `0..0` runs none.
+    r := 0;
+    for i: 0..4 {
+        r = r + i;
+    }
+    if r == 6 {
+        n = n + 2;
+    }
+
+    empty := 0;
+    for i: 0..0 {
+        empty = empty + 1;
+    }
+    if empty == 0 {
+        n = n + 4;
+    }
+
+    // Both names, so the index is a real local the body can read.
+    indices := 0;
+    for x, i: buf {
+        indices = indices + i;
+    }
+    if indices == 6 {
+        n = n + 8;
+    }
+
+    // Reverse. The fold is order-sensitive, which is the point: forward gives 32 and reverse 85,
+    // so a `for <` that silently ran forward would be visible here rather than plausible.
+    rev := 0;
+    for < x: buf {
+        rev = rev * 2 + x;
+    }
+    if rev == 85 {
+        n = n + 16;
+    }
+
+    // A view, whose length is loaded rather than folded from a type.
+    if sum_view(buf[]) == 15 {
+        n = n + 32;
+    }
+
+    // ---- labels -------------------------------------------------------------------------
+
+    rows: [3]s64;
+    cols: [3]s64;
+
+    // An unlabelled `break` leaves the *inner* loop, so the outer one still runs three times.
+    inner := 0;
+    for a: rows {
+        for b: cols {
+            inner = inner + 1;
+            break;
+        }
+    }
+    if inner == 3 {
+        n = n + 64;
+    }
+
+    // A labelled `break` leaves both, so the body runs exactly once.
+    outer_hits := 0;
+    outer: for a: rows {
+        for b: cols {
+            outer_hits = outer_hits + 1;
+            break outer;
+        }
+    }
+    if outer_hits == 1 {
+        n = n + 128;
+    }
+
+    // A labelled `continue` restarts the *outer* loop, so the inner one never gets past its first
+    // iteration and nothing after the `continue` runs.
+    skipped := 0;
+    lbl: for a: rows {
+        for b: cols {
+            if b == 0 {
+                continue lbl;
+            }
+            skipped = skipped + 1;
+        }
+    }
+    if skipped == 0 {
+        n = n + 256;
+    }
+
+    // ---- defer --------------------------------------------------------------------------
+
+    // At the closing brace, and after the statements before it.
+    scoped := 0;
+    {
+        defer scoped = scoped + 1;
+        scoped = scoped + 10;
+    }
+    if scoped == 11 {
+        n = n + 512;
+    }
+
+    // Reverse order within a scope, so paired acquisition and release is expressible.
+    order := 0;
+    {
+        defer order = order * 2;
+        defer order = order + 3;
+    }
+    if order == 6 {
+        n = n + 1024;
+    }
+
+    // Per iteration, not accumulated to the end of the procedure.
+    per := 0;
+    for x: buf {
+        defer per = per + 1;
+    }
+    if per == 4 {
+        n = n + 2048;
+    }
+
+    // **On the `break` path**, which is the claim most easily got wrong: this runs once, because
+    // the loop is left on its first iteration and the `defer` registered in that iteration runs.
+    on_break := 0;
+    for x: buf {
+        defer on_break = on_break + 1;
+        break;
+    }
+    if on_break == 1 {
+        n = n + 4096;
+    }
+
+    // Every assertion: 8191.
+    if n == 8191 {
+        exit(0);
+    }
+    exit(1);
+}

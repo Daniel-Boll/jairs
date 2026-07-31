@@ -30,7 +30,10 @@ fn has_rvalue(body: &MirBody, mut pred: impl FnMut(&Rvalue) -> bool) -> bool {
         .flat_map(|block| &block.stmts)
         .any(|stmt| match stmt {
             Statement::Assign { rvalue, .. } | Statement::Discard { rvalue, .. } => pred(rvalue),
-            Statement::Store { .. } | Statement::Nop => false,
+            Statement::Store { .. }
+            | Statement::Zero { .. }
+            | Statement::BoundsCheck { .. }
+            | Statement::Nop => false,
         })
 }
 

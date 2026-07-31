@@ -1,0 +1,66 @@
+// `[N]T` fixed arrays (ADR-0039): declaration, indexing, assignment, `.count`,
+// and the zero-initialisation §4 makes the defined behaviour of a declaration
+// with no initialiser.
+//
+// The `exit` at the end is what gives this file teeth under the differential
+// harness: only two corpus programs print, so a computation has to be made
+// observable through an exit status or the comparison is silence against silence.
+#import "Basic";
+
+main :: () {
+    // No initialiser, so every element is zero (ADR-0039 §4). A scalar
+    // declaration behaves the same way; an *array* has to, because MIR tracks
+    // definedness per slot and a partial write would otherwise poison the whole
+    // array.
+    buf: [4]u8;
+
+    // Indexing is a place, so it assigns as well as reads.
+    buf[0] = 65;
+    buf[1] = 66;
+    buf[3] = 1;
+
+    // `.count` is the length from the *type* — a compile-time constant, not a
+    // load (ADR-0039 §5). It is what lets a `while` over an array avoid writing
+    // the bound twice, which matters while there is still no `for`.
+    total := 0;
+    i := 0;
+    while i < buf.count {
+        total = total + cast(s64, buf[i]);
+        i = i + 1;
+    }
+
+    // A computed index, so the bounds check is a real runtime check rather than
+    // one `jr-sema` folded away.
+    last := buf[buf.count - 1];
+
+    // An array of a wider element, to exercise a stride that is not 1.
+    words: [3]s64;
+    words[2] = 7;
+    words[0] = words[2] * 2;
+
+    // An array of a struct, so the stride comes from a struct's layout.
+    dots: [2]Point;
+    dots[1].x = 5;
+    dots[1].y = 6;
+
+    // 65 + 66 + 0 + 1 = 132
+    if total == 132 {
+        if last == 1 {
+            if words[0] == 14 {
+                if dots[1].x + dots[1].y == 11 {
+                    // A zero-initialised element of an aggregate array, read
+                    // rather than assumed.
+                    if dots[0].x == 0 {
+                        exit(0);
+                    }
+                }
+            }
+        }
+    }
+    exit(1);
+}
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}

@@ -1,0 +1,8 @@
+// EXPECT: E0243 — `xx` on a literal, which has no effect (ADR-0046 §2)
+// A literal already takes its type from the context (ADR-0016 §1), so `xx` adds nothing here.
+// Worse, allowing it would *suppress* the fit check that makes `x: u8 = 300;` an error — so a
+// wrong value would pass silently. Its own code rather than E0242, because "delete the `xx`" is
+// a different instruction from "add a type".
+main :: () {
+    x: u8 = xx 200;
+}

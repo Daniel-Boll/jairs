@@ -83,9 +83,40 @@ mod input {
         #[returns(clone)]
         pub text: Arc<str>,
     }
+
+    /// Build settings that change the code a back end receives (ADR-0058 §2).
+    ///
+    /// **Why a salsa input?** For the reason
+    /// [`ModuleSearchPaths`](crate::ModuleSearchPaths) is one, stated in its own docs:
+    /// configuration that comes from outside the source files must be an input, or
+    /// salsa serves a memo computed under the old value. Toggling
+    /// `--no-bounds-check` has to invalidate every query that reads MIR, and an
+    /// input is what makes that automatic rather than remembered.
+    ///
+    /// **Why not a field on `ModuleSearchPaths`?** It would be one fewer thing to
+    /// thread and wrong in both directions: changing a module path would invalidate
+    /// MIR optimisation, and changing this would invalidate module lookup. Neither
+    /// is visible until somebody measures (ADR-0058 §2).
+    ///
+    /// **One field, deliberately.** `--release` and an `opt_level` are W8's, and a
+    /// surface designed around a single boolean would have to be redesigned when
+    /// they arrive.
+    #[salsa::input]
+    pub struct BuildConfig {
+        /// Whether array indexing emits a bounds check.
+        ///
+        /// `true` is the default and what every command but `--no-bounds-check`
+        /// passes. `false` makes `jr-mir`'s strip pass run, replacing every
+        /// `Statement::BoundsCheck` with a `Nop` (ADR-0003, ADR-0058 §1).
+        ///
+        /// This is a *build* setting and is therefore separate from `#no_abc`, which
+        /// is a property of a procedure and holds whatever the build says
+        /// (ADR-0058 §3).
+        pub bounds_checks: bool,
+    }
 }
 
-pub use input::SourceFile;
+pub use input::{BuildConfig, SourceFile};
 
 pub use queries::{
     all_diagnostics, build_source_map, lex_file, line_index, parse_diagnostics, parse_file,
@@ -207,6 +238,13 @@ pub struct JairsDatabase {
     /// once and then updated, or every refresh would make a new input and orphan the
     /// dependencies of the old one.
     workspace_files: Arc<Mutex<Option<workspace::WorkspaceFiles>>>,
+    /// The current build settings salsa input, if set (ADR-0058 §2).
+    ///
+    /// Held for the same reason the two above are, and created lazily for one more: most
+    /// commands never read it. `jr check` and `jr fmt` have no build settings to apply,
+    /// and an input created eagerly would be one every database carried whether or not a
+    /// query could reach it.
+    build_config: Arc<Mutex<Option<BuildConfig>>>,
     /// The shared interned types and compile-time values.
     ///
     /// Outside salsa for the same reason as `source_map`: it is an identity
@@ -226,6 +264,7 @@ impl Default for JairsDatabase {
             in_memory_modules: None,
             module_search_paths: Arc::new(Mutex::new(None)),
             workspace_files: Arc::new(Mutex::new(None)),
+            build_config: Arc::new(Mutex::new(None)),
             pool: Arc::new(Mutex::new(Pool::new())),
         }
     }
@@ -256,6 +295,11 @@ impl JairsDatabase {
             in_memory_modules: self.in_memory_modules.clone(),
             module_search_paths: Arc::clone(&self.module_search_paths),
             workspace_files: Arc::clone(&self.workspace_files),
+            // Shared, not reset. A snapshot that made a fresh `None` here would silently
+            // read checks-on while the database it came from had them off — and the LSP is
+            // the only snapshot caller, so the divergence would be invisible until
+            // something in an editor depended on the setting.
+            build_config: Arc::clone(&self.build_config),
             pool: Arc::clone(&self.pool),
         }
     }
@@ -274,6 +318,7 @@ impl JairsDatabase {
             in_memory_modules: None,
             module_search_paths: Arc::new(Mutex::new(None)),
             workspace_files: Arc::new(Mutex::new(None)),
+            build_config: Arc::new(Mutex::new(None)),
             pool: Arc::new(Mutex::new(Pool::new())),
         }
     }
@@ -292,6 +337,7 @@ impl JairsDatabase {
             in_memory_modules: Some(Arc::new(modules)),
             module_search_paths: Arc::new(Mutex::new(None)),
             workspace_files: Arc::new(Mutex::new(None)),
+            build_config: Arc::new(Mutex::new(None)),
             pool: Arc::new(Mutex::new(Pool::new())),
         }
     }
@@ -312,6 +358,7 @@ impl JairsDatabase {
             in_memory_modules: Some(Arc::new(modules)),
             module_search_paths: Arc::new(Mutex::new(None)),
             workspace_files: Arc::new(Mutex::new(None)),
+            build_config: Arc::new(Mutex::new(None)),
             pool: Arc::new(Mutex::new(Pool::new())),
         }
     }
@@ -397,6 +444,54 @@ impl JairsDatabase {
             *guard = Some(sp);
             sp
         }
+    }
+
+    /// Sets the build settings and returns the salsa input.
+    ///
+    /// Changing them starts a new salsa revision and invalidates `optimized_file_mir` and
+    /// its dependents, which is the entire reason ADR-0058 §2 made this an input rather
+    /// than a parameter the caller remembers to pass consistently.
+    ///
+    /// Updates the existing input rather than making a new one, for the reason
+    /// `workspace_files` records: a fresh input each time would orphan the dependencies
+    /// of the old one, so nothing would be invalidated and the change would appear to
+    /// have no effect.
+    pub fn set_build_config(&mut self, bounds_checks: bool) -> BuildConfig {
+        let existing = {
+            let guard = self
+                .build_config
+                .lock()
+                .expect("build_config lock poisoned");
+            *guard
+        };
+        if let Some(existing) = existing {
+            existing.set_bounds_checks(self).to(bounds_checks);
+            existing
+        } else {
+            let config = BuildConfig::new(self, bounds_checks);
+            let mut guard = self
+                .build_config
+                .lock()
+                .expect("build_config lock poisoned");
+            *guard = Some(config);
+            config
+        }
+    }
+
+    /// The build settings, creating them with bounds checks **on** if unset.
+    ///
+    /// The default is checks-on, which is what every consumer that does not care should
+    /// get: an editor, a test harness and `jr check` all want the program as written.
+    /// ADR-0058 §2 is explicit that only `jr run` and `jr build` take the flag.
+    pub fn build_config(&mut self) -> BuildConfig {
+        let existing = {
+            let guard = self
+                .build_config
+                .lock()
+                .expect("build_config lock poisoned");
+            *guard
+        };
+        existing.unwrap_or_else(|| self.set_build_config(true))
     }
 
     /// Walks `roots` and records the result as the workspace file list.

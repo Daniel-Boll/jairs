@@ -355,6 +355,259 @@ fn both_engines_trap_on_division_by_zero() {
     assert_eq!(vm, native);
 }
 
+#[test]
+fn both_engines_trap_on_an_index_out_of_bounds() {
+    let dir = TempDir::new().expect("a temporary directory");
+    // ADR-0003's explicit `bounds_check`, run in the VM and compiled natively. The index
+    // is computed rather than a literal, so `jr-sema`'s E0236 does not catch it first and
+    // the *runtime* check is what fires.
+    let source = concat!(
+        "#import \"Basic\";\n\n",
+        "main :: () {\n",
+        "    buf: [4]u8;\n",
+        "    i := 0;\n",
+        "    while i < 8 {\n",
+        "        buf[i] = 1;\n",
+        "        i = i + 1;\n",
+        "    }\n",
+        "}\n",
+    );
+    let (vm, native) = both_engines(source, dir.path(), "oob");
+    assert_eq!(vm.status, 4, "the VM must trap on an out-of-bounds index");
+    assert_eq!(
+        native.status, 4,
+        "native code must trap on an out-of-bounds index"
+    );
+    assert!(
+        vm.stderr.contains("index out of bounds"),
+        "the trap must name what went wrong, got {:?}",
+        vm.stderr
+    );
+    assert_eq!(
+        vm, native,
+        "the two engines disagree about a bounds-check trap"
+    );
+}
+
+#[test]
+fn a_declared_aggregate_is_zeroed_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    // ADR-0039 §4a, and this is a *regression* test rather than a new feature's test.
+    // `p: Point;` emitted no zeroing at all: the VM zeroes a fresh frame so it exited 0,
+    // while Cranelift's `ExplicitSlot` is raw stack, so the native binary exited with
+    // whatever the last call left there — 184 and then 200 on consecutive builds.
+    //
+    // Nothing caught it because `differential.rs` compares observable output and no
+    // corpus program observed a default-initialised aggregate. This test is that
+    // observation.
+    let source = concat!(
+        "#import \"Basic\";\n\n",
+        "Point :: struct { x: s64; y: s64; }\n\n",
+        "main :: () {\n",
+        "    p: Point;\n",
+        "    exit(p.x + p.y);\n",
+        "}\n",
+    );
+    let (vm, native) = both_engines(source, dir.path(), "zeroagg");
+    assert_eq!(
+        vm.status, 0,
+        "a declared aggregate must be zeroed in the VM"
+    );
+    assert_eq!(
+        native.status, 0,
+        "a declared aggregate must be zeroed natively -- an uninitialised stack slot \
+         exits with whatever the last call left there"
+    );
+    assert_eq!(vm, native);
+}
+
+#[test]
+fn both_engines_agree_about_ieee_754_edge_cases() {
+    let dir = TempDir::new().expect("a temporary directory");
+    // ADR-0040 §1. Float arithmetic is the one thing in this project where the VM's
+    // *software* evaluation and Cranelift's *hardware* instructions are genuinely different
+    // implementations of one specification. An integer add is exact in both by construction;
+    // `NaN == NaN` is only false in both because IEEE-754 says so, and this is what checks
+    // that both actually obey it.
+    let source = concat!(
+        "#import \"Basic\";\n\n",
+        "main :: () {\n",
+        "    nan := 0.0 / 0.0;\n",
+        "    inf := 1.0 / 0.0;\n",
+        "    negz := -0.0;\n",
+        "    n := 0;\n",
+        // Each of these would come out backwards under a raw bit compare, in opposite
+        // directions: identical bits for NaN, different bits for the two zeroes.
+        "    if nan != nan { n = n + 1; }\n",
+        "    if negz == 0.0 { n = n + 2; }\n",
+        "    if inf > 1e300 { n = n + 4; }\n",
+        // Saturating float-to-int, where Cranelift's non-`_sat` form would trap and the
+        // interpreter would not.
+        "    if cast(s8, 1000.0) == 127 { n = n + 8; }\n",
+        "    if cast(s64, nan) == 0 { n = n + 16; }\n",
+        "    exit(n);\n",
+        "}\n",
+    );
+    let (vm, native) = both_engines(source, dir.path(), "ieee");
+    assert_eq!(
+        vm.status, 31,
+        "every IEEE-754 assertion must hold in the VM"
+    );
+    assert_eq!(
+        native.status, 31,
+        "every IEEE-754 assertion must hold natively"
+    );
+    assert_eq!(vm, native, "the two engines disagree about IEEE-754");
+}
+
+#[test]
+fn float_arithmetic_never_traps_in_either_engine() {
+    let dir = TempDir::new().expect("a temporary directory");
+    // ADR-0002 makes integer overflow trap; ADR-0040 §1 scopes that to integers. A program
+    // that overflows, divides by zero and produces a NaN must run to completion and exit 0 —
+    // in both engines, and with the *same* absence of a trap message.
+    let source = concat!(
+        "#import \"Basic\";\n\n",
+        "main :: () {\n",
+        "    big := 1e308;\n",
+        "    overflowed := big * big;\n",
+        "    divided := 1.0 / 0.0;\n",
+        "    undefined := 0.0 / 0.0;\n",
+        "    negated := -0.0;\n",
+        "    if overflowed == divided { exit(0); }\n",
+        "    exit(1);\n",
+        "}\n",
+    );
+    let (vm, native) = both_engines(source, dir.path(), "notrap");
+    assert_eq!(vm.status, 0, "float overflow must not trap in the VM");
+    assert_eq!(native.status, 0, "float overflow must not trap natively");
+    assert!(
+        vm.stderr.is_empty(),
+        "no trap message expected, got {:?}",
+        vm.stderr
+    );
+    assert_eq!(vm, native);
+}
+
+#[test]
+fn both_engines_agree_about_enum_values() {
+    let dir = TempDir::new().expect("a temporary directory");
+    // ADR-0041 §3's three rules, and the third is the one that is easy to get wrong by
+    // resetting to the member's index: an explicit value makes *later* members continue from
+    // it. `Colour.RED` folds to a constant at MIR, so this also checks that the fold and both
+    // back ends agree about which number a member is.
+    let source = concat!(
+        "#import \"Basic\";\n\n",
+        "Status :: enum { OK :: 200; MISSING :: 404; NEXT; }\n\n",
+        "main :: () {\n",
+        "    n := 0;\n",
+        "    if cast(s64, Status.OK) == 200 { n = n + 1; }\n",
+        "    if cast(s64, Status.MISSING) == 404 { n = n + 2; }\n",
+        // 405, not 2: the continue-from-here rule.
+        "    if cast(s64, Status.NEXT) == 405 { n = n + 4; }\n",
+        "    if Status.OK != Status.MISSING { n = n + 8; }\n",
+        "    exit(n);\n",
+        "}\n",
+    );
+    let (vm, native) = both_engines(source, dir.path(), "enumvals");
+    assert_eq!(vm.status, 15, "every enum assertion must hold in the VM");
+    assert_eq!(native.status, 15, "every enum assertion must hold natively");
+    assert_eq!(vm, native, "the two engines disagree about enum values");
+}
+
+#[test]
+fn both_engines_trap_on_an_out_of_range_shift() {
+    let dir = TempDir::new().expect("a temporary directory");
+    // ADR-0042 §3, and the trap is what makes this worth a differential: **Cranelift masks
+    // the shift count natively** — `ishl` on an `I8` uses the low 3 bits — so without an
+    // explicit compare-and-trap the native binary would compute `x << 0` and exit 1 while the
+    // VM trapped. One engine right and one wrong, silently.
+    let source = concat!(
+        "#import \"Basic\";\n\n",
+        "main :: () {\n",
+        "    a: s8 = 1;\n",
+        "    c := 8;\n",
+        "    b := a << c;\n",
+        "    exit(1);\n",
+        "}\n",
+    );
+    let (vm, native) = both_engines(source, dir.path(), "shift");
+    assert_eq!(vm.status, 4, "the VM must trap on an out-of-range shift");
+    assert_eq!(
+        native.status, 4,
+        "native code must trap rather than masking the count"
+    );
+    assert!(
+        vm.stderr.contains("shift count out of range"),
+        "the trap must name what went wrong, got {:?}",
+        vm.stderr
+    );
+    assert_eq!(vm, native, "the two engines disagree about a shift trap");
+}
+
+#[test]
+fn both_engines_agree_about_bitwise_operators_and_precedence() {
+    let dir = TempDir::new().expect("a temporary directory");
+    // The two orderings that are *not* C's (ADR-0042 §1), unparenthesised so that a
+    // precedence change would move the answer rather than merely the tree.
+    let source = concat!(
+        "#import \"Basic\";\n\n",
+        "main :: () {\n",
+        "    a := 6;\n",
+        "    n := 0;\n",
+        "    if (a & 3) == 2 { n = n + 1; }\n",
+        "    if (a ^ 5) == 3 { n = n + 2; }\n",
+        "    if ~cast(u8, 0) == 255 { n = n + 4; }\n",
+        // `(a & 3) == 2` under Jairs; C would read `a & (3 == 2)`.
+        "    if a & 3 == 2 { n = n + 8; }\n",
+        // `1 + (1 << 3)` = 9 under Jairs; C would read `(1 + 1) << 3` = 16.
+        "    if 1 + 1 << 3 == 9 { n = n + 16; }\n",
+        "    exit(n);\n",
+        "}\n",
+    );
+    let (vm, native) = both_engines(source, dir.path(), "bitwise");
+    assert_eq!(vm.status, 31, "every bitwise assertion must hold in the VM");
+    assert_eq!(
+        native.status, 31,
+        "every bitwise assertion must hold natively"
+    );
+    assert_eq!(
+        vm, native,
+        "the two engines disagree about bitwise operators"
+    );
+}
+
+#[test]
+fn both_engines_agree_about_enum_flags() {
+    let dir = TempDir::new().expect("a temporary directory");
+    // ADR-0043 §2's numbering, including the case that is easy to get wrong two ways: after an
+    // explicit `B :: 8`, the next flag is 16 — the next power of two above the *value*, not
+    // above the member's index. A combination folds to a constant at MIR, so this also checks
+    // the folder and both back ends agree about which number a flag set is.
+    let source = concat!(
+        "#import \"Basic\";\n\n",
+        "F :: enum_flags { A; B :: 8; C; }\n\n",
+        "main :: () {\n",
+        "    n := 0;\n",
+        "    if cast(s64, F.A) == 1 { n = n + 1; }\n",
+        "    if cast(s64, F.C) == 16 { n = n + 2; }\n",
+        // A combination keeps the flags type and has a value no member has.
+        "    both := F.A | F.B;\n",
+        "    if cast(s64, both) == 9 { n = n + 4; }\n",
+        "    if (both & F.A) == F.A { n = n + 8; }\n",
+        "    if (both & F.C) != F.C { n = n + 16; }\n",
+        "    exit(n);\n",
+        "}\n",
+    );
+    let (vm, native) = both_engines(source, dir.path(), "enumflags");
+    assert_eq!(vm.status, 31, "every flags assertion must hold in the VM");
+    assert_eq!(
+        native.status, 31,
+        "every flags assertion must hold natively"
+    );
+    assert_eq!(vm, native, "the two engines disagree about enum_flags");
+}
+
 // ---------------------------------------------------------------------------
 // ADR-0020 — a trap names where it happened, identically in both engines
 // ---------------------------------------------------------------------------
@@ -661,5 +914,504 @@ fn a_store_through_a_pointer_is_still_observed_after_forwarding() {
     assert_eq!(
         native.status, 9,
         "native forwarded across an indirect store"
+    );
+}
+
+#[test]
+fn a_view_reads_and_writes_the_same_storage_in_both_engines() {
+    // ADR-0044 §4: a view is a pointer to storage, not a copy of it. This is the property
+    // that makes passing one worth doing, and the one a wrong `data` offset would break
+    // silently — the callee would write somewhere else and the caller would read the array's
+    // original contents, which is a plausible-looking wrong answer rather than a crash.
+    //
+    // A `[N]T` cannot express this test: the array would be copied and the write would be
+    // invisible, which is exactly the difference being checked.
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  fill :: (xs: []s64, value: s64) {\n\
+                  \x20   i := 0;\n\
+                  \x20   while i < xs.count {\n\
+                  \x20       xs[i] = value;\n\
+                  \x20       i = i + 1;\n\
+                  \x20   }\n\
+                  }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   buf: [3]s64;\n\
+                  \x20   fill(buf[], 5);\n\
+                  \x20   exit(buf[0] + buf[1] + buf[2]);\n\
+                  }\n";
+    let (vm, native) = both_engines(source, dir.path(), "viewwrite");
+    assert_eq!(vm.status, 15, "the VM wrote through the view");
+    assert_eq!(native.status, 15, "native wrote through the view");
+}
+
+#[test]
+fn a_views_count_is_loaded_rather_than_folded_in_both_engines() {
+    // The difference between `[N]T` and `[]T` in one program: `total` is called twice with
+    // views of different lengths, so a `.count` folded from a type — the way an array's is
+    // (ADR-0039 §5) — would give the same answer twice and the sum would be wrong.
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  total :: (xs: []s64) -> s64 {\n\
+                  \x20   i := 0;\n\
+                  \x20   t := 0;\n\
+                  \x20   while i < xs.count {\n\
+                  \x20       t = t + xs[i];\n\
+                  \x20       i = i + 1;\n\
+                  \x20   }\n\
+                  \x20   return t;\n\
+                  }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   four: [4]s64;\n\
+                  \x20   four[0] = 1;\n\
+                  \x20   four[1] = 2;\n\
+                  \x20   four[2] = 4;\n\
+                  \x20   four[3] = 8;\n\
+                  \x20   two: [2]s64;\n\
+                  \x20   two[0] = 16;\n\
+                  \x20   two[1] = 32;\n\
+                  \x20   exit(total(four[]) + total(two[]));\n\
+                  }\n";
+    let (vm, native) = both_engines(source, dir.path(), "viewcount");
+    assert_eq!(vm.status, 63, "the VM loaded each view's own count");
+    assert_eq!(native.status, 63, "native loaded each view's own count");
+}
+
+#[test]
+fn an_out_of_range_index_through_a_view_traps_in_both_engines() {
+    // The bounds check with a **runtime** length, which is the first one MIR has had: the
+    // check's `len` is a loaded `.count` rather than a constant (ADR-0039 §1's operand-shaped
+    // `len` finally being spent). A back end that masked or ignored it would read past the
+    // array instead of trapping, and the two engines would disagree about a program's output.
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  at :: (xs: []s64, i: s64) -> s64 {\n\
+                  \x20   return xs[i];\n\
+                  }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   buf: [2]s64;\n\
+                  \x20   exit(at(buf[], 5));\n\
+                  }\n";
+    let (vm, native) = both_engines(source, dir.path(), "viewtrap");
+    assert!(
+        vm.stderr.contains("index out of bounds"),
+        "the VM trapped: {:?}",
+        vm.stderr
+    );
+    assert!(
+        native.stderr.contains("index out of bounds"),
+        "native trapped: {:?}",
+        native.stderr
+    );
+    assert_eq!(
+        vm.stderr, native.stderr,
+        "ADR-0020 §2's one formatter, so the wording cannot drift"
+    );
+}
+
+#[test]
+fn a_union_reinterprets_bits_identically_in_both_engines() {
+    // ADR-0045 §1's decision, as a running program: writing one field and reading another is
+    // legal and reinterprets the bits. -1 as an `s64` is every bit set, so the low byte read
+    // through a `u8` field is 255 — and a layout that placed the second field anywhere but
+    // offset 0 would read 0 instead.
+    //
+    // This is the test the decision needs. A union that merely *ran* without reinterpreting
+    // would prove nothing about whether it is untagged or where its fields sit.
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  Mixed :: union { byte: u8; word: s64; }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   m: Mixed;\n\
+                  \x20   m.word = -1;\n\
+                  \x20   exit(cast(s64, m.byte));\n\
+                  }\n";
+    let (vm, native) = both_engines(source, dir.path(), "unionbits");
+    assert_eq!(vm.status, 255, "the VM read the union's low byte");
+    assert_eq!(native.status, 255, "native read the union's low byte");
+}
+
+#[test]
+fn a_narrow_union_write_is_visible_through_the_wide_field_in_both_engines() {
+    // **This was a live miscompile.** `forward.rs`'s `compare_paths` treated two different
+    // `Projection::Field` steps as disjoint storage — true for a struct, false for a union
+    // where every field is at offset 0 — so the stale wide store was forwarded over the narrow
+    // one and this program answered 0 instead of 7.
+    //
+    // Both engines consume the same forwarded MIR, so they *agreed* on the wrong answer: this
+    // asserts the value, not the agreement, which is the shape ADR-0023's own tests use.
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  Mixed :: union { byte: u8; word: s64; }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   m: Mixed;\n\
+                  \x20   m.word = 0;\n\
+                  \x20   m.byte = 7;\n\
+                  \x20   exit(m.word);\n\
+                  }\n";
+    let (vm, native) = both_engines(source, dir.path(), "unionfwd");
+    assert_eq!(
+        vm.status, 7,
+        "the VM saw the narrow store through the wide field"
+    );
+    assert_eq!(
+        native.status, 7,
+        "native saw the narrow store through the wide field"
+    );
+}
+
+#[test]
+fn a_union_is_the_size_of_its_largest_field_in_both_engines() {
+    // The layout rule, made observable without a `size_of` operator: a struct holding a union
+    // and an `s64` after it places the trailing field at the union's *largest* field's width.
+    // If the union were laid out as a struct — 8 + 1 rounded to 16 — the trailing field would
+    // move, and writing it would land on different bytes in the two engines' frames.
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  Mixed :: union { byte: u8; word: s64; }\n\
+                  Pair :: struct { m: Mixed; tail: s64; }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   p: Pair;\n\
+                  \x20   p.m.word = -1;\n\
+                  \x20   p.tail = 42;\n\
+                  \x20   exit(p.tail);\n\
+                  }\n";
+    let (vm, native) = both_engines(source, dir.path(), "unionsize");
+    assert_eq!(
+        vm.status, 42,
+        "the union's width did not overrun the trailing field in the VM"
+    );
+    assert_eq!(
+        native.status, 42,
+        "the union's width did not overrun the trailing field natively"
+    );
+}
+
+#[test]
+fn xx_converts_exactly_as_cast_does_in_both_engines() {
+    // ADR-0046 §2's equivalence, as running programs: `xx` is sugar for a `cast` whose type was
+    // written elsewhere in the statement. Each case is run *twice* — once spelled `xx`, once
+    // spelled `cast` — and the two must produce the same status, which is a stronger claim than
+    // either producing the right one.
+    let dir = TempDir::new().expect("a temporary directory");
+    let cases = [
+        // Truncation: 300 in a `u8` is 44, so a conversion that did not narrow would differ.
+        ("u8", "300", "u8"),
+        // Widening a signed narrow type, which Jairs requires a conversion for even though it
+        // is lossless (ADR-0037 §2) — the case `xx` most earns its keep on.
+        ("s64", "cast(s8, 100)", "s64"),
+        // Float to int, saturating rather than trapping (ADR-0040 §4).
+        ("s64", "7.9", "s64"),
+    ];
+    for (index, (target, value, cast_to)) in cases.iter().enumerate() {
+        let with_xx = format!(
+            "#import \"Basic\";\n\n\
+             main :: () {{\n    v := {value};\n    r: {target} = xx v;\n    exit(cast(s64, r));\n}}\n"
+        );
+        let with_cast = format!(
+            "#import \"Basic\";\n\n\
+             main :: () {{\n    v := {value};\n    r: {target} = cast({cast_to}, v);\n    \
+             exit(cast(s64, r));\n}}\n"
+        );
+        let (xx_vm, xx_native) = both_engines(&with_xx, dir.path(), &format!("xx{index}"));
+        let (cast_vm, cast_native) =
+            both_engines(&with_cast, dir.path(), &format!("xxcast{index}"));
+        assert_eq!(
+            xx_vm.status, cast_vm.status,
+            "`xx` and `cast` disagreed in the VM for {value} -> {target}"
+        );
+        assert_eq!(
+            xx_native.status, cast_native.status,
+            "`xx` and `cast` disagreed natively for {value} -> {target}"
+        );
+        assert_eq!(
+            xx_vm.status, xx_native.status,
+            "the two engines disagreed about `xx` for {value} -> {target}"
+        );
+    }
+}
+
+#[test]
+fn a_bare_member_equals_its_qualified_form_in_both_engines() {
+    // ADR-0046 §3: `.RED` and `Colour.RED` must produce the identical constant, because they
+    // differ only in *how the enum was found* — a difference sema has resolved before MIR runs.
+    // Written as one program comparing the two spellings, so a mismatch is an exit status rather
+    // than a comparison of two runs.
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  Colour :: enum { RED; GREEN; BLUE; }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   bare: Colour = .BLUE;\n\
+                  \x20   qualified := Colour.BLUE;\n\
+                  \x20   if bare == qualified {\n\
+                  \x20       exit(cast(s64, bare));\n\
+                  \x20   }\n\
+                  \x20   exit(99);\n\
+                  }\n";
+    let (vm, native) = both_engines(source, dir.path(), "baremember");
+    assert_eq!(
+        vm.status, 2,
+        "the VM agreed the two spellings are one value"
+    );
+    assert_eq!(
+        native.status, 2,
+        "native agreed the two spellings are one value"
+    );
+}
+
+#[test]
+fn a_bare_member_reaches_a_call_argument_and_a_comparison_in_both_engines() {
+    // ADR-0041 §2's step 4 and ADR-0046 §3: the two contexts a Jai programmer tries first. Both
+    // work because `check_operands` and the call path already thread a context — machinery that
+    // predates this wave — so this asserts that the context genuinely *reaches* the member
+    // rather than that a new rule fires.
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  Colour :: enum { RED; GREEN; }\n\
+                  \n\
+                  is_green :: (c: Colour) -> bool {\n\
+                  \x20   return c == .GREEN;\n\
+                  }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   n := 0;\n\
+                  \x20   if is_green(.GREEN) { n = n + 1; }\n\
+                  \x20   if !is_green(.RED) { n = n + 2; }\n\
+                  \x20   exit(n);\n\
+                  }\n";
+    let (vm, native) = both_engines(source, dir.path(), "bareargs");
+    assert_eq!(
+        vm.status, 3,
+        "the VM reached the member through both contexts"
+    );
+    assert_eq!(
+        native.status, 3,
+        "native reached the member through both contexts"
+    );
+}
+
+#[test]
+fn an_operator_overload_runs_identically_in_both_engines() {
+    // ADR-0048 §5: an overload lowers to an ordinary direct call, so a disagreement here would be
+    // about the *call* rather than the operator — which is exactly why it is worth asserting.
+    // Both engines consume the same MIR, so this asserts the value, not merely the agreement.
+    //
+    // The overload returns a **scalar**, deliberately: the native back end cannot return an
+    // aggregate at all, so a `Vec2`-returning `operator +` would pass under `jr run` and fail
+    // `jr build`, testing the pre-existing hole rather than the operator.
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  Vec2 :: struct { x: s64; y: s64; }\n\
+                  \n\
+                  operator + :: (a: Vec2, b: Vec2) -> s64 {\n\
+                  \x20   return a.x + b.x + a.y + b.y;\n\
+                  }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   p: Vec2;\n\
+                  \x20   p.x = 1;\n\
+                  \x20   p.y = 2;\n\
+                  \x20   q: Vec2;\n\
+                  \x20   q.x = 10;\n\
+                  \x20   q.y = 20;\n\
+                  \x20   exit(p + q);\n\
+                  }\n";
+    let (vm, native) = both_engines(source, dir.path(), "overload");
+    assert_eq!(vm.status, 33, "the VM called the overload");
+    assert_eq!(native.status, 33, "native called the overload");
+}
+
+#[test]
+fn a_mixed_type_overload_resolves_per_operand_order_in_both_engines() {
+    // ADR-0048 §4's no-ranking rule, which is only *visible* when both orders are written and
+    // differ: `Vec2 * s64` doubles and `s64 * Vec2` triples, so a resolver that ignored operand
+    // order — or that ranked one as a fallback for the other — would produce a different sum.
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  Vec2 :: struct { x: s64; }\n\
+                  \n\
+                  operator * :: (a: Vec2, b: s64) -> s64 {\n\
+                  \x20   return a.x * b * 2;\n\
+                  }\n\
+                  \n\
+                  operator * :: (a: s64, b: Vec2) -> s64 {\n\
+                  \x20   return a * b.x * 3;\n\
+                  }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   v: Vec2;\n\
+                  \x20   v.x = 5;\n\
+                  \x20   exit(v * 1 + 1 * v);\n\
+                  }\n";
+    let (vm, native) = both_engines(source, dir.path(), "overloadorder");
+    assert_eq!(vm.status, 25, "the VM picked an overload per operand order");
+    assert_eq!(
+        native.status, 25,
+        "native picked an overload per operand order"
+    );
+}
+
+#[test]
+fn a_builtin_operator_is_unaffected_by_an_overload_in_scope() {
+    // ADR-0048 §4: a builtin meaning always wins, and §3's orphan rule is what guarantees it —
+    // no overload can exist for two builtin types, so `s64 + s64` cannot find one. This program
+    // declares an overload *and* does builtin arithmetic, so a lookup that matched too eagerly
+    // would change the answer.
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  Vec2 :: struct { x: s64; }\n\
+                  \n\
+                  operator + :: (a: Vec2, b: Vec2) -> s64 {\n\
+                  \x20   return 99;\n\
+                  }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   exit(7 + 5);\n\
+                  }\n";
+    let (vm, native) = both_engines(source, dir.path(), "overloadbuiltin");
+    assert_eq!(vm.status, 12, "the VM used builtin addition");
+    assert_eq!(native.status, 12, "native used builtin addition");
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0058: the bounds-check build setting
+// ---------------------------------------------------------------------------
+
+/// Runs a corpus program under both engines *and* both bounds-check settings.
+///
+/// Four executions of one program. The comparison that matters is not VM-versus-native — the
+/// discovered-corpus test above already does that — but **checked-versus-unchecked**: a build
+/// setting that changed a valid program's answer would be a miscompile, and nothing else in the
+/// suite would see it, because every other test runs one setting.
+fn four_ways(program: &Path, dir: &Path) -> [Behaviour; 4] {
+    let vm_checked = run_in_vm(program);
+    let vm_unchecked = {
+        let output = Command::new(jr())
+            .arg("run")
+            .arg(program)
+            .arg("--no-bounds-check")
+            .arg("-I")
+            .arg(workspace_root().join("modules"))
+            .output()
+            .expect("jr run should be executable");
+        Behaviour {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            status: output.status.code().unwrap_or(-1),
+        }
+    };
+    let native_checked = run_natively(program, dir);
+    let native_unchecked = {
+        let binary = dir.join("unchecked");
+        let built = Command::new(jr())
+            .arg("build")
+            .arg(program)
+            .arg("-o")
+            .arg(&binary)
+            .arg("--no-bounds-check")
+            .arg("-I")
+            .arg(workspace_root().join("modules"))
+            .output()
+            .expect("jr build should be executable");
+        assert!(
+            built.status.success(),
+            "`jr build --no-bounds-check {}` failed:\n{}",
+            program.display(),
+            String::from_utf8_lossy(&built.stderr),
+        );
+        let output = Command::new(&binary)
+            .output()
+            .unwrap_or_else(|e| panic!("cannot run {}: {e}", binary.display()));
+        Behaviour {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            status: output.status.code().unwrap_or(-1),
+        }
+    };
+    [vm_checked, vm_unchecked, native_checked, native_unchecked]
+}
+
+#[test]
+fn removing_the_bounds_check_does_not_change_a_valid_programs_answer() {
+    // The safety argument for `--no-bounds-check`, stated as a test rather than as prose. Every
+    // index in these programs is in range, so the check never fires — which means stripping it must
+    // be unobservable. If it were not, the flag would be a miscompile switch.
+    //
+    // Deliberately **not** run over the whole corpus: that would be four executions of every
+    // program for one property, and the two files that index are where the property lives. Named,
+    // so a reader can see the coverage rather than trusting a sweep.
+    for name in ["047-no-abc.jr", "030-arrays.jr", "035-views.jr"] {
+        let program = workspace_root().join("tests/corpus/valid").join(name);
+        assert!(program.exists(), "{name} must exist");
+        let dir = TempDir::new().expect("a temporary directory");
+        let [vm_on, vm_off, native_on, native_off] = four_ways(&program, dir.path());
+        assert_eq!(
+            vm_on, vm_off,
+            "{name}: the VM disagreed with itself across the bounds-check setting"
+        );
+        assert_eq!(
+            native_on, native_off,
+            "{name}: native disagreed with itself across the bounds-check setting"
+        );
+        // And the cross-engine equality, under the *unchecked* setting specifically — the
+        // discovered-corpus test only ever compares the two engines with checks on.
+        assert_eq!(
+            vm_off, native_off,
+            "{name}: the two engines disagreed with `--no-bounds-check`"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0059: indirect calls
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_procedure_pointer_calls_the_right_target_in_both_engines() {
+    // The identity a proc pointer carries is what matters, not just that it calls *something*
+    // (ADR-0059 §4). `pick` returns one of two procedures with *different* answers, and the
+    // exit status is which one ran — so a representation that lost the identity, or that the two
+    // engines encoded differently in a way that leaked, would be a different number rather than a
+    // plausible one. The two engines' proc-pointer *bits* differ by design (an encoded `ProcRef`
+    // in the VM, a real address natively); this asserts the only thing that is observable —
+    // calling through it — agrees.
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  add :: (a: s64, b: s64) -> s64 { return a + b; }\n\
+                  sub :: (a: s64, b: s64) -> s64 { return a - b; }\n\
+                  \n\
+                  pick :: (want_add: bool) -> (s64, s64) -> s64 {\n\
+                  \x20   if want_add { return add; }\n\
+                  \x20   return sub;\n\
+                  }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   f := pick(false);\n\
+                  \x20   exit(f(50, 8));\n\
+                  }\n";
+    let (vm, native) = both_engines(source, dir.path(), "procptr");
+    assert_eq!(vm.status, 42, "the VM called the chosen procedure (sub)");
+    assert_eq!(
+        native.status, 42,
+        "native called the chosen procedure (sub)"
     );
 }

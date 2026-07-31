@@ -1,0 +1,20 @@
+// EXPECT: E0246 — two overloads of one operator for the same operand pair (ADR-0048 §4)
+// Resolution is an exact match on both operand types, so two overloads for the same pair have no
+// way to be told apart. This is the one *genuine* collision: `jr-hir`'s duplicate-name scan
+// deliberately exempts overloads, because one operator legitimately has many and they all intern
+// to a single synthetic name — so the real key `(operator, lhs, rhs)` is checked in sema, which is
+// the only place that key exists.
+Vec2 :: struct {
+    x: s64;
+}
+
+operator + :: (a: Vec2, b: Vec2) -> s64 {
+    return a.x;
+}
+
+operator + :: (a: Vec2, b: Vec2) -> s64 {
+    return b.x;
+}
+
+main :: () {
+}

@@ -71,3 +71,175 @@ pub(crate) const E0225: &str = "E0225";
 
 /// A constant's type depends on its own type.
 pub(crate) const E0226: &str = "E0226";
+
+/// `cast(T, x)` where either side is not an integer type (ADR-0037 §2).
+///
+/// Only integer-to-integer conversions exist in this wave. A pointer is deliberately not an
+/// integer kind, so casting one is refused here rather than becoming pointer arithmetic by
+/// the back door; floats arrive in a later wave.
+pub(crate) const E0232: &str = "E0232";
+
+/// An array length that is not a usable integer literal (ADR-0039 §3a).
+///
+/// Raised for `[COUNT]u8` — a named constant, whose value would have to come from the
+/// const-evaluator this crate has no access to (ADR-0018 §3 puts it in `jr-db`, downstream)
+/// — and for a literal that is negative or does not fit a `u64`.
+///
+/// Reported *here* rather than in `jr-hir`'s lowering, even though lowering is what reads
+/// the literal token: `tests/corpus/type-errors/` requires its files to lower cleanly and
+/// be rejected by sema alone, and rejecting a type is a semantic judgement anyway.
+pub(crate) const E0233: &str = "E0233";
+
+/// An enum member's explicit value that is not a usable integer literal (ADR-0041 §3).
+pub(crate) const E0237: &str = "E0237";
+
+/// A name that is not a member of the enum it was looked up in (ADR-0041).
+pub(crate) const E0238: &str = "E0238";
+
+/// Indexing something that is not an array (ADR-0039 §5).
+pub(crate) const E0234: &str = "E0234";
+
+/// An index whose type is not an integer (ADR-0039 §5).
+pub(crate) const E0235: &str = "E0235";
+
+/// A constant index proven out of range at compile time (ADR-0039 §2).
+///
+/// The check is a *runtime* one, but an index that is a literal is decidable here, and a
+/// program whose index cannot possibly be in range is better refused than compiled into a
+/// guaranteed trap — the same reasoning ADR-0016 §1 applies to a literal that does not fit
+/// its type.
+pub(crate) const E0236: &str = "E0236";
+
+/// Slicing something that cannot be sliced, or that has no storage (ADR-0044 §2, §6).
+///
+/// Covers three shapes: `[]` on a non-array, `[]` on a view (which would be an identity, and
+/// an operator that silently does nothing is one a reader concludes did something), and `[]`
+/// on an expression that is not a place — `[]` takes an address, so it needs storage.
+pub(crate) const E0239: &str = "E0239";
+
+/// An array where a view was expected (ADR-0044 §2).
+///
+/// A *specific* code rather than the generic mismatch [`E0214`], because this is the one
+/// mismatch with one fix and Jairs deliberately has no implicit conversion to apply: the help
+/// names `buf[]`. A reader arriving from Jai, where the conversion is implicit, hits this
+/// first.
+pub(crate) const E0240: &str = "E0240";
+
+/// `==` or `!=` on a view (ADR-0044 §5).
+///
+/// Refused rather than given a meaning: two views could compare as "the same storage" or as
+/// "the same contents", and picking one silently would make the wrong reading a bug that
+/// looks like working code.
+pub(crate) const E0241: &str = "E0241";
+
+/// `xx` where the context supplies no target type (ADR-0046 §2).
+///
+/// The help names `cast(T, x)`, because that is the recoverable fact: an explicit form exists
+/// and always will. "Cannot infer" on its own is accurate and useless — the ADR-0043 lesson.
+pub(crate) const E0242: &str = "E0242";
+
+/// `xx` applied to an untyped literal (ADR-0046 §2).
+///
+/// A literal already takes its type from context (ADR-0016 §1), so `xx` adds nothing — and it
+/// would *suppress* the fit check that makes `x: u8 = 300;` an error. A separate code from
+/// [`E0242`] because "delete the `xx`" is a different instruction from "add a type".
+pub(crate) const E0243: &str = "E0243";
+
+/// A bare `.RED` whose context is absent or is not an enum (ADR-0046 §3).
+///
+/// Deliberately **not** "unresolved name `RED`", which would send the reader looking for a
+/// declaration that was never meant to exist. When there *is* a context type it is named, since
+/// "expected `s64`, and a bare member needs an enum" is a different problem from having no
+/// context at all.
+pub(crate) const E0244: &str = "E0244";
+
+/// A declaration that cannot be an operator overload (ADR-0048 §2, §3).
+///
+/// Three shapes, each with its own note because each is a different fact a reader can act on:
+/// the wrong number of parameters (unary overloading is out of scope, §6), an operator the
+/// language reserves (wrapping is about a machine representation; bitwise belongs to
+/// `enum_flags`; `&&`/`||` are control flow), and the **orphan rule** — at least one operand must
+/// be a nominal type declared in this file, so that an `#import` cannot change what an operator
+/// means for types it does not own.
+pub(crate) const E0246: &str = "E0246";
+
+/// A `for` over something that cannot be iterated, or a range whose ends are not integers
+/// (ADR-0049 §1).
+///
+/// A `for` knows three shapes — an array, a view, and a range — and there is deliberately no
+/// user-extensible protocol: Jai's `for_expansion` is a macro, which needs W5's `#expand` and
+/// hygiene. The help says so, because "cannot iterate" without the reason invites the reader to
+/// look for a spelling that does not exist.
+pub(crate) const E0247: &str = "E0247";
+
+/// A destructuring statement that does not match its call's results (ADR-0052 §2, §3, §4).
+///
+/// Four conditions, one code, each with its own note:
+///
+/// * the target count differs from the result count. **Exact arity**, deliberately: allowing a
+///   caller to take a prefix — which Jai does — would make adding a result silently change nothing
+///   at any call site, and *reordering* results silently change what every caller binds;
+/// * the right-hand side is not a call at all, so there are no results to destructure;
+/// * the right-hand side is a call to a procedure returning **one** value, which is `x := f()` and
+///   needs no target list;
+/// * a results type used where a value's type belongs — `t: (s64, bool)` — which ADR-0052 §4 keeps
+///   unspellable so that reusing the struct machinery does not silently add tuples to the language.
+pub(crate) const E0251: &str = "E0251";
+
+/// A named argument or default value that does not fit ADR-0053's rules.
+///
+/// Six conditions, one code, each with its own note:
+///
+/// * a default that is not a **literal**. Refused because const-eval runs downstream of signature
+///   resolution (ADR-0018 §3), so a signature cannot depend on a computed constant — the same
+///   ordering ADR-0039 §3a records for an array length;
+/// * a default on a `#foreign` parameter, which Jairs does not control the call sites of;
+/// * a **positional** argument after a named one, which would make a positional argument's meaning
+///   depend on which names preceded it;
+/// * a parameter supplied **twice**, positionally and by name;
+/// * a parameter with **no argument and no default**; and
+/// * a named argument naming a parameter that does not exist — reported with a near-name
+///   suggestion, since a misspelling is exactly what ADR-0031 §1's machinery is for.
+pub(crate) const E0252: &str = "E0252";
+
+/// `context` used where there is none (ADR-0057 §3).
+///
+/// Two conditions: inside a `#c_call` procedure, which receives no implicit context by definition —
+/// including every `#foreign` one, since ADR-0001 makes those implicitly `#c_call`; and at **file
+/// scope**, where a constant's value is computed by const-eval and there is no call to have carried a
+/// context in.
+///
+/// Distinct from E0201 "unresolved name" deliberately: `context` is a keyword, so it always resolves
+/// and the mistake is that this procedure has none — reporting it as unresolved would send the reader
+/// looking for a declaration to add.
+pub(crate) const E0254: &str = "E0254";
+
+/// `#no_abc` on a `#foreign` procedure (ADR-0058 §3).
+///
+/// The directive suppresses a procedure's bounds checks, and a `#foreign` declaration has no body —
+/// so there is no index in it to leave unchecked and the directive could only be a word that does
+/// nothing.
+///
+/// Refused rather than ignored, because a silently-ignored directive tells the writer nothing: they
+/// asked for no bounds checks across a boundary Jairs does not compile, and the honest answer is
+/// that the request has no meaning rather than that it was granted.
+pub(crate) const E0255: &str = "E0255";
+
+/// A `#foreign` procedure used as a value (ADR-0059 §5).
+///
+/// Taking a procedure as a value — `f := add` — is how a proc pointer is made. A `#foreign`
+/// procedure's type is `ContextKind::CCall` and the VM reaches it through libffi rather than a
+/// `ProcRef`, so an indirect call to one is a second calling convention this wave does not build.
+///
+/// Refused at the point the value is *taken* rather than at the call, so the reader is told where
+/// they wrote the mistake — and distinct from a type mismatch (E0214), because `#foreign write`
+/// does have a procedure type and the objection is specifically that it is a foreign one.
+pub(crate) const E0256: &str = "E0256";
+
+/// `null` in a context that is not a pointer type, or with no context (ADR-0060 §1).
+///
+/// `null` takes its type from context, like an integer literal — but with no default, because there
+/// is no one pointer type to fall back to. `n: s64 = null` is a non-pointer context; `q := null` is
+/// no context at all. Distinct from E0214 "mismatched types" because the objection is specifically
+/// that a *pointer* was needed, which the note says.
+pub(crate) const E0257: &str = "E0257";

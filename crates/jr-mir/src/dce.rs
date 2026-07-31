@@ -47,8 +47,8 @@ use jr_pool::Pool;
 use rustc_hash::FxHashSet;
 
 use crate::mir::{
-    BlockId, Callee, MirBody, Operand, Place, PlaceBase, Rvalue, SlotId, Statement, Terminator,
-    ValueId,
+    BlockId, Callee, MirBody, Operand, Place, PlaceBase, Projection, Rvalue, SlotId, Statement,
+    Terminator, ValueId,
 };
 use crate::verify;
 
@@ -64,6 +64,11 @@ pub fn is_pure(rvalue: &Rvalue) -> bool {
         Rvalue::Use(_) | Rvalue::Address(_) | Rvalue::Undef => true,
         Rvalue::Binary { op, .. } => !op.can_trap(),
         Rvalue::Unary { op, .. } => !op.can_trap(),
+        // A conversion **cannot trap**: ADR-0037 §2 makes a narrowing cast truncate rather
+        // than check, which is exactly why it is safe to delete an unused one. Were `cast`
+        // ever changed to trap, this arm becomes wrong and silently deletes an observable
+        // trap — so that reversal needs a new ADR and this line, not just a codegen change.
+        Rvalue::Convert { .. } => true,
         // A load faults through a dangling pointer, and `jr-vm` documents that as
         // reachable from a valid program.
         Rvalue::Load(_) => false,
@@ -161,6 +166,13 @@ fn used_values(body: &MirBody) -> FxHashSet<ValueId> {
                     note_place(place, &mut used);
                     note_operand(value, &mut used);
                 }
+                Statement::Zero { place, .. } => note_place(place, &mut used),
+                // Both operands are read, and this statement is never deleted, so its
+                // operands keep their definitions alive.
+                Statement::BoundsCheck { index, len, .. } => {
+                    note_operand(index, &mut used);
+                    note_operand(len, &mut used);
+                }
                 Statement::Nop => {}
             }
         }
@@ -202,6 +214,21 @@ fn note_place(place: &Place, used: &mut FxHashSet<ValueId>) {
         PlaceBase::Slot(_) => {}
         PlaceBase::Deref(operand) => note_operand(operand, used),
     }
+    // Projections used to hold no operands, so this walk did not exist.
+    // `Projection::Index` carries one, and missing it here would let DCE delete the
+    // definition of an index that a surviving access still reads — a dangling `ValueId`
+    // in a place, which the verifier catches but only after the damage is expressible.
+    for projection in &place.projection {
+        match projection {
+            Projection::Index(operand) => note_operand(operand, used),
+            Projection::Field(_)
+            | Projection::Deref
+            | Projection::StringData
+            | Projection::StringCount
+            | Projection::ViewData
+            | Projection::ViewCount => {}
+        }
+    }
 }
 
 fn note_rvalue(rvalue: &Rvalue, used: &mut FxHashSet<ValueId>) {
@@ -212,6 +239,7 @@ fn note_rvalue(rvalue: &Rvalue, used: &mut FxHashSet<ValueId>) {
             note_operand(rhs, used);
         }
         Rvalue::Unary { op: _, operand } => note_operand(operand, used),
+        Rvalue::Convert { operand, from: _ } => note_operand(operand, used),
         Rvalue::Call { callee, args } => {
             match callee {
                 Callee::Direct(_) => {}
@@ -257,7 +285,17 @@ fn drop_dead_stores(body: &mut MirBody) -> bool {
                 }
                 // Deliberately *not* the store's own destination: a write nobody can
                 // read is what this function exists to find.
-                Statement::Store { .. } | Statement::Nop => {}
+                //
+                // `Zero` is a **write**, so it belongs here with `Store` and not in the
+                // observed set. Putting it there — the first draft of this change did —
+                // marks the slot as read and pins every dead store to it, which stopped
+                // `024-hello.jr`'s `Point` from being optimised away entirely. The program
+                // stayed correct and the optimisation silently stopped happening, which is
+                // what the optimized-MIR snapshot is for.
+                Statement::Store { .. }
+                | Statement::Zero { .. }
+                | Statement::BoundsCheck { .. }
+                | Statement::Nop => {}
             }
         }
     }
@@ -265,7 +303,11 @@ fn drop_dead_stores(body: &mut MirBody) -> bool {
     let mut changed = false;
     for index in 0..body.block_count() {
         for stmt in body.stmts_mut(BlockId::from_usize(index)) {
-            let Statement::Store { place, .. } = stmt else {
+            // `Zero` is deleted on the same terms as `Store`: it writes a slot, so if
+            // nothing can read that slot the write is dead. Leaving it out would keep a
+            // zeroing whose slot every other pass had already dropped, and
+            // `drop_unused_slots` would then keep the slot alive to hold it.
+            let (Statement::Store { place, .. } | Statement::Zero { place, .. }) = stmt else {
                 continue;
             };
             let PlaceBase::Slot(slot) = place.base else {
@@ -318,7 +360,10 @@ fn drop_unused_slots(body: &mut MirBody) -> bool {
                 Statement::Assign { rvalue, .. } | Statement::Discard { rvalue, .. } => {
                     note_rvalue_slots(rvalue, &mut used);
                 }
-                Statement::Store { place, .. } => note_place_slots(place, &mut used),
+                Statement::Store { place, .. } | Statement::Zero { place, .. } => {
+                    note_place_slots(place, &mut used)
+                }
+                Statement::BoundsCheck { .. } => {}
                 Statement::Nop => {}
             }
         }
@@ -348,6 +393,7 @@ fn note_rvalue_slots(rvalue: &Rvalue, used: &mut FxHashSet<SlotId>) {
         Rvalue::Use(_)
         | Rvalue::Binary { .. }
         | Rvalue::Unary { .. }
+        | Rvalue::Convert { .. }
         | Rvalue::Call { .. }
         | Rvalue::Undef => {}
     }

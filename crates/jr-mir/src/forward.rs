@@ -54,7 +54,7 @@
 
 use rustc_hash::FxHashSet;
 
-use jr_pool::Pool;
+use jr_pool::{Item, Pool, PoolId};
 
 use crate::mir::{
     BlockId, MirBody, Operand, Place, PlaceBase, Projection, Rvalue, SlotId, Statement,
@@ -69,7 +69,7 @@ pub fn forward_stores(body: &mut MirBody, pool: &Pool) -> bool {
     let escaping = escaping_slots(body);
     let mut changed = false;
     for index in 0..body.block_count() {
-        changed |= forward_in_block(body, BlockId::from_usize(index), &escaping);
+        changed |= forward_in_block(body, BlockId::from_usize(index), &escaping, pool);
     }
     if changed {
         verify::assert_valid(body, pool);
@@ -90,7 +90,10 @@ pub(crate) fn escaping_slots(body: &MirBody) -> FxHashSet<SlotId> {
         for stmt in &block.stmts {
             let rvalue = match stmt {
                 Statement::Assign { rvalue, .. } | Statement::Discard { rvalue, .. } => rvalue,
-                Statement::Store { .. } | Statement::Nop => continue,
+                Statement::Store { .. }
+                | Statement::Zero { .. }
+                | Statement::BoundsCheck { .. }
+                | Statement::Nop => continue,
             };
             // Only `Address` escapes a slot. A `Load` reads it, a `Store` writes it,
             // and neither hands out a pointer that outlives the statement.
@@ -120,7 +123,12 @@ enum Overlap {
     Disjoint,
 }
 
-fn forward_in_block(body: &mut MirBody, block: BlockId, escaping: &FxHashSet<SlotId>) -> bool {
+fn forward_in_block(
+    body: &mut MirBody,
+    block: BlockId,
+    escaping: &FxHashSet<SlotId>,
+    pool: &Pool,
+) -> bool {
     // Collected first, because rewriting needs `&mut` and deciding needs `&`.
     let mut rewrites: Vec<(usize, Operand)> = Vec::new();
     let stmts = &body.block(block).stmts;
@@ -136,7 +144,7 @@ fn forward_in_block(body: &mut MirBody, block: BlockId, escaping: &FxHashSet<Slo
         let Some(slot) = participating_slot(load) else {
             continue;
         };
-        if let Some(value) = available_store(stmts, position, load, slot, escaping) {
+        if let Some(value) = available_store(stmts, position, load, slot, escaping, pool, body) {
             rewrites.push((position, value));
         }
     }
@@ -164,12 +172,14 @@ fn available_store(
     load: &Place,
     slot: SlotId,
     escaping: &FxHashSet<SlotId>,
+    pool: &Pool,
+    body: &MirBody,
 ) -> Option<Operand> {
     let escapes = escaping.contains(&slot);
     for earlier in stmts[..position].iter().rev() {
         match earlier {
             Statement::Store { place, value, .. } => {
-                match store_relation(place, load, slot) {
+                match store_relation(place, load, slot, pool, body) {
                     Some(Overlap::Same) => return Some(*value),
                     // Shares storage without matching it, so the load's bytes are not
                     // this operand — and no earlier store can be trusted either.
@@ -190,6 +200,18 @@ fn available_store(
                     return None;
                 }
             }
+            // Zeroing writes the *whole* slot, so it kills any earlier store to it and
+            // is not itself a source to forward from: MIR cannot extract one element of a
+            // zeroed aggregate as a value, which is the same limitation that makes a
+            // whole-slot store refuse to feed a field load (ADR-0023 §3).
+            Statement::Zero { place, .. } => match participating_slot(place) {
+                Some(zeroed) if zeroed != slot => {}
+                // Our slot, or a place this pass cannot reason about.
+                _ => return None,
+            },
+            // Reads its operands and may trap. It writes nothing, so it cannot invalidate
+            // a store — a trap does not produce a *wrong* value, it ends the program.
+            Statement::BoundsCheck { .. } => {}
             Statement::Nop => {}
         }
     }
@@ -207,21 +229,34 @@ fn kills(rvalue: &Rvalue, slot: SlotId, escapes: bool) -> bool {
         // has a pointer and cannot touch one that does not.
         Rvalue::Call { .. } => escapes,
         // A load has no effect. Everything else is arithmetic on values.
+        // A conversion reads a value and writes a value; it cannot reach memory.
         Rvalue::Load(_)
         | Rvalue::Use(_)
         | Rvalue::Binary { .. }
         | Rvalue::Unary { .. }
+        | Rvalue::Convert { .. }
         | Rvalue::Undef => false,
     }
 }
 
 /// How a store's place relates to a load's, or `None` if the store is unanalysable.
-fn store_relation(store: &Place, load: &Place, slot: SlotId) -> Option<Overlap> {
+fn store_relation(
+    store: &Place,
+    load: &Place,
+    slot: SlotId,
+    pool: &Pool,
+    body: &MirBody,
+) -> Option<Overlap> {
     let stored = participating_slot(store)?;
     if stored != slot {
         return Some(Overlap::Disjoint);
     }
-    Some(compare_paths(&store.projection, &load.projection))
+    Some(compare_paths(
+        &store.projection,
+        &load.projection,
+        body.slot(slot).ty,
+        pool,
+    ))
 }
 
 /// The slot a place names, if this pass can reason about the place at all.
@@ -242,15 +277,91 @@ fn participating_slot(place: &Place) -> Option<SlotId> {
     Some(slot)
 }
 
+/// Whether `ty` is a union, whose fields all share offset 0 (ADR-0045 §3).
+fn is_union(ty: PoolId, pool: &Pool) -> bool {
+    ty.index() < pool.len() && matches!(pool.item(ty), Item::UnionType { .. })
+}
+
+/// The type one projection step lands on, for tracking the receiver type along a path.
+///
+/// Conservative: an unresolvable step yields [`PoolId::ERROR`], which `is_union` answers
+/// `false` for — so a path this cannot follow falls back to the struct rule. That is the safe
+/// direction only because a *later* unequal pair on an unknown type is then treated as
+/// disjoint, which is why this walks every step rather than only the ones before a difference.
+fn step_type(ty: PoolId, step: &Projection, pool: &Pool) -> PoolId {
+    if ty.index() >= pool.len() {
+        return PoolId::ERROR;
+    }
+    match step {
+        Projection::Field(index) => match pool.item(ty) {
+            Item::StructType { decl } | Item::UnionType { decl } => pool
+                .struct_fields(*decl)
+                .and_then(|fields| fields.get(*index as usize))
+                .map_or(PoolId::ERROR, |field| field.ty),
+            _ => PoolId::ERROR,
+        },
+        Projection::Index(_) => match pool.item(ty) {
+            Item::ArrayType { elem, .. } | Item::PointerType(elem) => *elem,
+            _ => PoolId::ERROR,
+        },
+        // A `Deref` never reaches here: `participating_slot` refuses a place containing one.
+        Projection::Deref => PoolId::ERROR,
+        Projection::StringData | Projection::ViewData => PoolId::ERROR,
+        Projection::StringCount | Projection::ViewCount => PoolId::S64,
+    }
+}
+
 /// Compares two projection paths on the same slot.
 ///
 /// Step by step, and the first difference means disjoint — which is a claim about a
 /// struct having distinct fields, not about where they sit (ADR-0023 §3). `.data` and
 /// `.count` are distinct steps and so are disjoint for the same reason.
-fn compare_paths(store: &[Projection], load: &[Projection]) -> Overlap {
+///
+/// # Why an index needs its own case
+///
+/// Two *different* `Projection::Index` steps are **not** disjoint. `buf[i]` and `buf[j]`
+/// name the same element whenever `i == j` at run time, and this pass cannot know that
+/// they differ — so the "first difference means disjoint" rule, which is sound for
+/// fields because a struct's fields are distinct by construction, would forward the
+/// wrong value:
+///
+/// ```text
+///   store buf[i] <- 1
+///   store buf[j] <- 2
+///   v = load buf[i]      // NOT 1 when i == j
+/// ```
+///
+/// Only two *identical* index operands are the same storage. Anything else is
+/// [`Overlap::Partial`] — "shares storage, extent unknown" — which refuses rather than
+/// deciding, and is the conservative answer this pass already has a name for.
+fn compare_paths(store: &[Projection], load: &[Projection], root: PoolId, pool: &Pool) -> Overlap {
+    let mut ty = root;
     for (left, right) in store.iter().zip(load) {
-        if left != right {
-            return Overlap::Disjoint;
+        if left == right {
+            ty = step_type(ty, left, pool);
+            continue;
+        }
+        // A field and an index cannot both be steps on the same type, so an unequal pair
+        // where *either* side is an index is two indices — but matching both sides
+        // explicitly keeps that from being an assumption a later variant can falsify.
+        match (left, right) {
+            (Projection::Index(_), _) | (_, Projection::Index(_)) => return Overlap::Partial,
+            // **Two different fields of a union share storage.** The "first difference means
+            // disjoint" rule is a claim about a *struct* having distinct fields, and a union
+            // falsifies it: every field is at offset 0 (ADR-0045 §3), so
+            //
+            //     store m.word <- 0
+            //     store m.byte <- 7
+            //     v = load m.word      // NOT 0
+            //
+            // would forward the stale wide store over the narrow one. This was a live wrong
+            // answer — the corpus program read 0 where 7 was written — and it is the same
+            // shape as the index case above: storage shared, extent unknown, so `Partial`
+            // refuses rather than deciding.
+            (Projection::Field(_), Projection::Field(_)) if is_union(ty, pool) => {
+                return Overlap::Partial;
+            }
+            _ => return Overlap::Disjoint,
         }
     }
     if store.len() == load.len() {

@@ -81,7 +81,12 @@ pub enum SyntaxKind {
     FALSE_KW,
 
     // ---- keywords (reserved for later waves) -----------------------------
-    /// `enum` — reserved, wave W1.
+    /// `enum` — real syntax as of ADR-0041.
+    ///
+    /// Still inside the "reserved for later waves" block because
+    /// [`SyntaxKind::is_reserved_keyword`]'s range test depends on the contiguous span, and
+    /// renumbering the kind space to move one keyword out would churn every `u16` in it for
+    /// no behavioural gain. The parser is what decides whether a keyword is refused.
     ENUM_KW,
     /// `union` — reserved, wave W1.
     UNION_KW,
@@ -91,12 +96,42 @@ pub enum SyntaxKind {
     DEFER_KW,
     /// `using` — reserved, wave W2.
     USING_KW,
-    /// `cast` — reserved, wave W1.
+    /// `cast` — real syntax as of ADR-0037, not a reserved word.
+    ///
+    /// This comment said "reserved, wave W1" for three waves after `cast` landed. See
+    /// [`SyntaxKind::ENUM_KW`] for why it stays in this block regardless.
     CAST_KW,
     /// `xx` (autocast) — reserved, wave W1.
     XX_KW,
-    /// `null` — reserved, wave W1.
+    /// `null` — real syntax as of ADR-0060, a context-typed pointer literal.
+    ///
+    /// It stays in this block, like `cast` and `enum` before it, rather than moving out beside
+    /// `FLAGS_KW`: it *was* reserved, so [`SyntaxKind::is_reserved_keyword`]'s range still ends here.
+    /// The predicate now means "in the historical reserved block" rather than "refused" — every
+    /// keyword in the block is implemented, and `null` was the last. The parser has no `NULL_KW`
+    /// refusal arm any more; it parses as a `LITERAL_EXPR`.
     NULL_KW,
+    /// `enum_flags` — real syntax as of ADR-0043.
+    ///
+    /// Placed **after** `NULL_KW` deliberately, which puts it *outside*
+    /// [`SyntaxKind::is_reserved_keyword`]'s range: it was never reserved, so adding it into
+    /// the reserved block would mean immediately having to remember to exclude it — the trap
+    /// `cast` and `enum` both walked into from the other side.
+    FLAGS_KW,
+    /// `context` — real syntax as of ADR-0057.
+    ///
+    /// Placed **after** `NULL_KW` like [`SyntaxKind::FLAGS_KW`] and [`SyntaxKind::OPERATOR_KW`],
+    /// which puts it *outside* [`SyntaxKind::is_reserved_keyword`]'s range: it was never reserved, so
+    /// adding it to that block would mean immediately having to remember to exclude it — the trap
+    /// `cast`, `enum`, `union`, `xx`, `for`, `defer` and `using` each walked into from the other side.
+    CONTEXT_KW,
+    /// `operator` — real syntax as of ADR-0048.
+    ///
+    /// Placed **after** `NULL_KW`, like `FLAGS_KW`, which puts it *outside*
+    /// [`SyntaxKind::is_reserved_keyword`]'s range: it was never reserved, so adding it to the
+    /// reserved block would mean immediately having to remember to exclude it — the trap `cast`,
+    /// `enum`, `union` and `xx` each walked into from the other side.
+    OPERATOR_KW,
 
     // ---- delimiters ------------------------------------------------------
     /// `(`
@@ -171,6 +206,16 @@ pub enum SyntaxKind {
     MINUS_PERCENT_EQ,
     /// `*%=`
     STAR_PERCENT_EQ,
+    /// `&=` (ADR-0042 §6)
+    AMP_EQ,
+    /// `|=`
+    PIPE_EQ,
+    /// `^=`
+    CARET_EQ,
+    /// `<<=`
+    SHL_EQ,
+    /// `>>=`
+    SHR_EQ,
 
     // ---- comparison ------------------------------------------------------
     /// `==`
@@ -226,6 +271,13 @@ pub enum SyntaxKind {
     /// `name :: value` — a compile-time constant. Procedures and structs are
     /// constants whose value is a `PROC` or `STRUCT_TYPE`, exactly as in Jai.
     CONST_DECL,
+    /// `operator + :: (a: T, b: T) -> T { … }` (ADR-0048 §1).
+    ///
+    /// Its own kind rather than a `CONST_DECL` whose `NAME` holds an operator token: every
+    /// consumer of `CONST_DECL` expects an `IDENT` there, and a shared kind would make each of
+    /// them ask. The *value* is an ordinary `PROC`, because an overload is an ordinary procedure
+    /// whose name happens to be an operator.
+    OPERATOR_DECL,
     /// `name := value`, `name: T`, or `name: T = value`.
     VAR_DECL,
     /// `#import "Basic";`
@@ -252,8 +304,101 @@ pub enum SyntaxKind {
     NAME_TYPE,
     /// `*T`
     POINTER_TYPE,
+    /// `[N]T` — a fixed-size array (ADR-0039 §3).
+    ///
+    /// The length is a child expression rather than a token, so that `[COUNT]u8`
+    /// parses the same way `[20]u8` does. Sema is where a non-constant length is
+    /// refused, because "is this expression a compile-time constant" is a semantic
+    /// question the parser cannot answer.
+    ARRAY_TYPE,
+    /// `[]T` — a view (ADR-0044 §1).
+    ///
+    /// A separate kind from `ARRAY_TYPE` rather than one with an absent length child, because
+    /// `TypeRef::Array`'s `len: None` already means "the length was not a usable literal"
+    /// (ADR-0039 §3a) — so a shared node would make a view indistinguishable from that error.
+    VIEW_TYPE,
+    /// `(T, T) -> T` — a procedure-pointer type (ADR-0059 §3).
+    ///
+    /// Holds a `PROC_TYPE_PARAMS` node then the return type. Distinct from a `RESULT_LIST`, which is
+    /// also `(…)`: the `->` is what tells them apart, and the parser commits only after it has seen
+    /// whether an arrow follows the closing `)`. A results list has no return type, so sharing the
+    /// node would make a consumer ask which of the two it really is.
+    PROC_TYPE,
+    /// The parameter-type list of a `PROC_TYPE`, holding zero or more type nodes.
+    ///
+    /// Its own node so the return type — the last type child of a `PROC_TYPE` — is not mistaken for
+    /// a parameter, which a flat list of type children would allow.
+    PROC_TYPE_PARAMS,
     /// `struct { ... }`
     STRUCT_TYPE,
+    /// `union { ... }` (ADR-0045).
+    ///
+    /// Its own kind rather than a `STRUCT_TYPE` with a flag, mirroring `Item::UnionType`: the
+    /// two differ in *layout*, and every consumer that computes an offset must branch on it.
+    /// It shares `FIELD_LIST`/`FIELD`, because a union's fields *are* a struct's fields.
+    UNION_TYPE,
+    /// `enum { RED; GREEN; }` (ADR-0041).
+    ///
+    /// A *type*, like `STRUCT_TYPE`, because ADR-0012 makes `Colour :: enum { … }` an
+    /// instance of the one `name :: value` constant form rather than a declaration of its
+    /// own.
+    ENUM_TYPE,
+    /// The member list of an `enum`.
+    MEMBER_LIST,
+    /// A `#c_call` attribute on a procedure, opting out of the implicit context (ADR-0057 §3).
+    ///
+    /// Its own node rather than a bare token so `jr-fmt` finds it by kind and lowering reads it the
+    /// way it reads `FOREIGN_ATTR` — every directive lexes as one `DIRECTIVE` token, so the node is
+    /// what distinguishes them.
+    C_CALL_ATTR,
+    /// A `#no_abc` attribute on a procedure, suppressing its bounds checks (ADR-0058 §3).
+    ///
+    /// Its own node beside `C_CALL_ATTR` rather than one shared `ATTR` kind carrying the directive
+    /// text. Two kinds means a consumer that handles one and forgets the other is a *missing arm*
+    /// rather than a string comparison that silently falls through — and `jr-fmt` has lost a
+    /// construct in seven of the last eight waves by exactly that route.
+    ///
+    /// **On the procedure, not on the index.** ADR-0003 said the opt-out would be per-index;
+    /// ADR-0058 §3 amends that, because a per-index flag has to reach `Projection::Index` through
+    /// every one of the eleven passes and back ends that match on a projection, and a flag some of
+    /// them ignore is this project's first named failure mode.
+    NO_ABC_ATTR,
+    /// The `context` keyword used as an expression (ADR-0057 §1).
+    ///
+    /// Its own kind rather than a `NAME_EXPR`, because `context` is a keyword and not a name — a
+    /// consumer reading names must not find it, or `context.allocator` would look like a field access
+    /// on a variable somebody declared.
+    CONTEXT_EXPR,
+    /// A `#scope_module` or `#scope_export` visibility marker (ADR-0054 §1).
+    ///
+    /// A node rather than a bare token so that `jr-fmt` can find it by kind and lowering can read
+    /// *which* directive it is from the token inside — the same shape `IMPORT_DECL` uses, and for
+    /// the same reason: every directive lexes as one `DIRECTIVE` token.
+    SCOPE_DECL,
+    /// A named argument at a call site: the `b = 2` of `f(1, b = 2)` (ADR-0053 §1).
+    ///
+    /// Its own node rather than an `ASSIGN_STMT`-shaped expression, because the two mean different
+    /// things and sharing a kind would make `f(a = 1)` indistinguishable from an assignment used as
+    /// an argument — which Jairs does not have.
+    NAMED_ARG,
+    /// A parenthesised result list after `->`: `(s64, bool)` (ADR-0052 §1).
+    ///
+    /// Its own node rather than a `PAREN_EXPR` in type position, because the two are different
+    /// things that happen to share brackets — and a consumer finding a `RESULT_LIST` by kind
+    /// knows it has several types without inspecting what is inside.
+    RESULT_LIST,
+    /// A destructuring target list: the `q, ok` of `q, ok := f();` (ADR-0052 §2).
+    ///
+    /// Holds a `NAME` per target, and an `UNDERSCORE` token for each discarded position — which is
+    /// why a discard needs no `NAME`: it is a *hole*, recognised positionally, and never becomes a
+    /// name anything can resolve (ADR-0052 §3).
+    TARGET_LIST,
+    /// One enum member: `RED;` or `NOT_FOUND :: 404;`.
+    ///
+    /// Its own kind rather than reusing `FIELD`: a field has a *type* and a member has an
+    /// optional *value*, so sharing the node would mean every consumer asking which one it
+    /// really is.
+    MEMBER,
     /// `{ x: s64; }`
     FIELD_LIST,
     /// `x: s64;`
@@ -274,6 +419,24 @@ pub enum SyntaxKind {
     ELSE_BRANCH,
     /// `while cond { ... }`
     WHILE_STMT,
+    /// `for x: buf { … }`, `for x, i: buf { … }`, `for i: 0..n { … }` (ADR-0049 §1).
+    ///
+    /// The loop variable is **named**, not implicit: Jai defaults to `it`/`it_index` and Jairs
+    /// requires the name, because a name introduced without being written is the invisible
+    /// behaviour ADR-0014 §3 refuses.
+    FOR_STMT,
+    /// The `a..b` range in a `for` header (ADR-0049 §1).
+    ///
+    /// Its own node, and reachable **only** here — there is no `..` operator in the expression
+    /// grammar and no `Range` in the pool, which is what keeps it from colliding with `[..]T`.
+    RANGE_EXPR,
+    /// `defer stmt;` (ADR-0049 §3).
+    DEFER_STMT,
+    /// `label:` before a `for` or `while` (ADR-0049 §2).
+    ///
+    /// A label names a *loop* and is deliberately not an expression name: it is resolved against
+    /// `build.rs`'s loop stack, the only place a loop's identity exists.
+    LOOP_LABEL,
     /// `return expr;`
     RETURN_STMT,
     /// `break;`
@@ -298,10 +461,44 @@ pub enum SyntaxKind {
     ARG_LIST,
     /// `a.b`
     FIELD_EXPR,
+    /// `a[i]` (ADR-0039 §5).
+    ///
+    /// Postfix, at the same precedence as `.b` and `.*`, so `a[i].x` and `a.b[i]`
+    /// chain the way a reader expects.
+    INDEX_EXPR,
+    /// `a[]` — the slice operator, producing a view over the whole of `a` (ADR-0044 §2).
+    ///
+    /// Postfix at the same precedence as `INDEX_EXPR`, and a *separate kind* rather than an
+    /// `INDEX_EXPR` with no subscript child: the two differ in what they produce and in
+    /// whether they take an address, and a consumer distinguishing them by counting children
+    /// would treat a malformed `a[` as a slice.
+    ///
+    /// Spelled `[]` and not `[..]` because `[..]T` is already reserved for dynamic arrays, so
+    /// `a[..]` and `[..]T` would be the same two tokens meaning different things in different
+    /// positions.
+    SLICE_EXPR,
     /// `p.*`
     DEREF_EXPR,
     /// `---`
     UNINIT_EXPR,
+    /// `xx expr` — autocast, whose target type comes from the context (ADR-0046 §2).
+    ///
+    /// A *prefix* form rather than a call-like `xx(expr)`: it takes no type argument, so there
+    /// is nothing to parenthesise. Its own kind rather than a `CAST_EXPR` with no type child,
+    /// because the two differ in exactly the question ADR-0046 is about — where the target type
+    /// comes from — and a shared kind would make every consumer ask.
+    AUTOCAST_EXPR,
+    /// `.RED` — an enum member named without its type (ADR-0046 §3).
+    ///
+    /// Unambiguous against a float without a lexer change: a `.` begins a fractional part only
+    /// when a digit follows, so `.5` is a literal and `.RED` is this.
+    MEMBER_EXPR,
+    /// `cast(T, x)`
+    ///
+    /// Its own node rather than a `CALL_EXPR` to a name, because its first argument is a
+    /// *type* and Jairs cannot pass one in a call until W4's RTTI (ADR-0037 §3). A node kind
+    /// rather than a token, so `TokenSet`'s `u128` bitmask is unaffected.
+    CAST_EXPR,
     /// `#run expr`
     RUN_EXPR,
     /// A directive used as an expression, e.g. `#system_library "c"`.
@@ -403,6 +600,9 @@ impl SyntaxKind {
             "true" => Self::TRUE_KW,
             "false" => Self::FALSE_KW,
             "enum" => Self::ENUM_KW,
+            "enum_flags" => Self::FLAGS_KW,
+            "operator" => Self::OPERATOR_KW,
+            "context" => Self::CONTEXT_KW,
             "union" => Self::UNION_KW,
             "for" => Self::FOR_KW,
             "defer" => Self::DEFER_KW,
@@ -431,6 +631,9 @@ impl SyntaxKind {
             Self::TRUE_KW => "true",
             Self::FALSE_KW => "false",
             Self::ENUM_KW => "enum",
+            Self::FLAGS_KW => "enum_flags",
+            Self::OPERATOR_KW => "operator",
+            Self::CONTEXT_KW => "context",
             Self::UNION_KW => "union",
             Self::FOR_KW => "for",
             Self::DEFER_KW => "defer",
@@ -471,6 +674,11 @@ impl SyntaxKind {
             Self::PLUS_PERCENT_EQ => "+%=",
             Self::MINUS_PERCENT_EQ => "-%=",
             Self::STAR_PERCENT_EQ => "*%=",
+            Self::AMP_EQ => "&=",
+            Self::PIPE_EQ => "|=",
+            Self::CARET_EQ => "^=",
+            Self::SHL_EQ => "<<=",
+            Self::SHR_EQ => ">>=",
             Self::EQ_EQ => "==",
             Self::BANG_EQ => "!=",
             Self::LT => "<",

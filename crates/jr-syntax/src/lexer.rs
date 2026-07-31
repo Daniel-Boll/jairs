@@ -68,6 +68,10 @@ const OPERATORS: &[(&str, SyntaxKind)] = &[
     ("-%=", MINUS_PERCENT_EQ),
     ("*%=", STAR_PERCENT_EQ),
     ("---", UNINIT),
+    // Three characters, so they must beat `<<`/`>>` *and* `<=`/`>=` — the same
+    // longest-match obligation the wrapping compound assignments have (ADR-0042 §6).
+    ("<<=", SHL_EQ),
+    (">>=", SHR_EQ),
     ("+%", PLUS_PERCENT),
     ("-%", MINUS_PERCENT),
     ("*%", STAR_PERCENT),
@@ -87,6 +91,9 @@ const OPERATORS: &[(&str, SyntaxKind)] = &[
     (">=", GT_EQ),
     ("&&", AMP_AMP),
     ("||", PIPE_PIPE),
+    ("&=", AMP_EQ),
+    ("|=", PIPE_EQ),
+    ("^=", CARET_EQ),
     ("<<", SHL),
     (">>", SHR),
     ("(", L_PAREN),
@@ -662,6 +669,35 @@ mod tests {
             assert_eq!(kinds(text), [kind], "{text}");
             assert!(kind.is_reserved_keyword(), "{text}");
         }
+    }
+
+    #[test]
+    fn enum_flags_lexes_as_its_own_keyword_and_is_not_reserved() {
+        // Its own test rather than a row in the reserved list above: `enum_flags` is *real*
+        // syntax as of ADR-0043, so it deliberately falls outside `is_reserved_keyword`'s
+        // range — putting it in that list would have asserted the opposite of what it is.
+        assert_eq!(kinds("enum_flags"), [FLAGS_KW]);
+        assert!(!FLAGS_KW.is_reserved_keyword());
+
+        // No ordering obligation, unlike the *operator* table: an identifier is scanned to its
+        // end and `from_keyword` matches the whole text, so `enum_flags` cannot be mis-lexed as
+        // `enum` followed by `_flags` — and `enum_flagsy` is an ordinary identifier.
+        assert_eq!(kinds("enum_flags x"), [FLAGS_KW, IDENT]);
+        assert_eq!(kinds("enum_flagsy"), [IDENT]);
+        assert_eq!(kinds("enum"), [ENUM_KW]);
+    }
+
+    #[test]
+    fn operator_lexes_as_its_own_keyword_and_is_not_reserved() {
+        // Same shape as the `enum_flags` test above and for the same reason: `operator` is real
+        // syntax as of ADR-0048, so it falls outside `is_reserved_keyword`'s range.
+        assert_eq!(kinds("operator"), [OPERATOR_KW]);
+        assert!(!OPERATOR_KW.is_reserved_keyword());
+
+        // The declaration form is `operator + :: …`, so the keyword and the operator token are
+        // two tokens with trivia between them — nothing here joins them.
+        assert_eq!(kinds("operator +"), [OPERATOR_KW, PLUS]);
+        assert_eq!(kinds("operator_thing"), [IDENT]);
     }
 
     // ---- the operator longest-match table --------------------------------

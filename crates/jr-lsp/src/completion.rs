@@ -48,12 +48,26 @@ const KEYWORDS: &[&str] = &[
     "struct", "if", "else", "while", "return", "break", "continue", "true", "false",
 ];
 
-/// The builtin type names.
+/// The builtin type names that are not integers.
 ///
-/// Four, because that is what `jr_sema`'s `resolve_type_name` matches. They are ordinary
-/// identifiers rather than keywords (`docs/spec/01-lexical.md`), which is why they are a
-/// separate list with a different completion kind.
-const BUILTIN_TYPES: &[&str] = &["s64", "u8", "bool", "string"];
+/// The integer tower comes from `jr_pool::IntKind::NAMES` instead of being repeated here
+/// (ADR-0037 §1) — this list used to say `["s64", "u8", "bool", "string"]`, which was one of
+/// four places the tower was written down and would have fallen behind it.
+///
+/// They are ordinary identifiers rather than keywords (`docs/spec/01-lexical.md`), which is
+/// why they are a separate list with a different completion kind.
+const BUILTIN_TYPES: &[&str] = &["bool", "string"];
+
+/// Every builtin type name, integers included.
+fn builtin_type_names() -> impl Iterator<Item = &'static str> {
+    // Both families from their own crate-owned lists (ADR-0037 §1, ADR-0040 §2), so a width
+    // added to either appears here without this function changing.
+    jr_pool::IntKind::NAMES
+        .iter()
+        .copied()
+        .chain(jr_pool::FloatKind::NAMES.iter().copied())
+        .chain(BUILTIN_TYPES.iter().copied())
+}
 
 /// The directives the parser interprets.
 const DIRECTIVES: &[&str] = &["#import", "#run", "#foreign", "#system_library"];
@@ -187,6 +201,12 @@ fn fields_at(
 
     match pool.item(ty) {
         Item::StringType => vec![field("data", PoolId::PTR_U8), field("count", PoolId::S64)],
+        // `[N]T` has exactly one pseudo-field, and deliberately no `.data` — offering one
+        // would advertise a field `jr-sema` rejects (ADR-0039 §5).
+        // A view offers the same one pseudo-field for the same reason, even though its
+        // `.count` is a load rather than a constant — completion cares what you may write,
+        // not how it lowers (ADR-0044 §4).
+        Item::ArrayType { .. } | Item::ViewType { .. } => vec![field("count", PoolId::S64)],
         Item::StructType { decl } => pool
             .struct_fields(*decl)
             .unwrap_or(&[])
@@ -284,8 +304,8 @@ fn names_at(
         kind: Some(CompletionItemKind::KEYWORD),
         ..CompletionItem::default()
     }));
-    out.extend(BUILTIN_TYPES.iter().map(|ty| CompletionItem {
-        label: (*ty).to_owned(),
+    out.extend(builtin_type_names().map(|ty| CompletionItem {
+        label: ty.to_owned(),
         kind: Some(CompletionItemKind::CLASS),
         ..CompletionItem::default()
     }));
@@ -322,9 +342,20 @@ fn item_completion(
                 Some(InsertTextFormat::SNIPPET),
             )
         }
+        // One arm for both aggregates: the protocol has no `UNION`, and `STRUCT` is the
+        // nearest true thing — an aggregate with named fields.
         ItemKind::Const {
-            value: jr_hir::ConstValue::Struct(_),
+            value: jr_hir::ConstValue::Struct(_) | jr_hir::ConstValue::Union(_),
         } => (CompletionItemKind::STRUCT, None, None),
+        ItemKind::Const {
+            value: jr_hir::ConstValue::Enum(_),
+        } => (CompletionItemKind::ENUM, None, None),
+        // An overload's name is the synthetic `"operator+"`, which a user cannot type — so it is
+        // deliberately **not offered** as a completion. `OPERATOR` exists in the protocol and
+        // suggesting the name would insert something that does not parse (ADR-0048 §1).
+        ItemKind::Const {
+            value: jr_hir::ConstValue::Operator(_, _),
+        } => return None,
         ItemKind::Const {
             value: jr_hir::ConstValue::Expr(_),
         } => (CompletionItemKind::CONSTANT, None, None),
@@ -543,6 +574,8 @@ mod tests {
             name: interner.intern(name),
             name_span: span,
             ty: None,
+            using: false,
+            default: None,
         };
         let params = vec![param("a"), param("b")];
         assert_eq!(

@@ -1,0 +1,126 @@
+// `enum_flags` (ADR-0043): an enum whose members combine.
+//
+// The numbering is Jai's and has three parts that are each easy to get wrong:
+//
+//   * auto-numbered by **powers of two** from 1, not sequentially -- otherwise `READ|WRITE`
+//     would be `0|1` = 1, which *equals* `WRITE` and makes the type useless;
+//   * an explicit value is allowed, and a later member continues from the next power of two
+//     **strictly above the previous value** -- not above its index;
+//   * and that holds even when the previous value is not itself a power of two, because an
+//     explicit mask like `RW :: 3` is a legal named combination.
+//
+// Zero is never auto-created: `NONE :: 0;` is written out, and it leaves the sequence alone.
+//
+// The `exit` at the end is what gives this file teeth under the differential harness: only
+// two corpus programs print, so a computation has to be made observable through an exit
+// status or the comparison is silence against silence.
+#import "Basic";
+
+/// Auto-numbered: 1, 2, 4.
+Perm :: enum_flags {
+    READ;
+    WRITE;
+    EXEC;
+}
+
+/// The three numbering edge cases, in one declaration.
+Edge :: enum_flags {
+    // Explicit zero, which does not disturb the sequence.
+    NONE :: 0;
+    // 1 -- the first flag, following a zero.
+    A;
+    B :: 8;
+    // 16, not 4: the next power of two above 8, rather than above `C`'s index.
+    C;
+    // A named mask, deliberately not a power of two (ADR-0043 §6).
+    AB :: 3;
+    // 4 -- the next power of two above 3, so a non-power-of-two predecessor does not
+    // simply double.
+    D;
+}
+
+/// A plain `enum` for contrast: still sequential, and still refusing `|`.
+Colour :: enum {
+    RED;
+    GREEN;
+}
+
+main :: () {
+    n := 0;
+
+    // Powers of two.
+    if cast(s64, Perm.READ) == 1 {
+        n = n + 1;
+    }
+    if cast(s64, Perm.WRITE) == 2 {
+        n = n + 2;
+    }
+    if cast(s64, Perm.EXEC) == 4 {
+        n = n + 4;
+    }
+
+    // A combination keeps the flags type and names no member -- which is correct rather than
+    // a gap (ADR-0043 §3).
+    both := Perm.READ | Perm.WRITE;
+    if cast(s64, both) == 3 {
+        n = n + 8;
+    }
+
+    // Testing a flag: the `&` idiom, which composes where a binary `has` would not.
+    if (both & Perm.READ) == Perm.READ {
+        n = n + 16;
+    }
+    if (both & Perm.EXEC) != Perm.EXEC {
+        n = n + 32;
+    }
+
+    // `^` and `~` also keep the type.
+    toggled := both ^ Perm.EXEC;
+    if cast(s64, toggled) == 7 {
+        n = n + 64;
+    }
+    if cast(s64, ~Perm.READ) == -2 {
+        n = n + 128;
+    }
+
+    // Testing two flags at once, which is why the idiom is `&` and not an operator.
+    if (toggled & (Perm.READ | Perm.EXEC)) == (Perm.READ | Perm.EXEC) {
+        n = n + 256;
+    }
+
+    // The numbering edge cases.
+    if cast(s64, Edge.NONE) == 0 {
+        n = n + 512;
+    }
+    if cast(s64, Edge.A) == 1 {
+        n = n + 1024;
+    }
+    if cast(s64, Edge.C) == 16 {
+        n = n + 2048;
+    }
+    if cast(s64, Edge.D) == 4 {
+        n = n + 4096;
+    }
+
+    // A plain enum is unaffected: sequential from 0.
+    if cast(s64, Colour.GREEN) == 1 {
+        n = n + 8192;
+    }
+
+    // A flags value crossing a procedure boundary.
+    if can_write(both) {
+        n = n + 16384;
+    }
+
+    // Every assertion: 32767. `exit` takes the low byte, so the status is 255.
+    if n == 32767 {
+        exit(0);
+    }
+    exit(1);
+}
+
+/// A flags enum as a parameter type, which is what makes it a real type rather than a
+/// constant folded at its use site.
+can_write :: (p: Perm) -> bool {
+    return (p & Perm.WRITE) == Perm.WRITE;
+}

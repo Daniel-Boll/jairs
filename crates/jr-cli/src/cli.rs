@@ -143,6 +143,19 @@ pub struct RunArgs {
     #[arg(value_name = "PATH")]
     pub path: std::path::PathBuf,
 
+    /// Compile without array bounds checks (ADR-0003, ADR-0058 §1).
+    ///
+    /// Every `bounds_check` operation is stripped from the MIR the back end receives, so an
+    /// out-of-range index reads or writes whatever is at that address. That is the trade the
+    /// flag exists to offer, and it is undefined behaviour by construction.
+    ///
+    /// Two things it does **not** change. A `#no_abc` procedure has no checks either way, because
+    /// that is a property of the code rather than of the build (ADR-0058 §3). And compile-time
+    /// execution always checks, because a trap there is a *diagnostic* rather than a program
+    /// behaviour — so `#run f(9)` on an eight-element array is still an error (ADR-0058 §4).
+    #[arg(long = "no-bounds-check")]
+    pub no_bounds_check: bool,
+
     /// Directory to search for imported modules. May be repeated; searched in
     /// the order given, before the bundled module directory (ADR-0014).
     #[arg(short = 'I', long = "module-path", value_name = "DIR")]
@@ -167,6 +180,19 @@ pub struct BuildArgs {
     /// when there is no C driver to link with.
     #[arg(long = "emit-object")]
     pub emit_object: bool,
+
+    /// Compile without array bounds checks (ADR-0003, ADR-0058 §1).
+    ///
+    /// Every `bounds_check` operation is stripped from the MIR the back end receives, so an
+    /// out-of-range index reads or writes whatever is at that address. That is the trade the
+    /// flag exists to offer, and it is undefined behaviour by construction.
+    ///
+    /// Two things it does **not** change. A `#no_abc` procedure has no checks either way, because
+    /// that is a property of the code rather than of the build (ADR-0058 §3). And compile-time
+    /// execution always checks, because a trap there is a *diagnostic* rather than a program
+    /// behaviour — so `#run f(9)` on an eight-element array is still an error (ADR-0058 §4).
+    #[arg(long = "no-bounds-check")]
+    pub no_bounds_check: bool,
 
     /// Directory to search for imported modules. May be repeated; searched in
     /// the order given, before the bundled module directory (ADR-0014).

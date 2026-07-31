@@ -1,0 +1,13 @@
+// EXPECT: E0223 — `<<` on an `enum_flags` (ADR-0043 §3)
+// A flags enum accepts `& | ^ ~` and not the shifts: `Perm.READ << 1` would produce `WRITE`
+// by an accident of the numbering, which is the same objection ADR-0041 §6 used to refuse
+// ordering. The note says so rather than claiming bitwise operators need an integer, which
+// would be misleading for a type that accepts the other four.
+Perm :: enum_flags {
+    READ;
+    WRITE;
+}
+
+main :: () {
+    p := Perm.READ << 1;
+}

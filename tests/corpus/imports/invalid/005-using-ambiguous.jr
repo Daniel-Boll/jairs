@@ -1,0 +1,24 @@
+// EXPECT: E0250 — a name promoted by two `using`s, reported at the *use* (ADR-0050 §3)
+//
+// This is ADR-0014 §3's ambiguity rule reused verbatim rather than a second one invented:
+// overlapping providers are harmless as long as the ambiguous name is never referenced. So
+// `qualified_only` below is **legal** — it uses only `a.x` and `b.y` — and only `ambiguous` is
+// refused.
+//
+// Refusing at the *declaration* instead was considered and rejected: it would make two overlapping
+// embeds illegal even in a procedure that only ever writes the qualified forms, which the import
+// rules deliberately permit.
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+/// Legal: overlapping promotions, never used unqualified.
+qualified_only :: (using a: Point, using b: Point) -> s64 {
+    return a.x + b.y;
+}
+
+/// Refused: `x` could be either.
+ambiguous :: (using a: Point, using b: Point) -> s64 {
+    return x;
+}

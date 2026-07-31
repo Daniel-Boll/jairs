@@ -524,9 +524,24 @@ fn symbol_kind(kind: &ItemKind) -> SymbolKind {
         ItemKind::Const {
             value: ConstValue::Proc(_),
         } => SymbolKind::FUNCTION,
+        // The protocol has an `OPERATOR` kind, so an overload gets its own icon in an outline
+        // rather than looking like an ordinary function.
+        ItemKind::Const {
+            value: ConstValue::Operator(_, _),
+        } => SymbolKind::OPERATOR,
         ItemKind::Const {
             value: ConstValue::Struct(_),
         } => SymbolKind::STRUCT,
+        // The protocol has no `UNION`, and `STRUCT` is the nearest true thing: it is an
+        // aggregate with named fields. `CLASS` would be worse — it implies methods.
+        ItemKind::Const {
+            value: ConstValue::Union(_),
+        } => SymbolKind::STRUCT,
+        // The protocol has a real `ENUM` kind, so an enum gets its own icon in an outline
+        // rather than being shown as a struct.
+        ItemKind::Const {
+            value: ConstValue::Enum(_),
+        } => SymbolKind::ENUM,
         ItemKind::Const {
             value: ConstValue::Expr(_),
         } => SymbolKind::CONSTANT,

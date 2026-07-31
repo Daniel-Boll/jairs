@@ -1,0 +1,15 @@
+// EXPECT: E0257 — `null` in a context that is not a pointer type (ADR-0060 §1)
+//
+// `null` takes its type from context, like an integer literal — but with no default, because there
+// is no one pointer type to fall back to. Two ways to get it wrong: a non-pointer context, and no
+// context at all. This file has the first; a bare `null` (`q := null`) is the second, and both are
+// E0257. Distinct from E0214 "mismatched types" because the objection is specifically that a
+// *pointer* was needed, which the note says.
+//
+// A `null` in a *pointer* context is fine and is exercised in `valid/049-null-and-malloc.jr`; only
+// the wrong-context case belongs here, because a file under `type-errors/` must otherwise check
+// cleanly.
+main :: () {
+    // A pointer literal assigned to an integer: the literal is well-formed, the context is wrong.
+    n: s64 = null;
+}

@@ -1,0 +1,179 @@
+// `using` — field promotion and struct embedding (ADR-0050), W2's resolution feature.
+//
+// `PLAN.md` §2.1 called this "the first genuinely hard resolution problem", and the difficulty is
+// not the syntax but that every other name in Jairs resolves to **one** thing while a promoted name
+// resolves to a *path*: `x` meaning `p.x`. That is `Res::Promoted`, and adding the variant made
+// every exhaustive match over `Res` a compile error — which is how the ten consumers that had to
+// learn about it were *found* rather than remembered (ADR-0050 §2).
+//
+// Four things here are worth checking rather than assuming, and each was got wrong first:
+//
+//   * a real local **shadows** a promoted field, silently. Invisible in any program where the names
+//     differ, and getting it backwards is a wrong answer rather than an error — so `shadowed`
+//     below returns the local's value and nothing else would reveal it;
+//   * embedding must be followed by **both** sema and MIR. Sema alone accepted `e.x` while MIR
+//     returned `None`, which `give_up` turned into a refused body and a trap at run time — the
+//     "well-typed placeholder" failure mode, caught by running rather than by reading;
+//   * a promoted name is a **place**, so `x = 1` assigns through it. Answering otherwise would make
+//     every `using` parameter silently read-only;
+//   * promotion is **transitive** through two levels of embedding, which a one-level
+//     implementation passes every single-level test without.
+//
+// The `exit` at the end is what gives this file teeth under the differential harness: only two
+// corpus programs print, so a computation has to be made observable through an exit status or the
+// comparison is silence against silence.
+#import "Basic";
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+/// A struct that **embeds** `Point`. The base stays a real field at a real offset — `using` is a
+/// resolution feature and `jr-pool` needed nothing (ADR-0050 §4) — so `e.base` is still nameable.
+Entity :: struct {
+    using base: Point;
+    hp: s64;
+}
+
+/// **Two** levels, so ADR-0050 §4's transitivity claim is tested. A one-level implementation
+/// resolves `Entity`'s fields and fails here.
+Actor :: struct {
+    using body: Entity;
+    speed: s64;
+}
+
+/// Field promotion on a **parameter**: `x` and `y` with no `p.`.
+len2 :: (using p: Point) -> s64 {
+    return x * x + y * y;
+}
+
+/// **A real local shadows the promoted field, silently** (ADR-0050 §3). Returns 99, not `p.x`.
+///
+/// The rejected alternative — promotion winning — would mean adding a field to `Point` silently
+/// changes what `n` means in every procedure that `using`s it. That is action at a distance, and
+/// this procedure is what proves the language does not do it.
+shadowed :: (using p: Point) -> s64 {
+    x := 99;
+    return x;
+}
+
+/// A promoted name is a **place**, so assigning through it writes to the caller's copy of the
+/// parameter — which is a copy, so the effect is observable only in the return value.
+bump :: (using p: Point) -> s64 {
+    x = x + 10;
+    return x;
+}
+
+/// Promotion through a **pointer**, auto-dereferenced exactly as `p.x` already is (ADR-0050 §1) —
+/// so the two spellings agree about what a field access means.
+len2_ptr :: (using p: *Point) -> s64 {
+    return x + y;
+}
+
+/// Two `using`s that overlap but are only ever used **qualified**. Legal, which is ADR-0014 §3's
+/// ambiguity rule reused: overlapping providers are harmless until the ambiguous name is
+/// referenced. A rule that refused the declaration would reject this procedure for nothing.
+qualified_only :: (using a: Point, using b: Point) -> s64 {
+    return a.x + b.y;
+}
+
+main :: () {
+    n := 0;
+
+    // ---- promotion on a parameter --------------------------------------------------------
+
+    q: Point;
+    q.x = 3;
+    q.y = 4;
+    if len2(q) == 25 {
+        n = n + 1;
+    }
+
+    // A real local wins. 99, never 3.
+    if shadowed(q) == 99 {
+        n = n + 2;
+    }
+
+    // Assignment through a promoted name.
+    if bump(q) == 13 {
+        n = n + 4;
+    }
+
+    // The caller's value is untouched: a parameter is a copy.
+    if q.x == 3 {
+        n = n + 8;
+    }
+
+    // Through a pointer.
+    if len2_ptr(*q) == 7 {
+        n = n + 16;
+    }
+
+    if qualified_only(q, q) == 7 {
+        n = n + 32;
+    }
+
+    // ---- embedding -----------------------------------------------------------------------
+
+    e: Entity;
+    // Reached through the embedded base, and written through it.
+    e.x = 5;
+    e.y = 6;
+    e.hp = 9;
+
+    if e.x == 5 {
+        n = n + 64;
+    }
+    // The base is still a real, nameable field — the same storage, reached the long way.
+    if e.base.x == 5 {
+        n = n + 128;
+    }
+    if e.base.y == 6 {
+        n = n + 256;
+    }
+    // The outer struct's own field is unaffected by the embedding.
+    if e.hp == 9 {
+        n = n + 512;
+    }
+
+    // **Two levels.** `a.x` reaches `a.body.base.x`, which is what makes this transitive rather
+    // than a single hop.
+    a: Actor;
+    a.x = 7;
+    a.hp = 8;
+    a.speed = 11;
+    if a.x == 7 {
+        n = n + 1024;
+    }
+    if a.body.base.x == 7 {
+        n = n + 2048;
+    }
+    if a.hp == 8 {
+        n = n + 4096;
+    }
+    if a.speed == 11 {
+        n = n + 8192;
+    }
+
+    // ---- a `using` local -----------------------------------------------------------------
+
+    // Promotes from its declaration onward, and only within its block — the same
+    // order-sensitivity an ordinary local has.
+    using u: Point;
+    x = 20;
+    y = 22;
+    if x == 20 {
+        n = n + 16384;
+    }
+    // The same storage, qualified.
+    if u.y == 22 {
+        n = n + 32768;
+    }
+
+    // Every assertion: 65535.
+    if n == 65535 {
+        exit(0);
+    }
+    exit(1);
+}

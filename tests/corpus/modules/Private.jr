@@ -1,0 +1,33 @@
+// A module with a private section, for ADR-0054 §1's `#scope_module`.
+//
+// **Export is the default**, so `scaled` and `doubled` below are visible to an importer with no
+// directive at all — which is what keeps every existing module, including `modules/Basic`, meaning
+// exactly what it did. ADR-0014 §2 promised that and 126 corpus files rely on it.
+//
+// Everything after `#scope_module` is hidden until the next `#scope_export`, so the two helpers in
+// the middle are module-private. They are still perfectly usable *here* — `scaled` calls one — which
+// is the point: "module-private" means invisible to importers, not invisible everywhere.
+FACTOR :: 3;
+
+scaled :: (n: s64) -> s64 {
+    return times_factor(n);
+}
+
+#scope_module
+
+/// Hidden. Called by `scaled` above, which proves a private name still resolves within its own file.
+times_factor :: (n: s64) -> s64 {
+    return n * FACTOR;
+}
+
+/// Also hidden, and never called — a private declaration nothing uses is still legal.
+unused_helper :: (n: s64) -> s64 {
+    return n - 1;
+}
+
+#scope_export
+
+/// Visible again: the marker changes what follows it, and `#scope_export` switches back.
+doubled :: (n: s64) -> s64 {
+    return n * 2;
+}

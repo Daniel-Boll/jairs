@@ -1,0 +1,160 @@
+// Multiple return values (ADR-0052) — the feature ADR-0008's error model rests on.
+//
+// ADR-0008 chose Jai's approach — several returns plus `#must` — over exceptions and over a
+// `Result` type, so this is the mechanism that decision needs. `#must` is deliberately **not** here:
+// ADR-0052 §5 amends ADR-0008 in writing to split them, because "how several values travel" is a
+// calling convention and "when not using one is an error" is a policy, and bundling a convention
+// with a policy is the plan-contradiction shape `AGENTS.md` names.
+//
+// `-> (s64, bool)` interns as a *structural results aggregate* whose layout is a struct's, which is
+// what made this wave cheap: ADR-0051's `sret` convention carries it, and the native back end needed
+// only to answer `Repr::Aggregate` for one more `Item`.
+//
+// Five things here are worth checking rather than assuming, and **three of the five were wrong
+// first** — each a silent wrong answer rather than a crash:
+//
+//   * the **second** result, and every one after it. `jr-pool`'s `field_offset` rejected a results
+//     type outright, so a destructuring statement bound the wrong values — visible only because the
+//     two results below hold *different* numbers;
+//   * the field-type walk exists in **three** places — `jr-pool`, `jr-vm` and `jr-codegen-clif` —
+//     and each refused a results type separately. Two of the three surfaced as "a field of a
+//     non-aggregate" and one as wrong values;
+//   * the returned aggregate is a **value** loaded out of a slot, not an address. `Rvalue::Address`
+//     was tried and `verify` refused it — "taking an address must produce a pointer" — which is that
+//     check earning its keep;
+//   * a `_` discard binds **nothing**: it is a hole recognised positionally, never a local and never
+//     in the resolve map (ADR-0052 §3). Both positions are exercised, because a first-position
+//     discard and a last-position one take different paths through the target list;
+//   * **exact arity**, which is what makes adding or reordering a result a compile error rather than
+//     a silent change at every call site (ADR-0052 §2). Refused in
+//     `imports/invalid/007-multiple-returns-arity.jr`, since a refusal cannot live in a file that
+//     must check cleanly.
+//
+// The `exit` at the end is what gives this file teeth under the differential harness: only two
+// corpus programs print, so a computation has to be made observable through an exit status or the
+// comparison is silence against silence.
+#import "Basic";
+
+/// The canonical shape: a value and a flag saying whether it is meaningful. This is what ADR-0008's
+/// error model looks like in practice, and why multiple returns comes before `#must` rather than
+/// after — there is nothing for `#must` to mark until this exists.
+divide :: (a: s64, b: s64) -> (s64, bool) {
+    if b == 0 {
+        return 0, false;
+    }
+    return a / b, true;
+}
+
+/// Two results of the **same** type, holding different values — which is the only way a
+/// wrong-offset bug is visible. With `(s64, bool)` alone, reading result 1 as result 0 would still
+/// have produced a plausible-looking `true`.
+pair :: () -> (s64, s64) {
+    return 40, 2;
+}
+
+/// **Three** results, so a two-element implementation that happened to work is caught. The third is
+/// a different width, so the offsets are not a uniform stride.
+triple :: (n: s64) -> (s64, bool, u8) {
+    return n * 2, n > 0, 7;
+}
+
+/// A results aggregate whose elements have **mixed alignment**, so `sequential_layout`'s padding is
+/// exercised rather than assumed: a `u8` followed by an `s64` needs seven bytes of padding, and
+/// reading the second field at offset 1 would give a garbage number.
+padded :: () -> (u8, s64) {
+    return 3, 999;
+}
+
+main :: () {
+    n := 0;
+
+    // ---- the canonical value-and-flag pair -----------------------------------------------
+
+    q, ok := divide(7, 2);
+    if q == 3 {
+        n = n + 1;
+    }
+    if ok {
+        n = n + 2;
+    }
+
+    // The failure path, which returns different values through the same convention.
+    z, bad := divide(5, 0);
+    if z == 0 {
+        n = n + 4;
+    }
+    if bad {
+        n = n + 8;
+    } else {
+        n = n + 16;
+    }
+
+    // ---- two results of the same type, so a swapped offset is visible ---------------------
+
+    a, b := pair();
+    if a == 40 {
+        n = n + 32;
+    }
+    if b == 2 {
+        n = n + 64;
+    }
+
+    // ---- three results, non-uniform widths -----------------------------------------------
+
+    x, flag, small := triple(5);
+    if x == 10 {
+        n = n + 128;
+    }
+    if flag {
+        n = n + 256;
+    }
+    if small == 7 {
+        n = n + 512;
+    }
+
+    // ---- padding between results ---------------------------------------------------------
+
+    tiny, big := padded();
+    if tiny == 3 {
+        n = n + 1024;
+    }
+    // Reading this at the wrong offset gives a number derived from `tiny`'s byte, not 999.
+    if big == 999 {
+        n = n + 2048;
+    }
+
+    // ---- the assignment form, into already-declared locals -------------------------------
+
+    q, ok = divide(9, 3);
+    if q == 3 {
+        n = n + 4096;
+    }
+    if ok {
+        n = n + 8192;
+    }
+
+    // ---- discards, in both positions -----------------------------------------------------
+
+    // Last position discarded: the flag is thrown away.
+    r, _ := divide(10, 5);
+    if r == 2 {
+        n = n + 16384;
+    }
+    // *First* position discarded, which takes a different path through the target list — the
+    // quotient is thrown away and only the flag is bound.
+    _, present := divide(8, 4);
+    if present {
+        n = n + 32768;
+    }
+    // Every position discarded, which is legal and means the same as a bare call statement
+    // (ADR-0052 §3): refusing it would need a rule distinguishing "all holes" from "some".
+    _, _ := divide(1, 1);
+    n = n + 65536;
+
+    // Every assertion: 131063. Not 131071 — the `bad` check below is an `if`/`else` pair, so
+    // exactly one of 8 and 16 is added rather than both, and the failure path adds 16.
+    if n == 131063 {
+        exit(0);
+    }
+    exit(1);
+}

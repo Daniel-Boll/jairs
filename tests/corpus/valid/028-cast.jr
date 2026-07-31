@@ -1,0 +1,32 @@
+// `cast(T, x)` in every direction (ADR-0037 §2): widening, narrowing, and a
+// change of signedness. A narrowing cast of a *runtime* value truncates; a
+// narrowing cast of a literal is a compile error and lives in `type-errors/`.
+//
+// The `exit` at the end is what gives this file teeth under the differential
+// harness: only two corpus programs print, so a computation has to be made
+// observable through an exit status or the comparison is silence against silence.
+#import "Basic";
+
+main :: () {
+    // Narrowing a runtime value truncates: 300 & 0xFF is 44.
+    big: s64 = 300;
+    small := cast(u8, big);
+
+    // Widening is exact, and sign extension follows the *source* type: a
+    // negative `s8` widens to a negative `s64`, not to 255.
+    neg: s8 = -1;
+    widened := cast(s64, neg);
+
+    // A same-width cast changes signedness only. Cranelift refuses `ireduce`
+    // and `uextend` on equal widths, so this is the pass-through case.
+    same := cast(u64, big);
+
+    if small == 44 {
+        if widened == -1 {
+            if same == 300 {
+                exit(0);
+            }
+        }
+    }
+    exit(1);
+}

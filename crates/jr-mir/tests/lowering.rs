@@ -39,14 +39,16 @@ fn a_procedure_returning_a_parameter_returns_the_entry_parameter() {
     let mut program = Program::new();
     let lowered = program.lower_clean("id :: (a: s64) -> s64 { return a; }");
     let body = lowered.body(&program.interner, "id");
+    // **Two entry parameters now**: the implicit context leads (ADR-0057 §4), then the declared
+    // `a`. So `a` is `params()[1]`, not `[0]` — the context is `[0]`.
     assert_eq!(
         body.params().len(),
-        1,
-        "one declared parameter, one entry parameter"
+        2,
+        "the implicit context plus one declared parameter"
     );
     assert_eq!(
         body.block(body.entry()).term,
-        Terminator::Return(Some(jr_mir::Operand::Value(body.params()[0]))),
+        Terminator::Return(Some(jr_mir::Operand::Value(body.params()[1]))),
         "returning a parameter must not copy it through a temporary"
     );
 }
@@ -269,7 +271,16 @@ fn a_loop_carried_variable_gets_exactly_one_block_parameter() {
     let mut program = Program::new();
     let lowered = program.lower_clean("main :: () { i := 0; while i < 3 { i = i + 1; } }");
     let body = lowered.body(&program.interner, "main");
-    let merges: usize = body.blocks().iter().map(|block| block.params.len()).sum();
+    // Sum the *non-entry* blocks' parameters: the entry block now carries the implicit context
+    // (ADR-0057 §4), which is a genuine parameter but not a loop merge. Excluding the entry counts
+    // only the merges, which is what this test is about.
+    let merges: usize = body
+        .blocks()
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != body.entry().index())
+        .map(|(_, block)| block.params.len())
+        .sum();
     assert_eq!(
         merges,
         1,
@@ -413,7 +424,9 @@ fn a_field_of_a_string_parameter_reads_through_a_spill_slot() {
     assert!(
         matches!(
             entry.stmts.first(),
-            Some(Statement::Store { value, .. }) if *value == Operand::Value(body.params()[0])
+            // `params()[1]`, not `[0]`: the implicit context leads (ADR-0057 §4), and `s` — the
+            // aggregate parameter that gets spilled — is the declared one after it.
+            Some(Statement::Store { value, .. }) if *value == Operand::Value(body.params()[1])
         ),
         "the parameter must be stored into its slot before anything reads it, got {:?}",
         entry.stmts.first()

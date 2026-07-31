@@ -1,0 +1,9 @@
+// EXPECT: E0232 — a string is not an integer
+//
+// Only integer-to-integer conversions exist (ADR-0037 §1). A pointer is
+// deliberately not an integer kind either, so casting one is refused here rather
+// than becoming pointer arithmetic by the back door.
+main :: () {
+    s := "hi";
+    n := cast(u8, s);
+}

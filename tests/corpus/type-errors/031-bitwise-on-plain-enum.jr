@@ -1,0 +1,12 @@
+// EXPECT: E0223 — `|` on a plain `enum` (ADR-0043 §4)
+// A plain enum's members are named alternatives, so combining two of them names no member.
+// The help line names `enum_flags`, because a reader who does not know it exists cannot find
+// it — and keeping this refusal is what makes the two declaration forms mean different things.
+Colour :: enum {
+    RED;
+    GREEN;
+}
+
+main :: () {
+    c := Colour.RED | Colour.GREEN;
+}

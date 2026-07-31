@@ -1,0 +1,161 @@
+// Operator overloading (ADR-0048), the last feature of W1.
+//
+// An overload is `operator OP :: (…)` -- ADR-0012's `name :: value` form with an operator where
+// the name goes. The name interns as the synthetic symbol `operator+`, which no user can write,
+// and that single decision is what makes the rest free: it lands in the same flat per-file name
+// map every other constant does, so importing, shadowing and ADR-0014 §3's ambiguity reporting
+// all work with no new mechanism.
+//
+// Three rules here are worth checking rather than assuming:
+//
+//   * resolution is an **exact** match on both operand types -- no conversion, no promotion, no
+//     ranking (ADR-0048 §4). So `Vec2 * s64` and `s64 * Vec2` are two declarations, and writing
+//     only one means only one order works. That is the cost of not becoming C++;
+//   * a **builtin meaning always wins**: `s64 + s64` never consults the overload table, which
+//     falls out of §3's orphan rule since no overload can exist for two builtin types;
+//   * an overload lowers to an **ordinary direct call** (§5) -- no new MIR node -- so it is
+//     inlinable by ADR-0021's inliner on the same terms as any small procedure.
+//
+// Every overload here returns a **scalar**, deliberately: the native back end cannot return an
+// aggregate at all (it says so, while the VM does it fine), so a `Vec2`-returning `operator +`
+// would run under `jr run` and fail `jr build` -- and this file must work in both engines.
+//
+// The `exit` at the end is what gives this file teeth under the differential harness: only two
+// corpus programs print, so a computation has to be made observable through an exit status or the
+// comparison is silence against silence.
+#import "Basic";
+
+Vec2 :: struct {
+    x: s64;
+    y: s64;
+}
+
+/// A different nominal type, so that resolution has to key on *both* operands rather than on the
+/// operator alone.
+Pair :: struct {
+    lo: s64;
+    hi: s64;
+}
+
+/// Same operand types, returning a scalar.
+operator + :: (a: Vec2, b: Vec2) -> s64 {
+    return a.x + b.x + a.y + b.y;
+}
+
+/// **Mixed types.** The most-wanted case, and the reason ADR-0048 §3's orphan rule requires only
+/// *one* operand to be local rather than both.
+operator * :: (a: Vec2, b: s64) -> s64 {
+    return (a.x + a.y) * b;
+}
+
+/// The *other* order, which is a separate declaration because there is no ranking (§4). Written
+/// here so the corpus proves both work; a program that writes only one gets only one.
+operator * :: (a: s64, b: Vec2) -> s64 {
+    return a * (b.x + b.y);
+}
+
+/// A second overload of the same operator on a *different* type, which is the point of keying on
+/// the operand pair.
+operator + :: (a: Pair, b: Pair) -> s64 {
+    return a.lo + b.lo + a.hi + b.hi;
+}
+
+/// Comparison, which ADR-0048 §2 permits -- and which is the second thing anyone tries.
+operator == :: (a: Vec2, b: Vec2) -> bool {
+    return a.x == b.x && a.y == b.y;
+}
+
+operator != :: (a: Vec2, b: Vec2) -> bool {
+    return a.x != b.x || a.y != b.y;
+}
+
+/// Ordering, so the whole comparison family is exercised rather than just equality.
+operator < :: (a: Vec2, b: Vec2) -> bool {
+    return (a.x + a.y) < (b.x + b.y);
+}
+
+main :: () {
+    n := 0;
+
+    p: Vec2;
+    p.x = 1;
+    p.y = 2;
+    q: Vec2;
+    q.x = 10;
+    q.y = 20;
+
+    // Same-type arithmetic: 1 + 10 + 2 + 20.
+    if p + q == 33 {
+        n = n + 1;
+    }
+
+    // Mixed, both orders. Each is its own declaration.
+    if p * 10 == 30 {
+        n = n + 2;
+    }
+    if 10 * p == 30 {
+        n = n + 4;
+    }
+
+    // A different type reaching a different overload of the *same* operator.
+    r: Pair;
+    r.lo = 100;
+    r.hi = 200;
+    s: Pair;
+    s.lo = 1;
+    s.hi = 2;
+    if r + s == 303 {
+        n = n + 8;
+    }
+
+    // Comparison, all three forms.
+    same: Vec2;
+    same.x = 1;
+    same.y = 2;
+    if p == same {
+        n = n + 16;
+    }
+    if p != q {
+        n = n + 32;
+    }
+    if p < q {
+        n = n + 64;
+    }
+
+    // **A builtin meaning is untouched.** `s64 + s64` must not consult the overload table, and
+    // this is what proves it: if it did, the exact-match lookup would find nothing and fall
+    // through, so the observable difference is only that the answer stays right.
+    a := 7;
+    b := 5;
+    if a + b == 12 {
+        n = n + 128;
+    }
+    if a * b == 35 {
+        n = n + 256;
+    }
+    if a == 7 {
+        n = n + 512;
+    }
+
+    // An overload's result feeding an ordinary builtin operator, so the two compose.
+    if (p + q) * 2 == 66 {
+        n = n + 1024;
+    }
+
+    // An overload called through a procedure boundary, which is what makes it a real feature
+    // rather than a fold at the use site.
+    if total(p, q) == 33 {
+        n = n + 2048;
+    }
+
+    // Every assertion: 4095.
+    if n == 4095 {
+        exit(0);
+    }
+    exit(1);
+}
+
+/// The overload resolved inside another body, not just in `main`.
+total :: (a: Vec2, b: Vec2) -> s64 {
+    return a + b;
+}

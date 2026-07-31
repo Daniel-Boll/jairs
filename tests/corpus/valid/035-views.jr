@@ -1,0 +1,138 @@
+// `[]T` views (ADR-0044): the reason `[N]T` exists to be sliced from.
+//
+// A `[N]T` parameter works for exactly one length, so `sum` would need a copy per size.
+// A view is `{data: *T, count: s64}` -- the same two words `string` is (ADR-0004) -- so one
+// procedure serves every length.
+//
+// Three rules here are worth checking rather than assuming:
+//
+//   * there is **no implicit conversion**: `total(buf)` is an error and `total(buf[])` is
+//     not, because an implicit one would take an address invisibly and would be the
+//     language's first implicit conversion (ADR-0044 §2);
+//   * `xs.count` is a **load** of the second word, where `buf.count` is a constant from the
+//     type -- so a view's length can differ between two calls to the same procedure;
+//   * a view **writes through** to whatever it was made from, which is what makes passing one
+//     worth doing at all.
+//
+// The `exit` at the end is what gives this file teeth under the differential harness: only
+// two corpus programs print, so a computation has to be made observable through an exit
+// status or the comparison is silence against silence.
+#import "Basic";
+
+/// One procedure, every length -- which is the whole point.
+total :: (xs: []s64) -> s64 {
+    i := 0;
+    t := 0;
+    while i < xs.count {
+        t = t + xs[i];
+        i = i + 1;
+    }
+    return t;
+}
+
+/// A view is a pointer to storage, not a copy of it (ADR-0044 §4).
+fill :: (xs: []s64, value: s64) {
+    i := 0;
+    while i < xs.count {
+        xs[i] = value;
+        i = i + 1;
+    }
+}
+
+/// `.count` crossing a procedure boundary, so it cannot be folded from a type at the call
+/// site.
+length_of :: (xs: []s64) -> s64 {
+    return xs.count;
+}
+
+main :: () {
+    n := 0;
+
+    four: [4]s64;
+    four[0] = 1;
+    four[1] = 2;
+    four[2] = 4;
+    four[3] = 8;
+
+    two: [2]s64;
+    two[0] = 16;
+    two[1] = 32;
+
+    // The same procedure over two different lengths. Under `[N]T` these would be two
+    // procedures.
+    if total(four[]) == 15 {
+        n = n + 1;
+    }
+    if total(two[]) == 48 {
+        n = n + 2;
+    }
+
+    // The length is runtime data, so it differs per view.
+    if length_of(four[]) == 4 {
+        n = n + 4;
+    }
+    if length_of(two[]) == 2 {
+        n = n + 8;
+    }
+
+    // A view in a local, indexed directly.
+    xs := four[];
+    if xs[2] == 4 {
+        n = n + 16;
+    }
+    if xs.count == 4 {
+        n = n + 32;
+    }
+
+    // Writing through a view is visible in the array it was made from -- the property that
+    // makes passing one useful.
+    fill(two[], 7);
+    if two[0] == 7 {
+        n = n + 64;
+    }
+    if two[1] == 7 {
+        n = n + 128;
+    }
+
+    // Assigning through a view held in a local, then reading the *array*.
+    xs[0] = 100;
+    if four[0] == 100 {
+        n = n + 256;
+    }
+
+    // A view of a view's element type, one level down: `[]u8` over a byte buffer, which is
+    // the shape `print_digits` will eventually want.
+    bytes: [3]u8;
+    bytes[0] = 65;
+    bytes[2] = 67;
+    bs := bytes[];
+    if bs.count == 3 {
+        n = n + 512;
+    }
+    if bs[0] == 65 {
+        n = n + 1024;
+    }
+    // Zero-initialised, since an array declaration zeroes (ADR-0039 §4).
+    if bs[1] == 0 {
+        n = n + 2048;
+    }
+
+    // A view copies as two words: `ys` and `xs` name the same storage.
+    ys := xs;
+    ys[3] = 9;
+    if four[3] == 9 {
+        n = n + 4096;
+    }
+
+    // Slicing through a pointer, which auto-derefs exactly as indexing does.
+    p := *four;
+    if total(p[]) == 115 {
+        n = n + 8192;
+    }
+
+    // Every assertion: 16383.
+    if n == 16383 {
+        exit(0);
+    }
+    exit(1);
+}

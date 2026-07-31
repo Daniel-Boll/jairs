@@ -1,0 +1,134 @@
+// `float32` and `float64` (ADR-0040): literals in every form the lexer produces,
+// arithmetic, comparisons, and `cast` in all four directions.
+//
+// Most of this file is about **IEEE-754's two surprises**, because they are where the two
+// engines could silently disagree: the VM evaluates in software through `jr-pool` and
+// Cranelift emits hardware instructions, and they are only equal because both obey the
+// same specification. An integer add is exact in both by construction; a float compare is
+// not.
+//
+// The `exit` at the end is what gives this file teeth under the differential harness: only
+// two corpus programs print, so a computation has to be made observable through an exit
+// status or the comparison is silence against silence.
+#import "Basic";
+
+main :: () {
+    // Every literal form. `1e9` has no fractional part, which the tree-sitter grammar used
+    // to reject while the compiler accepted it -- a wrong tree the drift gate could not see
+    // until this file existed.
+    plain := 1.5;
+    exponent := 1e9;
+    signed_exponent := 1.5e-3;
+    separated := 1_000.5;
+
+    // Context typing (ADR-0040 §5): the literal takes `float32` from the annotation rather
+    // than defaulting to `float64` and then mismatching.
+    narrow: float32 = 1.5;
+
+    // No fit check, unlike an integer literal: `1e300` in a `float32` is `inf`, because
+    // IEEE-754 saturates and ADR-0040 §1 makes that a value rather than a failure.
+    too_big: float32 = 1e300;
+
+    // Arithmetic, and division by zero producing values rather than traps.
+    sum := plain + plain;
+    difference := plain - plain;
+    product := plain * 4.0;
+    infinity := 1.0 / 0.0;
+    neg_infinity := -1.0 / 0.0;
+    nan := 0.0 / 0.0;
+
+    // Negation is total: `-0.0` is a real value, where negating the most negative integer
+    // traps (ADR-0002 versus ADR-0040 §1).
+    negative_zero := -0.0;
+
+    // All four cast directions.
+    widened := cast(float64, narrow);
+    narrowed := cast(float32, plain);
+    from_integer := cast(float64, 7);
+    truncated := cast(s64, -1.9);
+    saturated := cast(s8, 1000.0);
+    nan_to_int := cast(s64, nan);
+
+    n := 0;
+
+    // The two comparisons a raw *bit* compare gets wrong, in opposite directions. A float
+    // reaching the VM's bit-compare fallback would answer both backwards -- a plausible
+    // wrong answer rather than an error, which is why they are pinned here.
+    // This one must NOT fire: `NaN == NaN` is false despite identical bits.
+    if nan == nan {
+        n = n + 1;
+    }
+    // This one must: `NaN != NaN` is true, because `!=` is the negation of `==` rather
+    // than its own ordered predicate.
+    if nan != nan {
+        n = n + 2;
+    }
+    // And this one: `0.0 == -0.0` is true despite *different* bits.
+    if negative_zero == 0.0 {
+        n = n + 4;
+    }
+
+    if infinity > 1e300 {
+        n = n + 8;
+    }
+    if neg_infinity < -1e300 {
+        n = n + 16;
+    }
+    // `too_big` is a `float32` and `infinity` a `float64`, and ADR-0040 §6 has no implicit
+    // conversion either way -- so the comparison needs an explicit widening cast. That is
+    // stricter than C and is the same strictness the integer widths already have.
+    if cast(float64, too_big) == infinity {
+        n = n + 32;
+    }
+
+    if sum == 3.0 {
+        n = n + 64;
+    }
+    if difference == 0.0 {
+        n = n + 128;
+    }
+    if product == 6.0 {
+        n = n + 256;
+    }
+
+    if widened == 1.5 {
+        n = n + 512;
+    }
+    if narrowed == narrow {
+        n = n + 1024;
+    }
+    if from_integer == 7.0 {
+        n = n + 2048;
+    }
+
+    // Truncation toward zero, not rounding: -1.9 is -1.
+    if truncated == -1 {
+        n = n + 4096;
+    }
+    // Saturation, not wrapping: 1000 in an `s8` is 127, where a wrap would give -24.
+    if saturated == 127 {
+        n = n + 8192;
+    }
+    // `NaN` converts to 0, matching `fcvt_to_sint_sat` and the interpreter.
+    if nan_to_int == 0 {
+        n = n + 16384;
+    }
+
+    if exponent == 1000000000.0 {
+        n = n + 32768;
+    }
+    if signed_exponent < 0.01 {
+        n = n + 65536;
+    }
+    if separated == 1000.5 {
+        n = n + 131072;
+    }
+
+    // Every assertion but the first: 262142. `exit` takes the low byte, so the status this
+    // program is checked by is 254 -- which still distinguishes it from every prefix of the
+    // assertions failing.
+    if n == 262142 {
+        exit(0);
+    }
+    exit(1);
+}

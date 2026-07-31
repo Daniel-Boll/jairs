@@ -41,7 +41,7 @@
 //! where an 8-bit add overflows. Widening everything to `I64` would have silently
 //! moved every narrow boundary.
 
-use cranelift_codegen::ir::{AbiParam, Signature, Type, types};
+use cranelift_codegen::ir::{AbiParam, ArgumentPurpose, Signature, Type, types};
 use cranelift_codegen::isa::CallConv;
 use jr_codegen::CodegenError;
 use jr_pool::{Item, Pool, PoolId, TargetLayout, layout_of};
@@ -100,11 +100,52 @@ impl Repr {
                 ty: int_type(*bits)?,
                 signed: *signed,
             }),
+            // An enum *is* its backing type in a register (ADR-0041 §3), and the backing
+            // type is `s64` for every enum this wave has — so `signed: true` is not a guess,
+            // it is `s64`'s signedness. An explicit backing type would read it from the
+            // declaration instead.
+            Item::EnumType { .. } => Ok(Self::Scalar {
+                ty: types::I64,
+                signed: true,
+            }),
+            // A float is a scalar in a *float* register, and `signed` is meaningless for one
+            // — IEEE-754 has one signed representation. It is recorded as `true` because the
+            // only consumer that reads it for a float is `unary`'s negation, and a float
+            // negation is the signed kind: it flips the sign bit rather than subtracting from
+            // zero.
+            Item::FloatType { bits } => Ok(Self::Scalar {
+                ty: match bits {
+                    32 => types::F32,
+                    64 => types::F64,
+                    other => {
+                        return Err(CodegenError::Internal(format!(
+                            "no Cranelift type for a {other}-bit float"
+                        )));
+                    }
+                },
+                signed: true,
+            }),
             Item::PointerType(_) | Item::ProcType { .. } => Ok(Self::Scalar {
                 ty: pointer_type(target),
                 signed: false,
             }),
-            Item::StringType | Item::StructType { .. } => {
+            // A view joins the aggregates: two words, so it lives in memory and is passed
+            // by copy exactly as a `string` is (ADR-0044 §1).
+            Item::StringType
+            | Item::StructType { .. }
+            // A union is an aggregate: it lives in memory and is passed by copy, exactly as a
+            // struct is. Its size is its largest field's, which `layout_of` already knows.
+            | Item::UnionType { .. }
+            | Item::ArrayType { .. }
+            // **A results aggregate, which is what makes ADR-0052 free in this crate.** Answering
+            // `Aggregate` here is the entire back-end change for multiple returns: ADR-0051's
+            // `returns_via_sret` keys off exactly this, so the caller allocates a slot, the callee
+            // writes through it, and neither had to learn what a results list is.
+            | Item::ResultsType { .. }
+            // A context is an aggregate — but note that what a call actually passes is a
+            // *pointer* to one (ADR-0057 §2), which is a scalar. This arm is for the pointee.
+            | Item::ContextType
+            | Item::ViewType { .. } => {
                 let layout = layout_of(pool, target, ty)
                     .map_err(|reason| CodegenError::NoLayout { ty, reason })?;
                 Ok(Self::Aggregate {
@@ -121,6 +162,7 @@ impl Repr {
             | Item::VoidValue
             | Item::BoolValue(_)
             | Item::IntValue { .. }
+            | Item::FloatValue { .. }
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
@@ -191,11 +233,19 @@ pub fn pointer_type(target: TargetLayout) -> Type {
 /// `void` contributes no parameter and no result, which is what makes
 /// [`Repr::Void`] a case rather than a zero-width scalar.
 ///
+/// An aggregate return is realised as a **caller-allocated `sret` pointer** in the
+/// leading parameter position (ADR-0051 §1): the caller allocates a slot, passes its
+/// address, and the callee writes through it. [`returns_via_sret`] is the one predicate
+/// that decides this, so the signature and the body cannot disagree about whether a
+/// given procedure has the hidden parameter.
+///
 /// # Errors
 /// [`CodegenError::NoLayout`] when a parameter or return type has none.
-/// [`CodegenError::Unsupported`] when an aggregate would cross a `#foreign`
-/// boundary, or would be returned: see the module docs, and [`ProcKind`] for why
-/// guessing a C struct convention is worse than refusing.
+/// [`CodegenError::Unsupported`] when an aggregate would cross a `#foreign` boundary —
+/// as a parameter *or* as a return — because that needs each platform's own struct
+/// classification rules and guessing them puts garbage in a register with no
+/// diagnostic (ADR-0051 §4). A Jairs-to-Jairs aggregate return is **not** refused: both
+/// sides are compiled here and only need to agree with each other.
 pub fn signature(
     pool: &Pool,
     target: TargetLayout,
@@ -203,9 +253,35 @@ pub fn signature(
     ret: PoolId,
     call_conv: CallConv,
     foreign: bool,
+    receives_context: bool,
     describe: &dyn Fn(&str) -> CodegenError,
 ) -> Result<Signature, CodegenError> {
     let mut sig = Signature::new(call_conv);
+
+    let ret_repr = Repr::of(pool, target, ret)?;
+    if ret_repr.is_aggregate() {
+        if foreign {
+            return Err(describe(
+                "returning an aggregate from a `#foreign` procedure, whose C struct \
+                 convention this back end does not implement",
+            ));
+        }
+        // **First**, matching every C ABI that uses this convention, and marked
+        // `StructReturn` rather than passed as a plain pointer so Cranelift's verifier
+        // and any later ABI work can see what it is.
+        sig.params.push(AbiParam::special(
+            pointer_type(target),
+            ArgumentPurpose::StructReturn,
+        ));
+    }
+
+    // **The context is the second hidden parameter** (ADR-0057 §4), after `sret` and before the
+    // declared ones. A plain pointer rather than a special-purpose one: Cranelift has no
+    // `ArgumentPurpose` for it, and it is an ordinary `*Context` the callee reads through.
+    if receives_context {
+        sig.params.push(AbiParam::new(pointer_type(target)));
+    }
+
     for ty in params {
         let repr = Repr::of(pool, target, *ty)?;
         if foreign && repr.is_aggregate() {
@@ -219,18 +295,29 @@ pub fn signature(
         }
     }
 
-    let repr = Repr::of(pool, target, ret)?;
-    if repr.is_aggregate() {
-        // Returning a pointer to the callee's own frame would dangle, and the
-        // caller-allocated `sret` convention is real work with no consumer: nothing
-        // in Jairs-0 returns a struct or a string, and a `#run` producing one is
-        // already refused because ADR-0015's `Item` has no aggregate-value variant.
-        return Err(describe(
-            "returning an aggregate, which needs a caller-allocated result slot",
-        ));
-    }
-    if let Some(clif) = repr.clif_type(target) {
+    // An `sret` procedure returns *nothing*: the result travels through the pointer, so
+    // adding a return value as well would describe a convention neither side implements.
+    if !ret_repr.is_aggregate()
+        && let Some(clif) = ret_repr.clif_type(target)
+    {
         sig.returns.push(AbiParam::new(clif));
     }
     Ok(sig)
+}
+
+/// Whether a procedure returning `ret` uses the `sret` convention (ADR-0051 §1).
+///
+/// The single predicate both the signature and the body consult. Two separate tests for
+/// "does this have a hidden first parameter" would be two chances to disagree, and a
+/// disagreement here shifts *every* argument by one position — a silent miscompile
+/// rather than a crash, which is this project's named first failure mode.
+///
+/// # Errors
+/// [`CodegenError::NoLayout`] when `ret` has no layout.
+pub fn returns_via_sret(
+    pool: &Pool,
+    target: TargetLayout,
+    ret: PoolId,
+) -> Result<bool, CodegenError> {
+    Ok(Repr::of(pool, target, ret)?.is_aggregate())
 }

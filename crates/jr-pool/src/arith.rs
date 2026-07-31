@@ -74,6 +74,52 @@ impl IntKind {
         bits: 64,
     };
 
+    /// The integer kind a builtin type *name* denotes, if it denotes one.
+    ///
+    /// **This is the one list of integer type names in the project** (ADR-0037 §1). It lives
+    /// here rather than in `jr-sema` because three other places need the same answer —
+    /// `resolve_type_name`, the "the builtin types are …" note, and the language server's
+    /// completion list — and four string matches that must agree is the drift ADR-0022 §2
+    /// refuses for arithmetic. A width added here appears everywhere at once.
+    ///
+    /// Only the widths Jairs has: 8, 16, 32 and 64, signed and unsigned. `s128` is not a
+    /// Jairs type, and neither is `u1` — the `bits` field can hold them and the *language*
+    /// does not have them, which is exactly why the name mapping is narrower than the
+    /// representation.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        let (signed, digits) = match name.as_bytes().first()? {
+            b's' => (true, &name[1..]),
+            b'u' => (false, &name[1..]),
+            _ => return None,
+        };
+        let bits = match digits {
+            "8" => 8,
+            "16" => 16,
+            "32" => 32,
+            "64" => 64,
+            _ => return None,
+        };
+        Some(Self { signed, bits })
+    }
+
+    /// Every integer type name Jairs has, in widening order per signedness.
+    ///
+    /// Ordered rather than a set, so a completion list and a diagnostic's note read the same
+    /// way round every time. Signed first because `s64` is what an untyped literal defaults
+    /// to (ADR-0016 §1), so it is the name a reader meets first.
+    pub const NAMES: &'static [&'static str] =
+        &["s8", "s16", "s32", "s64", "u8", "u16", "u32", "u64"];
+
+    /// The name this kind is spelled with: `s64`, `u16`.
+    ///
+    /// The inverse of [`IntKind::from_name`], and kept beside it so the two cannot disagree —
+    /// a round-trip test asserts they do not.
+    #[must_use]
+    pub fn name(self) -> String {
+        format!("{}{}", if self.signed { 's' } else { 'u' }, self.bits)
+    }
+
     /// The integer kind of `ty`, if it is an integer type.
     ///
     /// A pointer is deliberately *not* an integer kind: pointer arithmetic is not
@@ -86,6 +132,16 @@ impl IntKind {
                 signed: *signed,
                 bits: *bits,
             }),
+            // An enum *is* its backing integer at run time (ADR-0041 §3), which is `s64` for
+            // every enum this project has. Answering here rather than at each consumer is what
+            // lets the interpreter, the folder and both back ends treat `Perm.READ | Perm.WRITE`
+            // as the integer operation it is — and it is `Item`-level rather than a special
+            // case per evaluator, which is ADR-0022 §2's rule.
+            //
+            // Deliberately *both* forms: a plain enum reaches this only through `cast` and a
+            // comparison, both of which want the backing kind too, and refusing it here would
+            // make `cast(s64, colour)` need a second path.
+            Item::EnumType { .. } => Some(Self::S64),
             _ => None,
         }
     }
@@ -180,6 +236,17 @@ pub enum IntOp {
     WrapSub,
     /// Wrapping multiplication (`*%`).
     WrapMul,
+    /// Bitwise and (`&`) — cannot trap (ADR-0042).
+    BitAnd,
+    /// Bitwise or (`|`) — cannot trap.
+    BitOr,
+    /// Bitwise xor (`^`) — cannot trap.
+    BitXor,
+    /// Left shift (`<<`). Traps on a count outside the type's width (ADR-0042 §3).
+    Shl,
+    /// Right shift (`>>`), arithmetic for a signed type and logical for an unsigned one
+    /// (ADR-0042 §2). Traps on an out-of-range count.
+    Shr,
 }
 
 /// A comparison of two integers of the same kind. The result is a `bool`.
@@ -215,6 +282,12 @@ pub enum IntTrap {
     },
     /// A divisor was zero.
     DivideByZero,
+    /// A shift count was negative or `>=` the type's width (ADR-0042 §3).
+    ///
+    /// A trap rather than a mask or a saturation, for ADR-0002's reason: a shift by 8 of an
+    /// 8-bit value produces a result the program did not ask for, and every alternative is a
+    /// *silent* wrong answer.
+    ShiftOutOfRange,
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +340,37 @@ pub const fn int_binary(op: IntOp, out: IntKind, a: i128, b: i128) -> Result<u64
         IntOp::WrapAdd => out.wrap(a + b),
         IntOp::WrapSub => out.wrap(a - b),
         IntOp::WrapMul => out.wrap(a * b),
+
+        // Bitwise operations are done on the *stored bits*, then re-normalised. Working on
+        // the decoded `i128` would sign-extend a negative narrow value into the high bits and
+        // then mask them off again — the same answer for `&`, `|` and `^`, but only because
+        // the mask undoes it, which is a coincidence worth not relying on.
+        IntOp::BitAnd => out.wrap(a & b),
+        IntOp::BitOr => out.wrap(a | b),
+        IntOp::BitXor => out.wrap(a ^ b),
+
+        // A count is out of range when it is negative or `>=` the width (ADR-0042 §3). Both
+        // are the same trap, because reinterpreting a negative count as a shift the other way
+        // would make `x << -1` silently mean `x >> 1`.
+        IntOp::Shl => {
+            // `as` rather than `i128::from`, because this function is `const` and `From`
+            // is not yet a const trait. Widening a `u16` to an `i128` is exact either way.
+            if b < 0 || b >= out.bits as i128 {
+                return Err(IntTrap::ShiftOutOfRange);
+            }
+            out.wrap(a << b)
+        }
+        IntOp::Shr => {
+            if b < 0 || b >= out.bits as i128 {
+                return Err(IntTrap::ShiftOutOfRange);
+            }
+            // `a` is the *decoded* value, so it is already negative for a negative signed
+            // input — and `>>` on a negative `i128` is arithmetic in Rust. That gives sign
+            // extension for a signed type for free. For an unsigned type `a` is non-negative,
+            // so the same shift is logical. The type decides, exactly as it does for `/`
+            // (ADR-0042 §2), without this needing to branch on `out.signed`.
+            out.wrap(a >> b)
+        }
     })
 }
 
@@ -281,6 +385,16 @@ pub const fn int_compare(op: IntCmp, a: i128, b: i128) -> bool {
         IntCmp::Gt => a > b,
         IntCmp::Ge => a >= b,
     }
+}
+
+/// Complements a value's bits, producing bits of kind `out` (ADR-0042 §4).
+///
+/// Normalised to the type's own width, so `~0` in a `u8` is 255 rather than `-1` truncated —
+/// which is what makes a narrow type complement within its width instead of at 64 bits and
+/// then differing between the two engines.
+#[must_use]
+pub const fn int_not(out: IntKind, a: i128) -> u64 {
+    out.wrap(!a)
 }
 
 /// Negates a mathematical value, producing bits of kind `out`.
@@ -387,5 +501,137 @@ mod tests {
         assert!(int_compare(IntCmp::Lt, -1, 1));
         assert!(!int_compare(IntCmp::Lt, 1, -1));
         assert!(int_compare(IntCmp::Ge, 5, 5));
+    }
+
+    #[test]
+    fn every_name_round_trips_through_from_name() {
+        // The two directions are written separately, so this is what keeps them honest.
+        for name in IntKind::NAMES {
+            let kind = IntKind::from_name(name).unwrap_or_else(|| panic!("{name} must parse"));
+            assert_eq!(kind.name(), *name);
+        }
+    }
+
+    #[test]
+    fn the_tower_is_exactly_eight_names() {
+        // Guards against a width being added to the list without a decision: ADR-0037 §1 says
+        // 8/16/32/64 in both signednesses, and `float32`/`float64` are a later wave.
+        assert_eq!(IntKind::NAMES.len(), 8);
+        assert_eq!(IntKind::from_name("s64"), Some(IntKind::S64));
+        assert_eq!(
+            IntKind::from_name("u16"),
+            Some(IntKind {
+                signed: false,
+                bits: 16
+            })
+        );
+    }
+
+    #[test]
+    fn a_name_the_language_does_not_have_is_not_a_kind() {
+        // The `bits` field can represent all of these. The *language* does not have them,
+        // which is the whole reason the name mapping is narrower than the representation.
+        for name in [
+            "s128", "u1", "s7", "int", "float32", "s", "u", "s64x", "bool",
+        ] {
+            assert_eq!(IntKind::from_name(name), None, "{name} must not parse");
+        }
+    }
+
+    #[test]
+    fn bitwise_operations_normalise_to_the_type_width() {
+        let u8k = IntKind {
+            signed: false,
+            bits: 8,
+        };
+        assert_eq!(
+            u8k.decode(int_binary(IntOp::BitAnd, u8k, 0xF0, 0x3C).unwrap()),
+            0x30
+        );
+        assert_eq!(
+            u8k.decode(int_binary(IntOp::BitOr, u8k, 0xF0, 0x0F).unwrap()),
+            0xFF
+        );
+        assert_eq!(
+            u8k.decode(int_binary(IntOp::BitXor, u8k, 0xFF, 0x0F).unwrap()),
+            0xF0
+        );
+        // `~0` in a `u8` is 255, not `-1` (ADR-0042 §4): the complement is normalised to the
+        // type's own width rather than taken at 64 bits and truncated.
+        assert_eq!(u8k.decode(int_not(u8k, 0)), 255);
+    }
+
+    #[test]
+    fn right_shift_is_arithmetic_for_signed_and_logical_for_unsigned() {
+        // ADR-0042 §2: the *type* decides, exactly as it does for `/`.
+        let s8k = IntKind {
+            signed: true,
+            bits: 8,
+        };
+        assert_eq!(s8k.decode(int_binary(IntOp::Shr, s8k, -8, 1).unwrap()), -4);
+        let u8k = IntKind {
+            signed: false,
+            bits: 8,
+        };
+        assert_eq!(u8k.decode(int_binary(IntOp::Shr, u8k, 240, 4).unwrap()), 15);
+    }
+
+    #[test]
+    fn a_shift_count_at_or_past_the_width_traps() {
+        // Not masked to the width (which x86 does natively and would silently turn `<< 8`
+        // into `<< 0`), and not saturated to zero. ADR-0042 §3.
+        let s8k = IntKind {
+            signed: true,
+            bits: 8,
+        };
+        assert_eq!(
+            int_binary(IntOp::Shl, s8k, 1, 8),
+            Err(IntTrap::ShiftOutOfRange)
+        );
+        assert_eq!(
+            int_binary(IntOp::Shr, s8k, 1, 8),
+            Err(IntTrap::ShiftOutOfRange)
+        );
+        // A count one below the width is fine, which is what makes the boundary a boundary.
+        assert!(int_binary(IntOp::Shl, s8k, 1, 7).is_ok());
+    }
+
+    #[test]
+    fn a_negative_shift_count_traps_rather_than_reversing_direction() {
+        // `x << -1` must not silently mean `x >> 1` (ADR-0042 §3).
+        let s64k = IntKind::S64;
+        assert_eq!(
+            int_binary(IntOp::Shl, s64k, 4, -1),
+            Err(IntTrap::ShiftOutOfRange)
+        );
+    }
+
+    #[test]
+    fn a_left_shift_that_overflows_the_type_wraps_rather_than_trapping() {
+        // The *count* is checked; the result is not. `1 << 7` in an `s8` is -128, because the
+        // bit lands on the sign. That is what the bits do, and ADR-0002's overflow trap is
+        // about arithmetic whose true result is unrepresentable — a shift's result is exactly
+        // the bits requested.
+        let s8k = IntKind {
+            signed: true,
+            bits: 8,
+        };
+        assert_eq!(s8k.decode(int_binary(IntOp::Shl, s8k, 1, 7).unwrap()), -128);
+    }
+
+    #[test]
+    fn each_width_masks_and_bounds_correctly() {
+        // The tower is a naming change *because* these were already generic. Asserted rather
+        // than assumed, since every new width relies on it.
+        let u16_kind = IntKind::from_name("u16").expect("parses");
+        assert_eq!(u16_kind.min(), 0);
+        assert_eq!(u16_kind.max(), 65_535);
+        let s8 = IntKind::from_name("s8").expect("parses");
+        assert_eq!(s8.min(), -128);
+        assert_eq!(s8.max(), 127);
+        // Truncation is the cast's runtime behaviour (ADR-0037 §2): 300 wraps to 44 in `u8`.
+        assert_eq!(IntKind::from_name("u8").expect("parses").wrap(300), 44);
+        // And sign extension survives narrowing to a signed type.
+        assert_eq!(s8.decode(s8.wrap(-1)), -1);
     }
 }

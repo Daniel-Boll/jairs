@@ -27,6 +27,12 @@ pub struct ProcDecl {
     /// The return type. [`PoolId::VOID`] when the source omitted the arrow, never
     /// absent, per ADR-0015 §3.
     pub ret: PoolId,
+    /// Whether it receives the implicit context as a leading hidden parameter (ADR-0057 §3).
+    ///
+    /// `false` for a `#c_call` or `#foreign` procedure. The back end reads this rather than
+    /// recomputing it, so the signature and the MIR body agree about the parameter count — the
+    /// argument shift ADR-0053 §1 records is what a disagreement produces.
+    pub receives_context: bool,
     /// Whether it is defined here or imported.
     pub kind: ProcKind,
 }
@@ -123,6 +129,9 @@ pub fn declarations(input: &FileInput<'_>, pool: &Pool, entry: Option<ProcId>) -
             proc: ProcRef::new(input.file, proc),
             params: sig.params.clone(),
             ret: sig.ret,
+            // From the HIR's own flags, the same two `jr-mir` reads — a `#c_call` or `#foreign`
+            // procedure takes no context (ADR-0057 §3).
+            receives_context: !(data.c_call || data.foreign.is_some()),
             kind,
         });
     }

@@ -74,12 +74,45 @@ pub(crate) fn call(
         )));
     }
 
+    // `malloc` and `free` are satisfied from the VM's **own** linear region rather than the host
+    // (ADR-0061 §1). A Jairs pointer is an offset into that region, bounds-checked on every
+    // dereference; a raw host `malloc` address is not such an offset, so a byte written through it
+    // would fail the check that keeps the VM a sandbox. Intercepting here means a comptime-adjacent
+    // runtime `malloc` returns memory the VM can actually read and write, and the native back end
+    // still calls libc — the two engines' pointer *bits* differ, which nothing observes, while the
+    // byte round-trip agrees.
+    match foreign.symbol.as_str() {
+        "malloc" if is_pointer_return(vm, foreign) => {
+            let size = args
+                .first()
+                .map_or(0, |v| v.as_int(IntKind::S64).unwrap_or(0)) as u64;
+            // 16-byte alignment, matching what libc `malloc` guarantees, so a program that assumes
+            // it holds in the VM too is not surprised. Zero size still yields a usable pointer.
+            let address = vm.memory_mut().allocate(size, 16)?;
+            return Ok(Value::Scalar(address));
+        }
+        // `free` is a no-op: the VM's region is bump-allocated with no reclamation (the same model
+        // its call frames use), so releasing is nothing to do. `free(null)` is defined and lands
+        // here too. This means a long-running comptime allocator leaks within the VM, which the
+        // memory bound turns into a diagnosable `Exhausted` rather than a fault.
+        "free" if foreign.ret == PoolId::VOID => return Ok(Value::Void),
+        _ => {}
+    }
+
     let mut raw = Vec::with_capacity(args.len());
     for (value, ty) in args.iter().zip(&foreign.params) {
         raw.push(marshal(vm, value, *ty)?);
     }
 
     dispatch(vm, foreign, &raw)
+}
+
+/// Whether a foreign procedure's declared return type is a pointer.
+///
+/// Guards the `malloc` interception so a *different* `#foreign` procedure a program happens to name
+/// `malloc` — with a non-pointer return — is not silently rerouted to the VM's allocator.
+fn is_pointer_return(vm: &Vm<'_>, foreign: &ForeignProc) -> bool {
+    matches!(vm.pool().item(foreign.ret), Item::PointerType(_))
 }
 
 /// One argument, reduced to the machine word the C ABI passes.
@@ -173,6 +206,13 @@ fn dispatch(vm: &mut Vm<'_>, foreign: &ForeignProc, args: &[u64]) -> Result<Valu
     let pool = vm.pool();
     match IntKind::of(pool, foreign.ret) {
         Some(kind) => Ok(Value::Scalar(kind.wrap(kind.decode(raw)))),
+        // A **pointer** return is the raw word unchanged (ADR-0060 §2): a pointer is one machine
+        // word and its bits are the address, so there is nothing to narrow — the same way the
+        // native back end treats `malloc`'s `-> *u8`. `IntKind::of` answers `None` for a pointer
+        // type, so this arm is what a pointer return needs and `return_type` above already accepts
+        // one; without it a `malloc` binding refused at run time while `return_type` said it was
+        // callable — the two disagreeing about the same declaration.
+        None if matches!(pool.item(foreign.ret), Item::PointerType(_)) => Ok(Value::Scalar(raw)),
         None => Err(VmError::unsupported(format!(
             "a foreign procedure returning {:?} arrives with a later wave",
             pool.item(foreign.ret)

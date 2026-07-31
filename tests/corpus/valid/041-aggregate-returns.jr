@@ -1,0 +1,203 @@
+// Returning an aggregate (ADR-0051) — the back-end wave that removed the last place where the two
+// engines disagreed about what *compiles*.
+//
+// `jr run` has always returned a struct correctly, because a VM `Value` can hold bytes. `jr build`
+// refused, and its refusal said why: returning a pointer to the callee's own frame would dangle,
+// and the caller-allocated `sret` convention was "real work with no consumer". That reason expired —
+// ADR-0048 recorded that `Vec2 + Vec2 -> Vec2`, the natural first example of an operator overload,
+// "gives 37 under `jr run` and fails `jr build`", and called every scalar-returning overload in the
+// corpus "forced, not chosen". This file is where the aggregate-returning one lives.
+//
+// Five things here are worth checking rather than assuming:
+//
+//   * the **contents**, not just the size. A convention that returned the right number of bytes and
+//     the wrong values would pass any test that only checked the call completed, which is why every
+//     assertion reads a field back;
+//   * **two sizes**, because they take different paths through Cranelift. A 16-byte `Vec2` copy
+//     unrolls into loads and stores; a 64-byte struct calls `memcpy` — and that call did not link,
+//     because the libcall namer produced Cranelift's internal `Memcpy` rather than the C `memcpy`.
+//     A latent bug in *every* libcall, found only because this was the first one ever emitted;
+//   * an aggregate result feeding an aggregate **parameter**, so the two halves of the convention
+//     meet — the parameter side already worked and the return side is what this wave added;
+//   * a **trap** must not leave a variable half-written, which is why the caller copies out of a
+//     fresh slot rather than letting the callee write into the destination directly (ADR-0051 §2).
+//     `keep` below reads its result after a call that could have trapped and did not;
+//   * a returned **view**, which ADR-0044 §5 owed and this wave unblocked incidentally. Read
+//     *through* afterwards, because a `data` word that copied correctly but pointed at the wrong
+//     storage would satisfy a `.count` check alone.
+//
+// The `exit` at the end is what gives this file teeth under the differential harness: only two
+// corpus programs print, so a computation has to be made observable through an exit status or the
+// comparison is silence against silence. Here it is doing more than usual — the VM needs no change
+// at all for this wave, so the harness comparing the two engines is the *only* thing checking that
+// the new convention agrees with the one that already worked.
+#import "Basic";
+
+Vec2 :: struct {
+    x: s64;
+    y: s64;
+}
+
+/// Eight words, well past any plausible register threshold, so its copy takes the `memcpy` path
+/// rather than the unrolled one. ADR-0051 §1 chose one convention for *every* size deliberately —
+/// a register fast path for small structs is where a silent disagreement with the C ABI lives.
+Big :: struct {
+    a: s64;
+    b: s64;
+    c: s64;
+    d: s64;
+    e: s64;
+    f: s64;
+    g: s64;
+    h: s64;
+}
+
+mk :: (a: s64, b: s64) -> Vec2 {
+    r: Vec2;
+    r.x = a;
+    r.y = b;
+    return r;
+}
+
+/// **The overload ADR-0048 could not write.** It returns `Vec2`, which that wave had to avoid
+/// entirely — every overload in `038-operator-overloading.jr` returns a scalar for this reason, and
+/// that file keeps its scalars rather than being rewritten, because a passing test rewritten to use
+/// a new feature loses the coverage it had.
+operator + :: (p: Vec2, q: Vec2) -> Vec2 {
+    r: Vec2;
+    r.x = p.x + q.x;
+    r.y = p.y + q.y;
+    return r;
+}
+
+big :: (n: s64) -> Big {
+    r: Big;
+    r.a = n;
+    r.b = n + 1;
+    r.c = n + 2;
+    r.d = n + 3;
+    r.e = n + 4;
+    r.f = n + 5;
+    r.g = n + 6;
+    r.h = n + 7;
+    return r;
+}
+
+/// An aggregate **parameter** fed by an aggregate **result**, so both halves of the convention meet
+/// in one call. The parameter side already worked; a mismatch between them would shift arguments.
+double :: (v: Vec2) -> Vec2 {
+    return v + v;
+}
+
+/// Returns a struct built from a value that a trap could have prevented producing. Reading the
+/// result afterwards is what makes ADR-0051 §2's "a trap must not leave a variable half-assigned"
+/// observable rather than merely argued: the division cannot trap here, and the fields are checked.
+keep :: (n: s64) -> Vec2 {
+    r: Vec2;
+    r.x = n / 2;
+    r.y = n % 3;
+    return r;
+}
+
+/// An aggregate returned through **two** call levels, so the result of an `sret` call becomes the
+/// result of another one without an intermediate named variable.
+forward :: (a: s64, b: s64) -> Vec2 {
+    return mk(a, b);
+}
+
+/// **A returned view**, which ADR-0044 §5 recorded as owed and this wave unblocked incidentally: a
+/// `[]T` is a `{data, count}` aggregate, so it travels the same `sret` path a struct does. Exercised
+/// rather than assumed — "the ABI makes this representable" and "this works" are different claims,
+/// and only running it distinguishes them.
+tail :: (buf: []s64) -> []s64 {
+    return buf;
+}
+
+main :: () {
+    n := 0;
+
+    // ---- the plain case, contents checked ------------------------------------------------
+
+    v := mk(3, 4);
+    if v.x == 3 {
+        n = n + 1;
+    }
+    if v.y == 4 {
+        n = n + 2;
+    }
+
+    // ---- the overload that was blocked --------------------------------------------------
+
+    s := mk(1, 2) + mk(10, 20);
+    if s.x == 11 {
+        n = n + 4;
+    }
+    if s.y == 22 {
+        n = n + 8;
+    }
+
+    // ---- a large struct, which takes the memcpy path ------------------------------------
+
+    b := big(100);
+    if b.a == 100 {
+        n = n + 16;
+    }
+    // The last field, so a copy that got the *length* wrong is visible rather than plausible.
+    if b.h == 107 {
+        n = n + 32;
+    }
+
+    // ---- an aggregate result feeding an aggregate parameter ------------------------------
+
+    d := double(mk(5, 6));
+    if d.x == 10 {
+        n = n + 64;
+    }
+    if d.y == 12 {
+        n = n + 128;
+    }
+
+    // ---- two levels of sret, no intermediate variable -----------------------------------
+
+    f := forward(7, 8);
+    if f.x == 7 {
+        n = n + 256;
+    }
+    if f.y == 8 {
+        n = n + 512;
+    }
+
+    // ---- a returned view, whose two words are an aggregate ------------------------------
+
+    arr: [4]s64;
+    arr[0] = 7;
+    arr[3] = 9;
+    w := tail(arr[]);
+    if w.count == 4 {
+        n = n + 4096;
+    }
+    // Read *through* the returned view, so a `data` word that survived the copy pointing at the
+    // wrong storage is visible rather than plausible.
+    if w[0] == 7 {
+        n = n + 8192;
+    }
+    if w[3] == 9 {
+        n = n + 16384;
+    }
+
+    // ---- a result whose fields come from trapping arithmetic ----------------------------
+
+    k := keep(10);
+    if k.x == 5 {
+        n = n + 1024;
+    }
+    if k.y == 1 {
+        n = n + 2048;
+    }
+
+    // Every assertion: 32767.
+    if n == 32767 {
+        exit(0);
+    }
+    exit(1);
+}

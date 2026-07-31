@@ -50,6 +50,7 @@
 //! error recovery invented. That cannot be fixed here; it is recorded so the next
 //! reader does not mistake it for a MIR bug.
 
+mod bounds;
 mod build;
 mod cfg;
 mod code;
@@ -67,6 +68,7 @@ mod ssa;
 mod thunk;
 mod verify;
 
+pub use bounds::strip_bounds_checks;
 pub use build::{lower_body, lower_file};
 pub use cfg::{body_diagnostics, file_diagnostics};
 pub use constprop::const_prop;
@@ -74,11 +76,13 @@ pub use dce::{dce, is_pure};
 pub use dump::{dump_body, dump_body_spans, dump_file};
 pub use forward::forward_stores;
 pub use inline::{Callees, MAX_INLINE_STATEMENTS, inline_body, is_inlinable};
-pub use inputs::{ConstValues, ImportedProcs};
+pub use inputs::{
+    ConstValues, FilledArg, FilledArgs, ImportedProc, ImportedProcs, ImportedValues, OperatorCalls,
+};
 pub use mir::{
-    BinOp, BlockData, BlockId, Callee, Facts, FileMir, MirBody, MirSpan, Operand, Place, PlaceBase,
-    Poisoned, ProcRef, Projection, Rvalue, SlotData, SlotId, Statement, Target, Terminator, UnOp,
-    UndefinedRead, Unreachable, ValueData, ValueId,
+    BinOp, BlockData, BlockId, Callee, Facts, FileMir, MirBody, MirSpan, NumKind, Operand, Place,
+    PlaceBase, Poisoned, ProcRef, Projection, Rvalue, SlotData, SlotId, Statement, Target,
+    Terminator, UnOp, UndefinedRead, Unreachable, ValueData, ValueId,
 };
 pub use optimize::{MAX_OPT_ROUNDS, OptStats, optimize};
 pub use span::resolve_span;

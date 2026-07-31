@@ -1,0 +1,8 @@
+// EXPECT: E0223 — bitwise operators are integers only (ADR-0042 §5)
+// A float's bits are a sign, an exponent and a mantissa, so ANDing two of them produces a
+// bit pattern that is not the AND of anything meaningful. A program that wants a float's
+// bits will want a cast to an integer of the same width, which Jairs does not have yet.
+main :: () {
+    a := 1.5;
+    b := a & a;
+}

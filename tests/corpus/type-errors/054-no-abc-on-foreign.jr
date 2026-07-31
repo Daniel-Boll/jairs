@@ -1,0 +1,22 @@
+// EXPECT: E0255 — `#no_abc` on a `#foreign` procedure (ADR-0058 §3)
+//
+// `#no_abc` suppresses a procedure's bounds checks. A `#foreign` declaration has no body, so there
+// is no index in it to leave unchecked — the directive could only ever be a word that does nothing.
+//
+// **Refused rather than ignored**, and the difference matters more than it looks. Someone writing
+// this has asked for unchecked indexing across a boundary Jairs does not compile at all: the C
+// function's own array accesses were never Jairs' to check. Silently accepting the directive would
+// tell them their request was granted. Refusing it says the request has no meaning here, which is
+// the true answer.
+//
+// This is the one interaction ADR-0058 §3 rules out. `#no_abc` on an ordinary procedure is legal
+// (`tests/corpus/valid/047-no-abc.jr`), and `#no_abc` *with* `#c_call` is legal in either order —
+// only the `#foreign` combination is refused, because only that one has no body.
+
+/// The library, so the only diagnostic in this file is the one it is named for. A `#foreign`
+/// declaration naming an undeclared library is E0225, and a refusal file with two unrelated errors
+/// makes the second one look like a consequence of the first.
+libc :: #system_library "c";
+
+/// The refusal. `#no_abc` after the return type, then a `#foreign` binding with no body.
+read_raw :: (fd: s64, buf: *u8, count: s64) -> s64 #no_abc #foreign libc "read";

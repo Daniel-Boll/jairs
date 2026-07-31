@@ -1,0 +1,107 @@
+// Indirect calls (ADR-0059) — the third feature of W3, and the one that resolves the plan
+// contradiction the two waves before it kept recording: an allocator is a procedure pointer plus
+// data, and until now neither engine could call through a pointer.
+//
+// The refusal both engines carried was unusually well-prepared. `Callee::Indirect` has been in MIR
+// since the slice, with an arm in every pass and both engines; each engine arm *refused*, naming the
+// same blocker — a procedure interns as `Item::ProcValue { decl }`, a `DeclId`, but a call needs a
+// `ProcRef`. This wave fills in those two refusals and adds the one genuinely new piece of surface:
+// the procedure-pointer *type* `(T, T) -> T`.
+//
+// Five things here are worth checking rather than assuming:
+//
+//   * a **value** of procedure type calls correctly — `f := add; f(...)` — which is the whole
+//     feature at its smallest;
+//   * a proc pointer **passed as a parameter** calls correctly, which is what makes it useful:
+//     `apply` takes a `(s64, s64) -> s64` and calls it, the shape a higher-order procedure and an
+//     allocator both need. The parameter is one machine word, so this also exercises the ABI;
+//   * **which** procedure a pointer names is observable, not just *that* it calls one — `pick`
+//     returns one of two procedures by a condition, and calling the result must run the chosen one.
+//     A representation that lost the identity would still call *something*;
+//   * the two engines **agree**, though their proc-pointer bits differ by design (ADR-0059 §4): the
+//     VM encodes a `ProcRef`, native emits a real code address. Only calling through it is
+//     observable, and the differential harness compares that;
+//   * a proc pointer **stored in a local and reassigned** still calls the right target, so the value
+//     flows through SSA and a slot like any scalar.
+//
+// The refusals live in `type-errors/055-foreign-as-value.jr` (E0256) — a file that must check
+// cleanly cannot hold one.
+//
+// The `exit` at the end gives this file teeth under the differential harness: a wrong target or a
+// lost identity is a *different number* rather than a plausible one.
+#import "Basic";
+
+/// A plain binary procedure, used both directly and as a value.
+add :: (a: s64, b: s64) -> s64 {
+    return a + b;
+}
+
+/// Encodes its operands' positions so calling the *wrong* one is a different answer, not a
+/// coincidentally-equal one.
+sub :: (a: s64, b: s64) -> s64 {
+    return a - b;
+}
+
+/// Takes a procedure **as a parameter** and calls it (ADR-0059 §3). The `(s64, s64) -> s64` is the
+/// new type syntax; `fn` is one machine word, so this is the ABI check as well as the feature.
+apply :: (fn: (s64, s64) -> s64, a: s64, b: s64) -> s64 {
+    return fn(a, b);
+}
+
+/// Returns *one of two procedures* by a condition, so the identity a pointer carries is observable:
+/// a representation that only recorded "some procedure" would call the wrong one.
+pick :: (want_add: bool) -> (s64, s64) -> s64 {
+    if want_add {
+        return add;
+    }
+    return sub;
+}
+
+main :: () {
+    n := 0;
+
+    // A value of procedure type, called directly through the local.
+    f := add;
+    if f(20, 22) == 42 {
+        n = n + 1;
+    }
+
+    // The same value passed as a parameter and called there.
+    if apply(f, 20, 22) == 42 {
+        n = n + 2;
+    }
+
+    // A different procedure through the same parameter, so `apply` is not secretly calling `add`.
+    g := sub;
+    if apply(g, 50, 8) == 42 {
+        n = n + 4;
+    }
+
+    // The pointer's identity is observable: `pick` chooses, and the choice must run.
+    chosen := pick(true);
+    if chosen(40, 2) == 42 {
+        n = n + 8;
+    }
+    other := pick(false);
+    if other(44, 2) == 42 {
+        n = n + 16;
+    }
+
+    // Reassigning a proc-pointer local flows through a slot like any scalar.
+    h := add;
+    h = sub;
+    if h(43, 1) == 42 {
+        n = n + 32;
+    }
+
+    // A procedure literal passed straight to the parameter, never bound to a local.
+    if apply(add, 21, 21) == 42 {
+        n = n + 64;
+    }
+
+    // Every assertion: 127.
+    if n == 127 {
+        exit(0);
+    }
+    exit(1);
+}

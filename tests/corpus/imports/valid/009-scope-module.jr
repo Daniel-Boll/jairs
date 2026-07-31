@@ -1,0 +1,30 @@
+// Importing a module with a private section (ADR-0054 §1).
+//
+// `modules/Private.jr` hides two helpers behind `#scope_module` and exports the rest. This file uses
+// only the exports, so it must check cleanly — which is the half of the wave that proves the filter
+// does not break a legal program. The other half, using a *hidden* name, is
+// `imports/invalid/009-not-exported.jr`: one file cannot do both, because this one must be clean.
+//
+// Note what is *not* here: no directive, no visibility syntax, nothing new at the use site at all.
+// A hidden name is simply absent from the imported scope, which is why the whole feature is one
+// filter in `file_exports` (ADR-0054 §3).
+#import "Private";
+
+main :: () {
+    n := 0;
+    // Exported with no directive, because export is the default.
+    if scaled(2) == 6 {
+        n = n + 1;
+    }
+    // Exported by an explicit `#scope_export` after the private section.
+    if doubled(4) == 8 {
+        n = n + 2;
+    }
+    // A *constant* declared before any marker is exported too, and its **value** now crosses the
+    // boundary (ADR-0055 §1). When this file was written one wave earlier that was E0245 — "the
+    // compiler could not lower the body" — and this assertion had to be left out with a note saying
+    // so. The note is gone because the gap is.
+    if FACTOR == 3 {
+        n = n + 4;
+    }
+}

@@ -172,6 +172,24 @@ pub enum LayoutError {
     /// occupies no bytes and may be stored, whereas these cannot be stored at
     /// all.
     ComptimeOnly(PoolId),
+    /// An array's total size overflowed a `u64`.
+    ///
+    /// `[N]T` is `N` elements of `T`, and both come from source: nothing bounds their
+    /// product. Distinguished from [`LayoutError::Recursive`] because that one is a
+    /// compiler guard against a shape sema does not reject, while this is arithmetic on
+    /// numbers a program wrote.
+    ArrayTooLarge {
+        /// The element type.
+        elem: PoolId,
+        /// The requested length.
+        len: u64,
+    },
+    /// Array or struct nesting exceeded this module's depth limit.
+    ///
+    /// A separate variant from [`LayoutError::Recursive`], which names a *struct*: an
+    /// array nests structurally (`[2][2][2]...u8`) with no declaration to blame, so there
+    /// is no `DeclId` to report.
+    Depth,
 }
 
 impl std::fmt::Display for LayoutError {
@@ -199,6 +217,13 @@ impl std::fmt::Display for LayoutError {
                 "pool item {} exists only at compile time and has no runtime size",
                 id.index()
             ),
+            Self::ArrayTooLarge { elem, len } => write!(
+                f,
+                "an array of {len} elements of pool item {} is larger than a `u64` can \
+                 describe",
+                elem.index()
+            ),
+            Self::Depth => write!(f, "type nesting exceeded the layout depth limit"),
         }
     }
 }
@@ -223,14 +248,20 @@ pub const fn align_up(offset: u64, align: u32) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// string
+// The `{data, count}` pair
 // ---------------------------------------------------------------------------
 
-/// The offset and layout of `string`'s `.data` field (ADR-0004).
+/// The offset and layout of the `data` word of a `{data, count}` pair.
 ///
-/// First field, so offset 0, and a `*u8`.
+/// First field, so offset 0, and pointer-shaped.
+///
+/// **Two types have this layout**: `string` (ADR-0004) and `[]T` (ADR-0044 §1). The
+/// arithmetic is shared and the identities are not — a view is not a string and a string is
+/// not a byte run (ADR-0015 §2) — so this computes offsets for both while
+/// [`crate::Item::StringType`] and [`crate::Item::ViewType`] stay distinct types with
+/// distinct projections.
 #[must_use]
-pub const fn string_data(target: TargetLayout) -> (u64, Layout) {
+pub const fn pair_data(target: TargetLayout) -> (u64, Layout) {
     (
         0,
         Layout {
@@ -240,19 +271,21 @@ pub const fn string_data(target: TargetLayout) -> (u64, Layout) {
     )
 }
 
-/// The offset and layout of `string`'s `.count` field (ADR-0004).
+/// The offset and layout of the `count` word of a `{data, count}` pair.
 ///
-/// An `s64` placed after `.data`, at the next 8-aligned offset.
+/// An `s64` placed after `data`, at the next 8-aligned offset. `s64` rather than `u64` for
+/// both users, so that `i < xs.count` is not a mixed-signedness comparison ADR-0015's
+/// no-coercion rule would refuse (ADR-0044 §1).
 #[must_use]
-pub const fn string_count(target: TargetLayout) -> (u64, Layout) {
+pub const fn pair_count(target: TargetLayout) -> (u64, Layout) {
     let count = Layout::scalar(8);
     (align_up(target.pointer_size as u64, count.align), count)
 }
 
-/// The layout of `string` itself.
+/// The layout of a `{data, count}` pair itself.
 #[must_use]
-pub const fn string_layout(target: TargetLayout) -> Layout {
-    let (offset, count) = string_count(target);
+pub const fn pair_layout(target: TargetLayout) -> Layout {
+    let (offset, count) = pair_count(target);
     let align = if target.pointer_align > count.align {
         target.pointer_align
     } else {
@@ -262,6 +295,24 @@ pub const fn string_layout(target: TargetLayout) -> Layout {
         size: align_up(offset + count.size, align),
         align,
     }
+}
+
+/// The offset and layout of `string`'s `.data` field (ADR-0004).
+#[must_use]
+pub const fn string_data(target: TargetLayout) -> (u64, Layout) {
+    pair_data(target)
+}
+
+/// The offset and layout of `string`'s `.count` field (ADR-0004).
+#[must_use]
+pub const fn string_count(target: TargetLayout) -> (u64, Layout) {
+    pair_count(target)
+}
+
+/// The layout of `string` itself.
+#[must_use]
+pub const fn string_layout(target: TargetLayout) -> Layout {
+    pair_layout(target)
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +360,11 @@ fn layout_at_depth(
         // sub-byte addressing is not a thing a pointer can express.
         Item::IntType { bits, .. } => Ok(Layout::scalar(u32::from(bits.div_ceil(8)).max(1))),
 
+        // Self-aligned, like every IEEE-754 type on both targets: 4 bytes for `float32`,
+        // 8 for `float64` (ADR-0040 §2). The width is spelled in the type, so no target
+        // lookup is needed — the same reason `IntType` above needs none.
+        Item::FloatType { bits } => Ok(Layout::scalar(u32::from(bits / 8))),
+
         Item::StringType => Ok(string_layout(target)),
 
         // A procedure used as a value is a code pointer (ADR-0012), so it is
@@ -320,11 +376,67 @@ fn layout_at_depth(
 
         Item::TypeType | Item::ForeignLibraryType => Err(LayoutError::ComptimeOnly(ty)),
 
+        // `size = stride * len`, where the stride is the element size rounded up to the
+        // element's own alignment. For every type Jairs has today the two are equal,
+        // because `struct_layout_at_depth` below already rounds a struct's size up to its
+        // alignment for exactly this reason — but computing the stride explicitly means an
+        // element type that ever *stops* being self-aligned cannot silently overlap.
+        //
+        // A zero-length array is legal and zero-sized. It keeps the element's alignment,
+        // so `*[0]T` is still a properly aligned pointer.
+        Item::ArrayType { elem, len } => {
+            if depth >= MAX_DEPTH {
+                return Err(LayoutError::Depth);
+            }
+            let elem_layout = layout_at_depth(pool, target, *elem, depth + 1)?;
+            let stride = align_up(elem_layout.size, elem_layout.align);
+            Ok(Layout {
+                size: stride.checked_mul(*len).ok_or(LayoutError::ArrayTooLarge {
+                    elem: *elem,
+                    len: *len,
+                })?,
+                align: elem_layout.align,
+            })
+        }
+
+        // A view is the same two words `string` is (ADR-0044 §1), and the element type does
+        // not enter the layout at all: a view of a `[100]u8` and a view of a `u8` are both
+        // one pointer and one count. That is what makes `[]T` passable where `[N]T` is not.
+        Item::ViewType { .. } => Ok(pair_layout(target)),
+
+        // An enum's layout **is** its backing type's (ADR-0041 §3), which is `s64` for every
+        // enum this wave has. Delegating rather than repeating `Layout::scalar(8)` is what
+        // makes an explicit backing type — `enum u8 { … }` — a change to one line here
+        // rather than a change to layout.
+        Item::EnumType { .. } => layout_at_depth(pool, target, PoolId::S64, depth + 1),
+
         Item::StructType { decl } => struct_layout_at_depth(pool, target, *decl, depth),
+
+        // A results aggregate lays out exactly as a struct of the same field types, through the
+        // *same* function (ADR-0052 §1). The element list is right here, so unlike a struct there
+        // is no side table to be unresolved.
+        Item::ResultsType { elems } => sequential_layout(pool, target, elems, depth),
+
+        // The context's fields are fixed by the compiler (ADR-0057 §1), so they are listed here
+        // rather than read from the struct side table — there is no `DeclId` to key one on.
+        Item::ContextType => sequential_layout(pool, target, CONTEXT_FIELD_TYPES, depth),
+
+        // A union: every field at offset 0, so the size is the **largest** field's rather than
+        // the running sum, and the alignment is the strictest (ADR-0045 §3). The size is then
+        // rounded up to that alignment exactly as a struct's is, so an array of unions stays
+        // aligned at every element.
+        //
+        // This and `field_offset`'s union arm are the two places a union differs from a struct
+        // at all. Both live here because ADR-0018 §2 makes this the one place layout may be
+        // computed — and for a union that is not a formality: a layout disagreement between the
+        // engines would be *invisible*, since both would read plausible bits from the wrong
+        // place rather than crashing.
+        Item::UnionType { decl } => union_layout_at_depth(pool, target, *decl, depth),
 
         Item::VoidValue
         | Item::BoolValue(_)
         | Item::IntValue { .. }
+        | Item::FloatValue { .. }
         | Item::StrValue(_)
         | Item::TypeValue(_)
         | Item::ProcValue { .. }
@@ -332,7 +444,11 @@ fn layout_at_depth(
     }
 }
 
-fn struct_layout_at_depth(
+/// The layout of a union: the largest field's size, the strictest field's alignment.
+///
+/// An **empty union is zero-sized** with alignment 1, matching an empty struct. Refusing it
+/// would be a special case with no argument behind it (ADR-0045 §3).
+fn union_layout_at_depth(
     pool: &Pool,
     target: TargetLayout,
     decl: DeclId,
@@ -349,10 +465,66 @@ fn struct_layout_at_depth(
     let mut align = 1u32;
     for field in fields {
         let field_layout = layout_at_depth(pool, target, field.ty, depth + 1)?;
+        size = size.max(field_layout.size);
+        align = align.max(field_layout.align);
+    }
+    Ok(Layout {
+        size: align_up(size, align),
+        align,
+    })
+}
+
+fn struct_layout_at_depth(
+    pool: &Pool,
+    target: TargetLayout,
+    decl: DeclId,
+    depth: u32,
+) -> Result<Layout, LayoutError> {
+    if depth >= MAX_DEPTH {
+        return Err(LayoutError::Recursive(decl));
+    }
+    let fields = pool
+        .struct_fields(decl)
+        .ok_or(LayoutError::UnresolvedStruct(decl))?;
+    let tys: Vec<PoolId> = fields.iter().map(|field| field.ty).collect();
+    sequential_layout(pool, target, &tys, depth)
+}
+
+/// The field types of [`Item::ContextType`], in order (ADR-0057 §1).
+///
+/// One field today. A `const` rather than a function so that layout, field lookup and both engines
+/// read the *same* list — three copies of "what fields does a context have" would be three chances to
+/// disagree, which is the duplication ADR-0052 found for field types across three crates.
+pub const CONTEXT_FIELD_TYPES: &[PoolId] = &[PoolId::ALLOC_FN, PoolId::FREE_FN, PoolId::S64];
+
+/// The field *names* of [`Item::ContextType`], parallel to [`CONTEXT_FIELD_TYPES`].
+///
+/// Three fields as of ADR-0062 §2: the two halves of an allocator and its own state word. Flattened
+/// into the context rather than nested in an `Allocator` struct, because a nested struct type would
+/// need a `DeclId` a compiler-declared type has not got — the same problem ADR-0057 §1 met and solved
+/// by going structural.
+pub const CONTEXT_FIELD_NAMES: &[&str] = &["allocator", "allocator_free", "allocator_data"];
+
+/// The layout of a sequence of fields laid out in order, C-style.
+///
+/// Shared by a struct's layout and a **results aggregate**'s (ADR-0052 §1), because the two are the
+/// same computation over the same rules. Factored out rather than copied: a second implementation of
+/// field offsets would be a *silent wrong offset* rather than a crash — the failure mode ADR-0018 §2
+/// made one shared layout function to prevent, and which no verifier can catch.
+fn sequential_layout(
+    pool: &Pool,
+    target: TargetLayout,
+    tys: &[PoolId],
+    depth: u32,
+) -> Result<Layout, LayoutError> {
+    let mut size = 0u64;
+    let mut align = 1u32;
+    for ty in tys {
+        let field_layout = layout_at_depth(pool, target, *ty, depth + 1)?;
         size = align_up(size, field_layout.align) + field_layout.size;
         align = align.max(field_layout.align);
     }
-    // Rounding the total up to the struct's own alignment is what makes an array
+    // Rounding the total up to the aggregate's own alignment is what makes an array
     // of it aligned at every element, which is why it is not merely the offset
     // past the last field.
     Ok(Layout {
@@ -377,23 +549,65 @@ pub fn field_offset(
     ty: PoolId,
     index: u32,
 ) -> Result<(u64, Layout), LayoutError> {
-    let Item::StructType { decl } = pool.item(ty) else {
-        return Err(LayoutError::NotAType(ty));
-    };
-    let fields = pool
-        .struct_fields(*decl)
-        .ok_or(LayoutError::UnresolvedStruct(*decl))?;
+    // **Every field of a union is at offset 0.** This is the single line that makes a union a
+    // union, it is shared by both engines, and getting it wrong would be a silent
+    // wrong-address bug rather than an error (ADR-0045 §3).
+    if let Item::UnionType { decl } = pool.item(ty) {
+        let fields = pool
+            .struct_fields(*decl)
+            .ok_or(LayoutError::UnresolvedStruct(*decl))?;
+        let field = fields
+            .get(index as usize)
+            .ok_or(LayoutError::NotAType(ty))?;
+        return Ok((0, layout_of(pool, target, field.ty)?));
+    }
 
+    // A results aggregate's fields are laid out in order exactly as a struct's, and its element
+    // list is right here rather than in a side table (ADR-0052 §1). Sharing
+    // `sequential_field_offset` below is what keeps the two from disagreeing: **omitting this
+    // returned `NotAType` for every result after the first**, which surfaced as a destructuring
+    // statement binding the wrong values rather than as an error.
+    let tys: Vec<PoolId> = match pool.item(ty) {
+        Item::ResultsType { elems } => elems.clone(),
+        // The context's fields, from the one list every consumer reads (ADR-0057 §1).
+        Item::ContextType => CONTEXT_FIELD_TYPES.to_vec(),
+        Item::StructType { decl } => pool
+            .struct_fields(*decl)
+            .ok_or(LayoutError::UnresolvedStruct(*decl))?
+            .iter()
+            .map(|field| field.ty)
+            .collect(),
+        _ => return Err(LayoutError::NotAType(ty)),
+    };
+    sequential_field_offset(pool, target, &tys, index).ok_or(LayoutError::NotAType(ty))?
+}
+
+/// The offset and layout of one field in a sequentially laid-out aggregate.
+///
+/// Shared by a struct's field lookup and a results aggregate's, for the reason `sequential_layout`
+/// is shared: two implementations of a field offset would be two chances to produce a silent wrong
+/// address, which no verifier catches.
+///
+/// Returns `None` when `index` is out of range, and `Some(Err(..))` when a field's own layout fails.
+fn sequential_field_offset(
+    pool: &Pool,
+    target: TargetLayout,
+    tys: &[PoolId],
+    index: u32,
+) -> Option<Result<(u64, Layout), LayoutError>> {
     let mut offset = 0u64;
-    for (position, field) in fields.iter().enumerate() {
-        let field_layout = layout_of(pool, target, field.ty)?;
+    for (position, ty) in tys.iter().enumerate() {
+        let field_layout = match layout_of(pool, target, *ty) {
+            Ok(layout) => layout,
+            Err(reason) => return Some(Err(reason)),
+        };
         offset = align_up(offset, field_layout.align);
         if position == index as usize {
-            return Ok((offset, field_layout));
+            return Some(Ok((offset, field_layout)));
         }
         offset += field_layout.size;
     }
-    Err(LayoutError::NotAType(ty))
+    None
 }
 
 #[cfg(test)]
@@ -457,6 +671,117 @@ mod tests {
         assert_eq!(string_count(T), (8, Layout { size: 8, align: 8 }));
         assert_eq!(
             layout_of(&pool, T, PoolId::STRING),
+            Ok(Layout { size: 16, align: 8 })
+        );
+    }
+
+    /// A union of `u8` and `s64` at `decl`, for the layout tests.
+    fn union_of(pool: &mut Pool, interner: &Interner, index: u32, tys: &[PoolId]) -> PoolId {
+        let decl = DeclId::new(FileId::from_usize(0), index);
+        let ty = pool.union_type(decl);
+        let fields = tys
+            .iter()
+            .enumerate()
+            .map(|(i, t)| Field::new(interner.intern(&format!("f{i}")), *t))
+            .collect();
+        pool.set_struct_fields(decl, fields);
+        ty
+    }
+
+    #[test]
+    fn a_union_is_its_largest_field_with_every_field_at_zero() {
+        // ADR-0045 §3. The `u8` first and the `s64` second, so a struct's running-sum rule
+        // would give size 16 and offset 8 for the second field — both visibly wrong here.
+        let interner = Interner::new();
+        let mut pool = Pool::new();
+        let ty = union_of(&mut pool, &interner, 40, &[PoolId::U8, PoolId::S64]);
+        assert_eq!(
+            layout_of(&pool, T, ty),
+            Ok(Layout { size: 8, align: 8 }),
+            "the largest field's size, not the sum"
+        );
+        for index in 0..2 {
+            let (offset, _) = field_offset(&pool, T, ty, index).expect("a union field");
+            assert_eq!(offset, 0, "field {index} of a union must be at offset 0");
+        }
+    }
+
+    #[test]
+    fn a_unions_size_is_rounded_up_to_its_alignment() {
+        // So that an array of unions stays aligned at every element — the same reason a
+        // struct's size is rounded up.
+        let interner = Interner::new();
+        let mut pool = Pool::new();
+        let ty = union_of(&mut pool, &interner, 41, &[PoolId::U8, PoolId::U8]);
+        assert_eq!(layout_of(&pool, T, ty), Ok(Layout { size: 1, align: 1 }));
+
+        let wide = union_of(&mut pool, &interner, 42, &[PoolId::S64, PoolId::U8]);
+        assert_eq!(layout_of(&pool, T, wide), Ok(Layout { size: 8, align: 8 }));
+    }
+
+    #[test]
+    fn an_empty_union_is_zero_sized() {
+        // Legal, matching an empty struct (ADR-0045 §3).
+        let interner = Interner::new();
+        let mut pool = Pool::new();
+        let ty = union_of(&mut pool, &interner, 43, &[]);
+        assert_eq!(layout_of(&pool, T, ty), Ok(Layout::ZERO));
+    }
+
+    #[test]
+    fn a_union_and_a_struct_of_the_same_fields_are_different_types() {
+        // Nominal identity, and the layouts differ — which is the whole reason `UnionType` is
+        // a separate `Item` variant rather than a flag (ADR-0045 §4).
+        let interner = Interner::new();
+        let mut pool = Pool::new();
+        let u = union_of(&mut pool, &interner, 44, &[PoolId::S64, PoolId::S64]);
+        let s_decl = DeclId::new(FileId::from_usize(0), 45);
+        let st = pool.struct_type(s_decl);
+        pool.set_struct_fields(
+            s_decl,
+            vec![
+                Field::new(interner.intern("f0"), PoolId::S64),
+                Field::new(interner.intern("f1"), PoolId::S64),
+            ],
+        );
+        assert_ne!(u, st);
+        assert_eq!(layout_of(&pool, T, u), Ok(Layout { size: 8, align: 8 }));
+        assert_eq!(layout_of(&pool, T, st), Ok(Layout { size: 16, align: 8 }));
+    }
+
+    #[test]
+    fn a_view_has_strings_layout_whatever_its_element_is() {
+        // ADR-0044 §1: the element type does not enter a view's layout at all. A view of a
+        // `[100]u8` is the same two words as a view of a `u8`, which is exactly what makes
+        // `[]T` passable where `[N]T` is not.
+        let mut pool = Pool::new();
+        let big = pool.array_of(PoolId::U8, 100);
+        let of_big = pool.view_of(big);
+        let of_byte = pool.view_of(PoolId::U8);
+        let expected = Layout { size: 16, align: 8 };
+        assert_eq!(layout_of(&pool, T, of_big), Ok(expected));
+        assert_eq!(layout_of(&pool, T, of_byte), Ok(expected));
+        assert_eq!(
+            layout_of(&pool, T, PoolId::STRING),
+            Ok(expected),
+            "a view and a string share the layout and not the identity (ADR-0015 §2)"
+        );
+    }
+
+    #[test]
+    fn a_view_of_a_view_nests() {
+        // Structural interning, so this needs no rule of its own (ADR-0044 §6).
+        let mut pool = Pool::new();
+        let once = pool.view_of(PoolId::S64);
+        let twice = pool.view_of(once);
+        assert_ne!(once, twice);
+        assert_eq!(
+            pool.view_of(PoolId::S64),
+            once,
+            "structural: one type per elem"
+        );
+        assert_eq!(
+            layout_of(&pool, T, twice),
             Ok(Layout { size: 16, align: 8 })
         );
     }
