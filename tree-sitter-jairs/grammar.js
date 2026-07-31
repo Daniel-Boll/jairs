@@ -379,6 +379,7 @@ module.exports = grammar({
         $.for_stmt,
         $.defer_stmt,
         $.push_context_stmt,
+        $.switch_stmt,
         $.return_stmt,
         $.break_stmt,
         $.continue_stmt,
@@ -455,6 +456,28 @@ module.exports = grammar({
 
     // `defer stmt;` or `defer { }` (ADR-0049 §3).
     defer_stmt: ($) => seq("defer", field("body", $._single_stmt)),
+
+    // switch e { case v; … else; … } (ADR-0067). An arm's body is a run of statements ending at the
+    // next `case`, the next `else`, or the closing brace — the same statement-list shape a block has,
+    // so no new body kind enters the grammar.
+    switch_stmt: ($) =>
+      seq(
+        "switch",
+        field("value", $._expr),
+        "{",
+        repeat($.switch_arm),
+        "}",
+      ),
+
+    switch_arm: ($) =>
+      seq(
+        choice(
+          seq("case", field("value", $._expr)),
+          "else",
+        ),
+        ";",
+        repeat($._stmt),
+      ),
 
     // push_context { … } (ADR-0063) — a block with its own copy of the context. The body is a
     // braced block only, never a braceless single statement: the parser requires the braces so a

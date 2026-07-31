@@ -1464,6 +1464,10 @@ impl<'src> Parser<'src> {
                 self.parse_push_context_stmt();
                 true
             }
+            SWITCH_KW => {
+                self.parse_switch_stmt();
+                true
+            }
             RETURN_KW => {
                 self.parse_return_stmt();
                 true
@@ -1650,6 +1654,66 @@ impl<'src> Parser<'src> {
         } else {
             let span = self.current_span();
             self.error(span, "expected `{` after `push_context`", E0116);
+        }
+        self.finish_node();
+    }
+
+    /// Parses `switch e { case v; … else; … }` (ADR-0067).
+    ///
+    /// An arm is `case <expr>;` — or `else;` — followed by the statements it runs, which end at the
+    /// next `case`, the next `else`, or the closing brace. That reuses the statement-list parsing every
+    /// block has, so no new body shape enters the grammar (ADR-0067 §1); braces per arm would be noise
+    /// on the common one-statement arm.
+    fn parse_switch_stmt(&mut self) {
+        self.start_node(SWITCH_STMT);
+        self.bump(); // `switch`
+        self.parse_expr();
+        if self.at(L_BRACE) {
+            self.bump(); // `{`
+            // Arms until the closing brace. A token that begins neither an arm nor `}` is reported
+            // once and skipped, so one stray token does not turn the rest of the switch into garbage.
+            while !self.at(R_BRACE) && !self.at(EOF) {
+                if self.at(CASE_KW) || self.at(ELSE_KW) {
+                    self.parse_switch_arm();
+                } else {
+                    let span = self.current_span();
+                    self.error(span, "expected `case`, `else` or `}` in a `switch`", E0116);
+                    self.bump();
+                }
+            }
+            self.expect(R_BRACE);
+        } else {
+            let span = self.current_span();
+            self.error(span, "expected `{` after a `switch`'s value", E0116);
+        }
+        self.finish_node();
+    }
+
+    /// Parses one `switch` arm: `case v;` or `else;`, then its statements (ADR-0067 §1).
+    ///
+    /// The `else` arm is the same node with **no value expression** — an absent value *is* the
+    /// catch-all, so it needs no second node kind and every consumer distinguishes the two by asking
+    /// whether a value is there.
+    fn parse_switch_arm(&mut self) {
+        self.start_node(SWITCH_ARM);
+        let is_case = self.at(CASE_KW);
+        self.bump(); // `case` or `else`
+        if is_case {
+            if self.at_set(EXPR_START) {
+                self.parse_expr();
+            } else {
+                let span = self.current_span();
+                self.error(span, "expected a value after `case`", E0116);
+            }
+        }
+        // The `;` closes the arm's *header*, not the arm: what follows is the body.
+        self.expect(SEMICOLON);
+        // Statements until the next arm or the end of the switch. `parse_stmt` returning false means
+        // the token starts no statement, which the enclosing loop reports.
+        while !self.at(R_BRACE) && !self.at(CASE_KW) && !self.at(ELSE_KW) && !self.at(EOF) {
+            if !self.parse_stmt() {
+                break;
+            }
         }
         self.finish_node();
     }

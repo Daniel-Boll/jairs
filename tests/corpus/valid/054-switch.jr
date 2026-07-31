@@ -1,0 +1,142 @@
+// `switch` with exhaustiveness checking (ADR-0067) — the first feature of **W4.5**, and the wave that
+// moved *before* W4 because checking showed it did not need comptime.
+//
+// PLAN §2.1 placed W4.5 after W4 "because exhaustiveness diagnostics want comptime type info". That is
+// a want, not a need: exhaustiveness over an enum needs only the member set, and `Pool::enum_members` is
+// already populated during checking (ADR-0041 §4). Both prerequisites were verified by *running* —
+// `c == .GREEN` and `c == Colour.GREEN` already worked — so the wave came forward. ADR-0067 §0 records
+// the amendment, because a wave order justified by a dependency that does not exist is the "plans that
+// contradict themselves" failure mode PLAN §5 names.
+//
+// Six things here are worth checking rather than assuming, and the `exit` at the end gives each teeth
+// under the differential harness — a wrong arm, a fallthrough, or a scrutinee evaluated twice would each
+// be a different exit status:
+//
+//   * a **bare `.RED`** works as a case (ADR-0041 §2 step 5, the deferral this settles), because the
+//     scrutinee's type is the expected type the arm's value resolves against — the same mechanism
+//     `c == .GREEN` already used;
+//   * a **qualified `Colour.RED`** is equally legal, and the two spellings name one member;
+//   * **no fallthrough** (ADR-0067 §5): an arm runs and the `switch` ends, so `describe` returns one
+//     value rather than falling into the next arm's;
+//   * an **`else` arm** is the catch-all and makes a non-enum `switch` total (§4) — `classify` switches
+//     on an `s64`, which has no finite member set to be exhaustive over (§3);
+//   * the **scrutinee is evaluated once**, before any comparison (§6), which matters because a
+//     `switch f() { … }` must not call `f` per arm — `from_call` switches on a call's result;
+//   * both engines agree, because a `switch` lowers to the branch chain an `if`/`else if` over the same
+//     comparisons already produces — **no new MIR node** and no back-end change.
+#import "Basic";
+
+/// Auto-numbered 0, 1, 2 — the same enum `032-enums.jr` uses, so the two files cannot disagree about
+/// what an enum is.
+Colour :: enum {
+    RED;
+    GREEN;
+    BLUE;
+}
+
+/// Exhaustive over `Colour` with **bare** members, and no `else` — which is only legal because every
+/// member is named. Omitting one is E0258 (`type-errors/059`), and adding an `else` here would be E0260,
+/// since it could never run.
+describe :: (c: Colour) -> s64 {
+    r := 0;
+    switch c {
+        case .RED;
+            r = 1;
+        case .GREEN;
+            r = 2;
+        case .BLUE;
+            r = 4;
+    }
+    return r;
+}
+
+/// The same match written with **qualified** members, proving the two spellings are interchangeable.
+/// A reader comparing this with `describe` should see only the spelling change.
+describe_qualified :: (c: Colour) -> s64 {
+    r := 0;
+    switch c {
+        case Colour.RED;
+            r = 1;
+        case Colour.GREEN;
+            r = 2;
+        case Colour.BLUE;
+            r = 4;
+    }
+    return r;
+}
+
+/// A `switch` on an `s64`, made total by `else`. Exhaustiveness is **not** checked here (ADR-0067 §3):
+/// an integer has no finite member set, so the check would be approximate rather than true, and an
+/// `else` is what makes the match total instead.
+classify :: (n: s64) -> s64 {
+    r := 0;
+    switch n {
+        case 1;
+            r = 10;
+        case 2;
+            r = 20;
+        else;
+            r = 30;
+    }
+    return r;
+}
+
+/// Returns a value for the scrutinee, so `from_call` matches on a **call's result**. If the lowering
+/// evaluated the scrutinee per arm, this would be called once per comparison.
+two :: () -> s64 {
+    return 2;
+}
+
+/// Switches on a call, which is the shape that makes "evaluated once" observable in the MIR: the
+/// snapshot shows one `call` before the first comparison, not one per arm (ADR-0067 §6).
+from_call :: () -> s64 {
+    r := 0;
+    switch two() {
+        case 1;
+            r = 100;
+        case 2;
+            r = 200;
+        else;
+            r = 300;
+    }
+    return r;
+}
+
+main :: () {
+    n := 0;
+
+    // Each member reaches its own arm, and only its own — no fallthrough.
+    if describe(Colour.RED) == 1 {
+        n = n + 1;
+    }
+    if describe(Colour.GREEN) == 2 {
+        n = n + 2;
+    }
+    if describe(Colour.BLUE) == 4 {
+        n = n + 4;
+    }
+
+    // The qualified spelling agrees with the bare one.
+    if describe_qualified(Colour.GREEN) == 2 {
+        n = n + 8;
+    }
+
+    // A matched case and the `else` fallback, on a non-enum scrutinee.
+    if classify(2) == 20 {
+        n = n + 16;
+    }
+    if classify(99) == 30 {
+        n = n + 32;
+    }
+
+    // A call as the scrutinee.
+    if from_call() == 200 {
+        n = n + 64;
+    }
+
+    // Every assertion: 127.
+    if n == 127 {
+        exit(0);
+    }
+    exit(1);
+}

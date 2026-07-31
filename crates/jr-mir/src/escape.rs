@@ -322,6 +322,18 @@ fn addr_taken(body: &Body) -> (FxHashSet<LocalId>, FxHashSet<jr_hir::ParamId>) {
             // introduces is a synthesised slot no *local* names, so nothing here promotes it — the
             // block's own locals are reached through `inner` (ADR-0063 §2).
             Stmt::PushContext(inner, _) => stmt_worklist.push(*inner),
+            // A `switch`'s scrutinee and every arm's case value are ordinary operands, and each arm's
+            // body is a block — nothing here takes an address, so nothing is promoted differently
+            // (ADR-0067 §6).
+            Stmt::Switch { value, arms, .. } => {
+                expr_worklist.push((*value, false));
+                for arm in arms {
+                    if let Some(case) = arm.value {
+                        expr_worklist.push((case, false));
+                    }
+                    stmt_worklist.push(arm.body);
+                }
+            }
             Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
         }
     }

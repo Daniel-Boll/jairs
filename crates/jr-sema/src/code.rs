@@ -243,3 +243,26 @@ pub(crate) const E0256: &str = "E0256";
 /// no context at all. Distinct from E0214 "mismatched types" because the objection is specifically
 /// that a *pointer* was needed, which the note says.
 pub(crate) const E0257: &str = "E0257";
+
+/// A `switch` on an enum that does not name every member (ADR-0067 §3).
+///
+/// The point of adding matching is that the compiler can *prove* a case is handled, so a missing
+/// member is an error rather than a warning — a warning would leave the proof optional, the same
+/// "behaviour depends on something invisible" ADR-0014 §3 refuses.
+///
+/// The message names the members that are missing rather than counting them, because the missing name
+/// *is* the fix and a count makes the reader re-derive it. Only raised for an enum scrutinee: an `s64`
+/// has no finite member set to be exhaustive over, so it needs an `else` instead.
+pub(crate) const E0258: &str = "E0258";
+
+/// A duplicate `case` value, or a second `else`, in one `switch` (ADR-0067 §4).
+///
+/// The second arm can never run, and an arm that cannot run is a statement the reader believes does.
+/// Reported against the *later* arm, since the earlier one is the one that works.
+pub(crate) const E0259: &str = "E0259";
+
+/// An `else` arm on a `switch` that already names every member of its enum (ADR-0067 §4).
+///
+/// Unreachable, and this is the diagnostic that makes E0258 worth having: without it every `switch`
+/// could end in `else` and the exhaustiveness check would never fire.
+pub(crate) const E0260: &str = "E0260";

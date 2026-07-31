@@ -1044,6 +1044,49 @@ impl Formatter {
                 }
                 self.newline();
             }
+            SWITCH_STMT => {
+                self.emit_indent();
+                self.emit("switch ");
+                // The scrutinee is the switch's *own* expression child; an arm's case value lives under
+                // a `SWITCH_ARM`, so `children()` here sees only this one (ADR-0067 §1).
+                if let Some(value) = node.children().find(|n| is_expr_kind(n.kind())) {
+                    self.format_expr(&value);
+                }
+                self.emit(" {");
+                self.newline();
+                self.indent += 1;
+                for arm in node.children().filter(|n| n.kind() == SWITCH_ARM) {
+                    self.emit_indent();
+                    // An absent value is the `else` arm — but a *malformed* `case ;` also has none, so
+                    // the keyword decides, exactly as `SwitchArm::is_else` does. Printing `else` for a
+                    // broken `case` would change what the source says.
+                    let is_else = arm
+                        .children_with_tokens()
+                        .filter_map(|e| e.into_token())
+                        .any(|t| t.kind() == ELSE_KW);
+                    if is_else {
+                        self.emit("else;");
+                    } else {
+                        self.emit("case ");
+                        if let Some(value) = arm.children().find(|n| is_expr_kind(n.kind())) {
+                            self.format_expr(&value);
+                        }
+                        self.emit(";");
+                    }
+                    self.newline();
+                    // The arm's statements, indented under its header. Each is a full statement, so
+                    // `format_stmt` emits its own indent and newline.
+                    self.indent += 1;
+                    for stmt in arm.children().filter(|n| is_stmt_kind(n.kind())) {
+                        self.format_stmt(&stmt);
+                    }
+                    self.indent -= 1;
+                }
+                self.indent -= 1;
+                self.emit_indent();
+                self.emit("}");
+                self.newline();
+            }
             PUSH_CONTEXT_STMT => {
                 self.emit_indent();
                 self.emit("push_context ");
@@ -1661,6 +1704,7 @@ fn is_stmt_kind(kind: SyntaxKind) -> bool {
             | FOR_STMT
             | DEFER_STMT
             | PUSH_CONTEXT_STMT
+            | SWITCH_STMT
             | LOOP_LABEL
             | RETURN_STMT
             | BREAK_STMT

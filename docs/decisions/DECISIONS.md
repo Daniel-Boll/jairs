@@ -346,3 +346,74 @@ before relying on it, because the whole scope turned on it.
 
 All four forks taken as recommended. ADR-0066 records them and bounds ADR-0020. No new diagnostic code
 (a backtrace is a runtime message, not a diagnostic; E0258 still first free).
+
+---
+
+## Wave: switch and exhaustiveness (ADR-0067), 2026-07-31 — W4.5 opens, reordered before W4
+
+### What running first established (it moved the wave)
+
+PLAN §2.1 placed W4.5 after W4 because "exhaustiveness diagnostics **want** comptime type info". That is
+a want, not a need, and it was checkable:
+
+- `Pool::enum_members(decl)` already exists (ADR-0041 §4) and is **populated during checking** by
+  `jr-sema`'s `ctx.rs`, which is the phase a non-exhaustive `switch` would be reported in. Three sites in
+  `jr-sema` already read it.
+- `c == .GREEN` and `c == Colour.GREEN` both compile and run in both engines *today* — verified by
+  running, not by reading. So resolving a bare `.RED` case against the scrutinee's type and comparing an
+  enum value are mechanisms that exist; `check_bare_member` takes an expected type (ADR-0046), which is
+  exactly what an arm supplies.
+
+So W4.5's first two deliverables (a `switch`, exhaustiveness) need nothing from W4. Recorded as an
+amendment in ADR-0067 §0 rather than done quietly, because PLAN §5 names "plans that contradict
+themselves" a project failure mode, and a wave order justified by a dependency that does not exist is
+one. What comptime *would* add — exhaustiveness over a computed type (RTTI), a generated `switch`
+(`#insert`) — is real but is not what the row asks for.
+
+### Fork 1 — statement or expression
+
+- Options: **a statement (taken, recommended)**; an expression yielding a value.
+- Why: the same reason `push_context` is a statement (ADR-0063 §5) — an expression raises "what is its
+  type" and "what does a non-exhaustive one evaluate to", and Jairs-0 has nowhere that needs a
+  `switch`'s value. A compatible extension later.
+
+### Fork 2 — arm syntax
+
+- Options: **`case <value>;` then statements until the next `case` (taken, recommended)**; a braced block
+  per arm; `=>` per arm.
+- Why: matches Jai, and reuses the statement-list parsing every block already has, so no new body shape
+  enters the grammar. Braces are noise on the common one-statement arm; `=>` is not a token Jairs has and
+  would appear in exactly one place.
+
+### Fork 3 — cases: values or patterns
+
+- Options: **values compared with `==` (taken, recommended)**; patterns with destructuring/ranges/guards.
+- Why: keeps the wave to what §2.1 asks and to machinery that exists — a `switch` lowers to the chain of
+  `==` tests a program writes by hand today. Patterns are a much larger surface and want the tagged
+  variant (§7) to be worth having.
+
+### Fork 4 — the catch-all, and whether exhaustiveness is an error
+
+- Options: **`else` as the catch-all, non-exhaustive is an *error* (taken, recommended)**; a new
+  `default` keyword; a warning instead of an error.
+- Why: `else` is already this language's word for "the other branch", and a second word for one idea is
+  a second thing to remember. An error rather than a warning because the whole point of adding matching
+  is that the compiler can *prove* a case is handled — a warning leaves the proof optional, the same
+  "behaviour depends on something invisible" ADR-0014 §3 refuses. And an `else` on an
+  already-exhaustive enum `switch` is itself an error (E0260), since otherwise every `switch` could end
+  in `else` and the member check would never fire.
+
+### Fork 5 — fallthrough
+
+- Options: **none (taken, recommended)**; C-style implicit fallthrough; an explicit `fallthrough`.
+- Why: implicit fallthrough is the most-regretted control-flow default in this language's lineage and
+  Jai does not have it. Sharing an arm between two values is a future multi-value `case`, recorded as
+  absent rather than faked.
+
+### Resolution
+
+All five forks taken as recommended. ADR-0067 records them and amends PLAN §2.1's wave order (§0). Three
+new diagnostic codes — E0258 non-exhaustive, E0259 duplicate `case`/second `else`, E0260 unreachable
+`else` — so **E0261 becomes the first free code**, the first wave in five to add any. No new MIR node:
+the lowering is the `if`/`else if` branch chain that already exists. The tagged variant type, W4.5's
+third deliverable, stays for its own wave (§7) and is now unblocked by this one.

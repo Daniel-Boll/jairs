@@ -40,7 +40,7 @@ use rustc_hash::FxHashMap;
 use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
-    E0254, E0256, E0257,
+    E0254, E0256, E0257, E0258, E0259, E0260,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -290,6 +290,7 @@ impl Ctx<'_> {
             // — E0254, reused because it means exactly "this needs a context and there isn't one"
             // (ADR-0063 §4). The message names `push_context` so the diagnostic points at what was
             // written. The block is checked regardless, so a body error inside it is still reported.
+            Stmt::Switch { value, arms, span } => self.check_switch(body, value, &arms, span),
             Stmt::PushContext(inner, span) => {
                 if self.body_is_c_call(body) {
                     self.diags.push(
@@ -1681,6 +1682,147 @@ impl Ctx<'_> {
                 self.check_expr(scope, rhs, Some(PoolId::BOOL));
                 self.expect(expected, PoolId::BOOL, span)
             }
+        }
+    }
+
+    /// Checks `switch e { case v; … else; … }` (ADR-0067).
+    ///
+    /// Three jobs, in this order because each depends on the last: type the scrutinee, check every arm's
+    /// value *against that type* — which is what lets a bare `.RED` resolve, since the scrutinee's type
+    /// is the expected type `check_bare_member` wants (§2) — and then judge the set of arms as a whole.
+    ///
+    /// The set judgement is where the diagnostics live: a duplicate value or a second `else` is E0259,
+    /// an enum `switch` missing members is E0258, and an `else` on one that names them all is E0260. The
+    /// last is what makes the first worth having, since otherwise every `switch` could end in `else`.
+    fn check_switch(
+        &mut self,
+        body: BodyId,
+        value: ExprId,
+        arms: &[jr_hir::SwitchArm],
+        span: Span,
+    ) {
+        let scope = ExprScope::Body(body);
+        let scrutinee = self.check_expr(scope, value, None);
+
+        // Which enum this is, if any. Only an enum has a finite member set to be exhaustive over (§3);
+        // an `s64` switch is legal and simply needs an `else` to be total.
+        let enum_decl = match self.pool.item(scrutinee) {
+            Item::EnumType { decl, flags } => Some((*decl, *flags)),
+            _ => None,
+        };
+
+        // Members named so far, and their arms' spans, so a duplicate is reported against the *later*
+        // arm — the earlier one is the one that works.
+        let mut seen_members: Vec<Symbol> = Vec::new();
+        let mut seen_else: Option<Span> = None;
+
+        for arm in arms {
+            match arm.value {
+                None => {
+                    // A second `else` can never run.
+                    if seen_else.is_some() {
+                        self.diags.push(
+                            Diagnostic::error(arm.span, "this `switch` already has an `else`")
+                                .with_code(E0259)
+                                .with_note("a second catch-all can never run"),
+                        );
+                    }
+                    seen_else = Some(arm.span);
+                }
+                Some(case) => {
+                    // Checked against the scrutinee's type, which is what resolves a bare `.RED` and
+                    // what rejects a case of the wrong type through the ordinary mismatch (E0214).
+                    let want = (scrutinee != PoolId::ERROR).then_some(scrutinee);
+                    self.check_expr(scope, case, want);
+                    // For an enum, remember *which* member so exhaustiveness and duplicate detection
+                    // have something to compare. A case whose member cannot be named — a computed
+                    // value, or an error — contributes nothing rather than a wrong entry.
+                    if enum_decl.is_some()
+                        && let Some(name) = self.case_member_name(body, case)
+                    {
+                        if seen_members.contains(&name) {
+                            let text = self.interner.resolve(name).to_owned();
+                            self.diags.push(
+                                Diagnostic::error(
+                                    arm.span,
+                                    format!("`{text}` is already handled by an earlier `case`"),
+                                )
+                                .with_code(E0259)
+                                .with_note("a duplicate case can never run"),
+                            );
+                        } else {
+                            seen_members.push(name);
+                        }
+                    }
+                }
+            }
+            self.check_stmt(body, arm.body);
+        }
+
+        // The set judgement. Only for an enum: §3 restricts exhaustiveness to the type whose member set
+        // is finite and known, which is what makes the diagnostic true rather than approximate.
+        if let Some((decl, flags)) = enum_decl {
+            let missing: Vec<String> = self
+                .pool
+                .enum_members(decl)
+                .unwrap_or(&[])
+                .iter()
+                .filter(|member| !seen_members.contains(&member.name))
+                .map(|member| self.interner.resolve(member.name).to_owned())
+                .collect();
+            let ty = self.pool.enum_type(decl, flags);
+            let text = self.describe(ty);
+
+            match (missing.is_empty(), seen_else) {
+                // Every member named *and* an `else`: the `else` cannot run (§4).
+                (true, Some(else_span)) => {
+                    self.diags.push(
+                        Diagnostic::error(
+                            else_span,
+                            format!(
+                                "this `else` can never run: every member of `{text}` is handled"
+                            ),
+                        )
+                        .with_code(E0260)
+                        .with_help("remove the `else`"),
+                    );
+                }
+                // Members missing and no `else`: not exhaustive. The names *are* the fix, so they are
+                // listed rather than counted.
+                (false, None) => {
+                    let list = missing.join("`, `");
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            format!("this `switch` does not handle every member of `{text}`"),
+                        )
+                        .with_code(E0258)
+                        .with_note(format!("missing: `{list}`"))
+                        .with_help("add a `case` for each, or an `else` arm"),
+                    );
+                }
+                // Exhaustive by members, or made total by an `else`.
+                (true, None) | (false, Some(_)) => {}
+            }
+        }
+    }
+
+    /// The enum member an arm's `case` value names, if it names one syntactically (ADR-0067 §3).
+    ///
+    /// Reads the *expression* rather than a folded value, because exhaustiveness is about which members
+    /// were written: `case .RED` and `case Colour.RED` are the two spellings, and both carry the name.
+    ///
+    /// `None` for anything else — a computed value, a variable, an error — which contributes nothing to
+    /// the member set rather than a wrong entry. That makes a `switch` whose arms are computed
+    /// *non*-exhaustive, which is the honest answer: nothing here can prove it covers the members.
+    fn case_member_name(&self, body: BodyId, case: ExprId) -> Option<Symbol> {
+        match self.hir.body(body).exprs.get(case.index())? {
+            // `case .RED` — a bare member, resolved from the scrutinee's type.
+            Expr::Member { name, .. } => Some(*name),
+            // `case Colour.RED` — qualified. The receiver is the enum, which the arm's type check
+            // already agreed with, so the field name is the member.
+            Expr::Field { name, .. } => Some(*name),
+            _ => None,
         }
     }
 

@@ -702,8 +702,36 @@ pub enum Stmt {
     /// lowering-time swap with no new MIR node. A separate variant rather than a flag on
     /// [`Stmt::Block`], so every exhaustive match decides what a context scope means.
     PushContext(StmtId, Span),
+    /// `switch e { case v; … else; … }` (ADR-0067).
+    ///
+    /// The arms are values compared with `==`, not patterns (§2), so each carries an expression and the
+    /// block it runs. The `else` arm's `value` is `None` — an absent value *is* the catch-all (§4), which
+    /// is why no separate variant or flag distinguishes it.
+    Switch {
+        /// The value being matched.
+        value: ExprId,
+        /// The arms, in source order. Order matters: it is the order the comparisons are tried, and the
+        /// order a duplicate-case diagnostic reports against.
+        arms: Vec<SwitchArm>,
+        /// Span of the whole statement.
+        span: Span,
+    },
     /// Error recovery placeholder.
     Error(Span),
+}
+
+/// One arm of a [`Stmt::Switch`] (ADR-0067 §1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchArm {
+    /// The value this arm matches, or `None` for the `else` catch-all (ADR-0067 §4).
+    ///
+    /// A *value*, not a pattern: it is compared with `==`, which is why a bare `.RED` works here
+    /// unchanged — the scrutinee's type is the expected type it resolves against (§2).
+    pub value: Option<ExprId>,
+    /// The statements this arm runs, as a block.
+    pub body: StmtId,
+    /// Span of the arm's header, for a diagnostic that points at one arm.
+    pub span: Span,
 }
 
 // ---------------------------------------------------------------------------

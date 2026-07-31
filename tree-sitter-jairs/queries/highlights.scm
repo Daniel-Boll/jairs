@@ -75,6 +75,12 @@
   ; would highlight as a variable. The `push_context_stmt` node is what makes it a keyword here
   ; rather than a text predicate — the same node-not-text argument `context` records.
   "push_context"
+  ; `switch` and `case`, real as of ADR-0067 and never reserved. Both are legal identifiers, so the
+  ; failure mode of omitting them is not an ERROR node but a silent mis-colour — the same trap
+  ; `context` and `push_context` record. The `switch_stmt`/`switch_arm` nodes are what make them
+  ; keywords here rather than a text predicate.
+  "switch"
+  "case"
 ] @keyword
 
 ; Boolean literals are keywords in Jairs

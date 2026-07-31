@@ -947,6 +947,18 @@ impl<'a> ResolveCtx<'a> {
             // the same names as outside the wrapper (ADR-0063). The copy that isolates them is a
             // `jr-mir` concern, invisible to resolution.
             Stmt::PushContext(inner, _) => self.resolve_body_stmt(body_id, inner),
+            // A `switch`'s arms resolve like any block, and each arm's *value* like any expression —
+            // cases are values, not patterns (ADR-0067 §2), so a bare `.RED` needs nothing special here:
+            // `jr-sema` supplies its enum from the scrutinee's type.
+            Stmt::Switch { value, arms, .. } => {
+                self.resolve_body_expr(body_id, value);
+                for arm in arms {
+                    if let Some(case) = arm.value {
+                        self.resolve_body_expr(body_id, case);
+                    }
+                    self.resolve_body_stmt(body_id, arm.body);
+                }
+            }
             Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
         }
     }

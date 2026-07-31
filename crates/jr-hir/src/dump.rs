@@ -364,6 +364,28 @@ impl<'a> Dumper<'a> {
                 self.dump_body_stmt(body, inner);
                 self.indent -= 1;
             }
+            Stmt::Switch { value, arms, .. } => {
+                let value = *value;
+                let arms = arms.clone();
+                let text = self.fmt_body_expr(body, value);
+                self.line(&format!("Switch {text}"));
+                self.indent += 1;
+                for arm in &arms {
+                    // The `else` arm prints as `else` rather than as an arm with no value, because a
+                    // reader of a dump should not have to infer the catch-all from an absence.
+                    match arm.value {
+                        Some(value) => {
+                            let case = self.fmt_body_expr(body, value);
+                            self.line(&format!("case {case}"));
+                        }
+                        None => self.line("else"),
+                    }
+                    self.indent += 1;
+                    self.dump_body_stmt(body, arm.body);
+                    self.indent -= 1;
+                }
+                self.indent -= 1;
+            }
             Stmt::Return(expr, _) => {
                 let s = expr
                     .map(|e| self.fmt_body_expr(body, e))

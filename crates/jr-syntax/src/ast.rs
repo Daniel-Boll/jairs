@@ -142,6 +142,8 @@ ast_node!(ForStmt, FOR_STMT);
 ast_node!(RangeExpr, RANGE_EXPR);
 ast_node!(DeferStmt, DEFER_STMT);
 ast_node!(PushContextStmt, PUSH_CONTEXT_STMT);
+ast_node!(SwitchStmt, SWITCH_STMT);
+ast_node!(SwitchArm, SWITCH_ARM);
 ast_node!(LoopLabel, LOOP_LABEL);
 ast_node!(ReturnStmt, RETURN_STMT);
 ast_node!(BreakStmt, BREAK_STMT);
@@ -312,6 +314,8 @@ pub enum Stmt {
     Defer(DeferStmt),
     /// `push_context { … }` (ADR-0063)
     PushContext(PushContextStmt),
+    /// `switch e { case v; … }` (ADR-0067)
+    Switch(SwitchStmt),
     /// `label: for …` or `label: while …` (ADR-0049 §2)
     Labelled(LoopLabel),
 }
@@ -332,6 +336,7 @@ impl AstNode for Stmt {
                 | FOR_STMT
                 | DEFER_STMT
                 | PUSH_CONTEXT_STMT
+                | SWITCH_STMT
                 | LOOP_LABEL
         )
     }
@@ -350,6 +355,7 @@ impl AstNode for Stmt {
             FOR_STMT => Some(Self::For(ForStmt(node))),
             DEFER_STMT => Some(Self::Defer(DeferStmt(node))),
             PUSH_CONTEXT_STMT => Some(Self::PushContext(PushContextStmt(node))),
+            SWITCH_STMT => Some(Self::Switch(SwitchStmt(node))),
             LOOP_LABEL => Some(Self::Labelled(LoopLabel(node))),
             _ => None,
         }
@@ -369,6 +375,7 @@ impl AstNode for Stmt {
             Self::For(n) => n.syntax(),
             Self::Defer(n) => n.syntax(),
             Self::PushContext(n) => n.syntax(),
+            Self::Switch(n) => n.syntax(),
             Self::Labelled(n) => n.syntax(),
         }
     }
@@ -854,6 +861,44 @@ impl PushContextStmt {
     /// `defer` and `if` share.
     pub fn block(&self) -> Option<Block> {
         self.0.children().find_map(Block::cast)
+    }
+}
+impl SwitchStmt {
+    /// The value being matched (ADR-0067 §1).
+    ///
+    /// The *first* expression child, because an arm's `case` value is also an expression child of the
+    /// switch's subtree — but an arm's lives under a `SWITCH_ARM`, so `children()` at this level sees
+    /// only the scrutinee.
+    pub fn value(&self) -> Option<Expr> {
+        child_node(&self.0)
+    }
+
+    /// The arms, in source order.
+    pub fn arms(&self) -> impl Iterator<Item = SwitchArm> + '_ {
+        child_nodes(&self.0)
+    }
+}
+impl SwitchArm {
+    /// The value this arm matches, or `None` for the `else` arm (ADR-0067 §4).
+    ///
+    /// An absent value *is* the catch-all — that is what distinguishes `else;` from `case v;` without a
+    /// second node kind — so a consumer asks this rather than looking for a keyword.
+    pub fn value(&self) -> Option<Expr> {
+        child_node(&self.0)
+    }
+
+    /// Whether this is the `else` arm.
+    ///
+    /// Reads the keyword rather than inferring it from a missing value, because a malformed
+    /// `case ;` also has no value and is *not* a catch-all — treating it as one would make a syntax
+    /// error silently exhaustive.
+    pub fn is_else(&self) -> bool {
+        child_token(&self.0, ELSE_KW).is_some()
+    }
+
+    /// The statements this arm runs.
+    pub fn body(&self) -> impl Iterator<Item = Stmt> + '_ {
+        child_nodes(&self.0)
     }
 }
 impl LoopLabel {

@@ -139,6 +139,19 @@ pub enum SyntaxKind {
     /// "arrives later" refusal for it), so adding it to that block would mean immediately having to
     /// remember to exclude it — the trap `cast`, `enum`, `union` and `xx` each walked into.
     PUSH_CONTEXT_KW,
+    /// `switch` — real syntax as of ADR-0067.
+    ///
+    /// Placed **after** `NULL_KW`, like `CONTEXT_KW` and `PUSH_CONTEXT_KW`, which puts it *outside*
+    /// [`SyntaxKind::is_reserved_keyword`]'s range: it was never reserved — no wave ever emitted an
+    /// "arrives later" refusal for it — so adding it to that block would mean immediately having to
+    /// remember to exclude it.
+    SWITCH_KW,
+    /// `case` — real syntax as of ADR-0067, and only meaningful inside a `switch`.
+    ///
+    /// Lexed as its own keyword rather than matched as an identifier, so that `case` opening an arm is a
+    /// *token* the grammar can key on. Matching text would make a variable called `case` silently start
+    /// an arm — the trap `context` walked into from the other side (ADR-0057).
+    CASE_KW,
 
     // ---- delimiters ------------------------------------------------------
     /// `(`
@@ -445,6 +458,19 @@ pub enum SyntaxKind {
     /// statements is forced to decide what a context scope means rather than treating it as an
     /// ordinary block that happens to swap a pointer.
     PUSH_CONTEXT_STMT,
+    /// `switch e { case v; … else; … }` (ADR-0067) — a value match with exhaustiveness checking.
+    ///
+    /// Holds the scrutinee expression and one [`SyntaxKind::SWITCH_ARM`] per arm.
+    SWITCH_STMT,
+    /// One arm of a `switch`: `case v;` or `else;`, then the statements it runs (ADR-0067 §1).
+    ///
+    /// Its own node rather than a flat run of statements under `SWITCH_STMT`, because an arm has an
+    /// identity — a value, a body, and a position the exhaustiveness check reports against. A flat list
+    /// would make "which arm does this statement belong to" a counting exercise.
+    ///
+    /// The `else` arm is a `SWITCH_ARM` with no value expression, which is what distinguishes it: an
+    /// absent value *is* the catch-all, so nothing needs a second node kind.
+    SWITCH_ARM,
     /// `label:` before a `for` or `while` (ADR-0049 §2).
     ///
     /// A label names a *loop* and is deliberately not an expression name: it is resolved against
@@ -617,6 +643,8 @@ impl SyntaxKind {
             "operator" => Self::OPERATOR_KW,
             "context" => Self::CONTEXT_KW,
             "push_context" => Self::PUSH_CONTEXT_KW,
+            "switch" => Self::SWITCH_KW,
+            "case" => Self::CASE_KW,
             "union" => Self::UNION_KW,
             "for" => Self::FOR_KW,
             "defer" => Self::DEFER_KW,
@@ -649,6 +677,8 @@ impl SyntaxKind {
             Self::OPERATOR_KW => "operator",
             Self::CONTEXT_KW => "context",
             Self::PUSH_CONTEXT_KW => "push_context",
+            Self::SWITCH_KW => "switch",
+            Self::CASE_KW => "case",
             Self::UNION_KW => "union",
             Self::FOR_KW => "for",
             Self::DEFER_KW => "defer",

@@ -4662,3 +4662,168 @@ proc main -> void {
     discard call extern proc1(1_s64)
     return
 }
+
+========================================
+054-switch.jr
+========================================
+proc describe -> s64 {
+  params: v0: *Context, v1: Colour
+  bb0(v0: *Context, v1: Colour):
+    v2: bool = v1 == 0_Colour
+    branch v2 ? bb2() : bb3()
+  bb2():
+    goto bb1(1_s64)
+  bb3():
+    v3: bool = v1 == 1_Colour
+    branch v3 ? bb4() : bb5()
+  bb4():
+    goto bb1(2_s64)
+  bb5():
+    v4: bool = v1 == 2_Colour
+    branch v4 ? bb6() : bb7()
+  bb6():
+    goto bb1(4_s64)
+  bb7():
+    goto bb1(0_s64)
+  bb1(v5: s64):
+    return v5
+}
+proc describe_qualified -> s64 {
+  params: v0: *Context, v1: Colour
+  bb0(v0: *Context, v1: Colour):
+    v2: bool = v1 == 0_Colour
+    branch v2 ? bb2() : bb3()
+  bb2():
+    goto bb1(1_s64)
+  bb3():
+    v3: bool = v1 == 1_Colour
+    branch v3 ? bb4() : bb5()
+  bb4():
+    goto bb1(2_s64)
+  bb5():
+    v4: bool = v1 == 2_Colour
+    branch v4 ? bb6() : bb7()
+  bb6():
+    goto bb1(4_s64)
+  bb7():
+    goto bb1(0_s64)
+  bb1(v5: s64):
+    return v5
+}
+proc classify -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: bool = v1 == 1_s64
+    branch v2 ? bb2() : bb3()
+  bb2():
+    goto bb1(10_s64)
+  bb3():
+    v3: bool = v1 == 2_s64
+    branch v3 ? bb4() : bb5()
+  bb4():
+    goto bb1(20_s64)
+  bb5():
+    goto bb1(30_s64)
+  bb1(v4: s64):
+    return v4
+}
+proc two -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    return 2_s64
+}
+proc from_call -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call proc3(v0)
+    v2: bool = v1 == 1_s64
+    branch v2 ? bb2() : bb3()
+  bb2():
+    goto bb1(100_s64)
+  bb3():
+    v3: bool = v1 == 2_s64
+    branch v3 ? bb4() : bb5()
+  bb4():
+    goto bb1(200_s64)
+  bb5():
+    goto bb1(300_s64)
+  bb1(v4: s64):
+    return v4
+}
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call proc0(v0, 0_Colour)
+    v2: bool = v1 == 1_s64
+    branch v2 ? bb1() : bb2()
+  bb1():
+    v3: s64 = 0_s64 + 1_s64
+    goto bb3(v3)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v6: s64):
+    v4: s64 = call proc0(v0, 1_Colour)
+    v5: bool = v4 == 2_s64
+    branch v5 ? bb4() : bb5()
+  bb4():
+    v7: s64 = v6 + 2_s64
+    goto bb6(v7)
+  bb5():
+    goto bb6(v6)
+  bb6(v10: s64):
+    v8: s64 = call proc0(v0, 2_Colour)
+    v9: bool = v8 == 4_s64
+    branch v9 ? bb7() : bb8()
+  bb7():
+    v11: s64 = v10 + 4_s64
+    goto bb9(v11)
+  bb8():
+    goto bb9(v10)
+  bb9(v14: s64):
+    v12: s64 = call proc1(v0, 1_Colour)
+    v13: bool = v12 == 2_s64
+    branch v13 ? bb10() : bb11()
+  bb10():
+    v15: s64 = v14 + 8_s64
+    goto bb12(v15)
+  bb11():
+    goto bb12(v14)
+  bb12(v18: s64):
+    v16: s64 = call proc2(v0, 2_s64)
+    v17: bool = v16 == 20_s64
+    branch v17 ? bb13() : bb14()
+  bb13():
+    v19: s64 = v18 + 16_s64
+    goto bb15(v19)
+  bb14():
+    goto bb15(v18)
+  bb15(v22: s64):
+    v20: s64 = call proc2(v0, 99_s64)
+    v21: bool = v20 == 30_s64
+    branch v21 ? bb16() : bb17()
+  bb16():
+    v23: s64 = v22 + 32_s64
+    goto bb18(v23)
+  bb17():
+    goto bb18(v22)
+  bb18(v26: s64):
+    v24: s64 = call proc4(v0)
+    v25: bool = v24 == 200_s64
+    branch v25 ? bb19() : bb20()
+  bb19():
+    v27: s64 = v26 + 64_s64
+    goto bb21(v27)
+  bb20():
+    goto bb21(v26)
+  bb21(v28: s64):
+    v29: bool = v28 == 127_s64
+    branch v29 ? bb22() : bb23()
+  bb22():
+    discard call extern proc1(0_s64)
+    goto bb24()
+  bb23():
+    goto bb24()
+  bb24():
+    discard call extern proc1(1_s64)
+    return
+}

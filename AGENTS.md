@@ -68,7 +68,7 @@ cd tree-sitter-jairs && npx --yes tree-sitter-cli@0.26.11 generate \
 ```
 
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
-visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919.
+visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924.
 
 ## House style
 
@@ -163,10 +163,10 @@ There is no central registry; each crate has a `code.rs` with one constant per c
 a `///` saying exactly what raises it. Ranges: E0001–E0006 lexer, E0100–E0199 parser,
 E0200–E0211 `jr-hir` (E0210 actually raised by `jr-db`'s module loader, E0204 relocated
 to `jr-sema`), E0212–E0226 `jr-sema`, E0227–E0229 `jr-mir`, E0230 `jr-db` const-eval,
-E0231 `jr-db` unused imports, E0232–E0247 and E0250–E0257 `jr-sema` and `jr-hir` past
+E0231 `jr-db` unused imports, E0232–E0247 and E0250–E0260 `jr-sema` and `jr-hir` past
 their original blocks (E0250/E0253 in `jr-hir`, the rest in `jr-sema`).
 
-**E0258 is the first free code**; E0131 is the first free *parser* code. E0231 is `jr-db`'s
+**E0261 is the first free code**; E0131 is the first free *parser* code. E0231 is `jr-db`'s
 unused-import warning — the first code in this project that is a *warning* rather than an
 error, so a consumer filtering by severity has something to filter.
 

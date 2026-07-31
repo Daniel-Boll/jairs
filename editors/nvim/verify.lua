@@ -814,6 +814,71 @@ if has_parser then
       buf = vim.api.nvim_get_current_buf()
     end
 
+    -- `switch` and `case` (ADR-0067). Same failure mode as `context` and `push_context`: both are
+    -- legal identifiers, so omitting the grammar rules would not produce an ERROR node — a `switch`
+    -- would parse as a name followed by a stray block, and the keywords would mis-colour as variables
+    -- while every gate stayed green. So this checks the node types and the keyword highlights.
+    local sw_file = root .. "/tests/corpus/valid/054-switch.jr"
+    if vim.uv.fs_stat(sw_file) then
+      vim.cmd.edit(vim.fn.fnameescape(sw_file))
+      local sw_buf = vim.api.nvim_get_current_buf()
+      local sw_ok, sw_parser = pcall(vim.treesitter.get_parser, sw_buf, "jairs")
+      if sw_ok and sw_parser then
+        local sw_tree = sw_parser:parse()[1]
+        check("the switch corpus file parses with no ERROR node", not sw_tree:root():has_error())
+
+        local sw_kinds = {}
+        local function sw_walk(node)
+          sw_kinds[node:type()] = (sw_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            sw_walk(child)
+          end
+        end
+        sw_walk(sw_tree:root())
+        -- Four switches in that file: describe, describe_qualified, classify, from_call.
+        check("tree-sitter produces switch_stmt", (sw_kinds.switch_stmt or 0) == 4)
+        -- Thirteen arms: 3 + 3 + 3 (two cases and an else) + 3 (two cases and an else) = 12, plus none
+        -- stray. Counted rather than merely present, because an arm rule that swallowed the next arm
+        -- would still produce *some* switch_arm nodes.
+        check("tree-sitter produces one switch_arm per arm", (sw_kinds.switch_arm or 0) == 12)
+
+        -- And neither keyword may be read as an ordinary name.
+        local sw_as_name = false
+        local function sw_name_walk(node)
+          if node:type() == "name_expr" then
+            local text = vim.treesitter.get_node_text(node, sw_buf)
+            if text == "switch" or text == "case" then
+              sw_as_name = true
+            end
+          end
+          for child in node:iter_children() do
+            sw_name_walk(child)
+          end
+        end
+        sw_name_walk(sw_tree:root())
+        check("`switch`/`case` are not parsed as ordinary names", not sw_as_name)
+
+        local sw_q_ok, sw_q = pcall(vim.treesitter.query.get, "jairs", "highlights")
+        if sw_q_ok and sw_q then
+          local saw_switch, saw_case = false, false
+          for id, node in sw_q:iter_captures(sw_tree:root(), sw_buf, 0, -1) do
+            local capture = sw_q.captures[id]
+            local text = vim.treesitter.get_node_text(node, sw_buf)
+            if capture == "keyword" and text == "switch" then
+              saw_switch = true
+            end
+            if capture == "keyword" and text == "case" then
+              saw_case = true
+            end
+          end
+          check("`switch` highlights as a keyword", saw_switch)
+          check("`case` highlights as a keyword", saw_case)
+        end
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
     -- `#no_abc` (ADR-0058 §3). Two things the drift gate cannot see.
     --
     -- The **ordering** one is why this block exists. `#c_call` and `#no_abc` are legal in either

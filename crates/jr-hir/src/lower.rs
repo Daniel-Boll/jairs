@@ -1110,6 +1110,40 @@ impl<'a> BodyLowerCtx<'a> {
             // statements resolve names and types exactly as they would outside the wrapper — and
             // `jr-mir` is where the context copy and the pointer swap live. Holding the block rather
             // than inlining its statements keeps the scope one identity, so the copy happens once.
+            // `switch e { case v; … }` (ADR-0067). Each arm's value is lowered as an ordinary
+            // expression — cases are values, not patterns (§2) — and its statements become a block, so
+            // an arm's scope is a block's scope and needs no new rule.
+            AstStmt::Switch(sw) => {
+                let value = sw
+                    .value()
+                    .map(|e| self.lower_expr(&e))
+                    .unwrap_or_else(|| self.alloc_expr(Expr::Error(span), span));
+                let arms = sw
+                    .arms()
+                    .map(|arm| {
+                        let arm_span = self.span_of_node(arm.syntax());
+                        // The `else` arm has no value, and that absence is the catch-all. A malformed
+                        // `case ;` also has none, so `is_else` reads the *keyword* — treating a syntax
+                        // error as a catch-all would make it silently exhaustive.
+                        let value = if arm.is_else() {
+                            None
+                        } else {
+                            Some(arm.value().map(|e| self.lower_expr(&e)).unwrap_or_else(|| {
+                                self.alloc_expr(Expr::Error(arm_span), arm_span)
+                            }))
+                        };
+                        let stmts: Vec<StmtId> =
+                            arm.body().map(|stmt| self.lower_stmt(&stmt)).collect();
+                        let body = self.alloc_stmt(Stmt::Block(stmts, arm_span));
+                        crate::hir::SwitchArm {
+                            value,
+                            body,
+                            span: arm_span,
+                        }
+                    })
+                    .collect();
+                self.alloc_stmt(Stmt::Switch { value, arms, span })
+            }
             AstStmt::PushContext(p) => {
                 let inner = p
                     .block()

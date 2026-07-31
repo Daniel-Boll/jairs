@@ -96,19 +96,19 @@
 #h(4pt)
 #pill[924 tests]
 #h(4pt)
-#pill[ADR-0066 latest]
+#pill[ADR-0067 latest]
 #h(4pt)
-#pill(fill: rgb("#e8f5ec"), stroke: good)[W3 complete · W4 comptime next]
+#pill(fill: rgb("#fdf2e6"), stroke: warn)[W4.5 open early · tagged variant next]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
   metric("Tests", "924", "workspace, all passing"),
-  metric("Corpus", "149", "jr files, both engines"),
-  metric("ADRs", "66", "0001 to 0066, immutable"),
-  metric("Diagnostics", "88", "codes, E0258 next free"),
-  metric("Editor checks", "156", "Neovim, verified not gated"),
+  metric("Corpus", "153", "jr files, both engines"),
+  metric("ADRs", "67", "0001 to 0067, immutable"),
+  metric("Diagnostics", "91", "codes, E0261 next free"),
+  metric("Editor checks", "162", "Neovim, verified not gated"),
 )
 
 // ---------------------------------------------------------------------------
@@ -144,21 +144,22 @@
         one shared formatter.
       ]
     - #text(size: 7.4pt)[
-        *The differential harness compares a failing program too.* A trap's whole stderr — reason,
-        location and now the call chain — must match byte for byte, which is the only thing holding two
-        very different mechanisms together: the VM pushes a `ProcRef` and resolves names from the HIR,
-        while native writes name pointers into a mutable global its generated helper walks at trap time.
+        *A plan's stated reason is checkable.* W4.5 was scheduled after W4 because exhaustiveness
+        "wants comptime type info". Three greps and a two-line program showed it does not: the enum
+        member set is already in the pool during checking. The wave moved forward and the table records
+        the amendment — a wave order resting on a dependency that does not exist is a plan contradicting
+        itself.
       ]
     - #text(size: 7.4pt)[
-        *It found a real asymmetry.* `main`'s frame is pushed by its caller, and native's caller is the C
-        entry shim while the VM's is `run_main` — so native printed one frame fewer until the shim
-        learned to push it. Nothing but the byte comparison would have noticed.
+        *MIR snapshots prove properties, not just stability.* `describe` and `describe_qualified` lower
+        to *identical* MIR, which is how the corpus shows `case .RED` and `case Colour.RED` are two
+        spellings of one member; and `from_call` shows one `call` before the first comparison, proving the
+        scrutinee is evaluated once rather than per arm.
       ]
     - #text(size: 7.4pt, fill: warn)[
-        *An ADR can be wrong about its own example.* This wave's draft predicted two callees would both
-        be inlined away; running it showed only leaves inline, so one survived with a real frame. The
-        forks were sound, the illustration was not — and running the example while writing the ADR, not
-        after, is what caught it.
+        *The formatter deleted a whole statement, again.* A kind absent from `is_stmt_kind` is silently
+        dropped, so the first formatted run lost all four switches in the corpus file. Twelfth wave in
+        fourteen. The ADR predicted it, which is why the fix and the node arrived together.
       ]
   ],
 )
@@ -173,12 +174,13 @@
   ("Full integer tower, bool, string, pointers", "pointer difference p - q, deferred"),
   ("float32 and float64, plain IEEE-754, no traps", "percent on floats, is_nan, math (W7)"),
   ("struct, nominal, one level", ""),
-  ("union, nominal, untagged, fields at offset 0", "a tagged variant type (W4.5)"),
-  ("enum and enum_flags, namespaced, bare dot-member", "explicit backing type; a switch (W4.5)"),
+  ("union, nominal, untagged, fields at offset 0", "a tagged variant type (W4.5, next)"),
+  ("enum and enum_flags, namespaced, bare dot-member, switch cases", "an explicit backing type"),
   ("Fixed arrays and views, bounds-checked, returnable", "array literals, sub-slicing"),
   ("cast and xx from context; operator overloading", "unary, index and call overloading"),
   ("Trapping arithmetic, wrapping variants, bitwise", "transmute; float printing"),
   ("if, else, while, for, break, continue, defer, using", ""),
+  ("switch with exhaustiveness checking over an enum; else", "patterns, ranges, guards; a jump table"),
   ("Multiple returns, named args, literal defaults", "#must; a multi-result call in a return"),
   ("import, foreign, system_library, #scope_module", "polymorphs, macros (W5)"),
   ("One trivial compile-time run, folded", "arbitrary run, RTTI, insert (W4)"),
@@ -238,7 +240,7 @@
   ("Cranelift back end", "works", "Aggregate returns via sret; indirect calls via func_addr"),
   ("LLVM back end", "not started", "W8 owns it"),
   ("Language server", "12 caps", "Diagnostics, hover, goto, completion, rename, actions, hints"),
-  ("Neovim integration", "works", "Runtimepath dir, no plugin manager; 156 checks"),
+  ("Neovim integration", "works", "Runtimepath dir, no plugin manager; 162 checks"),
   ("Driver", "stub", "Should consume the workspace notion that now exists"),
 )
 
@@ -286,8 +288,8 @@
     "Arbitrary compile-time execution, RTTI and Type values, insert, code. PLAN section 5 names this the project's top risk: sema and comptime become mutually recursive.",
   ),
   (
-    "W4.5 Pattern matching", "not started",
-    "switch with exhaustiveness, a bare dot-member as a case, and a tagged variant type. Was missing from the wave table entirely — two accepted ADRs deferred decisions to it while no wave scheduled it.",
+    "W4.5 Pattern matching", "in progress",
+    "switch with exhaustiveness checking and a bare dot-member as a case both landed (ADR-0067), which also settles ADR-0041 §2 step 5. Reordered ahead of W4 after checking showed its stated dependency on comptime was a want rather than a need. Remaining: a tagged variant type beside union — the other half of ADR-0045 §1, now unblocked because switch is what makes a tag worth reading.",
   ),
   (
     "W5 Polymorphism", "not started",
@@ -341,20 +343,20 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[Eighteen waves shipped]
+    #sub[Nineteen waves shipped]
     #text(size: 7.4pt)[
-      ADR-0049 through 0066: for and defer, using, aggregate returns, multiple returns, named and
+      ADR-0049 through 0067: for and defer, using, aggregate returns, multiple returns, named and
       default arguments, scope visibility, imported constants, float constants, context, the
       bounds-check build setting, indirect calls, null plus a memory source, the allocator
-      protocol, push_context, pointer arithmetic, temporary storage, and trap backtraces.
+      protocol, push_context, pointer arithmetic, temporary storage, trap backtraces, and switch.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 924. Corpus 116 to 149 files. Neovim checks 103 to 156. *W2 and W3 both
-      closed*: an allocator in the context, push_context to scope it, raw pointer arithmetic, a
-      temporary-storage arena built from all three, and a trap that names the frames that were live.
-      W4 — comptime, the project's top risk — is next.
+      Test count 900 to 924. Corpus 116 to 153 files. Neovim checks 103 to 162. *W2 and W3 both
+      closed*, and *W4.5 opened a wave early* — its stated dependency on comptime turned out not to
+      exist. A switch over an enum is now exhaustiveness-checked, which leaves one deliverable (a tagged
+      variant type) before W4 — comptime, the project's top risk.
     ]
 
     #v(0.3em)

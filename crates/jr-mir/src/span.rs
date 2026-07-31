@@ -86,6 +86,7 @@ fn stmt_span(stmt: &jr_hir::Stmt) -> Span {
         | Stmt::Error(span) => *span,
         Stmt::Break(_, span) | Stmt::Continue(_, span) | Stmt::Defer(_, span) => *span,
         Stmt::PushContext(_, span) => *span,
+        Stmt::Switch { span, .. } => *span,
         Stmt::Assign { span, .. }
         | Stmt::If { span, .. }
         | Stmt::While { span, .. }

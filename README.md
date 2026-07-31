@@ -18,7 +18,12 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after **traps with backtraces** (ADR-0066), which **completes wave W3 — Runtime core**: a
+Last updated after **`switch` with exhaustiveness checking** (ADR-0067), which **opens wave W4.5 —
+Pattern matching, a wave earlier than planned**: `switch` over an enum must name every member or say
+`else`, a missing one is an error that *lists* what is missing, and a bare `.RED` works as a case.
+PLAN placed W4.5 after W4 "because exhaustiveness diagnostics want comptime type info" — checking showed
+that was a want rather than a need, so the wave moved forward and §2.1 records the amendment. On top of
+traps with backtraces (ADR-0066), which **completed wave W3 — Runtime core**: a
 trap now names the procedure frames that were live beneath it, innermost first, and both engines emit
 byte-identical bytes — the VM from a shadow stack it resolves against the HIR, native from name pointers
 its generated helper walks at trap time. Inlined frames do not appear, because at run time they did not
@@ -41,7 +46,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 924 workspace tests; six CI gates green on macOS arm64, plus 156 Neovim
+`print_int` (ADR-0037). 924 workspace tests; six CI gates green on macOS arm64, plus 162 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do
@@ -51,7 +56,7 @@ checks that are verified rather than gated.
 | Compile and run a program in the comptime VM | `jr run file.jr` | Register bytecode interpreter, no JIT tier |
 | Compile to a native executable | `jr build file.jr -o out` | arm64 macOS verified; x86-64 Linux configured in CI but **never run** |
 | Build without bounds checks | `jr build file.jr --no-bounds-check`, or `jr run` | ADR-0003's build setting, finally wired (ADR-0058). An out-of-range index is then undefined behaviour, which is the trade. `#no_abc` on a procedure does the same locally, whatever the build says; compile-time execution checks regardless |
-| Get rustc-grade diagnostics | `jr check file.jr` | 88 codes across lexer, parser, HIR, sema, MIR and const-eval. E0218 and E0212 suggest a near name; E0231 is the one *warning* — an unused `#import` |
+| Get rustc-grade diagnostics | `jr check file.jr` | 91 codes across lexer, parser, HIR, sema, MIR and const-eval. E0218 and E0212 suggest a near name; E0231 is the one *warning* — an unused `#import` |
 | Format source canonically | `jr fmt [--check] paths…` | The corpus is canonical under it, CI-enforced |
 | Inspect tokens or the CST | `jr parse file.jr` | Debug aid |
 | Measure language-server latency | `jr bench file.jr` | Reports min/median/p95 cold, warm and after an edit. **Reports, never judges** — no threshold, not a gate (ADR-0033) |
@@ -76,14 +81,15 @@ The authoritative version of this list is
 | `float32`, `float64` — plain IEEE-754, no traps | `%` on floats, `is_nan`, math intrinsics (**W7**) |
 | `cast(T, x)` between any two numeric types, and `xx` where the context gives the type | pointer conversions — `xx` is no more powerful than `cast` |
 | `struct { … }`, one level, nominal | |
-| `union { … }`, nominal, **untagged** — every field at offset 0 | a *tagged* variant type (**W2**, once pattern matching exists) |
-| `enum { RED; GREEN :: 5; }`, nominal, namespaced members, and bare `.RED` from context | `.RED` in a `switch`, since there is no `switch` (**W2**) |
+| `union { … }`, nominal, **untagged** — every field at offset 0 | a *tagged* variant type (**W4.5**, now unblocked by `switch`) |
+| `enum { RED; GREEN :: 5; }`, nominal, namespaced members, and bare `.RED` from context — including as a `switch` case (ADR-0067) | |
 | `enum_flags { READ; WRITE; }` — powers of two, combines with `& \| ^ ~` | building one from a computed integer (`cast(Perm, 3)` is refused) |
 | procedures, one result or several: `-> (s64, bool)`, `q, ok := f();`, `_` to discard | `#must` (its own ADR); a multi-result call as a `return` operand |
 | a procedure as a **value**: `f := add`, a `(s64, s64) -> s64` parameter or **struct field**, `f(...)` calls through it; `(T)` with no arrow for a void return | a cross-file or `#foreign` procedure value; comparing or printing one; a `#c_call` proc-pointer type |
 | named arguments `f(b = 2, a = 1)` and literal defaults `(b: s64 = 10)` | a non-literal default; a named argument on a cross-file call, or in a `#run` |
 | `::` constant, `:=` inferred, `: T = v` typed, `---` uninit | |
 | `if` / `else if` / `else`, `while`, `return` | |
+| `switch e { case v; … else; … }` over an enum or an integer, **exhaustiveness-checked** for an enum, no fallthrough (ADR-0067) | patterns, ranges, guards; a multi-value `case`; `switch` as an expression |
 | `for x: buf`, `for x, i: buf`, `for i: 0..n`, `for < x: buf`; over arrays, views and ranges | iterate-by-reference `for *x`, a range as a value, `for` over a user type (**a later wave**) |
 | `break` / `continue`, labelled (`break outer`) or not; `defer` at every scope exit | |
 | `using p: Point` promotes a struct's fields; `using base: Point;` embeds them, transitively | `using` on an enum, a module, or an **imported** struct |
@@ -182,13 +188,12 @@ ignoring the flag a compile error, is owed its own ADR. There is no GC and no RA
   cannot shadow an existing name — C's rule would be worse here than in C, because ADR-0014's
   flat import merge would let an imported enum's members enlarge the name space every
   identifier resolves against.
-- **Bare `.RED` does not work yet, and that is a planned gap rather than an oversight.** Jai
-  allows `c: Colour = .RED;`. ADR-0041 §2 records the five concrete steps it needs — a syntax
-  node, an HIR expression, a sema rule on the context path, an audit of every place a type is
-  pushed inward, and a decision about `switch` — because it asks the context for a *namespace
-  to resolve a name in* rather than a type to give an untyped value, which is a new resolution
-  rule and not a new literal. `Colour.RED` stays valid forever, so nothing written today breaks
-  when `.RED` lands.
+- **Bare `.RED` works, and its last owed decision is now taken.** `c: Colour = .RED;` landed with
+  `xx` autocast (ADR-0046); ADR-0041 §2 listed five steps it needed, and the fifth — "a decision
+  about `switch`" — was owed until ADR-0067 made `case .RED` legal. It asks the context for a
+  *namespace to resolve a name in* rather than a type to give an untyped value, which is why it was
+  a resolution rule rather than a new literal. `Colour.RED` stays valid, so both spellings work and
+  the corpus proves they compile to identical MIR.
 - **An enum's numbering is Jai's, including the part that surprises people.** Members
   auto-number from 0, an explicit value is allowed, and **later members continue from it** —
   `enum { A; B :: 10; C; }` is 0, 10, 11, not 0, 10, 2. Duplicate values are legal. Ordering
@@ -336,7 +341,7 @@ ignoring the flag a compile error, is owed its own ADR. There is no GC and no RA
 - **ADR-0002's arithmetic has two implementations, not one.** `jr-pool` owns the one
   both *evaluators* share; `jr-codegen-clif` keeps its own because it emits code rather
   than evaluating. The pair is held equal by `differential.rs` and nothing else.
-- **Neovim integration is verified on one machine, not gated.** The 156 checks need an
+- **Neovim integration is verified on one machine, not gated.** The 162 checks need an
   editor, and Neovim is not a build dependency of this workspace, so `cargo test` cannot
   run them. No other editor is packaged for, deliberately (ADR-0036). They also need the
   *installed* parser to be current: `editors/nvim/build.sh` is a separate artefact from the

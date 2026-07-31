@@ -368,6 +368,15 @@ impl Reach {
                 }
                 Stmt::Defer(inner, _) => stmt_work.push(*inner),
                 Stmt::PushContext(inner, _) => stmt_work.push(*inner),
+                Stmt::Switch { value, arms, .. } => {
+                    expr_work.push(*value);
+                    for arm in arms {
+                        if let Some(case) = arm.value {
+                            expr_work.push(case);
+                        }
+                        stmt_work.push(arm.body);
+                    }
+                }
                 Stmt::Return(value, _) => {
                     if let Some(value) = value {
                         expr_work.push(*value);
@@ -486,6 +495,9 @@ fn scan(
             // and a compile-time swap of which pointer `context` reads — no new MIR node (ADR-0063
             // §2), so there is nothing here to refuse.
             | Stmt::PushContext(_, _)
+            // Representable: a `switch` lowers to the branch chain an `if`/`else if` over the same
+            // comparisons already produces (ADR-0067 §6), so there is nothing to refuse either.
+            | Stmt::Switch { .. }
             | Stmt::Defer(_, _) => {}
         }
     }
@@ -1048,6 +1060,7 @@ impl Lower<'_> {
                 label,
                 span: _,
             } => self.for_stmt(value, index, &iterable, reverse, body, label),
+            Stmt::Switch { value, arms, .. } => self.switch_stmt(value, &arms),
             Stmt::PushContext(inner, _) => self.push_context_stmt(inner),
             // Registered, not lowered: the statements run at every *exit* from the enclosing
             // scope, so `block` emits them before each terminator that leaves (ADR-0049 §3).
@@ -1581,6 +1594,94 @@ impl Lower<'_> {
 
         self.ssa.seal_block(&mut self.mir, join);
         self.current = (then_fell_through || else_fell_through).then_some(join);
+    }
+
+    /// Lowers `switch e { case v; … else; … }` (ADR-0067 §6) to the branch chain an `if`/`else if` over
+    /// the same comparisons already produces — **no new MIR node**, and no back-end change.
+    ///
+    /// The scrutinee is evaluated **once**, into one operand every arm's comparison reads. That is not
+    /// only an optimisation: evaluating it per arm would run its side effects once per test, so a
+    /// `switch f() { … }` would call `f` several times. The chain shape is what makes that natural —
+    /// the operand is computed before the first test block.
+    ///
+    /// Each arm gets a test block and a body block; every body jumps to one join. An `else` arm's body
+    /// is the last test's false edge, so it needs no comparison. A `switch` with no `else` whose
+    /// comparisons all fail falls through to the join, which is what an unmatched non-enum `switch`
+    /// does — and an enum one cannot get there, because sema proved the members are covered (§3).
+    fn switch_stmt(&mut self, value: ExprId, arms: &[jr_hir::SwitchArm]) {
+        // Evaluated once, before any test (see above).
+        let scrutinee = self.expr(value);
+        let Some(mut current) = self.current else {
+            return;
+        };
+
+        let join = self.mir.push_block();
+        let mut any_fell_through = false;
+        // The `else` arm, if there is one: it has no comparison and runs when every test failed, so it
+        // is held back and lowered into the final false edge.
+        let (cases, else_arm): (Vec<&jr_hir::SwitchArm>, Option<&jr_hir::SwitchArm>) = {
+            let mut cases = Vec::with_capacity(arms.len());
+            let mut fallback = None;
+            for arm in arms {
+                if arm.value.is_some() {
+                    cases.push(arm);
+                } else if fallback.is_none() {
+                    // A second `else` is E0259, so sema already refused it; taking the first keeps this
+                    // lowering total rather than depending on that.
+                    fallback = Some(arm);
+                }
+            }
+            (cases, fallback)
+        };
+
+        for arm in cases {
+            let Some(case) = arm.value else { continue };
+            self.current = Some(current);
+            let case_operand = self.expr(case);
+            let Some(test) = self.current else { return };
+
+            let body_bb = self.mir.push_block();
+            // A `next` block even for the last arm, so each branch edge lands on a single-predecessor
+            // block — targeting the join directly would make a critical edge, which `verify` rejects
+            // (the same reason `if_stmt` always creates an `else` block).
+            let next_bb = self.mir.push_block();
+
+            let cond = self.define(
+                PoolId::BOOL,
+                Rvalue::Binary {
+                    op: BinOp::Eq,
+                    lhs: scrutinee,
+                    rhs: case_operand,
+                },
+                self.span(case),
+            );
+            self.mir.set_terminator(
+                test,
+                Terminator::Branch {
+                    cond,
+                    then_: Target::new(body_bb),
+                    else_: Target::new(next_bb),
+                },
+            );
+            self.ssa.seal_block(&mut self.mir, body_bb);
+            self.ssa.seal_block(&mut self.mir, next_bb);
+
+            self.current = Some(body_bb);
+            self.stmt(arm.body);
+            any_fell_through |= self.goto(join);
+
+            current = next_bb;
+        }
+
+        // Whatever is left after every test is the `else` arm's body, or nothing.
+        self.current = Some(current);
+        if let Some(arm) = else_arm {
+            self.stmt(arm.body);
+        }
+        any_fell_through |= self.goto(join);
+
+        self.ssa.seal_block(&mut self.mir, join);
+        self.current = any_fell_through.then_some(join);
     }
 
     fn while_stmt(&mut self, cond: ExprId, body: StmtId, label: Option<Symbol>) {
