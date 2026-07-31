@@ -363,7 +363,8 @@ impl Verifier<'_> {
                 | Projection::StringData
                 | Projection::StringCount
                 | Projection::ViewData
-                | Projection::ViewCount => {}
+                | Projection::ViewCount
+                | Projection::VariantTag => {}
             }
         }
     }
@@ -992,7 +993,8 @@ fn mark_place(place: &Place, used: &mut [bool]) {
             | Projection::StringData
             | Projection::StringCount
             | Projection::ViewData
-            | Projection::ViewCount => {}
+            | Projection::ViewCount
+            | Projection::VariantTag => {}
         }
     }
 }

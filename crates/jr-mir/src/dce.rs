@@ -226,7 +226,8 @@ fn note_place(place: &Place, used: &mut FxHashSet<ValueId>) {
             | Projection::StringData
             | Projection::StringCount
             | Projection::ViewData
-            | Projection::ViewCount => {}
+            | Projection::ViewCount
+            | Projection::VariantTag => {}
         }
     }
 }

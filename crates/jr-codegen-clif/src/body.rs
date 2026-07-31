@@ -1245,6 +1245,11 @@ impl Translator<'_, '_> {
                     address = self.offset(address, offset);
                     ty = PoolId::S64;
                 }
+                // The tag is the leading field, so its offset is 0 and the address is unchanged
+                // (ADR-0068 §3). Only the type moves, to `u8`, so a load reads one byte.
+                Projection::VariantTag => {
+                    ty = PoolId::U8;
+                }
             }
         }
         Ok(address)
@@ -1286,6 +1291,7 @@ impl Translator<'_, '_> {
                         })?
                 }
                 Projection::ViewCount => PoolId::S64,
+                Projection::VariantTag => PoolId::U8,
             };
         }
         Ok(ty)

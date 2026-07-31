@@ -522,7 +522,8 @@ fn replace_in_place(place: &mut crate::mir::Place, old: Operand, new: Operand) {
             | crate::mir::Projection::StringData
             | crate::mir::Projection::StringCount
             | crate::mir::Projection::ViewData
-            | crate::mir::Projection::ViewCount => {}
+            | crate::mir::Projection::ViewCount
+            | crate::mir::Projection::VariantTag => {}
         }
     }
 }

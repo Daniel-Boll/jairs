@@ -468,6 +468,16 @@ pub enum Projection {
     /// (ADR-0039 §5). That difference is the whole point of a view, which is why it needs a
     /// projection at all.
     ViewCount,
+    /// A `variant`'s tag byte, of type `u8` (ADR-0068 §3).
+    ///
+    /// Its own projection rather than `Field(n)`, because the tag is **not a case**: no source
+    /// expression names it (§5 keeps `v.tag` unspellable), and giving it a field index would put it in
+    /// the same numbering the cases use — so a `Field(0)` would be ambiguous between the tag and the
+    /// first case, which is exactly the kind of silent wrong-address bug ADR-0045 §3 warns about.
+    ///
+    /// Reachable only from lowering: a write to a case emits a store through this, and a read of a case
+    /// emits a load through it to compare (§4).
+    VariantTag,
 }
 
 /// The kind of a numeric value: an integer or a float (ADR-0040 §3).
@@ -1403,7 +1413,8 @@ fn remap_place_slots(place: &mut Place, remap: &[Option<SlotId>]) {
             | Projection::StringData
             | Projection::StringCount
             | Projection::ViewData
-            | Projection::ViewCount => {}
+            | Projection::ViewCount
+            | Projection::VariantTag => {}
         }
     }
 }

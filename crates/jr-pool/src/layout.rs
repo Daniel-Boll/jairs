@@ -632,6 +632,22 @@ pub fn field_offset(
         return Ok((0, layout_of(pool, target, field.ty)?));
     }
 
+    // **Every case of a variant is at the payload offset**, which is the same line one step along: a
+    // variant is a tag followed by a union, so its cases overlap each other but sit *after* the tag
+    // (ADR-0068 §3). Getting this wrong would read the tag as part of a case, or a case as the tag —
+    // a silent wrong-address bug of exactly the kind the union arm above warns about, which is why
+    // the offset is computed here and in neither engine.
+    if let Item::VariantType { decl } = pool.item(ty) {
+        let fields = pool
+            .struct_fields(*decl)
+            .ok_or(LayoutError::UnresolvedStruct(*decl))?;
+        let field = fields
+            .get(index as usize)
+            .ok_or(LayoutError::NotAType(ty))?;
+        let at = variant_payload_offset(pool, target, *decl)?;
+        return Ok((at, layout_of(pool, target, field.ty)?));
+    }
+
     // A results aggregate's fields are laid out in order exactly as a struct's, and its element
     // list is right here rather than in a side table (ADR-0052 §1). Sharing
     // `sequential_field_offset` below is what keeps the two from disagreeing: **omitting this

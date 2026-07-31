@@ -456,7 +456,8 @@ impl Splice {
                     | Projection::StringData
                     | Projection::StringCount
                     | Projection::ViewData
-                    | Projection::ViewCount => *step,
+                    | Projection::ViewCount
+                    | Projection::VariantTag => *step,
                 })
                 .collect(),
         }

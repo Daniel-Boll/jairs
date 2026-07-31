@@ -605,6 +605,12 @@ impl Compiler<'_> {
                     }
                     ty = PoolId::S64;
                 }
+                // A variant's tag is at offset 0 — it is the *leading* field (ADR-0068 §3), which is
+                // why nothing has to be computed here. The type becomes `u8`, so a load through this
+                // reads one byte rather than a case's width.
+                Projection::VariantTag => {
+                    ty = PoolId::U8;
+                }
             }
         }
 

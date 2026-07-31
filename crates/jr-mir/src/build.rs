@@ -236,6 +236,7 @@ pub fn lower_body(
         param_slots: FxHashMap::default(),
         param_tys: Vec::new(),
         bounds_checks: !proc_data.no_abc,
+        variant_cases: FxHashMap::default(),
         context: None,
         current: None,
         loops: Vec::new(),
@@ -772,6 +773,14 @@ struct Lower<'a> {
     /// index and the `for` element. Two lookups of one fact is how the two sites come to disagree,
     /// and the dangerous direction is silent: an unchecked store.
     bounds_checks: bool,
+    /// Which case each variant-field place names, filled by `project_field` (ADR-0068 §4).
+    ///
+    /// Keyed by the whole `Place`, because that is what `assign` has when it decides whether to emit a
+    /// tag store — and a `Place`'s type is not recoverable from the place alone, so the alternative
+    /// would be a second implementation of projection typing.
+    ///
+    /// Empty for every program that declares no variant.
+    variant_cases: FxHashMap<Place, u32>,
     /// The hidden context parameter's value, for a procedure that receives one (ADR-0057 §2).
     ///
     /// `None` for a `#c_call` procedure, which is what makes `context` unlowerable there — and sema
@@ -1456,7 +1465,36 @@ impl Lower<'_> {
                 )
             }
         };
+        // **A write to a variant's case sets the tag** (ADR-0068 §4), before the value store so that a
+        // trap in the value's own evaluation cannot leave the tag claiming a case that was never
+        // written. `variant_case_written` answers `None` for every other assignment, so an ordinary
+        // struct or union store pays one `is_variant` check.
+        if let Some((base, index)) = self.variant_case_written(&place) {
+            let tag = self.pool.int_value(PoolId::U8, u64::from(index));
+            self.emit(Statement::Store {
+                place: base.project(Projection::VariantTag),
+                value: Operand::Constant(tag),
+                span,
+            });
+        }
         self.emit(Statement::Store { place, value, span });
+    }
+
+    /// The variant place and case index a store writes, if it writes a variant's case (ADR-0068 §4).
+    ///
+    /// `None` for every other place, which is the common case: an assignment to a struct field, a
+    /// local, an array element or a union field all answer `None` and emit no tag store.
+    ///
+    /// The answer comes from a map `project_field` fills as it builds a place, rather than from
+    /// re-deriving the receiver's type here: a `Place`'s type is not recoverable from the place alone
+    /// (its base is a slot or an operand and its steps carry no types), and re-deriving it would be a
+    /// second implementation of projection typing — two chances to disagree about which aggregate a
+    /// field belongs to, which for a variant means writing the tag of the wrong object.
+    fn variant_case_written(&self, place: &Place) -> Option<(Place, u32)> {
+        let index = *self.variant_cases.get(place)?;
+        let mut base = place.clone();
+        base.projection.pop();
+        Some((base, index))
     }
 
     fn return_stmt(&mut self, value: Option<ExprId>) {
@@ -3252,7 +3290,14 @@ impl Lower<'_> {
         if let Some(index) = fields.iter().position(|field| field.name == name) {
             let field_ty = fields[index].ty;
             let index = u32::try_from(index).ok()?;
-            return Some((place.project(Projection::Field(index)), field_ty));
+            let projected = place.project(Projection::Field(index));
+            // Remembered here, where the receiver's *type* is in hand, so that `assign` can emit the
+            // tag store without re-deriving it (ADR-0068 §4). Recorded only for a variant, so the map
+            // stays empty for every program that declares none.
+            if matches!(self.pool.item(ty), Item::VariantType { .. }) {
+                self.variant_cases.insert(projected.clone(), index);
+            }
+            return Some((projected, field_ty));
         }
         // **Then a field of a `using`-embedded base**, which is what makes `e.x` reach
         // `e.base.x` (ADR-0050 §4). Missing this was not a compile error: sema accepted `e.x`

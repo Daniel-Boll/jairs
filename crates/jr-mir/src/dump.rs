@@ -460,6 +460,7 @@ impl Dumper<'_> {
                 // array's is a constant, which is the one thing a reader checks here.
                 Projection::ViewData => text.push_str(".view_data"),
                 Projection::ViewCount => text.push_str(".view_count"),
+                Projection::VariantTag => text.push_str(".tag"),
             }
         }
         text
