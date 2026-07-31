@@ -1,0 +1,99 @@
+// Pointer arithmetic (ADR-0064) — `p + n`, `n + p` and `p - n`, element-scaled and unchecked, the
+// seventh feature of W3 and the one that makes a *bump* allocator writable.
+//
+// Before this, a pointer could not move: `p + 1` was E0223. An allocator could only wrap `malloc`
+// (ADR-0060 §5, ADR-0062 §5). Now a program can carve a region from one `malloc` and hand out slices
+// by advancing a pointer — which is what temporary storage wants, and what `recording_alloc` in
+// `050` could count bytes for but not actually do.
+//
+// Six things here are worth checking rather than assuming, and the `exit` at the end gives each teeth
+// under the differential harness — a wrong stride, a wrong direction, or a byte vs element confusion
+// is a different exit status:
+//
+//   * `p + n` is **element-scaled**: on a `*s64`, `p + 1` advances eight bytes, so `(base + 1).*`
+//     reads the second `s64`, not the second byte (ADR-0064 §2). This is the fork that matters, and a
+//     byte-scaled implementation would read the wrong value here;
+//   * `n + p` is the same as `p + n` — addition commutes — so `2 + base` and `base + 2` reach the
+//     same element;
+//   * `p - n` moves **back**: from `base + 3`, subtracting 2 lands on `base + 1`;
+//   * a `*u8` walk is the allocator case, where element and byte scaling coincide — the region below
+//     is carved into `s64`-sized cells by advancing a byte pointer by 8;
+//   * arithmetic is **unchecked** (ADR-0064 §3): a raw pointer has no length, so nothing traps on an
+//     offset — the program is responsible for staying in its allocation, which it does;
+//   * both engines agree, though the VM allocates from its own region and native from libc
+//     (ADR-0061). The scaled addresses are computed from one `jr-pool` stride in both back ends.
+#import "Basic";
+
+/// Fills `n` s64 cells of an array with `10, 20, 30, …` by advancing a pointer one element at a time,
+/// then reads two of them back through fresh offsets — the read and the write reach the same cell, so
+/// `p + i` is a stable address rather than an accident.
+walk_s64 :: () -> s64 {
+    a: [4]s64;
+    base := *a[0];
+
+    // Write through advancing element offsets.
+    // Fills the cells with 10, 20, 30, 40.
+    i := 0;
+    while i < 4 {
+        p := base + i;
+        p.* = (i + 1) * 10;
+        i = i + 1;
+    }
+
+    total := 0;
+
+    // `p + n`: the third cell is 30.
+    third := base + 2;
+    if third.* == 30 {
+        total = total + 1;
+    }
+    // `n + p`: addition commutes, so `2 + base` is the same cell.
+    also_third := 2 + base;
+    if also_third.* == 30 {
+        total = total + 2;
+    }
+    // `p - n`: from the fourth cell, back two, is the second — 20.
+    back := (base + 3) - 2;
+    if back.* == 20 {
+        total = total + 4;
+    }
+    return total;
+}
+
+/// A bump allocator over a `*u8` region: hand out `s64`-sized cells by advancing a byte pointer by 8.
+/// This is the motivating case — element and byte scaling coincide on a `*u8`, and it is exactly what
+/// a real temporary-storage arena does.
+bump :: () -> s64 {
+    region := malloc(64);
+    if region == null {
+        return 0;
+    }
+
+    // Two cells, 8 bytes apart.
+    cell0 := region;
+    cell1 := region + 8;
+    cell0.* = 111;
+    cell1.* = 222;
+
+    // Read back through independently-computed offsets, so a stale or wrong address shows.
+    r0 := region + 0;
+    r1 := region + 8;
+    got := 0;
+    if r0.* == 111 {
+        got = got + 8;
+    }
+    if r1.* == 222 {
+        got = got + 16;
+    }
+
+    free(region);
+    return got;
+}
+
+main :: () {
+    n := walk_s64() + bump();
+    if n == 31 {
+        exit(0);
+    }
+    exit(1);
+}

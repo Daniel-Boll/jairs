@@ -1582,6 +1582,25 @@ impl Ctx<'_> {
             | BinOp::WrapAdd
             | BinOp::WrapSub
             | BinOp::WrapMul => {
+                // **Pointer arithmetic, before the numeric path** (ADR-0064). A pointer operand must
+                // not be unified with an integer one, so this is decided by typing each operand with
+                // no shared expectation and asking whether either is a pointer. Only `+` and `-`
+                // apply; `*`, `/`, `%` and the wrapping forms on a pointer fall through to the
+                // rejection below, which is what E0223 means for them.
+                //
+                // **Skipped when a concrete numeric type is expected**, because then the expression
+                // *is* numeric — `sum: s64 = xx tiny + 1;` must push `s64` inward so the autocast has
+                // a context (E0242 otherwise), and a pointer result could never satisfy an `s64`
+                // annotation anyway. So the speculative untyped probe below only runs when the result
+                // could actually be a pointer: no expectation, or a pointer expectation.
+                let numeric_context =
+                    expected.is_some_and(|ty| self.is_numeric(ty) && self.pointee(ty).is_none());
+                if matches!(op, BinOp::Add | BinOp::Sub)
+                    && !numeric_context
+                    && let Some(result) = self.check_pointer_arithmetic(scope, op, lhs, rhs, span)
+                {
+                    return self.expect(expected, result, span);
+                }
                 // Push a *numeric* context inward so that `g: u8 = 1 + 2;` types both
                 // literals as `u8`, and `f: float32 = 1.5 + 2.5;` types both as `float32`,
                 // rather than defaulting either and then complaining.
@@ -1661,6 +1680,93 @@ impl Ctx<'_> {
                 self.check_expr(scope, lhs, Some(PoolId::BOOL));
                 self.check_expr(scope, rhs, Some(PoolId::BOOL));
                 self.expect(expected, PoolId::BOOL, span)
+            }
+        }
+    }
+
+    /// Types `p + n`, `n + p`, `p - n` and `p - q` (ADR-0064), or returns `None` for the numeric path.
+    ///
+    /// Called only for `+` and `-`, and only *before* the numeric handling, because a pointer operand
+    /// must not be unified with an integer one — so each operand is typed with **no shared
+    /// expectation** and the shape decided from the pair. `None` means "neither operand is a pointer",
+    /// which hands the operation back to the ordinary numeric path unchanged; the hot case (`s64 +
+    /// s64`) takes it after two `pointee` checks that both say no.
+    ///
+    /// `jr-mir` re-derives which of the three forms this is from the operands' recorded types rather
+    /// than a side table — the same "read the `TypeMap`, do not recompute" discipline the overload
+    /// path uses (ADR-0048 §5).
+    fn check_pointer_arithmetic(
+        &mut self,
+        scope: ExprScope,
+        op: BinOp,
+        lhs: ExprId,
+        rhs: ExprId,
+        span: Span,
+    ) -> Option<PoolId> {
+        // Typed with no expectation, so an integer operand defaults to `s64` and a pointer keeps its
+        // type — the two are never made to match.
+        let left = self.check_expr(scope, lhs, None);
+        let right = self.check_expr(scope, rhs, None);
+        let left_ptr = self.pointee(left);
+        let right_ptr = self.pointee(right);
+
+        match (left_ptr, right_ptr) {
+            // Neither is a pointer: not our case, back to the numeric path. The operands are already
+            // typed, and re-typing them there with a numeric expectation is harmless — `check_expr`
+            // overwrites the same `TypeMap` entry with the same or a more specific type.
+            (None, None) => None,
+            // Both pointers. `p + q` is meaningless; `p - q` (the pointer difference) is deferred to
+            // its own wave (ADR-0064 §5), because its element-count result needs the stride, which is
+            // layout `jr-mir` does not carry. Both are E0223 — the operator does not fit here.
+            (Some(_), Some(_)) => {
+                let text = self.describe(left);
+                self.reject_operator(op, &text, span);
+                Some(PoolId::ERROR)
+            }
+            // `p + n` or `p - n`: pointer on the left, integer on the right. Result is the pointer.
+            (Some(_), None) => {
+                if self.int_info(right).is_some() {
+                    Some(left)
+                } else {
+                    let rtext = self.describe(right);
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            format!("a pointer can only be offset by an integer, not `{rtext}`"),
+                        )
+                        .with_code(E0223),
+                    );
+                    Some(PoolId::ERROR)
+                }
+            }
+            // `n + p`: integer on the left, pointer on the right. Legal only for `+` — `n - p` is
+            // "an integer minus a pointer", which has no meaning (the distance is `p - n`, the other
+            // order). Result is the pointer.
+            (None, Some(_)) => {
+                if op == BinOp::Add && self.int_info(left).is_some() {
+                    Some(right)
+                } else if op == BinOp::Sub {
+                    let ltext = self.describe(left);
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            format!("cannot subtract a pointer from `{ltext}`"),
+                        )
+                        .with_code(E0223)
+                        .with_note("write `p - n` to move a pointer back, not `n - p`"),
+                    );
+                    Some(PoolId::ERROR)
+                } else {
+                    let ltext = self.describe(left);
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            format!("a pointer can only be offset by an integer, not `{ltext}`"),
+                        )
+                        .with_code(E0223),
+                    );
+                    Some(PoolId::ERROR)
+                }
             }
         }
     }

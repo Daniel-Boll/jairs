@@ -96,7 +96,7 @@
 #h(4pt)
 #pill[919 tests]
 #h(4pt)
-#pill[ADR-0063 latest]
+#pill[ADR-0064 latest]
 #h(4pt)
 #pill(fill: rgb("#fdf2e6"), stroke: warn)[W3 in progress · temporary storage + backtraces left]
 
@@ -105,8 +105,8 @@
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
   metric("Tests", "919", "workspace, all passing"),
-  metric("Corpus", "146", "jr files, both engines"),
-  metric("ADRs", "63", "0001 to 0063, immutable"),
+  metric("Corpus", "148", "jr files, both engines"),
+  metric("ADRs", "64", "0001 to 0064, immutable"),
   metric("Diagnostics", "88", "codes, E0258 next free"),
   metric("Editor checks", "156", "Neovim, verified not gated"),
 )
@@ -144,21 +144,22 @@
         one shared formatter.
       ]
     - #text(size: 7.4pt)[
-        *MIR snapshots pin the exact instruction sequence.* This wave the `push_context` file shows
-        the whole feature: a `Context` slot, a load of the caller's context, a store into the slot,
-        an address-of — the copy-plus-swap, with no new MIR node.
+        *MIR snapshots pin the exact instruction sequence.* This wave the pointer-arithmetic file
+        shows `p + n` as a slot holding the pointer, indexed — the same load-then-scale a view's
+        `data` word takes, so both back ends scale by the element stride and no size appears in the
+        mid-end.
       ]
     - #text(size: 7.4pt)[
-        *Every fix is verified by reverting it* and watching the test fail. This wave the highlight
-        check was reverted to prove it bites, and the isolation the wave adds was verified by
-        *running the claim it corrects* — a two-line program showed a callee's write leaking to its
-        caller, which ADR-0057 §2 said could not happen.
+        *The differential harness catches regressions the wave did not aim at.* Typing pointer
+        operands with no expectation broke `sum: s64 = xx tiny + 1;` — the autocast lost its `s64`
+        context. A guard that skips the pointer probe when a numeric type is expected fixed it; the
+        harness found it because a passing corpus file suddenly failed to compile.
       ]
     - #text(size: 7.4pt, fill: warn)[
-        *A documented invariant is not a verified one.* ADR-0057 §2 claimed a callee cannot change
-        its caller's context; it was false for six waves because no corpus program observed a write
-        *failing* to propagate — every allocator test wanted the shared behaviour. push_context is the
-        construct that makes the claim true, and the ADR amends §2 to say so.
+        *How a feature lowers can narrow its scope.* `p - q`, the pointer difference, read as obviously
+        part of "pointer arithmetic" until the lowering showed its element-count result needs the
+        stride — layout the mid-end deliberately does not carry. Cut mid-wave and deferred, rather than
+        smuggled in with a layout query `jr-mir` lacks.
       ]
   ],
 )
@@ -170,7 +171,7 @@
 #section[The language today]
 
 #let lang = (
-  ("Full integer tower, bool, string, pointers", "pointer arithmetic, deliberately none"),
+  ("Full integer tower, bool, string, pointers", "pointer difference p - q, deferred"),
   ("float32 and float64, plain IEEE-754, no traps", "percent on floats, is_nan, math (W7)"),
   ("struct, nominal, one level", ""),
   ("union, nominal, untagged, fields at offset 0", "a tagged variant type (W4.5)"),
@@ -187,7 +188,8 @@
   ("context, a hidden parameter passed by pointer", "temp storage (W3)"),
   ("Procedures as values: call, pass, return, struct field", "a cross-file or foreign proc value; comparing one"),
   ("null, a context-typed pointer literal; malloc and free", "pointer arithmetic; cast to a pointer"),
-  ("An allocator in the context, installed and called through", "a bump allocator; temp storage (W3)"),
+  ("An allocator in the context, installed and called through", "temp storage (W3)"),
+  ("Pointer offset p + n, n + p, p - n — element-scaled, unchecked", "the difference p - q; p[n]; ordering"),
   ("push_context, a block with its own copy of the context", ""),
 )
 
@@ -277,7 +279,7 @@
   ),
   (
     "W3 Runtime core", "in progress",
-    "Six of eight done. context (ADR-0057), the bounds-check build setting (ADR-0058, finishing ADR-0003), indirect calls (ADR-0059), null plus a memory source (ADR-0060/0061), the allocator protocol (ADR-0062), and push_context (ADR-0063) — a block gets its own copy of the context, restored on exit, which made true the isolation ADR-0057 §2 claimed and never had. Remaining: temporary storage (blocked on pointer arithmetic for a bump allocator) and traps with backtraces.",
+    "Seven of eight done. context (ADR-0057), the bounds-check build setting (ADR-0058, finishing ADR-0003), indirect calls (ADR-0059), null plus a memory source (ADR-0060/0061), the allocator protocol (ADR-0062), push_context (ADR-0063), and pointer arithmetic (ADR-0064) — p + n on a *T, element-scaled and unchecked, so a bump allocator can advance a pointer. Remaining: temporary storage (now unblocked — the bump allocator it needed is writable) and traps with backtraces.",
   ),
   (
     "W4 Comptime", "not started",
@@ -339,19 +341,19 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[Fifteen waves shipped]
+    #sub[Sixteen waves shipped]
     #text(size: 7.4pt)[
-      ADR-0049 through 0063: for and defer, using, aggregate returns, multiple returns, named and
+      ADR-0049 through 0064: for and defer, using, aggregate returns, multiple returns, named and
       default arguments, scope visibility, imported constants, float constants, context, the
       bounds-check build setting, indirect calls, null plus a memory source, the allocator
-      protocol, and push_context.
+      protocol, push_context, and pointer arithmetic.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 919. Corpus 116 to 146 files. Neovim checks 103 to 156. W2 closed; W3 opened
-      and six of its eight features landed. A program can install an allocator in the context, a
-      callee allocates through it, and a push_context block scopes the whole thing — restored on exit.
+      Test count 900 to 919. Corpus 116 to 148 files. Neovim checks 103 to 156. W2 closed; W3 opened
+      and seven of its eight features landed. A program can install an allocator in the context, scope
+      it with push_context, and advance a raw pointer — so a bump allocator is finally writable.
     ]
 
     #v(0.3em)

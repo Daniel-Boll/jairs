@@ -1,0 +1,20 @@
+// EXPECT: E0223 — the pointer *difference* `p - q` is deferred (ADR-0064 §5)
+//
+// Pointer offset landed in ADR-0064: `p + n`, `n + p` and `p - n` all work, element-scaled. What is
+// *not* in it is `p - q`, the distance between two pointers — its result is a count of elements, so it
+// must divide the byte distance by the element stride, and the stride is layout that ADR-0017 §5 keeps
+// out of `jr-mir` (the back ends scale a `Projection::Index`; `jr-mir` never handles a size). So `p -
+// q` needs a new MIR node or a layout query the mid-end does not have — a decision of its own, and one
+// a bump allocator (which only advances a pointer) does not force. Until its wave, it is E0223: the
+// operator does not fit these operands, which is exactly what E0223 says.
+//
+// `n - p` — an integer minus a pointer — is a *separate* refusal with its own message ("cannot
+// subtract a pointer from `s64`", since the distance is `p - n`, the other order). It is the same code
+// by design; this file pins the `p - q` case, which is the one the deferral is about.
+main :: () {
+    a: [4]s64;
+    p := *a[0];
+    q := *a[2];
+    d := p - q;
+    a[0] = d;
+}

@@ -18,11 +18,13 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after **`push_context`** (ADR-0063): a block gets its own copy of the context, so an
-allocator a callee installs inside it is restored on exit — the isolation ADR-0057 §2 claimed but
-never had. The sixth feature of **wave W3** after the allocator protocol (ADR-0062): `context.allocator`
-is a procedure pointer a program installs in one line, and a callee allocates through it without
-knowing which — the placeholder ADR-0057 left, now real. Both on top of `null` and a memory source
+Last updated after **pointer arithmetic** (ADR-0064): `p + n`, `n + p` and `p - n` on a `*T`,
+element-scaled and unchecked, so a bump allocator can carve a region and hand out cells by advancing a
+pointer. The seventh feature of **wave W3** after `push_context` (ADR-0063): a block gets its own copy
+of the context, so an allocator a callee installs inside it is restored on exit — the isolation
+ADR-0057 §2 claimed but never had. Both on top of the allocator protocol (ADR-0062):
+`context.allocator` is a procedure pointer a program installs in one line, and a callee allocates
+through it without knowing which. All on top of `null` and a memory source
 (ADR-0060/0061), indirect calls (ADR-0059), the implicit `context` (ADR-0057) and the bounds-check
 build setting (ADR-0058, which finished ADR-0003) — on top of
 imported constant values (ADR-0055) and a float-constant codegen fix (ADR-0056), `#scope_module`
@@ -65,7 +67,7 @@ The authoritative version of this list is
 
 | Works | Absent (wave) |
 |---|---|
-| `s8 s16 s32 s64`, `u8 u16 u32 u64`, `bool`, `string`, `*T`, `null` | pointer arithmetic (`p + 1`), still deliberately none |
+| `s8 s16 s32 s64`, `u8 u16 u32 u64`, `bool`, `string`, `*T`, `null` | pointer *difference* `p - q`; unchecked, so past-end is UB |
 | `float32`, `float64` — plain IEEE-754, no traps | `%` on floats, `is_nan`, math intrinsics (**W7**) |
 | `cast(T, x)` between any two numeric types, and `xx` where the context gives the type | pointer conversions — `xx` is no more powerful than `cast` |
 | `struct { … }`, one level, nominal | |
@@ -99,7 +101,8 @@ The authoritative version of this list is
 | overflow traps with a source location (ADR-0002, ADR-0020) | backtraces (**W3**) |
 | `context` — a hidden parameter passed by pointer, so a callee reads what its caller wrote; `#c_call` opts out and gets none | temporary storage (**W3**) |
 | `push_context { … }` — a block with its own copy of the context, so a write inside it is restored on exit (ADR-0063) | — |
-| `context.allocator` / `.allocator_free` / `.allocator_data` — install an allocator, and a callee allocates through it without knowing which | a *bump* allocator, which needs pointer arithmetic; a `#foreign` procedure installed directly (wrap it) |
+| `context.allocator` / `.allocator_free` / `.allocator_data` — install an allocator, and a callee allocates through it without knowing which | a `#foreign` procedure installed directly (wrap it) |
+| `p + n`, `n + p`, `p - n` on a `*T` — element-scaled, unchecked; a bump allocator advances a pointer (ADR-0064) | `p - q` (deferred); `p[n]` sugar; pointer ordering `< >` |
 
 ADR-0008 chose Jai's **error model** — several return values plus `#must` — and the first half now
 exists: a procedure returns a value and a flag, and the caller must name both. `#must`, which makes

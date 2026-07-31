@@ -4432,3 +4432,134 @@ proc main -> void {
     discard call extern proc1(2_s64)
     return
 }
+
+========================================
+052-pointer-arithmetic.jr
+========================================
+proc walk_s64 -> s64 {
+  params: v0: *Context
+  slots:
+    s0: [4]s64  // local 0
+    s1: *s64  // temporary
+    s2: *s64  // temporary
+    s3: *s64  // temporary
+    s4: *s64  // temporary
+    s5: *s64  // temporary
+  bb0(v0: *Context):
+    zero s0
+    bounds_check 0_s64 < 4_s64
+    v1: *s64 = addr s0[0_s64]
+    goto bb1(0_s64)
+  bb1(v2: s64):
+    v3: bool = v2 < 4_s64
+    branch v3 ? bb2() : bb3()
+  bb2():
+    store s1 <- v1
+    v5: *s64 = addr s1[v2]
+    v6: s64 = v2 + 1_s64
+    v7: s64 = v6 * 10_s64
+    store (v5).* <- v7
+    v8: s64 = v2 + 1_s64
+    goto bb1(v8)
+  bb3():
+    goto bb4()
+  bb4():
+    store s2 <- v1
+    v9: *s64 = addr s2[2_s64]
+    v10: s64 = load (v9).*
+    v11: bool = v10 == 30_s64
+    branch v11 ? bb5() : bb6()
+  bb5():
+    v12: s64 = 0_s64 + 1_s64
+    goto bb7(v12)
+  bb6():
+    goto bb7(0_s64)
+  bb7(v17: s64):
+    store s3 <- v1
+    v14: *s64 = addr s3[2_s64]
+    v15: s64 = load (v14).*
+    v16: bool = v15 == 30_s64
+    branch v16 ? bb8() : bb9()
+  bb8():
+    v18: s64 = v17 + 2_s64
+    goto bb10(v18)
+  bb9():
+    goto bb10(v17)
+  bb10(v25: s64):
+    store s4 <- v1
+    v20: *s64 = addr s4[3_s64]
+    v21: s64 = -2_s64
+    store s5 <- v20
+    v22: *s64 = addr s5[v21]
+    v23: s64 = load (v22).*
+    v24: bool = v23 == 20_s64
+    branch v24 ? bb11() : bb12()
+  bb11():
+    v26: s64 = v25 + 4_s64
+    goto bb13(v26)
+  bb12():
+    goto bb13(v25)
+  bb13(v27: s64):
+    return v27
+}
+proc bump -> s64 {
+  params: v0: *Context
+  slots:
+    s0: *u8  // temporary
+    s1: *u8  // temporary
+    s2: *u8  // temporary
+  bb0(v0: *Context):
+    v1: *u8 = call extern proc2(64_s64)
+    v2: bool = v1 == 0_*u8
+    branch v2 ? bb1() : bb2()
+  bb1():
+    return 0_s64
+  bb2():
+    goto bb3()
+  bb3():
+    store s0 <- v1
+    v3: *u8 = addr s0[8_s64]
+    store (v1).* <- 111_u8
+    store (v3).* <- 222_u8
+    store s1 <- v1
+    v4: *u8 = addr s1[0_s64]
+    store s2 <- v1
+    v5: *u8 = addr s2[8_s64]
+    v6: u8 = load (v4).*
+    v7: bool = v6 == 111_u8
+    branch v7 ? bb4() : bb5()
+  bb4():
+    v8: s64 = 0_s64 + 8_s64
+    goto bb6(v8)
+  bb5():
+    goto bb6(0_s64)
+  bb6(v12: s64):
+    v10: u8 = load (v5).*
+    v11: bool = v10 == 222_u8
+    branch v11 ? bb7() : bb8()
+  bb7():
+    v13: s64 = v12 + 16_s64
+    goto bb9(v13)
+  bb8():
+    goto bb9(v12)
+  bb9(v16: s64):
+    discard call extern proc3(v1)
+    return v16
+}
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call proc0(v0)
+    v2: s64 = call proc1(v0)
+    v3: s64 = v1 + v2
+    v4: bool = v3 == 31_s64
+    branch v4 ? bb1() : bb2()
+  bb1():
+    discard call extern proc1(0_s64)
+    goto bb3()
+  bb2():
+    goto bb3()
+  bb3():
+    discard call extern proc1(1_s64)
+    return
+}

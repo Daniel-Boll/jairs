@@ -174,3 +174,59 @@ building on it.
 
 All four forks taken as recommended. ADR-0063 records them and amends ADR-0057 §2. No new diagnostic
 code: a `push_context` in a `#c_call` procedure reuses E0254 (needs a context, has none).
+
+---
+
+## Wave: pointer arithmetic (ADR-0064), 2026-07-31
+
+### What running first revealed (not a fork)
+
+`*x[i]` — the address of an indexed element — already works in both engines and scales the index by
+the element stride (verified by running: `a: [4]s64; a[2] = 99; p := *a[2]; exit(p.*)` prints 99).
+That decided the lowering: `p + n` is the address of `p.*` indexed by `n`, a shape both back ends
+already handle, so the wave adds no machine arithmetic.
+
+### Fork 1 — which wave
+
+- Options: **pointer arithmetic (taken, recommended)**; traps-with-backtraces; temporary storage.
+- Why: §7 (after ADR-0063) named pointer arithmetic "the blocking gap" — temporary storage wants a
+  bump allocator and a bump allocator wants `p + n`. It is more self-contained than
+  traps-with-backtraces (whose native half is a call-stack representation entangled with the inliner)
+  and it unblocks the W3 feature that is otherwise stuck. Temporary storage itself comes after, once
+  this lands.
+
+### Fork 2 — which operations
+
+- Options: **`p ± int` only (taken, recommended)**; add `p - q` (the pointer difference) too; add
+  `p[n]` indexing sugar or pointer ordering `< >`.
+- Why: `p ± int` is what a bump allocator needs (it only advances a pointer) and it lowers to an
+  indexed address the back ends already scale — **no new MIR node**. `p - q` was in the first draft but
+  cut mid-wave when the lowering was worked out: its result is a count of *elements*, so it must divide
+  the byte distance by the element stride, and the stride is layout that ADR-0017 §5 keeps out of
+  `jr-mir` (the back ends scale a `Projection::Index`; `jr-mir` never sees a size). Delivering it would
+  need a new MIR node or a layout query `jr-mir` lacks — a decision of its own that the motivating use
+  case does not force, so it is deferred (ADR-0064 §5). `p[n]` and pointer ordering are separate
+  decisions too; everything else on a pointer stays E0223.
+
+### Fork 3 — scaling
+
+- Options: **element-scaled like C (taken, recommended)**; byte-scaled.
+- Why: `p + 1` advancing one `T` is what a systems programmer expects and keeps `p + (q - p) == q`.
+  Byte scaling makes stepping to the next element the verbose case (`p + sizeof(T)`) and invites the
+  forgotten-stride bug. A `*u8` is where the two coincide and is the common case, which is exactly why
+  the rule is chosen for the `*s64` case that differs.
+
+### Fork 4 — bounds checking
+
+- Options: **unchecked (taken, recommended)**; a checked pointer that carries a length.
+- Why: a raw pointer has no length to check `n` against — that is the boundary of ADR-0003, not a hole
+  in it. The checked type already exists (`[]T`, the view); adding a second length to `*T` would make
+  it no longer one machine word. Walking past an allocation is UB by construction, the same trade
+  `--no-bounds-check` offers for arrays.
+
+### Resolution
+
+All four forks taken as recommended, with Fork 2 narrowed mid-wave to `p ± int` (dropping `p - q`, now
+deferred). ADR-0064 records them and lifts the refusal ADR-0060 §5 deferred. No new diagnostic code
+(E0258 still first free), no new MIR node: the type rules are new `check_binary` arms and the lowering
+builds an indexed address, which both back ends already scale by element stride.

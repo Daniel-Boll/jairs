@@ -2270,6 +2270,18 @@ impl Lower<'_> {
         ty: PoolId,
         span: MirSpan,
     ) -> Operand {
+        // **Pointer offset, before the numeric path** (ADR-0064). `p + n`, `n + p` and `p - n` lower
+        // to the address of the pointer's pointee indexed by `n` — the back ends scale the index by
+        // the element stride, so no size is needed here (ADR-0017 §5). Recognised by the *result*
+        // type being a pointer, which sema set only for these forms; `p - q` is deferred and refused
+        // in sema, so a pointer result with `Sub` is always `p - n`.
+        if matches!(op, jr_hir::BinOp::Add | jr_hir::BinOp::Sub)
+            && self.pointee(ty).is_some()
+            && let Some(result) = self.pointer_offset(op, lhs, rhs, ty, span)
+        {
+            return result;
+        }
+
         // `&&` and `||` are control flow, not operators: MIR's `BinOp` has no
         // variant for them, which is what makes forgetting to short-circuit a
         // compile error rather than a silent semantic change.
@@ -2310,6 +2322,65 @@ impl Lower<'_> {
             },
             span,
         )
+    }
+
+    /// Lowers `p + n`, `n + p` and `p - n` (ADR-0064) to the address of the pointer's pointee indexed
+    /// by `n` — the shape `*p.*[n]` builds, which both back ends scale by the element stride.
+    ///
+    /// `None` would mean sema typed the result a pointer without either operand being one, which
+    /// cannot happen — but it is returned rather than a placeholder, per ADR-0017 §4, so a future
+    /// change that broke the invariant refuses the body rather than lowering a wrong address.
+    ///
+    /// No `BoundsCheck`: a raw pointer has no length to check against (ADR-0064 §3). The back ends'
+    /// stride scaling is why no size appears here (ADR-0017 §5).
+    fn pointer_offset(
+        &mut self,
+        op: jr_hir::BinOp,
+        lhs: ExprId,
+        rhs: ExprId,
+        ty: PoolId,
+        span: MirSpan,
+    ) -> Option<Operand> {
+        // Which operand is the pointer? Its recorded type is a pointer; the other is the integer
+        // offset. `n + p` puts the pointer on the right, and only `+` allows that (sema refused
+        // `n - p`), so a `Sub` here is always `p - n` with the pointer on the left.
+        let (ptr_expr, off_expr) = if self.pointee(self.ty(lhs)).is_some() {
+            (lhs, rhs)
+        } else {
+            (rhs, lhs)
+        };
+
+        let ptr_operand = self.expr(ptr_expr);
+        let mut offset = self.expr(off_expr);
+
+        // `p - n` moves back, so the index is `-n`. An ordinary negation on the integer, emitted
+        // before the index, so there is one scaled-address path rather than a second for subtraction.
+        if op == jr_hir::BinOp::Sub {
+            let off_ty = self.ty(off_expr);
+            offset = self.define(
+                off_ty,
+                Rvalue::Unary {
+                    op: UnOp::Neg,
+                    operand: offset,
+                },
+                span,
+            );
+        }
+
+        // **Index a slot holding the pointer, exactly as a view indexes its `data` word.** Both back
+        // ends' `Projection::Index` scale by the element stride when the place's type at that step is
+        // a *pointer* — they load the pointer and add `n * stride(pointee)` (ADR-0044 §2's view path).
+        // A raw pointer value is not in memory, so it is spilled to a fresh slot of the pointer type
+        // first; then `Place::slot(slot).Index(n)` is that same load-then-scale, and `Rvalue::Address`
+        // of it is `p + n` — with no size computed here (ADR-0017 §5) and no `BoundsCheck` (§3).
+        let slot = self.mir.push_slot(ty, None, span);
+        self.emit(Statement::Store {
+            place: Place::slot(slot),
+            value: ptr_operand,
+            span,
+        });
+        let place = Place::slot(slot).project(Projection::Index(offset));
+        Some(self.define(ty, Rvalue::Address(place), span))
     }
 
     /// Lowers `&&` (`short_on = false`) or `||` (`short_on = true`).
