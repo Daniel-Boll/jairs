@@ -93,6 +93,7 @@ pub(crate) fn escaping_slots(body: &MirBody) -> FxHashSet<SlotId> {
                 Statement::Store { .. }
                 | Statement::Zero { .. }
                 | Statement::BoundsCheck { .. }
+                | Statement::TagCheck { .. }
                 | Statement::Nop => continue,
             };
             // Only `Address` escapes a slot. A `Load` reads it, a `Store` writes it,
@@ -211,7 +212,7 @@ fn available_store(
             },
             // Reads its operands and may trap. It writes nothing, so it cannot invalidate
             // a store — a trap does not produce a *wrong* value, it ends the program.
-            Statement::BoundsCheck { .. } => {}
+            Statement::BoundsCheck { .. } | Statement::TagCheck { .. } => {}
             Statement::Nop => {}
         }
     }

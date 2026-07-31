@@ -330,6 +330,23 @@ impl Translator<'_, '_> {
                         .icmp(IntCC::UnsignedGreaterThanOrEqual, index, len);
                 self.trap_if(out_of_range, TrapKind::IndexOutOfBounds)
             }
+            // The tag is one byte at the variant's own address (ADR-0068 §3), so this loads a byte and
+            // compares. Phrased as `tag != case` so `trap_if`'s cold trap block is reused, exactly as
+            // the bounds check above reuses it rather than gaining an inverted twin.
+            Statement::TagCheck { place, case, .. } => {
+                let address = self.address(place)?;
+                let tag = self.builder.ins().load(
+                    cranelift_codegen::ir::types::I8,
+                    MemFlagsData::new(),
+                    address,
+                    0,
+                );
+                let wrong = self
+                    .builder
+                    .ins()
+                    .icmp_imm_s(IntCC::NotEqual, tag, i64::from(*case));
+                self.trap_if(wrong, TrapKind::WrongVariantCase)
+            }
             Statement::Nop => Ok(()),
         }
     }
@@ -1790,7 +1807,8 @@ fn statement_span(stmt: &Statement) -> MirSpan {
         | Statement::Store { span, .. }
         | Statement::Discard { span, .. }
         | Statement::Zero { span, .. }
-        | Statement::BoundsCheck { span, .. } => *span,
+        | Statement::BoundsCheck { span, .. }
+        | Statement::TagCheck { span, .. } => *span,
         Statement::Nop => MirSpan::Synthetic,
     }
 }

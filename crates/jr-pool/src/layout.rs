@@ -774,6 +774,52 @@ mod tests {
         ty
     }
 
+    /// A variant of the given case types at `decl`, for the layout tests.
+    fn variant_of(pool: &mut Pool, interner: &Interner, index: u32, tys: &[PoolId]) -> PoolId {
+        let decl = DeclId::new(FileId::from_usize(0), index);
+        let ty = pool.variant_type(decl);
+        let fields = tys
+            .iter()
+            .enumerate()
+            .map(|(i, t)| Field::new(interner.intern(&format!("f{i}")), *t))
+            .collect();
+        pool.set_struct_fields(decl, fields);
+        ty
+    }
+
+    #[test]
+    fn a_variant_is_a_tag_then_the_union_of_its_cases() {
+        // ADR-0068 §3. Two `s64` cases: the union is 8 bytes aligned 8, so the tag's byte is padded
+        // out to 8 and the whole thing is 16. Every case sits at the payload offset, **not** at 0 —
+        // reading a case at 0 would read the tag, which is the silent wrong-address bug the ADR
+        // warns about.
+        let interner = Interner::new();
+        let mut pool = Pool::new();
+        let ty = variant_of(&mut pool, &interner, 60, &[PoolId::S64, PoolId::S64]);
+        assert_eq!(
+            layout_of(&pool, T, ty),
+            Ok(Layout { size: 16, align: 8 }),
+            "a tag byte padded to the cases' alignment, then the cases"
+        );
+        for index in 0..2 {
+            let (offset, _) = field_offset(&pool, T, ty, index).expect("a variant case");
+            assert_eq!(offset, 8, "case {index} must sit past the tag");
+        }
+    }
+
+    #[test]
+    fn a_variant_of_bytes_puts_its_cases_right_after_the_tag() {
+        // The case where the padding does *not* absorb the tag: `u8` cases align to 1, so the payload
+        // starts at byte 1 and the whole variant is 2 bytes. This is the arithmetic that would be
+        // hidden by only ever testing 8-aligned cases.
+        let interner = Interner::new();
+        let mut pool = Pool::new();
+        let ty = variant_of(&mut pool, &interner, 61, &[PoolId::U8, PoolId::U8]);
+        assert_eq!(layout_of(&pool, T, ty), Ok(Layout { size: 2, align: 1 }));
+        let (offset, _) = field_offset(&pool, T, ty, 0).expect("a variant case");
+        assert_eq!(offset, 1, "a byte case sits immediately after the tag");
+    }
+
     #[test]
     fn a_union_is_its_largest_field_with_every_field_at_zero() {
         // ADR-0045 §3. The `u8` first and the `s64` second, so a struct's running-sum rule

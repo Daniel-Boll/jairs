@@ -86,6 +86,7 @@ fn calls_left(
                 jr_mir::Statement::Store { .. }
                 | jr_mir::Statement::Zero { .. }
                 | jr_mir::Statement::BoundsCheck { .. }
+                | jr_mir::Statement::TagCheck { .. }
                 | jr_mir::Statement::Nop => continue,
             };
             if matches!(rvalue, jr_mir::Rvalue::Call { .. }) {

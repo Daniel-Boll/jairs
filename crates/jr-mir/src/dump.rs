@@ -363,6 +363,13 @@ impl Dumper<'_> {
                     self.span(*span)
                 )
             }
+            Statement::TagCheck { place, case, span } => {
+                format!(
+                    "tag_check {}.tag == {case}{}",
+                    self.place(place),
+                    self.span(*span)
+                )
+            }
             Statement::Nop => String::from("nop"),
         }
     }

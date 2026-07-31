@@ -191,7 +191,8 @@ pub fn is_inlinable(callee: &MirBody) -> bool {
                 // size budget without needing to be inspected.
                 Statement::Store { .. }
                 | Statement::Zero { .. }
-                | Statement::BoundsCheck { .. } => statements += 1,
+                | Statement::BoundsCheck { .. }
+                | Statement::TagCheck { .. } => statements += 1,
             }
         }
     }
@@ -275,6 +276,7 @@ fn next_site(body: &MirBody, block: BlockId, callees: &Callees<'_>) -> Option<Si
             Statement::Store { .. }
             | Statement::Zero { .. }
             | Statement::BoundsCheck { .. }
+            | Statement::TagCheck { .. }
             | Statement::Nop => continue,
         };
         let Rvalue::Call {
@@ -526,6 +528,17 @@ impl Splice {
             } => Statement::BoundsCheck {
                 index: self.operand(index),
                 len: self.operand(len),
+                span: self.span(),
+            },
+            // The case index is a constant that travels unchanged; only the place is remapped into the
+            // caller's value space, and the span becomes the call's (ADR-0021 §3).
+            Statement::TagCheck {
+                place,
+                case,
+                span: _,
+            } => Statement::TagCheck {
+                place: self.place(place),
+                case: *case,
                 span: self.span(),
             },
             Statement::Discard { rvalue, span: _ } => Statement::Discard {

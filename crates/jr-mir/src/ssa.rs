@@ -370,6 +370,9 @@ impl SsaBuilder {
                         replace_operand(index, old, replacement);
                         replace_operand(len, old, replacement);
                     }
+                    Statement::TagCheck { place, .. } => {
+                        replace_in_place(place, old, replacement);
+                    }
                     Statement::Nop => {}
                 }
             }

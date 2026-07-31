@@ -460,6 +460,17 @@ impl<'a> Vm<'a> {
                         return Err(VmError::Trap(Trap::IndexOutOfBounds));
                     }
                 }
+                // The tag is one byte at the variant's own offset (ADR-0068 §3), so this reads a byte
+                // and compares it with the case the source named. A mismatch is the trap that makes a
+                // variant safer than a union — the whole point of the form.
+                Instr::TagCheck { place, case } => {
+                    let address = self.address(frame, place)?;
+                    let bytes = self.memory.read(address, u64::from(jr_pool::TAG_SIZE))?;
+                    let tag = u64::from(*bytes.first().unwrap_or(&0));
+                    if tag != u64::from(*case) {
+                        return Err(VmError::Trap(Trap::WrongVariantCase));
+                    }
+                }
                 Instr::Store { place, value } => {
                     let value = self.operand(frame, *value)?;
                     let address = self.address(frame, place)?;

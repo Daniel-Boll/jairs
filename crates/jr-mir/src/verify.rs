@@ -193,7 +193,8 @@ impl Verifier<'_> {
                     | Statement::Store { span, .. }
                     | Statement::Discard { span, .. }
                     | Statement::Zero { span, .. }
-                    | Statement::BoundsCheck { span, .. } => *span,
+                    | Statement::BoundsCheck { span, .. }
+                    | Statement::TagCheck { span, .. } => *span,
                     Statement::Nop => continue,
                 };
                 if let MirSpan::Param(proc, _) = span
@@ -316,6 +317,7 @@ impl Verifier<'_> {
                 self.check_operand_ids(at, *index);
                 self.check_operand_ids(at, *len);
             }
+            Statement::TagCheck { place, .. } => self.check_place_ids(at, place),
             Statement::Nop => {}
         }
     }
@@ -476,6 +478,7 @@ impl Verifier<'_> {
                         mark_operand(*index, &mut used);
                         mark_operand(*len, &mut used);
                     }
+                    Statement::TagCheck { place, .. } => mark_place(place, &mut used),
                     Statement::Nop => {}
                 }
             }
@@ -735,6 +738,11 @@ impl Verifier<'_> {
                         self.check_place_types(at, place);
                         let _ = value; // the stored type needs layout to check; see module docs
                     }
+                    // The place must be well-typed; the *case* is an index into the variant's field
+                    // list, which needs the layout this module deliberately does not have (ADR-0017
+                    // §5), so an out-of-range case is `jr-pool`'s `NotAType` at the offset lookup
+                    // rather than a check here.
+                    Statement::TagCheck { place, .. } => self.check_place_types(at, place),
                     Statement::Nop => {}
                 }
             }

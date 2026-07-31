@@ -278,6 +278,16 @@ impl Compiler<'_> {
                 });
                 Ok(())
             }
+            // The place is planned down to the variant itself; the tag sits at its offset 0 (ADR-0068
+            // §3), so no extra step is added here.
+            Statement::TagCheck { place, case, .. } => {
+                let plan = self.plan(place)?;
+                self.emit(Instr::TagCheck {
+                    place: plan,
+                    case: *case,
+                });
+                Ok(())
+            }
             // A discarded rvalue must still be *evaluated*: ADR-0002 makes overflow
             // trap, so `a + b;` in statement position is observable even though
             // nothing reads the sum. Only a call has effects beyond that, but
@@ -726,7 +736,8 @@ fn statement_span(stmt: &Statement) -> MirSpan {
         | Statement::Store { span, .. }
         | Statement::Discard { span, .. }
         | Statement::Zero { span, .. }
-        | Statement::BoundsCheck { span, .. } => *span,
+        | Statement::BoundsCheck { span, .. }
+        | Statement::TagCheck { span, .. } => *span,
         Statement::Nop => MirSpan::Synthetic,
     }
 }

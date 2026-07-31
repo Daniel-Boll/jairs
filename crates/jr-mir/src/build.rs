@@ -2280,7 +2280,19 @@ impl Lower<'_> {
                 }
             },
             Expr::Field { .. } | Expr::Index { .. } | Expr::Deref(_, _) => match self.place(id) {
-                Some((place, _)) => self.define(ty, Rvalue::Load(place), span),
+                Some((place, _)) => {
+                    // **A read of a variant's case checks the tag first** (ADR-0068 §4). Before the
+                    // load, so a wrong-case read traps rather than returning reinterpreted bits — which
+                    // is the entire difference between `variant` and `union`.
+                    if let Some((base, case)) = self.variant_case_written(&place) {
+                        self.emit(Statement::TagCheck {
+                            place: base,
+                            case,
+                            span,
+                        });
+                    }
+                    self.define(ty, Rvalue::Load(place), span)
+                }
                 None => {
                     // Never `Undef`: that would read as a legitimate uninitialised
                     // value and pass the verifier, which is how a field of an
