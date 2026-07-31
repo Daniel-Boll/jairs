@@ -57,6 +57,17 @@ module.exports = grammar({
     [$.if_stmt, $._single_stmt],
     // `(expr)(` — is the first `(expr)` a paren_expr, or the callee of a call?
     [$.arg_list, $.paren_expr],
+    // `name :` — a loop label (ADR-0049 §2) or an ordinary typed declaration? Only the following
+    // token tells them apart, so this is a genuine GLR conflict rather than a precedence question:
+    // a `prec` silently broke every `n: s64` declaration in the corpus, which gate 6 caught.
+    [$.loop_label, $.name],
+    // `-> (s64)` — a one-element results list (ADR-0052 §1) or a void-returning procedure pointer
+    // (ADR-0062 §1)? Both are now valid readings of the same tokens, and *nothing* after them
+    // distinguishes the two, so this is a genuine ambiguity rather than a look-ahead question. A
+    // declared conflict lets GLR carry both and settle it; a `prec` would silently pick one, which
+    // is the trap `loop_label` and `scope_decl` each walked into. The compiler's parser resolves it
+    // the same way it always did — `ret_type` looks for the arrow after the `)`.
+    [$.result_list, $.proc_type_params],
   ],
 
   word: ($) => $.identifier,
@@ -73,9 +84,17 @@ module.exports = grammar({
     _item: ($) =>
       choice(
         $.import_decl,
+        $.scope_decl,
         $.run_decl,
         $._decl,
       ),
+
+    // `#scope_module` / `#scope_export` — a bare directive with no argument and no `;`, marking a
+    // *position* in the file rather than declaring anything (ADR-0054 §1). Matched on its **text**
+    // rather than as a `$.directive` with a precedence: a `prec(3)` made *every* bare directive a
+    // scope marker and stranded `#run`'s expression, because every directive lexes as one token.
+    scope_decl: (_$) =>
+      field("directive", choice("#scope_module", "#scope_export")),
 
     // #import "Basic";
     // Must have higher precedence than run_decl to win when the directive is
@@ -145,6 +164,9 @@ module.exports = grammar({
           ";",
         ),
         seq(
+          // `using q: Point;` promotes (ADR-0050 §1). Only the typed form takes it: promotion
+          // needs the field list, so the compiler refuses `using q := f()` (E0128).
+          optional("using"),
           field("name", $.name),
           ":",
           field("type", $._type),
@@ -172,11 +194,23 @@ module.exports = grammar({
       seq(
         field("params", $.param_list),
         optional(field("ret_type", $.ret_type)),
+        // `#c_call` (ADR-0057 §3) and `#no_abc` (ADR-0058 §3), in either order — a `repeat`, not two
+        // `optional`s, because the compiler accepts both orderings and a fixed order would make one
+        // spelling an ERROR node while the other parsed.
+        repeat(field("attr", $._proc_attr)),
         choice(
           field("body", $.block),
           seq(field("foreign", $.foreign_attr), ";"),
         ),
       ),
+
+    _proc_attr: ($) => choice($.c_call_attr, $.no_abc_attr),
+
+    // #c_call (ADR-0057 §3)
+    c_call_attr: (_$) => field("directive", "#c_call"),
+
+    // #no_abc (ADR-0058 §3)
+    no_abc_attr: (_$) => field("directive", "#no_abc"),
 
     param_list: ($) =>
       seq(
@@ -193,9 +227,27 @@ module.exports = grammar({
 
     // param: name ':' type — no field() on name to keep S-expr clean
     param: ($) =>
-      seq($.identifier, ":", field("type", $._type)),
+      seq(
+        // `using p: Point` promotes the type's fields (ADR-0050 §1). Only the typed form takes it.
+        optional("using"),
+        $.identifier,
+        ":",
+        field("type", $._type),
+        // `= 10` — a literal default (ADR-0053 §2). Any expression parses; sema refuses a
+        // non-literal, with a message saying why.
+        optional(seq("=", field("default", $._expr))),
+      ),
 
-    ret_type: ($) => seq("->", field("type", $._type)),
+    // `-> T`, `-> (T, U)` (a results list, ADR-0052 §1), or `-> (T) -> U` (a proc-pointer return,
+    // ADR-0059 §3). The last two both begin `(`; the `->` after the `)` decides, and GLR explores
+    // both until it appears.
+    ret_type: ($) =>
+      seq("->", field("type", choice($.result_list, $._type))),
+
+    // `(T, U, …)` after `->` (ADR-0052 §1). A one-element list interns to the element itself, so
+    // `-> (T)` and `-> T` are the same type — normalised in `jr-pool`, not refused here.
+    result_list: ($) =>
+      seq("(", $._type, repeat(seq(",", $._type)), ")"),
 
     // #foreign libc "write"
     foreign_attr: ($) =>
@@ -217,7 +269,28 @@ module.exports = grammar({
         $.struct_type,
         $.union_type,
         $.enum_type,
+        $.proc_type,
       ),
+
+    // (T, T) -> T — a procedure-pointer type (ADR-0059 §3).
+    //
+    // In return position this collides with `result_list`: both begin `(`, and only the `->` after
+    // the closing `)` tells them apart. tree-sitter's GLR resolves it on its own (a declared
+    // conflict was tried and `generate` reported it unnecessary). The parameter list is its own node
+    // so the return type is not mistaken for a last parameter.
+    proc_type: ($) =>
+      seq(
+        field("params", $.proc_type_params),
+        // The arrow is **optional** (ADR-0062 §1): `(s64)` is a procedure pointer returning `void`,
+        // the way a declaration omits it. This widens the return-position ambiguity with
+        // `result_list` — `(s64)` alone is now a valid *type* as well as a one-element results list
+        // — which GLR still resolves, because `ret_type` offers both and only the following token
+        // distinguishes them.
+        optional(seq("->", field("return", $._type))),
+      ),
+
+    proc_type_params: ($) =>
+      seq("(", optional(seq($._type, repeat(seq(",", $._type)))), ")"),
 
     // *T
     pointer_type: ($) => seq("*", field("inner", $._type)),
@@ -289,9 +362,9 @@ module.exports = grammar({
 
     field_list: ($) => seq("{", repeat($.field), "}"),
 
-    // struct field: name ':' type ';' — no field() on name
+    // struct field: `name : type ;`, or `using name : type ;` to embed (ADR-0050 §1).
     field: ($) =>
-      seq($.identifier, ":", field("type", $._type), ";"),
+      seq(optional("using"), $.identifier, ":", field("type", $._type), ";"),
 
     // -----------------------------------------------------------------------
     // Statements
@@ -303,10 +376,13 @@ module.exports = grammar({
         $.block,
         $.if_stmt,
         $.while_stmt,
+        $.for_stmt,
+        $.defer_stmt,
         $.return_stmt,
         $.break_stmt,
         $.continue_stmt,
         $.decl_stmt,
+        $.destructuring_stmt,
         $.assign_stmt,
         $.expr_stmt,
       ),
@@ -347,19 +423,62 @@ module.exports = grammar({
       choice(
         $.if_stmt,
         $.while_stmt,
+        $.for_stmt,
+        $.defer_stmt,
         $.return_stmt,
         $.break_stmt,
         $.continue_stmt,
+        $.destructuring_stmt,
         $.assign_stmt,
         $.expr_stmt,
       ),
 
+    // `for x: iter { }`, `for x, i: iter { }`, `for < x: iter { }` (ADR-0049 §1). An optional label
+    // (`outer: for …`) precedes it. The iterable is an expression, including a `range_expr`.
+    for_stmt: ($) =>
+      seq(
+        optional(field("label", $.loop_label)),
+        "for",
+        optional("<"),
+        field("value", $.identifier),
+        optional(seq(",", field("index", $.identifier))),
+        ":",
+        field("iter", $._expr),
+        field("body", $.block),
+      ),
+
+    // `outer:` before a loop (ADR-0049 §2). `name :` collides with an ordinary typed declaration —
+    // only the following token tells them apart — so the `[$.loop_label, $.name]` conflict resolves
+    // it, and a `prec` was tried and silently broke every `n: s64` declaration.
+    loop_label: ($) => seq(field("label", $.identifier), ":"),
+
+    // `defer stmt;` or `defer { }` (ADR-0049 §3).
+    defer_stmt: ($) => seq("defer", field("body", $._single_stmt)),
+
     return_stmt: ($) =>
-      seq("return", optional(field("value", $._expr)), ";"),
+      seq(
+        "return",
+        optional(seq(field("value", $._expr), repeat(seq(",", field("value", $._expr))))),
+        ";",
+      ),
 
-    break_stmt: (_$) => seq("break", ";"),
+    // `break;`, `break outer;` (ADR-0049 §2), and likewise for continue.
+    break_stmt: ($) => seq("break", optional(field("label", $.identifier)), ";"),
 
-    continue_stmt: (_$) => seq("continue", ";"),
+    continue_stmt: ($) => seq("continue", optional(field("label", $.identifier)), ";"),
+
+    // `q, ok := f();` and `q, ok = f();` (ADR-0052 §2). A `_` is an ordinary identifier in Jairs, so
+    // a discard needs no separate rule — lowering recognises the text.
+    destructuring_stmt: ($) =>
+      seq(
+        field("targets", $.target_list),
+        choice(":=", "="),
+        field("value", $._expr),
+        ";",
+      ),
+
+    target_list: ($) =>
+      seq($.identifier, repeat1(seq(",", $.identifier))),
 
     // lhs AssignOp rhs ;
     assign_stmt: ($) =>
@@ -418,6 +537,8 @@ module.exports = grammar({
         $.paren_expr,
         $.literal_expr,
         $.name_expr,
+        $.context_expr,
+        $.range_expr,
         $.uninit_expr,
         $.cast_expr,
         $.autocast_expr,
@@ -560,13 +681,18 @@ module.exports = grammar({
         "(",
         optional(
           seq(
-            $._expr,
-            repeat(seq(",", $._expr)),
+            choice($.named_arg, $._expr),
+            repeat(seq(",", choice($.named_arg, $._expr))),
             optional(","),
           ),
         ),
         ")",
       ),
+
+    // `b = 2` at a call site (ADR-0053 §1). Its own node rather than an assignment-shaped
+    // expression, because the two mean different things and a consumer must be able to tell them
+    // apart.
+    named_arg: ($) => seq(field("name", $.identifier), "=", field("value", $._expr)),
 
     // Parenthesised expression
     paren_expr: ($) => seq("(", field("inner", $._expr), ")"),
@@ -579,10 +705,21 @@ module.exports = grammar({
         $.string_literal,
         $.true,
         $.false,
+        $.null,
       ),
 
     // Name reference
     name_expr: ($) => $.identifier,
+
+    // `0..n` — a range, reachable only as a `for`'s iterable (ADR-0049 §1). The `..` exists
+    // nowhere else, which is what keeps it from colliding with `[..]T`. Low precedence so its
+    // operands bind first.
+    range_expr: ($) => prec.left(-2, seq(field("start", $._expr), "..", field("end", $._expr))),
+
+    // `context` — the implicit context, a keyword rather than a name (ADR-0057 §1). Its own node so
+    // a consumer reading names does not find it, or `context.allocator` would look like a field
+    // access on a variable somebody declared. Carries a token-level precedence to beat `identifier`.
+    context_expr: (_$) => prec(1, "context"),
 
     // --- (explicitly uninitialised)
     uninit_expr: (_$) => "---",
@@ -715,6 +852,10 @@ module.exports = grammar({
     // Boolean literals
     true: (_$) => "true",
     false: (_$) => "false",
+    // `null` — a context-typed pointer literal (ADR-0060 §1). A keyword the lexer already produces;
+    // here it joins the literal choice so `p: *u8 = null` parses as a `literal_expr` rather than an
+    // error, and a highlighter colours it as a constant.
+    null: (_$) => "null",
 
     // Line comment: // to end of line
     line_comment: (_$) => token(seq("//", /.*/)),

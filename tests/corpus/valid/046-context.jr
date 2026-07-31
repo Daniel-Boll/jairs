@@ -1,0 +1,101 @@
+// The implicit `context` (ADR-0057) — the first feature of W3.
+//
+// ADR-0001 decided the ABI in the vertical slice — a hidden parameter, `#c_call` to opt out — and put
+// `ContextKind` in every procedure type so this wave would be implementation rather than re-typing.
+// That held: the type side needed no change. What was missing is that **nothing passed a context**;
+// now both engines do.
+//
+// `context` is a value of a compiler-declared struct. It had one field when this file was written —
+// `allocator: s64`, a placeholder — and ADR-0062 replaced that with the real protocol: two procedure
+// pointers (`allocator`, `allocator_free`) and a state word (`allocator_data`). **This file was
+// rewritten rather than extended**, which is a first for the corpus: what it tests is the *ABI* — that
+// a context is one object reached by pointer — not what the fields mean, so it now exercises that
+// through `allocator_data`, the field that is still a plain `s64`. The protocol itself is
+// `valid/050-allocator.jr`.
+//
+// Five things here are worth checking rather than assuming:
+//
+//   * a callee reads what its caller **wrote**, because the context is passed by *pointer* (ADR-0057
+//     §2). A copy would make "set the field, then call" silently not work, which is the entire
+//     point of a context — so `bumped` below sets the field and a callee reads the new value;
+//   * a caller is **not** affected by a callee it did not observe, since each modifying procedure owns
+//     the pointer it was handed;
+//   * `main`'s context is **zeroed** (ADR-0057 §5): it has no Jairs caller, so the entry stub creates
+//     it, and `context.allocator_data` reads 0 before anything sets it — a defined value, not garbage;
+//   * a `#c_call` procedure receives **no** context and runs fine without one, which is what proves
+//     the opt-out is real rather than cosmetic;
+//   * the hidden parameter is **leading** (ADR-0057 §4), so a call passing arguments still lands them
+//     on the right parameters — `add_ctx` takes both a context and a declared argument.
+//
+// The `exit` is what gives this file teeth under the differential harness: the two engines must agree
+// about a value that only exists because a pointer was threaded through every call correctly.
+#import "Basic";
+
+/// Reads the context's one field. Receives the context because it is an ordinary Jairs procedure.
+read_allocator :: () -> s64 {
+    return context.allocator_data;
+}
+
+/// A declared argument *and* the context, so the leading hidden parameter (ADR-0057 §4) does not push
+/// `n` to the wrong position — if it did, this would add the context pointer to `n` rather than 100.
+add_ctx :: (n: s64) -> s64 {
+    return n + 100;
+}
+
+/// Sets the field and calls a reader, which must see the new value (ADR-0057 §2). The write is on
+/// this procedure's own context, handed down by pointer to `read_allocator`.
+bumped :: (v: s64) -> s64 {
+    context.allocator_data = v;
+    return read_allocator();
+}
+
+/// A `#c_call` procedure: no context at all (ADR-0057 §3). It runs, which is what proves the opt-out
+/// works rather than merely parsing.
+raw :: (n: s64) -> s64 #c_call {
+    return n * 2;
+}
+
+main :: () {
+    n := 0;
+
+    // `main`'s context is zeroed, so its callees read 0 until something writes.
+    if read_allocator() == 0 {
+        n = n + 1;
+    }
+    if context.allocator_data == 0 {
+        n = n + 2;
+    }
+
+    // A write here is visible to a callee, because the context is one object reached by pointer.
+    context.allocator_data = 5;
+    if read_allocator() == 5 {
+        n = n + 4;
+    }
+
+    // `bumped` sets the field on the context it was handed and its callee sees it.
+    if bumped(9) == 9 {
+        n = n + 8;
+    }
+    // ...and `bumped`'s write is not visible back here: it modified the pointer it was passed, which
+    // is the same one, so this actually reads 9 now — the by-pointer semantics, observed from the
+    // caller's side. (A `push_context` form that isolated the callee is a later wave, ADR-0057 §6.)
+    if context.allocator_data == 9 {
+        n = n + 16;
+    }
+
+    // The leading hidden parameter does not disturb a declared argument.
+    if add_ctx(23) == 123 {
+        n = n + 32;
+    }
+
+    // A `#c_call` procedure runs with no context.
+    if raw(21) == 42 {
+        n = n + 64;
+    }
+
+    // Every assertion: 127.
+    if n == 127 {
+        exit(0);
+    }
+    exit(1);
+}

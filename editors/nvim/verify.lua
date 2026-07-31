@@ -315,6 +315,521 @@ if has_parser then
       buf = vim.api.nvim_get_current_buf()
     end
 
+    -- `#scope_module` (ADR-0054). Three things the drift gate cannot see: that a bare
+    -- `#scope_module` produces a `scope_decl` node, that `#run x;` is still a `run_decl` and not
+    -- one — a `prec(3)` on the scope rule made *every* bare directive a scope marker and stranded
+    -- `#run`'s expression — and that the standard library's own private section parses.
+    local sc_file = root .. "/modules/Basic/module.jr"
+    if vim.uv.fs_stat(sc_file) then
+      vim.cmd.edit(vim.fn.fnameescape(sc_file))
+      local sc_buf = vim.api.nvim_get_current_buf()
+      local sc_ok, sc_parser = pcall(vim.treesitter.get_parser, sc_buf, "jairs")
+      if sc_ok and sc_parser then
+        local sc_tree = sc_parser:parse()[1]
+        check("modules/Basic parses with no ERROR node", not sc_tree:root():has_error())
+
+        local sc_kinds = {}
+        local function sc_walk(node)
+          sc_kinds[node:type()] = (sc_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            sc_walk(child)
+          end
+        end
+        sc_walk(sc_tree:root())
+        -- Two markers are written in `Basic`: one `#scope_module` and one `#scope_export`.
+        check("`#scope_module` produces a scope_decl node", (sc_kinds.scope_decl or 0) == 2)
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- `#run` must still be a `run_decl`, not a `scope_decl` — the regression a precedence-based
+    -- scope rule caused, pinned at the level where it was visible only as an ERROR node.
+    local run_file = root .. "/tests/corpus/valid/020-run-directive.jr"
+    if vim.uv.fs_stat(run_file) then
+      vim.cmd.edit(vim.fn.fnameescape(run_file))
+      local rn_buf = vim.api.nvim_get_current_buf()
+      local rn_ok, rn_parser = pcall(vim.treesitter.get_parser, rn_buf, "jairs")
+      if rn_ok and rn_parser then
+        local rn_tree = rn_parser:parse()[1]
+        check("the #run corpus file parses with no ERROR node", not rn_tree:root():has_error())
+        local rn_kinds = {}
+        local function rn_walk(node)
+          rn_kinds[node:type()] = (rn_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            rn_walk(child)
+          end
+        end
+        rn_walk(rn_tree:root())
+        check("`#run` is still a run_decl", (rn_kinds.run_decl or 0) > 0)
+        check("`#run` did not become a scope_decl", (rn_kinds.scope_decl or 0) == 0)
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- Named arguments and defaults (ADR-0053). Three things the drift gate cannot see: that
+    -- `f(b = 2)` produces a `named_arg` node rather than an expression followed by a stray `=`,
+    -- that a parameter's `= 10` survives as a child of `param`, and that an *ordinary* call is
+    -- still not a named argument — a grammar that made every argument a `named_arg` would parse the
+    -- corpus file cleanly while being wrong.
+    local na_file = root .. "/tests/corpus/valid/043-named-and-default-arguments.jr"
+    if vim.uv.fs_stat(na_file) then
+      vim.cmd.edit(vim.fn.fnameescape(na_file))
+      local na_buf = vim.api.nvim_get_current_buf()
+      local na_ok, na_parser = pcall(vim.treesitter.get_parser, na_buf, "jairs")
+      if na_ok and na_parser then
+        local na_tree = na_parser:parse()[1]
+        check(
+          "the named-arguments corpus file parses with no ERROR node",
+          not na_tree:root():has_error()
+        )
+
+        local na_kinds = {}
+        local function na_walk(node)
+          na_kinds[node:type()] = (na_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            na_walk(child)
+          end
+        end
+        na_walk(na_tree:root())
+        check("`f(b = 2)` produces a named_arg node", (na_kinds.named_arg or 0) > 0)
+        -- Twelve named arguments are written in that file. Counted rather than merely detected,
+        -- because a grammar accepting the form in only the first position would still produce some.
+        check("every named argument produces a node", (na_kinds.named_arg or 0) >= 12)
+        -- `add(3, 4)` and the `exit` calls are positional, so not every argument is named — a
+        -- grammar that swallowed positional arguments into `named_arg` would fail this.
+        check(
+          "an ordinary positional argument is not a named_arg",
+          (na_kinds.named_arg or 0) < (na_kinds.arg_list or 0) * 4
+        )
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- Multiple returns (ADR-0052). Three things the drift gate cannot see: that `-> (s64, bool)`
+    -- produces a `result_list` node rather than a parenthesised type, that a destructuring statement
+    -- produces a `target_list`, and that a `_` discard is inside one — a grammar admitting the
+    -- target list only for real names would still parse the corpus file if `_` happened to lex the
+    -- same way, so the *count* is checked.
+    local mr_file = root .. "/tests/corpus/valid/042-multiple-returns.jr"
+    if vim.uv.fs_stat(mr_file) then
+      vim.cmd.edit(vim.fn.fnameescape(mr_file))
+      local mr_buf = vim.api.nvim_get_current_buf()
+      local mr_ok, mr_parser = pcall(vim.treesitter.get_parser, mr_buf, "jairs")
+      if mr_ok and mr_parser then
+        local mr_tree = mr_parser:parse()[1]
+        check(
+          "the multiple-returns corpus file parses with no ERROR node",
+          not mr_tree:root():has_error()
+        )
+
+        local mr_kinds = {}
+        local function mr_walk(node)
+          mr_kinds[node:type()] = (mr_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            mr_walk(child)
+          end
+        end
+        mr_walk(mr_tree:root())
+        check("`-> (s64, bool)` produces a result_list node", (mr_kinds.result_list or 0) > 0)
+        check(
+          "`q, ok := f()` produces a target_list node",
+          (mr_kinds.target_list or 0) > 0
+        )
+        -- Nine destructuring statements are written in that file. Counting rather than merely
+        -- checking presence, because a grammar accepting only the two-target form would still
+        -- produce *some* target lists while silently failing on the three-target one.
+        check(
+          "every destructuring statement produces a target list",
+          (mr_kinds.target_list or 0) >= 9
+        )
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- `using` (ADR-0050). Three things the drift gate cannot see: that `using` highlights as a
+    -- keyword rather than as reserved — seven for seven on that pairing now, and this is the last
+    -- keyword to make the trip — that it appears in all three binding positions, and that an
+    -- ordinary `hp: s64;` field beside a `using` one is still a plain field.
+    local using_file = root .. "/tests/corpus/valid/040-using.jr"
+    if vim.uv.fs_stat(using_file) then
+      vim.cmd.edit(vim.fn.fnameescape(using_file))
+      local us_buf = vim.api.nvim_get_current_buf()
+      local us_ok, us_parser = pcall(vim.treesitter.get_parser, us_buf, "jairs")
+      if us_ok and us_parser then
+        local us_tree = us_parser:parse()[1]
+        check("the `using` corpus file parses with no ERROR node", not us_tree:root():has_error())
+
+        local us_query_ok, us_query = pcall(vim.treesitter.query.get, "jairs", "highlights")
+        if us_query_ok and us_query then
+          local kw, res = 0, false
+          for id, node in us_query:iter_captures(us_tree:root(), us_buf, 0, -1) do
+            local capture = us_query.captures[id]
+            local text = vim.treesitter.get_node_text(node, us_buf)
+            if text == "using" then
+              if capture == "keyword" then
+                kw = kw + 1
+              elseif capture == "keyword.reserved" then
+                res = true
+              end
+            end
+          end
+          -- Six `using` bindings are written in that file: two embedded fields, three parameters
+          -- (one of them a pointer), and one local. Counting rather than merely checking presence,
+          -- because a grammar that admitted the keyword in only *one* position would still see it.
+          check("every `using` highlights as a keyword", kw >= 6)
+          check("`using` is no longer highlighted as reserved", not res)
+        end
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- `for`, labels, `defer` and ranges (ADR-0049). Four things the drift gate cannot see.
+    --
+    -- The `n: s64` one is the reason this block exists at all: `loop_label` and an ordinary
+    -- typed declaration both begin `identifier ":"`, and resolving that with a `prec(1)` — the
+    -- first thing `tree-sitter generate` suggests — made the label rule win *everywhere* and
+    -- silently broke every declaration in the corpus. A declared GLR conflict fixes it, and
+    -- this pins the fix, because the wrong resolution is a wrong *shape* rather than an ERROR.
+    local for_file = root .. "/tests/corpus/valid/039-for-labels-and-defer.jr"
+    if vim.uv.fs_stat(for_file) then
+      vim.cmd.edit(vim.fn.fnameescape(for_file))
+      local fo_buf = vim.api.nvim_get_current_buf()
+      local fo_ok, fo_parser = pcall(vim.treesitter.get_parser, fo_buf, "jairs")
+      if fo_ok and fo_parser then
+        local fo_tree = fo_parser:parse()[1]
+        check("the `for` corpus file parses with no ERROR node", not fo_tree:root():has_error())
+
+        local fo_kinds = {}
+        local function fo_walk(node)
+          fo_kinds[node:type()] = (fo_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            fo_walk(child)
+          end
+        end
+        fo_walk(fo_tree:root())
+        check("`for x: buf` produces a for_stmt node", (fo_kinds.for_stmt or 0) > 0)
+        check("`outer: for` produces a loop_label node", (fo_kinds.loop_label or 0) > 0)
+        check("`defer f();` produces a defer_stmt node", (fo_kinds.defer_stmt or 0) > 0)
+        check("`0..4` produces a range_expr node", (fo_kinds.range_expr or 0) > 0)
+        -- The label rule must not have swallowed ordinary declarations. `buf: [4]s64;` and
+        -- `total := 0;` are both in this file, so a `loop_label` count above the number of
+        -- labelled loops written (two) means the rule is matching declarations too.
+        check(
+          "an ordinary `name: T` declaration is not parsed as a loop label",
+          (fo_kinds.loop_label or 0) == 2
+        )
+
+        local fo_query_ok, fo_query = pcall(vim.treesitter.query.get, "jairs", "highlights")
+        if fo_query_ok and fo_query then
+          local kw, res, labels = {}, {}, 0
+          for id, node in fo_query:iter_captures(fo_tree:root(), fo_buf, 0, -1) do
+            local capture = fo_query.captures[id]
+            local text = vim.treesitter.get_node_text(node, fo_buf)
+            if text == "for" or text == "defer" then
+              if capture == "keyword" then
+                kw[text] = true
+              elseif capture == "keyword.reserved" then
+                res[text] = true
+              end
+            end
+            if capture == "label" then
+              labels = labels + 1
+            end
+          end
+          -- Five for five on this pairing now: `cast`, `enum`, `union`, `xx`, and these two.
+          check("`for` highlights as a keyword", kw["for"] == true)
+          check("`defer` highlights as a keyword", kw["defer"] == true)
+          check("`for` is no longer highlighted as reserved", not res["for"])
+          check("`defer` is no longer highlighted as reserved", not res["defer"])
+          -- Two labelled loops, and two jumps that name one.
+          check("a loop label and the jump naming it both highlight", labels >= 4)
+        end
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- A **void-returning** procedure pointer, `(T)` with no arrow (ADR-0062 §1). This is the one
+    -- shape where the grammar's ambiguity is genuine rather than a look-ahead: `-> (s64)` is both a
+    -- one-element results list and a void-returning proc pointer, resolved by a declared GLR
+    -- conflict. A regression that picked the wrong reading is a wrong *shape*, not an ERROR node, so
+    -- gate 6 would stay green — which is why the node kinds are counted here.
+    local al_file = root .. "/tests/corpus/valid/050-allocator.jr"
+    if vim.uv.fs_stat(al_file) then
+      vim.cmd.edit(vim.fn.fnameescape(al_file))
+      local al_buf = vim.api.nvim_get_current_buf()
+      local al_ok, al_parser = pcall(vim.treesitter.get_parser, al_buf, "jairs")
+      if al_ok and al_parser then
+        local al_tree = al_parser:parse()[1]
+        check("the allocator corpus file parses with no ERROR node", not al_tree:root():has_error())
+
+        local al_kinds = {}
+        local function al_walk(node)
+          al_kinds[node:type()] = (al_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            al_walk(child)
+          end
+        end
+        al_walk(al_tree:root())
+        -- That file declares `libc_free :: (p: *u8)` and `free_through_context :: (p: *u8)` — both
+        -- void-returning *declarations*, not proc-pointer types — so the `proc_type` count here
+        -- comes only from what the file spells as a type. It spells none: the allocator's fields
+        -- live in the compiler-declared context, not in source. So this asserts the absence, which
+        -- is what tells a reader the context's fields are not user syntax.
+        check("no proc_type node is spelled in the allocator file", (al_kinds.proc_type or 0) == 0)
+        -- And a results list is not accidentally produced by a void-returning declaration.
+        check("a void-returning declaration is not a results list", (al_kinds.result_list or 0) == 0)
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- `null` (ADR-0060). The drift gate confirms it parses as a `null` node; what it cannot see is
+    -- that the formatter kept it (it lands in a literal filter that a missing arm would delete
+    -- from, which happened in this wave and a unit test now pins) and that the highlighter colours
+    -- it. Here we assert the node kind and the highlight, since the reserved-keyword rule that used
+    -- to match `null` as an identifier is now dead.
+    local nl_file = root .. "/tests/corpus/valid/049-null-and-malloc.jr"
+    if vim.uv.fs_stat(nl_file) then
+      vim.cmd.edit(vim.fn.fnameescape(nl_file))
+      local nl_buf = vim.api.nvim_get_current_buf()
+      local nl_ok, nl_parser = pcall(vim.treesitter.get_parser, nl_buf, "jairs")
+      if nl_ok and nl_parser then
+        local nl_tree = nl_parser:parse()[1]
+        check("the null/malloc corpus file parses with no ERROR node", not nl_tree:root():has_error())
+
+        local nl_kinds = {}
+        local function nl_walk(node)
+          nl_kinds[node:type()] = (nl_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            nl_walk(child)
+          end
+        end
+        nl_walk(nl_tree:root())
+        -- `null` appears several times in that file; a presence check suffices, because the point
+        -- is that it is a `null` node at all rather than a `name_expr` an identifier rule matched.
+        check("`null` produces a null node", (nl_kinds.null or 0) >= 1)
+        -- And it must NOT be a name_expr whose text is `null` — the old reserved-identifier match.
+        local saw_as_name = false
+        local function name_walk(node)
+          if node:type() == "name_expr"
+            and vim.treesitter.get_node_text(node, nl_buf) == "null" then
+            saw_as_name = true
+          end
+          for child in node:iter_children() do
+            name_walk(child)
+          end
+        end
+        name_walk(nl_tree:root())
+        check("`null` is not parsed as an ordinary name", not saw_as_name)
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- Procedure-pointer types (ADR-0059). Two things the drift gate cannot see.
+    --
+    -- The return-position one is why this block exists. A `proc_type` and a `result_list` both begin
+    -- `(` in return position, and only the `->` after the `)` tells them apart — the compiler's
+    -- parser looks that far ahead by hand, tree-sitter's GLR explores both. A regression that made
+    -- `pick :: () -> (s64, s64) -> s64` parse its return as a results list is a wrong *shape*, not
+    -- an ERROR node, so it would pass gate 6 while meaning something else.
+    local pp_file = root .. "/tests/corpus/valid/048-indirect-calls.jr"
+    if vim.uv.fs_stat(pp_file) then
+      vim.cmd.edit(vim.fn.fnameescape(pp_file))
+      local pp_buf = vim.api.nvim_get_current_buf()
+      local pp_ok, pp_parser = pcall(vim.treesitter.get_parser, pp_buf, "jairs")
+      if pp_ok and pp_parser then
+        local pp_tree = pp_parser:parse()[1]
+        check(
+          "the indirect-call corpus file parses with no ERROR node",
+          not pp_tree:root():has_error()
+        )
+
+        local pp_kinds = {}
+        local function pp_walk(node)
+          pp_kinds[node:type()] = (pp_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            pp_walk(child)
+          end
+        end
+        pp_walk(pp_tree:root())
+        -- Two `proc_type`s are written: `apply`'s `fn` parameter and `pick`'s return type. Counting
+        -- rather than merely checking presence, because the two are in *different* positions — a
+        -- parameter and a return — and the return one goes through the results-list disambiguation,
+        -- so a grammar that handled only the parameter position would still see one.
+        check("`(T, T) -> T` produces a proc_type node", (pp_kinds.proc_type or 0) == 2)
+        -- And `pick`'s `(s64, s64)` return must **not** have been read as a results list: that is
+        -- the silent wrong-shape regression, so its absence is asserted directly.
+        check(
+          "a proc-pointer return is not parsed as a results list",
+          (pp_kinds.result_list or 0) == 0
+        )
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- `context` and `#c_call` (ADR-0057). This block exists because the wave shipped with the
+    -- grammar knowing neither, and the *two* failures were of different kinds:
+    --
+    --   * `#c_call` was an ERROR node, which gate 6 caught;
+    --   * `context` was **not**. It is a legal identifier, so the corpus parsed and
+    --     `context.allocator` was a `field_expr` over a `name_expr` — a field access on a variable
+    --     nobody declared. The two parsers disagreed about what the tree *meant* while every gate
+    --     stayed green, which is the failure ADR-0025 §4 added the gate for and the one it cannot
+    --     see. So the check here is on the node type, not on the absence of an error.
+    local ctx_file = root .. "/tests/corpus/valid/046-context.jr"
+    if vim.uv.fs_stat(ctx_file) then
+      vim.cmd.edit(vim.fn.fnameescape(ctx_file))
+      local cx_buf = vim.api.nvim_get_current_buf()
+      local cx_ok, cx_parser = pcall(vim.treesitter.get_parser, cx_buf, "jairs")
+      if cx_ok and cx_parser then
+        local cx_tree = cx_parser:parse()[1]
+        check("the context corpus file parses with no ERROR node", not cx_tree:root():has_error())
+
+        local cx_kinds = {}
+        local function cx_walk(node)
+          cx_kinds[node:type()] = (cx_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            cx_walk(child)
+          end
+        end
+        cx_walk(cx_tree:root())
+        -- Five `context` mentions are written in that file: `read_allocator`'s read, `bumped`'s
+        -- write, and three in `main` (two reads and a write). Counted rather than merely present,
+        -- because the keyword-versus-identifier ambiguity could resolve one way in one position and
+        -- the other way elsewhere, and a presence check would see the good case only.
+        check("`context` produces a context_expr node", (cx_kinds.context_expr or 0) == 5)
+        check("`#c_call` produces a c_call_attr node", (cx_kinds.c_call_attr or 0) == 1)
+        -- And `context` must **not** have been read as a name. A `name_expr` whose text is
+        -- `context` is exactly the silent divergence above, so this asserts its absence directly
+        -- rather than inferring it from the count.
+        local saw_as_name = false
+        local function name_walk(node)
+          if node:type() == "name_expr"
+            and vim.treesitter.get_node_text(node, cx_buf) == "context" then
+            saw_as_name = true
+          end
+          for child in node:iter_children() do
+            name_walk(child)
+          end
+        end
+        name_walk(cx_tree:root())
+        check("`context` is not parsed as an ordinary name", not saw_as_name)
+
+        local cx_query_ok, cx_query = pcall(vim.treesitter.query.get, "jairs", "highlights")
+        if cx_query_ok and cx_query then
+          local kw, res, directive = 0, false, false
+          for id, node in cx_query:iter_captures(cx_tree:root(), cx_buf, 0, -1) do
+            local capture = cx_query.captures[id]
+            local text = vim.treesitter.get_node_text(node, cx_buf)
+            if text == "context" then
+              if capture == "keyword" then
+                kw = kw + 1
+              elseif capture == "keyword.reserved" then
+                res = true
+              end
+            end
+            if text == "#c_call" and capture == "keyword.directive" then
+              directive = true
+            end
+          end
+          check("every `context` highlights as a keyword", kw == 5)
+          check("`context` is not highlighted as reserved", not res)
+          -- `#c_call` is a literal token rather than a `(directive)` node, so the general directive
+          -- rule does not reach it: without its own capture it would have no colour at all, which
+          -- is a silent loss rather than a failure.
+          check("`#c_call` highlights as a directive", directive)
+        end
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- `#no_abc` (ADR-0058 §3). Two things the drift gate cannot see.
+    --
+    -- The **ordering** one is why this block exists. `#c_call` and `#no_abc` are legal in either
+    -- order, and a grammar using two `optional`s in a fixed order would make one spelling an ERROR
+    -- node while the other parsed — so gate 6 *would* catch that. What it cannot catch is the
+    -- formatter reordering them, which is not an error at all: `jr fmt` would rewrite one legal
+    -- spelling into the other and gate 5 would fail only if a corpus file happened to use the
+    -- second. So the corpus file uses `#no_abc #c_call`, and this asserts the tree keeps that order.
+    local abc_file = root .. "/tests/corpus/valid/047-no-abc.jr"
+    if vim.uv.fs_stat(abc_file) then
+      vim.cmd.edit(vim.fn.fnameescape(abc_file))
+      local ab_buf = vim.api.nvim_get_current_buf()
+      local ab_ok, ab_parser = pcall(vim.treesitter.get_parser, ab_buf, "jairs")
+      if ab_ok and ab_parser then
+        local ab_tree = ab_parser:parse()[1]
+        check("the `#no_abc` corpus file parses with no ERROR node", not ab_tree:root():has_error())
+
+        local ab_kinds = {}
+        local function ab_walk(node)
+          ab_kinds[node:type()] = (ab_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            ab_walk(child)
+          end
+        end
+        ab_walk(ab_tree:root())
+        -- Three `#no_abc` procedures are written in that file: `read_fast`, `sum_fast` and
+        -- `raw_fast`. Counted, because the directive appears in three different shapes — with a
+        -- return type, on a procedure that loops, and beside `#c_call` — and a grammar that
+        -- admitted it in only one position would still see one.
+        check("`#no_abc` produces a no_abc_attr node", (ab_kinds.no_abc_attr or 0) == 3)
+        check("`#c_call` still parses beside it", (ab_kinds.c_call_attr or 0) == 1)
+
+        -- The order, read off the tree. `raw_fast` is declared `#no_abc #c_call`, so the first
+        -- attribute child of that `proc` must be the `no_abc_attr` — if the formatter or the
+        -- grammar reordered them, this is where it shows.
+        local first_of_pair = nil
+        local function order_walk(node)
+          if node:type() == "proc" then
+            local attrs = {}
+            for child in node:iter_children() do
+              local t = child:type()
+              if t == "no_abc_attr" or t == "c_call_attr" then
+                attrs[#attrs + 1] = t
+              end
+            end
+            if #attrs == 2 then
+              first_of_pair = attrs[1]
+            end
+          end
+          for child in node:iter_children() do
+            order_walk(child)
+          end
+        end
+        order_walk(ab_tree:root())
+        check(
+          "`#no_abc #c_call` keeps the order it was written in",
+          first_of_pair == "no_abc_attr",
+          first_of_pair
+        )
+
+        local ab_query_ok, ab_query = pcall(vim.treesitter.query.get, "jairs", "highlights")
+        if ab_query_ok and ab_query then
+          local coloured = 0
+          for id, node in ab_query:iter_captures(ab_tree:root(), ab_buf, 0, -1) do
+            if ab_query.captures[id] == "keyword.directive"
+              and vim.treesitter.get_node_text(node, ab_buf) == "#no_abc" then
+              coloured = coloured + 1
+            end
+          end
+          -- A literal token, so the general `(directive)` rule does not reach it: without its own
+          -- capture it would have no colour at all, which is a silent loss rather than a failure.
+          check("every `#no_abc` highlights as a directive", coloured == 3, coloured)
+        end
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
     -- A field access must still be a `field_expr`, not a bare member. This is the regression
     -- `member_expr` caused at precedence 10, pinned at the level where it was invisible: the
     -- corpus still parsed, so only the *shape* showed it.

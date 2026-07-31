@@ -14,7 +14,7 @@
 //! (`docs/spec/02-declarations.md`), and it stops holding the day return-type
 //! inference is added.
 
-use jr_base::FileId;
+use jr_base::{FileId, Symbol};
 use jr_hir::{ItemId, ProcId};
 use jr_pool::{DeclId, Field, Pool, PoolId};
 use rustc_hash::FxHashMap;
@@ -115,6 +115,19 @@ pub struct ProcSig {
     /// The parameter types, in order. A parameter whose type could not be
     /// resolved is [`PoolId::ERROR`].
     pub params: Vec<PoolId>,
+    /// The parameter *names*, parallel to `params` (ADR-0053 §1).
+    ///
+    /// Here rather than on `Item::ProcType` because that is the per-**type** record and this is the
+    /// per-**procedure** one: two procedures with identical parameter and return types intern to one
+    /// `ProcType` and genuinely have different parameter names, so putting names in the type would
+    /// either break interning or lie about one of them.
+    pub names: Vec<Symbol>,
+    /// The default value of each parameter, parallel to `params` (ADR-0053 §2).
+    ///
+    /// An interned literal, or `None` for a parameter that must be supplied. Already a `PoolId`
+    /// rather than an expression, because sema interned the literal when it resolved the signature —
+    /// which is what keeps const-eval out of this entirely (ADR-0018 §3).
+    pub defaults: Vec<Option<PoolId>>,
     /// The return type. [`PoolId::VOID`] when the source omitted the arrow —
     /// never `None`, per ADR-0015 §3.
     pub ret: PoolId,

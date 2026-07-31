@@ -35,7 +35,7 @@ use jr_diag::{Diagnostic, Diagnostics};
 use jr_hir::{
     BodyId, ExprScope, FileHir, ItemId, ItemKind, LocalId, ResolveMap, StructId, TypeRef, TypeRefId,
 };
-use jr_pool::{DeclId, IntKind, Item, Pool, PoolId};
+use jr_pool::{ContextKind, DeclId, IntKind, Item, Pool, PoolId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::code::{E0211, E0212, E0213, E0214, E0233, E0237, E0240};
@@ -122,6 +122,16 @@ pub(crate) struct Ctx<'a> {
     /// Collected here and handed to `CheckOutput` when the context is dropped, exactly as
     /// `types` and `diags` are.
     pub(crate) operator_calls: FxHashMap<(ExprScope, jr_hir::ExprId), (FileId, jr_hir::ProcId)>,
+    /// Positional argument lists for calls using a named argument or a default (ADR-0053 §1).
+    pub(crate) filled_calls: FxHashMap<(ExprScope, jr_hir::ExprId), Vec<crate::check::ArgSlot>>,
+    /// Callee expressions in *call* position (ADR-0059 §5).
+    ///
+    /// A `#foreign` procedure is legal to call and illegal to take as a value (E0256). The `Name`
+    /// arm of `check_expr` cannot tell the two apart on its own — a callee is a `Name` too — so
+    /// `check_call` records the callee's id here first, and the arm skips the refusal for one it
+    /// finds. The same `(ExprScope, ExprId)` keying `operator_calls` and `filled_calls` use, for
+    /// the same reason: an id alone does not say which arena it indexes.
+    pub(crate) call_position: FxHashSet<(ExprScope, jr_hir::ExprId)>,
 }
 
 impl<'a> Ctx<'a> {
@@ -136,6 +146,7 @@ impl<'a> Ctx<'a> {
         mode: Mode,
     ) -> Self {
         Self {
+            call_position: FxHashSet::default(),
             hir,
             file,
             resolve,
@@ -151,6 +162,7 @@ impl<'a> Ctx<'a> {
             body: None,
             locals: FxHashMap::default(),
             operator_calls: FxHashMap::default(),
+            filled_calls: FxHashMap::default(),
         }
     }
 
@@ -300,6 +312,53 @@ impl<'a> Ctx<'a> {
                     PoolId::ERROR
                 } else {
                     self.pool.view_of(element)
+                }
+            }
+            // `-> (s64, bool)` (ADR-0052 §1). Interned structurally, and normalised: a one-element
+            // list becomes the element itself, so `-> (T)` and `-> T` are one type.
+            //
+            // Poison is flat here as it is for a view: one `PoolId::ERROR` comparison recognises a
+            // results list with an unresolvable element, rather than a results type *containing*
+            // poison that every consumer would have to look inside.
+            TypeRef::Results(elems) => {
+                let mut resolved = Vec::with_capacity(elems.len());
+                let mut poisoned = false;
+                for elem in elems {
+                    let ty = self.resolve_type(scope, elem, span);
+                    poisoned |= ty == PoolId::ERROR;
+                    resolved.push(ty);
+                }
+                if poisoned {
+                    PoolId::ERROR
+                } else {
+                    self.pool.results_type(resolved)
+                }
+            }
+            // `(T, T) -> T` (ADR-0059 §3). Interned to the **same** `Item::ProcType` a declared
+            // procedure gets, so `add`'s type and a `fn: (s64, s64) -> s64` parameter's type are one
+            // entry and passing the procedure is an ordinary type match. `ContextKind::Jairs`
+            // always: the type syntax carries no `#c_call`, so a `#foreign` procedure's `CCall` type
+            // is a *different* interned type — which is what makes ADR-0059 §5's refusal fall out of
+            // the type system rather than needing a separate check.
+            TypeRef::Proc { params, ret } => {
+                let mut resolved = Vec::with_capacity(params.len());
+                let mut poisoned = false;
+                for param in params {
+                    let ty = self.resolve_type(scope, param, span);
+                    poisoned |= ty == PoolId::ERROR;
+                    resolved.push(ty);
+                }
+                // A missing return arrow is `void`, exactly as a declared procedure's is
+                // (`signature.rs`), and `void` has no spelling so there is no name to have lowered.
+                let ret_ty = match ret {
+                    Some(r) => self.resolve_type(scope, r, span),
+                    None => PoolId::VOID,
+                };
+                poisoned |= ret_ty == PoolId::ERROR;
+                if poisoned {
+                    PoolId::ERROR
+                } else {
+                    self.pool.proc_type(resolved, ret_ty, ContextKind::Jairs)
                 }
             }
             TypeRef::Struct(sid) => {
@@ -525,7 +584,13 @@ impl<'a> Ctx<'a> {
                 Some(id) => self.resolve_type(ExprScope::TopLevel, id, field.name_span),
                 None => PoolId::ERROR,
             };
-            resolved.push(jr_pool::Field::new(field.name, field_ty));
+            // The `using` flag travels with the field so that *field lookup* can follow an
+            // embedded base (ADR-0050 §4). It changes no offset: `field_offset` never reads it.
+            resolved.push(if field.using {
+                jr_pool::Field::embedded(field.name, field_ty)
+            } else {
+                jr_pool::Field::new(field.name, field_ty)
+            });
         }
         let decl = DeclId::new(self.file, sid.as_u32());
         self.pool.set_struct_fields(decl, resolved.clone());
@@ -639,6 +704,13 @@ impl<'a> Ctx<'a> {
             Item::PointerType(inner) => format!("*{}", self.describe(*inner)),
             Item::ArrayType { elem, len } => format!("[{len}]{}", self.describe(*elem)),
             Item::ViewType { elem } => format!("[]{}", self.describe(*elem)),
+            // Spelled the way the source spells it (ADR-0052 §1), so an arity diagnostic can say
+            // "`(s64, bool)` returns 2 values" rather than naming an internal type nobody wrote.
+            Item::ContextType => "Context".to_owned(),
+            Item::ResultsType { elems } => {
+                let parts: Vec<String> = elems.iter().map(|ty| self.describe(*ty)).collect();
+                format!("({})", parts.join(", "))
+            }
             Item::StructType { .. } => self
                 .type_name(ty)
                 .map_or_else(|| "struct".to_owned(), str::to_owned),

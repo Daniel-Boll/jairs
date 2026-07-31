@@ -1,0 +1,71 @@
+// EXPECT: E0252 — the named-argument and default-value rules (ADR-0053 §2, §3)
+//
+// Six refusals, each with its own note, because each is a different mistake:
+//
+//   * a **non-literal default**. This is the one worth explaining rather than merely refusing: the
+//     value must be a literal because const-eval runs *downstream* of signature resolution
+//     (ADR-0018 §3), so a signature cannot depend on a constant whose own type depends on
+//     signatures. A reader told only "unsupported" would try `= 2 + 3` next, which is why the note
+//     names the reason;
+//   * a **positional argument after a named one**, refused so that a positional argument's meaning
+//     never depends on which names preceded it — otherwise reading a call would require knowing the
+//     signature and counting;
+//   * a parameter supplied **twice**;
+//   * a parameter with **no argument and no default**;
+//   * a named argument naming a parameter that **does not exist**, with a near-name suggestion — the
+//     same machinery E0212 and E0218 use (ADR-0031 §1), because a misspelling is what it is for;
+//   * a default on a **`#foreign`** parameter, whose call sites are the C function's and not Jairs's
+//     to fill in.
+//
+// Filed under `imports/invalid/` rather than `type-errors/`: these are sema diagnostics and so would
+// qualify there, but that harness asserts one exact code set per file and six refusals of one code
+// are clearer together than split across six files.
+SIZE :: 4;
+libc :: #system_library "c";
+
+f :: (a: s64, b: s64 = 2, c: s64 = 3) -> s64 {
+    return a * 100 + b * 10 + c;
+}
+
+/// A positional argument cannot follow a named one.
+bad_order :: () -> s64 {
+    return f(a = 1, 2);
+}
+
+/// `a` is filled positionally and then named.
+bad_duplicate :: () -> s64 {
+    return f(1, a = 2);
+}
+
+/// `a` has no default, so omitting it is an error however the rest are supplied.
+bad_missing :: () -> s64 {
+    return f(b = 2);
+}
+
+/// No such parameter. `colur` is close enough to nothing here for a suggestion; the *suggestion*
+/// path is exercised by `draw` below, whose `colour` is one edit away.
+bad_unknown :: () -> s64 {
+    return f(1, nope = 2);
+}
+
+draw :: (colour: s64 = 1) -> s64 {
+    return colour;
+}
+
+/// A misspelling one edit from a real parameter, so the `did you mean` help fires.
+bad_spelling :: () -> s64 {
+    return draw(colur = 2);
+}
+
+/// A default that is a named constant rather than a literal.
+bad_const_default :: (n: s64 = SIZE) -> s64 {
+    return n;
+}
+
+/// A default that is a constant *expression*, refused for the same reason.
+bad_expr_default :: (n: s64 = 2 + 3) -> s64 {
+    return n;
+}
+
+/// A `#foreign` procedure cannot carry a default.
+bad_foreign :: (fd: s64 = 1, count: s64) -> s64 #foreign libc "read";

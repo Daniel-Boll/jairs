@@ -207,6 +207,11 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
             signatures.signatures.as_ref(),
             &values,
             imports.as_ref(),
+            // **Empty, and this one is not a gap.** Const-eval evaluating *this* file's constants has
+            // no business reading another file's — that would make one module's constant folding
+            // depend on another's, and ADR-0055 §3's acyclicity argument is about `optimized_file_mir`
+            // rather than about this query. A `#run` reading an imported constant stays refused.
+            &jr_mir::ImportedValues::new(),
             // **Empty, deliberately.** Const-eval runs before `checked`, so the overload map does
             // not exist yet — and asking for it here would make const-eval depend on the check
             // phase, which is the cycle ADR-0018 §3 avoided by putting const-eval downstream of
@@ -217,6 +222,16 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
             // overload, falls through to the builtin path, and sema has already reported the
             // operand types as unsupported — so this is a refusal rather than a wrong answer.
             &jr_mir::OperatorCalls::new(),
+            // **Empty for the same reason, and with the same consequence** (ADR-0053 §2). The
+            // filled-argument map is `checked`'s output, so a `#run` calling a procedure with a
+            // *default* argument gets the source-order list — which for a call that omits an
+            // argument is one operand short, and `scan` refuses the body rather than passing
+            // garbage. A refusal, not a wrong answer.
+            //
+            // Named arguments in a `#run` are refused the same way. Both are recorded as owed
+            // rather than discovered: lifting them means giving const-eval a checked view, which
+            // is the cycle ADR-0018 §3 exists to prevent.
+            &jr_mir::FilledArgs::new(),
             interner,
             &mut pool,
         );
@@ -351,16 +366,21 @@ fn evaluate(
     // alive: a `string` result is a `{data, count}` pair whose bytes live in the VM's
     // memory, so keeping it means copying them out before the VM goes away. The pool
     // cannot be interned into here either, because the VM borrows it.
+    //
+    // Asked **before** the borrow for exactly that reason: `reduce` needs to know whether the result
+    // is a float, and the pool is unavailable once the VM holds it.
+    let is_float = jr_pool::FloatKind::of(pool, ty).is_some();
     let raw = {
         let mut vm = Vm::new(&program, pool, Mode::Comptime).map_err(|e: VmError| e.to_string())?;
         let value = vm.call(thunk_proc, Vec::new()).map_err(|e| e.to_string())?;
-        reduce(&vm, &value, ty).map_err(|e| e.to_string())?
+        reduce(&vm, &value, ty, is_float).map_err(|e| e.to_string())?
     };
 
     Ok(match raw {
         Raw::Void => PoolId::VOID_VALUE,
         Raw::Bool(value) => pool.bool_value(value),
         Raw::Int(bits) => pool.int_value(ty, bits),
+        Raw::Float(bits) => pool.float_value(ty, bits),
         Raw::Str(bytes) => {
             let text = String::from_utf8(bytes)
                 .map_err(|_| "a compile-time string was not valid UTF-8".to_owned())?;
@@ -378,19 +398,41 @@ enum Raw {
     Void,
     Bool(bool),
     Int(u64),
+    /// A float's raw IEEE-754 bits, kept distinct from [`Raw::Int`] even though the VM holds both as
+    /// a scalar (ADR-0040 §3).
+    ///
+    /// The distinction is the whole of the fix: without it a float constant interned as an
+    /// `Item::IntValue` carrying a `float64` type, and the native back end emitted `iconst` on an
+    /// `F64` register.
+    Float(u64),
     Str(Vec<u8>),
 }
 
 /// Copies a result out of the VM.
-fn reduce(vm: &Vm<'_>, value: &Value, ty: PoolId) -> Result<Raw, VmError> {
+fn reduce(vm: &Vm<'_>, value: &Value, ty: PoolId, is_float: bool) -> Result<Raw, VmError> {
     match value {
         Value::Void => Ok(Raw::Void),
         Value::Scalar(bits) => {
             if ty == PoolId::BOOL {
-                Ok(Raw::Bool(*bits != 0))
-            } else {
-                Ok(Raw::Int(*bits))
+                return Ok(Raw::Bool(*bits != 0));
             }
+            // **A float is a scalar in the VM** — ADR-0040 §3's "a float is its bits, and the
+            // interpretation comes from the type" — so mapping every scalar to `Raw::Int` interned a
+            // float constant as an `Item::IntValue` whose type was `float64`. `jr-codegen-clif` then
+            // emitted `iconst` with an `F64` Cranelift type, and Cranelift's `iconst_bounds` verifier
+            // panicked with "entered unreachable code" a long way from here.
+            //
+            // The VM read it back correctly, because it too takes the interpretation from the type —
+            // so `jr run` gave the right answer while `jr build` crashed, which is the two engines
+            // disagreeing about what *compiles* rather than about what a program computes. The
+            // differential harness cannot see that: a program that does not build produces no output.
+            //
+            // Latent since floats landed (ADR-0040): no corpus file had a float `::` constant, and a
+            // float *local* never comes through here at all.
+            if is_float {
+                return Ok(Raw::Float(*bits));
+            }
+            Ok(Raw::Int(*bits))
         }
         Value::Aggregate(_) if ty == PoolId::STRING => Ok(Raw::Str(vm.read_string(value)?)),
         // A struct computed at compile time would need the pool to intern an aggregate

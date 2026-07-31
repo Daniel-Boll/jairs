@@ -574,6 +574,8 @@ mod tests {
             name: interner.intern(name),
             name_span: span,
             ty: None,
+            using: false,
+            default: None,
         };
         let params = vec![param("a"), param("b")];
         assert_eq!(

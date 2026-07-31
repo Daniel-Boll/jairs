@@ -619,6 +619,22 @@ impl Compiler<'_> {
     }
 
     fn field_type(&self, ty: PoolId, index: u32) -> Result<PoolId, VmError> {
+        // A results aggregate's element list *is* its field list (ADR-0052 §1), so it is read
+        // directly rather than through the struct side table — there is no `DeclId` to key one on.
+        // The context's fields are the compiler's list (ADR-0057 §1) — the **third** consumer of
+        // "what type is field N", after `jr-pool`'s `field_offset` and `jr-codegen-clif`'s. ADR-0052
+        // recorded that duplication as owed and this wave adds a fourth aggregate kind to all three,
+        // which is the cost it predicted.
+        if matches!(self.pool.item(ty), Item::ContextType) {
+            return jr_pool::Pool::context_field_type(index)
+                .ok_or_else(|| VmError::internal(format!("no context field {index}")));
+        }
+        if let Item::ResultsType { elems } = self.pool.item(ty) {
+            return elems
+                .get(index as usize)
+                .copied()
+                .ok_or_else(|| VmError::internal(format!("no result {index}")));
+        }
         // A union's field list is a struct's, so this accepts both; only `field_offset`
         // distinguishes them, and that is `jr-pool`'s (ADR-0045 §5).
         let (Item::StructType { decl } | Item::UnionType { decl }) = self.pool.item(ty) else {
@@ -655,6 +671,14 @@ impl Compiler<'_> {
             | Item::ViewType { .. }
             | Item::StructType { .. }
             | Item::UnionType { .. }
+            // A results aggregate is bytes laid out like a struct's (ADR-0052 §1), so it reads as
+            // one. Classifying it as a scalar would read one word where several live — a wrong
+            // number of bytes rather than a failure, which is what this match is exhaustive to
+            // prevent.
+            | Item::ResultsType { .. }
+            // A context is an aggregate: its fields live in memory and it is reached through a
+            // pointer (ADR-0057 §2).
+            | Item::ContextType
             | Item::TypeType
             | Item::ErrorType
             | Item::ForeignLibraryType

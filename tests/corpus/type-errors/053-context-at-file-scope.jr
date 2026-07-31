@@ -1,0 +1,6 @@
+// EXPECT: E0254 — `context` at file scope (ADR-0057 §3)
+//
+// A constant's value is computed by const-eval (ADR-0018 §3), which runs before any call — so there
+// is no context to have been passed in. The message says that rather than "unresolved name", for the
+// reason `type-errors/052` gives: `context` is a keyword, not a name.
+BAD :: context.allocator;

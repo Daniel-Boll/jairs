@@ -1,0 +1,40 @@
+// EXPECT: E0251 — a destructuring statement whose target count differs from the result count
+//
+// **Exact arity** (ADR-0052 §2), and the alternative is what makes it worth a corpus file: Jai lets a
+// caller bind a *prefix* of the results, which means adding a result to a procedure silently changes
+// nothing at any call site, and *reordering* results silently changes what every existing caller
+// binds. That is action at a distance — the same objection ADR-0014 §3 made about import order
+// deciding behaviour, and ADR-0048 §3 about an `#import` redefining `+`.
+//
+// Filed under `imports/invalid/` rather than `type-errors/` because that directory's contract is that
+// its files "parse, lower and resolve cleanly" and are rejected by *semantic analysis*. This is a
+// sema diagnostic, so it would qualify — except that the harness there asserts the exact code set per
+// file, and the three refusals below are cleaner to keep together than to split across three files
+// whose only difference is a count.
+divide :: (a: s64, b: s64) -> (s64, bool) {
+    return a / b, true;
+}
+
+/// Too few names for two results.
+too_few :: () -> s64 {
+    q := divide(7, 2);
+    return q;
+}
+
+/// Too many names for two results.
+too_many :: () -> s64 {
+    q, ok, extra := divide(7, 2);
+    return q;
+}
+
+/// A destructuring statement on a procedure returning **one** value, which is `x := f();` and needs
+/// no target list. Named precisely, because "expected 2 values" without saying what it does return
+/// sends the reader looking for a problem at the call site.
+single :: (n: s64) -> s64 {
+    return n;
+}
+
+wrong_form :: () -> s64 {
+    a, b := single(1);
+    return a;
+}

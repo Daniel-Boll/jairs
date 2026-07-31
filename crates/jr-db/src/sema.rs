@@ -89,6 +89,9 @@ pub struct CheckResult {
     /// Carried through from `jr-sema` so that `jr-mir` can lower the call without re-running
     /// resolution — the same reason `types` is carried rather than recomputed.
     pub operator_calls: Arc<jr_mir::OperatorCalls>,
+    /// The positional argument list of every call using a named argument or a default
+    /// (ADR-0053 §1).
+    pub filled_args: Arc<jr_mir::FilledArgs>,
 }
 
 // ---------------------------------------------------------------------------
@@ -244,11 +247,26 @@ pub fn checked(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) -
         operator_calls.set(*scope, *expr, jr_mir::ProcRef::new(*target_file, *proc));
     }
 
+    // Translated for the same reason `operator_calls` is: the `ArgSlot`/`FilledArg` pair keeps
+    // `jr-sema` and `jr-mir` independent of each other, and this is the one place the mapping lives.
+    let mut filled_args = jr_mir::FilledArgs::new();
+    for ((scope, expr), slots) in &output.filled_calls {
+        let translated: Vec<jr_mir::FilledArg> = slots
+            .iter()
+            .map(|slot| match slot {
+                jr_sema::ArgSlot::Given(expr) => jr_mir::FilledArg::Expr(*expr),
+                jr_sema::ArgSlot::Default(value) => jr_mir::FilledArg::Default(*value),
+            })
+            .collect();
+        filled_args.set(*scope, *expr, translated);
+    }
+
     CheckResult {
         types: Arc::new(types),
         diagnostics: Arc::new(output.diagnostics),
         type_name_imports: Arc::from(output.type_name_imports),
         operator_calls: Arc::new(operator_calls),
+        filled_args: Arc::new(filled_args),
     }
 }
 

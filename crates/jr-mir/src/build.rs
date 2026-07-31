@@ -118,7 +118,10 @@ pub fn lower_file(
     signatures: &FileSignatures,
     consts: &ConstValues,
     imports: &ImportedProcs,
+    // The value of each imported constant this file reads (ADR-0055 §1).
+    imported_values: &crate::inputs::ImportedValues,
     operators: &OperatorCalls,
+    filled: &crate::inputs::FilledArgs,
     interner: &Interner,
     pool: &mut Pool,
 ) -> FileMir {
@@ -130,7 +133,18 @@ pub fn lower_file(
             continue;
         }
         let lowered = lower_body(
-            hir, proc, resolve, types, signatures, consts, imports, operators, interner, pool,
+            hir,
+            proc,
+            resolve,
+            types,
+            signatures,
+            consts,
+            imports,
+            imported_values,
+            operators,
+            filled,
+            interner,
+            pool,
         );
         out.push(proc, lowered);
     }
@@ -150,7 +164,10 @@ pub fn lower_body(
     signatures: &FileSignatures,
     consts: &ConstValues,
     imports: &ImportedProcs,
+    // The value of each imported constant this file reads (ADR-0055 §1).
+    imported_values: &crate::inputs::ImportedValues,
     operators: &OperatorCalls,
+    filled: &crate::inputs::FilledArgs,
     interner: &Interner,
     pool: &mut Pool,
 ) -> Result<MirBody, Poisoned> {
@@ -178,7 +195,16 @@ pub fn lower_body(
 
     let reach = Reach::of(body);
     if let Some(reason) = scan(
-        hir, body, body_id, &reach, resolve, types, signatures, consts, imports,
+        hir,
+        body,
+        body_id,
+        &reach,
+        resolve,
+        types,
+        signatures,
+        consts,
+        imports,
+        imported_values,
     ) {
         return Err(Poisoned::Here(reason));
     }
@@ -197,7 +223,9 @@ pub fn lower_body(
         types,
         consts,
         imports,
+        imported_values,
         operators,
+        filled,
         interner,
         pool,
         mir: MirBody::new(ProcRef::new(file, proc), ret),
@@ -206,6 +234,9 @@ pub fn lower_body(
         slots: FxHashMap::default(),
         params: FxHashMap::default(),
         param_slots: FxHashMap::default(),
+        param_tys: Vec::new(),
+        bounds_checks: !proc_data.no_abc,
+        context: None,
         current: None,
         loops: Vec::new(),
         defers: Vec::new(),
@@ -213,7 +244,12 @@ pub fn lower_body(
         failed: None,
         ret,
     };
-    lower.run(proc, &params, body.root);
+    // Every Jairs procedure receives the context; a `#c_call` one does not, and every `#foreign` one
+    // is implicitly `#c_call` (ADR-0001, ADR-0057 §3). Read from the HIR rather than from the interned
+    // `ContextKind` because that is where the flag is, and the two agree by construction — sema sets
+    // the kind from these same two fields.
+    let receives_context = !(proc_data.c_call || proc_data.foreign.is_some());
+    lower.run(proc, &params, body.root, receives_context);
     lower.finish()
 }
 
@@ -261,6 +297,21 @@ impl Reach {
             out.stmts.push(id);
             match body.stmt(id) {
                 Stmt::Block(ids, _) => stmt_work.extend(ids.iter().copied()),
+                // The destructuring forms reach their call and their targets, so both are walked
+                // (ADR-0052 §2). A `_` discard reaches nothing, which is what `None` records.
+                Stmt::LocalTuple { targets, call, .. } => {
+                    for local in targets.iter().flatten() {
+                        out.locals.push(*local);
+                    }
+                    expr_work.push(*call);
+                }
+                Stmt::AssignTuple { targets, call, .. } => {
+                    for target in targets.iter().flatten() {
+                        expr_work.push(*target);
+                    }
+                    expr_work.push(*call);
+                }
+                Stmt::ReturnTuple(exprs, _) => expr_work.extend(exprs.iter().copied()),
                 Stmt::Local(local, _) => {
                     out.locals.push(*local);
                     if let Some(local_data) = body.locals.get(local.index())
@@ -333,6 +384,7 @@ impl Reach {
             match body.expr(id) {
                 Expr::Literal(_, _)
                 | Expr::Name { .. }
+                | Expr::Context(_)
                 | Expr::Uninit(_)
                 | Expr::Directive { .. }
                 | Expr::Error(_) => {}
@@ -353,6 +405,7 @@ impl Reach {
                 Expr::Call {
                     callee,
                     args,
+                    arg_names: _,
                     span: _,
                 } => {
                     out.callees.insert(*callee);
@@ -404,6 +457,7 @@ fn scan(
     signatures: &FileSignatures,
     consts: &ConstValues,
     imports: &ImportedProcs,
+    imported_values: &crate::inputs::ImportedValues,
 ) -> Option<&'static str> {
     let scope = ExprScope::Body(body_id);
 
@@ -411,6 +465,12 @@ fn scan(
         match body.stmt(*id) {
             Stmt::Error(_) => return Some("the body contains recovered syntax"),
             Stmt::Block(_, _)
+            // Representable: a destructuring statement lowers to a call plus field reads, and a
+            // multi-value return to stores through the results slot — all shapes MIR already has
+            // (ADR-0052 §1), which is why nothing here needs refusing.
+            | Stmt::LocalTuple { .. }
+            | Stmt::AssignTuple { .. }
+            | Stmt::ReturnTuple(_, _)
             | Stmt::Local(_, _)
             | Stmt::Item(_, _)
             | Stmt::Expr(_, _)
@@ -441,6 +501,9 @@ fn scan(
         }
         match body.expr(*id) {
             Expr::Error(_) => return Some("the body contains recovered syntax"),
+            // Representable: `context` lowers to a load of the hidden parameter (ADR-0057 §2), which
+            // is an ordinary place read and needs nothing new.
+            Expr::Context(_) => {}
             // ADR-0018 §3: a `#run` lowers exactly when the const query has
             // already evaluated it. Without a value there is still nothing
             // honest to emit, so the ADR-0017 refusal survives as the fallback.
@@ -455,7 +518,7 @@ fn scan(
                 span: _,
                 res,
             } => {
-                let res = resolve.get(scope, *id).unwrap_or(*res);
+                let res = resolve.get(scope, *id).unwrap_or_else(|| res.clone());
                 // A name whose *type* is `type` denotes a type rather than a value (ADR-0012),
                 // so it needs no runtime value and must not be refused for lacking one. This is
                 // the receiver of `Colour.RED` — including an **imported** `Colour`, which was
@@ -467,8 +530,16 @@ fn scan(
                 // question with the same answer for a local and an imported declaration.
                 let denotes_a_type = types.expr_type(scope, *id) == Some(PoolId::TYPE);
                 if !denotes_a_type
-                    && let Some(reason) =
-                        scan_name(hir, signatures, reach, consts, imports, *id, res)
+                    && let Some(reason) = scan_name(
+                        hir,
+                        signatures,
+                        reach,
+                        consts,
+                        imports,
+                        imported_values,
+                        *id,
+                        res,
+                    )
                 {
                     return Some(reason);
                 }
@@ -498,11 +569,25 @@ fn scan_name(
     reach: &Reach,
     consts: &ConstValues,
     imports: &ImportedProcs,
+    imported_values: &crate::inputs::ImportedValues,
     id: ExprId,
     res: Res,
 ) -> Option<&'static str> {
     match res {
         Res::Local(_) | Res::Param(_) => None,
+        // A promoted name lowers to a field access on its base (ADR-0050 §2), so it is
+        // representable exactly when the base is — which `scan` decides by recursing. The
+        // recursion is what makes an embedded chain work rather than only one level.
+        Res::Promoted { base, field: _ } => scan_name(
+            hir,
+            signatures,
+            reach,
+            consts,
+            imports,
+            imported_values,
+            id,
+            (*base).clone(),
+        ),
         Res::Error => Some("a name failed to resolve"),
         Res::Imported(import, name) => {
             if reach.callees.contains(&id) {
@@ -515,11 +600,15 @@ fn scan_name(
                 } else {
                     Some("a cross-file call needs the callee's signatures")
                 }
+            } else if imported_values.get(import, name).is_some() {
+                // **ADR-0055 §1 made this representable**, the same way ADR-0018 §5 made a cross-file
+                // callee representable: `jr-db` read the other module's `file_consts` and handed the
+                // value over, so lowering has it in hand and needs no cross-body read.
+                None
             } else {
-                // An imported *constant*'s value would have to come from the other
-                // file's const evaluation, which is the cross-body read ADR-0017 §3
-                // keeps out of this query. Nothing in the corpus needs it.
-                Some("an imported name has no value until jr-vm")
+                // A constant the other file's const-eval could not fold. That is E0230 in *its* file
+                // already, so refusing here rather than inventing a second diagnostic is right.
+                Some("an imported constant has no value that const-eval could compute")
             }
         }
         Res::Item(item) => {
@@ -543,6 +632,15 @@ fn scan_name(
             } else if consts.item(item).is_some() {
                 // ADR-0018 §3: the const query evaluated it, so there is a value
                 // to emit.
+                None
+            } else if is_proc {
+                // A procedure name used as a **value** rather than a direct callee —
+                // `f := add` (ADR-0059 §1). It lowers to an `Item::ProcValue`, a real
+                // constant, so this is *not* the placeholder trap: `proc_value_of` gives it a
+                // representation, and refusing here would have refused a legal program while
+                // the value existed to emit. A `#foreign` procedure as a value is E0256 from
+                // sema, raised before lowering runs, so it never reaches here; a cross-file one
+                // resolves to `Res::Imported` and is refused by that arm.
                 None
             } else if matches!(
                 &item_data.kind,
@@ -622,7 +720,11 @@ struct Lower<'a> {
     types: &'a TypeMap,
     consts: &'a ConstValues,
     imports: &'a ImportedProcs,
+    /// Values of imported constants (ADR-0055 §1).
+    imported_values: &'a crate::inputs::ImportedValues,
     operators: &'a OperatorCalls,
+    /// Positional argument lists for calls using a named argument or a default (ADR-0053 §1).
+    filled: &'a crate::inputs::FilledArgs,
     interner: &'a Interner,
     pool: &'a mut Pool,
     mir: MirBody,
@@ -636,6 +738,29 @@ struct Lower<'a> {
     /// scalar parameter stays purely in a register, and asking for its address is
     /// not expressible in Jairs-0 anyway.
     param_slots: FxHashMap<ParamId, SlotId>,
+    /// Each parameter's declared type, by position.
+    ///
+    /// Needed because a promoted name reached through a **scalar** parameter — a `using p: *Point`
+    /// — has no slot to read a type from, and a `Res` carries no type of its own. Recorded here
+    /// rather than re-derived from the signature at each use, so the two cannot disagree.
+    param_tys: Vec<PoolId>,
+    /// Whether this procedure emits bounds checks at all (ADR-0058 §3).
+    ///
+    /// `false` for a `#no_abc` procedure. This is the **whole** representation of the local opt-out:
+    /// a body that never emitted the checks is indistinguishable from one the strip pass cleared,
+    /// which is why ADR-0058 §3 could amend ADR-0003 to procedure granularity without touching
+    /// `Projection::Index`.
+    ///
+    /// Read once, here, rather than asked of the HIR at each of the two emission sites — the array
+    /// index and the `for` element. Two lookups of one fact is how the two sites come to disagree,
+    /// and the dangerous direction is silent: an unchecked store.
+    bounds_checks: bool,
+    /// The hidden context parameter's value, for a procedure that receives one (ADR-0057 §2).
+    ///
+    /// `None` for a `#c_call` procedure, which is what makes `context` unlowerable there — and sema
+    /// has already refused it with E0254, so reaching lowering with `None` and a `context` expression
+    /// would mean the two disagree.
+    context: Option<Operand>,
     /// The block being filled, or `None` once control cannot reach further.
     ///
     /// `None` rather than a "terminated" flag on a block, because a statement
@@ -714,6 +839,8 @@ impl Lower<'_> {
             | Item::ForeignLibraryType
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
+            | Item::ResultsType { .. }
+            | Item::ContextType
             | Item::EnumType { .. }
             | Item::StructType { .. }
             | Item::UnionType { .. }
@@ -733,15 +860,33 @@ impl Lower<'_> {
     // Driving
     // -------------------------------------------------------------------
 
-    fn run(&mut self, proc: ProcId, params: &[PoolId], root: StmtId) {
+    fn run(&mut self, proc: ProcId, params: &[PoolId], root: StmtId, receives_context: bool) {
         let entry = self.mir.entry();
         self.current = Some(entry);
+        // Kept for the whole body: a promoted name through a scalar parameter needs its type and
+        // has nowhere else to get one (see `param_tys`).
+        self.param_tys = params.to_vec();
 
         // Parameters are bound to entry-block parameters. They are deliberately
         // *not* routed through the SSA builder: `Res::Param` indexes
         // `Proc::params`, `SsaBuilder` is keyed on `LocalId`, and `jr-hir`'s `Body`
         // does not store parameters at all, so there is no local to key on.
-        let mut param_values = Vec::with_capacity(params.len());
+        // **The context is a leading block parameter** (ADR-0057 §4), before every declared one and
+        // after ADR-0051's `sret` pointer. Leading rather than trailing so that its position does not
+        // depend on the argument count — with two hidden parameters the offset is 0, 1 or 2, and one
+        // shared predicate must compute it rather than each site counting.
+        //
+        // It is not a `ParamId`: `Res::Param` indexes `Proc::params`, which the context is not in.
+        let mut param_values = Vec::with_capacity(params.len() + 1);
+        if receives_context {
+            let ctx_ty = self.pool.context_pointer();
+            let value = self.mir.push_block_param(entry, ctx_ty, MirSpan::Synthetic);
+            self.context = Some(Operand::Value(value));
+            // Recorded in `MirBody::params` too, or `verify` reports "entry parameters disagree" —
+            // the body's list and the entry block's must match, which is the check that caught this.
+            param_values.push(value);
+        }
+
         for (index, ty) in params.iter().enumerate() {
             let span = MirSpan::Param(proc, u32::try_from(index).unwrap_or(u32::MAX));
             let value = self.mir.push_block_param(entry, *ty, span);
@@ -902,10 +1047,125 @@ impl Lower<'_> {
             // scope, so `block` emits them before each terminator that leaves (ADR-0049 §3).
             Stmt::Defer(inner, _) => self.defers.push(inner),
             Stmt::Return(value, _) => self.return_stmt(value),
+            Stmt::ReturnTuple(exprs, _) => self.return_tuple(&exprs),
+            Stmt::LocalTuple { targets, call, .. } => self.local_tuple(&targets, call),
+            Stmt::AssignTuple { targets, call, .. } => self.assign_tuple(&targets, call),
             Stmt::Break(label, _) => self.jump(true, label, id),
             Stmt::Continue(label, _) => self.jump(false, label, id),
             Stmt::Error(_) => {}
         }
+    }
+
+    /// Lowers `return a, b;` (ADR-0052 §1).
+    ///
+    /// Builds the results aggregate in a slot — one `Store` per result into its field — and returns
+    /// the slot's address, which is how every aggregate value travels (ADR-0051 §1). No new MIR node:
+    /// the results type is an aggregate, so `Rvalue::Address` of a slot already means "this
+    /// aggregate", and the back end's `sret` path copies it out.
+    fn return_tuple(&mut self, exprs: &[ExprId]) {
+        let Some(_) = self.current else { return };
+        let ret_ty = self.mir.ret();
+        let Some(elems) = self.pool.results_elems(ret_ty).map(<[PoolId]>::to_vec) else {
+            // Sema refuses a count mismatch (E0251), so reaching here means the declared return is
+            // not a results type at all. Refusing the body is right rather than lowering the first
+            // value and dropping the rest — a silent wrong answer is exactly what
+            // `Lower::give_up` exists to prevent.
+            self.give_up(
+                "a multi-value return in a procedure that does not declare several results",
+            );
+            return;
+        };
+        let span = MirSpan::Synthetic;
+        let slot = self.mir.push_slot(ret_ty, None, span);
+        for (index, (expr, elem_ty)) in exprs.iter().zip(elems).enumerate() {
+            let value = self.expr(*expr);
+            let Ok(field) = u32::try_from(index) else {
+                self.give_up("a results list longer than a u32 can index");
+                return;
+            };
+            let _ = elem_ty;
+            self.emit(Statement::Store {
+                place: Place::slot(slot).project(Projection::Field(field)),
+                value,
+                span,
+            });
+        }
+        // The returned *value* is the aggregate itself, loaded out of the slot the fields were
+        // stored into — symmetrical with `results_place` on the caller's side, and the same shape
+        // `return r;` takes for an ordinary struct local. `Rvalue::Address` was tried and `verify`
+        // refused it: an address must produce a pointer, and the return type is not one.
+        let operand = self.define(ret_ty, Rvalue::Load(Place::slot(slot)), span);
+        self.return_operand(Some(operand));
+    }
+
+    /// Lowers `q, ok := f();` (ADR-0052 §2).
+    ///
+    /// The call's result is an aggregate, so it already lives in memory; each target reads its own
+    /// field out of it. A discard reads nothing at all, which is the payoff for representing it as
+    /// `None` rather than as a local nothing uses (ADR-0052 §3).
+    fn local_tuple(&mut self, targets: &[Option<LocalId>], call: ExprId) {
+        let Some(source) = self.results_place(call) else {
+            return;
+        };
+        for (index, target) in targets.iter().enumerate() {
+            let Some(local) = *target else { continue };
+            let Ok(field) = u32::try_from(index) else {
+                return;
+            };
+            let ty = self.local_ty(local);
+            let span = MirSpan::Local(self.body_id, local);
+            let place = source.clone().project(Projection::Field(field));
+            let value = self.define(ty, Rvalue::Load(place), span);
+            self.write_local(local, value, span);
+        }
+    }
+
+    /// Lowers `q, ok = f();` (ADR-0052 §2), whose targets are existing places.
+    fn assign_tuple(&mut self, targets: &[Option<ExprId>], call: ExprId) {
+        let Some(source) = self.results_place(call) else {
+            return;
+        };
+        for (index, target) in targets.iter().enumerate() {
+            let Some(target) = *target else { continue };
+            let Ok(field) = u32::try_from(index) else {
+                return;
+            };
+            let span = MirSpan::Expr(self.scope(), target);
+            let read = source.clone().project(Projection::Field(field));
+            let ty = self.ty(target);
+            let value = self.define(ty, Rvalue::Load(read), span);
+            // The ordinary assignment path, so a promoted local, a spilled one and a field target
+            // all behave exactly as they do for `q = 1` — one rule for what `=` means.
+            if let Some(local) = self.promotable_local(target) {
+                self.write_local(local, value, span);
+            } else if let Some((place, _)) = self.place(target) {
+                self.emit(Statement::Store { place, value, span });
+            }
+        }
+    }
+
+    /// Evaluates a multi-result call and returns the place its results live in.
+    ///
+    /// Shared by both destructuring forms so they cannot disagree about how the call is evaluated —
+    /// and, more importantly, so the call happens **exactly once** however many targets read from it.
+    fn results_place(&mut self, call: ExprId) -> Option<Place> {
+        let ty = self.ty(call);
+        self.pool.results_elems(ty)?;
+        let span = MirSpan::Expr(self.scope(), call);
+        // **Stored into a slot, then read from it.** The call's *value* is the aggregate itself
+        // rather than a pointer to it, so `Place::deref` was wrong — `verify` said so, "deref of a
+        // non-pointer", which is the check earning its keep. A slot gives the results a place, and
+        // `Statement::Store` of an aggregate is the same copy an ordinary `x := mk()` emits.
+        //
+        // This is also what makes the call happen exactly once however many targets read from it.
+        let operand = self.expr(call);
+        let slot = self.mir.push_slot(ty, None, span);
+        self.emit(Statement::Store {
+            place: Place::slot(slot),
+            value: operand,
+            span,
+        });
+        Some(Place::slot(slot))
     }
 
     fn local_decl(&mut self, local: LocalId) {
@@ -1024,6 +1284,8 @@ impl Lower<'_> {
             // nothing because every index fails the bounds check against a count of 0.
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
+            | Item::ResultsType { .. }
+            | Item::ContextType
             | Item::StructType { .. }
             | Item::UnionType { .. }
             | Item::ProcType { .. }
@@ -1055,9 +1317,10 @@ impl Lower<'_> {
             && let Expr::Call {
                 callee,
                 args,
+                arg_names: _,
                 span: _,
             } = self.body.expr(expr).clone()
-            && let Some(rvalue) = self.call_rvalue(callee, &args)
+            && let Some(rvalue) = self.call_rvalue(expr, callee, &args)
         {
             let span = self.span(expr);
             self.emit(Statement::Discard { rvalue, span });
@@ -1130,6 +1393,15 @@ impl Lower<'_> {
 
     fn return_stmt(&mut self, value: Option<ExprId>) {
         let operand = value.map(|expr| self.expr(expr));
+        self.return_operand(operand);
+    }
+
+    /// Terminates the current block with a `return` of an already-computed operand.
+    ///
+    /// Split out so that [`Self::return_tuple`] shares the signature-honouring logic below rather
+    /// than repeating it — two places deciding what a `void` procedure returns would be two chances
+    /// to emit a terminator `verify` rejects.
+    fn return_operand(&mut self, operand: Option<Operand>) {
         let Some(block) = self.current else { return };
         // A `void` procedure must return nothing and a valued one must return
         // something; `verify` checks both, so honour the signature rather than the
@@ -1468,16 +1740,10 @@ impl Lower<'_> {
         // the index is the value — and for a sequence the counter needs its own storage.
         //
         // `for x, i: buf` reuses `i`, because the user asked for the index by name and it is the
-        // counter. `for x: buf` allocates a slot no name reaches, which is the unspellable-name
-        // trick ADR-0048 used for `operator+`.
-        // **The counter always lives in a slot**, even when a user named it. A slot is memory, so
-        // reading it is a `Load` that creates no phi — and the step block reads it *after* the body
-        // has been lowered but *before* the header is sealed, which with SSA reads produced an
-        // incomplete phi in the header that could not see a definition from outside the loop. The
-        // symptom was a definite-assignment false positive on a variable the loop never touched.
-        //
-        // A named index is *also* written to its own local at the top of the body, so the user sees
-        // an ordinary variable and the mid-end can still promote it.
+        // counter — an ordinary local, so it is subject to the same promotion as any other and the
+        // mid-end can keep it in a register. `for x: buf` allocates a slot no name reaches, which is
+        // the unspellable-name trick ADR-0048 used for `operator+`. A *range* has no element, so the
+        // counter and the loop variable are genuinely one local.
         let counter = match (index, bounds.element.is_some()) {
             // A sequence with no named index: the counter is a fresh slot, distinct from `value`.
             (None, true) => self.synthetic_counter(span),
@@ -1543,28 +1809,13 @@ impl Lower<'_> {
         );
         self.mir
             .set_terminator(pre_exit, Terminator::Goto(Target::new(exit)));
-        // `pre_exit` has exactly one predecessor, so it can be sealed now.
-        //
-        // `body_bb` **cannot**, and that is this wave's subtlest bug. Its only predecessor is the
-        // header, so sealing looks safe — but sealing it resolves any *incomplete phi* created
-        // while lowering the body, and a nested loop's `break outer` adds an edge to **this**
-        // loop's exit after that resolution has happened. The read then resolved against a
-        // predecessor set that was still growing, and reported a definite-assignment false
-        // positive on a variable assigned right there. Sealed after the body instead.
+        // `pre_exit` and `body_bb` each have exactly one predecessor — the header — so both are
+        // sealed now, before the body runs. That is what `while_stmt` does. Sealing `body_bb`
+        // *after* the body was tried, as a fix for a nested `break outer`, and it made things
+        // worse: it resolved the body's incomplete phis too late and produced the very
+        // definite-assignment false positive it was meant to remove. The real cause of that false
+        // positive was elsewhere — an unreachable step block, handled below — not the seal order.
         self.ssa.seal_block(&mut self.mir, pre_exit);
-        // **The step's back edge is set now, before the body is lowered.** `MirBody::predecessors`
-        // is a `OnceLock` computed from terminators, so a block sealed while an edge into it does not
-        // yet exist reads a stale set — and the header's back edge comes from the step. `while_stmt`
-        // never hit this because its back edge is the body's own terminator, set by `goto` before
-        // anything reads through the header.
-        //
-        // Statements are appended to `step_bb` later; only the *terminator* has to be early.
-        self.mir
-            .set_terminator(step_bb, Terminator::Goto(Target::new(header)));
-        // `body_bb`'s only predecessor is the header, so it is sealed before the body runs. That is
-        // what `while_stmt` does, and doing it *after* the body — an attempted fix for a nested
-        // `break` — resolved the body's incomplete phis too late and produced the very
-        // false positive it was meant to remove.
         self.ssa.seal_block(&mut self.mir, body_bb);
 
         let body_defer_depth = self.defers.len();
@@ -1586,11 +1837,17 @@ impl Lower<'_> {
             // The same `BoundsCheck` an ordinary index emits. A `for` provably stays in range and
             // const-prop may delete it, which is ADR-0003's point: a pass *proves* it redundant
             // rather than lowering skipping it.
-            self.emit(Statement::BoundsCheck {
-                index: idx,
-                len: bounds.end,
-                span,
-            });
+            //
+            // `#no_abc` is the one case where lowering *does* skip it (ADR-0058 §3), and that is a
+            // different claim: the programmer asked for no check rather than a pass proving one
+            // unnecessary.
+            if self.bounds_checks {
+                self.emit(Statement::BoundsCheck {
+                    index: idx,
+                    len: bounds.end,
+                    span,
+                });
+            }
             let elem_place = place.project(Projection::Index(idx));
             let elem_ty = self.local_ty(value);
             let loaded = self.define(elem_ty, Rvalue::Load(elem_place), span);
@@ -1600,44 +1857,63 @@ impl Lower<'_> {
         self.stmt(body);
 
         // The body falls through to the step; a `continue` jumps straight to it.
-        self.goto(step_bb);
+        let body_fell_through = self.goto(step_bb);
         self.loops.pop();
         // **The loop body's defers are popped here**, and forgetting it made a later loop's
         // `defer` run the *earlier* loop's statements too — which read a variable declared between
         // them and produced a definite-assignment false positive rather than a wrong answer.
         self.defers.truncate(body_defer_depth);
 
-        // The step, in its own block so that **both** paths run it.
+        // **Whether the step block is reachable at all**, which is the whole of this wave's last
+        // bug. A body that always `break`s — `for x: buf { …; break; }` — never falls through and
+        // never `continue`s, so nothing enters the step. Terminating it anyway would give the
+        // *header* a predecessor that no path reaches, and `read_variable_recursive` resolving the
+        // header's phi would then walk into a block with **no predecessors of its own** and take
+        // the `0 =>` arm: an `undef` and a definite-assignment report against a variable assigned
+        // two lines above.
         //
-        // Sealed after the body, because a `continue` inside the body is one of its predecessors.
-        self.current = Some(step_bb);
-        let idx = self.read_counter(counter, span);
-        let one = Operand::Constant(self.pool.int_value(PoolId::S64, 1));
-        let next = self.define(
-            PoolId::S64,
-            Rvalue::Binary {
-                op: if reverse { BinOp::Sub } else { BinOp::Add },
-                lhs: idx,
-                rhs: one,
-            },
-            span,
-        );
-        self.write_counter(counter, next, span);
-        // The terminator was set before the body; `current` is cleared by hand because `goto` would
-        // overwrite it.
-        self.current = None;
+        // The reachability test is the same one `while_stmt` gets for free, because its back edge
+        // *is* the body's terminator: `goto` sets an edge only when there is a block to terminate.
+        // A step block that no path reaches is left as its constructed trap, unreferenced, and
+        // ADR-0022 §4's compaction drops it.
+        let step_reached = body_fell_through || self.has_predecessor(step_bb);
+        if step_reached {
+            // The step, in its own block so that **both** paths run it.
+            self.current = Some(step_bb);
+            let idx = self.read_counter(counter, span);
+            let one = Operand::Constant(self.pool.int_value(PoolId::S64, 1));
+            let next = self.define(
+                PoolId::S64,
+                Rvalue::Binary {
+                    op: if reverse { BinOp::Sub } else { BinOp::Add },
+                    lhs: idx,
+                    rhs: one,
+                },
+                span,
+            );
+            self.write_counter(counter, next, span);
+            self.goto(header);
+        }
 
-        // **Order matters, and getting it wrong was a definite-assignment false positive.** The
-        // header must be sealed *before* the step, because the step's own reads resolve through the
-        // header's phis — and the header's predecessor set is complete once the step block exists
-        // as a block, not once it is sealed. `while_stmt` has no step block, which is why it never
-        // hit this.
-        // Every edge into the step exists now: the body's fall-through and any `continue`. The
-        // header follows, because its back edge comes from the step.
+        // Every edge into the step exists now: the body's fall-through and any `continue`. It is
+        // sealed before the header because the header's back edge comes *from* the step, and the
+        // step's own reads resolve through the header — so the header's predecessor set has to be
+        // final first, which it is, since the step's terminator is set above.
         self.ssa.seal_block(&mut self.mir, step_bb);
         self.ssa.seal_block(&mut self.mir, header);
         self.ssa.seal_block(&mut self.mir, exit);
         self.current = Some(exit);
+    }
+
+    /// Whether any terminator set so far names `block`.
+    ///
+    /// Only `for_stmt` needs this, and only for its step block: a `continue` reaches the step
+    /// through [`Self::jump`], which sets a terminator somewhere in the body rather than returning
+    /// anything to the loop. So "did a `continue` happen" is a question about the CFG, and the CFG
+    /// is where the answer already is. Reading it rather than threading a `bool` out of `stmt`
+    /// keeps the fact in one place instead of two that can disagree.
+    fn has_predecessor(&self, block: BlockId) -> bool {
+        !self.mir.predecessors()[block.index()].is_empty()
     }
 
     /// Terminates the current block with a jump to `target`.
@@ -1666,6 +1942,17 @@ impl Lower<'_> {
         let ty = self.ty(id);
         let span = self.span(id);
         match self.body.expr(id).clone() {
+            // The hidden parameter's value: a `*Context` (ADR-0057 §2). Sema refused `context` in a
+            // `#c_call` procedure (E0254), so `None` here would mean sema and lowering disagree —
+            // `give_up` says so rather than emitting a placeholder, which is ADR-0017 §4's rule and
+            // the one the project's first failure mode is about.
+            Expr::Context(_) => match self.context {
+                Some(operand) => operand,
+                None => {
+                    self.give_up("`context` in a procedure that receives none");
+                    Operand::Constant(PoolId::VOID_VALUE)
+                }
+            },
             Expr::Literal(literal, _) => Operand::Constant(self.constant(&literal, ty)),
             Expr::Name {
                 name: _,
@@ -1687,7 +1974,25 @@ impl Lower<'_> {
                 // reads types instead of computing them, and resolution is the same kind of rule.
                 match self.operators.get(self.scope(), id) {
                     Some(target) => {
-                        let args = vec![self.expr(lhs), self.expr(rhs)];
+                        // **An overload is an ordinary Jairs procedure** (ADR-0048 §5), so it
+                        // receives the context — the operand list is the two operands *after* it
+                        // (ADR-0057 §4). Omitting it was "called a procedure taking 3 arguments with
+                        // 2": an overload lowers through this path rather than `call_rvalue`, so the
+                        // context that path prepends was missing here.
+                        let mut args = Vec::with_capacity(3);
+                        if self.operator_receives_context(target) {
+                            match self.context {
+                                Some(operand) => args.push(operand),
+                                None => {
+                                    self.give_up(
+                                        "an operator overload called where there is no context",
+                                    );
+                                    return Operand::Constant(PoolId::VOID_VALUE);
+                                }
+                            }
+                        }
+                        args.push(self.expr(lhs));
+                        args.push(self.expr(rhs));
                         self.define(
                             ty,
                             Rvalue::Call {
@@ -1708,8 +2013,9 @@ impl Lower<'_> {
             Expr::Call {
                 callee,
                 args,
+                arg_names: _,
                 span: _,
-            } => match self.call_rvalue(callee, &args) {
+            } => match self.call_rvalue(id, callee, &args) {
                 Some(rvalue) => self.define(ty, rvalue, span),
                 None => {
                     self.give_up("a call has no resolvable callee");
@@ -1837,11 +2143,24 @@ impl Lower<'_> {
             }
             Literal::Bool(value) => self.pool.bool_value(*value),
             Literal::Str(text) => self.pool.str_value(text),
+            // `null` is the zero pointer of its context's type (ADR-0060 §1): an `IntValue` of the
+            // pointer type `ty`, which both engines already treat as a pointer-width scalar. `ty` is
+            // the pointer type sema resolved for this expression, so a `ProcValue`-style bridge is
+            // needed nowhere — the value *is* the bits, and the type says how wide.
+            Literal::Null => self.pool.int_value(ty, 0),
         }
     }
 
     fn name(&mut self, id: ExprId, res: Res, ty: PoolId, span: MirSpan) -> Operand {
         let res = self.resolve.get(self.scope(), id).unwrap_or(res);
+        // A promoted name is a *load* through its base's place (ADR-0050 §2). Handled before the
+        // match because it is the one arm that needs the place machinery rather than a lookup.
+        if let Res::Promoted { .. } = &res {
+            let Some((place, field_ty)) = self.res_place(&res) else {
+                return Operand::Constant(PoolId::VOID_VALUE);
+            };
+            return self.define(field_ty, Rvalue::Load(place), span);
+        }
         match res {
             Res::Local(local) => {
                 if self.promotable.is_promotable(local) {
@@ -1862,13 +2181,31 @@ impl Lower<'_> {
                 .get(&param)
                 .copied()
                 .unwrap_or(Operand::Constant(PoolId::VOID_VALUE)),
-            // A file-level constant the const query evaluated is a constant
-            // operand (ADR-0018 §3). Everything else here `scan` already refused.
+            // Handled by the early return above, which needs the place machinery rather than a
+            // lookup. Kept as an explicit arm so the match stays exhaustive without a `_`.
+            Res::Promoted { .. } => Operand::Constant(PoolId::VOID_VALUE),
+            // A file-level constant the const query evaluated is a constant operand
+            // (ADR-0018 §3). A **procedure name used as a value** is a `ProcValue` constant
+            // (ADR-0059 §1) — the const query does not fold a bare procedure name, so without this
+            // arm it fell to `Rvalue::Undef`, the placeholder that is this project's first named
+            // failure mode. Interned here, keyed on the procedure's own `DeclId`.
             Res::Item(item) => match self.consts.item(item) {
+                Some(value) => Operand::Constant(value),
+                None => match self.proc_value_of(item, ty) {
+                    Some(value) => Operand::Constant(value),
+                    None => self.define(ty, Rvalue::Undef, span),
+                },
+            },
+            // **An imported constant is a constant operand** (ADR-0055 §1), exactly as a local one
+            // is. Teaching `scan` to accept it without this would have been the project's named
+            // first failure mode: a body that passes the representability check and then lowers to
+            // `Rvalue::Undef` — a *legitimate value* — so neither the verifier nor ADR-0017 §4's
+            // poison gate could catch the garbage.
+            Res::Imported(import, name) => match self.imported_values.get(import, name) {
                 Some(value) => Operand::Constant(value),
                 None => self.define(ty, Rvalue::Undef, span),
             },
-            Res::Imported(_, _) | Res::Error => self.define(ty, Rvalue::Undef, span),
+            Res::Error => self.define(ty, Rvalue::Undef, span),
         }
     }
 
@@ -2128,11 +2465,17 @@ impl Lower<'_> {
 
         // ADR-0003's explicit check, as a statement of its own before the access. The
         // comparison is unsigned, so one test covers a negative index too.
-        self.emit(Statement::BoundsCheck {
-            index: index_operand,
-            len,
-            span,
-        });
+        //
+        // Skipped entirely in a `#no_abc` procedure (ADR-0058 §3). Emitting it and letting the
+        // strip pass clear it would be the tidier-looking arrangement and it would be wrong: the
+        // pass is driven by a *build* setting, and `#no_abc` must hold whatever the build says.
+        if self.bounds_checks {
+            self.emit(Statement::BoundsCheck {
+                index: index_operand,
+                len,
+                span,
+            });
+        }
 
         place = place.project(Projection::Index(index_operand));
         Some((place, elem))
@@ -2186,13 +2529,142 @@ impl Lower<'_> {
     }
 
     /// Builds a call rvalue, or `None` if the callee is not one this wave lowers.
-    fn call_rvalue(&mut self, callee: ExprId, args: &[ExprId]) -> Option<Rvalue> {
-        let target = self.direct_callee(callee)?;
-        let operands: Vec<Operand> = args.iter().map(|arg| self.expr(*arg)).collect();
+    fn call_rvalue(&mut self, call: ExprId, callee: ExprId, args: &[ExprId]) -> Option<Rvalue> {
+        // A callee that names a procedure directly is a `Callee::Direct`; one that is a *value* of
+        // procedure-pointer type — a local, a parameter — is a `Callee::Indirect` (ADR-0059 §1).
+        // `direct_callee` returning `None` is the signal, not an error: it says "this is not a name
+        // that resolves to a procedure declaration", which for a proc-pointer value is exactly right.
+        let Some(target) = self.direct_callee(callee) else {
+            return self.indirect_call(call, callee, args);
+        };
+        // **Sema's positional list wins when it exists** (ADR-0053 §1). A named argument was written
+        // out of order and a default was never written at all, so lowering the *source* order here
+        // would pass arguments to the wrong parameters and drop defaults entirely — a silent wrong
+        // answer, which is why the order is decided once, in sema, and read here.
+        // **The callee's context comes first** (ADR-0057 §4), and it is *this* procedure's context
+        // passed through — a callee sees what its caller set, which is the whole point (§2).
+        let mut leading: Vec<Operand> = Vec::new();
+        if self.callee_receives_context(callee) {
+            match self.context {
+                Some(operand) => leading.push(operand),
+                None => {
+                    // A `#c_call` procedure calling a Jairs one has no context to pass. ADR-0057's
+                    // consequences record this as a real hole and refusing as the right answer: a
+                    // boundary that silently invented a context would hide where one came from.
+                    self.give_up("a `#c_call` procedure calling a procedure that needs a context");
+                    return None;
+                }
+            }
+        }
+        let operands: Vec<Operand> = match self.filled.get(self.scope(), call) {
+            Some(filled) => filled
+                .iter()
+                .map(|slot| match *slot {
+                    crate::inputs::FilledArg::Expr(expr) => self.expr(expr),
+                    crate::inputs::FilledArg::Default(value) => Operand::Constant(value),
+                })
+                .collect(),
+            None => args.iter().map(|arg| self.expr(*arg)).collect(),
+        };
+        let mut args = leading;
+        args.extend(operands);
         Some(Rvalue::Call {
             callee: Callee::Direct(target),
+            args,
+        })
+    }
+
+    /// Lowers a call whose callee is a *value* of procedure-pointer type (ADR-0059 §1).
+    ///
+    /// Reached when [`Self::direct_callee`] returns `None` — the callee is not a name resolving to a
+    /// procedure declaration, so it is an expression producing a proc pointer. The pointer is
+    /// evaluated to an operand and the call is [`Callee::Indirect`], which both engines already
+    /// have an arm for.
+    ///
+    /// **The context is prepended exactly as for a direct call.** A proc-pointer type is
+    /// `ContextKind::Jairs` in this wave (ADR-0059 §3), so the target always receives the context —
+    /// there is no `#c_call` proc-pointer type to check. A `#c_call` procedure calling through a
+    /// pointer still has no context to pass, and refuses for the same reason a direct such call does.
+    ///
+    /// **No `FilledArgs`**: named arguments and defaults resolve against a *declaration*'s parameter
+    /// names (ADR-0053 §1), and an indirect call has no declaration in hand — only a type. So the
+    /// arguments are positional, which is the only form sema admits through a proc pointer.
+    fn indirect_call(&mut self, _call: ExprId, callee: ExprId, args: &[ExprId]) -> Option<Rvalue> {
+        let pointer = self.expr(callee);
+        let mut operands: Vec<Operand> = Vec::with_capacity(args.len() + 1);
+        // Every Jairs procedure receives the context, and a proc-pointer type is always a Jairs one
+        // this wave — so an indirect call always prepends it, from *this* procedure's context.
+        match self.context {
+            Some(operand) => operands.push(operand),
+            None => {
+                self.give_up("a `#c_call` procedure calling through a procedure pointer");
+                return None;
+            }
+        }
+        operands.extend(args.iter().map(|arg| self.expr(*arg)));
+        Some(Rvalue::Call {
+            callee: Callee::Indirect(pointer),
             args: operands,
         })
+    }
+
+    /// Whether the callee at `target` receives the implicit context (ADR-0057 §3).
+    ///
+    /// **The one predicate both the signature side and the call side consult**, for the reason
+    /// `repr::returns_via_sret` is (ADR-0051 §1): the *presence* of a hidden parameter shifts every
+    /// other argument, and two independent tests would be two chances to produce a silent shift.
+    ///
+    /// A cross-file callee answers `true` unless its signature says otherwise — which is why this
+    /// takes a `ProcRef` rather than a `ProcId`: an imported procedure's `c_call` flag lives in the
+    /// other file's HIR, and `FileSignatures` is what crosses.
+    /// Whether an operator overload receives the context (ADR-0057 §3).
+    ///
+    /// An overload is always a local Jairs procedure — ADR-0048 §3's orphan rule keeps it in the
+    /// file that declares an operand type, and an overload is never `#c_call` (there is no syntax to
+    /// mark one) — so it always receives a context. The predicate exists for symmetry and to survive
+    /// a future `#c_call` operator rather than because any overload answers `false` today.
+    fn operator_receives_context(&self, target: ProcRef) -> bool {
+        if target.file != self.file {
+            return true;
+        }
+        self.hir
+            .procs
+            .get(target.proc.index())
+            .is_some_and(|p| !(p.c_call || p.foreign.is_some()))
+    }
+
+    fn callee_receives_context(&self, callee: ExprId) -> bool {
+        let Expr::Name { res, .. } = self.body.expr(callee) else {
+            return false;
+        };
+        let res = self
+            .resolve
+            .get(self.scope(), callee)
+            .unwrap_or_else(|| res.clone());
+        match res {
+            // A local callee: its `c_call`/`foreign` flags are in this file's HIR.
+            Res::Item(item) => match self.hir.items.get(item.index()).map(|i| &i.kind) {
+                Some(ItemKind::Const {
+                    value: ConstValue::Proc(proc),
+                }) => self
+                    .hir
+                    .procs
+                    .get(proc.index())
+                    .is_some_and(|p| !(p.c_call || p.foreign.is_some())),
+                _ => false,
+            },
+            // **A cross-file callee's context flag was decided in its own file** and carried across by
+            // `imported_procs` (ADR-0057 §3). It cannot be recomputed here — the callee's
+            // `#c_call`/`#foreign` status is not in this file's HIR — and answering `true` for
+            // everything cross-file passed a context to `#foreign exit`, which surfaced as "`exit`
+            // takes 1 arguments, called with 2": the argument shift ADR-0053 §1 records, from the
+            // callee's side.
+            Res::Imported(import, name) => self
+                .imports
+                .resolved(import, name)
+                .is_some_and(|p| p.receives_context),
+            Res::Local(_) | Res::Param(_) | Res::Promoted { .. } | Res::Error => false,
+        }
     }
 
     /// The procedure a callee expression names.
@@ -2213,7 +2685,10 @@ impl Lower<'_> {
         else {
             return None;
         };
-        let res = self.resolve.get(self.scope(), callee).unwrap_or(*res);
+        let res = self
+            .resolve
+            .get(self.scope(), callee)
+            .unwrap_or_else(|| res.clone());
         match res {
             Res::Item(item) => {
                 let ItemKind::Const {
@@ -2225,8 +2700,32 @@ impl Lower<'_> {
                 Some(ProcRef::new(self.file, *proc))
             }
             Res::Imported(import, name) => self.imports.get(import, name),
-            Res::Local(_) | Res::Param(_) | Res::Error => None,
+            // A promoted field cannot be a callee: Jairs has no procedure-valued fields, and
+            // calling through one would need `Callee::Indirect` plus a decision about what a
+            // field holding a procedure means.
+            Res::Local(_) | Res::Param(_) | Res::Promoted { .. } | Res::Error => None,
         }
+    }
+
+    /// Interns a procedure name used as a *value* to its `Item::ProcValue` (ADR-0059 §1).
+    ///
+    /// Returns `None` for anything but a same-file Jairs procedure, so the caller falls through to
+    /// its existing handling — which for a non-procedure item is already covered by `consts`, and
+    /// for a `#foreign` one is the E0256 sema raised before lowering ran. `scan` refuses a
+    /// cross-file procedure value, so `item` names a declaration in *this* file and the `DeclId` is
+    /// a local lookup, exactly as `direct_callee` does for a call.
+    ///
+    /// The value's type is the `ProcType` sema already computed for this expression — passed in as
+    /// `ty` rather than recomputed, so the value and the type cannot disagree.
+    fn proc_value_of(&mut self, item: jr_hir::ItemId, ty: PoolId) -> Option<PoolId> {
+        let ItemKind::Const {
+            value: ConstValue::Proc(proc),
+        } = &self.hir.items.get(item.index())?.kind
+        else {
+            return None;
+        };
+        let decl = jr_pool::DeclId::new(self.file, u32::try_from(proc.index()).ok()?);
+        Some(self.pool.proc_value(ty, decl))
     }
 
     // -------------------------------------------------------------------
@@ -2246,10 +2745,19 @@ impl Lower<'_> {
         else {
             return None;
         };
-        let res = self.resolve.get(self.scope(), expr).unwrap_or(*res);
+        let res = self
+            .resolve
+            .get(self.scope(), expr)
+            .unwrap_or_else(|| res.clone());
         match res {
             Res::Local(local) => self.promotable.is_promotable(local).then_some(local),
-            Res::Param(_) | Res::Item(_) | Res::Imported(_, _) | Res::Error => None,
+            // A promoted name is a field of a binding, never a register-held local in its own
+            // right — assignment to it goes through `place`, which `res_place` serves.
+            Res::Param(_)
+            | Res::Item(_)
+            | Res::Imported(_, _)
+            | Res::Promoted { .. }
+            | Res::Error => None,
         }
     }
 
@@ -2259,6 +2767,10 @@ impl Lower<'_> {
             return None;
         }
         match self.body.expr(expr).clone() {
+            // **`context` has no place of its own** — it is the pointer *value*. `context.allocator`
+            // reaches storage through `field_place`, which dereferences a pointer receiver exactly as
+            // `p.x` does (ADR-0057 §2), so the field is assignable and `context` itself is not.
+            Expr::Context(_) => None,
             Expr::Name {
                 name: _,
                 span: _,
@@ -2286,6 +2798,10 @@ impl Lower<'_> {
                         let slot = self.param_slots.get(&param).copied()?;
                         Some((Place::slot(slot), self.mir.slot(slot).ty))
                     }
+                    // The place a promoted name denotes: the base's place, then the field
+                    // projection (ADR-0050 §2). This is what makes `x = 1` work inside a
+                    // procedure taking a `using` parameter.
+                    Res::Promoted { .. } => self.res_place(&res),
                     Res::Item(_) | Res::Imported(_, _) | Res::Error => None,
                 }
             }
@@ -2411,6 +2927,123 @@ impl Lower<'_> {
             .map(|m| m.value)
     }
 
+    /// The place a `Res` names, for the root of a promoted path (ADR-0050 §2).
+    ///
+    /// `place` cannot serve this: it takes an `ExprId` and a promoted base is a `Res`, because the
+    /// promotion was synthesised by resolution rather than written as an expression. Only the two
+    /// binding kinds are reachable — a `using` prefixes a local or a parameter, so an item or an
+    /// import can never be a promoted base — and the exhaustive match makes that a compile error
+    /// if it ever stops being true.
+    fn res_place(&mut self, res: &Res) -> Option<(Place, PoolId)> {
+        match res {
+            Res::Local(local) => {
+                let local = *local;
+                let ty = self.local_ty(local);
+                let span = MirSpan::Local(self.body_id, local);
+                // Deliberately **not** gated on `is_promotable`: a `using` local has its fields
+                // read through it, which `escape.rs` treats as an escape, so it is always spilled.
+                // Asserting that here rather than assuming it would be the better shape, and
+                // `slot_for` is what makes the assumption safe — it allocates on demand.
+                let slot = self.slot_for(local, ty, span);
+                Some((Place::slot(slot), ty))
+            }
+            Res::Param(param) => {
+                if let Some(slot) = self.param_slots.get(param).copied() {
+                    return Some((Place::slot(slot), self.mir.slot(slot).ty));
+                }
+                // **A scalar parameter has no slot**, and a `using` parameter of *pointer* type is
+                // exactly that: `param_slots` holds only aggregates, spilled at entry so they have
+                // an address. So a `using p: *Point` reaches its fields through the pointer's
+                // register value rather than through storage — and returning `None` here made the
+                // promoted field type as the pointer, which surfaced as "Add on a non-integer
+                // operand" at run time rather than as a refusal.
+                let operand = self.params.get(param).copied()?;
+                let ty = self.param_tys.get(param.index()).copied()?;
+                let pointee = self.pointee(ty)?;
+                Some((Place::deref(operand), pointee))
+            }
+            // A promoted base can itself be promoted — `using` on a field of a `using` binding —
+            // so this recurses, which is what makes ADR-0050 §4's transitivity work rather than
+            // only resolving one level.
+            Res::Promoted { base, field } => {
+                let (place, ty) = self.res_place(base)?;
+                // **A pointer base is dereferenced through its *value*, not its place.** A
+                // pointer is a register type, so its slot holds the pointer itself — projecting a
+                // field out of that slot would read the field at an offset into the *pointer's*
+                // storage. `field_place` already draws this distinction for `p.x`; missing it
+                // here typed `x` as the pointer and produced "Add on a non-integer operand" at
+                // run time rather than a refusal, which is why the corpus program exercises
+                // `using p: *Point` at all.
+                if self.pointee(ty).is_some() {
+                    let operand = self.define(ty, Rvalue::Load(place), MirSpan::Synthetic);
+                    let pointee = self.pointee(ty)?;
+                    return self.project_field(Place::deref(operand), pointee, *field);
+                }
+                self.project_field(place, ty, *field)
+            }
+            Res::Item(_) | Res::Imported(_, _) | Res::Error => None,
+        }
+    }
+
+    /// Projects `name` out of a place of type `ty`, auto-dereferencing.
+    ///
+    /// Split out of [`Self::field_place`] so the promoted path shares the *same* field-index
+    /// computation. Two implementations of "which projection is field `x`" would be two chances to
+    /// disagree, and a disagreement here is a silent wrong offset rather than a crash — the failure
+    /// mode `AGENTS.md` names first.
+    fn project_field(
+        &mut self,
+        mut place: Place,
+        mut ty: PoolId,
+        name: Symbol,
+    ) -> Option<(Place, PoolId)> {
+        while let Some(pointee) = self.pointee(ty) {
+            place = place.project(Projection::Deref);
+            ty = pointee;
+        }
+        // The context's fields come from the compiler's list rather than the struct side table, for
+        // the reason ADR-0057 §1 gives: a compiler-declared type has no `DeclId` to key one on. The
+        // *offset* still comes from `jr-pool`, so both engines agree without this repeating it.
+        if matches!(self.pool.item(ty), Item::ContextType) {
+            let field_ty = jr_pool::Pool::context_field_type(jr_pool::Pool::context_field(
+                self.interner.resolve(name),
+            )?)?;
+            let index = jr_pool::Pool::context_field(self.interner.resolve(name))?;
+            return Some((place.project(Projection::Field(index)), field_ty));
+        }
+        let decl = match self.pool.item(ty) {
+            Item::StructType { decl } | Item::UnionType { decl } => *decl,
+            _ => return None,
+        };
+        let fields = self.pool.struct_fields(decl)?.to_vec();
+        // A direct field first — its own declaration shadows an embedded one, matching
+        // `jr-sema`'s `check_field` (ADR-0050 §4).
+        if let Some(index) = fields.iter().position(|field| field.name == name) {
+            let field_ty = fields[index].ty;
+            let index = u32::try_from(index).ok()?;
+            return Some((place.project(Projection::Field(index)), field_ty));
+        }
+        // **Then a field of a `using`-embedded base**, which is what makes `e.x` reach
+        // `e.base.x` (ADR-0050 §4). Missing this was not a compile error: sema accepted `e.x`
+        // through its own embedded search and MIR returned `None`, which `give_up` turned into a
+        // refused body and a trap at run time. Two searches that must agree, so both are written
+        // against the same `using` flag on the same field list — the shape ADR-0050 §4 chose
+        // precisely so that no *offset* is computed twice.
+        for (index, field) in fields.iter().enumerate() {
+            if !field.using {
+                continue;
+            }
+            let index = u32::try_from(index).ok()?;
+            let base_place = place.clone().project(Projection::Field(index));
+            // Recurses, so an embedding nested more than one deep resolves — the transitivity
+            // ADR-0050 §4 promises, and untestable with a single level of nesting.
+            if let Some(found) = self.project_field(base_place, field.ty, name) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
     fn field_place(&mut self, receiver: ExprId, name: Symbol) -> Option<(Place, PoolId)> {
         let receiver_ty = self.ty(receiver);
 
@@ -2462,39 +3095,12 @@ impl Lower<'_> {
             };
         }
 
-        let decl = match self.pool.item(ty) {
-            // A union's field access is a struct's, identically: the same `Projection::Field`
-            // by the same index into the same side table. What differs is the *offset* that
-            // index resolves to, which is `jr-pool`'s (ADR-0045 §5).
-            Item::StructType { decl } | Item::UnionType { decl } => *decl,
-            Item::VoidType
-            | Item::BoolType
-            | Item::IntType { .. }
-            | Item::FloatType { .. }
-            | Item::StringType
-            | Item::TypeType
-            | Item::ErrorType
-            | Item::ForeignLibraryType
-            | Item::PointerType(_)
-            | Item::ArrayType { .. }
-            | Item::ViewType { .. }
-            | Item::EnumType { .. }
-            | Item::ProcType { .. }
-            | Item::VoidValue
-            | Item::BoolValue(_)
-            | Item::IntValue { .. }
-            | Item::FloatValue { .. }
-            | Item::StrValue(_)
-            | Item::TypeValue(_)
-            | Item::ProcValue { .. }
-            | Item::ForeignLibraryValue(_) => return None,
-        };
+        // A union's field access is a struct's, identically: the same `Projection::Field` by the
+        // same index into the same side table. What differs is the *offset* that index resolves
+        // to, which is `jr-pool`'s (ADR-0045 §5). Shared with the promoted path so the two cannot
+        // disagree about which projection a field name is.
         let _ = self.file;
-        let fields = self.pool.struct_fields(decl)?;
-        let index = fields.iter().position(|field| field.name == name)?;
-        let field_ty = fields[index].ty;
-        let index = u32::try_from(index).ok()?;
-        Some((place.project(Projection::Field(index)), field_ty))
+        self.project_field(place, ty, name)
     }
 }
 

@@ -1,0 +1,75 @@
+// A float `::` constant, which crashed the native back end (ADR-0056).
+//
+// `R :: 0.5; main :: () { if R == 0.5 { } }` made `jr build` panic inside Cranelift's verifier with
+// "entered unreachable code", while `jr run` computed the right answer — so the two engines disagreed
+// about what *compiles*, which is the class of gap ADR-0051 closed for aggregate returns and which the
+// differential harness structurally cannot see: a program that does not build produces no output.
+//
+// The cause was one line in `jr-db`'s `reduce`, which copies a compile-time result out of the VM. It
+// mapped **every** `Value::Scalar` to an integer — and a float *is* a scalar in the VM, because
+// ADR-0040 §3 makes a float its bits with the interpretation coming from the type. So a float constant
+// interned as an `Item::IntValue` carrying a `float64` type, and `jr-codegen-clif` emitted `iconst` on
+// an `F64` register. The VM read it back correctly, because it too takes the interpretation from the
+// type — which is exactly why nothing caught this.
+//
+// Latent since floats landed in ADR-0040: **no corpus file had a float constant**, and a float *local*
+// never goes through `reduce` at all. That is the "unexercised path holds a wrong instruction" shape
+// ADR-0051 met from the other direction with its libcall naming.
+//
+// Both widths are here because ADR-0040 §3 puts a `float32`'s bits in its low 32, so the two take
+// different paths through interning and exercising only `float64` would miss one.
+#import "Basic";
+
+HALF :: 0.5;
+QUARTER :: 0.25;
+NEGATIVE :: -1.5;
+WHOLE :: 2.0;
+
+/// A `float32`, whose bits are narrowed at interning time (ADR-0040 §5).
+///
+/// A **local**, because a `float32` *constant* has no way to say its width: `NARROW :: 0.75` infers
+/// `float64` and `NARROW : float32 = 0.75` is a variable, not a constant. So the narrow interning path
+/// is exercised through a local here, and a typed `float32` constant is owed — recorded in §7 rather
+/// than discovered, because writing one is the obvious next thing a reader tries.
+narrow_local :: () -> float32 {
+    n: float32 = 0.75;
+    return n;
+}
+
+main :: () {
+    n := 0;
+
+    // The bare comparison that crashed.
+    if HALF == 0.5 {
+        n = n + 1;
+    }
+    // Arithmetic, so a wrong bit pattern is a wrong answer rather than a plausible one.
+    if HALF * 4.0 == 2.0 {
+        n = n + 2;
+    }
+    if QUARTER + QUARTER == 0.5 {
+        n = n + 4;
+    }
+    // A negative float constant, which ADR-0038 folds the sign into during lowering.
+    if NEGATIVE * 2.0 == -3.0 {
+        n = n + 8;
+    }
+    // A float constant whose value happens to be integral — the case most likely to *look* right
+    // while carrying integer bits, because 2.0 and 2 are visually the same number.
+    if WHOLE == 2.0 {
+        n = n + 16;
+    }
+    if WHOLE / 2.0 == 1.0 {
+        n = n + 32;
+    }
+    // A `float32`, for the narrower interning path.
+    if narrow_local() > 0.5 {
+        n = n + 64;
+    }
+
+    // Every assertion: 127.
+    if n == 127 {
+        exit(0);
+    }
+    exit(1);
+}

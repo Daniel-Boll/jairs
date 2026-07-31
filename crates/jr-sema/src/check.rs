@@ -39,15 +39,32 @@ use rustc_hash::FxHashMap;
 
 use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
-    E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247,
+    E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
+    E0254, E0256, E0257,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
-use crate::sigs::FileSignatures;
+use crate::sigs::{FileSignatures, ProcSig};
 
 // ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------
+
+/// One resolved argument position (ADR-0053 §1).
+///
+/// A `Vec<ArgSlot>` per call replaces the source-order argument list, so `jr-mir` lowers a call
+/// without knowing what a parameter name is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArgSlot {
+    /// An argument the call site wrote, positionally or by name.
+    Given(ExprId),
+    /// A parameter's default value, already interned (ADR-0053 §2).
+    ///
+    /// A `PoolId` rather than an `ExprId` because the default belongs to the *declaration*, not to
+    /// this call — so there is no expression in this body to point at, and MIR emits it as a
+    /// constant operand directly.
+    Default(PoolId),
+}
 
 /// What the check phase produces.
 pub struct CheckOutput {
@@ -83,6 +100,12 @@ pub struct CheckOutput {
     /// implementations of one rule are two chances to disagree, which is why `jr-mir` reads
     /// `TypeMap` instead of typing expressions itself.
     pub operator_calls: FxHashMap<(ExprScope, ExprId), (jr_base::FileId, ProcId)>,
+    /// The positional argument list of every call that used a named argument or a default
+    /// (ADR-0053 §1).
+    ///
+    /// **Absent for an all-positional call with no defaults**, so the common path pays nothing and
+    /// `jr-mir` falls back to the source order — which for such a call is already correct.
+    pub filled_calls: FxHashMap<(ExprScope, ExprId), Vec<ArgSlot>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +207,7 @@ pub fn check_file(
         diagnostics: ctx.diags,
         type_name_imports,
         operator_calls: ctx.operator_calls,
+        filled_calls: ctx.filled_calls,
     }
 }
 
@@ -210,6 +234,16 @@ impl Ctx<'_> {
                 }
             }
             Stmt::Local(local, _) => self.check_local(body, local),
+            Stmt::LocalTuple {
+                targets,
+                call,
+                span,
+            } => self.check_local_tuple(body, &targets, call, span),
+            Stmt::AssignTuple {
+                targets,
+                call,
+                span,
+            } => self.check_assign_tuple(scope, &targets, call, span),
             // Declared but never constructed by lowering; a nested item would be
             // E0207 long before it reached here.
             Stmt::Item(_, _) => {}
@@ -237,6 +271,7 @@ impl Ctx<'_> {
                 self.check_stmt(body, loop_body);
             }
             Stmt::Return(expr, span) => self.check_return(scope, expr, span),
+            Stmt::ReturnTuple(exprs, span) => self.check_return_tuple(scope, &exprs, span),
             Stmt::For {
                 value,
                 index,
@@ -338,6 +373,115 @@ impl Ctx<'_> {
     }
 
     /// Checks a local declaration and records the local's type.
+    /// Checks `q, ok := f();` (ADR-0052 §2).
+    ///
+    /// Each target's type is the corresponding *result* type, so the locals are typed from the
+    /// call rather than from an annotation — a destructuring declaration has no place to write one.
+    fn check_local_tuple(
+        &mut self,
+        body: BodyId,
+        targets: &[Option<jr_hir::LocalId>],
+        call: ExprId,
+        span: Span,
+    ) {
+        let scope = ExprScope::Body(body);
+        let results = self.destructured_results(scope, call, targets.len(), span);
+        for (index, target) in targets.iter().enumerate() {
+            // A discard is typed as nothing, because it declares nothing.
+            let Some(local) = target else { continue };
+            let ty = results.get(index).copied().unwrap_or(PoolId::ERROR);
+            self.locals.insert((body, *local), ty);
+            self.types.set_local(body, *local, ty);
+        }
+    }
+
+    /// Checks `q, ok = f();` (ADR-0052 §2).
+    ///
+    /// Each present target must be an assignable place whose type accepts the matching result, so
+    /// this reuses `expect` and `is_place` rather than inventing a second assignability rule — two
+    /// rules would be two chances to disagree about what `=` means.
+    fn check_assign_tuple(
+        &mut self,
+        scope: ExprScope,
+        targets: &[Option<ExprId>],
+        call: ExprId,
+        span: Span,
+    ) {
+        let results = self.destructured_results(scope, call, targets.len(), span);
+        for (index, target) in targets.iter().enumerate() {
+            let Some(target) = target else { continue };
+            let target_ty = self.check_expr(scope, *target, None);
+            if !self.is_place(scope, *target) {
+                let text = self.describe(target_ty);
+                self.diags.push(
+                    Diagnostic::error(span, format!("cannot assign to this `{text}` target"))
+                        .with_code(E0251)
+                        .with_note("each target of a destructuring assignment must be assignable"),
+                );
+                continue;
+            }
+            if let Some(result) = results.get(index).copied() {
+                self.expect(Some(target_ty), result, span);
+            }
+        }
+    }
+
+    /// The result types a destructuring statement's right-hand side produces, checking arity.
+    ///
+    /// Returns one type per *target* so the caller can index it positionally; a mismatch yields
+    /// `PoolId::ERROR` entries, which propagate without inventing a second diagnostic per target.
+    ///
+    /// This is the one place arity is decided (ADR-0052 §2). Both statement forms ask it, so they
+    /// cannot disagree about how many results a call has.
+    fn destructured_results(
+        &mut self,
+        scope: ExprScope,
+        call: ExprId,
+        want: usize,
+        span: Span,
+    ) -> Vec<PoolId> {
+        let ty = self.check_expr(scope, call, None);
+        if ty == PoolId::ERROR {
+            return vec![PoolId::ERROR; want];
+        }
+        let Some(elems) = self.pool.results_elems(ty).map(<[PoolId]>::to_vec) else {
+            // One result, or none: a destructuring statement is the wrong form. Named precisely,
+            // because "expected 2 values" without saying what it *does* return sends the reader
+            // looking for a call site problem.
+            let text = self.describe(ty);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("this call returns one value of type `{text}`, not {want}"),
+                )
+                .with_code(E0251)
+                .with_note("a destructuring statement needs a procedure returning several values")
+                .with_note("for a single result, write `x := f();`"),
+            );
+            return vec![PoolId::ERROR; want];
+        };
+        if elems.len() != want {
+            let text = self.describe(ty);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!(
+                        "this call returns {} values, but {want} {} named",
+                        elems.len(),
+                        if want == 1 { "is" } else { "are" }
+                    ),
+                )
+                .with_code(E0251)
+                .with_note(format!("it returns `{text}`"))
+                .with_note(
+                    "the counts must match exactly; write `_` to discard a result you do not want",
+                ),
+            );
+            return vec![PoolId::ERROR; want];
+        }
+        elems
+    }
+
     fn check_local(&mut self, body: BodyId, local: jr_hir::LocalId) {
         let scope = ExprScope::Body(body);
         let hir = self.hir;
@@ -444,6 +588,57 @@ impl Ctx<'_> {
     ///
     /// Whether every path through a non-`void` procedure actually returns is a
     /// control-flow question, not a typing one, and is not answered here.
+    /// Checks `return a, b;` against the procedure's declared results (ADR-0052 §1).
+    ///
+    /// Each expression is checked against its *positional* result type, so a mismatch names the
+    /// position rather than the whole tuple — which is what makes a two-result procedure returning
+    /// `(bool, s64)` by mistake report the swap rather than "expected `(s64, bool)`".
+    fn check_return_tuple(&mut self, scope: ExprScope, exprs: &[ExprId], span: Span) {
+        let ret = self.body.as_ref().map_or(PoolId::ERROR, |body| body.ret);
+        let Some(elems) = self.pool.results_elems(ret).map(<[PoolId]>::to_vec) else {
+            // The procedure declares one result (or none) and this `return` gives several. Checked
+            // here rather than left to `expect`, because a results aggregate has no type to unify
+            // with a scalar and the generic mismatch would name an internal type.
+            for expr in exprs {
+                self.check_expr(scope, *expr, None);
+            }
+            let text = self.describe(ret);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!(
+                        "this `return` gives {} values, but the procedure returns `{text}`",
+                        exprs.len()
+                    ),
+                )
+                .with_code(E0251)
+                .with_note("declare several results as `-> (T, U)` to return several values"),
+            );
+            return;
+        };
+        if elems.len() != exprs.len() {
+            for expr in exprs {
+                self.check_expr(scope, *expr, None);
+            }
+            let text = self.describe(ret);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!(
+                        "this `return` gives {} values, but `{text}` declares {}",
+                        exprs.len(),
+                        elems.len()
+                    ),
+                )
+                .with_code(E0251),
+            );
+            return;
+        }
+        for (expr, want) in exprs.iter().zip(elems) {
+            self.check_expr(scope, *expr, Some(want));
+        }
+    }
+
     fn check_return(&mut self, scope: ExprScope, expr: Option<ExprId>, span: Span) {
         let ret = self.body.as_ref().map_or(PoolId::ERROR, |body| body.ret);
         match expr {
@@ -482,6 +677,24 @@ impl Ctx<'_> {
     /// here and propagates meaningless locals into MIR, the mid-end, and both
     /// backends forever.
     pub(crate) fn reject_void_binding(&mut self, ty: PoolId, span: Span) -> PoolId {
+        // **A results aggregate is not storable** (ADR-0052 §4). `q := divide(7, 2)` binds *the
+        // whole aggregate*, which would make a results type spellable as a variable's type through
+        // the back door — and every tuple question ADR-0052 §1 declined to answer would follow.
+        // Refused here because this is the one place a binding's inferred type is judged, so the
+        // same rule covers a local, a `:=` and anything else that infers.
+        if self.pool.results_elems(ty).is_some() {
+            let text = self.describe(ty);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("cannot bind `{text}`: a multi-result call needs one name per result"),
+                )
+                .with_code(E0251)
+                .with_note("several results are not a value, so there is nothing to store")
+                .with_help("write `a, b := f();`, naming every result, or `_` to discard one"),
+            );
+            return PoolId::ERROR;
+        }
         if ty != PoolId::VOID {
             return ty;
         }
@@ -566,9 +779,34 @@ impl Ctx<'_> {
     ) -> PoolId {
         let expr = self.expr_of(scope, id);
         let ty = match expr {
+            // `context` is a `*Context` — passed by pointer so a callee's writes reach *its* callees
+            // (ADR-0057 §2). Typed as the pointer rather than the struct, so `context.allocator` goes
+            // through the same auto-deref `p.x` already does and needs no special field rule.
+            Expr::Context(span) => {
+                let ty = self.context_expr_type(scope, span);
+                self.expect(expected, ty, span)
+            }
             Expr::Literal(literal, span) => self.check_literal(&literal, expected, span),
             Expr::Name { span, res, .. } => {
                 let res = self.resolve.get(scope, id).unwrap_or(res);
+                // A **`#foreign` procedure taken as a value** is refused (E0256, ADR-0059 §5): its
+                // type is `ContextKind::CCall` and the VM reaches it through libffi rather than a
+                // `ProcRef`, so an indirect call to one is a second mechanism this wave does not
+                // build. Caught here, in value position — a *direct* call routes through
+                // `type_of_callee`, which does not refuse, so `write(…)` stays legal.
+                if self.is_foreign_proc(&res) && !self.call_position.contains(&(scope, id)) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            "a `#foreign` procedure cannot be used as a value yet",
+                        )
+                        .with_code(E0256)
+                        .with_note(
+                            "an indirect call to a foreign procedure needs machinery a later wave adds",
+                        ),
+                    );
+                    return PoolId::ERROR;
+                }
                 let ty = self.type_of_name(res);
                 self.expect(expected, ty, span)
             }
@@ -581,8 +819,13 @@ impl Ctx<'_> {
             Expr::Unary { op, operand, span } => {
                 self.check_unary(scope, op, operand, expected, span)
             }
-            Expr::Call { callee, args, span } => {
-                let ty = self.check_call(scope, callee, &args, span);
+            Expr::Call {
+                callee,
+                args,
+                arg_names,
+                span,
+            } => {
+                let ty = self.check_call(scope, id, callee, &args, &arg_names, span);
                 self.expect(expected, ty, span)
             }
             Expr::Field {
@@ -890,7 +1133,7 @@ impl Ctx<'_> {
         match self.expr_of(scope, id) {
             Expr::Literal(literal, _) => match literal {
                 Literal::Float { .. } => true,
-                Literal::Int { .. } | Literal::Str(_) | Literal::Bool(_) => false,
+                Literal::Int { .. } | Literal::Str(_) | Literal::Bool(_) | Literal::Null => false,
             },
             Expr::Unary { operand, .. } => self.untyped_literal_is_float(scope, operand),
             Expr::Binary { lhs, .. } => self.untyped_literal_is_float(scope, lhs),
@@ -906,6 +1149,42 @@ impl Ctx<'_> {
             Literal::Str(_) => self.expect(expected, PoolId::STRING, span),
             Literal::Int { value, .. } => self.check_int_literal(*value, expected, span),
             Literal::Float { .. } => self.check_float_literal(expected, span),
+            Literal::Null => self.check_null_literal(expected, span),
+        }
+    }
+
+    /// Types `null` against its context (ADR-0060 §1).
+    ///
+    /// `null` has no intrinsic type and takes its context's, exactly as an integer literal does —
+    /// but unlike an integer there is **no default**: a bare `null` with no context is E0257,
+    /// because there is no one pointer type to fall back to. The context must be a *pointer* type;
+    /// `n: s64 = null` is the same E0257, the literal being fine and the context wrong for it.
+    fn check_null_literal(&mut self, expected: Option<PoolId>, span: Span) -> PoolId {
+        match expected {
+            Some(want) if want == PoolId::ERROR => PoolId::ERROR,
+            Some(want) if self.pointee(want).is_some() => want,
+            Some(want) => {
+                let text = self.describe(want);
+                self.diags.push(
+                    Diagnostic::error(
+                        span,
+                        format!("mismatched types: expected `{text}`, found `null`"),
+                    )
+                    .with_code(E0257)
+                    .with_note("`null` is a pointer, so its context must be a pointer type"),
+                );
+                PoolId::ERROR
+            }
+            None => {
+                self.diags.push(
+                    Diagnostic::error(span, "`null` needs a pointer type from its context")
+                        .with_code(E0257)
+                        .with_note(
+                            "unlike an integer literal, `null` has no default type — annotate the                              binding or call, e.g. `p: *u8 = null`",
+                        ),
+                );
+                PoolId::ERROR
+            }
         }
     }
 
@@ -990,7 +1269,95 @@ impl Ctx<'_> {
         target
     }
 
+    /// The type of a `context` expression, refusing it where there is no context (ADR-0057 §3).
+    ///
+    /// Two refusals, both E0254 and each with its own note: a `#c_call` procedure receives none by
+    /// definition, and file scope has no call to have carried one.
+    fn context_expr_type(&mut self, scope: ExprScope, span: Span) -> PoolId {
+        match scope {
+            ExprScope::TopLevel => {
+                self.diags.push(
+                    Diagnostic::error(span, "`context` is not available at file scope")
+                        .with_code(E0254)
+                        .with_note(
+                            "a constant's value is computed before any call, so no context has been passed",
+                        ),
+                );
+                PoolId::ERROR
+            }
+            ExprScope::Body(body) => {
+                if self.body_is_c_call(body) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            "`context` is not available in a `#c_call` procedure",
+                        )
+                        .with_code(E0254)
+                        .with_note("a `#c_call` procedure receives no implicit context (ADR-0001)")
+                        .with_help("remove the `#c_call`, or pass what is needed explicitly"),
+                    );
+                    return PoolId::ERROR;
+                }
+                self.pool.context_pointer()
+            }
+        }
+    }
+
+    /// Whether the procedure owning `body` is `#c_call` (ADR-0057 §3).
+    ///
+    /// Reads `Proc::c_call` *or* `foreign`, because ADR-0001 makes every `#foreign` procedure
+    /// implicitly `#c_call` and sema is where that implication already lives — asking only the flag
+    /// would let a `#foreign` procedure mention `context`.
+    fn body_is_c_call(&self, body: BodyId) -> bool {
+        self.hir
+            .procs
+            .iter()
+            .find(|proc| proc.body == Some(body))
+            .is_some_and(|proc| proc.c_call || proc.foreign.is_some())
+    }
+
     /// Types a name reference from its resolution.
+    /// Whether `res` names a `#foreign` procedure (ADR-0059 §5).
+    ///
+    /// A same-file item only: a cross-file procedure value resolves to `Res::Imported` and is
+    /// refused earlier for a different reason (ADR-0059 §1), so this need not chase imports.
+    fn is_foreign_proc(&mut self, res: &Res) -> bool {
+        match res {
+            Res::Item(item) => self
+                .hir
+                .items
+                .get(item.index())
+                .and_then(|it| match &it.kind {
+                    jr_hir::ItemKind::Const {
+                        value: jr_hir::ConstValue::Proc(proc),
+                    } => self.hir.procs.get(proc.index()),
+                    _ => None,
+                })
+                .is_some_and(|proc| proc.foreign.is_some()),
+            // An **imported** `#foreign` procedure, asked of its *type* rather than the other
+            // file's HIR (ADR-0062 §3). `ContextKind::CCall` is exactly what `#foreign` means
+            // (ADR-0001), and the type is what this file already has — chasing the declaration
+            // across the module boundary would be a second answer to the same question.
+            //
+            // Without this arm an imported `#foreign` procedure assigned into a proc-pointer field
+            // reported "expected `(s64) -> *u8`, found `(s64) -> *u8`" — identical text, because the
+            // two types differ only in the invisible `ContextKind`. A message a reader cannot act on.
+            Res::Imported(import, name) => {
+                let ty = self
+                    .entry_for_import(*import, *name)
+                    .map_or(PoolId::ERROR, |entry| entry.ty);
+                matches!(
+                    self.pool.item(ty),
+                    Item::ProcType {
+                        context: jr_pool::ContextKind::CCall,
+                        ..
+                    }
+                )
+            }
+            Res::Local(_) | Res::Param(_) | Res::Promoted { .. } | Res::Error => false,
+        }
+    }
+
     fn type_of_name(&mut self, res: Res) -> PoolId {
         match res {
             Res::Local(local) => self
@@ -1011,8 +1378,94 @@ impl Ctx<'_> {
             Res::Imported(import, name) => self
                 .entry_for_import(import, name)
                 .map_or(PoolId::ERROR, |entry| entry.ty),
+            // A promoted name is the *base's* type, then a field of it (ADR-0050 §2). The base is
+            // itself a `Res`, so this recurses: a name promoted through an embedded field is a
+            // chain, and typing it one level would silently give the wrong type for the
+            // transitive case ADR-0050 §4 promises.
+            Res::Promoted { base, field } => {
+                let base_ty = self.type_of_name((*base).clone());
+                self.promoted_field_type(base_ty, field)
+            }
             Res::Error => PoolId::ERROR,
         }
+    }
+
+    /// The type of `name` found through a `using`-embedded field of the struct `decl`.
+    ///
+    /// Searches breadth-first over the embedded bases, so a shallower embedding wins — which
+    /// matters when two levels both provide a name and is the same "nearer declaration shadows"
+    /// rule the direct-field check above uses.
+    ///
+    /// Returns `None` when nothing provides it, leaving the caller to raise E0218 with its
+    /// near-name suggestion (ADR-0031 §1) rather than duplicating that diagnostic here.
+    fn embedded_field_type(&mut self, decl: jr_pool::DeclId, name: Symbol) -> Option<PoolId> {
+        // A cycle is impossible — a struct cannot contain itself by value, and the recursive-type
+        // refusal already covers it (ADR-0050 §4) — but the depth bound is kept anyway, because a
+        // malformed pool would otherwise loop forever inside the compiler rather than report.
+        let mut frontier: Vec<jr_pool::DeclId> = vec![decl];
+        for _ in 0..16u32 {
+            let mut next = Vec::new();
+            for current in frontier.drain(..) {
+                let fields = match self.pool.struct_fields(current) {
+                    Some(fields) => fields.to_vec(),
+                    None => continue,
+                };
+                for field in &fields {
+                    if !field.using {
+                        continue;
+                    }
+                    let mut base_ty = field.ty;
+                    while let Some(inner) = self.pointee(base_ty) {
+                        base_ty = inner;
+                    }
+                    let Item::StructType { decl: inner_decl } = self.pool.item(base_ty) else {
+                        continue;
+                    };
+                    let inner_decl = *inner_decl;
+                    if let Some(found) = self
+                        .pool
+                        .struct_fields(inner_decl)
+                        .and_then(|fs| fs.iter().find(|f| f.name == name).map(|f| f.ty))
+                    {
+                        return Some(found);
+                    }
+                    next.push(inner_decl);
+                }
+            }
+            if next.is_empty() {
+                return None;
+            }
+            frontier = next;
+        }
+        None
+    }
+
+    /// The type of `field` within `base_ty`, for a `using`-promoted name.
+    ///
+    /// Auto-derefs, so `using p: *Point` types `x` as `Point`'s `x` — matching the auto-deref
+    /// `p.x` already does, because the two spellings must agree (ADR-0050 §1).
+    ///
+    /// Raises no diagnostic: resolution built the promotion from the struct's *own* field list, so
+    /// a field that does not exist here means the two disagree, which is a compiler bug rather than
+    /// a program error. `PoolId::ERROR` propagates without inventing a message that would point at
+    /// the user's code for our mistake.
+    fn promoted_field_type(&mut self, base_ty: PoolId, field: Symbol) -> PoolId {
+        let mut ty = base_ty;
+        while let Some(inner) = self.pointee(ty) {
+            ty = inner;
+        }
+        // Only a struct, deliberately: `Item::UnionType` is *not* matched here even though
+        // `check_field` treats the two alike, because ADR-0050 §5 refuses `using` on a union and
+        // resolution has already reported it. Accepting one here would give a value to a promotion
+        // that was supposed to have been refused.
+        let decl = match self.pool.item(ty) {
+            Item::StructType { decl } => *decl,
+            _ => return PoolId::ERROR,
+        };
+        self.pool
+            .struct_fields(decl)
+            .and_then(|fields| fields.iter().find(|f| f.name == field).map(|f| f.ty))
+            .unwrap_or(PoolId::ERROR)
     }
 
     /// Types a binary operation.
@@ -1503,10 +1956,19 @@ impl Ctx<'_> {
     fn check_call(
         &mut self,
         scope: ExprScope,
+        id: ExprId,
         callee: ExprId,
         args: &[ExprId],
+        arg_names: &[Option<Symbol>],
         span: Span,
     ) -> PoolId {
+        // The callee is in **call position**, where a `#foreign` procedure is a legal thing to
+        // name — it is only illegal to take one as a *value* (E0256, ADR-0059 §5). This id is
+        // recorded so `check_expr`'s `Name` arm skips the E0256 refusal for it, while still typing
+        // and `set_expr`-recording the callee exactly as every other expression. Skipping
+        // `check_expr` entirely (an earlier attempt) left the callee's type unrecorded, which
+        // surfaced as MIR's "an expression was never typed" on `write(…)`.
+        self.call_position.insert((scope, callee));
         let callee_ty = self.check_expr(scope, callee, None);
         // Copy the signature out before touching `self` again: the pool borrow
         // and the diagnostic sink cannot both be live.
@@ -1528,6 +1990,33 @@ impl Ctx<'_> {
             }
             return PoolId::ERROR;
         };
+
+        // **Named arguments and defaults are resolved into positional order here** (ADR-0053 §1),
+        // before the arity check and the type check, so both work on one shape. The result is
+        // recorded so `jr-mir` reads it instead of the source order — one pass decides argument
+        // order, which is the same split ADR-0048 §5 made for overload resolution.
+        let named = arg_names.iter().any(Option::is_some);
+        let has_defaults = self
+            .callee_sig(scope, callee)
+            .is_some_and(|sig| sig.defaults.iter().any(Option::is_some));
+        if named || has_defaults {
+            if let Some(filled) = self.fill_arguments(scope, callee, args, arg_names, span) {
+                for (index, slot) in filled.iter().enumerate() {
+                    let want = params.get(index).copied();
+                    if let ArgSlot::Given(arg) = slot {
+                        self.check_expr(scope, *arg, want);
+                    }
+                }
+                self.filled_calls.insert((scope, id), filled);
+                return ret;
+            }
+            // `fill_arguments` reported the problem; type what was written so a second error in an
+            // argument is still found, then poison.
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
 
         if args.len() != params.len() {
             self.diags.push(
@@ -1551,6 +2040,148 @@ impl Ctx<'_> {
         }
 
         ret
+    }
+
+    /// The callee's per-procedure signature, when the callee names a procedure.
+    ///
+    /// `Item::ProcType` carries only *types*, so parameter names and defaults have to come from
+    /// `ProcSig` — which is keyed by `ProcId` and therefore needs the callee resolved to one
+    /// (ADR-0053 §1).
+    fn callee_sig(&mut self, scope: ExprScope, callee: ExprId) -> Option<ProcSig> {
+        let Expr::Name { res, .. } = self.expr_of(scope, callee) else {
+            return None;
+        };
+        let res = self.resolve.get(scope, callee).unwrap_or(res);
+        let item = match res {
+            Res::Item(item) => item,
+            // A call to an imported procedure resolves through the other file's signatures, which
+            // this crate does not hold — so a named argument on a cross-file call is not supported
+            // and says so rather than silently ignoring the name.
+            Res::Imported(_, _)
+            | Res::Local(_)
+            | Res::Param(_)
+            | Res::Promoted { .. }
+            | Res::Error => return None,
+        };
+        let jr_hir::ItemKind::Const {
+            value: jr_hir::ConstValue::Proc(proc),
+        } = self.hir.item(item).kind.clone()
+        else {
+            return None;
+        };
+        self.sigs.proc_sig(proc).cloned()
+    }
+
+    /// Resolves an argument list into one slot per parameter (ADR-0053 §1, §3).
+    ///
+    /// Returns `None` having reported a diagnostic when any of §3's four rules is broken. The four
+    /// are checked in source order so the *first* mistake is the one reported, rather than a cascade.
+    fn fill_arguments(
+        &mut self,
+        scope: ExprScope,
+        callee: ExprId,
+        args: &[ExprId],
+        arg_names: &[Option<Symbol>],
+        span: Span,
+    ) -> Option<Vec<ArgSlot>> {
+        let sig = self.callee_sig(scope, callee)?;
+        let mut slots: Vec<Option<ArgSlot>> = vec![None; sig.params.len()];
+        let mut seen_named = false;
+
+        for (index, arg) in args.iter().enumerate() {
+            match arg_names.get(index).copied().flatten() {
+                Some(name) => {
+                    seen_named = true;
+                    let Some(position) = sig.names.iter().position(|n| *n == name) else {
+                        let text = self.interner.resolve(name);
+                        let candidates: Vec<&str> = sig
+                            .names
+                            .iter()
+                            .map(|n| self.interner.resolve(*n))
+                            .collect();
+                        let mut diag = Diagnostic::error(
+                            span,
+                            format!("this procedure has no parameter named `{text}`"),
+                        )
+                        .with_code(E0252);
+                        // The same near-name machinery E0212 and E0218 use (ADR-0031 §1) — a
+                        // misspelled parameter is exactly the case it exists for.
+                        if let Some(suggestion) =
+                            crate::suggest::nearest(text, candidates.iter().copied())
+                        {
+                            diag = diag.with_help(format!("did you mean `{suggestion}`?"));
+                        }
+                        self.diags.push(diag);
+                        return None;
+                    };
+                    if slots[position].is_some() {
+                        let text = self.interner.resolve(name);
+                        self.diags.push(
+                            Diagnostic::error(span, format!("`{text}` is supplied more than once"))
+                                .with_code(E0252)
+                                .with_note(
+                                    "a parameter already filled positionally cannot be named",
+                                ),
+                        );
+                        return None;
+                    }
+                    slots[position] = Some(ArgSlot::Given(*arg));
+                }
+                None => {
+                    if seen_named {
+                        self.diags.push(
+                            Diagnostic::error(
+                                span,
+                                "a positional argument cannot follow a named one",
+                            )
+                            .with_code(E0252)
+                            .with_note(
+                                "otherwise a positional argument's meaning would depend on which names came before it",
+                            ),
+                        );
+                        return None;
+                    }
+                    if index >= slots.len() {
+                        self.diags.push(
+                            Diagnostic::error(
+                                span,
+                                format!(
+                                    "this procedure takes {} argument{}, but more were supplied",
+                                    sig.params.len(),
+                                    if sig.params.len() == 1 { "" } else { "s" }
+                                ),
+                            )
+                            .with_code(E0252),
+                        );
+                        return None;
+                    }
+                    slots[index] = Some(ArgSlot::Given(*arg));
+                }
+            }
+        }
+
+        // Anything still unfilled must have a default, or the call is incomplete.
+        let mut filled = Vec::with_capacity(slots.len());
+        for (position, slot) in slots.into_iter().enumerate() {
+            match slot {
+                Some(slot) => filled.push(slot),
+                None => match sig.defaults.get(position).copied().flatten() {
+                    Some(value) => filled.push(ArgSlot::Default(value)),
+                    None => {
+                        let text = self.interner.resolve(sig.names[position]);
+                        self.diags.push(
+                            Diagnostic::error(
+                                span,
+                                format!("`{text}` has no argument and no default value"),
+                            )
+                            .with_code(E0252),
+                        );
+                        return None;
+                    }
+                },
+            }
+        }
+        Some(filled)
     }
 
     /// Types a field access, looking through pointers.
@@ -1577,6 +2208,9 @@ impl Ctx<'_> {
             // A union's field access *is* a struct's: same field list, same side table, same
             // diagnostics. Only the offsets differ, and those are `jr-pool`'s (ADR-0045 §5).
             Item::StructType { decl } | Item::UnionType { decl } => ReceiverKind::Struct(*decl),
+            // The context's fields are the compiler's, not a side table's — there is no `DeclId` to
+            // key one on (ADR-0057 §1), so this is its own receiver kind rather than a `Struct`.
+            Item::ContextType => ReceiverKind::Context,
             Item::ArrayType { .. } => ReceiverKind::Array,
             Item::ViewType { .. } => ReceiverKind::View,
             // `Colour.RED`: the *receiver* is the enum type used as a value, so its type is
@@ -1639,10 +2273,15 @@ impl Ctx<'_> {
                 }
             }
             ReceiverKind::Struct(decl) => {
+                // A direct field first, then — failing that — a field of any `using`-embedded
+                // base (ADR-0050 §4). Direct wins, so a struct that declares `x` *and* embeds
+                // something declaring `x` means its own, which matches the rule everywhere else
+                // in the language: the nearer declaration shadows.
                 let found = self
                     .pool
                     .struct_fields(decl)
-                    .and_then(|fields| fields.iter().find(|f| f.name == name).map(|f| f.ty));
+                    .and_then(|fields| fields.iter().find(|f| f.name == name).map(|f| f.ty))
+                    .or_else(|| self.embedded_field_type(decl, name));
                 match found {
                     Some(field_ty) => field_ty,
                     None => {
@@ -1651,6 +2290,21 @@ impl Ctx<'_> {
                     }
                 }
             }
+            ReceiverKind::Context => match jr_pool::Pool::context_field(field) {
+                Some(index) => jr_pool::Pool::context_field_type(index).unwrap_or(PoolId::ERROR),
+                None => {
+                    let candidates = jr_pool::CONTEXT_FIELD_NAMES.iter().copied();
+                    let mut diag =
+                        Diagnostic::error(name_span, format!("the context has no field `{field}`"))
+                            .with_code(E0218);
+                    // The same near-name machinery every other field lookup uses (ADR-0031 §1).
+                    if let Some(suggestion) = crate::suggest::nearest(field, candidates) {
+                        diag = diag.with_help(format!("did you mean `{suggestion}`?"));
+                    }
+                    self.diags.push(diag);
+                    PoolId::ERROR
+                }
+            },
             ReceiverKind::Fieldless => {
                 let text = self.describe(ty);
                 self.diags.push(
@@ -1828,7 +2482,9 @@ impl Ctx<'_> {
         let entry = match res {
             Res::Item(item) => self.entry_for_item(item)?,
             Res::Imported(import, name) => self.entry_for_import(import, name)?,
-            Res::Local(_) | Res::Param(_) | Res::Error => return None,
+            // A promoted name is a *field*, and a field never denotes a type — Jairs has no
+            // nested type declarations, so `using p: Point` cannot put a type name in scope.
+            Res::Local(_) | Res::Param(_) | Res::Promoted { .. } | Res::Error => return None,
         };
         let denoted = entry.type_value?;
         match self.pool.item(denoted) {
@@ -1947,10 +2603,20 @@ impl Ctx<'_> {
     /// pointer is assignable and deciding that needs the receiver's type.
     fn is_place(&mut self, scope: ExprScope, id: ExprId) -> bool {
         match self.expr_of(scope, id) {
+            // **`context` itself is not a place** — it is the pointer value, not storage — but
+            // `context.allocator` is, because `Expr::Field` on a pointer receiver is assignable and
+            // that arm decides it from the receiver's *type*. So writing the field works and
+            // rebinding `context` wholesale does not, which is ADR-0057 §2's shape exactly.
+            Expr::Context(_) => false,
             Expr::Name { res, .. } => {
                 let res = self.resolve.get(scope, id).unwrap_or(res);
                 match res {
                     Res::Local(_) | Res::Param(_) => true,
+                    // A promoted name **is** a place: `x` where `using p: Point` is in scope means
+                    // `p.x`, and an ordinary `p.x` is assignable. Answering `false` here would
+                    // silently make `x = 1` a "cannot assign" error inside any procedure taking a
+                    // `using` parameter — the promotion would look read-only for no stated reason.
+                    Res::Promoted { .. } => true,
                     Res::Item(item) => self
                         .entry_for_item(item)
                         .is_some_and(|entry| entry.is_assignable()),
@@ -2029,6 +2695,10 @@ impl Ctx<'_> {
                 // operands still disagree. ADR-0040 §6 keeps that asymmetry deliberately —
                 // `1` and `1.0` are different literals.
                 Literal::Int { .. } | Literal::Float { .. } => true,
+                // `null` takes its type from context too (ADR-0060 §1), so `p == null` types the
+                // `null` as `p`'s pointer type rather than reporting a mismatch — the same reason
+                // an integer literal is untyped here.
+                Literal::Null => true,
                 Literal::Str(_) | Literal::Bool(_) => false,
             },
             Expr::Unary { op, operand, .. } => match op {
@@ -2059,6 +2729,7 @@ impl Ctx<'_> {
             | Expr::Member { .. }
             | Expr::Name { .. }
             | Expr::Call { .. }
+            | Expr::Context(_)
             | Expr::Field { .. }
             | Expr::Deref(..)
             | Expr::Uninit(_)
@@ -2105,6 +2776,12 @@ enum ReceiverKind {
     Struct(jr_pool::DeclId),
     /// A fixed-size array, whose `.count` is a pseudo-field read from the type.
     Array,
+    /// The implicit context, whose fields are the compiler's (ADR-0057 §1).
+    ///
+    /// Its own variant rather than a [`ReceiverKind::Struct`] because a context has no `DeclId` — a
+    /// compiler-declared type has no declaration site — so its fields cannot be in the struct side
+    /// table that variant reads.
+    Context,
     /// A view, whose `.count` is a pseudo-field **loaded** from the value (ADR-0044 §4).
     ///
     /// Distinct from [`ReceiverKind::Array`] even though both answer `.count` with an `s64`,

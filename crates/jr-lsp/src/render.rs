@@ -318,6 +318,8 @@ impl Decl<'_> {
                 IntKind::of(self.pool, *ty).map(|kind| kind.decode(*bits).to_string())
             }
             Item::BoolValue(value) => Some(value.to_string()),
+            // A results aggregate is a transport, never a constant (ADR-0052 §4).
+            Item::ContextType | Item::ResultsType { .. } => None,
             // `{:?}` so `1.0` does not render as `1` on a hover card and read as an integer.
             Item::FloatValue { ty, bits } => jr_pool::FloatKind::of(self.pool, *ty)
                 .map(|kind| format!("{:?}", kind.decode(*bits))),
@@ -426,6 +428,16 @@ pub fn type_name(pool: &Pool, signatures: &FileSignatures, ty: PoolId) -> String
             format!("[{len}]{}", type_name(pool, signatures, *elem))
         }
         Item::ViewType { elem } => format!("[]{}", type_name(pool, signatures, *elem)),
+        // Spelled as written, so hovering a multi-result procedure shows `-> (s64, bool)` rather
+        // than a name the user never typed (ADR-0052 §1).
+        Item::ContextType => "Context".to_owned(),
+        Item::ResultsType { elems } => {
+            let parts: Vec<String> = elems
+                .iter()
+                .map(|ty| type_name(pool, signatures, *ty))
+                .collect();
+            format!("({})", parts.join(", "))
+        }
         Item::StructType { decl } => signatures
             .type_name(ty)
             .map_or_else(|| format!("struct{decl:?}"), ToOwned::to_owned),

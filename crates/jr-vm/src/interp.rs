@@ -35,6 +35,8 @@
 //! for the same reason `MirBody::reverse_postorder` uses an explicit stack. The depth
 //! cap turns it into [`VmError::Exhausted`].
 
+use jr_base::FileId;
+use jr_hir::ProcId;
 use jr_mir::{BinOp, Callee, NumKind, ProcRef, UnOp, Unreachable};
 use jr_pool::{Item, Pool, PoolId, StrId, TargetLayout, string_count, string_data, string_layout};
 use rustc_hash::FxHashMap;
@@ -221,6 +223,12 @@ impl<'a> Vm<'a> {
         &self.memory
     }
 
+    /// Mutable access to the VM's memory, for the FFI bridge to satisfy `malloc` from the VM's own
+    /// region (ADR-0061 §1) rather than from the host.
+    pub const fn memory_mut(&mut self) -> &mut Memory {
+        &mut self.memory
+    }
+
     /// Copies the bytes a `string` value points at out of VM memory.
     ///
     /// Needed because a `string` result cannot survive the VM: it is a `{data, count}`
@@ -252,6 +260,24 @@ impl<'a> Vm<'a> {
             return Ok(Vec::new());
         }
         Ok(self.memory.read(address, count)?.to_vec())
+    }
+
+    /// Allocates a zeroed context and returns a pointer to it (ADR-0057 §5).
+    ///
+    /// `main` has no Jairs caller, so something must create the first context. **Zeroed rather than
+    /// uninitialised**, so `context.allocator` reads 0 in a program that never sets it — a defined
+    /// value rather than garbage, matching what ADR-0039 §4a decided for a default-initialised
+    /// aggregate.
+    ///
+    /// # Errors
+    /// [`VmError`] if the allocation fails.
+    pub fn new_context(&mut self, size: u64, align: u32) -> Result<Value, VmError> {
+        let address = self.memory.allocate(size.max(1), align)?;
+        let zeros = vec![0u8; usize::try_from(size).unwrap_or(0)];
+        if !zeros.is_empty() {
+            self.memory.write(address, &zeros)?;
+        }
+        Ok(Value::Scalar(address))
     }
 
     /// Calls a procedure with `args` and returns its result.
@@ -447,19 +473,33 @@ impl<'a> Vm<'a> {
             // from the type at every use.
             Item::FloatValue { ty: _, bits } => Ok(Value::Scalar(bits)),
             Item::StrValue(str_id) => self.string_value(str_id),
-            // A type or a procedure as a *value* is comptime-only (wave W4) and has
+            // A **procedure value** encodes its `ProcRef` as a scalar (ADR-0059 §4): the VM's
+            // proc pointer is not a code address but a handle it decodes at the indirect call.
+            // The bits differ from the native back end's real address, and that is allowed —
+            // nothing observes a proc pointer's bits, only calling through it, which the
+            // differential harness compares. The pack is `(file << 32) | proc`, matching
+            // `resolve_callee`'s unpack exactly; a mismatch there would be a wrong call, not a
+            // wrong number, so the two live next to each other in intent.
+            Item::ProcValue { ty: _, decl } => {
+                let file = decl.file.index() as u64;
+                let proc = u64::from(decl.index);
+                Ok(Value::Scalar((file << 32) | proc))
+            }
+            // A type or a library used as a *value* is comptime-only (wave W4) and has
             // no runtime representation; `jr_pool::LayoutError::ComptimeOnly` says
             // the same thing from the layout side.
-            Item::TypeValue(_) | Item::ProcValue { .. } | Item::ForeignLibraryValue(_) => Err(
-                VmError::unsupported("a type, procedure or library used as a runtime value"),
-            ),
+            Item::TypeValue(_) | Item::ForeignLibraryValue(_) => Err(VmError::unsupported(
+                "a type or library used as a runtime value",
+            )),
             // Exhaustive by *type* variant rather than a catch-all, and that change is this
             // wave's doing: a `ref other` arm here swallowed `Item::FloatValue` and reported
             // "expected a value constant, found the type FloatValue" at run time, while the
             // native back end computed the right answer. A catch-all cannot be a compile
             // error when a variant is added, which is exactly what `AGENTS.md` bans a `_` arm
             // for.
-            Item::VoidType
+            Item::ContextType
+            | Item::ResultsType { .. }
+            | Item::VoidType
             | Item::BoolType
             | Item::IntType { .. }
             | Item::FloatType { .. }
@@ -751,15 +791,15 @@ impl<'a> Vm<'a> {
     fn resolve_callee(&mut self, frame: &Frame, callee: &Callee) -> Result<ProcRef, VmError> {
         match callee {
             Callee::Direct(target) => Ok(*target),
-            // A procedure-pointer value would have to carry a `ProcRef`, and the pool
-            // interns a procedure as an `Item::ProcValue { decl }` — a `DeclId`, not a
-            // `ProcRef`. Bridging the two needs a decl-to-proc map nothing builds yet,
-            // and nothing in Jairs-0 calls through a pointer.
+            // A procedure pointer is a scalar handle encoding its `ProcRef` (ADR-0059 §4):
+            // `(file << 32) | proc`, the exact inverse of `constant`'s pack for an
+            // `Item::ProcValue`. The two must agree bit-for-bit, so they are written to be read
+            // together — a mismatch is a call to the wrong procedure, not a diagnosable failure.
             Callee::Indirect(operand) => {
-                let _ = self.operand(frame, *operand)?;
-                Err(VmError::unsupported(
-                    "calling through a procedure pointer arrives with a later wave",
-                ))
+                let handle = self.operand(frame, *operand)?.scalar()?;
+                let file = FileId::from_usize((handle >> 32) as usize);
+                let proc = ProcId::from_u32((handle & 0xFFFF_FFFF) as u32);
+                Ok(ProcRef::new(file, proc))
             }
         }
     }

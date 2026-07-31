@@ -1,0 +1,21 @@
+// EXPECT: E0253 — a name an imported module declares but does not export (ADR-0054 §2)
+//
+// `modules/Private.jr` puts `times_factor` and `unused_helper` behind `#scope_module`, so neither is
+// in the scope this file resolves against.
+//
+// **Why this is not E0201.** The name genuinely is absent from the imported scope, so "unresolved
+// name" would be *true* — and it would offer a near-name suggestion and send the reader looking for a
+// typo. The difference between "you misspelled this" and "the module's author hid this" is the entire
+// value of the diagnostic, and only the specific one can say it. That cost one extra lookup, on the
+// error path only: the exported scope carries the set of names it filtered out.
+#import "Private";
+
+/// A hidden helper, used.
+reach_private :: (n: s64) -> s64 {
+    return times_factor(n);
+}
+
+/// A second one, to show the message names the module rather than the declaration.
+reach_other :: (n: s64) -> s64 {
+    return unused_helper(n);
+}

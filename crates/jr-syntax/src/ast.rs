@@ -117,6 +117,8 @@ ast_node!(NameType, NAME_TYPE);
 ast_node!(PointerType, POINTER_TYPE);
 ast_node!(ArrayType, ARRAY_TYPE);
 ast_node!(ViewType, VIEW_TYPE);
+ast_node!(ProcType, PROC_TYPE);
+ast_node!(ProcTypeParams, PROC_TYPE_PARAMS);
 ast_node!(StructType, STRUCT_TYPE);
 ast_node!(UnionType, UNION_TYPE);
 ast_node!(EnumType, ENUM_TYPE);
@@ -131,6 +133,11 @@ ast_node!(AssignStmt, ASSIGN_STMT);
 ast_node!(IfStmt, IF_STMT);
 ast_node!(ElseBranch, ELSE_BRANCH);
 ast_node!(WhileStmt, WHILE_STMT);
+ast_node!(ScopeDecl, SCOPE_DECL);
+ast_node!(ContextExpr, CONTEXT_EXPR);
+ast_node!(CCallAttr, C_CALL_ATTR);
+ast_node!(NoAbcAttr, NO_ABC_ATTR);
+ast_node!(NamedArg, NAMED_ARG);
 ast_node!(ForStmt, FOR_STMT);
 ast_node!(RangeExpr, RANGE_EXPR);
 ast_node!(DeferStmt, DEFER_STMT);
@@ -218,6 +225,8 @@ pub enum TypeExpr {
     Array(ArrayType),
     /// `[]T` (ADR-0044 §1)
     View(ViewType),
+    /// `(T, T) -> T` (ADR-0059 §3)
+    Proc(ProcType),
     /// `Ident`
     Name(NameType),
     /// `struct { ... }`
@@ -235,6 +244,7 @@ impl AstNode for TypeExpr {
             POINTER_TYPE
                 | ARRAY_TYPE
                 | VIEW_TYPE
+                | PROC_TYPE
                 | NAME_TYPE
                 | STRUCT_TYPE
                 | UNION_TYPE
@@ -247,6 +257,7 @@ impl AstNode for TypeExpr {
             POINTER_TYPE => Some(Self::Pointer(PointerType(node))),
             ARRAY_TYPE => Some(Self::Array(ArrayType(node))),
             VIEW_TYPE => Some(Self::View(ViewType(node))),
+            PROC_TYPE => Some(Self::Proc(ProcType(node))),
             NAME_TYPE => Some(Self::Name(NameType(node))),
             STRUCT_TYPE => Some(Self::Struct(StructType(node))),
             UNION_TYPE => Some(Self::Union(UnionType(node))),
@@ -260,6 +271,7 @@ impl AstNode for TypeExpr {
             Self::Pointer(n) => n.syntax(),
             Self::Array(n) => n.syntax(),
             Self::View(n) => n.syntax(),
+            Self::Proc(n) => n.syntax(),
             Self::Name(n) => n.syntax(),
             Self::Struct(n) => n.syntax(),
             Self::Union(n) => n.syntax(),
@@ -381,6 +393,8 @@ pub enum Expr {
     Index(IndexExpr),
     /// `a[]` (ADR-0044 §2)
     Slice(SliceExpr),
+    /// `context` (ADR-0057 §1)
+    Context(ContextExpr),
     /// `a..b` — reachable only in a `for` header (ADR-0049 §1)
     Range(RangeExpr),
     /// `p.*`
@@ -412,6 +426,7 @@ impl AstNode for Expr {
                 | FIELD_EXPR
                 | INDEX_EXPR
                 | SLICE_EXPR
+                | CONTEXT_EXPR
                 | RANGE_EXPR
                 | DEREF_EXPR
                 | UNINIT_EXPR
@@ -434,6 +449,7 @@ impl AstNode for Expr {
             FIELD_EXPR => Some(Self::Field(FieldExpr(node))),
             INDEX_EXPR => Some(Self::Index(IndexExpr(node))),
             SLICE_EXPR => Some(Self::Slice(SliceExpr(node))),
+            CONTEXT_EXPR => Some(Self::Context(ContextExpr(node))),
             RANGE_EXPR => Some(Self::Range(RangeExpr(node))),
             DEREF_EXPR => Some(Self::Deref(DerefExpr(node))),
             UNINIT_EXPR => Some(Self::Uninit(UninitExpr(node))),
@@ -457,6 +473,7 @@ impl AstNode for Expr {
             Self::Field(n) => n.syntax(),
             Self::Index(n) => n.syntax(),
             Self::Slice(n) => n.syntax(),
+            Self::Context(n) => n.syntax(),
             Self::Range(n) => n.syntax(),
             Self::Deref(n) => n.syntax(),
             Self::Uninit(n) => n.syntax(),
@@ -528,6 +545,11 @@ impl VarDecl {
     /// The initialiser expression, if present.
     pub fn initializer(&self) -> Option<Expr> {
         child_node(&self.0)
+    }
+
+    /// Whether this declaration is `using`, promoting its type's fields (ADR-0050 §1).
+    pub fn is_using(&self) -> bool {
+        child_token(&self.0, USING_KW).is_some()
     }
 }
 
@@ -601,6 +623,50 @@ impl Param {
     pub fn ty(&self) -> Option<TypeExpr> {
         child_node(&self.0)
     }
+
+    /// Whether this parameter is `using`, promoting its type's fields (ADR-0050 §1).
+    pub fn is_using(&self) -> bool {
+        child_token(&self.0, USING_KW).is_some()
+    }
+
+    /// The default value, if the parameter has one (ADR-0053 §2).
+    pub fn default_value(&self) -> Option<Expr> {
+        child_node(&self.0)
+    }
+}
+
+impl Proc {
+    /// Whether this procedure is `#c_call`, opting out of the implicit context (ADR-0057 §3).
+    pub fn is_c_call(&self) -> bool {
+        self.0.children().any(|n| n.kind() == C_CALL_ATTR)
+    }
+
+    /// Whether this procedure is `#no_abc`, suppressing its bounds checks (ADR-0058 §3).
+    ///
+    /// A *procedure*-level question, which is what ADR-0058 §3 amends ADR-0003 to make it: the
+    /// directive is on the header, so `Proc` is the only node that has to answer.
+    pub fn is_no_abc(&self) -> bool {
+        self.0.children().any(|n| n.kind() == NO_ABC_ATTR)
+    }
+}
+
+impl ScopeDecl {
+    /// The directive token, `#scope_module` or `#scope_export` (ADR-0054 §1).
+    pub fn directive(&self) -> Option<SyntaxToken> {
+        child_token(&self.0, DIRECTIVE)
+    }
+}
+
+impl NamedArg {
+    /// The parameter name being named.
+    pub fn name(&self) -> Option<Name> {
+        child_node(&self.0)
+    }
+
+    /// The value.
+    pub fn value(&self) -> Option<Expr> {
+        child_node(&self.0)
+    }
 }
 
 impl RetType {
@@ -663,6 +729,28 @@ impl ViewType {
     /// difference from [`ArrayType`] (ADR-0044 §1).
     pub fn elem(&self) -> Option<TypeExpr> {
         child_node(&self.0)
+    }
+}
+impl ProcType {
+    /// The parameter types, in order — `s64, bool` in `(s64, bool) -> T`.
+    pub fn params(&self) -> impl Iterator<Item = TypeExpr> + '_ {
+        self.0
+            .children()
+            .find(|n| n.kind() == PROC_TYPE_PARAMS)
+            .into_iter()
+            .flat_map(|list| list.children().filter_map(TypeExpr::cast))
+    }
+
+    /// The return type, `T` in `(…) -> T`.
+    ///
+    /// The one type child that is **not** inside the `PROC_TYPE_PARAMS` node — which is why the
+    /// parameters live in their own node rather than as flat children: otherwise the last parameter
+    /// and the return type would be indistinguishable (ADR-0059 §3).
+    pub fn ret(&self) -> Option<TypeExpr> {
+        self.0
+            .children()
+            .filter(|n| n.kind() != PROC_TYPE_PARAMS)
+            .find_map(TypeExpr::cast)
     }
 }
 impl AutocastExpr {
@@ -879,6 +967,11 @@ impl Field {
     pub fn ty(&self) -> Option<TypeExpr> {
         child_node(&self.0)
     }
+
+    /// Whether this field is `using`-embedded, promoting its type's fields (ADR-0050 §1).
+    pub fn is_using(&self) -> bool {
+        child_token(&self.0, USING_KW).is_some()
+    }
 }
 
 impl Block {
@@ -1064,7 +1157,7 @@ impl LiteralExpr {
             .find(|t| {
                 matches!(
                     t.kind(),
-                    INT_LITERAL | FLOAT_LITERAL | STRING_LITERAL | TRUE_KW | FALSE_KW
+                    INT_LITERAL | FLOAT_LITERAL | STRING_LITERAL | TRUE_KW | FALSE_KW | NULL_KW
                 )
             })
     }

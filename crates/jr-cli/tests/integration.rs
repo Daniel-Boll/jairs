@@ -297,10 +297,62 @@ fn imports_invalid_corpus_fails() {
         "imports/invalid/001-module-not-found.jr",
         "imports/invalid/002-ambiguous-imported-name.jr",
         "imports/invalid/003-unresolved-after-import.jr",
+        // `using` refusals (ADR-0050 §5, §3, §1). Filed here rather than under `type-errors/`
+        // because E0250 is a **resolution** diagnostic and that directory's contract is that its
+        // files "parse, lower and resolve cleanly" — a rule this wave met by moving the files
+        // rather than by weakening it. These three happen to import nothing, which the directory
+        // permits: its contract is about the *stage* the error comes from, not about imports.
+        "imports/invalid/004-using-on-a-union.jr",
+        "imports/invalid/005-using-ambiguous.jr",
+        "imports/invalid/006-using-on-a-non-struct.jr",
+        // Multiple-return arity (ADR-0052 §2) and the named-argument rules (ADR-0053 §3).
+        "imports/invalid/007-multiple-returns-arity.jr",
+        "imports/invalid/008-named-argument-rules.jr",
+        // A name an imported module declares but does not export (ADR-0054 §2).
+        "imports/invalid/009-not-exported.jr",
+        // An *imported* `#foreign` procedure installed into a procedure-pointer field (ADR-0062 §3).
+        // Here rather than under `type-errors/` because reaching the case needs the import resolved,
+        // and a same-file version tests a path that already worked.
+        "imports/invalid/010-foreign-allocator.jr",
     ] {
         let code = check_with_modules(vec![corpus_path(file)], Some("modules"));
         assert_eq!(code, 1, "{file} must report an error");
     }
+}
+
+/// Every file in `imports/invalid/` must be in the list above.
+///
+/// **This exists because three files were not.** ADR-0052's and ADR-0053's refusal files were added
+/// to the directory and the list edits silently failed to apply, so for two waves the directory grew
+/// while the test did not — and ADR-0054's filter could be disabled with the whole suite still
+/// green. A hand-maintained list of files in a directory is a list that drifts; this is the check
+/// that makes the drift a failure.
+#[test]
+fn every_imports_invalid_file_is_exercised() {
+    let dir = corpus_path("imports/invalid");
+    let mut found: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jr"))
+        .filter_map(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .collect();
+    found.sort();
+
+    let source = include_str!("integration.rs");
+    let mut missing = Vec::new();
+    for name in &found {
+        if !source.contains(&format!("imports/invalid/{name}")) {
+            missing.push(name.clone());
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "these imports/invalid files are not exercised by `imports_invalid_corpus_fails`: {missing:?}"
+    );
 }
 
 /// `024-hello.jr` imports the real bundled `Basic` module, with no
@@ -372,6 +424,7 @@ fn run_program(path: PathBuf) -> i32 {
     let args = jr_cli::cli::RunArgs {
         path,
         module_paths: Vec::new(),
+        no_bounds_check: false,
     };
     jr_cli::commands::run::run(args, &global).unwrap()
 }
@@ -418,6 +471,7 @@ fn run_reports_a_program_with_no_main() {
     let args = jr_cli::cli::RunArgs {
         path,
         module_paths: Vec::new(),
+        no_bounds_check: false,
     };
     let error = jr_cli::commands::run::run(args, &global).expect_err("must not run");
     assert!(
@@ -494,19 +548,20 @@ fn a_refused_body_is_a_diagnostic_rather_than_a_crash() {
     // the interpreter's own lookup — `internal compiler error: no routine for file 0 proc 0`,
     // on a program `jr check` had just called clean.
     //
-    // The construct used here is a reference to an *imported constant*, which `jr-mir`'s module
-    // docs record as the one thing still refused unconditionally: its value would have to come
-    // from another file's const evaluation, the cross-body read ADR-0017 §3 keeps out. Chosen
-    // deliberately over the bug that motivated the gate — imported *enum members*, which
-    // ADR-0047 §1 fixed — so this test survives that fix rather than dying with it.
+    // The construct used here is a **`#run` inside a body**, which ADR-0016 §4 refuses: a `#run`
+    // has no value until `jr-vm` evaluates it, and only *file-level* ones are evaluated. W4 owns
+    // arbitrary `#run`, so this stays refused for several waves yet.
+    //
+    // It used to be a reference to an *imported constant*, chosen "so this test survives that fix
+    // rather than dying with it" — and **ADR-0055 was that fix**, so the construct had to change.
+    // The comment predicted its own obsolescence and the prediction came true one wave later; the
+    // lesson is that a test naming a *specific* gap outlives the gap only if the gap outlives the
+    // test, which no gap should.
     let dir = TempDir::new().unwrap();
-    let modules = dir.path().join("Widths");
-    std::fs::create_dir_all(&modules).unwrap();
-    std::fs::write(modules.join("module.jr"), "WIDTH :: 7;\n").unwrap();
     let path = dir.path().join("main.jr");
     std::fs::write(
         &path,
-        "#import \"Basic\";\n#import \"Widths\";\n\nmain :: () {\n    n := WIDTH;\n    exit(n);\n}\n",
+        "#import \"Basic\";\n\nmain :: () {\n    n := #run 7;\n    exit(n);\n}\n",
     )
     .unwrap();
 
@@ -532,6 +587,7 @@ fn a_refused_body_is_a_diagnostic_rather_than_a_crash() {
         jr_cli::cli::RunArgs {
             path,
             module_paths: vec![dir.path().to_path_buf()],
+            no_bounds_check: false,
         },
         &global,
     );

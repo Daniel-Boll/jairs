@@ -76,6 +76,9 @@ fn stmt_span(stmt: &jr_hir::Stmt) -> Span {
     use jr_hir::Stmt;
     match stmt {
         Stmt::Block(_, span)
+        | Stmt::ReturnTuple(_, span)
+        | Stmt::LocalTuple { span, .. }
+        | Stmt::AssignTuple { span, .. }
         | Stmt::Local(_, span)
         | Stmt::Item(_, span)
         | Stmt::Expr(_, span)

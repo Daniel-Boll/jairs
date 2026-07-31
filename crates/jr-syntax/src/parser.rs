@@ -29,7 +29,7 @@ use rowan::{Checkpoint, GreenNode, GreenNodeBuilder};
 use crate::code::{
     E0100, E0101, E0102, E0103, E0104, E0105, E0106, E0107, E0108, E0109, E0110, E0111, E0112,
     E0113, E0114, E0115, E0116, E0117, E0118, E0119, E0121, E0123, E0124, E0125, E0126, E0127,
-    E0199,
+    E0128, E0129, E0130, E0199,
 };
 use crate::kind::{SyntaxKind, SyntaxKind::*, SyntaxNode};
 use crate::lexer::{Token, lex};
@@ -183,6 +183,15 @@ const EXPR_START: TokenSet = TokenSet::new(&[
     // neighbours were checked here too: every other prefix form is present.
     XX_KW,
     DOT,
+    // `context` (ADR-0057 §1). Needed here as well as in `parse_primary` for the reason `CAST_KW`
+    // and `XX_KW` were: `:=` and the statement dispatcher both gate on this set, so without it
+    // `x := context.allocator;` never reaches the expression parser at all.
+    CONTEXT_KW,
+    // `null` (ADR-0060 §1), a literal. Needed here as well as in the literal arm of `parse_primary`
+    // for the same reason: without it `q := null;` reports a *parser* error ("expected an
+    // expression") before sema can give the intended E0257 ("null needs a pointer context"). The
+    // token-set trap once more, and the fifth keyword-shaped feature to meet it.
+    NULL_KW,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -320,7 +329,15 @@ impl<'src> Parser<'src> {
             None => false,
             Some(token) => match token.kind {
                 ARROW | L_BRACE => true,
-                DIRECTIVE => &self.text[self.tokens[i].range] == "#foreign",
+                // `#c_call` joins `#foreign` here (ADR-0057 §3), and omitting it was not a
+                // near-miss: `raw :: () #c_call { }` was read as a *parenthesised expression*
+                // constant, so the whole declaration collapsed into four cascading errors starting
+                // at `()`. The same shape as `TYPE_START` missing three keywords in ADR-0045 —
+                // a token-set list that decides what a construct *is*.
+                DIRECTIVE => matches!(
+                    &self.text[self.tokens[i].range],
+                    "#foreign" | "#c_call" | "#no_abc"
+                ),
                 _ => false,
             },
         }
@@ -555,6 +572,14 @@ impl<'src> Parser<'src> {
                 match text {
                     "#import" => self.parse_import_decl(),
                     "#run" => self.parse_run_decl(),
+                    // Visibility markers (ADR-0054 §1). A bare directive on its own line, taking no
+                    // argument and needing no `;` — it is a *position* in the file rather than a
+                    // declaration, so there is nothing for a terminator to end.
+                    //
+                    // `#scope_file` is deliberately **not** here: a Jairs module is one file
+                    // (ADR-0014 §1), so it would be indistinguishable from `#scope_module` and no
+                    // program could tell them apart. It stays the E0101 stray token it is today.
+                    "#scope_module" | "#scope_export" => self.parse_scope_decl(),
                     _ => {
                         // Unknown directive at top level — treat as a stray token.
                         return false;
@@ -587,6 +612,17 @@ impl<'src> Parser<'src> {
         } else {
             ""
         }
+    }
+
+    /// Parses `#scope_module` or `#scope_export` (ADR-0054 §1).
+    ///
+    /// The directive token is kept inside the node rather than folded into a flag here, so the tree
+    /// stays a faithful record of what was written and `jr-fmt` can print it back — the same reason
+    /// `parse_operator_decl` keeps its operator token.
+    fn parse_scope_decl(&mut self) {
+        self.start_node(SCOPE_DECL);
+        self.bump(); // the directive
+        self.finish_node();
     }
 
     fn parse_import_decl(&mut self) {
@@ -759,6 +795,106 @@ impl<'src> Parser<'src> {
         self.finish_node();
     }
 
+    /// Parses `q, ok := f();` and `q, ok = f();` (ADR-0052 §2).
+    ///
+    /// The target list is its own node so a consumer can find it by kind, and a `_` is kept as its
+    /// **token** inside that node rather than as a `NAME`: it is a hole recognised positionally, and
+    /// giving it a `NAME` would make it look like a binding to anything reading names (ADR-0052 §3).
+    fn parse_destructuring_stmt(&mut self) {
+        // **Trivia is flushed before the checkpoint.** A `rowan` checkpoint captures everything the
+        // builder has not yet wrapped, which includes the whitespace and comments preceding this
+        // statement — so a checkpoint taken first made the `DECL_STMT` node start at the enclosing
+        // block's `{`, and every diagnostic on the statement pointed there instead of at the
+        // statement. Visible only in a multi-line file, which is why the corpus file is one.
+        self.skip_trivia_peek();
+        self.flush_trivia();
+        let cp = self.builder.checkpoint();
+        self.start_node(TARGET_LIST);
+        loop {
+            if self.at(IDENT) {
+                // `_` lexes as an ordinary identifier, so the *token text* is what marks a discard.
+                // Checked in lowering rather than here, because the parser's job is the shape.
+                self.parse_name();
+            } else {
+                let span = self.current_span();
+                self.error(span, "expected a name or `_` in a target list", E0129);
+                break;
+            }
+            if !self.eat(COMMA) {
+                break;
+            }
+        }
+        self.finish_node();
+
+        // `:=` declares, `=` assigns. Anything else is not a destructuring statement at all, and
+        // saying so beats recovering into an expression that cannot mean anything.
+        let kind = if self.at(COLON_EQ) {
+            DECL_STMT
+        } else if self.at(EQ) {
+            ASSIGN_STMT
+        } else {
+            let span = self.current_span();
+            self.error(
+                span,
+                "expected `:=` or `=` after a target list, as in `q, ok := f();`",
+                E0129,
+            );
+            self.start_node_at(cp, ERROR);
+            self.finish_node();
+            return;
+        };
+        self.start_node_at(cp, kind);
+        self.bump(); // `:=` or `=`
+        self.parse_expr();
+        self.expect(SEMICOLON);
+        self.finish_node();
+    }
+
+    /// Parses `using q: Point;` — a local declaration carrying the promotion flag (ADR-0050 §1).
+    ///
+    /// A `VAR_DECL` like any other, with the keyword kept as a token inside it: lowering reads the
+    /// token to set `Local::using`, so the tree stays a faithful record of what was written and
+    /// `jr-fmt` can print it back. There is deliberately no `using q;` form over an
+    /// already-declared variable — that would make the set of names in scope depend on a
+    /// statement's position, a second order-sensitivity rule on top of the one locals have.
+    fn parse_using_var_decl(&mut self) {
+        self.start_node(VAR_DECL);
+        self.bump(); // `using`
+        if !self.at(IDENT) {
+            let span = self.current_span();
+            self.error(span, "expected a name after `using`", E0128);
+            self.finish_node();
+            return;
+        }
+        self.parse_name();
+        // Only the typed form makes sense: promotion needs the type's field list, and `using q := f()`
+        // would need the *inferred* type before resolution runs. Refused with a reason rather than
+        // accepted and then rejected in sema.
+        if !self.at(COLON) {
+            let span = self.current_span();
+            self.error(
+                span,
+                "a `using` declaration needs an explicit type, as in `using q: Point;`",
+                E0128,
+            );
+            self.recover_until(TokenSet::new(&[SEMICOLON]), true);
+            self.finish_node();
+            return;
+        }
+        self.bump(); // `:`
+        if self.at_set(TYPE_START) {
+            self.parse_type();
+        } else {
+            let span = self.current_span();
+            self.error(span, "expected a type after `:`", E0105);
+        }
+        if self.eat(EQ) {
+            self.parse_rhs_value();
+        }
+        self.expect(SEMICOLON);
+        self.finish_node();
+    }
+
     fn parse_rhs_value(&mut self) {
         if self.at(UNINIT) {
             self.start_node(UNINIT_EXPR);
@@ -777,6 +913,32 @@ impl<'src> Parser<'src> {
         // Optional return type
         if self.at(ARROW) {
             self.parse_ret_type();
+        }
+        // Attributes between the return type and the body: `#c_call` (ADR-0057 §3) and `#no_abc`
+        // (ADR-0058 §3).
+        //
+        // A **loop**, so the two may be written in either order. One `if` per attribute would make
+        // `#no_abc #c_call` parse and `#c_call #no_abc` not, which is an ordering rule no reader
+        // would guess and which nothing about the language needs.
+        //
+        // `#c_call`: a `#foreign` declaration does not need it, because sema makes every `#foreign`
+        // procedure implicitly `#c_call` (ADR-0001) — writing both is legal and redundant rather
+        // than an error. `#no_abc`: sema *refuses* it on a `#foreign` declaration (E0255), because a
+        // procedure with no body has no index to leave unchecked. Both are accepted here and judged
+        // there, so the diagnostic can explain itself rather than the parser reporting a syntax
+        // error about a directive that is spelled correctly.
+        loop {
+            if !self.at(DIRECTIVE) {
+                break;
+            }
+            let kind = match self.current_directive_text() {
+                "#c_call" => C_CALL_ATTR,
+                "#no_abc" => NO_ABC_ATTR,
+                _ => break,
+            };
+            self.start_node(kind);
+            self.bump();
+            self.finish_node();
         }
         // Body or foreign attribute
         match self.current() {
@@ -808,7 +970,11 @@ impl<'src> Parser<'src> {
                 if self.at(R_PAREN) {
                     break; // trailing comma
                 }
-                if !self.at(IDENT) {
+                // `using p: Point` after a comma (ADR-0050 §1). Gating on `IDENT` alone made the
+                // *second* `using` parameter end the list — so `(using a: Point, using b: Point)`
+                // reported four cascading errors. The third hand-written token gate this wave had
+                // to widen, after the struct and union field lists.
+                if !self.at(IDENT) && !self.at(USING_KW) {
                     break;
                 }
                 self.parse_param();
@@ -820,6 +986,8 @@ impl<'src> Parser<'src> {
 
     fn parse_param(&mut self) {
         self.start_node(PARAM);
+        // `using p: Point` promotes Point's fields into the body's scope (ADR-0050 §1).
+        self.eat(USING_KW);
         if self.at(IDENT) {
             self.bump(); // param name
             self.expect(COLON);
@@ -828,6 +996,18 @@ impl<'src> Parser<'src> {
             } else {
                 let span = self.current_span();
                 self.error(span, "expected a type for parameter", E0107);
+            }
+            // `= 10` — a default value (ADR-0053 §2). Any expression parses here; sema refuses
+            // anything but a literal, with a message saying why. Accepting only a literal in the
+            // parser would report "expected a literal" for `= SIZE`, which is true and unhelpful:
+            // the reader needs to know the value must be one *because* const-eval runs later.
+            if self.eat(EQ) {
+                if self.at_set(EXPR_START) {
+                    self.parse_expr();
+                } else {
+                    let span = self.current_span();
+                    self.error(span, "expected a default value after `=`", E0130);
+                }
             }
         } else {
             let span = self.current_span();
@@ -841,12 +1021,84 @@ impl<'src> Parser<'src> {
     fn parse_ret_type(&mut self) {
         self.start_node(RET_TYPE);
         self.bump(); // `->`
-        if self.at_set(TYPE_START) {
+        // `-> (s64, bool)` returns several values (ADR-0052 §1). Checked *before* `TYPE_START`,
+        // because `(` is not in that set and adding it there would make `(s64)` a legal type
+        // everywhere — which ADR-0052 §4 forbids: a results list may appear only here.
+        if self.at(L_PAREN) {
+            // `(` in return position is ambiguous: a results list `-> (s64, bool)` (ADR-0052 §1)
+            // and a procedure-pointer return `-> (s64) -> T` (ADR-0059 §3) both start with it. The
+            // `->` after the matching `)` decides, and it is the *only* thing that can — so the
+            // parser looks ahead to it rather than committing and backtracking. A proc-pointer
+            // return is a `parse_type`, which handles the `(` itself; a results list is not a type.
+            if self.arrow_follows_matching_paren() {
+                self.parse_type();
+            } else {
+                self.parse_result_list();
+            }
+        } else if self.at_set(TYPE_START) {
             self.parse_type();
         } else {
             let span = self.current_span();
             self.error(span, "expected a return type after `->`", E0109);
         }
+        self.finish_node();
+    }
+
+    /// Whether an `->` follows the `)` that closes the `(` at the cursor (ADR-0059 §3).
+    ///
+    /// The one disambiguation between a results list and a procedure-pointer return type, both of
+    /// which begin `(` in return position. Scans to the matching close paren by depth — the same
+    /// technique `looks_like_proc_signature` uses — then checks the next non-trivia token. An
+    /// unterminated `(` answers `false`, so a half-typed `-> (s64` parses as a results list and the
+    /// missing `)` is reported there rather than here.
+    fn arrow_follows_matching_paren(&mut self) -> bool {
+        debug_assert_eq!(self.current(), L_PAREN);
+        let mut depth = 0usize;
+        let mut i = self.pos;
+        while i < self.tokens.len() {
+            let kind = self.tokens[i].kind;
+            i += 1;
+            match kind {
+                L_PAREN => depth += 1,
+                R_PAREN => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if depth != 0 {
+            return false; // unterminated: let the results-list parser report the missing `)`
+        }
+        while i < self.tokens.len() && self.tokens[i].kind.is_trivia() {
+            i += 1;
+        }
+        self.tokens.get(i).is_some_and(|t| t.kind == ARROW)
+    }
+
+    /// Parses `(T, U, …)` after `->` (ADR-0052 §1).
+    ///
+    /// A one-element list parses fine and *interns* to the element itself, so `-> (T)` and `-> T`
+    /// are the same type — normalised in `jr-pool` rather than refused here, because the tree stays
+    /// a faithful record of what was written and `jr-fmt` can print it back.
+    fn parse_result_list(&mut self) {
+        self.start_node(RESULT_LIST);
+        self.bump(); // `(`
+        while !self.at(R_PAREN) && !self.at(EOF) {
+            if self.at_set(TYPE_START) {
+                self.parse_type();
+            } else {
+                let span = self.current_span();
+                self.error(span, "expected a result type", E0129);
+                break;
+            }
+            if !self.eat(COMMA) {
+                break;
+            }
+        }
+        self.expect(R_PAREN);
         self.finish_node();
     }
 
@@ -939,11 +1191,59 @@ impl<'src> Parser<'src> {
             UNION_KW => {
                 self.parse_union_type();
             }
+            L_PAREN => {
+                self.parse_proc_type();
+            }
             _ => {
                 let span = self.current_span();
                 self.error(span, "expected a type", E0111);
             }
         }
+    }
+
+    /// `(T, T) -> T` — a procedure-pointer type (ADR-0059 §3).
+    ///
+    /// The only parenthesised type in the language, so `(` in type position is unambiguously this —
+    /// unlike `(` in *return* position, where a `RESULT_LIST` and a proc-pointer type both start
+    /// with it and the `->` decides. In a type there is no results list to confuse it with, because
+    /// a results list is reachable only as a return type (ADR-0052 §4).
+    ///
+    /// The `->` is required: `(s64)` alone is not a type, and a missing arrow is E0111 rather than a
+    /// silent single-element parse, so a reader who wrote a parenthesised type meaning to write a
+    /// return type is told rather than surprised.
+    fn parse_proc_type(&mut self) {
+        self.start_node(PROC_TYPE);
+        self.start_node(PROC_TYPE_PARAMS);
+        self.expect(L_PAREN);
+        if !self.at(R_PAREN) {
+            self.parse_type();
+            while self.eat(COMMA) {
+                if self.at(R_PAREN) {
+                    break; // trailing comma
+                }
+                self.parse_type();
+            }
+        }
+        self.expect(R_PAREN);
+        self.finish_node(); // PROC_TYPE_PARAMS
+        // The arrow is **optional** (ADR-0062 §1): `(s64)` is a procedure pointer returning `void`,
+        // exactly as `f :: (n: s64) { }` returns `void` by omitting it. Requiring it made a
+        // void-returning procedure pointer *unspellable* — `-> void` is E0212 because `void` has no
+        // type name (ADR-0015 §3), and `-> ` with nothing after it is a parse error — which blocked
+        // an allocator's `free: (*u8)` half.
+        //
+        // A present arrow with nothing usable after it is still an error: that is a half-written
+        // return rather than the void form, and treating it as void would make `(s64) ->` and
+        // `(s64)` two spellings of one type.
+        if self.eat(ARROW) {
+            if self.at_set(TYPE_START) {
+                self.parse_type();
+            } else {
+                let span = self.current_span();
+                self.error(span, "expected a return type after `->`", E0111);
+            }
+        }
+        self.finish_node(); // PROC_TYPE
     }
 
     fn parse_struct_type(&mut self) {
@@ -952,7 +1252,11 @@ impl<'src> Parser<'src> {
         self.start_node(FIELD_LIST);
         self.expect(L_BRACE);
         while !self.at(R_BRACE) && !self.at(EOF) {
-            if self.at(IDENT) {
+            // `using base: Point;` embeds (ADR-0050 §1), so the loop admits the keyword as well
+            // as a bare name. Gating on `IDENT` alone made `using` inside a struct report
+            // "expected a field name" — the token-set trap this project keeps meeting, here in a
+            // hand-written loop rather than a `TokenSet`.
+            if self.at(IDENT) || self.at(USING_KW) {
                 self.parse_field();
             } else {
                 let before = self.pos;
@@ -979,7 +1283,11 @@ impl<'src> Parser<'src> {
         self.start_node(FIELD_LIST);
         self.expect(L_BRACE);
         while !self.at(R_BRACE) && !self.at(EOF) {
-            if self.at(IDENT) {
+            // `using base: Point;` embeds (ADR-0050 §1), so the loop admits the keyword as well
+            // as a bare name. Gating on `IDENT` alone made `using` inside a struct report
+            // "expected a field name" — the token-set trap this project keeps meeting, here in a
+            // hand-written loop rather than a `TokenSet`.
+            if self.at(IDENT) || self.at(USING_KW) {
                 self.parse_field();
             } else {
                 let before = self.pos;
@@ -1056,7 +1364,23 @@ impl<'src> Parser<'src> {
 
     fn parse_field(&mut self) {
         self.start_node(FIELD);
-        self.bump(); // field name (IDENT)
+        // `using base: Point;` embeds Point's fields (ADR-0050 §1). The keyword is a *prefix on the
+        // binding* rather than a statement, so it is eaten here and the rest of the field parses
+        // unchanged — which is why embedding needed no new node kind.
+        self.eat(USING_KW);
+        // **Checked, not assumed.** Before `using`, this function was only ever called with an
+        // `IDENT` current, so bumping unconditionally was safe. Admitting `using` broke that: a
+        // file truncated to `struct { using` bumped past the end of the token stream and panicked
+        // — a compiler crash on partial input, which an editor produces on every keystroke.
+        // Caught by `every_prefix_of_every_corpus_file_round_trips`, which exists for this.
+        if self.at(IDENT) {
+            self.bump(); // field name
+        } else {
+            let span = self.current_span();
+            self.error(span, "expected a field name after `using`", E0112);
+            self.finish_node();
+            return;
+        }
         self.expect(COLON);
         if self.at_set(TYPE_START) {
             self.parse_type();
@@ -1148,9 +1472,29 @@ impl<'src> Parser<'src> {
                 self.parse_continue_stmt();
                 true
             }
+            // `using q: Point;` — a local declaration that also promotes (ADR-0050 §1). Its own arm
+            // because `parse_decl` dispatches on `nth(1)` assuming the *current* token is the name,
+            // and with a `using` prefix the name has moved along by one.
+            // `_, ok := f();` — a discard in the *first* position, which the `IDENT` arm below
+            // cannot see because `_` lexes as an identifier only if written as one. It does, in
+            // Jairs, so this arm exists for symmetry rather than necessity — and is kept because a
+            // future lexer change making `_` its own token would otherwise silently lose the form.
+            USING_KW => {
+                self.start_node(DECL_STMT);
+                self.parse_using_var_decl();
+                self.finish_node();
+                true
+            }
             IDENT => {
                 // Could be: decl (name :: / name := / name :), assign stmt, or expr stmt.
                 let next = self.nth(1);
+                // **A destructuring target list** — `q, ok := f();` (ADR-0052 §2). A comma after
+                // the first name is what distinguishes it: no other statement form has one there,
+                // because Jairs has no comma operator and no multi-declaration syntax.
+                if next == COMMA {
+                    self.parse_destructuring_stmt();
+                    return true;
+                }
                 // A **loop label** is `name:` followed by `for` or `while` (ADR-0049 §2), which
                 // collides with a typed declaration `x: s64` on the first two tokens. Only the
                 // *third* tells them apart, so this looks one further rather than committing.
@@ -1314,6 +1658,18 @@ impl<'src> Parser<'src> {
         self.bump(); // `return`
         if self.at_set(EXPR_START) {
             self.parse_expr();
+            // `return a, b;` returns several values (ADR-0052 §1). The comma-separated expressions
+            // are siblings of the `RETURN_STMT` rather than a node of their own: lowering counts
+            // them, and a single expression is the ordinary case with no list to unwrap.
+            while self.eat(COMMA) {
+                if self.at_set(EXPR_START) {
+                    self.parse_expr();
+                } else {
+                    let span = self.current_span();
+                    self.error(span, "expected an expression after `,` in a return", E0129);
+                    break;
+                }
+            }
         }
         self.expect(SEMICOLON);
         self.finish_node();
@@ -1552,7 +1908,7 @@ impl<'src> Parser<'src> {
             // floats "arrive in wave W1", and W1 is where they arrived (ADR-0040). The
             // refusal is deleted rather than reworded, because a message naming a wave that
             // has happened is the plan contradicting the code.
-            INT_LITERAL | FLOAT_LITERAL | STRING_LITERAL | TRUE_KW | FALSE_KW => {
+            INT_LITERAL | FLOAT_LITERAL | STRING_LITERAL | TRUE_KW | FALSE_KW | NULL_KW => {
                 self.start_node(LITERAL_EXPR);
                 self.bump();
                 self.finish_node();
@@ -1590,17 +1946,20 @@ impl<'src> Parser<'src> {
                     self.finish_node();
                 }
             }
-            // Reserved keywords: emit a wave-specific diagnostic.
-            // `for` and `defer` are real syntax as of ADR-0049 and are handled by
-            // `parse_stmt_inner`, so only `using` is still refused here. Reaching this arm with
-            // `for` would mean one appeared in *expression* position, which is a different error.
+            // `using` is real syntax as of ADR-0050, but only as a **prefix on a binding** — a
+            // field, a parameter or a typed local. Reaching it here means one appeared in
+            // *expression* position, so the diagnostic says what it is rather than the
+            // now-false "arrives in wave W2" this arm used to print for it.
+            //
+            // No reserved keyword is left in this position: `enum`, `union`, `for`, `defer`,
+            // `cast`, `xx` and `using` have all become real, and each has its own arm. The
+            // wave-specific refusal that used to live here is gone entirely.
             USING_KW => {
                 let span = self.current_span();
-                let kw = self.current();
                 self.error(
                     span,
-                    format!("`{}` arrives in wave W2", kw.static_text().unwrap_or("?")),
-                    E0121,
+                    "`using` prefixes a declaration, so it cannot appear in an expression",
+                    E0128,
                 );
                 self.start_node(ERROR);
                 self.bump();
@@ -1610,6 +1969,14 @@ impl<'src> Parser<'src> {
             // argument is a type and Jairs has no way to pass one in a call (ADR-0037 §3).
             // A missing or malformed operand recovers rather than aborting: the node is
             // produced either way, so the rest of the expression still parses.
+            // `context` (ADR-0057 §1). A node of its own rather than a `NAME_EXPR`, so nothing
+            // reading names finds it — `context.allocator` must not look like a field access on a
+            // variable somebody declared.
+            CONTEXT_KW => {
+                self.start_node(CONTEXT_EXPR);
+                self.bump();
+                self.finish_node();
+            }
             CAST_KW => {
                 self.start_node(CAST_EXPR);
                 self.bump(); // `cast`
@@ -1666,18 +2033,6 @@ impl<'src> Parser<'src> {
                 self.bump();
                 self.finish_node();
             }
-            NULL_KW => {
-                let span = self.current_span();
-                let kw = self.current();
-                self.error(
-                    span,
-                    format!("`{}` arrives in wave W1", kw.static_text().unwrap_or("?")),
-                    E0121,
-                );
-                self.start_node(ERROR);
-                self.bump();
-                self.finish_node();
-            }
             // `&`, `|`, `^`, `<<` and `>>` are *binary* operators (ADR-0042 §1) and `~` is
             // prefix (§4), so reaching any of them here means one appeared where an operand
             // belongs — `a & & b`. Reported as a missing expression rather than as a reserved
@@ -1710,11 +2065,37 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// Parses one argument, which may be `name = value` (ADR-0053 §1).
+    ///
+    /// `IDENT` followed by `=` is the marker. Jairs has no assignment *expression*, so there is
+    /// nothing for this to be ambiguous with — an `=` inside an argument list can only be a named
+    /// argument. `==` is a different token, so `f(a == 1)` is unaffected.
+    fn parse_arg(&mut self) {
+        if self.at(IDENT) && self.nth(1) == EQ {
+            self.start_node(NAMED_ARG);
+            self.parse_name();
+            self.bump(); // `=`
+            if self.at_set(EXPR_START) {
+                self.parse_expr();
+            } else {
+                let span = self.current_span();
+                self.error(
+                    span,
+                    "expected a value after `=` in a named argument",
+                    E0130,
+                );
+            }
+            self.finish_node();
+            return;
+        }
+        self.parse_expr();
+    }
+
     fn parse_arg_list(&mut self) {
         self.start_node(ARG_LIST);
         self.bump(); // `(`
         if !self.at(R_PAREN) {
-            self.parse_expr();
+            self.parse_arg();
             while self.eat(COMMA) {
                 if self.at(R_PAREN) {
                     break; // trailing comma
@@ -1722,7 +2103,7 @@ impl<'src> Parser<'src> {
                 if !self.at_set(EXPR_START) {
                     break;
                 }
-                self.parse_expr();
+                self.parse_arg();
             }
         }
         if !self.eat(R_PAREN) {
@@ -1755,8 +2136,14 @@ impl<'src> Parser<'src> {
 /// (both arenas would have to agree where it lives), but that refusal belongs downstream: the
 /// parser's job is to produce the tree, and a missing entry here would report "expected a
 /// type" at the keyword instead.
-const TYPE_START: TokenSet =
-    TokenSet::new(&[STAR, IDENT, STRUCT_KW, ENUM_KW, FLAGS_KW, UNION_KW, L_BRACK]);
+///
+/// `L_PAREN` is the newest entry, for a procedure-pointer type `(T, T) -> T` (ADR-0059 §3). It is
+/// the token-set trap this project keeps meeting: without it, `fn: (s64) -> s64` reported "expected
+/// a type" at the `(` and the whole declaration collapsed, exactly as `#c_call` and the array
+/// keywords did before their entries were added.
+const TYPE_START: TokenSet = TokenSet::new(&[
+    STAR, IDENT, STRUCT_KW, ENUM_KW, FLAGS_KW, UNION_KW, L_BRACK, L_PAREN,
+]);
 
 /// The operators ADR-0048 §2 permits an overload for.
 ///

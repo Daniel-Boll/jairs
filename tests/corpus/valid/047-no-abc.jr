@@ -1,0 +1,108 @@
+// `#no_abc` and the bounds-check build setting (ADR-0058) — the second feature of W3.
+//
+// ADR-0003 decided in the *vertical slice* that bounds checking is a build setting carried as an
+// explicit MIR operation a pass strips, with a local opt-out. The operation landed with arrays
+// (ADR-0039); the pass and the flag never did, and PLAN.md §1.5 said "the operation exists and the
+// pass that strips it does not" for eleven waves. Both exist now.
+//
+// **This file cannot observe the interesting thing, and that is worth stating.** A stripped bounds
+// check is invisible in any program that stays in range — and a corpus file must check and run
+// cleanly, so every index here is in range. Reading `buf[9]` with the checks off would read whatever
+// is at that address, which is undefined behaviour by construction: that is what the flag buys, and
+// a test asserting what it produces would be asserting a fact about this machine's stack.
+//
+// So the evidence for the pass lives in three other places (ADR-0058 §5):
+//
+//   * `crates/jr-db/tests/optimized_mir.rs` counts `BoundsCheck` statements under each setting,
+//     which is the only *direct* evidence the pass ran;
+//   * `differential.rs` runs this file in both engines, which is what says a valid program computes
+//     the same answer either way — a build setting that changed an answer would be a miscompile;
+//   * a test asserting the check is still there by default, because a pass that always stripped
+//     would satisfy everything else.
+//
+// What this file *does* prove is the half that is observable: that `#no_abc` parses, formats,
+// checks, lowers and runs — in a procedure that indexes, alongside one that does not have the
+// directive, so the two lower differently from the same source.
+//
+// The `exit` is what gives it teeth under the differential harness: only two corpus programs print,
+// so a computation has to be made observable through an exit status.
+#import "Basic";
+
+/// Indexes with the check suppressed (ADR-0058 §3). The index comes from a **parameter**, so
+/// nothing in the mid-end can prove it in range — which is what makes this procedure's MIR
+/// genuinely different from `safe`'s below rather than identical after const-prop deleted both.
+read_fast :: (buf: [4]s64, i: s64) -> s64 #no_abc {
+    return buf[i];
+}
+
+/// The same body without the directive, so its check survives. Here to make the difference between
+/// the two a property of the *declaration* rather than of the build — a file-level reading of
+/// `#no_abc` would give these two the same MIR.
+read_safe :: (buf: [4]s64, i: s64) -> s64 {
+    return buf[i];
+}
+
+/// A `for` over an array also emits a check per element, at a second site in the lowering path
+/// (ADR-0049). `#no_abc` has to reach that one too, or the directive would work on `buf[i]` and
+/// silently not on a loop — two emission sites is how they come to disagree.
+sum_fast :: (buf: [4]s64) -> s64 #no_abc {
+    total := 0;
+    for x: buf {
+        total = total + x;
+    }
+    return total;
+}
+
+/// Both attributes on one procedure, in the order the parser accepts second. `#c_call` and
+/// `#no_abc` are independent — one is about the calling convention and the other about indexing —
+/// and writing both must be legal in either order, because an ordering rule is one no reader could
+/// guess. This also pins the formatter against reordering them.
+raw_fast :: (buf: [4]s64, i: s64) -> s64 #no_abc #c_call {
+    return buf[i];
+}
+
+main :: () {
+    n := 0;
+
+    xs: [4]s64;
+    xs[0] = 1;
+    xs[1] = 2;
+    xs[2] = 4;
+    xs[3] = 8;
+
+    // The unchecked read and the checked one must agree, in range. This is the whole safety
+    // argument for the flag: removing a check cannot change a valid program's answer.
+    if read_fast(xs, 2) == 4 {
+        n = n + 1;
+    }
+    if read_safe(xs, 2) == 4 {
+        n = n + 2;
+    }
+    if read_fast(xs, 2) == read_safe(xs, 2) {
+        n = n + 4;
+    }
+
+    // Every element, through the `for` lowering's own check site.
+    if sum_fast(xs) == 15 {
+        n = n + 8;
+    }
+
+    // `#no_abc` and `#c_call` together.
+    if raw_fast(xs, 3) == 8 {
+        n = n + 16;
+    }
+
+    // The first and last elements, which are the two a wrong bound is most likely to catch.
+    if read_fast(xs, 0) == 1 {
+        n = n + 32;
+    }
+    if read_fast(xs, 3) == 8 {
+        n = n + 64;
+    }
+
+    // Every assertion: 127.
+    if n == 127 {
+        exit(0);
+    }
+    exit(1);
+}

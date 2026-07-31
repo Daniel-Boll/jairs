@@ -101,9 +101,15 @@ impl Program {
         let (hir, lower_diags) = jr_hir::lower_file(&parsed, file, &self.interner);
         earlier.extend(lower_diags.iter().cloned());
 
-        let exports: Vec<(&str, &ItemScope)> = modules
+        // Owned, because `export_scope` now *computes* a filtered scope rather than returning a
+        // borrow of the file's own (ADR-0054 §3) — one definition of what a module exports.
+        let owned_exports: Vec<(&str, ItemScope)> = modules
             .iter()
             .map(|(name, _, module_hir, _)| (*name, module_hir.export_scope()))
+            .collect();
+        let exports: Vec<(&str, &ItemScope)> = owned_exports
+            .iter()
+            .map(|(name, scope)| (*name, scope))
             .collect();
         let (resolve, resolve_diags) = jr_hir::resolve(&hir, &exports, &self.interner);
         earlier.extend(resolve_diags.iter().cloned());

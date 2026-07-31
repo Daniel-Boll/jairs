@@ -164,13 +164,35 @@ pub struct Field {
     pub name: Symbol,
     /// The field's type.
     pub ty: PoolId,
+    /// `true` for `using base: Point;` — this field's own fields are reachable through the
+    /// enclosing struct (ADR-0050 §1).
+    ///
+    /// Carried here, on the *layout* type, purely so that field **lookup** can follow it. It
+    /// deliberately does not affect layout at all: an embedded base stays a real field at a real
+    /// offset (ADR-0050 §4), which is what lets `using` be a resolution feature and leaves
+    /// `field_offset` untouched.
+    pub using: bool,
 }
 
 impl Field {
     /// Creates a field.
     #[must_use]
     pub const fn new(name: Symbol, ty: PoolId) -> Self {
-        Self { name, ty }
+        Self {
+            name,
+            ty,
+            using: false,
+        }
+    }
+
+    /// Creates a `using`-embedded field (ADR-0050 §1).
+    #[must_use]
+    pub const fn embedded(name: Symbol, ty: PoolId) -> Self {
+        Self {
+            name,
+            ty,
+            using: true,
+        }
     }
 }
 
@@ -281,6 +303,39 @@ pub enum Item {
     ViewType {
         /// The element type.
         elem: PoolId,
+    },
+    /// The implicit context's struct type (ADR-0057 §1).
+    ///
+    /// **Compiler-declared**, so it has no `DeclId` from any file — which is why it is its own
+    /// variant rather than an `Item::StructType`, whose nominal identity *is* a declaration site
+    /// (ADR-0015 §1). The same reasoning ADR-0052 §1 used for a results aggregate: a type with no
+    /// declaration cannot key on one.
+    ///
+    /// Its fields are fixed by the compiler rather than held in the struct side table, because there
+    /// is no `DeclId` to key that table on. One field today — `allocator: s64`, a placeholder a
+    /// program can read and write so the ABI is observable, deliberately *not* an allocator protocol
+    /// (ADR-0057 §1).
+    ContextType,
+    /// The several results of a procedure returning more than one (ADR-0052 §1).
+    ///
+    /// **Structural**, keyed on the element list, because it has no declaration site: `(s64, bool)`
+    /// written in two files is one type. That is the opposite choice from [`Item::StructType`],
+    /// whose nominal `DeclId` exists so two structurally identical structs stay distinct
+    /// (ADR-0015 §1) — and the reason it is right here is that there is nothing to be distinct
+    /// *from*, since a results list is anonymous by construction.
+    ///
+    /// **Its layout is a struct's**, computed by delegating to the same function rather than
+    /// repeating it: a duplicated offset computation would be a silent wrong answer rather than a
+    /// crash, and both engines read offsets from `jr-pool` for exactly that reason (ADR-0018 §2).
+    ///
+    /// Deliberately **not** a general tuple. ADR-0052 §4 keeps it unspellable as a variable's,
+    /// parameter's or field's type: it is a transport that comes into being at a `return` and is
+    /// destructured at the call, and making it storable would raise every tuple question — literals,
+    /// equality, indexing — that ADR-0052 §1 declined to answer.
+    ResultsType {
+        /// The result types, in declaration order. Always at least two: interning normalises a
+        /// one-element list to the element itself, so there is no 1-tuple to explain.
+        elems: Vec<PoolId>,
     },
     /// A nominal enum type, keyed on its declaration site (ADR-0041 §4).
     ///
@@ -425,6 +480,10 @@ impl Item {
             | Self::TypeType
             | Self::ErrorType
             | Self::ForeignLibraryType
+            // A results list is a type, so it answers `type` like every other (ADR-0052 §1).
+            | Self::ResultsType { .. }
+            // So is the context's struct type (ADR-0057 §1).
+            | Self::ContextType
             | Self::PointerType(_)
             | Self::ArrayType { .. }
             | Self::ViewType { .. }

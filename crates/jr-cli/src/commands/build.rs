@@ -60,6 +60,10 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
     let mut search_paths = args.module_paths.clone();
     search_paths.push(crate::commands::check::bundled_module_dir());
     let search = db.set_module_search_paths(search_paths);
+    // The build setting, before any MIR query runs. ADR-0058 §2 makes it a salsa input so that
+    // setting it late would still invalidate correctly — but setting it here means no query ever
+    // runs under a value the user did not ask for, which is one fewer thing to reason about.
+    let config = db.set_build_config(!args.no_bounds_check);
 
     let text = std::fs::read_to_string(&args.path)
         .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", args.path.display()))?;
@@ -81,7 +85,7 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
         return Ok(1);
     }
 
-    let built = match build_object(&db, root, search) {
+    let built = match build_object(&db, root, search, config) {
         Ok(built) => built,
         Err(message) => {
             crate::report::error(&message);

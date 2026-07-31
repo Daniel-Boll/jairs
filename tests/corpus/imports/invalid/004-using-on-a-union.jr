@@ -1,0 +1,18 @@
+// EXPECT: E0250 — `using` on a union (ADR-0050 §5)
+//
+// ADR-0045 §6 said "no `using` on a union" when `using` did not exist, which was a statement about
+// absence rather than a decision. ADR-0050 §5 decides it on the merits and the answer is still no,
+// for a reason: a union is untagged, so exactly one field holds a valid value and nothing records
+// which — and a *promoted* `i` gives the reader no syntactic clue a union is involved, where an
+// explicit `b.i` does.
+//
+// A tagged variant type would overturn this, because a tag makes "which field is valid"
+// answerable. That is ADR-0045 §1's deferred decision, not this one.
+Bits :: union {
+    i: s64;
+    f: float64;
+}
+
+read_it :: (using b: Bits) -> s64 {
+    return i;
+}

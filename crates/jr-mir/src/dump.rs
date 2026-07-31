@@ -522,7 +522,18 @@ impl Dumper<'_> {
             },
             Item::StrValue(str_id) => format!("{:?}", self.pool.resolve_str(*str_id)),
             Item::TypeValue(ty) => format!("type({})", self.ty(*ty)),
-            Item::ProcValue { ty: _, decl } => format!("proc({decl:?})"),
+            // A procedure *value* names the same `(file, proc)` a `ProcRef` does, so it prints by
+            // the **same** convention as a direct callee — `proc{n}` in this file, `extern proc{n}`
+            // in another — and never the raw `DeclId`. Printing the `DeclId` leaked the `FileId`,
+            // which load order renumbers: one new corpus file would churn every proc-value line in
+            // the snapshot, the exact thing `proc_ref` exists to avoid (ADR-0018).
+            Item::ProcValue { ty: _, decl } => {
+                if Some(decl.file) == self.home {
+                    format!("proc{}", decl.index)
+                } else {
+                    format!("extern proc{}", decl.index)
+                }
+            }
             Item::ForeignLibraryValue(str_id) => {
                 format!("library({:?})", self.pool.resolve_str(*str_id))
             }
@@ -532,6 +543,8 @@ impl Dumper<'_> {
             | Item::BoolType
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
+            | Item::ResultsType { .. }
+            | Item::ContextType
             | Item::FloatType { .. }
             | Item::EnumType { .. }
             | Item::IntType { .. }
@@ -577,6 +590,16 @@ impl Dumper<'_> {
             },
             Item::ArrayType { elem, len } => format!("[{len}]{}", self.ty(*elem)),
             Item::ViewType { elem } => format!("[]{}", self.ty(*elem)),
+            // Spelled as the source spells it, so a snapshot shows `(s64, bool)` rather than an
+            // opaque name — and, per `AGENTS.md`, carries no `FileId` or index that load order
+            // could renumber.
+            // Spelled as the source spells it, so a snapshot reads `*Context` for the hidden
+            // parameter rather than an opaque name (ADR-0057 §1).
+            Item::ContextType => String::from("Context"),
+            Item::ResultsType { elems } => {
+                let parts: Vec<String> = elems.iter().map(|ty| self.ty(*ty)).collect();
+                format!("({})", parts.join(", "))
+            }
             Item::TypeType => String::from("type"),
             Item::ErrorType => String::from("<unknown>"),
             Item::ForeignLibraryType => String::from("<library>"),

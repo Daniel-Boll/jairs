@@ -50,7 +50,7 @@ use jr_mir::{Callees, FileMir, ImportedProcs};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
-    Db, SourceFile,
+    BuildConfig, Db, SourceFile,
     module_loader::{ModuleSearchPaths, file_hir, frontend_diagnostics, module_file, resolved},
     sema::checked,
 };
@@ -99,7 +99,12 @@ pub fn imported_procs(
         .values()
         .filter_map(|res| match res {
             Res::Imported(import, name) => Some((*import, *name)),
-            Res::Local(_) | Res::Param(_) | Res::Item(_) | Res::Error => None,
+            // A promoted name resolves through a local or a parameter, so it never names an
+            // import — and ADR-0050 §5 leaves `using` on an *imported* struct unsupported, so
+            // there is no cross-file promotion to collect here yet.
+            Res::Local(_) | Res::Param(_) | Res::Item(_) | Res::Promoted { .. } | Res::Error => {
+                None
+            }
         })
         .collect::<FxHashSet<_>>()
         .into_iter()
@@ -131,10 +136,110 @@ pub fn imported_procs(
         else {
             continue;
         };
-        out.set_parts(import, name, other_file, *proc);
+        // Whether the *callee* takes a context is decided in *its* file's HIR (ADR-0057 §3), which is
+        // the only place it is available — the importing file cannot recompute it. Carried across
+        // now, or a call to an imported `#foreign` procedure would be handed a context it does not
+        // take.
+        let callee = other_hir.procs.get(proc.index());
+        let receives_context = callee.is_some_and(|p| !(p.c_call || p.foreign.is_some()));
+        out.set_full(
+            import,
+            name,
+            jr_mir::ProcRef::new(other_file, *proc),
+            receives_context,
+        );
     }
 
     Arc::new(out)
+}
+
+/// The value of every imported **constant** a file reads (ADR-0055 §1).
+///
+/// The parallel of [`imported_procs`], deliberately built the same way from the same
+/// `(ItemId, Symbol)` pairs: ADR-0018 §5 established the "resolve across files in `jr-db`, hand
+/// `jr-mir` a flat map" shape, and a second mechanism for the same job would be a second thing to
+/// keep correct.
+///
+/// **Why this does not cycle** (ADR-0055 §3): `file_consts(B)` depends on `file_signatures(B)` and
+/// `file_hir(B)` — *not* on `checked(B)`, because ADR-0018 §3 put const-eval downstream of signatures
+/// — and on nothing in the importing file. So an edge from A's lowering to B's const-eval has no path
+/// back, and two modules importing each other is fine for the reason ADR-0014 §4 makes cycles legal.
+///
+/// The same `search_paths` are passed through, so a module's constants cannot depend on who imported
+/// it — the action at a distance ADR-0014 §3 objects to throughout.
+#[salsa::tracked(returns(clone))]
+pub fn imported_values(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+) -> Arc<jr_mir::ImportedValues> {
+    let hir = file_hir(db, file);
+    let resolve = resolved(db, file, search_paths).map;
+
+    let mut pairs: Vec<(ItemId, Symbol)> = resolve
+        .resolutions
+        .values()
+        .filter_map(|res| match res {
+            Res::Imported(import, name) => Some((*import, *name)),
+            Res::Local(_) | Res::Param(_) | Res::Item(_) | Res::Promoted { .. } | Res::Error => {
+                None
+            }
+        })
+        .collect::<FxHashSet<_>>()
+        .into_iter()
+        .collect();
+    pairs.sort_unstable();
+
+    // One `file_consts` call per imported module rather than per name, matching `imported_procs`'
+    // one-module-lookup-per-import.
+    let mut evaluated: FxHashMap<ItemId, Option<EvaluatedModule>> = FxHashMap::default();
+    let mut out = jr_mir::ImportedValues::new();
+
+    for (import, name) in pairs {
+        let entry = evaluated
+            .entry(import)
+            .or_insert_with(|| {
+                // `import_target` yields the `FileHir` but not the `SourceFile` that `file_consts`
+                // needs, so the module is looked up once more here. One extra `module_file` call per
+                // *import*, memoised by salsa and by the `evaluated` map — not per name.
+                let (_, other_hir) = import_target(db, &hir, search_paths, import)?;
+                let path = module_path_of(&hir, import)?;
+                let found = module_file(db, search_paths, path).found?;
+                let other = db.source_file_for_path(found.to_string_lossy().as_ref())?;
+                Some((
+                    other_hir,
+                    crate::consts::file_consts(db, other, search_paths).values,
+                ))
+            })
+            .clone();
+        let Some((other_hir, values)) = entry else {
+            continue;
+        };
+        let Some(item) = other_hir.scope.get(name) else {
+            continue;
+        };
+        // A *procedure* crosses as a `ProcRef` through `imported_procs`, not as a value — so only a
+        // constant with an evaluated value lands here.
+        if let Some(value) = values.item(item) {
+            out.set(import, name, value);
+        }
+    }
+
+    Arc::new(out)
+}
+
+/// One imported module's HIR and its evaluated constants, memoised per `#import` item.
+///
+/// A named type because the tuple is complex enough that clippy asks for one, and the name says what
+/// the pair is *for*: the HIR resolves a name to an `ItemId`, and the values map that id to a value.
+type EvaluatedModule = (Arc<FileHir>, Arc<jr_mir::ConstValues>);
+
+/// The module path an `#import` item names, for [`imported_values`].
+fn module_path_of(hir: &FileHir, import: ItemId) -> Option<Arc<str>> {
+    let ItemKind::Import { path, .. } = &hir.items.get(import.index())?.kind else {
+        return None;
+    };
+    Some(Arc::from(path.as_str()))
 }
 
 /// The file an `#import` item resolves to, and its [`FileId`].
@@ -201,7 +306,9 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
     let checked_file = checked(db, file, search_paths);
     let types = checked_file.types;
     let operators = checked_file.operator_calls;
+    let filled = checked_file.filled_args;
     let imports = imported_procs(db, file, search_paths);
+    let imported_constants = imported_values(db, file, search_paths);
     let consts = crate::consts::file_consts(db, file, search_paths).values;
     let interner = db.interner();
 
@@ -215,7 +322,9 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
         own.signatures.as_ref(),
         consts.as_ref(),
         imports.as_ref(),
+        imported_constants.as_ref(),
         operators.as_ref(),
+        filled.as_ref(),
         interner,
         &mut pool,
     );
@@ -246,12 +355,13 @@ pub fn dump_optimized_mir(
     db: &dyn Db,
     file: SourceFile,
     search_paths: ModuleSearchPaths,
+    config: BuildConfig,
 ) -> String {
     render(
         db,
         file,
         search_paths,
-        optimized_file_mir(db, file, search_paths),
+        optimized_file_mir(db, file, search_paths, config),
     )
 }
 
@@ -310,6 +420,7 @@ pub fn optimized_file_mir(
     db: &dyn Db,
     file: SourceFile,
     search_paths: ModuleSearchPaths,
+    config: BuildConfig,
 ) -> MirResult {
     let built = file_mir(db, file, search_paths);
     if built.gated {
@@ -369,6 +480,13 @@ pub fn optimized_file_mir(
                 // leaves this query only the decision above: *which* bodies may be
                 // rewritten. A future pass is a change in one crate, and it cannot
                 // accidentally be appended on the wrong side of the frozen check.
+                // The strip pass runs **before** the pipeline and **once** (ADR-0058 §1). Not
+                // inside the loop, because a body never grows a new `BoundsCheck`, so a second
+                // scan could only find nothing — and not after, because a stripped body has
+                // fewer statements for const-prop and DCE to work with, which is the point.
+                if !config.bounds_checks(db) {
+                    jr_mir::strip_bounds_checks(&mut body);
+                }
                 jr_mir::optimize(&mut body, &callees, &mut pool);
                 out.push(proc, Ok(body));
             }

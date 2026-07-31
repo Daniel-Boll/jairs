@@ -1,0 +1,34 @@
+// EXPECT: E0256 — a `#foreign` procedure installed into a procedure-pointer field (ADR-0062 §3)
+//
+// `context.allocator = malloc` is refused, and the *reason it gets its own diagnostic* is what this
+// file is really about. A `#foreign` procedure's type is `ContextKind::CCall` (ADR-0001) and a
+// procedure-pointer type is always `Jairs` (ADR-0059 §3), so the two are different interned types and
+// an ordinary type mismatch would report:
+//
+//     expected `(s64) -> *u8`, found `(s64) -> *u8`
+//
+// — identical text, because the difference is invisible. That is not a message a reader can act on,
+// and it is not something they could change even if they saw it: the C convention is the whole point
+// of `#foreign`. So this reuses E0256, the code ADR-0059 §5 defined for taking a `#foreign` procedure
+// as a value, because it is the same objection reached through assignment.
+//
+// The actionable answer is the wrapper, which `valid/050-allocator.jr` shows:
+//
+//     libc_alloc :: (n: s64) -> *u8 { return malloc(n); }
+//     context.allocator = libc_alloc;
+//
+// An **imported** `#foreign` procedure is used deliberately. A same-file one already reported E0256
+// before this wave; the imported case fell through to the two-identical-types mismatch, because the
+// check only looked at this file's HIR. It now asks the *type* instead, which is the thing that
+// crosses the module boundary.
+//
+// **Filed under `imports/invalid/` rather than `type-errors/`** for exactly that reason: it needs the
+// `#import` resolved to reach the case at all, and `type-errors/` files are checked with modules
+// *unresolved* on purpose (so sema stays silent about poison rather than inventing type errors). A
+// same-file version of this would test the path that already worked.
+#import "Basic";
+
+install_foreign :: () {
+    // The refusal: libc's `malloc`, straight into the context's allocator field.
+    context.allocator = malloc;
+}

@@ -1,0 +1,26 @@
+// EXPECT: E0256 — a `#foreign` procedure used as a value (ADR-0059 §5)
+//
+// Taking a procedure as a value — `f := add` — is how a procedure pointer is made (ADR-0059 §1). A
+// `#foreign` procedure's type is `ContextKind::CCall` and the VM reaches it through libffi rather
+// than a `ProcRef`, so an indirect call to one is a *second* calling convention this wave does not
+// build. It is refused at the point the value is taken.
+//
+// **Refused, not a type mismatch.** `puts` does have a procedure type, so `g := puts` would
+// otherwise type fine and fail only at the eventual indirect call — or worse, lower to a `ProcValue`
+// the VM's `ProcRef` path could not resolve. E0256 catches it where the reader wrote it, and its own
+// code lets the message say "yet" rather than reporting a type error a reader cannot act on.
+//
+// A **direct** call to a `#foreign` procedure is still legal — that is the whole point of `#foreign`
+// — so the objection is specifically to taking one as a value. The callee of a call routes through a
+// path that does not refuse; only value position does.
+
+libc :: #system_library "c";
+
+/// A `#foreign` procedure declared in *this* file, so its use resolves to a same-file item and
+/// reaches the E0256 check rather than the cross-file refusal (ADR-0059 §1) an imported one would.
+puts :: (s: *u8) -> s64 #foreign libc "puts";
+
+grab_foreign :: () {
+    // The refusal: a `#foreign` procedure taken as a value.
+    g := puts;
+}

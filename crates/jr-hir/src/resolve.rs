@@ -19,11 +19,26 @@
 //! been declared in the current scope chain. After lowering, `Expr::Name`
 //! nodes that resolved to a local already have `res = Res::Local(id)`.
 //!
-//! ## Lookup order (spec §03, ADR-0014 §3)
+//! ## Lookup order (spec §03, ADR-0014 §3, ADR-0050 §3)
 //!
-//! Innermost first: block locals → parameters → **this file's own file-scope
-//! items** → imported scopes. A file-level declaration silently shadows an
-//! imported name of the same name.
+//! Innermost first: block locals → parameters → **fields promoted by `using`** →
+//! **this file's own file-scope items** → imported scopes. A file-level
+//! declaration silently shadows an imported name of the same name.
+//!
+//! ## `using` promotion (ADR-0050)
+//!
+//! `using p: Point` puts `Point`'s field names in scope, resolving to
+//! [`Res::Promoted`] — a *path*, `p` then the field, rather than a single id.
+//! Promotion sits **below** locals and parameters deliberately: a real binding
+//! always wins, silently, exactly as a file-scope item shadows an import. The
+//! rejected alternative is argued at ADR-0050 §3 — a promoted field shadowing a
+//! local would mean adding a field to a struct silently changes what an
+//! unrelated local name means in every procedure that `using`s it.
+//!
+//! Two `using`s promoting one name is an error **at the use site** (E0250), not
+//! at the declaration, so overlapping embeds are harmless when only the
+//! qualified forms are used. That is ADR-0014 §3's ambiguity rule reused rather
+//! than a second one invented.
 //!
 //! ## Import semantics (ADR-0014 §2)
 //!
@@ -46,6 +61,8 @@
 //! | E0200 | Duplicate file-level declaration of the same name |
 //! | E0201 | Unresolved name (not a local, param, file-level item, or import) |
 //! | E0211 | Ambiguous name provided by two or more imported modules |
+//! | E0250 | A `using` on a non-struct, or a name promoted by two `using`s |
+//! | E0253 | A name an imported module declares but does not export (ADR-0054 §2) |
 //!
 //! Note: E0200 (duplicate declaration) is detected here rather than in
 //! lowering because we need to see all items before we can detect duplicates.
@@ -71,6 +88,20 @@ const E0200: &str = "E0200";
 const E0201: &str = "E0201";
 /// Ambiguous name provided by two or more imported modules.
 const E0211: &str = "E0211";
+/// A `using` that cannot promote, or a promoted name two `using`s both supply (ADR-0050).
+///
+/// Four conditions, one code, each with its own note: `using` on a type that is not a struct,
+/// `using` on a *union* (refused because untagged storage makes "which field is valid"
+/// unanswerable — ADR-0050 §5), a name promoted by two bindings, and a `using` whose type could
+/// not be resolved at all.
+const E0250: &str = "E0250";
+/// A use of a name an imported module declares but does not export (ADR-0054 §2).
+///
+/// Distinct from E0201 deliberately: the name really is absent from the imported scope, so
+/// "unresolved" would be true — and its near-name suggestion would point the reader at a spelling
+/// mistake when the actual answer is that the module's author put the declaration behind
+/// `#scope_module`.
+const E0253: &str = "E0253";
 
 // ---------------------------------------------------------------------------
 // ResolveMap
@@ -116,8 +147,11 @@ impl ResolveMap {
     }
 
     /// Returns the resolution for an expression in a given arena, if any.
+    ///
+    /// Clones rather than copies: `Res` gained a `Box` when `Res::Promoted` arrived (ADR-0050 §2),
+    /// so this is a clone for a promoted name and a cheap bitwise copy for every other variant.
     pub fn get(&self, scope: ExprScope, id: ExprId) -> Option<Res> {
-        self.resolutions.get(&(scope, id)).copied()
+        self.resolutions.get(&(scope, id)).cloned()
     }
 
     /// Returns the resolution for a top-level expression, if any.
@@ -159,6 +193,13 @@ struct ImportIndex<'a> {
     /// If a name maps to exactly one entry, it is unambiguous. If it maps to
     /// two or more, it is ambiguous (E0211 at the use site).
     by_name: FxHashMap<Symbol, Vec<(&'a str, ItemId)>>,
+    /// Names an imported module declares but does not export, and which module hid each
+    /// (ADR-0054 §2).
+    ///
+    /// Consulted only when `by_name` misses, so it costs nothing on the common path — and it is what
+    /// turns "unresolved name" into "not exported by `Shapes`", which is the difference between
+    /// sending a reader after a typo and telling them the truth.
+    hidden: FxHashMap<Symbol, &'a str>,
 }
 
 /// The result of looking up a name in the import index.
@@ -209,6 +250,7 @@ impl<'a> ImportIndex<'a> {
 
         // Build the by-name index.
         let mut by_name: FxHashMap<Symbol, Vec<(&'a str, ItemId)>> = FxHashMap::default();
+        let mut hidden: FxHashMap<Symbol, &'a str> = FxHashMap::default();
         for (mod_name, scope, import_id) in &deduped {
             for &sym in scope.names.keys() {
                 // Skip names that are shadowed by a file-level declaration.
@@ -219,12 +261,26 @@ impl<'a> ImportIndex<'a> {
                 }
                 by_name.entry(sym).or_default().push((mod_name, *import_id));
             }
+            // Names the module declares behind `#scope_module` (ADR-0054 §2). Recorded so a use of
+            // one is reported as "not exported" rather than as an unresolved name — and *not*
+            // inserted into `by_name`, because a hidden name genuinely does not resolve.
+            for &sym in &scope.hidden {
+                if hir.scope.get(sym).is_some() {
+                    continue;
+                }
+                hidden.entry(sym).or_insert(mod_name);
+            }
         }
 
         // Suppress unused-variable warning for interner when no names exist.
         let _ = interner;
 
-        Self { by_name }
+        Self { by_name, hidden }
+    }
+
+    /// The module that declares `name` behind `#scope_module`, if one does (ADR-0054 §2).
+    fn hidden_by(&self, name: Symbol) -> Option<&'a str> {
+        self.hidden.get(&name).copied()
     }
 
     /// Looks up a name in the import index.
@@ -248,12 +304,39 @@ impl<'a> ImportIndex<'a> {
 // Resolution context
 // ---------------------------------------------------------------------------
 
+/// One name a `using` binding puts in scope, and where it came from.
+///
+/// Collected per body before its statements are walked. A `Vec` rather than a map because the
+/// *ambiguity* rule needs to see every provider of a name, not just the last one (ADR-0050 §3):
+/// two `using`s promoting `x` is an error at the use site, and reporting it requires both bases.
+#[derive(Debug, Clone)]
+struct Promotion {
+    /// The promoted field's name.
+    name: Symbol,
+    /// The binding the field is reached through — a `Res::Local` or `Res::Param`.
+    base: Res,
+    /// Where the `using` was written, for the ambiguity diagnostic's note.
+    span: Span,
+}
+
 struct ResolveCtx<'a> {
     hir: &'a FileHir,
     interner: &'a Interner,
     import_index: ImportIndex<'a>,
     diags: Diagnostics,
     map: ResolveMap,
+    /// Names promoted into the scope currently being resolved (ADR-0050 §3).
+    ///
+    /// A stack, pushed as a `using` binding comes into scope and truncated when its block ends —
+    /// so a `using` local promotes only from its declaration onward and only within its block,
+    /// which is the same order-sensitivity ordinary locals have. Resolving the whole body against
+    /// one flat set was the simpler option and it was rejected: it would make a promoted name
+    /// visible *above* the `using` that introduces it, which is the only place in the language a
+    /// name's visibility would not be position-dependent.
+    ///
+    /// A parameter's promotions are pushed once for the whole body, because a parameter is in
+    /// scope throughout it.
+    promotions: Vec<Promotion>,
 }
 
 impl<'a> ResolveCtx<'a> {
@@ -269,7 +352,233 @@ impl<'a> ResolveCtx<'a> {
             import_index,
             diags: Diagnostics::new(),
             map: ResolveMap::new(),
+            promotions: Vec::new(),
         }
+    }
+
+    // -------------------------------------------------------------------
+    // `using` promotion (ADR-0050)
+    // -------------------------------------------------------------------
+
+    /// The fields a `using` binding of type `ty` promotes, or `None` with a diagnostic raised.
+    ///
+    /// Only a **struct** has fields to promote. A union is refused on its own grounds (ADR-0050 §5):
+    /// it is untagged, so exactly one field holds a valid value and nothing records which — and a
+    /// promoted `f` gives the reader no syntactic clue a union is involved, where an explicit `u.f`
+    /// does. That is a reason rather than an absence, which is what ADR-0045 §6 left open.
+    fn using_fields(&mut self, ty: Option<crate::hir::TypeRefId>, span: Span) -> Vec<Symbol> {
+        let Some(ty_id) = ty else {
+            // The parser refuses a `using` with no type (E0128), so reaching here means the type
+            // failed to lower. Already reported; stay quiet rather than doubling up.
+            return Vec::new();
+        };
+        let Some(name) = self.type_ref_name_in(&self.hir.type_refs, ty_id) else {
+            self.diags.push(
+                Diagnostic::error(span, "a `using` declaration must name a struct type")
+                    .with_code(E0250)
+                    .with_label(Label::with_message(span, "this is not a named type"))
+                    .with_note(
+                        "`using` promotes a struct's fields into scope, so it needs a type that has fields",
+                    ),
+            );
+            return Vec::new();
+        };
+        self.fields_of_named_struct(name, span)
+    }
+
+    /// The field names of the struct `name` denotes, with every refusal reported (ADR-0050 §5).
+    ///
+    /// Shared by the parameter and local paths so the two cannot disagree about what `using` may
+    /// promote — the "teach the shared layer, not each consumer" rule this project keeps relearning.
+    fn fields_of_named_struct(&mut self, name: Symbol, span: Span) -> Vec<Symbol> {
+        // Only this file's own structs, deliberately: promoting an *imported* struct's fields needs
+        // the other file's HIR, which this pass does not have (it receives `ItemScope`s, which map
+        // names to ids and carry no field lists). Recorded as owed in ADR-0050's consequences
+        // rather than silently resolving to nothing.
+        let Some(item_id) = self.hir.scope.get(name) else {
+            let text = self.interner.resolve(name);
+            // A builtin type name and an imported struct both land here, and they want different
+            // advice: one can never work, the other is a gap. Telling a user that `s64` "is not
+            // supported yet" would promise a future where `using n: s64` means something.
+            // Spelled out rather than asked of `jr-pool`: `jr-hir` does not depend on it and
+            // should not start — the layering runs the other way. The cost is that a *new*
+            // builtin type name has to be added here too, which is why the list is exhaustive
+            // over the tower rather than a prefix test.
+            let builtin = matches!(
+                text,
+                "s8" | "s16"
+                    | "s32"
+                    | "s64"
+                    | "u8"
+                    | "u16"
+                    | "u32"
+                    | "u64"
+                    | "bool"
+                    | "string"
+                    | "float32"
+                    | "float64"
+                    | "void"
+            );
+            let mut diag =
+                Diagnostic::error(span, format!("cannot `using` `{text}`: it is not a struct"))
+                    .with_code(E0250)
+                    .with_label(Label::with_message(span, "not a struct"));
+            diag = if builtin {
+                diag.with_note("`using` promotes a struct's fields, and a builtin type has none")
+            } else {
+                diag.with_note(
+                    "`using` on a struct imported from another module is not supported yet",
+                )
+            };
+            self.diags.push(diag);
+            return Vec::new();
+        };
+        match &self.hir.items[item_id.index()].kind {
+            ItemKind::Const {
+                value: ConstValue::Struct(struct_id),
+                ..
+            } => self.hir.structs[struct_id.index()]
+                .fields
+                .iter()
+                .map(|f| f.name)
+                .collect(),
+            ItemKind::Const {
+                value: ConstValue::Union(_),
+                ..
+            } => {
+                let text = self.interner.resolve(name);
+                self.diags.push(
+                    Diagnostic::error(span, format!("cannot `using` the union `{text}`"))
+                        .with_code(E0250)
+                        .with_label(Label::with_message(span, "a union's fields cannot be promoted"))
+                        .with_note(
+                            "a union is untagged, so exactly one field holds a valid value and nothing records which",
+                        )
+                        .with_note("write `u.field` instead, so the reader can see a union is involved"),
+                );
+                Vec::new()
+            }
+            ItemKind::Const { .. }
+            | ItemKind::Import { .. }
+            | ItemKind::Var { .. }
+            | ItemKind::Run { .. } => {
+                let text = self.interner.resolve(name);
+                self.diags.push(
+                    Diagnostic::error(span, format!("cannot `using` `{text}`: it is not a struct"))
+                        .with_code(E0250)
+                        .with_label(Label::with_message(span, "not a struct"))
+                        .with_note(
+                            "`using` promotes a struct's fields, so only a struct can be used",
+                        ),
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// [`Self::using_fields`] for a **local**, whose type annotation is in the body's arena.
+    ///
+    /// A separate entry point rather than a flag, because the arena to read is decided by *where
+    /// the id came from* and nothing in a `TypeRefId` records which — `Body::type_refs`' own doc
+    /// comment says so, and both arenas start at index 0. Reading the wrong one would silently
+    /// resolve to a different type's fields, which is precisely the class of silent wrong answer
+    /// `AGENTS.md` names.
+    fn using_fields_in_body(
+        &mut self,
+        body: BodyId,
+        ty: Option<crate::hir::TypeRefId>,
+        span: Span,
+    ) -> Vec<Symbol> {
+        let Some(ty_id) = ty else {
+            return Vec::new();
+        };
+        let Some(name) = self.type_ref_name_in(&self.hir.bodies[body.index()].type_refs, ty_id)
+        else {
+            self.diags.push(
+                Diagnostic::error(span, "a `using` declaration must name a struct type")
+                    .with_code(E0250)
+                    .with_label(Label::with_message(span, "this is not a named type"))
+                    .with_note(
+                        "`using` promotes a struct's fields into scope, so it needs a type that has fields",
+                    ),
+            );
+            return Vec::new();
+        };
+        self.fields_of_named_struct(name, span)
+    }
+
+    /// The name a `TypeRef` denotes, following pointers, in an explicit arena.
+    ///
+    /// The arena is a parameter rather than assumed, because a local's annotation lives in the
+    /// body's `type_refs` and a parameter's in the file's, and both start at index 0 — so a
+    /// `TypeRefId` alone cannot say which. Passing it in makes the choice visible at each call.
+    ///
+    /// Pointers are followed so that `using p: *Point` promotes too — the same auto-deref `a.b`
+    /// already does (ADR-0050 §1), so the two spellings agree about what a field access means.
+    fn type_ref_name_in(
+        &self,
+        arena: &[crate::hir::TypeRef],
+        mut ty: crate::hir::TypeRefId,
+    ) -> Option<Symbol> {
+        loop {
+            match arena.get(ty.index())? {
+                crate::hir::TypeRef::Name(sym) => return Some(*sym),
+                crate::hir::TypeRef::Pointer(inner) => ty = *inner,
+                crate::hir::TypeRef::Array { .. }
+                | crate::hir::TypeRef::View { .. }
+                // A `using` of a results list is unreachable — ADR-0052 §4 keeps one out of every
+                // position but a return type — so this names no struct.
+                | crate::hir::TypeRef::Results(_)
+                // A `using fn: (s64) -> s64` is refused: a procedure-pointer type has no fields to
+                // promote, so it names no struct — the same answer as a view or an array.
+                | crate::hir::TypeRef::Proc { .. }
+                | crate::hir::TypeRef::Struct(_)
+                | crate::hir::TypeRef::Union(_)
+                | crate::hir::TypeRef::Enum(_)
+                | crate::hir::TypeRef::Error => return None,
+            }
+        }
+    }
+
+    /// Looks a name up among the promotions currently in scope.
+    ///
+    /// Returns the innermost single match. Two providers at any depth is E0250 **at the use site**,
+    /// which is ADR-0014 §3's ambiguity rule reused verbatim: overlapping promotions are harmless
+    /// as long as the ambiguous name is never referenced.
+    fn lookup_promotion(&mut self, name: Symbol, span: Span) -> Option<Res> {
+        let matches: Vec<&Promotion> = self
+            .promotions
+            .iter()
+            .rev()
+            .filter(|p| p.name == name)
+            .collect();
+        let first = matches.first()?;
+        // Innermost wins over an outer one — a `using` local shadows a `using` parameter, matching
+        // how locals shadow parameters. Ambiguity is only among promotions at the *same* depth,
+        // which is what equal spans of origin cannot distinguish, so the rule used here is: more
+        // than one provider *anywhere* in scope for a name that is actually used is ambiguous.
+        if matches.len() > 1 {
+            let text = self.interner.resolve(name);
+            let mut diag = Diagnostic::error(
+                span,
+                format!("`{text}` is promoted by more than one `using`"),
+            )
+            .with_code(E0250)
+            .with_label(Label::with_message(
+                span,
+                "which one is meant is not decidable",
+            ));
+            for p in &matches {
+                diag = diag.with_label(Label::with_message(p.span, "promoted here"));
+            }
+            diag = diag.with_note("write the qualified form, as in `a.x`, to say which is meant");
+            self.diags.push(diag);
+            return Some(Res::Error);
+        }
+        Some(Res::Promoted {
+            base: Box::new(first.base.clone()),
+            field: name,
+        })
     }
 
     /// Resolve a name to a `Res`, checking file scope then imports.
@@ -277,12 +586,24 @@ impl<'a> ResolveCtx<'a> {
     /// Emits E0201 (unresolved) or E0211 (ambiguous) as appropriate.
     /// Returns `Res::Error` on failure so callers can continue resolving.
     fn resolve_name(&mut self, name: Symbol, span: Span) -> Res {
-        // 1. Check file-level scope first (shadows imports, ADR-0014 §3).
+        // 1. Fields promoted by a `using` in scope (ADR-0050 §3).
+        //
+        // Reaching this function at all means lowering did *not* bind the name to a local or a
+        // parameter, so those two have already won — which is the "a real binding always wins,
+        // silently" half of §3, enforced by where this check sits rather than by a rule.
+        //
+        // Promotion is checked *before* file items so that a promoted field beats a same-named
+        // constant: the field is the nearer scope, matching how a local beats a file item.
+        if let Some(res) = self.lookup_promotion(name, span) {
+            return res;
+        }
+
+        // 2. Check file-level scope (shadows imports, ADR-0014 §3).
         if let Some(item_id) = self.hir.scope.get(name) {
             return Res::Item(item_id);
         }
 
-        // 2. Check the import index.
+        // 3. Check the import index.
         match self.import_index.lookup(name) {
             Some(Ok((import_id, sym))) => Res::Imported(import_id, sym),
             Some(Err(providers)) => {
@@ -312,8 +633,25 @@ impl<'a> ResolveCtx<'a> {
                 Res::Error
             }
             None => {
-                // Not found anywhere.
                 let name_text = self.interner.resolve(name);
+                // **An imported module may declare this name and not export it** (ADR-0054 §2). The
+                // name genuinely does not resolve, so E0201 would be *true* — and it would offer a
+                // near-name suggestion and send the reader hunting a typo that is not there. The
+                // difference between "you misspelled this" and "the author hid this" is the whole
+                // value of the diagnostic.
+                if let Some(module) = self.import_index.hidden_by(name) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            format!("`{name_text}` is not exported by `{module}`"),
+                        )
+                        .with_code(E0253)
+                        .with_note("it is declared behind `#scope_module`")
+                        .with_help("remove the `#scope_module`, or move the declaration above it"),
+                    );
+                    return Res::Error;
+                }
+                // Not found anywhere.
                 let diag = Diagnostic::error(span, format!("unresolved name `{name_text}`"))
                     .with_code(E0201);
                 self.diags.push(diag);
@@ -340,6 +678,39 @@ impl<'a> ResolveCtx<'a> {
             let body_id = BodyId::from_usize(i);
             self.resolve_body(body_id);
         }
+    }
+
+    /// The `using` parameters of the procedure owning `body`, as promotions.
+    ///
+    /// A `Body` does not point back to its `Proc` — the arenas are independent — so this scans the
+    /// procedure arena for the one whose `body` matches. Bodies are few per file and this runs once
+    /// per body, so the quadratic shape is not worth a reverse index; if it ever is, the index
+    /// belongs on `FileHir` where lowering can fill it in for free.
+    fn param_promotions(&mut self, body: BodyId) -> Vec<Promotion> {
+        let owner = self
+            .hir
+            .procs
+            .iter()
+            .position(|p| p.body == Some(body))
+            .map(|i| self.hir.procs[i].clone());
+        let Some(proc) = owner else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (index, param) in proc.params.iter().enumerate() {
+            if !param.using {
+                continue;
+            }
+            let base = Res::Param(crate::hir::ParamId::from_usize(index));
+            for field in self.using_fields(param.ty, param.name_span) {
+                out.push(Promotion {
+                    name: field,
+                    base: base.clone(),
+                    span: param.name_span,
+                });
+            }
+        }
+        out
     }
 
     fn check_duplicates(&mut self) {
@@ -391,7 +762,7 @@ impl<'a> ResolveCtx<'a> {
                     let resolved = self.resolve_name(name, span);
                     self.map.insert(ExprScope::TopLevel, id, resolved);
                 } else {
-                    self.map.insert(ExprScope::TopLevel, id, *res);
+                    self.map.insert(ExprScope::TopLevel, id, res.clone());
                 }
             }
             Expr::Binary { lhs, rhs, .. } => {
@@ -449,6 +820,10 @@ impl<'a> ResolveCtx<'a> {
             // member is found in an enum sema picks from the context type (ADR-0046 §3). Left
             // unresolved deliberately rather than resolved to `Res::Error`, which would read as
             // a failed lookup.
+            // `context` is a *keyword*, so there is nothing to resolve — and deliberately no
+            // `ResolveMap` entry, or it would look like a name reference to anything reading that map
+            // (ADR-0057 §1, the reason ADR-0049 §2 kept a loop label out too).
+            Expr::Context(_) => {}
             Expr::Member { .. } => {}
             Expr::Run(inner, _) => {
                 let inner = *inner;
@@ -460,7 +835,12 @@ impl<'a> ResolveCtx<'a> {
 
     fn resolve_body(&mut self, body_id: BodyId) {
         let root = self.hir.bodies[body_id.index()].root;
+        // A parameter is in scope for the whole body, so its promotions are pushed once around it.
+        // The stack is cleared rather than truncated because bodies do not nest.
+        self.promotions.clear();
+        self.promotions = self.param_promotions(body_id);
         self.resolve_body_stmt(body_id, root);
+        self.promotions.clear();
     }
 
     fn resolve_body_stmt(&mut self, body_id: BodyId, stmt_id: StmtId) {
@@ -468,14 +848,57 @@ impl<'a> ResolveCtx<'a> {
         let stmt = self.hir.bodies[body_id.index()].stmts[stmt_id.index()].clone();
         match stmt {
             Stmt::Block(stmts, _) => {
+                // A `using` local promotes only until its block ends, so the stack is truncated
+                // back to its depth on the way out. That is what makes promotion order-sensitive
+                // in the same way an ordinary local is.
+                let depth = self.promotions.len();
                 for sid in stmts {
                     self.resolve_body_stmt(body_id, sid);
                 }
+                self.promotions.truncate(depth);
             }
             Stmt::Local(local_id, _) => {
                 let local = self.hir.bodies[body_id.index()].locals[local_id.index()].clone();
                 if let Some(init) = local.init {
                     self.resolve_body_expr(body_id, init);
+                }
+                // Pushed *after* the initialiser is resolved, so `using p: Point = p;` does not
+                // see its own promotions — the same reason a local is not in scope in its own
+                // initialiser.
+                if local.using {
+                    // A local's type annotation lives in the *body's* arena, not the file's
+                    // (see `Body::type_refs`), so this cannot share `using_fields` with the
+                    // parameter path — which reads `FileHir::type_refs`. Two arenas that both
+                    // start at 0 is exactly the hazard `Body::type_refs`' doc comment warns about.
+                    let fields = self.using_fields_in_body(body_id, local.ty, local.name_span);
+                    let base = Res::Local(local_id);
+                    for field in fields {
+                        self.promotions.push(Promotion {
+                            name: field,
+                            base: base.clone(),
+                            span: local.name_span,
+                        });
+                    }
+                }
+            }
+            // The call is resolved; the *targets* are locals lowering already bound, and a `_`
+            // discard resolves to nothing at all — which is the whole point of making it a hole
+            // rather than a binding (ADR-0052 §3).
+            Stmt::LocalTuple { call, .. } => {
+                self.resolve_body_expr(body_id, call);
+            }
+            // Here the targets *are* expressions — places being assigned to — so each present one
+            // is resolved. A `None` is a discard and has nothing to resolve.
+            Stmt::AssignTuple { targets, call, .. } => {
+                for target in targets.into_iter().flatten() {
+                    self.resolve_body_expr(body_id, target);
+                }
+                self.resolve_body_expr(body_id, call);
+            }
+            // Each returned expression is resolved; there is no target list here, so nothing else.
+            Stmt::ReturnTuple(exprs, _) => {
+                for expr in exprs {
+                    self.resolve_body_expr(body_id, expr);
                 }
             }
             Stmt::Item(_, _) => {}
@@ -570,6 +993,8 @@ impl<'a> ResolveCtx<'a> {
             Expr::Autocast { operand, .. } => {
                 self.resolve_body_expr(body_id, operand);
             }
+            // Nothing to resolve; see the top-level arm above.
+            Expr::Context(_) => {}
             Expr::Member { .. } => {}
             Expr::Run(inner, _) => {
                 self.resolve_body_expr(body_id, inner);

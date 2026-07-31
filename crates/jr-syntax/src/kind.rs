@@ -103,7 +103,13 @@ pub enum SyntaxKind {
     CAST_KW,
     /// `xx` (autocast) — reserved, wave W1.
     XX_KW,
-    /// `null` — reserved, wave W1.
+    /// `null` — real syntax as of ADR-0060, a context-typed pointer literal.
+    ///
+    /// It stays in this block, like `cast` and `enum` before it, rather than moving out beside
+    /// `FLAGS_KW`: it *was* reserved, so [`SyntaxKind::is_reserved_keyword`]'s range still ends here.
+    /// The predicate now means "in the historical reserved block" rather than "refused" — every
+    /// keyword in the block is implemented, and `null` was the last. The parser has no `NULL_KW`
+    /// refusal arm any more; it parses as a `LITERAL_EXPR`.
     NULL_KW,
     /// `enum_flags` — real syntax as of ADR-0043.
     ///
@@ -112,6 +118,13 @@ pub enum SyntaxKind {
     /// the reserved block would mean immediately having to remember to exclude it — the trap
     /// `cast` and `enum` both walked into from the other side.
     FLAGS_KW,
+    /// `context` — real syntax as of ADR-0057.
+    ///
+    /// Placed **after** `NULL_KW` like [`SyntaxKind::FLAGS_KW`] and [`SyntaxKind::OPERATOR_KW`],
+    /// which puts it *outside* [`SyntaxKind::is_reserved_keyword`]'s range: it was never reserved, so
+    /// adding it to that block would mean immediately having to remember to exclude it — the trap
+    /// `cast`, `enum`, `union`, `xx`, `for`, `defer` and `using` each walked into from the other side.
+    CONTEXT_KW,
     /// `operator` — real syntax as of ADR-0048.
     ///
     /// Placed **after** `NULL_KW`, like `FLAGS_KW`, which puts it *outside*
@@ -304,6 +317,18 @@ pub enum SyntaxKind {
     /// `TypeRef::Array`'s `len: None` already means "the length was not a usable literal"
     /// (ADR-0039 §3a) — so a shared node would make a view indistinguishable from that error.
     VIEW_TYPE,
+    /// `(T, T) -> T` — a procedure-pointer type (ADR-0059 §3).
+    ///
+    /// Holds a `PROC_TYPE_PARAMS` node then the return type. Distinct from a `RESULT_LIST`, which is
+    /// also `(…)`: the `->` is what tells them apart, and the parser commits only after it has seen
+    /// whether an arrow follows the closing `)`. A results list has no return type, so sharing the
+    /// node would make a consumer ask which of the two it really is.
+    PROC_TYPE,
+    /// The parameter-type list of a `PROC_TYPE`, holding zero or more type nodes.
+    ///
+    /// Its own node so the return type — the last type child of a `PROC_TYPE` — is not mistaken for
+    /// a parameter, which a flat list of type children would allow.
+    PROC_TYPE_PARAMS,
     /// `struct { ... }`
     STRUCT_TYPE,
     /// `union { ... }` (ADR-0045).
@@ -320,6 +345,54 @@ pub enum SyntaxKind {
     ENUM_TYPE,
     /// The member list of an `enum`.
     MEMBER_LIST,
+    /// A `#c_call` attribute on a procedure, opting out of the implicit context (ADR-0057 §3).
+    ///
+    /// Its own node rather than a bare token so `jr-fmt` finds it by kind and lowering reads it the
+    /// way it reads `FOREIGN_ATTR` — every directive lexes as one `DIRECTIVE` token, so the node is
+    /// what distinguishes them.
+    C_CALL_ATTR,
+    /// A `#no_abc` attribute on a procedure, suppressing its bounds checks (ADR-0058 §3).
+    ///
+    /// Its own node beside `C_CALL_ATTR` rather than one shared `ATTR` kind carrying the directive
+    /// text. Two kinds means a consumer that handles one and forgets the other is a *missing arm*
+    /// rather than a string comparison that silently falls through — and `jr-fmt` has lost a
+    /// construct in seven of the last eight waves by exactly that route.
+    ///
+    /// **On the procedure, not on the index.** ADR-0003 said the opt-out would be per-index;
+    /// ADR-0058 §3 amends that, because a per-index flag has to reach `Projection::Index` through
+    /// every one of the eleven passes and back ends that match on a projection, and a flag some of
+    /// them ignore is this project's first named failure mode.
+    NO_ABC_ATTR,
+    /// The `context` keyword used as an expression (ADR-0057 §1).
+    ///
+    /// Its own kind rather than a `NAME_EXPR`, because `context` is a keyword and not a name — a
+    /// consumer reading names must not find it, or `context.allocator` would look like a field access
+    /// on a variable somebody declared.
+    CONTEXT_EXPR,
+    /// A `#scope_module` or `#scope_export` visibility marker (ADR-0054 §1).
+    ///
+    /// A node rather than a bare token so that `jr-fmt` can find it by kind and lowering can read
+    /// *which* directive it is from the token inside — the same shape `IMPORT_DECL` uses, and for
+    /// the same reason: every directive lexes as one `DIRECTIVE` token.
+    SCOPE_DECL,
+    /// A named argument at a call site: the `b = 2` of `f(1, b = 2)` (ADR-0053 §1).
+    ///
+    /// Its own node rather than an `ASSIGN_STMT`-shaped expression, because the two mean different
+    /// things and sharing a kind would make `f(a = 1)` indistinguishable from an assignment used as
+    /// an argument — which Jairs does not have.
+    NAMED_ARG,
+    /// A parenthesised result list after `->`: `(s64, bool)` (ADR-0052 §1).
+    ///
+    /// Its own node rather than a `PAREN_EXPR` in type position, because the two are different
+    /// things that happen to share brackets — and a consumer finding a `RESULT_LIST` by kind
+    /// knows it has several types without inspecting what is inside.
+    RESULT_LIST,
+    /// A destructuring target list: the `q, ok` of `q, ok := f();` (ADR-0052 §2).
+    ///
+    /// Holds a `NAME` per target, and an `UNDERSCORE` token for each discarded position — which is
+    /// why a discard needs no `NAME`: it is a *hole*, recognised positionally, and never becomes a
+    /// name anything can resolve (ADR-0052 §3).
+    TARGET_LIST,
     /// One enum member: `RED;` or `NOT_FOUND :: 404;`.
     ///
     /// Its own kind rather than reusing `FIELD`: a field has a *type* and a member has an
@@ -529,6 +602,7 @@ impl SyntaxKind {
             "enum" => Self::ENUM_KW,
             "enum_flags" => Self::FLAGS_KW,
             "operator" => Self::OPERATOR_KW,
+            "context" => Self::CONTEXT_KW,
             "union" => Self::UNION_KW,
             "for" => Self::FOR_KW,
             "defer" => Self::DEFER_KW,
@@ -559,6 +633,7 @@ impl SyntaxKind {
             Self::ENUM_KW => "enum",
             Self::FLAGS_KW => "enum_flags",
             Self::OPERATOR_KW => "operator",
+            Self::CONTEXT_KW => "context",
             Self::UNION_KW => "union",
             Self::FOR_KW => "for",
             Self::DEFER_KW => "defer",

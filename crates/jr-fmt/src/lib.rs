@@ -278,6 +278,21 @@ impl Formatter {
             VAR_DECL => self.format_var_decl(node),
             IMPORT_DECL => self.format_import_decl(node),
             RUN_DECL => self.format_run_decl(node),
+            // A visibility marker (ADR-0054 §1). **It survived without this arm**, through the
+            // raw-text fallback below — which round-trips and stops *canonicalising*, the trap
+            // ADR-0048 recorded when `operator   +   ::` passed through unchanged. An explicit arm
+            // emits the directive alone on its line whatever the node contains.
+            SCOPE_DECL => {
+                self.emit_indent();
+                if let Some(directive) = node
+                    .children_with_tokens()
+                    .filter_map(|e| e.into_token())
+                    .find(|t| t.kind() == DIRECTIVE)
+                {
+                    self.emit(directive.text());
+                }
+                self.newline();
+            }
             _ => {
                 self.emit_indent();
                 self.emit(&node.text().to_string());
@@ -365,6 +380,21 @@ impl Formatter {
 
     fn format_var_decl(&mut self, node: &SyntaxNode) {
         self.emit_indent();
+        self.emit_using(node);
+        // A destructuring declaration — `q, ok := f();` (ADR-0052 §2). The parser reuses `VAR_DECL`
+        // for it, so the *presence* of a target list is what distinguishes the two forms here, as
+        // it is in lowering.
+        if let Some(list) = node.children().find(|n| n.kind() == TARGET_LIST) {
+            self.format_target_list(&list);
+            self.emit(" := ");
+            if let Some(expr) = node.children().find(|n| is_expr_kind(n.kind())) {
+                self.format_expr(&expr);
+            }
+            self.emit_trailing_comment(node);
+            self.emit(";");
+            self.newline();
+            return;
+        }
         let name = node
             .children()
             .find(|n| n.kind() == NAME)
@@ -442,8 +472,36 @@ impl Formatter {
         }
         if let Some(ret) = node.children().find(|n| n.kind() == RET_TYPE) {
             self.emit(" -> ");
-            if let Some(ty) = ret.children().find(|n| is_type_kind(n.kind())) {
+            // `-> (s64, bool)` (ADR-0052 §1). A `RESULT_LIST` is **not** a type node, so
+            // `is_type_kind` does not find it — and without this arm the formatter emitted
+            // `-> ` with nothing after it, deleting the whole result list. Fifth consecutive
+            // wave for this trap, and the second where no *kind predicate* was missing: the
+            // list is its own node and the emitter simply had no case for it.
+            if let Some(list) = ret.children().find(|n| n.kind() == RESULT_LIST) {
+                self.format_result_list(&list);
+            } else if let Some(ty) = ret.children().find(|n| is_type_kind(n.kind())) {
                 self.format_type(&ty);
+            }
+        }
+        // `#c_call` (ADR-0057 §3), before the body. Deleting it changed what the program *means* — a
+        // `#c_call` procedure with the attribute dropped would silently start taking a context and
+        // its callers would be recompiled against a different ABI. Seventh consecutive wave for this
+        // trap, and the worst kind: not lost formatting but a lost calling convention.
+        // Emitted in **source order**, not in a fixed order of the two kinds. The parser accepts
+        // `#c_call #no_abc` and `#no_abc #c_call` (either order is legal, because an ordering rule
+        // would be one no reader could guess), so a formatter that emitted `#c_call` first would
+        // *reorder* one of them. Reordering is not lost source, but it means `jr fmt` is not
+        // idempotent on the input it did not choose — and gate 5 would fail on a corpus file
+        // written the other way round.
+        for attr in node.children() {
+            match attr.kind() {
+                C_CALL_ATTR => self.emit(" #c_call"),
+                // `#no_abc` (ADR-0058 §3). Eighth consecutive wave for this trap, and this one is
+                // the *safe* direction to lose: dropping it restores a bounds check, so the program
+                // gets slower rather than unsound. `#c_call` above is the opposite — dropping that
+                // silently changes a calling convention.
+                NO_ABC_ATTR => self.emit(" #no_abc"),
+                _ => {}
             }
         }
         if let Some(body) = node.children().find(|n| n.kind() == BLOCK) {
@@ -471,6 +529,7 @@ impl Formatter {
     }
 
     fn format_param(&mut self, node: &SyntaxNode) {
+        self.emit_using(node);
         if let Some(name_tok) = node
             .children_with_tokens()
             .filter_map(|e| e.into_token())
@@ -481,6 +540,14 @@ impl Formatter {
         self.emit(": ");
         if let Some(ty) = node.children().find(|n| is_type_kind(n.kind())) {
             self.format_type(&ty);
+        }
+        // `= 10` — a default value (ADR-0053 §2). **Sixth consecutive wave** for this trap: without
+        // this the formatter deleted every default, turning a callable `f(1)` into an arity error.
+        // That is a change in what the program *means*, like ADR-0050's deleted `using` and
+        // ADR-0052's truncated `return a, b;`.
+        if let Some(default) = node.children().find(|n| is_expr_kind(n.kind())) {
+            self.emit(" = ");
+            self.format_expr(&default);
         }
     }
 
@@ -696,7 +763,25 @@ impl Formatter {
         self.newline();
     }
 
+    /// Emits `using ` when the node carries the keyword (ADR-0050 §1).
+    ///
+    /// Shared by the field, parameter and local emitters because dropping it is not a cosmetic
+    /// loss: `using p: Point` formatted as `p: Point` **changes what the program means** — every
+    /// promoted bare name in the body stops resolving. The formatter has deleted a construct in
+    /// four consecutive waves now (`cast`, `xx`, `for`/`defer`, and this), so the three call sites
+    /// share one helper rather than repeating a condition that can be forgotten at one of them.
+    fn emit_using(&mut self, node: &SyntaxNode) {
+        if node
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .any(|t| t.kind() == USING_KW)
+        {
+            self.emit("using ");
+        }
+    }
+
     fn format_field(&mut self, node: &SyntaxNode) {
+        self.emit_using(node);
         if let Some(name_tok) = node
             .children_with_tokens()
             .filter_map(|e| e.into_token())
@@ -757,6 +842,39 @@ impl Formatter {
             }
             ENUM_TYPE => {
                 self.format_enum_type(node);
+            }
+            PROC_TYPE => {
+                // `(T, T) -> T` (ADR-0059 §3). An explicit arm rather than the raw-text fallback
+                // below, for the reason this file keeps re-learning: raw text stops canonicalising,
+                // so `( s64 ,bool )->T` would survive as written instead of normalising like every
+                // other construct. The parameters live in a `PROC_TYPE_PARAMS` child; the return
+                // type is the one type child outside it.
+                self.emit("(");
+                if let Some(params) = node.children().find(|n| n.kind() == PROC_TYPE_PARAMS) {
+                    let types: Vec<SyntaxNode> = params
+                        .children()
+                        .filter(|n| is_type_kind(n.kind()))
+                        .collect();
+                    for (i, ty) in types.iter().enumerate() {
+                        if i > 0 {
+                            self.emit(", ");
+                        }
+                        self.format_type(ty);
+                    }
+                }
+                self.emit(")");
+                // The arrow is **optional** (ADR-0062 §1): `(s64)` is a void-returning procedure
+                // pointer. Emitting `") -> "` unconditionally produced `(s64) -> ` with nothing
+                // after it — which does not parse, so the formatter turned a legal program into an
+                // illegal one. Found by the round-trip test rather than by reading.
+                if let Some(ret) = node
+                    .children()
+                    .filter(|n| n.kind() != PROC_TYPE_PARAMS)
+                    .find(|n| is_type_kind(n.kind()))
+                {
+                    self.emit(" -> ");
+                    self.format_type(&ret);
+                }
             }
             _ => {
                 self.emit(&node.text().to_string());
@@ -875,6 +993,14 @@ impl Formatter {
     fn format_stmt(&mut self, node: &SyntaxNode) {
         match node.kind() {
             DECL_STMT => {
+                // A destructuring declaration's `DECL_STMT` wraps the `TARGET_LIST` *directly*
+                // rather than a `VAR_DECL` — the parser reuses the statement kind and there is no
+                // inner declaration node to delegate to (ADR-0052 §2). Falling through to
+                // `format_item` on the target list emitted the names and dropped the `:= f();`.
+                if node.children().any(|n| n.kind() == TARGET_LIST) {
+                    self.format_var_decl(node);
+                    return;
+                }
                 if let Some(inner) = node.children().next() {
                     self.format_item(&inner);
                 }
@@ -903,12 +1029,47 @@ impl Formatter {
                 self.emit_indent();
                 self.format_while_stmt(node);
             }
+            FOR_STMT => {
+                self.emit_indent();
+                self.format_for_stmt(node);
+            }
+            DEFER_STMT => {
+                self.emit_indent();
+                self.emit("defer ");
+                // The deferred thing is an arbitrary statement (ADR-0049 §3), and it is formatted
+                // *inline* so that `defer close(a);` stays on one line. `format_stmt` would emit
+                // its own indent and newline, putting the statement on the line below `defer`.
+                if let Some(inner) = node.children().find(|n| is_stmt_kind(n.kind())) {
+                    self.format_single_stmt_inline(&inner);
+                }
+                self.newline();
+            }
+            LOOP_LABEL => {
+                self.emit_indent();
+                if let Some(name) = node.children().find(|n| n.kind() == NAME) {
+                    self.emit(name.text().to_string().trim());
+                }
+                self.emit(": ");
+                // The label *wraps* the loop, so the loop is formatted without its own indent —
+                // it is already on this line, after the `name:`.
+                if let Some(inner) = node.children().find(|n| n.kind() == FOR_STMT) {
+                    self.format_for_stmt(&inner);
+                } else if let Some(inner) = node.children().find(|n| n.kind() == WHILE_STMT) {
+                    self.format_while_stmt(&inner);
+                }
+            }
             RETURN_STMT => {
                 self.emit_indent();
                 self.emit("return");
-                if let Some(expr) = node.children().find(|n| is_expr_kind(n.kind())) {
-                    self.emit(" ");
-                    self.format_expr(&expr);
+                // **Every** returned expression, not just the first (ADR-0052 §1). Taking only
+                // `find(..)` silently dropped `return a, b;` to `return a;` — a change in what the
+                // program *computes*, which is the worst thing this file can do and the same class
+                // of loss as ADR-0050's deleted `using`.
+                let exprs: Vec<SyntaxNode> =
+                    node.children().filter(|n| is_expr_kind(n.kind())).collect();
+                for (index, expr) in exprs.iter().enumerate() {
+                    self.emit(if index == 0 { " " } else { ", " });
+                    self.format_expr(expr);
                 }
                 self.emit_trailing_comment(node);
                 self.emit(";");
@@ -917,6 +1078,7 @@ impl Formatter {
             BREAK_STMT => {
                 self.emit_indent();
                 self.emit("break");
+                self.emit_jump_label(node);
                 self.emit_trailing_comment(node);
                 self.emit(";");
                 self.newline();
@@ -924,6 +1086,7 @@ impl Formatter {
             CONTINUE_STMT => {
                 self.emit_indent();
                 self.emit("continue");
+                self.emit_jump_label(node);
                 self.emit_trailing_comment(node);
                 self.emit(";");
                 self.newline();
@@ -942,6 +1105,15 @@ impl Formatter {
     }
 
     fn format_assign_stmt(&mut self, node: &SyntaxNode) {
+        // `q, ok = f();` (ADR-0052 §2), the assignment counterpart of the declaration form above.
+        if let Some(list) = node.children().find(|n| n.kind() == TARGET_LIST) {
+            self.format_target_list(&list);
+            self.emit(" = ");
+            if let Some(expr) = node.children().find(|n| is_expr_kind(n.kind())) {
+                self.format_expr(&expr);
+            }
+            return;
+        }
         let mut exprs = node.children().filter(|n| is_expr_kind(n.kind()));
         if let Some(lhs) = exprs.next() {
             self.format_expr(&lhs);
@@ -1011,11 +1183,104 @@ impl Formatter {
                 self.format_assign_stmt(node);
                 self.emit(";");
             }
-            BREAK_STMT => self.emit("break;"),
-            CONTINUE_STMT => self.emit("continue;"),
+            BREAK_STMT => {
+                self.emit("break");
+                self.emit_jump_label(node);
+                self.emit(";");
+            }
+            CONTINUE_STMT => {
+                self.emit("continue");
+                self.emit_jump_label(node);
+                self.emit(";");
+            }
+            // A `defer` can be the single braceless statement of an `if` — `if bad  defer f();`
+            // parses — so this arm exists for the same reason the others do: the fallback emits
+            // `node.text()` verbatim, which would carry the original spacing rather than
+            // canonicalising it.
+            DEFER_STMT => {
+                self.emit("defer ");
+                if let Some(inner) = node.children().find(|n| is_stmt_kind(n.kind())) {
+                    self.format_single_stmt_inline(&inner);
+                }
+            }
             _ => {
                 self.emit(node.text().to_string().trim());
             }
+        }
+    }
+
+    /// Emits ` name` for a `break`/`continue` that names a loop, and nothing for one that does not.
+    ///
+    /// Shared by the block and the braceless-inline paths, because a label dropped on one of them
+    /// would silently retarget the jump to the innermost loop — a *behaviour* change from
+    /// formatting, which is the worst thing this file can do.
+    fn emit_jump_label(&mut self, node: &SyntaxNode) {
+        if let Some(name) = node.children().find(|n| n.kind() == NAME) {
+            self.emit(" ");
+            self.emit(name.text().to_string().trim());
+        }
+    }
+
+    /// Formats `for x: buf`, `for x, i: buf` and `for < x: buf` (ADR-0049 §1).
+    ///
+    /// The `<` is emitted with a space either side — `for < x: buf` — because it is a *marker on
+    /// the loop* rather than an operator, and running it into the name (`for <x`) would read as a
+    /// comparison against `x`.
+    fn format_for_stmt(&mut self, node: &SyntaxNode) {
+        self.emit("for ");
+        if node
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .any(|t| t.kind() == LT)
+        {
+            self.emit("< ");
+        }
+        let names: Vec<SyntaxNode> = node.children().filter(|n| n.kind() == NAME).collect();
+        for (i, name) in names.iter().enumerate() {
+            if i > 0 {
+                self.emit(", ");
+            }
+            self.emit(name.text().to_string().trim());
+        }
+        self.emit(": ");
+        if let Some(iterable) = node.children().find(|n| is_expr_kind(n.kind())) {
+            self.format_expr(&iterable);
+        }
+        if let Some(body) = node.children().find(|n| n.kind() == BLOCK) {
+            self.emit(" ");
+            self.format_block(&body);
+        }
+        self.newline();
+    }
+
+    /// Formats `(s64, bool)` after `->` (ADR-0052 §1).
+    ///
+    /// One space after each comma and none inside the brackets, matching every other comma-separated
+    /// list this formatter emits — a parameter list and an argument list both look like this.
+    fn format_result_list(&mut self, node: &SyntaxNode) {
+        self.emit("(");
+        let tys: Vec<SyntaxNode> = node.children().filter(|n| is_type_kind(n.kind())).collect();
+        for (index, ty) in tys.iter().enumerate() {
+            if index > 0 {
+                self.emit(", ");
+            }
+            self.format_type(ty);
+        }
+        self.emit(")");
+    }
+
+    /// Formats `q, ok` — a destructuring target list (ADR-0052 §2).
+    ///
+    /// A `_` is emitted from its `NAME` node's text like any other target, because the parser keeps
+    /// a discard as a `NAME` whose text happens to be `_`: it is lowering that recognises the hole
+    /// (ADR-0052 §3), so the formatter needs no special case and cannot lose one.
+    fn format_target_list(&mut self, node: &SyntaxNode) {
+        let names: Vec<SyntaxNode> = node.children().filter(|n| n.kind() == NAME).collect();
+        for (index, name) in names.iter().enumerate() {
+            if index > 0 {
+                self.emit(", ");
+            }
+            self.emit(name.text().to_string().trim());
         }
     }
 
@@ -1042,7 +1307,12 @@ impl Formatter {
                     .find(|t| {
                         matches!(
                             t.kind(),
-                            INT_LITERAL | FLOAT_LITERAL | STRING_LITERAL | TRUE_KW | FALSE_KW
+                            INT_LITERAL
+                                | FLOAT_LITERAL
+                                | STRING_LITERAL
+                                | TRUE_KW
+                                | FALSE_KW
+                                | NULL_KW
                         )
                     })
                 {
@@ -1209,6 +1479,21 @@ impl Formatter {
                     self.emit(arg.text());
                 }
             }
+            // `context` — a keyword standing for the current context (ADR-0057 §1). Emitted from its
+            // static text rather than the node's, which is empty of anything but the keyword token.
+            CONTEXT_EXPR => self.emit("context"),
+            RANGE_EXPR => {
+                // `0..4` with no spaces around the `..`, matching every language that has ranges
+                // and keeping the loop header short enough to read as one unit.
+                let mut ends = node.children().filter(|n| is_expr_kind(n.kind()));
+                if let Some(start) = ends.next() {
+                    self.format_expr(&start);
+                }
+                self.emit("..");
+                if let Some(end) = ends.next() {
+                    self.format_expr(&end);
+                }
+            }
             _ => {
                 self.emit(&node.text().to_string());
             }
@@ -1217,14 +1502,39 @@ impl Formatter {
 
     fn format_arg_list(&mut self, node: &SyntaxNode) {
         self.emit("(");
-        let args: Vec<SyntaxNode> = node.children().filter(|n| is_expr_kind(n.kind())).collect();
+        // **A `NAMED_ARG` is not an expression kind**, so filtering on `is_expr_kind` alone dropped
+        // every named argument silently — `draw(y = 2, x = 1)` became `draw()`, which changes what
+        // the program computes. Both kinds are collected and each formatted by its own shape.
+        let args: Vec<SyntaxNode> = node
+            .children()
+            .filter(|n| is_expr_kind(n.kind()) || n.kind() == NAMED_ARG)
+            .collect();
         for (i, arg) in args.iter().enumerate() {
             if i > 0 {
                 self.emit(", ");
             }
-            self.format_expr(arg);
+            if arg.kind() == NAMED_ARG {
+                self.format_named_arg(arg);
+            } else {
+                self.format_expr(arg);
+            }
         }
         self.emit(")");
+    }
+
+    /// Formats `name = value` (ADR-0053 §1).
+    ///
+    /// One space either side of the `=`, matching an assignment statement — the two look the same
+    /// because they read the same way, and Jairs has no assignment expression for this to be
+    /// confused with.
+    fn format_named_arg(&mut self, node: &SyntaxNode) {
+        if let Some(name) = node.children().find(|n| n.kind() == NAME) {
+            self.emit(name.text().to_string().trim());
+        }
+        self.emit(" = ");
+        if let Some(value) = node.children().find(|n| is_expr_kind(n.kind())) {
+            self.format_expr(&value);
+        }
     }
 
     // ---- trailing comment --------------------------------------------------
@@ -1290,6 +1600,14 @@ fn is_expr_kind(kind: SyntaxKind) -> bool {
             // list says to check this on every new expression kind (ADR-0039).
             | INDEX_EXPR
             | SLICE_EXPR
+            // A range reaches this only as a `for`'s iterable (ADR-0049 §1) — there is no `..`
+            // in the expression grammar — but it is found *through* this predicate, so omitting
+            // it would leave `for i: 0..4` with nothing to iterate.
+            | RANGE_EXPR
+            // `context` (ADR-0057 §1). Omitting it deleted every `context` — the seventh wave to lose
+            // source this way, and the same trap as `NAMED_ARG` and `RESULT_LIST`: a node sitting
+            // where an expression sits is not, by itself, an expression kind.
+            | CONTEXT_EXPR
             | RUN_EXPR
             | DIRECTIVE_EXPR
     )
@@ -1302,11 +1620,23 @@ fn is_type_kind(kind: SyntaxKind) -> bool {
     // formatter delete the type from `buf: [4]u8;`.
     matches!(
         kind,
-        NAME_TYPE | POINTER_TYPE | STRUCT_TYPE | UNION_TYPE | ARRAY_TYPE | VIEW_TYPE | ENUM_TYPE
+        NAME_TYPE
+            | POINTER_TYPE
+            | STRUCT_TYPE
+            | UNION_TYPE
+            | ARRAY_TYPE
+            | VIEW_TYPE
+            | ENUM_TYPE
+            | PROC_TYPE
     )
 }
 
 /// Returns `true` if `kind` is a statement node kind.
+///
+/// `FOR_STMT`, `DEFER_STMT` and `LOOP_LABEL` belong here for the reason the whole file keeps
+/// re-learning: a kind absent from one of these predicates is *silently dropped*, so leaving them
+/// out deleted every `for` and every `defer` from the corpus (ADR-0049's consequence list, and the
+/// third consecutive wave to lose source this way).
 fn is_stmt_kind(kind: SyntaxKind) -> bool {
     matches!(
         kind,
@@ -1315,6 +1645,9 @@ fn is_stmt_kind(kind: SyntaxKind) -> bool {
             | ASSIGN_STMT
             | IF_STMT
             | WHILE_STMT
+            | FOR_STMT
+            | DEFER_STMT
+            | LOOP_LABEL
             | RETURN_STMT
             | BREAK_STMT
             | CONTINUE_STMT
@@ -1770,6 +2103,318 @@ mod tests {
         let out = fmt(src);
         assert!(out.contains("while i < 10 {"), "got: {out}");
         assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    /// Named arguments and defaults (ADR-0053), asserted to *survive*.
+    ///
+    /// **Sixth consecutive wave** for the formatter trap, and this one lost both halves: every
+    /// default vanished (turning a callable `f(1)` into an arity error) and every named argument
+    /// vanished with it, because `NAMED_ARG` is not an expression kind and the argument-list walk
+    /// filtered on `is_expr_kind`. Both change what the program means.
+    #[test]
+    fn named_arguments_and_defaults_survive() {
+        let src = "f :: (a: s64, b: s64 = 10, c: bool = true) -> s64 {\n    return a;\n}\n\ng :: () -> s64 {\n    return f(1, c = false, b = 2);\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("b: s64 = 10"),
+            "an integer default must survive: {out}"
+        );
+        assert!(
+            out.contains("c: bool = true"),
+            "a boolean default must survive: {out}"
+        );
+        assert!(
+            out.contains("f(1, c = false, b = 2)"),
+            "every named argument must survive, in order: {out}"
+        );
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    /// The formatter must *canonicalise* these forms, not pass them through.
+    #[test]
+    fn named_arguments_are_canonicalised() {
+        let src =
+            "f :: (a: s64,b: s64=10) -> s64 { return a; }\ng :: () -> s64 { return f(1,b=2); }\n";
+        let out = fmt(src);
+        assert!(out.contains("(a: s64, b: s64 = 10)"), "got: {out}");
+        assert!(out.contains("f(1, b = 2)"), "got: {out}");
+        assert_parses(&out);
+    }
+
+    /// Multiple returns (ADR-0052), asserted to *survive*.
+    ///
+    /// Fifth consecutive wave for the formatter trap, and this one lost source in **two** ways: the
+    /// result list vanished entirely (`-> (s64, bool)` became `-> `), and a multi-value return was
+    /// truncated to its first value (`return a, b;` became `return a;`). The second changes what the
+    /// program computes, which is the same class of loss as ADR-0050's deleted `using`.
+    #[test]
+    fn multiple_returns_survive() {
+        let src = "f :: () -> (s64, bool) {\n    return 1, true;\n}\n\ng :: () {\n    q, ok := f();\n    q, ok = f();\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("-> (s64, bool)"),
+            "the result list must survive: {out}"
+        );
+        assert!(
+            out.contains("return 1, true;"),
+            "every returned value must survive: {out}"
+        );
+        assert!(out.contains("q, ok := f();"), "got: {out}");
+        assert!(out.contains("q, ok = f();"), "got: {out}");
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    /// A `_` discard must survive in either position (ADR-0052 §3).
+    #[test]
+    fn discards_survive_in_either_position() {
+        let src = "f :: () -> (s64, bool) {\n    return 1, true;\n}\n\ng :: () {\n    a, _ := f();\n    _, b := f();\n    _, _ := f();\n}\n";
+        let out = fmt(src);
+        assert!(out.contains("a, _ := f();"), "got: {out}");
+        assert!(out.contains("_, b := f();"), "got: {out}");
+        assert!(out.contains("_, _ := f();"), "got: {out}");
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    /// The formatter must *canonicalise* these forms, not pass them through.
+    #[test]
+    fn multiple_returns_are_canonicalised() {
+        let src = "f :: ()->(s64,bool){\nreturn 1,true;\n}\ng :: (){\nq,ok:=f();\n}\n";
+        let out = fmt(src);
+        assert!(out.contains("f :: () -> (s64, bool) {"), "got: {out}");
+        assert!(out.contains("    return 1, true;"), "got: {out}");
+        assert!(out.contains("    q, ok := f();"), "got: {out}");
+        assert_parses(&out);
+    }
+
+    /// `context` and `#c_call` (ADR-0057), asserted to *survive*.
+    ///
+    /// Seventh consecutive wave for the formatter trap, and `#c_call` is the worst kind: dropping it
+    /// does not lose formatting, it changes the *calling convention* — a `#c_call` procedure with the
+    /// attribute gone silently starts taking a context, and every caller is recompiled against a
+    /// different ABI. `context` deleting to nothing (`x := ;`) is the same node-in-expression-position
+    /// trap as `RESULT_LIST` and `NAMED_ARG` before it.
+    #[test]
+    fn context_and_c_call_survive() {
+        let src = "raw :: () #c_call {\n    x := context;\n}\n\nf :: () {\n    context.allocator = 1;\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("() #c_call {"),
+            "the `#c_call` attribute must survive: {out}"
+        );
+        assert!(
+            out.contains("x := context;"),
+            "`context` must survive: {out}"
+        );
+        assert!(
+            out.contains("context.allocator = 1;"),
+            "`context.field` must survive: {out}"
+        );
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    /// A procedure-pointer type survives and canonicalises (ADR-0059 §3).
+    ///
+    /// Ninth wave running that the formatter could lose a construct — and a proc-pointer type is the
+    /// kind that lands in the raw-text fallback rather than being deleted, which is worse in a
+    /// quieter way: it *survives* but stops normalising, so `( s64 , bool )->T` would round-trip as
+    /// written. The test asserts canonical spacing, not just survival, for that reason. Both a
+    /// parameter position and a return position are checked, because the return one goes through the
+    /// results-list disambiguation and could regress independently.
+    /// `null` survives formatting (ADR-0060 §1).
+    ///
+    /// A literal, so the easy case — it round-trips as its own text — but the formatter has lost a
+    /// construct in eight of the last ten waves, and a literal that lands in a raw-text fallback
+    /// stops canonicalising, so it is pinned rather than assumed.
+    #[test]
+    fn null_survives() {
+        let src = "f :: () {\n    p: *u8 = null;\n}\n";
+        let out = fmt(src);
+        assert!(out.contains("p: *u8 = null;"), "`null` must survive: {out}");
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn a_procedure_pointer_type_canonicalises() {
+        let src = "apply :: (fn: (s64,bool)->s64, a: s64) -> s64 {\n    return a;\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("fn: (s64, bool) -> s64"),
+            "a proc-pointer parameter type must canonicalise: {out}"
+        );
+        assert_idempotent(src);
+        assert_parses(&out);
+
+        // Return position, where the `(` is disambiguated from a results list by the `->`.
+        let ret = "pick :: () -> (s64, s64) -> s64 {\n    return add;\n}\n";
+        let out = fmt(ret);
+        assert!(
+            out.contains("-> (s64, s64) -> s64"),
+            "a proc-pointer return type must survive: {out}"
+        );
+        assert_idempotent(ret);
+        assert_parses(&out);
+
+        // A **void-returning** proc pointer, `(T)` with no arrow (ADR-0062 §1). The emitter wrote
+        // `") -> "` unconditionally before this, producing `(*u8) -> ` with nothing after it — which
+        // does not parse, so the formatter turned a legal program into an illegal one. `assert_parses`
+        // is what catches that, and it is why it is in every one of these tests.
+        let void_ret = "Sink :: struct {\n    put: (*u8);\n}\n";
+        let out = fmt(void_ret);
+        assert!(
+            out.contains("put: (*u8);"),
+            "a void-returning proc-pointer type must survive without an arrow: {out}"
+        );
+        assert!(!out.contains("->"), "and must not grow one: {out}");
+        assert_idempotent(void_ret);
+        assert_parses(&out);
+    }
+
+    /// `#no_abc` survives, canonicalises, and does not get **reordered** (ADR-0058 §3).
+    ///
+    /// Eighth consecutive wave for the formatter losing a construct. This one is the *safe*
+    /// direction to lose — dropping it restores a bounds check, so the program gets slower rather
+    /// than unsound — which is exactly why it needs a test: nothing about the program's behaviour
+    /// would tell anyone it had happened.
+    ///
+    /// The reordering assertion is the one that is not obvious. The parser accepts the two
+    /// attributes in either order, so a formatter emitting them in a fixed order would silently
+    /// rewrite `#no_abc #c_call` into `#c_call #no_abc`. That is not lost source, but it means
+    /// `jr fmt` is not idempotent on input it did not write, and gate 5 fails on a corpus file
+    /// written the other way round.
+    #[test]
+    fn no_abc_survives_and_keeps_its_position() {
+        let src = "read :: (buf: [4]s64, i: s64) -> s64 #no_abc {\n    return buf[i];\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("-> s64 #no_abc {"),
+            "the `#no_abc` attribute must survive, after the return type: {out}"
+        );
+        assert_idempotent(src);
+        assert_parses(&out);
+
+        // Both attributes, in each order, each preserved as written.
+        let both = "a :: () #c_call #no_abc {\n}\n\nb :: () #no_abc #c_call {\n}\n";
+        let out = fmt(both);
+        assert!(
+            out.contains("a :: () #c_call #no_abc {"),
+            "the written order must be kept: {out}"
+        );
+        assert!(
+            out.contains("b :: () #no_abc #c_call {"),
+            "and kept in the other direction too, or the formatter is reordering: {out}"
+        );
+        assert_idempotent(both);
+        assert_parses(&out);
+    }
+
+    /// `using` in all three positions (ADR-0050 §1), each asserted to *survive*.
+    ///
+    /// Fourth consecutive wave for this trap — `cast`, then every `xx`, then `for`/`defer`, now
+    /// this — and the worst of the four: dropping `using` does not merely lose formatting, it
+    /// **changes what the program means**, because every promoted bare name in the body stops
+    /// resolving. The formatter deleted all three positions before these assertions existed.
+    #[test]
+    fn using_survives_in_all_three_positions() {
+        let src = "Entity :: struct {\n    using base: Point;\n    hp: s64;\n}\n\nlen2 :: (using p: Point) -> s64 {\n    using q: Point;\n    return x;\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("using base: Point;"),
+            "an embedded field must keep its keyword: {out}"
+        );
+        assert!(
+            out.contains("(using p: Point)"),
+            "a promoted parameter must keep its keyword: {out}"
+        );
+        assert!(
+            out.contains("using q: Point;"),
+            "a promoted local must keep its keyword: {out}"
+        );
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    /// The formatter must *canonicalise* `using`, not merely pass it through.
+    ///
+    /// Written for the reason ADR-0049's equivalent test was: the round-trip and idempotence
+    /// assertions above are both satisfied by a formatter that emits `node.text()` verbatim, so
+    /// only a misformatted input proves the emitter runs.
+    #[test]
+    fn using_is_canonicalised_not_passed_through() {
+        let src = "f :: (using    p:Point)->s64{\nusing   q:Point;\nreturn x;\n}\n";
+        let out = fmt(src);
+        assert!(out.contains("(using p: Point)"), "got: {out}");
+        assert!(out.contains("    using q: Point;"), "got: {out}");
+        assert_parses(&out);
+    }
+
+    /// The four `for` forms (ADR-0049 §1), each asserted to *survive*.
+    ///
+    /// This test exists because a kind missing from `is_stmt_kind` or `is_expr_kind` makes the
+    /// formatter **delete** the construct rather than mangle it, and that has now happened in three
+    /// consecutive waves — `cast`, then every `xx`, then every `for` and `defer` here. Asserting the
+    /// keyword is still present is what turns the fourth occurrence into a test failure.
+    #[test]
+    fn for_stmt_forms() {
+        let src = "f :: () {\n    for x: buf {\n        t = t + x;\n    }\n    for x, i: buf {\n        t = t + i;\n    }\n    for i: 0..4 {\n        t = t + i;\n    }\n    for < x: buf {\n        t = t + x;\n    }\n}\n";
+        let out = fmt(src);
+        assert!(out.contains("for x: buf {"), "got: {out}");
+        assert!(out.contains("for x, i: buf {"), "got: {out}");
+        assert!(out.contains("for i: 0..4 {"), "got: {out}");
+        assert!(
+            out.contains("for < x: buf {"),
+            "the reverse marker must survive: {out}"
+        );
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    /// A label must survive on the loop *and* on the jump.
+    ///
+    /// Dropping it would not be a cosmetic loss: `break outer` silently becoming `break` retargets
+    /// the jump to the innermost loop, so the formatter would change what the program *does*.
+    #[test]
+    fn loop_labels_survive() {
+        let src = "f :: () {\n    outer: for a: rows {\n        for b: cols {\n            break outer;\n        }\n    }\n    lbl: while c {\n        continue lbl;\n    }\n}\n";
+        let out = fmt(src);
+        assert!(out.contains("outer: for a: rows {"), "got: {out}");
+        assert!(out.contains("break outer;"), "got: {out}");
+        assert!(out.contains("lbl: while c {"), "got: {out}");
+        assert!(out.contains("continue lbl;"), "got: {out}");
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    /// `defer` wraps an arbitrary statement (ADR-0049 §3), formatted inline.
+    #[test]
+    fn defer_stmt() {
+        let src = "f :: () {\n    defer close(a);\n    defer n = n + 1;\n}\n";
+        let out = fmt(src);
+        assert!(out.contains("defer close(a);"), "got: {out}");
+        assert!(
+            out.contains("defer n = n + 1;"),
+            "a `defer` over an assignment stays on one line: {out}"
+        );
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    /// The formatter must *canonicalise* these forms, not merely pass them through.
+    ///
+    /// Written because the round-trip and idempotence assertions above are both satisfied by a
+    /// formatter that emits `node.text()` verbatim — which is what the fallback arm does, and which
+    /// would leave `outer:for<x,i:buf` untouched while looking green.
+    #[test]
+    fn for_and_defer_are_canonicalised_not_passed_through() {
+        let src = "f :: () {\nouter:for<x,i:buf{\ndefer n=n+1;\nbreak outer;\n}\n}\n";
+        let out = fmt(src);
+        assert!(out.contains("outer: for < x, i: buf {"), "got: {out}");
+        assert!(out.contains("        defer n = n + 1;"), "got: {out}");
         assert_parses(&out);
     }
 

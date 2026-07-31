@@ -1290,3 +1290,128 @@ fn a_builtin_operator_is_unaffected_by_an_overload_in_scope() {
     assert_eq!(vm.status, 12, "the VM used builtin addition");
     assert_eq!(native.status, 12, "native used builtin addition");
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0058: the bounds-check build setting
+// ---------------------------------------------------------------------------
+
+/// Runs a corpus program under both engines *and* both bounds-check settings.
+///
+/// Four executions of one program. The comparison that matters is not VM-versus-native — the
+/// discovered-corpus test above already does that — but **checked-versus-unchecked**: a build
+/// setting that changed a valid program's answer would be a miscompile, and nothing else in the
+/// suite would see it, because every other test runs one setting.
+fn four_ways(program: &Path, dir: &Path) -> [Behaviour; 4] {
+    let vm_checked = run_in_vm(program);
+    let vm_unchecked = {
+        let output = Command::new(jr())
+            .arg("run")
+            .arg(program)
+            .arg("--no-bounds-check")
+            .arg("-I")
+            .arg(workspace_root().join("modules"))
+            .output()
+            .expect("jr run should be executable");
+        Behaviour {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            status: output.status.code().unwrap_or(-1),
+        }
+    };
+    let native_checked = run_natively(program, dir);
+    let native_unchecked = {
+        let binary = dir.join("unchecked");
+        let built = Command::new(jr())
+            .arg("build")
+            .arg(program)
+            .arg("-o")
+            .arg(&binary)
+            .arg("--no-bounds-check")
+            .arg("-I")
+            .arg(workspace_root().join("modules"))
+            .output()
+            .expect("jr build should be executable");
+        assert!(
+            built.status.success(),
+            "`jr build --no-bounds-check {}` failed:\n{}",
+            program.display(),
+            String::from_utf8_lossy(&built.stderr),
+        );
+        let output = Command::new(&binary)
+            .output()
+            .unwrap_or_else(|e| panic!("cannot run {}: {e}", binary.display()));
+        Behaviour {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            status: output.status.code().unwrap_or(-1),
+        }
+    };
+    [vm_checked, vm_unchecked, native_checked, native_unchecked]
+}
+
+#[test]
+fn removing_the_bounds_check_does_not_change_a_valid_programs_answer() {
+    // The safety argument for `--no-bounds-check`, stated as a test rather than as prose. Every
+    // index in these programs is in range, so the check never fires — which means stripping it must
+    // be unobservable. If it were not, the flag would be a miscompile switch.
+    //
+    // Deliberately **not** run over the whole corpus: that would be four executions of every
+    // program for one property, and the two files that index are where the property lives. Named,
+    // so a reader can see the coverage rather than trusting a sweep.
+    for name in ["047-no-abc.jr", "030-arrays.jr", "035-views.jr"] {
+        let program = workspace_root().join("tests/corpus/valid").join(name);
+        assert!(program.exists(), "{name} must exist");
+        let dir = TempDir::new().expect("a temporary directory");
+        let [vm_on, vm_off, native_on, native_off] = four_ways(&program, dir.path());
+        assert_eq!(
+            vm_on, vm_off,
+            "{name}: the VM disagreed with itself across the bounds-check setting"
+        );
+        assert_eq!(
+            native_on, native_off,
+            "{name}: native disagreed with itself across the bounds-check setting"
+        );
+        // And the cross-engine equality, under the *unchecked* setting specifically — the
+        // discovered-corpus test only ever compares the two engines with checks on.
+        assert_eq!(
+            vm_off, native_off,
+            "{name}: the two engines disagreed with `--no-bounds-check`"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0059: indirect calls
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_procedure_pointer_calls_the_right_target_in_both_engines() {
+    // The identity a proc pointer carries is what matters, not just that it calls *something*
+    // (ADR-0059 §4). `pick` returns one of two procedures with *different* answers, and the
+    // exit status is which one ran — so a representation that lost the identity, or that the two
+    // engines encoded differently in a way that leaked, would be a different number rather than a
+    // plausible one. The two engines' proc-pointer *bits* differ by design (an encoded `ProcRef`
+    // in the VM, a real address natively); this asserts the only thing that is observable —
+    // calling through it — agrees.
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  add :: (a: s64, b: s64) -> s64 { return a + b; }\n\
+                  sub :: (a: s64, b: s64) -> s64 { return a - b; }\n\
+                  \n\
+                  pick :: (want_add: bool) -> (s64, s64) -> s64 {\n\
+                  \x20   if want_add { return add; }\n\
+                  \x20   return sub;\n\
+                  }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   f := pick(false);\n\
+                  \x20   exit(f(50, 8));\n\
+                  }\n";
+    let (vm, native) = both_engines(source, dir.path(), "procptr");
+    assert_eq!(vm.status, 42, "the VM called the chosen procedure (sub)");
+    assert_eq!(
+        native.status, 42,
+        "native called the chosen procedure (sub)"
+    );
+}

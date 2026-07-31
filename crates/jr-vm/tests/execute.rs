@@ -82,7 +82,13 @@ impl Fixture {
             &signatures.signatures,
             &ConstValues::new(),
             &ImportedProcs::new(),
+            // Empty, and **correct** rather than a shortcut: this harness resolves against `&[]`
+            // imports, so no name in any of its programs is an imported one and there is nothing for
+            // the map to hold. ADR-0053's lesson — a harness passing an empty map proves nothing —
+            // applies where the harness *does* have imports, which `jr-mir`'s does.
+            &jr_mir::ImportedValues::new(),
             &jr_mir::OperatorCalls::new(),
+            &jr_mir::FilledArgs::new(),
             &interner,
             &mut pool,
         );
@@ -129,7 +135,43 @@ impl Fixture {
     fn call(&self, name: &str, args: Vec<Value>, mode: Mode) -> Result<Value, VmError> {
         let mut vm =
             Vm::new(&self.program, &self.pool, mode).expect("room for the string constants");
+        let args = self.with_context(&mut vm, name, args);
         vm.call(self.proc(name), args)
+    }
+
+    /// Prepends the implicit context to an argument list, when the callee takes one.
+    ///
+    /// This harness calls a procedure *directly*, so there is no Jairs caller to have passed a
+    /// context — the same position `main` is in, and `jr-db`'s `run_main` solves it the same way
+    /// (ADR-0057 §5): a zeroed allocation whose address is the leading argument.
+    ///
+    /// **Conditional on the callee**, not unconditional, because a `#c_call` procedure takes no
+    /// hidden parameter and handing one over would be exactly the argument shift ADR-0053 §1
+    /// recorded — the VM says "called a procedure taking 1 arguments with 2" and the shift is
+    /// caught, but a test asserting the *wrong* number would pass for the wrong reason.
+    fn with_context(&self, vm: &mut Vm<'_>, name: &str, args: Vec<Value>) -> Vec<Value> {
+        // Asked of the *declaration*, exactly as `jr-db`'s `main_receives_context` does, and by
+        // the same predicate — `!(c_call || foreign)`. One rule with two spellings is how a caller
+        // and a callee come to disagree about whether a hidden parameter exists.
+        let proc = self.proc(name).proc;
+        let receives = self
+            .hir
+            .procs
+            .get(proc.index())
+            .is_some_and(|data| !(data.c_call || data.foreign.is_some()));
+        if !receives {
+            return args;
+        }
+        let context = Pool::find_context(&self.pool).expect("sema interned the context type");
+        let layout = jr_pool::layout_of(&self.pool, TargetLayout::LP64, context)
+            .expect("the context is an ordinary aggregate");
+        let mut with = Vec::with_capacity(args.len() + 1);
+        with.push(
+            vm.new_context(layout.size, layout.align)
+                .expect("room for one context"),
+        );
+        with.extend(args);
+        with
     }
 
     /// Runs a procedure, asserting it succeeded, and returns the integer result.
@@ -146,7 +188,8 @@ impl Fixture {
     fn output(&self, name: &str) -> String {
         let mut vm = Vm::new(&self.program, &self.pool, Mode::Runtime)
             .expect("room for the string constants");
-        vm.call(self.proc(name), Vec::new())
+        let args = self.with_context(&mut vm, name, Vec::new());
+        vm.call(self.proc(name), args)
             .unwrap_or_else(|e| panic!("`{name}` failed: {e}"));
         String::from_utf8_lossy(vm.captured_output()).into_owned()
     }
@@ -513,9 +556,11 @@ fn a_foreign_result_comes_back_as_a_value() {
         format!("{BASIC}go :: () -> s64 {{ s := \"abc\"; return write(1, s.data, s.count); }}");
     let fixture = Fixture::build(&source);
     let mut vm = Vm::new(&fixture.program, &fixture.pool, Mode::Runtime).expect("room");
-    let result = vm
-        .call(fixture.proc("go"), Vec::new())
-        .expect("write works");
+    // Its own `Vm` rather than `call`, because this test needs `Mode::Runtime` and a live `write` —
+    // so the context has to be prepended here too (ADR-0057 §5). `go` is an ordinary Jairs
+    // procedure, so it takes one; the `write` it calls is `#foreign` and does not.
+    let args = fixture.with_context(&mut vm, "go", Vec::new());
+    let result = vm.call(fixture.proc("go"), args).expect("write works");
     assert_eq!(result.as_int(jr_vm::IntKind::S64), Ok(3));
 }
 

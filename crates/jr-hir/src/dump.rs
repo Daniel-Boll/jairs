@@ -216,6 +216,47 @@ impl<'a> Dumper<'a> {
                 self.indent -= 1;
                 self.line("}");
             }
+            // A discard prints as `_`, which is what it is in the source — a hole rather than a
+            // binding, so there is no name to print (ADR-0052 §3).
+            Stmt::LocalTuple {
+                targets,
+                call,
+                span: _,
+            } => {
+                let names: Vec<String> = targets
+                    .iter()
+                    .map(|t| match t {
+                        Some(local) => self.sym(body.locals[local.index()].name).to_owned(),
+                        None => "_".to_owned(),
+                    })
+                    .collect();
+                let call = *call;
+                let rhs = self.fmt_body_expr(body, call);
+                self.line(&format!("LocalTuple {} := {rhs}", names.join(", ")));
+            }
+            Stmt::AssignTuple {
+                targets,
+                call,
+                span: _,
+            } => {
+                let targets = targets.clone();
+                let call = *call;
+                let parts: Vec<String> = targets
+                    .iter()
+                    .map(|t| match t {
+                        Some(expr) => self.fmt_body_expr(body, *expr),
+                        None => "_".to_owned(),
+                    })
+                    .collect();
+                let rhs = self.fmt_body_expr(body, call);
+                self.line(&format!("AssignTuple {} = {rhs}", parts.join(", ")));
+            }
+            Stmt::ReturnTuple(exprs, _) => {
+                let exprs = exprs.clone();
+                let parts: Vec<String> =
+                    exprs.iter().map(|e| self.fmt_body_expr(body, *e)).collect();
+                self.line(&format!("ReturnTuple {}", parts.join(", ")));
+            }
             Stmt::Local(local_id, _) => {
                 let local = &body.locals[local_id.index()];
                 let name = self.sym(local.name).to_owned();
@@ -374,9 +415,10 @@ fn fmt_expr_impl(expr: &Expr, interner: &Interner, is_top: bool, body: Option<&B
     };
 
     match expr {
+        Expr::Context(_) => String::from("context"),
         Expr::Literal(lit, _) => fmt_literal(lit),
         Expr::Name { name, res, .. } => {
-            let res_str = fmt_res(*res);
+            let res_str = fmt_res(res);
             format!("{}[{}]", sym(*name), res_str)
         }
         Expr::Binary { op, lhs, rhs, .. } => {
@@ -431,6 +473,10 @@ fn fmt_type_ref_impl(
 ) -> String {
     match tr {
         TypeRef::Name(sym) => interner.resolve(*sym).to_owned(),
+        // Printed by *arity* rather than by element, because the elements are `TypeRefId`s into an
+        // arena this function may not have (the `is_top` split below shows why), and a snapshot
+        // must never carry an index that load order can renumber.
+        TypeRef::Results(elems) => format!("({} results)", elems.len()),
         TypeRef::Pointer(inner) => {
             let inner_tr = if is_top {
                 // Can't easily recurse without the full context
@@ -467,6 +513,10 @@ fn fmt_type_ref_impl(
             };
             format!("[]{elem_tr}")
         }
+        // Printed by *arity*, like `Results` above and for the same reason: the parameter and
+        // return `TypeRefId`s index an arena this function may not have, and a snapshot must not
+        // carry an index that load order can renumber.
+        TypeRef::Proc { params, .. } => format!("({} params) -> _", params.len()),
         TypeRef::Struct(sid) => format!("struct#{}", sid.index()),
         TypeRef::Union(sid) => format!("union#{}", sid.index()),
         TypeRef::Enum(eid) => format!("enum#{}", eid.index()),
@@ -500,15 +550,21 @@ fn fmt_literal(lit: &Literal) -> String {
         }
         Literal::Str(s) => format!("{s:?}"),
         Literal::Bool(b) => b.to_string(),
+        Literal::Null => "null".to_owned(),
     }
 }
 
-fn fmt_res(res: Res) -> String {
+fn fmt_res(res: &Res) -> String {
     match res {
         Res::Local(id) => format!("local#{}", id.index()),
         Res::Param(id) => format!("param#{}", id.index()),
         Res::Item(id) => format!("item#{}", id.index()),
         Res::Imported(import_id, _) => format!("imported#{}", import_id.index()),
+        // The *path* a promoted name denotes, printed as one, so a snapshot shows which binding
+        // supplied the field rather than just that promotion happened. The field name is not
+        // resolved to text here because `fmt_res` has no interner; the base carries the identity
+        // that matters for reading a snapshot.
+        Res::Promoted { base, field: _ } => format!("promoted({})", fmt_res(base)),
         Res::Error => "?".to_owned(),
     }
 }

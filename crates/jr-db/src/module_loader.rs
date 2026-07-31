@@ -242,15 +242,26 @@ pub fn file_hir(db: &dyn Db, file: SourceFile) -> Arc<FileHir> {
 /// each other: `resolved(A)` can call `file_exports(B)` without
 /// `file_exports(B)` calling back into `resolved(A)`.
 ///
-/// Currently, everything at file scope is exported (ADR-0014 §2: `#scope_*`
-/// is not yet implemented). This will be refined in wave W2.
+/// **Filters out what `#scope_module` hides** (ADR-0054 §3). Export is the default, so a file with
+/// no visibility marker exports everything exactly as it did before — which ADR-0014 §2 promised and
+/// the whole corpus relies on.
+///
+/// The filter reads `Item::exported`, which lowering computed from this file's own source order. That
+/// is what keeps this query dependent on `file_hir` alone: a visibility rule needing *resolution* —
+/// an export list naming identifiers, say — could reach into another file and reintroduce the cycle
+/// this query's shape exists to prevent.
+///
+/// The declaring file's own `hir.scope` is untouched, so a hidden name resolves and answers hover
+/// inside its own file. "Module-private" means invisible to importers, not invisible everywhere.
 ///
 /// Uses `no_eq` because [`ItemScope`] does not implement [`PartialEq`].
 #[salsa::tracked(returns(clone), no_eq)]
 pub fn file_exports(db: &dyn Db, file: SourceFile) -> Arc<ItemScope> {
     let hir = file_hir(db, file);
-    // Everything in the file scope is exported (W2 will add #scope_* filtering).
-    Arc::new(hir.scope.clone())
+    // **`FileHir::export_scope` owns the rule**, and this query only caches it. Duplicating the
+    // filter here would be two answers to "what does this module export", and whichever a consumer
+    // happened to call would decide whether it saw encapsulation at all (ADR-0054 §3).
+    Arc::new(hir.export_scope())
 }
 
 // ---------------------------------------------------------------------------

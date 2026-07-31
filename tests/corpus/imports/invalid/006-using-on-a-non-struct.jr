@@ -1,0 +1,11 @@
+// EXPECT: E0250 — `using` on a type with no fields (ADR-0050 §1)
+//
+// `using` promotes a *struct's* fields, so a builtin scalar has nothing to promote. The note says
+// so rather than saying "not supported yet": telling a reader that `using n: s64` is a gap would
+// promise a future where it means something, and there is none — this is the only sensible answer.
+//
+// The message deliberately differs from the one an *imported* struct gets, which is a real gap
+// (ADR-0050's consequences record it as owed).
+count_it :: (using n: s64) -> s64 {
+    return n;
+}

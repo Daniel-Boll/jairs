@@ -412,6 +412,15 @@ fn layout_at_depth(
 
         Item::StructType { decl } => struct_layout_at_depth(pool, target, *decl, depth),
 
+        // A results aggregate lays out exactly as a struct of the same field types, through the
+        // *same* function (ADR-0052 §1). The element list is right here, so unlike a struct there
+        // is no side table to be unresolved.
+        Item::ResultsType { elems } => sequential_layout(pool, target, elems, depth),
+
+        // The context's fields are fixed by the compiler (ADR-0057 §1), so they are listed here
+        // rather than read from the struct side table — there is no `DeclId` to key one on.
+        Item::ContextType => sequential_layout(pool, target, CONTEXT_FIELD_TYPES, depth),
+
         // A union: every field at offset 0, so the size is the **largest** field's rather than
         // the running sum, and the alignment is the strictest (ADR-0045 §3). The size is then
         // rounded up to that alignment exactly as a struct's is, so an array of unions stays
@@ -477,15 +486,45 @@ fn struct_layout_at_depth(
     let fields = pool
         .struct_fields(decl)
         .ok_or(LayoutError::UnresolvedStruct(decl))?;
+    let tys: Vec<PoolId> = fields.iter().map(|field| field.ty).collect();
+    sequential_layout(pool, target, &tys, depth)
+}
 
+/// The field types of [`Item::ContextType`], in order (ADR-0057 §1).
+///
+/// One field today. A `const` rather than a function so that layout, field lookup and both engines
+/// read the *same* list — three copies of "what fields does a context have" would be three chances to
+/// disagree, which is the duplication ADR-0052 found for field types across three crates.
+pub const CONTEXT_FIELD_TYPES: &[PoolId] = &[PoolId::ALLOC_FN, PoolId::FREE_FN, PoolId::S64];
+
+/// The field *names* of [`Item::ContextType`], parallel to [`CONTEXT_FIELD_TYPES`].
+///
+/// Three fields as of ADR-0062 §2: the two halves of an allocator and its own state word. Flattened
+/// into the context rather than nested in an `Allocator` struct, because a nested struct type would
+/// need a `DeclId` a compiler-declared type has not got — the same problem ADR-0057 §1 met and solved
+/// by going structural.
+pub const CONTEXT_FIELD_NAMES: &[&str] = &["allocator", "allocator_free", "allocator_data"];
+
+/// The layout of a sequence of fields laid out in order, C-style.
+///
+/// Shared by a struct's layout and a **results aggregate**'s (ADR-0052 §1), because the two are the
+/// same computation over the same rules. Factored out rather than copied: a second implementation of
+/// field offsets would be a *silent wrong offset* rather than a crash — the failure mode ADR-0018 §2
+/// made one shared layout function to prevent, and which no verifier can catch.
+fn sequential_layout(
+    pool: &Pool,
+    target: TargetLayout,
+    tys: &[PoolId],
+    depth: u32,
+) -> Result<Layout, LayoutError> {
     let mut size = 0u64;
     let mut align = 1u32;
-    for field in fields {
-        let field_layout = layout_at_depth(pool, target, field.ty, depth + 1)?;
+    for ty in tys {
+        let field_layout = layout_at_depth(pool, target, *ty, depth + 1)?;
         size = align_up(size, field_layout.align) + field_layout.size;
         align = align.max(field_layout.align);
     }
-    // Rounding the total up to the struct's own alignment is what makes an array
+    // Rounding the total up to the aggregate's own alignment is what makes an array
     // of it aligned at every element, which is why it is not merely the offset
     // past the last field.
     Ok(Layout {
@@ -523,23 +562,52 @@ pub fn field_offset(
         return Ok((0, layout_of(pool, target, field.ty)?));
     }
 
-    let Item::StructType { decl } = pool.item(ty) else {
-        return Err(LayoutError::NotAType(ty));
+    // A results aggregate's fields are laid out in order exactly as a struct's, and its element
+    // list is right here rather than in a side table (ADR-0052 §1). Sharing
+    // `sequential_field_offset` below is what keeps the two from disagreeing: **omitting this
+    // returned `NotAType` for every result after the first**, which surfaced as a destructuring
+    // statement binding the wrong values rather than as an error.
+    let tys: Vec<PoolId> = match pool.item(ty) {
+        Item::ResultsType { elems } => elems.clone(),
+        // The context's fields, from the one list every consumer reads (ADR-0057 §1).
+        Item::ContextType => CONTEXT_FIELD_TYPES.to_vec(),
+        Item::StructType { decl } => pool
+            .struct_fields(*decl)
+            .ok_or(LayoutError::UnresolvedStruct(*decl))?
+            .iter()
+            .map(|field| field.ty)
+            .collect(),
+        _ => return Err(LayoutError::NotAType(ty)),
     };
-    let fields = pool
-        .struct_fields(*decl)
-        .ok_or(LayoutError::UnresolvedStruct(*decl))?;
+    sequential_field_offset(pool, target, &tys, index).ok_or(LayoutError::NotAType(ty))?
+}
 
+/// The offset and layout of one field in a sequentially laid-out aggregate.
+///
+/// Shared by a struct's field lookup and a results aggregate's, for the reason `sequential_layout`
+/// is shared: two implementations of a field offset would be two chances to produce a silent wrong
+/// address, which no verifier catches.
+///
+/// Returns `None` when `index` is out of range, and `Some(Err(..))` when a field's own layout fails.
+fn sequential_field_offset(
+    pool: &Pool,
+    target: TargetLayout,
+    tys: &[PoolId],
+    index: u32,
+) -> Option<Result<(u64, Layout), LayoutError>> {
     let mut offset = 0u64;
-    for (position, field) in fields.iter().enumerate() {
-        let field_layout = layout_of(pool, target, field.ty)?;
+    for (position, ty) in tys.iter().enumerate() {
+        let field_layout = match layout_of(pool, target, *ty) {
+            Ok(layout) => layout,
+            Err(reason) => return Some(Err(reason)),
+        };
         offset = align_up(offset, field_layout.align);
         if position == index as usize {
-            return Ok((offset, field_layout));
+            return Some(Ok((offset, field_layout)));
         }
         offset += field_layout.size;
     }
-    Err(LayoutError::NotAType(ty))
+    None
 }
 
 #[cfg(test)]

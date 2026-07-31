@@ -37,9 +37,17 @@ impl PoolId {
     pub const FALSE: Self = Self::from_usize(10);
     /// The type of a `#system_library` constant (ADR-0016 §3).
     pub const FOREIGN_LIBRARY: Self = Self::from_usize(11);
+    /// `(s64) -> *u8` — an allocator's allocate half (ADR-0062 §2).
+    ///
+    /// Pre-interned for the same reason [`PoolId::PTR_U8`] is: `CONTEXT_FIELD_TYPES` is a
+    /// `const &[PoolId]`, so a context field's type must be a well-known id — and this one is
+    /// reached the moment any program mentions `context.allocator`.
+    pub const ALLOC_FN: Self = Self::from_usize(12);
+    /// `(*u8)` — an allocator's release half, returning `void` (ADR-0062 §2).
+    pub const FREE_FN: Self = Self::from_usize(13);
 
     /// The number of well-known entries seeded by [`Pool::new`].
-    pub const WELL_KNOWN_COUNT: usize = 12;
+    pub const WELL_KNOWN_COUNT: usize = 14;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +135,21 @@ impl Pool {
         let t = pool.intern(Item::BoolValue(true));
         let f = pool.intern(Item::BoolValue(false));
         let foreign_lib = pool.intern(Item::ForeignLibraryType);
+        // The two halves of an allocator (ADR-0062 §2), `ContextKind::Jairs` because a proc-pointer
+        // type always is (ADR-0059 §3) — which is what makes a `#foreign` allocator a *different*
+        // type, and so refused (E0256) rather than silently accepted.
+        let alloc_fn = pool.intern(Item::ProcType {
+            params: vec![s64],
+            ret: ptr_u8,
+            context: ContextKind::Jairs,
+            effects: EffectRow,
+        });
+        let free_fn = pool.intern(Item::ProcType {
+            params: vec![ptr_u8],
+            ret: void,
+            context: ContextKind::Jairs,
+            effects: EffectRow,
+        });
 
         debug_assert_eq!(void, PoolId::VOID);
         debug_assert_eq!(bool_ty, PoolId::BOOL);
@@ -140,6 +163,8 @@ impl Pool {
         debug_assert_eq!(t, PoolId::TRUE);
         debug_assert_eq!(f, PoolId::FALSE);
         debug_assert_eq!(foreign_lib, PoolId::FOREIGN_LIBRARY);
+        debug_assert_eq!(alloc_fn, PoolId::ALLOC_FN);
+        debug_assert_eq!(free_fn, PoolId::FREE_FN);
         debug_assert_eq!(pool.len(), PoolId::WELL_KNOWN_COUNT);
 
         pool
@@ -237,6 +262,8 @@ impl Pool {
             | Item::PointerType(_)
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
+            | Item::ResultsType { .. }
+            | Item::ContextType
             | Item::EnumType { .. }
             | Item::StructType { .. }
             | Item::UnionType { .. }
@@ -282,6 +309,91 @@ impl Pool {
     /// runtime data, so `[]s64` is one type however many elements any particular view has.
     pub fn view_of(&mut self, elem: PoolId) -> PoolId {
         self.intern(Item::ViewType { elem })
+    }
+
+    /// Interns the implicit context's struct type (ADR-0057 §1).
+    ///
+    /// Compiler-declared and structural, so there is one `Context` type across every file — which is
+    /// what makes a context passed from one module usable in another without translation, the same
+    /// property ADR-0018 §2's shared pool gives every other type.
+    pub fn context_type(&mut self) -> PoolId {
+        self.intern(Item::ContextType)
+    }
+
+    /// The already-interned context type's id, without interning one (ADR-0057 §5).
+    ///
+    /// A method on `&self` so the native back end can call it during `declare`, where it holds the
+    /// pool by shared reference. `None` before sema interns the type.
+    #[must_use]
+    pub fn context_type_id(&self) -> Option<PoolId> {
+        self.find(&Item::ContextType)
+    }
+
+    /// The already-interned context type, without interning one (ADR-0057 §5).
+    ///
+    /// A read-only lookup, because the caller that needs it — `run_main`, creating `main`'s context —
+    /// holds the pool by shared reference and re-locking to intern deadlocked. Sema interns the type
+    /// long before, so `None` means no procedure in the program receives a context.
+    #[must_use]
+    pub fn find_context(pool: &Self) -> Option<PoolId> {
+        pool.find(&Item::ContextType)
+    }
+
+    /// A pointer to the context, which is how it is actually passed (ADR-0057 §2).
+    ///
+    /// By pointer rather than by value so that a callee's writes are visible to *its* callees — "set
+    /// the allocator, then call" is the whole point of a context, and a copy would make that silently
+    /// not work. It is also one machine word however many fields the struct grows, which matters
+    /// because every Jairs call carries it.
+    pub fn context_pointer(&mut self) -> PoolId {
+        let context = self.context_type();
+        self.pointer_to(context)
+    }
+
+    /// The index of a context field by name, or `None` (ADR-0057 §1).
+    #[must_use]
+    pub fn context_field(name: &str) -> Option<u32> {
+        crate::layout::CONTEXT_FIELD_NAMES
+            .iter()
+            .position(|candidate| *candidate == name)
+            .and_then(|index| u32::try_from(index).ok())
+    }
+
+    /// The type of a context field by index (ADR-0057 §1).
+    #[must_use]
+    pub fn context_field_type(index: u32) -> Option<PoolId> {
+        crate::layout::CONTEXT_FIELD_TYPES
+            .get(index as usize)
+            .copied()
+    }
+
+    /// Interns the results aggregate of a procedure returning several values (ADR-0052 §1).
+    ///
+    /// **A one-element list normalises to the element itself**, so `-> (T)` and `-> T` are the same
+    /// type and there is no 1-tuple whose behaviour would have to be explained. An *empty* list
+    /// normalises to `void` for the same reason: `-> ()` is a procedure returning nothing, which
+    /// ADR-0015 §3 already spells `PoolId::VOID`.
+    ///
+    /// Structural rather than nominal, so `(s64, bool)` written in two files interns once — see
+    /// [`Item::ResultsType`] for why an anonymous type cannot key on a `DeclId`.
+    pub fn results_type(&mut self, elems: Vec<PoolId>) -> PoolId {
+        match elems.len() {
+            0 => PoolId::VOID,
+            1 => elems[0],
+            _ => self.intern(Item::ResultsType { elems }),
+        }
+    }
+
+    /// The element types of a results aggregate, or `None` for any other type.
+    ///
+    /// The one place a consumer asks "does this procedure return several values, and which". Sema's
+    /// arity check and MIR's destructuring both read it, so neither counts results for itself.
+    #[must_use]
+    pub fn results_elems(&self, id: PoolId) -> Option<&[PoolId]> {
+        match self.item(id) {
+            Item::ResultsType { elems } => Some(elems),
+            _ => None,
+        }
     }
 
     /// Interns the nominal enum type declared at `decl` (ADR-0041 §4).
@@ -433,6 +545,8 @@ impl Pool {
             | Item::ErrorType
             | Item::ForeignLibraryType
             | Item::PointerType(_)
+            | Item::ResultsType { .. }
+            | Item::ContextType
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
             | Item::EnumType { .. }

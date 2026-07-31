@@ -1,0 +1,27 @@
+// Constants for `imports/valid/010`, exercising ADR-0055's cross-file values.
+//
+// Every kind const-eval can fold, because the wave's whole claim is that a `PoolId` needs no
+// translation across files — the pool is shared (ADR-0018 §2) — so a value of *any* kind should cross
+// with no per-kind work. If one kind needed special handling, that claim would be wrong.
+LIMIT :: 42;
+SCALE :: 3;
+NEGATIVE :: -7;
+WIDE :: 1000000;
+FLAG :: true;
+RATIO :: 0.5;
+
+/// A `float32` constant, because ADR-0040 §3 puts a `float32`'s bits in its low 32 — so the two
+/// widths take different paths through interning and only exercising `float64` would miss one.
+///
+/// `::` rather than `:`, which matters: a `:` declaration is a *variable*, and an imported variable's
+/// value does not cross the boundary at all (only a constant's does, ADR-0055 §2). Written `:` first,
+/// which produced E0245 and looked like a `float32` bug.
+NARROW :: 0.25;
+
+/// A constant computed by a `#run` in its **own** file, so the importing file reads a value that
+/// const-eval produced rather than one the source spelled.
+COMPUTED :: #run double(21);
+
+double :: (n: s64) -> s64 {
+    return n * 2;
+}

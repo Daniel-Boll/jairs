@@ -1,12 +1,12 @@
 //! The signature phase: typing declarations without checking bodies.
 
-use jr_base::{FileId, Interner};
+use jr_base::{FileId, Interner, Span};
 use jr_diag::{Diagnostic, Diagnostics};
-use jr_hir::{ConstValue, ExprScope, FileHir, ItemId, ItemKind, ProcId, ResolveMap};
+use jr_hir::{ConstValue, Expr, ExprScope, FileHir, ItemId, ItemKind, Literal, ProcId, ResolveMap};
 use jr_pool::{ContextKind, Item, Pool, PoolId};
 
 use crate::check::bin_op_text;
-use crate::code::{E0226, E0246};
+use crate::code::{E0204, E0214, E0226, E0246, E0252, E0255};
 use crate::ctx::{Ctx, Mode};
 use crate::map::TypeMap;
 use crate::sigs::{FileSignatures, ProcSig, SigEntry, SigKind};
@@ -433,11 +433,136 @@ impl Ctx<'_> {
         }
     }
 
+    /// Interns a parameter's default value, refusing anything but a literal (ADR-0053 §2).
+    ///
+    /// **No const-eval.** The literal is read directly out of the HIR and interned against the
+    /// parameter's type. A default that could be `SIZE` would make a *signature* depend on a
+    /// constant's value, and that constant's type depends on signatures — the cycle ADR-0018 §3's
+    /// ordering exists to prevent, and the same shape ADR-0039 §3a records for an array length.
+    ///
+    /// The refusal names what would be needed rather than saying "unsupported", because a reader who
+    /// writes `= SIZE` will try `= 2 + 3` next unless they learn the rule.
+    fn param_default(
+        &mut self,
+        param: &jr_hir::Param,
+        ty: PoolId,
+        foreign: bool,
+    ) -> Option<PoolId> {
+        let expr = param.default?;
+        let span = param.name_span;
+        // A `#foreign` procedure's parameters are the C function's, and Jairs does not control its
+        // call sites — a default would be a Jairs-side fiction the FFI boundary cannot honour
+        // (ADR-0053 §4).
+        if foreign {
+            self.diags.push(
+                Diagnostic::error(span, "a `#foreign` parameter cannot have a default value")
+                    .with_code(E0252)
+                    .with_note("the C function's own call sites are not Jairs's to fill in"),
+            );
+            return None;
+        }
+        let Expr::Literal(literal, lit_span) = self.hir.expr(expr).clone() else {
+            self.diags.push(
+                Diagnostic::error(span, "a default value must be a literal")
+                    .with_code(E0252)
+                    .with_note(
+                        "constants are evaluated after signatures are resolved, so a signature cannot depend on one",
+                    )
+                    .with_help("write the value directly, as in `= 10`"),
+            );
+            return None;
+        };
+        // Checked against the parameter's own type through the *existing* literal fit rule
+        // (ADR-0016 §1, ADR-0038), so `b: u8 = 300` is the established E0204 rather than a new code.
+        self.intern_default(&literal, ty, lit_span)
+    }
+
+    /// Interns a literal as a value of type `ty`, reporting a mismatch.
+    ///
+    /// Deliberately *not* `check_literal`, which answers a **type**: a default needs the interned
+    /// **value**, because `ProcSig::defaults` holds one and a call site fills it in without
+    /// re-reading the HIR. The fit check is `IntKind`'s, the same one every integer literal gets.
+    fn intern_default(&mut self, literal: &Literal, ty: PoolId, span: Span) -> Option<PoolId> {
+        match literal {
+            Literal::Bool(value) => {
+                self.expect_default(ty, PoolId::BOOL, span)?;
+                Some(self.pool.bool_value(*value))
+            }
+            Literal::Str(text) => {
+                self.expect_default(ty, PoolId::STRING, span)?;
+                Some(self.pool.str_value(text))
+            }
+            Literal::Int { value, .. } => {
+                let kind = jr_pool::IntKind::of(self.pool, ty)?;
+                // The *same* range check every integer literal gets (ADR-0038): checked against the
+                // type's range rather than its maximum magnitude, so `-128` fits `s8`.
+                let Ok(bits) = kind.check(*value, "a default value") else {
+                    let text = self.describe(ty);
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            format!("the default value does not fit in `{text}`"),
+                        )
+                        .with_code(E0204),
+                    );
+                    return None;
+                };
+                Some(self.pool.int_value(ty, bits))
+            }
+            Literal::Float { bits, .. } => {
+                let kind = jr_pool::FloatKind::of(self.pool, ty)?;
+                Some(
+                    self.pool
+                        .float_value(ty, kind.encode(f64::from_bits(*bits))),
+                )
+            }
+            // `null` as a default (ADR-0060 §5): a literal, so it is admissible, and it interns to
+            // the zero pointer of the parameter's type — the same value `check_null_literal`
+            // produces. The parameter's type must be a pointer, checked the way `expect_default`
+            // checks the other kinds: a `p: s64 = null` default is the same category error a
+            // `p: s64 = 1.5` default is.
+            Literal::Null => {
+                if self.pointee(ty).is_none() {
+                    let want = self.describe(ty);
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            format!("a `null` default cannot be used for a `{want}` parameter"),
+                        )
+                        .with_code(E0214),
+                    );
+                    return None;
+                }
+                Some(self.pool.int_value(ty, 0))
+            }
+        }
+    }
+
+    /// Reports a default whose literal kind does not match its parameter's type.
+    fn expect_default(&mut self, declared: PoolId, actual: PoolId, span: Span) -> Option<()> {
+        if declared == actual {
+            return Some(());
+        }
+        let want = self.describe(declared);
+        let got = self.describe(actual);
+        self.diags.push(
+            Diagnostic::error(
+                span,
+                format!("a default of type `{got}` cannot be used for a `{want}` parameter"),
+            )
+            .with_code(E0214),
+        );
+        None
+    }
+
     fn proc_signature(&mut self, proc: ProcId) -> ProcSig {
         let hir = self.hir;
         let declaration = hir.proc(proc).clone();
 
         let mut params = Vec::with_capacity(declaration.params.len());
+        let mut names = Vec::with_capacity(declaration.params.len());
+        let mut defaults = Vec::with_capacity(declaration.params.len());
+        let foreign = declaration.foreign.is_some();
         for param in &declaration.params {
             let ty = match param.ty {
                 // Parameter types live in `FileHir::type_refs`, not in
@@ -445,6 +570,8 @@ impl Ctx<'_> {
                 Some(id) => self.resolve_type(ExprScope::TopLevel, id, param.name_span),
                 None => PoolId::ERROR,
             };
+            names.push(param.name);
+            defaults.push(self.param_default(param, ty, foreign));
             params.push(ty);
         }
 
@@ -455,17 +582,49 @@ impl Ctx<'_> {
             None => PoolId::VOID,
         };
 
-        // Every `#foreign` procedure is implicitly `#c_call` (ADR-0001), and the
-        // context kind is part of the type's identity — a function pointer of one
-        // kind must never satisfy the other.
-        let context = if declaration.foreign.is_some() {
+        // Every `#foreign` procedure is implicitly `#c_call` (ADR-0001), and the context kind is
+        // part of the type's identity — a function pointer of one kind must never satisfy the other.
+        //
+        // **Both** conditions, not just `foreign`. This read `foreign.is_some()` alone, which was
+        // correct when written: `#c_call` was unparseable, so `#foreign` was the only route to
+        // `CCall`. ADR-0057 made the directive real and left this behind, so an explicit
+        // `raw :: () #c_call { }` interned as `ContextKind::Jairs` — its *type* claiming a context
+        // its ABI does not take. Nothing reads the kind for the ABI yet (lowering and both back
+        // ends ask the HIR flags directly), which is exactly why it was invisible: a wrong answer
+        // waiting for the first consumer, which is the shape of a function-pointer type check.
+        let context = if declaration.foreign.is_some() || declaration.c_call {
             ContextKind::CCall
         } else {
             ContextKind::Jairs
         };
 
+        // `#no_abc` on a `#foreign` declaration is refused (ADR-0058 §3). A procedure with no body
+        // has no index in it to leave unchecked, so the directive could only ever be a word that
+        // does nothing — and a directive that is silently ignored is worse than one that is
+        // rejected, because nothing tells the writer their intent did not land.
+        //
+        // Here rather than in the check phase because it is a property of the *declaration*: it
+        // needs no types, no body and no expression context.
+        if declaration.no_abc && declaration.foreign.is_some() {
+            self.diags.push(
+                Diagnostic::error(
+                    declaration.span,
+                    "`#no_abc` is not allowed on a `#foreign` procedure",
+                )
+                .with_code(E0255)
+                .with_note("a `#foreign` procedure has no body, so it has no index to check")
+                .with_help("remove the `#no_abc`"),
+            );
+        }
+
         let ty = self.pool.proc_type(params.clone(), ret, context);
-        let sig = ProcSig { params, ret, ty };
+        let sig = ProcSig {
+            params,
+            names,
+            defaults,
+            ret,
+            ty,
+        };
         self.sigs.insert_proc(proc, sig.clone());
         if let Some(library) = self.foreign_library_of(&declaration) {
             self.sigs.insert_foreign_library(proc, library);

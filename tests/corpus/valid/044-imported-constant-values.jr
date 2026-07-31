@@ -1,0 +1,50 @@
+// Reading an imported constant's value, observable to both engines (ADR-0055).
+//
+// `imports/valid/010` covers the same ground for the *resolution* harnesses, which resolve against
+// `tests/corpus/modules` only. This file is the half the **differential harness** runs — it imports
+// the bundled standard library and exits with a status, so the two engines compare a computation
+// rather than merely both accepting the program.
+//
+// The constants are `Basic`'s own `STDOUT` and `STDERR`, which is deliberate rather than convenient:
+// they are a real part of the standard library's surface, so this tests the boundary a user actually
+// crosses. Reading either was **E0245 for eleven waves** — "the compiler could not lower the body" —
+// which is why `print` had to take a `string` and `write` was never callable with `STDOUT` from
+// outside `Basic`.
+//
+// ADR-0055's consequences require using the *value*, not just resolving the name: a fix producing the
+// wrong number would satisfy any test checking only that the warning was gone. So every assertion
+// computes.
+#import "Basic";
+
+main :: () {
+    n := 0;
+
+    // The values `Basic` declares: `STDOUT :: 1` and `STDERR :: 2`.
+    if STDOUT == 1 {
+        n = n + 1;
+    }
+    if STDERR == 2 {
+        n = n + 2;
+    }
+    // Arithmetic on them, so a wrong value is a wrong answer rather than a plausible one.
+    if STDOUT + STDERR == 3 {
+        n = n + 4;
+    }
+    if STDERR - STDOUT == 1 {
+        n = n + 8;
+    }
+    // An imported constant as a **call argument**, which is the use that motivated the fix: writing
+    // to a chosen stream from outside `Basic` was not expressible before this wave. Zero bytes, so
+    // the program produces no output and the differential harness compares exit statuses rather than
+    // a stream this file did not intend to write to.
+    empty := "";
+    if write(STDOUT, empty.data, 0) == 0 {
+        n = n + 16;
+    }
+
+    // Every assertion: 31.
+    if n == 31 {
+        exit(0);
+    }
+    exit(1);
+}

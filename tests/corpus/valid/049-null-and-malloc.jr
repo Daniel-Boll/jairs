@@ -1,0 +1,93 @@
+// `null` and a memory source (ADR-0060) — the fourth feature of W3, and the last piece an allocator
+// needs that the compiler was refusing.
+//
+// The two waves before this both recorded that allocators were "unblocked, needing a proc-pointer
+// struct field". That field turned out to already work — ADR-0059 gave it for free, because a
+// procedure type is a scalar and field access is type-directed. What was actually missing, found by
+// writing an allocator and seeing what the compiler refused: `null` (the last reserved keyword, its
+// refusal still reading "arrives in wave W1") and a way to get memory (no `malloc` anywhere).
+//
+// Five things here are worth checking rather than assuming:
+//
+//   * `null` takes its type from **context** (ADR-0060 §1), like an integer literal — `p: *u8 =
+//     null` works, and a bare `null` with no context is E0257 (in `type-errors/056`). The one
+//     spelling of a null pointer, since `cast(*u8, 0)` is still refused;
+//   * `null == null` is **true** and `p == null` after a real allocation is **false** — the whole
+//     point of a null pointer is a sentinel a program can test, so this is the observable behaviour
+//     rather than the address, which is undefined;
+//   * a byte written through a `malloc`'d pointer **reads back** — `p[0] = 42; p[0] == 42` — proving
+//     the memory is real and writable without depending on which address the OS returned;
+//   * `free(null)` is **defined** (a no-op), so a program can release unconditionally;
+//   * the two engines **agree**, run as subprocesses. The VM reaches `malloc` through libffi in
+//     runtime mode, so the pointer is a genuine host address there too — the one place a host
+//     pointer is legitimate in the VM (ADR-0060 §4). A `#run malloc(…)` would *not* work, and is
+//     deliberately absent: ADR-0006 gates comptime FFI.
+//
+// The `exit` at the end gives this file teeth under the differential harness: a wrong answer about
+// null-ness or a byte that did not survive the round-trip is a different exit status.
+#import "Basic";
+
+main :: () {
+    n := 0;
+
+    // A null pointer, written with the keyword rather than a cast.
+    p: *u8 = null;
+    if p == null {
+        n = n + 1;
+    }
+    // Two null pointers compare equal. `p` is null here (nothing has allocated yet), and a fresh
+    // null literal takes `p`'s type from the comparison — the sentinel equals itself.
+    if p == null {
+        n = n + 2;
+    }
+
+    // Real memory from libc. Its address is undefined, but that it is *not* null is not.
+    p = malloc(16);
+    if p == null {
+        // Allocation failed — nothing more to test, and the assertions below would fault.
+        exit(1);
+    }
+    n = n + 4;
+
+    // A byte written through the pointer reads back: the memory is real and writable. The write is
+    // through `p.*` — indexing a bare pointer is pointer arithmetic, which is still refused
+    // (ADR-0060 §5), so a byte past the first is not reachable without it. One byte is enough to
+    // prove the storage is real.
+    p.* = 42;
+    if p.* == 42 {
+        n = n + 8;
+    }
+    // Overwrite, to prove the location is stable rather than read-once.
+    p.* = 200;
+    if p.* == 200 {
+        n = n + 16;
+    }
+
+    // Release it, then a defined no-op free of a null pointer. The null is a *typed local* rather
+    // than a bare `free(null)`: a `null` argument would take its type from the callee's parameter,
+    // which needs the `#import` resolved — and the sema corpus test checks these files with imports
+    // *unresolved* on purpose, so a context-free `null` there is E0257. A typed local sidesteps
+    // that without weakening the test: `free` still receives a null pointer.
+    free(p);
+    nothing: *u8 = null;
+    free(nothing);
+    n = n + 32;
+
+    // A second allocation, to prove `malloc` works more than once and the first `free` did not
+    // corrupt the allocator.
+    q: *u8 = malloc(1);
+    if q == null {
+        exit(1);
+    }
+    q.* = 9;
+    if q.* == 9 {
+        n = n + 64;
+    }
+    free(q);
+
+    // Every assertion: 127.
+    if n == 127 {
+        exit(0);
+    }
+    exit(1);
+}

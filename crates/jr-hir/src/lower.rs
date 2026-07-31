@@ -89,6 +89,12 @@ struct LowerCtx<'a> {
     // File-level arenas
     items: Vec<Item>,
     scope: ItemScope,
+    /// Whether declarations lowered from here on are exported (ADR-0054 §1).
+    ///
+    /// Starts `true`: export is the default, which is what keeps every existing file and all 126
+    /// corpus files meaning exactly what they did — ADR-0014 §2 promised it and `modules/Basic`
+    /// relies on it.
+    exporting: bool,
     procs: Vec<Proc>,
     structs: Vec<Struct>,
     enums: Vec<Enum>,
@@ -108,6 +114,7 @@ impl<'a> LowerCtx<'a> {
             diags: Diagnostics::new(),
             items: Vec::new(),
             scope: ItemScope::new(),
+            exporting: true,
             procs: Vec::new(),
             structs: Vec::new(),
             enums: Vec::new(),
@@ -222,6 +229,12 @@ impl<'a> LowerCtx<'a> {
                 };
                 self.alloc_top_type_ref(TypeRef::View { elem })
             }
+            TypeExpr::Proc(p) => {
+                let params: Vec<TypeRefId> =
+                    p.params().map(|t| self.lower_type_expr_top(&t)).collect();
+                let ret = p.ret().map(|t| self.lower_type_expr_top(&t));
+                self.alloc_top_type_ref(TypeRef::Proc { params, ret })
+            }
             TypeExpr::Struct(s) => {
                 let struct_id = self.lower_struct_type(s);
                 self.alloc_top_type_ref(TypeRef::Struct(struct_id))
@@ -280,6 +293,7 @@ impl<'a> LowerCtx<'a> {
                     name,
                     name_span,
                     ty,
+                    using: f.is_using(),
                 });
             }
         }
@@ -349,19 +363,37 @@ impl<'a> LowerCtx<'a> {
                     .map(|t| self.span_of_token(t))
                     .unwrap_or(span);
                 let ty = p.ty().map(|t| self.lower_type_expr_top(&t));
+                // A default is a *top-level* expression, like a constant's value: it belongs to the
+                // signature rather than to any body, so it goes in `FileHir::exprs`.
+                let default = p.default_value().map(|e| self.lower_top_expr(&e));
                 params.push(Param {
                     name,
                     name_span,
                     ty,
+                    using: p.is_using(),
+                    default,
                 });
             }
         }
 
-        // Return type
-        let ret = ast_proc
-            .ret_type()
-            .and_then(|rt| rt.ty())
-            .map(|t| self.lower_type_expr_top(&t));
+        // Return type. A `RESULT_LIST` is *not* a type node, so `rt.ty()` does not find one — the
+        // list is checked for first (ADR-0052 §1), which is also what keeps `(s64, bool)` from
+        // becoming a spellable type anywhere `TypeExpr` is accepted.
+        let ret = ast_proc.ret_type().and_then(|rt| {
+            let node = rt.syntax();
+            if let Some(list) = node
+                .children()
+                .find(|n| n.kind() == jr_syntax::SyntaxKind::RESULT_LIST)
+            {
+                let elems: Vec<TypeRefId> = list
+                    .children()
+                    .filter_map(jr_syntax::ast::TypeExpr::cast)
+                    .map(|t| self.lower_type_expr_top(&t))
+                    .collect();
+                return Some(self.alloc_top_type_ref(TypeRef::Results(elems)));
+            }
+            rt.ty().map(|t| self.lower_type_expr_top(&t))
+        });
 
         // Foreign attribute
         let foreign = ast_proc.foreign_attr().map(|fa| {
@@ -393,6 +425,8 @@ impl<'a> LowerCtx<'a> {
 
         self.alloc_proc(Proc {
             params,
+            c_call: ast_proc.is_c_call(),
+            no_abc: ast_proc.is_no_abc(),
             ret,
             body,
             foreign,
@@ -432,6 +466,42 @@ impl<'a> LowerCtx<'a> {
     }
 
     // ---- top-level expressions ---------------------------------------------
+
+    /// Lowers a **file-level** argument list, returning the values and their names (ADR-0053 §1).
+    ///
+    /// Walks the `ARG_LIST`'s children rather than `ArgList::args()`, because a `NAMED_ARG` is not an
+    /// expression kind and that accessor skips it entirely — which would have silently dropped every
+    /// named argument, the failure mode a kind-filtered walk always has.
+    ///
+    /// A near-identical `BodyLowerCtx::lower_args` exists for a body's own expression arena. The two
+    /// are separate rather than sharing a flag because they lower into *different arenas* that both
+    /// start at index 0, and passing the wrong one would resolve against a different expression —
+    /// the hazard `Body::type_refs`' doc comment records for types and this repeats for expressions.
+    fn lower_args(&mut self, list: &SyntaxNode) -> (Vec<ExprId>, Vec<Option<Symbol>>) {
+        let mut args = Vec::new();
+        let mut names = Vec::new();
+        for child in list.children() {
+            if let Some(named) = jr_syntax::ast::NamedArg::cast(child.clone()) {
+                let span = self.span_of_node(named.syntax());
+                let name = named
+                    .name()
+                    .and_then(|n| n.text())
+                    .map(|t| self.intern(t.as_str()));
+                let value = named
+                    .value()
+                    .map(|e| self.lower_top_expr(&e))
+                    .unwrap_or_else(|| self.alloc_top_expr(Expr::Error(span), span));
+                args.push(value);
+                names.push(name);
+                continue;
+            }
+            if let Some(expr) = AstExpr::cast(child) {
+                args.push(self.lower_top_expr(&expr));
+                names.push(None);
+            }
+        }
+        (args, names)
+    }
 
     fn lower_top_expr(&mut self, expr: &AstExpr) -> ExprId {
         let span = self.span_of_node(expr.syntax());
@@ -509,15 +579,19 @@ impl<'a> LowerCtx<'a> {
                         let err = Expr::Error(span);
                         self.alloc_top_expr(err, span)
                     });
-                let args = c
-                    .arg_list()
-                    .map(|al| {
-                        al.args()
-                            .map(|a| self.lower_top_expr(&a))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                self.alloc_top_expr(Expr::Call { callee, args, span }, span)
+                let (args, arg_names) = match c.arg_list() {
+                    Some(al) => self.lower_args(al.syntax()),
+                    None => (Vec::new(), Vec::new()),
+                };
+                self.alloc_top_expr(
+                    Expr::Call {
+                        callee,
+                        args,
+                        arg_names,
+                        span,
+                    },
+                    span,
+                )
             }
             AstExpr::Field(f) => {
                 let receiver = f
@@ -593,6 +667,9 @@ impl<'a> LowerCtx<'a> {
                     });
                 self.alloc_top_expr(Expr::Deref(ptr, span), span)
             }
+            // `context` at file scope is refused by sema rather than here (there is no context
+            // during const-eval), so lowering produces the node and sema says why.
+            AstExpr::Context(_) => self.alloc_top_expr(Expr::Context(span), span),
             AstExpr::Uninit(_) => self.alloc_top_expr(Expr::Uninit(span), span),
             AstExpr::Cast(c) => {
                 // Same refusal as the body case, and for the same reason.
@@ -685,6 +762,7 @@ impl<'a> LowerCtx<'a> {
         let proc_id = self.lower_proc(&proc);
         let name = self.intern(&format!("operator{}", token.text()));
         self.items.push(Item {
+            exported: self.exporting,
             name: Some(name),
             span,
             name_span,
@@ -739,6 +817,7 @@ impl<'a> LowerCtx<'a> {
         };
 
         self.alloc_item(Item {
+            exported: self.exporting,
             name,
             span,
             name_span,
@@ -766,6 +845,7 @@ impl<'a> LowerCtx<'a> {
         };
 
         self.alloc_item(Item {
+            exported: self.exporting,
             name,
             span,
             name_span,
@@ -782,6 +862,7 @@ impl<'a> LowerCtx<'a> {
         };
 
         self.alloc_item(Item {
+            exported: self.exporting,
             name: None,
             span,
             name_span: span,
@@ -797,6 +878,7 @@ impl<'a> LowerCtx<'a> {
             .unwrap_or_else(|| self.alloc_top_expr(Expr::Error(span), span));
 
         self.alloc_item(Item {
+            exported: self.exporting,
             name: None,
             span,
             name_span: span,
@@ -963,6 +1045,11 @@ impl<'a> BodyLowerCtx<'a> {
                 };
                 self.alloc_type_ref(TypeRef::View { elem })
             }
+            TypeExpr::Proc(p) => {
+                let params: Vec<TypeRefId> = p.params().map(|t| self.lower_type_expr(&t)).collect();
+                let ret = p.ret().map(|t| self.lower_type_expr(&t));
+                self.alloc_type_ref(TypeRef::Proc { params, ret })
+            }
             TypeExpr::Struct(_) | TypeExpr::Union(_) | TypeExpr::Enum(_) => {
                 // An inline aggregate type inside a body is unusual, and both arenas would
                 // have to agree about where it lives; refused rather than half-lowered.
@@ -987,6 +1074,12 @@ impl<'a> BodyLowerCtx<'a> {
         let span = self.span_of_node(stmt.syntax());
         match stmt {
             AstStmt::Block(b) => self.lower_block(b),
+            // A `TARGET_LIST` child means this is a destructuring form (ADR-0052 §2) rather than an
+            // ordinary declaration or assignment — the parser reuses `DECL_STMT`/`ASSIGN_STMT` for
+            // both, so the *presence of the list* is what distinguishes them.
+            AstStmt::Decl(d) if has_target_list(d.syntax()) => {
+                self.lower_local_tuple(d.syntax(), span)
+            }
             AstStmt::Decl(d) => self.lower_decl_stmt(d, span),
             AstStmt::Expr(e) => {
                 let expr_id = e
@@ -994,6 +1087,9 @@ impl<'a> BodyLowerCtx<'a> {
                     .map(|ex| self.lower_expr(&ex))
                     .unwrap_or_else(|| self.alloc_expr(Expr::Error(span), span));
                 self.alloc_stmt(Stmt::Expr(expr_id, span))
+            }
+            AstStmt::Assign(a) if has_target_list(a.syntax()) => {
+                self.lower_assign_tuple(a.syntax(), span)
             }
             AstStmt::Assign(a) => self.lower_assign_stmt(a, span),
             AstStmt::If(i) => self.lower_if_stmt(i, span),
@@ -1028,8 +1124,20 @@ impl<'a> BodyLowerCtx<'a> {
                 }
             }
             AstStmt::Return(r) => {
-                let expr = r.expr().map(|e| self.lower_expr(&e));
-                self.alloc_stmt(Stmt::Return(expr, span))
+                // Several expressions means a multi-value return (ADR-0052 §1). Counted here rather
+                // than given its own node kind, because one expression is the ordinary case and a
+                // list of one would have to be unwrapped everywhere downstream.
+                let exprs: Vec<ExprId> = r
+                    .syntax()
+                    .children()
+                    .filter_map(jr_syntax::ast::Expr::cast)
+                    .map(|e| self.lower_expr(&e))
+                    .collect();
+                match exprs.len() {
+                    0 => self.alloc_stmt(Stmt::Return(None, span)),
+                    1 => self.alloc_stmt(Stmt::Return(Some(exprs[0]), span)),
+                    _ => self.alloc_stmt(Stmt::ReturnTuple(exprs, span)),
+                }
             }
             AstStmt::Break(b) => {
                 let label = b
@@ -1087,6 +1195,7 @@ impl<'a> BodyLowerCtx<'a> {
                     ty,
                     init,
                     uninit,
+                    using: vd.is_using(),
                     span: vd_span,
                 };
                 let local_id = self.alloc_local(local);
@@ -1134,6 +1243,114 @@ impl<'a> BodyLowerCtx<'a> {
                 self.alloc_stmt(Stmt::Error(span))
             }
         }
+    }
+
+    /// Lowers `q, ok := f();` (ADR-0052 §2).
+    ///
+    /// A target whose text is `_` becomes `None` — a **hole**, not a local — which is what keeps a
+    /// discard out of the resolve map and out of the locals arena entirely (ADR-0052 §3). Recognised
+    /// by text rather than by token kind, because `_` lexes as an ordinary identifier in Jairs and
+    /// reserving it globally would break any program already using it as a name.
+    fn lower_local_tuple(&mut self, node: &SyntaxNode, span: Span) -> StmtId {
+        let targets = self.lower_targets(node);
+        let call = self.lower_tuple_rhs(node, span);
+        let mut locals = Vec::with_capacity(targets.len());
+        for name in &targets {
+            match name {
+                Some((sym, name_span)) => {
+                    let id = self.alloc_local(Local {
+                        name: *sym,
+                        name_span: *name_span,
+                        // No annotation is possible in this form: each local's type *is* the
+                        // matching result's, which sema fills in.
+                        ty: None,
+                        init: None,
+                        uninit: false,
+                        using: false,
+                        span,
+                    });
+                    self.define_local(*sym, id);
+                    locals.push(Some(id));
+                }
+                None => locals.push(None),
+            }
+        }
+        self.alloc_stmt(Stmt::LocalTuple {
+            targets: locals,
+            call,
+            span,
+        })
+    }
+
+    /// Lowers `q, ok = f();` (ADR-0052 §2), whose targets are existing places.
+    fn lower_assign_tuple(&mut self, node: &SyntaxNode, span: Span) -> StmtId {
+        let targets = self.lower_targets(node);
+        let call = self.lower_tuple_rhs(node, span);
+        let mut places = Vec::with_capacity(targets.len());
+        for name in &targets {
+            match name {
+                Some((sym, name_span)) => {
+                    // A target is a *name expression*, so it goes through the ordinary expression
+                    // path and gets an ordinary `Res` — which is what makes `is_place` and the
+                    // assignability rule apply to it unchanged.
+                    // The same conversion the ordinary name path does, so a destructuring target
+                    // resolves exactly as `q = 1` would — one rule for what a name means.
+                    let res = self
+                        .lookup_local(*sym)
+                        .map(|e| match e {
+                            ScopeEntry::Local(id) => Res::Local(id),
+                            ScopeEntry::Param(id) => Res::Param(id),
+                        })
+                        .unwrap_or(Res::Error);
+                    let expr = self.alloc_expr(
+                        Expr::Name {
+                            name: *sym,
+                            span: *name_span,
+                            res,
+                        },
+                        *name_span,
+                    );
+                    places.push(Some(expr));
+                }
+                None => places.push(None),
+            }
+        }
+        self.alloc_stmt(Stmt::AssignTuple {
+            targets: places,
+            call,
+            span,
+        })
+    }
+
+    /// The names in a `TARGET_LIST`, with `_` as `None`.
+    fn lower_targets(&mut self, node: &SyntaxNode) -> Vec<Option<(Symbol, Span)>> {
+        let Some(list) = node
+            .children()
+            .find(|n| n.kind() == jr_syntax::SyntaxKind::TARGET_LIST)
+        else {
+            return Vec::new();
+        };
+        list.children()
+            .filter(|n| n.kind() == jr_syntax::SyntaxKind::NAME)
+            .map(|name| {
+                let text = name.text().to_string();
+                let span = self.span_of_node(&name);
+                if text.trim() == "_" {
+                    None
+                } else {
+                    Some((self.intern(text.trim()), span))
+                }
+            })
+            .collect()
+    }
+
+    /// The call on the right of a destructuring statement.
+    fn lower_tuple_rhs(&mut self, node: &SyntaxNode, span: Span) -> ExprId {
+        node.children()
+            .find(|n| jr_syntax::ast::Expr::cast(n.clone()).is_some())
+            .and_then(jr_syntax::ast::Expr::cast)
+            .map(|e| self.lower_expr(&e))
+            .unwrap_or_else(|| self.alloc_expr(Expr::Error(span), span))
     }
 
     fn lower_assign_stmt(&mut self, a: &AssignStmt, span: Span) -> StmtId {
@@ -1253,6 +1470,9 @@ impl<'a> BodyLowerCtx<'a> {
             ty: None,
             init: None,
             uninit: false,
+            // A `for`'s loop variable is never `using`: there is no syntax for it, and
+            // ADR-0050 §6 leaves `using` in a `for` header deliberately absent.
+            using: false,
             span,
         });
         self.define_local(sym, id);
@@ -1293,6 +1513,36 @@ impl<'a> BodyLowerCtx<'a> {
             label,
             span,
         })
+    }
+
+    /// Lowers a **body-level** argument list (ADR-0053 §1).
+    ///
+    /// See `LowerCtx::lower_args` for why this is a separate function rather than a shared one with a
+    /// flag: the two arenas both start at index 0.
+    fn lower_args(&mut self, list: &SyntaxNode) -> (Vec<ExprId>, Vec<Option<Symbol>>) {
+        let mut args = Vec::new();
+        let mut names = Vec::new();
+        for child in list.children() {
+            if let Some(named) = jr_syntax::ast::NamedArg::cast(child.clone()) {
+                let span = self.span_of_node(named.syntax());
+                let name = named
+                    .name()
+                    .and_then(|n| n.text())
+                    .map(|t| self.intern(t.as_str()));
+                let value = named
+                    .value()
+                    .map(|e| self.lower_expr(&e))
+                    .unwrap_or_else(|| self.alloc_expr(Expr::Error(span), span));
+                args.push(value);
+                names.push(name);
+                continue;
+            }
+            if let Some(expr) = AstExpr::cast(child) {
+                args.push(self.lower_expr(&expr));
+                names.push(None);
+            }
+        }
+        (args, names)
     }
 
     fn lower_expr(&mut self, expr: &AstExpr) -> ExprId {
@@ -1363,11 +1613,19 @@ impl<'a> BodyLowerCtx<'a> {
                     .callee()
                     .map(|e| self.lower_expr(&e))
                     .unwrap_or_else(|| self.alloc_expr(Expr::Error(span), span));
-                let args = c
-                    .arg_list()
-                    .map(|al| al.args().map(|a| self.lower_expr(&a)).collect::<Vec<_>>())
-                    .unwrap_or_default();
-                self.alloc_expr(Expr::Call { callee, args, span }, span)
+                let (args, arg_names) = match c.arg_list() {
+                    Some(al) => self.lower_args(al.syntax()),
+                    None => (Vec::new(), Vec::new()),
+                };
+                self.alloc_expr(
+                    Expr::Call {
+                        callee,
+                        args,
+                        arg_names,
+                        span,
+                    },
+                    span,
+                )
             }
             AstExpr::Field(f) => {
                 let receiver = f
@@ -1425,6 +1683,7 @@ impl<'a> BodyLowerCtx<'a> {
                     .unwrap_or_else(|| self.alloc_expr(Expr::Error(span), span));
                 self.alloc_expr(Expr::Deref(ptr, span), span)
             }
+            AstExpr::Context(_) => self.alloc_expr(Expr::Context(span), span),
             AstExpr::Uninit(_) => self.alloc_expr(Expr::Uninit(span), span),
             AstExpr::Cast(c) => {
                 // A `cast` missing its type or its operand lowers to `Expr::Error`, not to a
@@ -1634,7 +1893,7 @@ fn lower_array_len(
         // `[1.5]u8` is not an array length. Sema reports it as E0233 like any other
         // non-integer-literal length; there is deliberately no float-specific message,
         // because "an array length must be an integer literal" already says it.
-        Literal::Float { .. } | Literal::Bool(_) | Literal::Str(_) => None,
+        Literal::Float { .. } | Literal::Bool(_) | Literal::Str(_) | Literal::Null => None,
     }
 }
 
@@ -1651,6 +1910,7 @@ fn lower_literal_impl(
     match tok.kind() {
         TRUE_KW => Literal::Bool(true),
         FALSE_KW => Literal::Bool(false),
+        NULL_KW => Literal::Null,
         STRING_LITERAL => {
             let raw = tok.text();
             let decoded = decode_string_impl(raw, span, diags);
@@ -1894,7 +2154,25 @@ pub fn lower_file(
 
     let mut ctx = LowerCtx::new(file, interner);
 
-    for item in source_file.items() {
+    // Walked as **children** rather than through `source_file.items()`, because a `SCOPE_DECL` is
+    // not an `Item` kind and that accessor would skip it — so every visibility marker would be
+    // invisible and every declaration would stay exported (ADR-0054 §1). The same kind-filtered
+    // walk that dropped named arguments one wave earlier.
+    for child in source_file.syntax().children() {
+        // A marker changes the visibility of everything *after* it, so it is applied to the context
+        // as the walk passes it. That is what makes this a position in the file rather than a
+        // property of a declaration.
+        if let Some(scope) = jr_syntax::ast::ScopeDecl::cast(child.clone()) {
+            let exported = scope
+                .directive()
+                .map(|token| token.text() != "#scope_module")
+                .unwrap_or(true);
+            ctx.exporting = exported;
+            continue;
+        }
+        let Some(item) = AstItem::cast(child) else {
+            continue;
+        };
         match item {
             AstItem::Const(cd) => ctx.lower_const_decl(&cd),
             AstItem::Operator(od) => ctx.lower_operator_decl(&od),
@@ -1928,4 +2206,15 @@ fn check_directive_as_expression(name: &str, span: Span) -> Option<Diagnostic> {
             .with_note("only `#run` and `#system_library` may appear in an expression")
             .with_help("if this directive should be supported, it needs a grammar rule of its own"),
     )
+}
+
+/// Whether a statement node carries a destructuring target list (ADR-0052 §2).
+///
+/// The parser reuses `DECL_STMT` and `ASSIGN_STMT` for both the ordinary and the destructuring
+/// forms, so this presence test is what tells them apart — rather than a third node kind, which
+/// would have made every consumer of those two kinds learn about a variant that behaves the same
+/// everywhere except in lowering.
+fn has_target_list(node: &SyntaxNode) -> bool {
+    node.children()
+        .any(|n| n.kind() == jr_syntax::SyntaxKind::TARGET_LIST)
 }

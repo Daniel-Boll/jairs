@@ -135,6 +135,23 @@ impl Program {
         consts: &ConstValues,
         imports: &ImportedProcs,
     ) -> Lowered {
+        self.lower_with_values(source, consts, imports, &jr_mir::ImportedValues::new())
+    }
+
+    /// [`Self::lower_with`], additionally stating the values of imported constants (ADR-0055 §1).
+    ///
+    /// Supplied by the caller for the reason `consts` is: this crate's tests have no module loader,
+    /// so a test that needs an imported constant to have a value **states** the value. An empty map
+    /// here is not a shortcut — it is the same "state what you need" contract, and a test asserting
+    /// something about imported constants must pass a non-empty one or it proves nothing (ADR-0053's
+    /// lesson about harnesses).
+    pub fn lower_with_values(
+        &mut self,
+        source: &str,
+        consts: &ConstValues,
+        imports: &ImportedProcs,
+        imported_values: &jr_mir::ImportedValues,
+    ) -> Lowered {
         let file = FILE;
         let parsed = jr_syntax::parse(source, file);
         let mut earlier = Diagnostics::new();
@@ -164,6 +181,21 @@ impl Program {
         let mut types = signatures.types;
         types.absorb(&checked.types);
 
+        // The **real** filled-argument map, translated from `checked`, not an empty one: passing
+        // `FilledArgs::new()` would make every named argument and default silently lower in source
+        // order here, so a lowering test could pass while the compiler was wrong (ADR-0053 §1).
+        let mut filled = jr_mir::FilledArgs::new();
+        for ((scope, expr), slots) in &checked.filled_calls {
+            let translated: Vec<jr_mir::FilledArg> = slots
+                .iter()
+                .map(|slot| match slot {
+                    jr_sema::ArgSlot::Given(expr) => jr_mir::FilledArg::Expr(*expr),
+                    jr_sema::ArgSlot::Default(value) => jr_mir::FilledArg::Default(*value),
+                })
+                .collect();
+            filled.set(*scope, *expr, translated);
+        }
+
         let mir = jr_mir::lower_file(
             &hir,
             &resolve,
@@ -171,7 +203,9 @@ impl Program {
             &signatures.signatures,
             consts,
             imports,
+            imported_values,
             &jr_mir::OperatorCalls::new(),
+            &filled,
             &self.interner,
             &mut self.pool,
         );

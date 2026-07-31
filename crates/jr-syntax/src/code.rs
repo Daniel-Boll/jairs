@@ -28,8 +28,14 @@
 //! | E0227–E0229 | `jr-mir` |
 //! | E0230 | `jr-db` const-eval |
 //! | E0231 | `jr-db` unused imports |
+//! | E0232–E0247, E0250–E0257 | `jr-sema` and `jr-hir`, past the original blocks |
 //!
-//! **E0232 is the first free code overall**, and **E0123 the first free parser code.**
+//! **E0258 is the first free code overall**, and **E0131 the first free parser code.**
+//!
+//! This table and that sentence are the thing most likely to be stale, because a wave that
+//! claims a code in another crate has no reason to open this file. ADR-0047 found the same
+//! sentence wrong once already. The tests below check what this crate *owns*; they cannot check
+//! a claim about somebody else's range, so the claim is a comment and the comment is a liability.
 
 // ---------------------------------------------------------------------------
 // Lexer: E0001–E0006
@@ -168,6 +174,27 @@ pub(crate) const E0126: &str = "E0126";
 /// says which — the same reasoning E0126 uses for a malformed `operator` declaration.
 pub(crate) const E0127: &str = "E0127";
 
+/// A malformed `using` declaration (ADR-0050 §1).
+///
+/// Two shapes: no name after `using`, and a `using` without an explicit type. The second is refused
+/// here rather than in sema because promotion needs the type's *field list*, and `using q := f()`
+/// would need the inferred type before resolution runs — so the form is not merely unsupported, it
+/// cannot mean anything.
+pub(crate) const E0128: &str = "E0128";
+
+/// A malformed result list or destructuring target list (ADR-0052 §1, §2).
+///
+/// Three shapes: a non-type inside `-> (…)`, a target list with no `:=` or `=` after it, and a
+/// trailing comma with nothing following. One code because each is "this is not the form", and the
+/// *message* says which — the reasoning E0126 and E0127 already use.
+pub(crate) const E0129: &str = "E0129";
+
+/// A malformed named argument or default value (ADR-0053 §1, §2).
+///
+/// Two shapes: `f(a = )` with no value, and `(n: s64 = )` with no default. One code because both are
+/// "the `=` has nothing after it", and the *message* says which.
+pub(crate) const E0130: &str = "E0130";
+
 /// Input nested more deeply than the parser's depth limit.
 ///
 /// Deliberately at the top of the parser's range rather than in sequence: it is a
@@ -211,6 +238,9 @@ mod tests {
         ("E0125", "malformed enum member"),
         ("E0126", "malformed operator declaration"),
         ("E0127", "malformed for or defer"),
+        ("E0128", "malformed using declaration"),
+        ("E0129", "malformed result or target list"),
+        ("E0130", "malformed named argument or default"),
         ("E0199", "nesting depth limit"),
     ];
 

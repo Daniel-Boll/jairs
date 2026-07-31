@@ -161,6 +161,8 @@ pub(crate) fn is_register_representable(pool: &Pool, ty: PoolId) -> bool {
         // A view is two words, so it is no more register-representable than the `string` it
         // shares a layout with (ADR-0044 §1).
         | Item::ViewType { .. }
+        | Item::ResultsType { .. }
+        | Item::ContextType
         | Item::StructType { .. }
         | Item::UnionType { .. }
         | Item::ProcType { .. }
@@ -244,6 +246,26 @@ fn addr_taken(body: &Body) -> (FxHashSet<LocalId>, FxHashSet<jr_hir::ParamId>) {
                     expr_worklist.push((init, false));
                 }
             }
+            // **A multi-result call's results are read through a place**, so the call's value is
+            // dereferenced — which needs no *local* to escape, because the storage is the callee's
+            // result slot rather than any variable here. The targets are ordinary writes.
+            //
+            // `false` for the call: it is not under an `AddrOf`, and its own aggregate-ness is what
+            // gives it storage (ADR-0051 §1) rather than anything this walk decides.
+            Stmt::LocalTuple { call, .. } => expr_worklist.push((*call, false)),
+            Stmt::AssignTuple { targets, call, .. } => {
+                for target in targets.iter().flatten() {
+                    expr_worklist.push((*target, false));
+                }
+                expr_worklist.push((*call, false));
+            }
+            // Each returned value is an ordinary operand; the *aggregate* they are stored into is a
+            // synthesised slot, which no local names and so nothing here can promote.
+            Stmt::ReturnTuple(exprs, _) => {
+                for expr in exprs {
+                    expr_worklist.push((*expr, false));
+                }
+            }
             // Nothing constructs `Stmt::Item` today (`crates/jr-sema/src/check.rs`
             // treats it identically, at check.rs:171-173), but it is matched
             // explicitly rather than folded into a wildcard so the day something
@@ -303,8 +325,25 @@ fn addr_taken(body: &Body) -> (FxHashSet<LocalId>, FxHashSet<jr_hir::ParamId>) {
     while let Some((expr_id, under_addr_of)) = expr_worklist.pop() {
         match body.expr(expr_id) {
             Expr::Name { res, .. } => {
-                if under_addr_of {
-                    match res {
+                // **A promoted name escapes its base unconditionally** (ADR-0050 §2), and this is
+                // not defence in depth — it is load-bearing. `x` where `using p: Point` is in
+                // scope lowers to a *projection of `p`'s place*, and a register-held local has no
+                // place at all. Without this the base would stay promotable and `res_place` would
+                // ask `slot_for` for storage the escape analysis had decided did not exist.
+                //
+                // `true` rather than `under_addr_of`, for exactly the reason `Expr::Slice` uses it
+                // (ADR-0044 §2): the projection needs an address whether or not a `*` is written,
+                // and a walk that only counted syntactic `AddrOf` would miss it — which that ADR
+                // records as a miscompile rather than a diagnostic.
+                let effective = under_addr_of || matches!(res, Res::Promoted { .. });
+                if effective {
+                    // The *root* of a promoted chain is what needs storage, so an embedded
+                    // promotion walks down to the binding it ultimately reaches.
+                    let mut target = res;
+                    while let Res::Promoted { base, .. } = target {
+                        target = base;
+                    }
+                    match target {
                         Res::Local(local) => {
                             escaped.insert(*local);
                         }
@@ -312,7 +351,10 @@ fn addr_taken(body: &Body) -> (FxHashSet<LocalId>, FxHashSet<jr_hir::ParamId>) {
                         Res::Param(param) => {
                             escaped_params.insert(*param);
                         }
-                        Res::Item(_) | Res::Imported(_, _) | Res::Error => {}
+                        // Unreachable: the loop above strips every `Promoted` layer, so `target`
+                        // is never one. Listed rather than `_`-armed so that a future `Res`
+                        // variant is a compile error here.
+                        Res::Promoted { .. } | Res::Item(_) | Res::Imported(_, _) | Res::Error => {}
                     }
                 }
             }
@@ -363,6 +405,8 @@ fn addr_taken(body: &Body) -> (FxHashSet<LocalId>, FxHashSet<jr_hir::ParamId>) {
             Expr::Deref(inner, _) => expr_worklist.push((*inner, under_addr_of)),
             Expr::Run(inner, _) => expr_worklist.push((*inner, under_addr_of)),
             // A bare `.RED` is a constant with no operand and no storage.
+            // `context` is the hidden parameter's value; nothing escapes through reading it.
+            Expr::Context(_) => {}
             Expr::Member { .. }
             | Expr::Literal(_, _)
             | Expr::Uninit(_)

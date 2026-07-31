@@ -1116,7 +1116,8 @@ fn empty_imports_slice_behaves_as_before() {
 
 #[test]
 fn export_scope_contains_all_file_level_names() {
-    // FileHir::export_scope() must return the full file scope (W1 over-share).
+    // With no `#scope_module` marker, every file-level name is exported — export is the default
+    // (ADR-0054 §1), which is what keeps every existing module meaning what it did.
     let source = "A :: 1;\nB :: 2;\nmain :: () {}";
     let interner = Interner::new();
     let f = file();

@@ -34,7 +34,10 @@ mod trap;
 pub use trap::{TRAP_HELPER, TrapKind};
 
 use cranelift_codegen::Context;
-use cranelift_codegen::ir::{AbiParam, Function, InstBuilder as _, TrapCode, UserFuncName, types};
+use cranelift_codegen::ir::{
+    AbiParam, Function, InstBuilder as _, MemFlagsData, StackSlotData, StackSlotKind, TrapCode,
+    UserFuncName, types,
+};
 use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings::{self, Configurable as _};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -42,7 +45,7 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use jr_codegen::{Backend, CodegenError, ProcDecl, ProcKind, TrapLocations};
 use jr_mir::{MirBody, ProcRef};
-use jr_pool::{Item, Pool, PoolId, StrId, TargetLayout};
+use jr_pool::{Item, Layout, Pool, PoolId, StrId, TargetLayout, layout_of};
 use rustc_hash::FxHashMap;
 
 /// The Cranelift implementation of [`Backend`].
@@ -59,8 +62,12 @@ pub struct ClifBackend {
     trap_helper: FuncId,
     /// Every library a `#foreign` declaration named, for the link line.
     libraries: Vec<String>,
-    /// The Jairs procedure the `main` shim calls, and its return type.
-    entry: Option<(ProcRef, PoolId)>,
+    /// The Jairs procedure the `main` shim calls, its return type, and whether it takes a context.
+    entry: Option<(ProcRef, PoolId, bool)>,
+    /// The context struct's layout and the target, remembered when the entry is declared so the
+    /// entry shim (built in `finalise`, which has no pool) can size the slot it allocates for
+    /// `main`'s context (ADR-0057 §5). `None` when `main` takes none.
+    entry_context: Option<(Layout, TargetLayout)>,
 }
 
 impl ClifBackend {
@@ -109,6 +116,7 @@ impl ClifBackend {
             trap_helper,
             libraries: Vec::new(),
             entry: None,
+            entry_context: None,
         };
         backend.emit_strings(pool)?;
         backend.define_trap_helper()?;
@@ -214,7 +222,7 @@ impl ClifBackend {
     /// what the VM's `RunOutcome::Completed` means. An integer-returning `main` gives
     /// its value, narrowed to the `int` the C runtime expects.
     fn define_entry_shim(&mut self) -> Result<(), CodegenError> {
-        let Some((entry, ret)) = self.entry else {
+        let Some((entry, ret, entry_context)) = self.entry else {
             // No entry point is not an error here: a library or a test may want an
             // object with no `main` in it. The driver refuses earlier when a *program*
             // declares none.
@@ -240,7 +248,42 @@ impl ClifBackend {
         builder.switch_to_block(block);
 
         let callee_ref = self.module.declare_func_in_func(callee, builder.func);
-        let call = builder.ins().call(callee_ref, &[]);
+        // **`main`'s context is a zeroed stack slot in the shim** (ADR-0057 §5): `main` has no Jairs
+        // caller, so the shim is where the first one is born. Zeroed, so `context.allocator` reads 0
+        // in a program that never sets it — the same defined-not-garbage rule ADR-0039 §4a used.
+        //
+        // Only when `main` takes one: a `#c_call main` gets no argument, and passing one anyway is
+        // the shift ADR-0053 §1 records.
+        let mut call_args = Vec::new();
+        if entry_context {
+            let (layout, target) = self.entry_context.ok_or_else(|| {
+                CodegenError::Internal(
+                    "entry takes a context but its layout was never recorded".to_owned(),
+                )
+            })?;
+            let size = u32::try_from(layout.size.max(1)).map_err(|_| {
+                CodegenError::Internal("the context is larger than a u32".to_owned())
+            })?;
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                size,
+                layout.align.trailing_zeros().try_into().unwrap_or(0),
+            ));
+            let pointer = crate::repr::pointer_type(target);
+            let address = builder.ins().stack_addr(pointer, slot, 0);
+            // Zero the field(s), so `context.allocator` reads 0 — `emit_small_memset` is what
+            // `Statement::Zero` already uses (ADR-0057 §5).
+            builder.emit_small_memset(
+                self.module.target_config(),
+                address,
+                0,
+                layout.size,
+                layout.align.try_into().unwrap_or(1),
+                MemFlagsData::new(),
+            );
+            call_args.push(address);
+        }
+        let call = builder.ins().call(callee_ref, &call_args);
         let results = builder.inst_results(call).to_vec();
 
         let status = match results.first() {
@@ -352,6 +395,7 @@ impl Backend for ClifBackend {
             decl.ret,
             call_conv,
             foreign,
+            decl.receives_context,
             &describe,
         )?;
 
@@ -362,7 +406,15 @@ impl Backend for ClifBackend {
         self.ids.insert(decl.proc, id);
         self.foreign.insert(decl.proc, foreign);
         if matches!(decl.kind, ProcKind::Local { entry: true, .. }) {
-            self.entry = Some((decl.proc, decl.ret));
+            self.entry = Some((decl.proc, decl.ret, decl.receives_context));
+            if decl.receives_context {
+                // Declaring the entry means checking ran, which interned the context; falling back
+                // to `ERROR` is defensive rather than panicking in codegen.
+                let ctx = pool.context_type_id().unwrap_or(PoolId::ERROR);
+                if let Ok(context_layout) = layout_of(pool, layout, ctx) {
+                    self.entry_context = Some((context_layout, layout));
+                }
+            }
         }
         Ok(())
     }
@@ -444,6 +496,14 @@ fn trap_signature(module: &ObjectModule) -> cranelift_codegen::ir::Signature {
 }
 
 /// The libcall naming Cranelift uses for its own helpers.
+///
+/// **Delegated to `cranelift-module`'s own namer rather than derived from `Display`.** The
+/// hand-rolled `format!("{libcall}")` produced Cranelift's *internal* spelling — `Memcpy`,
+/// capitalised — where the C library exports `memcpy`, so any emitted libcall failed to
+/// link. That was latent for the whole project: nothing emitted one until ADR-0051's
+/// aggregate return copied a struct big enough for `emit_small_memory_copy` to stop
+/// unrolling and call `memcpy` instead. A 16-byte `Vec2` inlines and links; a 64-byte
+/// struct did not, which is why the corpus program returns both sizes.
 fn default_libcall_names() -> Box<dyn Fn(cranelift_codegen::ir::LibCall) -> String + Send + Sync> {
-    Box::new(|libcall| format!("{libcall}"))
+    cranelift_module::default_libcall_names()
 }

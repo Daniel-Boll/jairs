@@ -3,77 +3,77 @@ source: crates/jr-db/tests/mir_corpus.rs
 expression: "dump_mir(&db, file, search)"
 ---
 proc print -> void {
-  params: v0: string
+  params: v0: *Context, v1: string
   slots:
     s0: string  // temporary
-  bb0(v0: string):
-    store s0 <- v0
-    v1: *u8 = load s0.data
-    v2: s64 = load s0.count
-    discard call proc0(1_s64, v1, v2)
+  bb0(v0: *Context, v1: string):
+    store s0 <- v1
+    v2: *u8 = load s0.data
+    v3: s64 = load s0.count
+    discard call proc0(1_s64, v2, v3)
     return
 }
 proc print_error -> void {
-  params: v0: string
+  params: v0: *Context, v1: string
   slots:
     s0: string  // temporary
-  bb0(v0: string):
-    store s0 <- v0
-    v1: *u8 = load s0.data
-    v2: s64 = load s0.count
-    discard call proc0(2_s64, v1, v2)
+  bb0(v0: *Context, v1: string):
+    store s0 <- v1
+    v2: *u8 = load s0.data
+    v3: s64 = load s0.count
+    discard call proc0(2_s64, v2, v3)
     return
 }
 proc print_line -> void {
-  params: v0: string
+  params: v0: *Context, v1: string
   slots:
     s0: string  // temporary
-  bb0(v0: string):
-    store s0 <- v0
-    discard call proc2(v0)
-    discard call proc2("\n")
+  bb0(v0: *Context, v1: string):
+    store s0 <- v1
+    discard call proc4(v0, v1)
+    discard call proc4(v0, "\n")
     return
 }
 proc put_byte -> void {
-  params: v0: u8
+  params: v0: *Context, v1: u8
   slots:
     s0: u8  // temporary
-  bb0(v0: u8):
-    store s0 <- v0
-    v1: *u8 = addr s0
-    discard call proc0(1_s64, v1, 1_s64)
+  bb0(v0: *Context, v1: u8):
+    store s0 <- v1
+    v2: *u8 = addr s0
+    discard call proc0(1_s64, v2, 1_s64)
     return
 }
 proc print_digits -> void {
-  params: v0: s64
-  bb0(v0: s64):
-    v1: bool = v0 >= 10_s64
-    branch v1 ? bb1() : bb2()
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: bool = v1 >= 10_s64
+    branch v2 ? bb1() : bb2()
   bb1():
-    v2: s64 = v0 / 10_s64
-    discard call proc6(v2)
+    v3: s64 = v1 / 10_s64
+    discard call proc8(v0, v3)
     goto bb3()
   bb2():
     goto bb3()
   bb3():
-    v3: s64 = v0 % 10_s64
-    v4: s64 = v3 + 48_s64
-    v5: u8 = convert v4 from s64
-    discard call proc5(v5)
+    v4: s64 = v1 % 10_s64
+    v5: s64 = v4 + 48_s64
+    v6: u8 = convert v5 from s64
+    discard call proc7(v0, v6)
     return
 }
 proc print_int -> void {
-  params: v0: s64
-  bb0(v0: s64):
-    v1: bool = v0 < 0_s64
-    branch v1 ? bb1() : bb2()
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: bool = v1 < 0_s64
+    branch v2 ? bb1() : bb2()
   bb1():
-    discard call proc2("-")
-    v2: s64 = -v0
-    discard call proc6(v2)
+    discard call proc4(v0, "-")
+    v3: s64 = -v1
+    discard call proc8(v0, v3)
     goto bb3()
   bb2():
-    discard call proc6(v0)
+    discard call proc8(v0, v1)
     goto bb3()
   bb3():
     return

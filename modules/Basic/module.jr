@@ -22,6 +22,18 @@ write :: (fd: s64, buf: *u8, count: s64) -> s64 #foreign libc "write";
 /// which the slice does not model yet.
 exit :: (status: s64) #foreign libc "exit";
 
+/// Allocates `size` bytes and returns a pointer to them, or `null` on failure (ADR-0060 §2).
+///
+/// The honest bottom of a standard library until wave W7 replaces it: libc's own `malloc`. A
+/// `#foreign` pointer return is an ordinary register scalar (ADR-0051), so this needs no new
+/// machinery. It cannot be called at *compile time* — ADR-0006 gates comptime FFI, and a host
+/// pointer read through the VM's own address space would be a plausible wrong value.
+malloc :: (size: s64) -> *u8 #foreign libc "malloc";
+
+/// Releases memory obtained from [`malloc`]. Passing `null` is defined (a no-op), which is why a
+/// program can `free` unconditionally.
+free :: (p: *u8) #foreign libc "free";
+
 /// The standard output file descriptor.
 STDOUT :: 1;
 /// The standard error file descriptor.
@@ -42,6 +54,20 @@ print_line :: (s: string) {
     print(s);
     print("\n");
 }
+
+// ---------------------------------------------------------------------------
+// Module-private helpers (ADR-0054 §1)
+// ---------------------------------------------------------------------------
+//
+// Everything from here down is hidden from importers until the `#scope_export` below. These two are
+// implementation detail: `put_byte` writes one byte through the address of a local, and
+// `print_digits` is the recursion `print_int` drives. An importer needs neither — and hiding them
+// means giving `print_digits` a buffer later cannot break a caller, because there are none outside
+// this file.
+//
+// This is the dogfooding ADR-0054's consequences call for: if `#scope_module` is right, the standard
+// library's own internals should be the first thing to use it.
+#scope_module
 
 /// Writes one byte to standard output.
 ///
@@ -71,6 +97,8 @@ print_digits :: (n: s64) {
     // which is why it is a cast and not a checked conversion (ADR-0037 §2).
     put_byte(cast(u8, n % 10 + 48));
 }
+
+#scope_export
 
 /// Writes a number in decimal.
 ///

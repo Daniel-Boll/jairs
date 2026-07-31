@@ -1,0 +1,15 @@
+// EXPECT: E0254 — `context` in a `#c_call` procedure (ADR-0057 §3)
+//
+// A `#c_call` procedure receives no implicit context — that is the whole meaning of the opt-out
+// (ADR-0001) — so `context` inside one has nothing to denote. Distinct from E0201 "unresolved name"
+// deliberately: `context` is a keyword and always "resolves", so reporting it as an unknown name
+// would send the reader looking for a declaration to add rather than telling them this procedure has
+// no context by design.
+//
+// Two shapes here: a `#c_call` procedure, and a `#foreign`-adjacent one — sema makes every `#foreign`
+// procedure implicitly `#c_call`, so a `context` in a body it *could* have (a `#foreign` declaration
+// has none) is covered by the same rule; that half is unobservable without a body, so only the
+// explicit `#c_call` is exercised.
+raw :: () -> s64 #c_call {
+    return context.allocator;
+}

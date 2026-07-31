@@ -24,7 +24,7 @@ use jr_hir::ProcId;
 use jr_pool::TargetLayout;
 
 use crate::{
-    Db, SourceFile,
+    BuildConfig, Db, SourceFile,
     mir::optimized_file_mir,
     module_loader::{ModuleSearchPaths, file_hir},
     run::main_of,
@@ -53,6 +53,7 @@ pub fn build_object(
     db: &dyn Db,
     root: SourceFile,
     search_paths: ModuleSearchPaths,
+    config: BuildConfig,
 ) -> Result<BuildOutput, String> {
     let entry = main_of(db, root).ok_or_else(|| "the file declares no `main`".to_owned())?;
 
@@ -62,7 +63,7 @@ pub fn build_object(
     // never be held across a nested query call.
     let mut inputs = Vec::with_capacity(files.len());
     for file in files {
-        let mir = optimized_file_mir(db, file, search_paths);
+        let mir = optimized_file_mir(db, file, search_paths, config);
         if mir.gated {
             continue;
         }

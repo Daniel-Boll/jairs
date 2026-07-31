@@ -114,6 +114,28 @@ pub enum TypeRef {
         /// The element type.
         elem: TypeRefId,
     },
+    /// The result list of a procedure returning several values: `(s64, bool)` (ADR-0052 §1).
+    ///
+    /// Reachable **only** as a return type — ADR-0052 §4 keeps it unspellable elsewhere, so a
+    /// consumer meeting one anywhere else has found a bug rather than a type to support.
+    Results(Vec<TypeRefId>),
+    /// A procedure-pointer type `(T, T) -> T` (ADR-0059 §3).
+    ///
+    /// Resolved by `jr-sema` to the **same** `Item::ProcType` a declared procedure has, so a
+    /// procedure value passes to a parameter of this type by an ordinary type match. The `->` is
+    /// what distinguishes this from [`TypeRef::Results`] in the source; here they are different
+    /// variants and cannot be confused.
+    Proc {
+        /// The parameter types, in order.
+        params: Vec<TypeRefId>,
+        /// The return type, or `None` for a procedure type that returns `void`.
+        ///
+        /// `None` rather than a `TypeRef::Name("void")`, because `void` has no spelling — sema
+        /// *rejects* the name `void` (ADR-0015 §3) — so there is no name to lower to. A missing
+        /// return resolves to `PoolId::VOID` in sema, the same way a declared procedure's missing
+        /// arrow does (`signature.rs`).
+        ret: Option<TypeRefId>,
+    },
     /// An inline struct type `struct { ... }`.
     Struct(StructId),
     /// An inline union type `union { ... }` (ADR-0045).
@@ -190,6 +212,13 @@ pub enum Literal {
     Str(String),
     /// `true` or `false`.
     Bool(bool),
+    /// The null pointer, `null` (ADR-0060 §1).
+    ///
+    /// Carries no value: a null pointer is the bit pattern 0, and its *type* comes from context
+    /// exactly as an integer literal's does (ADR-0016 §1). Held as a literal rather than a keyword
+    /// expression of its own so it takes the context-typing path `check_literal` already has, and so
+    /// `jr-fmt` finds it by the same route every other literal uses.
+    Null,
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +327,16 @@ pub enum AssignOp {
 // ---------------------------------------------------------------------------
 
 /// The result of resolving a name reference.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// # Why this is not `Copy`
+///
+/// [`Res::Promoted`] carries a `Box<Res>`, because a promoted name resolves to a *path* —
+/// `x` meaning `p.x` — and a self-referential enum cannot be `Copy`. ADR-0050 §2 chose that
+/// over the two alternatives (rewriting the HIR during resolution, or a side map beside
+/// `resolutions`) for one reason: adding a variant makes every exhaustive match over `Res` a
+/// compile error, so no consumer can *silently* fail to handle a promoted name. The allocation
+/// is per promoted resolution, not per lookup.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Res {
     /// A local variable.
     Local(LocalId),
@@ -311,6 +349,18 @@ pub enum Res {
     /// The `ItemId` is the `#import` item in the current file; the `Symbol`
     /// is the name in the imported scope.
     Imported(ItemId, Symbol),
+    /// A field reached through a `using` binding (ADR-0050 §2).
+    ///
+    /// `x` where `using p: Point` is in scope resolves to
+    /// `Promoted { base: Local/Param(p), field: x }`. The base is itself a `Res` rather than a
+    /// `LocalId`, so a name promoted through an *embedded* field is a chain — lowering walks it
+    /// rather than assuming one level (ADR-0050 §4's transitivity).
+    Promoted {
+        /// What the fields were promoted from.
+        base: Box<Res>,
+        /// The field's name in the base's type.
+        field: Symbol,
+    },
     /// Resolution failed (unresolved name or error recovery).
     Error,
 }
@@ -329,6 +379,13 @@ pub enum Expr {
         /// Span of the literal token.
         Span,
     ),
+    /// The implicit context, from the `context` keyword (ADR-0057 §1).
+    ///
+    /// Carries no name and no resolution: `context` is a keyword, so there is nothing to resolve and
+    /// nothing for the `ResolveMap` to hold. That is deliberate — a `Res` entry would make it look
+    /// like a name reference to anything reading that map, the same reason ADR-0049 §2 kept a loop
+    /// label out of it.
+    Context(Span),
     /// A name reference.
     ///
     /// `res` is filled in by the name-resolution pass. Before resolution it
@@ -365,8 +422,19 @@ pub enum Expr {
     Call {
         /// The callee expression.
         callee: ExprId,
-        /// The argument expressions.
+        /// The argument expressions, **in source order**.
+        ///
+        /// A named argument (ADR-0053 §1) appears here at the position it was *written*; the name is
+        /// in `arg_names` at the same index. Sema reorders them into parameter order and records the
+        /// result, so `jr-mir` never sees a name — one pass decides argument order.
         args: Vec<ExprId>,
+        /// One entry per argument: `Some(name)` for `b = 2`, `None` for a positional one.
+        ///
+        /// A parallel `Vec` rather than a `Vec<(Option<Symbol>, ExprId)>` so that every existing
+        /// consumer walking `args` keeps working unchanged — and an all-positional call carries a
+        /// vector of `None`, which costs one allocation and keeps the two lists impossible to
+        /// misalign.
+        arg_names: Vec<Option<Symbol>>,
         /// Span of the whole call.
         span: Span,
     },
@@ -474,6 +542,7 @@ impl Expr {
     /// Returns the span of this expression.
     pub fn span(&self) -> Span {
         match self {
+            Expr::Context(span) => *span,
             Expr::Literal(_, span) => *span,
             Expr::Name { span, .. } => *span,
             Expr::Binary { span, .. } => *span,
@@ -539,6 +608,31 @@ pub enum Stmt {
         /// Span of the whole statement.
         span: Span,
     },
+    /// `q, ok := f();` — declares several locals from one multi-result call (ADR-0052 §2).
+    ///
+    /// A separate variant rather than a generalised [`Stmt::Local`] because a *list* of targets is a
+    /// different shape, and every exhaustive match over `Stmt` should be forced to consider it.
+    LocalTuple {
+        /// One entry per result position: `Some(local)` for a name, `None` for a `_` discard.
+        ///
+        /// A discard is `None` rather than a local nothing reads, which is what keeps `_` out of the
+        /// resolve map entirely — it is a *hole* recognised positionally, not a binding (ADR-0052
+        /// §3).
+        targets: Vec<Option<LocalId>>,
+        /// The call producing the results. Only a call is legal here; sema refuses anything else.
+        call: ExprId,
+        /// Span of the whole statement.
+        span: Span,
+    },
+    /// `q, ok = f();` — assigns to several existing places (ADR-0052 §2).
+    AssignTuple {
+        /// One entry per result position: `Some(expr)` for a place, `None` for a `_` discard.
+        targets: Vec<Option<ExprId>>,
+        /// The call producing the results.
+        call: ExprId,
+        /// Span of the whole statement.
+        span: Span,
+    },
     /// `if cond { then } [else { else_ }]`
     If {
         /// The condition.
@@ -563,6 +657,11 @@ pub enum Stmt {
     },
     /// `return [expr];`
     Return(Option<ExprId>, Span),
+    /// `return a, b;` — several values at once (ADR-0052 §1).
+    ///
+    /// A separate variant rather than `Return` with a list, so that every exhaustive match is forced
+    /// to decide what a multi-value return means rather than silently handling only the first.
+    ReturnTuple(Vec<ExprId>, Span),
     /// `break;` or `break label;` (ADR-0049 §2).
     ///
     /// The label is a [`Symbol`] and deliberately **not** resolved here or by `ResolveMap`: it
@@ -617,6 +716,10 @@ pub struct Local {
     pub init: Option<ExprId>,
     /// `true` if the initialiser is `---` (explicit non-initialisation).
     pub uninit: bool,
+    /// `true` for `using q: Point;` — the type's fields resolve unqualified after this point
+    /// (ADR-0050 §1). Always has an explicit `ty`, because promotion needs the field list and
+    /// the parser refuses the inferred form (E0128).
+    pub using: bool,
     /// Span of the whole declaration.
     pub span: Span,
 }
@@ -687,6 +790,23 @@ impl Body {
 pub struct Proc {
     /// The parameters.
     pub params: Vec<Param>,
+    /// `true` for a `#c_call` procedure, which receives no implicit context (ADR-0057 §3).
+    ///
+    /// Read by `jr-sema` to set `ContextKind`, which ADR-0001 put in every procedure type in the
+    /// slice precisely so this wave would not have to re-type anything. Every `#foreign` procedure is
+    /// implicitly `#c_call`, and sema decides that from `foreign` rather than from this flag — so
+    /// writing both is redundant rather than contradictory.
+    pub c_call: bool,
+    /// `true` for a `#no_abc` procedure, whose indexing emits no bounds check (ADR-0058 §3).
+    ///
+    /// Read by `jr-mir`, which is where the check is emitted, so this flag is the whole
+    /// representation of the opt-out — no `Projection`, `Expr` or `Statement` carries it.
+    ///
+    /// **That is why it is on the procedure**, and ADR-0058 §3 amends ADR-0003 to say so: the
+    /// original decision put the opt-out at an individual index, which would have meant threading a
+    /// flag from here to `Projection::Index` through every pass and both back ends. A flag some of
+    /// those consumers ignored would be a bounds check silently restored or silently dropped.
+    pub no_abc: bool,
     /// The return type, if present.
     pub ret: Option<TypeRefId>,
     /// The body, if this is not a foreign procedure.
@@ -715,6 +835,15 @@ pub struct Param {
     pub name_span: Span,
     /// The parameter type.
     pub ty: Option<TypeRefId>,
+    /// `true` for `using p: Point` — the type's fields resolve unqualified in the body
+    /// (ADR-0050 §1).
+    pub using: bool,
+    /// The default value, for `b: s64 = 10` (ADR-0053 §2).
+    ///
+    /// Lowered as an ordinary expression so the tree stays faithful; **sema refuses anything but a
+    /// literal**, with a message saying why — the value must be one because const-eval runs
+    /// downstream of signatures (ADR-0018 §3), so a signature cannot depend on a computed constant.
+    pub default: Option<ExprId>,
 }
 
 /// Foreign procedure binding information.
@@ -795,6 +924,12 @@ pub struct Field {
     pub name_span: Span,
     /// The field type.
     pub ty: Option<TypeRefId>,
+    /// `true` for `using base: Point;` — the field's own type's fields become reachable
+    /// through the enclosing struct (ADR-0050 §1).
+    ///
+    /// The field stays a **real field** at a real offset, so `jr-pool` needs nothing: `using`
+    /// is purely a resolution feature (ADR-0050 §4).
+    pub using: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -863,6 +998,16 @@ pub enum ConstValue {
 pub struct Item {
     /// The declared name, if any (top-level `#run` has no name).
     pub name: Option<Symbol>,
+    /// Whether an importing file can see this declaration (ADR-0054 §1).
+    ///
+    /// `true` unless a `#scope_module` marker precedes it with no `#scope_export` in between.
+    /// Computed during lowering by walking items in source order, so it is a function of **this
+    /// file's own HIR** — which is what lets `jr-db`'s `file_exports` stay dependent on `file_hir`
+    /// alone and never cycle when two modules import each other (ADR-0054 §3).
+    ///
+    /// The declaring file's own scope is *never* filtered by this, so a hidden name resolves,
+    /// type-checks and answers hover inside its own file exactly as before.
+    pub exported: bool,
     /// Span of the whole item.
     pub span: Span,
     /// Span of the name token, if any.
@@ -883,6 +1028,16 @@ pub struct Item {
 pub struct ItemScope {
     /// Maps interned name → item ID.
     pub names: rustc_hash::FxHashMap<Symbol, ItemId>,
+    /// Names the file declares but does **not** export (ADR-0054 §2).
+    ///
+    /// Empty for a file's own scope, and populated only in the *exported* scope a module hands to an
+    /// importer — so a failed lookup can tell "this module has no such name" from "this module hides
+    /// it", and report the second as E0253 rather than as an unresolved name with a spelling
+    /// suggestion the reader cannot act on.
+    ///
+    /// Carried here rather than passed alongside because the two travel together everywhere: a
+    /// consumer holding a scope can always ask, and there is no way to pass one without the other.
+    pub hidden: rustc_hash::FxHashSet<Symbol>,
 }
 
 impl ItemScope {
@@ -899,6 +1054,17 @@ impl ItemScope {
     /// Inserts a name→item mapping.
     pub fn insert(&mut self, name: Symbol, id: ItemId) {
         self.names.insert(name, id);
+    }
+
+    /// Records that this scope's file declares `name` but does not export it (ADR-0054 §2).
+    pub fn hide(&mut self, name: Symbol) {
+        self.hidden.insert(name);
+    }
+
+    /// Whether `name` is declared by this scope's file but hidden from importers.
+    #[must_use]
+    pub fn is_hidden(&self, name: Symbol) -> bool {
+        self.hidden.contains(&name)
     }
 }
 
@@ -990,12 +1156,29 @@ impl FileHir {
     /// importers. Pass this to [`resolve`](fn@crate::resolve) as part of the `imports`
     /// slice when resolving a file that imports this one.
     ///
-    /// **Wave W1 temporary over-share:** everything at file scope is currently
-    /// exported. `#scope_file`, `#scope_module`, and `#scope_export` are lexed
-    /// but not yet implemented (wave W2). Until W2 lands, this method returns
-    /// the full file scope, which means modules have no encapsulation. This is
-    /// a known and deliberate temporary state, recorded in ADR-0014 §2.
-    pub fn export_scope(&self) -> &ItemScope {
-        &self.scope
+    /// **Honours `#scope_module`** (ADR-0054 §1). Export is the default, so a file with no marker
+    /// exports everything exactly as it did before — which is what ADR-0014 §2 promised and the whole
+    /// corpus relies on. A hidden name is *recorded* in the returned scope's `hidden` set rather than
+    /// merely omitted, so a use of it reports E0253 "not exported" instead of "unresolved name".
+    ///
+    /// This used to return the full file scope with a doc comment calling it a "W1 temporary
+    /// over-share". Returning it unfiltered while `jr-db`'s `file_exports` filtered would have been
+    /// **two answers to one question** — and the one a test harness happened to call would decide
+    /// whether the test saw encapsulation. So this filters too, by the same rule.
+    #[must_use]
+    pub fn export_scope(&self) -> ItemScope {
+        let mut exported = ItemScope::new();
+        for (name, item) in &self.scope.names {
+            if self
+                .items
+                .get(item.index())
+                .is_some_and(|declaration| declaration.exported)
+            {
+                exported.insert(*name, *item);
+            } else {
+                exported.hide(*name);
+            }
+        }
+        exported
     }
 }

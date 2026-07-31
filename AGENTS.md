@@ -29,8 +29,22 @@ same five steps every time:
    has rotted before: it went a whole wave claiming "a trap still reports no source
    location" after both engines had learned to report one. A capability table is easier
    to keep true than a paragraph, which is why it replaced one.
-5. **Commit and merge to `main` with `--no-ff`**, one logical change per commit — but
-   only when the decider explicitly says so.
+5. **Commit each wave as it goes green** — a `git commit` on the wave's `feat/<component>`
+   branch the moment all six gates pass, *before* starting the next wave. This is not the
+   same as merging: merging to `main` still needs the decider's explicit say-so (step 6).
+   Committing is the wave's own safety net and does not.
+
+   **Why this is a rule and not a preference.** Fourteen waves once sat uncommitted in one
+   working tree at once, and a careless `git checkout tree-sitter-jairs/grammar.js` — run as a
+   casual undo during a teeth-check — reverted the grammar *nine waves*, because `HEAD` was
+   nine waves behind the working state. It cost an hour of rule-by-rule reconstruction. A
+   per-wave commit bounds the blast radius of any such slip to a single wave: `git checkout`
+   or `git restore` then takes a file to the end of its own wave, not to a HEAD from before the
+   feature existed. `grammar.js` is the sharpest case — gate 6 checks it against *drift* by
+   regenerating, never against *reversion* — but the rule is general.
+
+6. **Merge to `main` with `--no-ff`**, one logical change per commit — but only when the
+   decider explicitly says so.
 
 ## The six gates
 
@@ -54,7 +68,7 @@ cd tree-sitter-jairs && npx --yes tree-sitter-cli@0.26.11 generate \
 ```
 
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
-visible. It has gone 376 → 429 → 511 → 596.
+visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919.
 
 ## House style
 
@@ -149,9 +163,10 @@ There is no central registry; each crate has a `code.rs` with one constant per c
 a `///` saying exactly what raises it. Ranges: E0001–E0006 lexer, E0100–E0199 parser,
 E0200–E0211 `jr-hir` (E0210 actually raised by `jr-db`'s module loader, E0204 relocated
 to `jr-sema`), E0212–E0226 `jr-sema`, E0227–E0229 `jr-mir`, E0230 `jr-db` const-eval,
-E0231 `jr-db` unused imports.
+E0231 `jr-db` unused imports, E0232–E0247 and E0250–E0257 `jr-sema` and `jr-hir` past
+their original blocks (E0250/E0253 in `jr-hir`, the rest in `jr-sema`).
 
-**E0232 is the first free code**; E0123 is the first free *parser* code. E0231 is `jr-db`'s
+**E0258 is the first free code**; E0131 is the first free *parser* code. E0231 is `jr-db`'s
 unused-import warning — the first code in this project that is a *warning* rather than an
 error, so a consumer filtering by severity has something to filter.
 

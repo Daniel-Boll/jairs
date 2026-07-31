@@ -171,3 +171,75 @@ pub(crate) const E0246: &str = "E0246";
 /// hygiene. The help says so, because "cannot iterate" without the reason invites the reader to
 /// look for a spelling that does not exist.
 pub(crate) const E0247: &str = "E0247";
+
+/// A destructuring statement that does not match its call's results (ADR-0052 §2, §3, §4).
+///
+/// Four conditions, one code, each with its own note:
+///
+/// * the target count differs from the result count. **Exact arity**, deliberately: allowing a
+///   caller to take a prefix — which Jai does — would make adding a result silently change nothing
+///   at any call site, and *reordering* results silently change what every caller binds;
+/// * the right-hand side is not a call at all, so there are no results to destructure;
+/// * the right-hand side is a call to a procedure returning **one** value, which is `x := f()` and
+///   needs no target list;
+/// * a results type used where a value's type belongs — `t: (s64, bool)` — which ADR-0052 §4 keeps
+///   unspellable so that reusing the struct machinery does not silently add tuples to the language.
+pub(crate) const E0251: &str = "E0251";
+
+/// A named argument or default value that does not fit ADR-0053's rules.
+///
+/// Six conditions, one code, each with its own note:
+///
+/// * a default that is not a **literal**. Refused because const-eval runs downstream of signature
+///   resolution (ADR-0018 §3), so a signature cannot depend on a computed constant — the same
+///   ordering ADR-0039 §3a records for an array length;
+/// * a default on a `#foreign` parameter, which Jairs does not control the call sites of;
+/// * a **positional** argument after a named one, which would make a positional argument's meaning
+///   depend on which names preceded it;
+/// * a parameter supplied **twice**, positionally and by name;
+/// * a parameter with **no argument and no default**; and
+/// * a named argument naming a parameter that does not exist — reported with a near-name
+///   suggestion, since a misspelling is exactly what ADR-0031 §1's machinery is for.
+pub(crate) const E0252: &str = "E0252";
+
+/// `context` used where there is none (ADR-0057 §3).
+///
+/// Two conditions: inside a `#c_call` procedure, which receives no implicit context by definition —
+/// including every `#foreign` one, since ADR-0001 makes those implicitly `#c_call`; and at **file
+/// scope**, where a constant's value is computed by const-eval and there is no call to have carried a
+/// context in.
+///
+/// Distinct from E0201 "unresolved name" deliberately: `context` is a keyword, so it always resolves
+/// and the mistake is that this procedure has none — reporting it as unresolved would send the reader
+/// looking for a declaration to add.
+pub(crate) const E0254: &str = "E0254";
+
+/// `#no_abc` on a `#foreign` procedure (ADR-0058 §3).
+///
+/// The directive suppresses a procedure's bounds checks, and a `#foreign` declaration has no body —
+/// so there is no index in it to leave unchecked and the directive could only be a word that does
+/// nothing.
+///
+/// Refused rather than ignored, because a silently-ignored directive tells the writer nothing: they
+/// asked for no bounds checks across a boundary Jairs does not compile, and the honest answer is
+/// that the request has no meaning rather than that it was granted.
+pub(crate) const E0255: &str = "E0255";
+
+/// A `#foreign` procedure used as a value (ADR-0059 §5).
+///
+/// Taking a procedure as a value — `f := add` — is how a proc pointer is made. A `#foreign`
+/// procedure's type is `ContextKind::CCall` and the VM reaches it through libffi rather than a
+/// `ProcRef`, so an indirect call to one is a second calling convention this wave does not build.
+///
+/// Refused at the point the value is *taken* rather than at the call, so the reader is told where
+/// they wrote the mistake — and distinct from a type mismatch (E0214), because `#foreign write`
+/// does have a procedure type and the objection is specifically that it is a foreign one.
+pub(crate) const E0256: &str = "E0256";
+
+/// `null` in a context that is not a pointer type, or with no context (ADR-0060 §1).
+///
+/// `null` takes its type from context, like an integer literal — but with no default, because there
+/// is no one pointer type to fall back to. `n: s64 = null` is a non-pointer context; `q := null` is
+/// no context at all. Distinct from E0214 "mismatched types" because the objection is specifically
+/// that a *pointer* was needed, which the note says.
+pub(crate) const E0257: &str = "E0257";

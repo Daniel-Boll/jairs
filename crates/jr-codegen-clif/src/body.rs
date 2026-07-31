@@ -54,7 +54,7 @@ use jr_pool::{
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::repr::{Repr, pointer_type};
+use crate::repr::{self, Repr, pointer_type};
 use crate::trap::TrapKind;
 
 /// What a translated MIR value is, once `void` is accounted for.
@@ -104,6 +104,7 @@ pub fn translate(
         slots: Vec::new(),
         current: MirSpan::Synthetic,
         messages: FxHashMap::default(),
+        sret: None,
     };
     translator.run()
 }
@@ -127,6 +128,14 @@ struct Translator<'a, 'b> {
     current: MirSpan,
     /// Data objects for messages already emitted, keyed by their bytes.
     messages: FxHashMap<String, DataId>,
+    /// The caller-allocated result pointer, for a procedure returning an aggregate
+    /// (ADR-0051 §1).
+    ///
+    /// `Some` exactly when [`repr::returns_via_sret`] says so, and read only by
+    /// `Terminator::Return`. Held on the translator rather than looked up again at the
+    /// return, because the *presence* of this parameter shifts every other parameter's
+    /// position by one — deciding it twice would be two chances to disagree.
+    sret: Option<ClifValue>,
 }
 
 impl Translator<'_, '_> {
@@ -144,6 +153,14 @@ impl Translator<'_, '_> {
         // signature rather than from `append_block_param`.
         let entry = self.block(self.body.entry())?;
         self.builder.append_block_params_for_function_params(entry);
+        // The `sret` pointer is the *leading* parameter, so it must be taken before the
+        // ordinary ones are bound — `bind_entry_params` walks the Cranelift list with its
+        // own cursor and would otherwise bind the result pointer to the first real
+        // parameter, shifting every argument by one.
+        if repr::returns_via_sret(self.ctx.pool, self.ctx.target, self.body.ret())? {
+            let params = self.builder.block_params(entry);
+            self.sret = params.first().copied();
+        }
         self.bind_entry_params(entry)?;
 
         // Every other block's parameters are MIR's own, which map one-for-one onto
@@ -222,7 +239,11 @@ impl Translator<'_, '_> {
     /// walked with independent cursors rather than zipped.
     fn bind_entry_params(&mut self, entry: Block) -> Result<(), CodegenError> {
         let clif: Vec<ClifValue> = self.builder.block_params(entry).to_vec();
-        let mut next = 0usize;
+        // Skip the hidden result pointer, which occupies position 0 when it exists
+        // (ADR-0051 §1). Starting at 0 regardless bound the *result* pointer to the first
+        // declared parameter and shifted every argument by one — a silent miscompile, and
+        // the reason `sret` is decided by one shared predicate.
+        let mut next = usize::from(self.sret.is_some());
         for value in self.body.params() {
             let ty = self.body.value(*value).ty;
             let repr = Repr::of(self.ctx.pool, self.ctx.target, ty)?;
@@ -318,7 +339,7 @@ impl Translator<'_, '_> {
             Rvalue::Binary { op, lhs, rhs } => self.binary(*op, *lhs, *rhs),
             Rvalue::Unary { op, operand } => self.unary(*op, *operand),
             Rvalue::Convert { operand, from } => self.convert(*operand, *from, dest),
-            Rvalue::Call { callee, args } => self.call(callee, args),
+            Rvalue::Call { callee, args } => self.call(callee, args, dest),
             Rvalue::Load(place) => self.load(place),
             Rvalue::Address(place) => {
                 let address = self.address(place)?;
@@ -332,9 +353,22 @@ impl Translator<'_, '_> {
                 // read, because every reading site checks `undef` first.
                 let ty = dest.map_or(PoolId::VOID, |id| self.body.value(id).ty);
                 let repr = Repr::of(self.ctx.pool, self.ctx.target, ty)?;
-                Ok(repr
-                    .clif_type(self.ctx.target)
-                    .map(|clif| self.builder.ins().iconst(clif, 0)))
+                // **The placeholder's instruction must match the register class**, not just the
+                // width: `iconst` on an `F32`/`F64` is what Cranelift's `iconst_bounds` verifier
+                // rejects, and it panics with "entered unreachable code" nowhere near here.
+                //
+                // Not the cause of the float-constant crash `PLAN.md` §7 records — that reproduces
+                // with this fixed — but wrong on its own terms, and reachable the moment a float
+                // local goes uninitialised. Fixed while looking for the other bug.
+                Ok(repr.clif_type(self.ctx.target).map(|clif| {
+                    if clif == cranelift_codegen::ir::types::F32 {
+                        self.builder.ins().f32const(0.0)
+                    } else if clif == cranelift_codegen::ir::types::F64 {
+                        self.builder.ins().f64const(0.0)
+                    } else {
+                        self.builder.ins().iconst(clif, 0)
+                    }
+                }))
             }
         }
     }
@@ -426,9 +460,27 @@ impl Translator<'_, '_> {
                 Ok(Some(clif))
             }
             Item::StrValue(str_id) => self.string_constant(str_id).map(Some),
+            // A **procedure value** is the code address of its target (ADR-0059 §4). Native uses a
+            // real function pointer — unlike the VM's encoded handle — because `call_indirect` takes
+            // an address, and nothing observes the bits so the two engines need not agree on them.
+            // `funcs` already holds a `FuncRef` for every reachable procedure, imported into this
+            // function; `func_addr` turns one into a pointer value.
+            Item::ProcValue { ty: _, decl } => {
+                let target = ProcRef::new(decl.file, jr_hir::ProcId::from_u32(decl.index));
+                let func = *self.ctx.funcs.get(&target).ok_or_else(|| {
+                    // A cross-file procedure value is refused in `scan` (ADR-0059 §1), and a
+                    // `#foreign` one is E0256 from sema, so a missing entry is a compiler bug
+                    // rather than a user error.
+                    CodegenError::Internal(format!(
+                        "no function declared for a procedure value {target:?}"
+                    ))
+                })?;
+                let pointer = pointer_type(self.ctx.target);
+                Ok(Some(self.builder.ins().func_addr(pointer, func)))
+            }
             _ => Err(CodegenError::Unsupported {
                 proc: self.proc,
-                what: "a type, procedure or library used as a runtime value".to_owned(),
+                what: "a type or library used as a runtime value".to_owned(),
             }),
         }
     }
@@ -844,33 +896,129 @@ impl Translator<'_, '_> {
     // -----------------------------------------------------------------------
 
     /// Translates a call.
-    fn call(&mut self, callee: &Callee, args: &[Operand]) -> Result<Slot, CodegenError> {
-        let target = match callee {
-            Callee::Direct(proc) => *proc,
-            // Nothing maps a procedure value to a `ProcRef` yet, which is the same
-            // gap the VM reports; refusing names it rather than miscompiling it.
-            Callee::Indirect(_) => {
-                return Err(CodegenError::Unsupported {
-                    proc: self.proc,
-                    what: "a call through a procedure pointer".to_owned(),
-                });
-            }
-        };
-        let func = *self
-            .ctx
-            .funcs
-            .get(&target)
-            .ok_or(CodegenError::Undeclared(target))?;
+    /// Emits a call, allocating the result slot when the callee returns an aggregate.
+    ///
+    /// `dest` gives the result's type, which is what decides whether the hidden `sret`
+    /// pointer is passed — the *same* `Repr::is_aggregate` question the callee's signature
+    /// asked, via the shared `repr::returns_via_sret`, so caller and callee cannot disagree
+    /// about the parameter count (ADR-0051 §1).
+    fn call(
+        &mut self,
+        callee: &Callee,
+        args: &[Operand],
+        dest: Option<ValueId>,
+    ) -> Result<Slot, CodegenError> {
+        // The `sret` slot, the argument reads and the result placement are identical whether the
+        // callee is direct or indirect — only the call *instruction* differs (`call` against a
+        // `FuncRef` versus `call_indirect` against an imported signature and a pointer value). So
+        // the callee is resolved to a closure that emits the one instruction, and everything around
+        // it is shared. Duplicating the slot logic per callee kind is how the two would drift about
+        // whether an aggregate return is placed the same way.
 
-        let mut values = Vec::with_capacity(args.len());
+        // The result type, from the value this call assigns to. A discarded call has no
+        // destination and therefore no aggregate to place — `Statement::Discard` on an
+        // aggregate-returning procedure would need a slot with no reader, and MIR does not
+        // produce one because a discarded call's `dest` is `None` only for `void`.
+        let ret_ty = dest.map_or(PoolId::VOID, |id| self.body.value(id).ty);
+        let via_sret = repr::returns_via_sret(self.ctx.pool, self.ctx.target, ret_ty)?;
+
+        let mut values = Vec::with_capacity(args.len() + usize::from(via_sret));
+        // A **fresh** slot per call, copied out of afterwards rather than passing the
+        // destination's own address (ADR-0051 §2). One extra copy, deliberately: passing the
+        // destination directly would let a callee that traps halfway leave the caller's
+        // variable half-assigned, and ADR-0002's traps are real control flow.
+        let result_slot = if via_sret {
+            let layout = layout_of(self.ctx.pool, self.ctx.target, ret_ty)
+                .map_err(|reason| CodegenError::NoLayout { ty: ret_ty, reason })?;
+            let size = u32::try_from(layout.size.max(1)).map_err(|_| {
+                CodegenError::Internal("a call result is larger than a u32".to_owned())
+            })?;
+            let data = StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                size,
+                layout.align.trailing_zeros().try_into().unwrap_or(0),
+            );
+            let handle = self.builder.create_sized_stack_slot(data);
+            let pointer = pointer_type(self.ctx.target);
+            let address = self.builder.ins().stack_addr(pointer, handle, 0);
+            // Leading, matching the signature.
+            values.push(address);
+            Some(address)
+        } else {
+            None
+        };
+
         for arg in args {
             if let Some(value) = self.read(*arg)? {
                 values.push(value);
             }
         }
-        let inst = self.builder.ins().call(func, &values);
+        let inst = match callee {
+            Callee::Direct(target) => {
+                let func = *self
+                    .ctx
+                    .funcs
+                    .get(target)
+                    .ok_or(CodegenError::Undeclared(*target))?;
+                self.builder.ins().call(func, &values)
+            }
+            // A pointer value plus an imported signature (ADR-0059 §4). The signature is built
+            // from the callee operand's *type* — a `ProcType` sema resolved — with the same
+            // convention a direct Jairs call uses: `CallConv::Fast`, receives the context, never a
+            // `#foreign` one (a `#foreign` procedure cannot be an indirect target, ADR-0059 §5).
+            Callee::Indirect(operand) => {
+                let sig = self.indirect_signature(*operand)?;
+                let sig_ref = self.builder.import_signature(sig);
+                let pointer = self.read_scalar(*operand)?;
+                self.builder.ins().call_indirect(sig_ref, pointer, &values)
+            }
+        };
+        // An `sret` call returns nothing; the result *is* the slot, and an aggregate value
+        // is represented by a pointer to its bytes, so the address is the value.
+        if let Some(address) = result_slot {
+            return Ok(Some(address));
+        }
         let results = self.builder.inst_results(inst);
         Ok(results.first().copied())
+    }
+
+    /// The Cranelift signature for a call through a procedure pointer (ADR-0059 §4).
+    ///
+    /// Built from the callee operand's `Item::ProcType` — its parameter and return types — with the
+    /// convention a direct Jairs call uses: `CallConv::Fast`, and the implicit context as a leading
+    /// hidden parameter. A proc-pointer type is always Jairs-convention this wave (ADR-0059 §3), so
+    /// `receives_context` is always true and `foreign` always false; there is no `#c_call`
+    /// proc-pointer type to vary them.
+    ///
+    /// The signature must match the callee's *declared* one exactly — the same `repr::signature`
+    /// builds both — or the two disagree about the parameter count, which is the silent-shift
+    /// failure `repr::returns_via_sret` exists to prevent (ADR-0051 §1).
+    fn indirect_signature(
+        &self,
+        operand: Operand,
+    ) -> Result<cranelift_codegen::ir::Signature, CodegenError> {
+        let proc_ty = self.operand_type(operand);
+        let Item::ProcType { params, ret, .. } = self.ctx.pool.item(proc_ty) else {
+            return Err(CodegenError::Internal(
+                "an indirect call whose callee is not of procedure type".to_owned(),
+            ));
+        };
+        let params = params.clone();
+        let ret = *ret;
+        let proc = self.proc;
+        repr::signature(
+            self.ctx.pool,
+            self.ctx.target,
+            &params,
+            ret,
+            cranelift_codegen::isa::CallConv::Fast,
+            false,
+            true,
+            &|what: &str| CodegenError::Unsupported {
+                proc,
+                what: what.to_owned(),
+            },
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -1179,6 +1327,23 @@ impl Translator<'_, '_> {
                 Ok(())
             }
             Terminator::Return(operand) => {
+                // **An aggregate result is copied into the caller's slot, and nothing is
+                // returned** (ADR-0051 §1). The operand holds a *pointer* to the callee's
+                // own storage — `Repr::Aggregate` travels as one — so returning it
+                // directly would hand back the address of a frame about to be destroyed.
+                // That dangling pointer is why the refusal this replaces existed.
+                if let Some(dest) = self.sret {
+                    if let Some(operand) = operand {
+                        let ty = self.operand_type(*operand);
+                        if let Some(src) = self.read(*operand)? {
+                            let layout = layout_of(self.ctx.pool, self.ctx.target, ty)
+                                .map_err(|reason| CodegenError::NoLayout { ty, reason })?;
+                            self.copy(dest, src, layout.size, layout.align);
+                        }
+                    }
+                    self.builder.ins().return_(&[]);
+                    return Ok(());
+                }
                 match operand {
                     Some(operand) => {
                         // The VM traps rather than returning an undefined value,
@@ -1357,6 +1522,21 @@ impl Translator<'_, '_> {
 
     /// A struct field's type.
     fn field_type(&self, ty: PoolId, index: u32) -> Result<PoolId, CodegenError> {
+        // A results aggregate carries its element list directly (ADR-0052 §1), so there is no
+        // `DeclId` and no side table — the **third** field-type walk this wave had to teach, after
+        // `jr-pool`'s `field_offset` and `jr-vm`'s. Three copies of "what type is field N" is the
+        // duplication ADR-0018 §2 warns about; consolidating them is owed and recorded in §7.
+        // The context's fields, from the same list (ADR-0057 §1).
+        if matches!(self.ctx.pool.item(ty), Item::ContextType) {
+            return jr_pool::Pool::context_field_type(index)
+                .ok_or_else(|| CodegenError::Internal(format!("no context field {index}")));
+        }
+        if let Item::ResultsType { elems } = self.ctx.pool.item(ty) {
+            return elems
+                .get(index as usize)
+                .copied()
+                .ok_or_else(|| CodegenError::Internal(format!("no result {index}")));
+        }
         // Accepts a union as well as a struct: the field *list* is shared and only the
         // offsets differ (ADR-0045 §5).
         let (Item::StructType { decl } | Item::UnionType { decl }) = self.ctx.pool.item(ty) else {

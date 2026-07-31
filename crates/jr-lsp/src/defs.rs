@@ -141,6 +141,36 @@ pub fn definition_at(
                     local,
                 })
             }
+            // **Goto-definition on a promoted name jumps to the binding that promoted it**, not
+            // to the field in the struct. That is the honest answer to "where does this name come
+            // from": the field exists regardless, and what put it *in scope here* is the `using`.
+            // Resolving to the struct's field would send the reader somewhere that does not
+            // explain why the bare name works.
+            //
+            // Recurses to the root of the chain, so an embedded promotion lands on the outermost
+            // binding rather than an intermediate field.
+            Res::Promoted { .. } => {
+                let mut target = &res;
+                while let Res::Promoted { base, .. } = target {
+                    target = base;
+                }
+                let ExprScope::Body(body) = found.scope else {
+                    return None;
+                };
+                match target {
+                    Res::Local(local) => Some(DefId::Local {
+                        file: path,
+                        body,
+                        local: *local,
+                    }),
+                    Res::Param(param) => owner_of(hir.as_ref(), body).map(|proc| DefId::Param {
+                        file: path,
+                        proc,
+                        param: *param,
+                    }),
+                    Res::Item(_) | Res::Imported(_, _) | Res::Promoted { .. } | Res::Error => None,
+                }
+            }
             Res::Error => None,
         };
     }
@@ -305,6 +335,34 @@ fn collect(
                 }),
                 ExprScope::TopLevel => None,
             },
+            // A promoted name counts as a reference to the **binding** it reaches through, which
+            // matches where goto-definition sends the reader. So `find references` on a `using`
+            // parameter finds every bare use of its promoted fields — which is the behaviour that
+            // makes the feature safe to refactor around, and the reason this is not `None`.
+            Res::Promoted { .. } => {
+                let mut target = &res;
+                while let Res::Promoted { base, .. } = target {
+                    target = base;
+                }
+                match (target, scope) {
+                    (Res::Local(local), ExprScope::Body(body)) => Some(DefId::Local {
+                        file: file.to_path_buf(),
+                        body,
+                        local: *local,
+                    }),
+                    (Res::Param(param), ExprScope::Body(body)) => {
+                        owner_of(hir, body).map(|proc| DefId::Param {
+                            file: file.to_path_buf(),
+                            proc,
+                            param: *param,
+                        })
+                    }
+                    (Res::Local(_) | Res::Param(_), ExprScope::TopLevel)
+                    | (Res::Item(_) | Res::Imported(_, _) | Res::Promoted { .. } | Res::Error, _) => {
+                        None
+                    }
+                }
+            }
             Res::Error => None,
         };
         if found.as_ref() == Some(def) {

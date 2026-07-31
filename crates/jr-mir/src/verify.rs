@@ -612,6 +612,8 @@ impl Verifier<'_> {
             | Item::ForeignLibraryType
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
+            | Item::ResultsType { .. }
+            | Item::ContextType
             | Item::FloatType { .. }
             | Item::EnumType { .. }
             | Item::StructType { .. }
@@ -663,6 +665,8 @@ impl Verifier<'_> {
             | Item::PointerType(_)
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
+            | Item::ResultsType { .. }
+            | Item::ContextType
             | Item::FloatType { .. }
             | Item::EnumType { .. }
             | Item::StructType { .. }

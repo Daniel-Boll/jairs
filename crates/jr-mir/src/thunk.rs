@@ -46,8 +46,8 @@ use jr_sema::TypeMap;
 
 use crate::inputs::{ConstValues, ImportedProcs};
 use crate::mir::{
-    BinOp, Callee, MirBody, MirSpan, Operand, Poisoned, ProcRef, Rvalue, Statement, Terminator,
-    UnOp,
+    BinOp, Callee, MirBody, MirSpan, Operand, Place, Poisoned, ProcRef, Rvalue, Statement,
+    Terminator, UnOp,
 };
 use crate::verify;
 
@@ -200,7 +200,10 @@ fn resolve_callee(
         Res::Imported(import, name) => imports.get(import, name).ok_or(Poisoned::Here(
             "a cross-file call needs the callee's signatures",
         )),
-        Res::Local(_) | Res::Param(_) | Res::Error => {
+        // A promoted name cannot occur at file scope: `using` prefixes a local or a parameter, and
+        // neither exists outside a body. Listed rather than `_`-armed so a future `Res` variant is
+        // a compile error here rather than silently taking this branch.
+        Res::Local(_) | Res::Param(_) | Res::Promoted { .. } | Res::Error => {
             Err(Poisoned::Here("a name failed to resolve at file scope"))
         }
     }
@@ -263,7 +266,8 @@ impl Thunk<'_> {
                     Res::Imported(_, _) => {
                         Err(Poisoned::Here("an imported constant has no value here"))
                     }
-                    Res::Local(_) | Res::Param(_) | Res::Error => {
+                    // Same as above: no `using` binding exists at file scope.
+                    Res::Local(_) | Res::Param(_) | Res::Promoted { .. } | Res::Error => {
                         Err(Poisoned::Here("a name failed to resolve at file scope"))
                     }
                 }
@@ -310,10 +314,26 @@ impl Thunk<'_> {
             Expr::Call {
                 callee,
                 args,
+                arg_names: _,
                 span: _,
             } => {
                 let target = self.callee(callee)?;
-                let mut operands = Vec::with_capacity(args.len());
+                let mut operands = Vec::with_capacity(args.len() + 1);
+                // **A comptime call passes a context too** (ADR-0057 §2), because the callee's
+                // signature takes one — a thunk is a `#c_call`-shaped entry with no context of its
+                // own, so it allocates a fresh zeroed one per call. Without this the callee was
+                // "called a procedure taking 3 arguments with 2", the shift ADR-0053 §1 records.
+                //
+                // The context need not persist between calls: const-eval reads only a constant's
+                // *result*, and nothing at file scope observes a mutation (E0254 refuses `context`
+                // there). A fresh slot each time is therefore correct and simplest.
+                if self.callee_receives_context(target) {
+                    let ctx_ty = self.pool.context_type();
+                    let slot = self.mir.push_slot(ctx_ty, None, MirSpan::Synthetic);
+                    let ptr_ty = self.pool.context_pointer();
+                    let address = self.define(ptr_ty, Rvalue::Address(Place::slot(slot)), id);
+                    operands.push(address);
+                }
                 for arg in &args {
                     operands.push(self.expr(*arg)?);
                 }
@@ -347,6 +367,10 @@ impl Thunk<'_> {
             Expr::Member { .. } => Err(Poisoned::Here(
                 "a bare enum member has no context at file level",
             )),
+            // `context` at file scope is refused by sema (E0254, ADR-0057 §3): a constant's value is
+            // computed before any call, so no context has been passed. Reaching here means sema and
+            // const-eval disagree, which is a poison rather than a placeholder.
+            Expr::Context(_) => Err(Poisoned::Here("`context` has no value at file scope")),
             Expr::Uninit(_) => Err(Poisoned::Here("`---` has no value")),
             Expr::Error(_) => Err(Poisoned::Here("the expression contains recovered syntax")),
         }
@@ -382,7 +406,26 @@ impl Thunk<'_> {
             }
             Literal::Bool(value) => self.pool.bool_value(*value),
             Literal::Str(text) => self.pool.str_value(text),
+            // `null` is the zero pointer of `ty` (ADR-0060 §1), the same `int_value(ty, 0)`
+            // `build.rs` folds — the two must agree because a `#run` folds through here and the
+            // same literal at run time folds through there (PLAN.md §3.1). A comptime `null` is
+            // fine; it is a comptime *`malloc`* that ADR-0006 refuses, not a null pointer.
+            Literal::Null => self.pool.int_value(ty, 0),
         }
+    }
+
+    /// Whether a comptime callee receives the implicit context (ADR-0057 §3).
+    ///
+    /// Only a *local* callee is reachable in a thunk — file-level const-eval calls procedures in the
+    /// same file — so its `c_call`/`foreign` flags are in this HIR, the same two `jr-mir`'s lowering
+    /// reads. A cross-file comptime call is refused elsewhere, so `false` for one is harmless.
+    fn callee_receives_context(&self, target: ProcRef) -> bool {
+        target.file == self.file
+            && self
+                .hir
+                .procs
+                .get(target.proc.index())
+                .is_some_and(|p| !(p.c_call || p.foreign.is_some()))
     }
 
     fn callee(&mut self, callee: ExprId) -> Result<ProcRef, Poisoned> {

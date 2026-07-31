@@ -50,6 +50,51 @@ use crate::mir::ProcRef;
 /// disagreement would silently call a different procedure. The same reasoning that makes `jr-mir`
 /// read `TypeMap` instead of typing expressions itself.
 ///
+/// The positional argument list of every call that used a named argument or a default (ADR-0053 §1).
+///
+/// Empty for a file that uses neither, which is the common case and costs nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FilledArgs {
+    calls: FxHashMap<(ExprScope, ExprId), Vec<FilledArg>>,
+}
+
+/// One resolved argument position, as `jr-mir` sees it (ADR-0053 §1).
+///
+/// The MIR-side mirror of `jr_sema::ArgSlot`. Separate rather than shared because `jr-mir` does not
+/// depend on `jr-sema` — the dependency runs the other way, through `jr-db` — and because MIR only
+/// needs two shapes: lower this expression, or emit this constant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilledArg {
+    /// Lower the expression the call site wrote.
+    Expr(ExprId),
+    /// Emit this already-interned default as a constant operand.
+    Default(PoolId),
+}
+
+impl FilledArgs {
+    /// An empty map: every call uses its source-order arguments.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records the positional argument list of one call.
+    pub fn set(&mut self, scope: ExprScope, expr: ExprId, args: Vec<FilledArg>) {
+        self.calls.insert((scope, expr), args);
+    }
+
+    /// The positional argument list of a call, if it needed reordering or a default.
+    ///
+    /// `None` for an all-positional call with no defaults, which is the common case — so lowering
+    /// falls back to the source order, and that order is already correct.
+    #[must_use]
+    pub fn get(&self, scope: ExprScope, expr: ExprId) -> Option<&[FilledArg]> {
+        self.calls.get(&(scope, expr)).map(Vec::as_slice)
+    }
+}
+
+/// Which overload each operator expression resolved to (ADR-0048 §5).
+///
 /// Empty for every file that uses no overload, which is the common case and costs nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OperatorCalls {
@@ -157,9 +202,70 @@ impl ConstValues {
 /// Symbol)`'s own shape, rather than on the referring expression: two references
 /// to the same imported procedure resolve identically, and keying on the
 /// resolution means lowering looks up what it already has in hand.
+/// The value of each imported *constant* a file reads (ADR-0055 §1).
+///
+/// Filled by `jr-db` from the other module's `file_consts`, and read by lowering where it used to
+/// refuse with "an imported name has no value until jr-vm". A `PoolId` needs no translation across
+/// files because the pool is shared (ADR-0018 §2), which is what makes a *value* the cheap thing to
+/// carry across a module boundary and a field list the expensive one.
+///
+/// Empty for a file that reads no imported constant, which costs nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImportedValues {
+    by_name: FxHashMap<(ItemId, jr_base::Symbol), PoolId>,
+}
+
+impl ImportedValues {
+    /// An empty map: every imported constant is refused, as it was before ADR-0055.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records the value an imported name has.
+    ///
+    /// Keyed on the *importing* file's `#import` item plus the name in the other scope — the same key
+    /// [`ImportedProcs`] uses, because `Res::Imported` yields exactly that pair and a second key
+    /// shape would be a second thing to keep in step (ADR-0055 §1).
+    pub fn set(&mut self, import: ItemId, name: jr_base::Symbol, value: PoolId) {
+        self.by_name.insert((import, name), value);
+    }
+
+    /// The value of an imported name, if the other file's const-eval produced one.
+    ///
+    /// `None` for a constant const-eval could not fold — which is E0230 in its *own* file already, so
+    /// the importing file refuses as it did before rather than inventing a second diagnostic.
+    #[must_use]
+    pub fn get(&self, import: ItemId, name: jr_base::Symbol) -> Option<PoolId> {
+        self.by_name.get(&(import, name)).copied()
+    }
+}
+
+/// The `ProcRef` each cross-file callee resolves to (ADR-0018 §5).
+///
+/// Filled by `jr-db` from the other module's signatures. Keying on the resolution rather than on the
+/// callee expression means two calls to the same imported procedure resolve identically, and lowering
+/// looks up what it already has in hand.
+///
+/// Empty for a file that calls nothing across a boundary, in which case every cross-file call is
+/// refused exactly as ADR-0017 shipped.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImportedProcs {
-    by_name: FxHashMap<(ItemId, jr_base::Symbol), ProcRef>,
+    by_name: FxHashMap<(ItemId, jr_base::Symbol), ImportedProc>,
+}
+
+/// A resolved cross-file callee: where it is, and whether it takes the implicit context.
+///
+/// The context flag rides along because it cannot be recomputed on the *importing* side — the
+/// callee's `#c_call`/`#foreign` status is in its *own* file's HIR, which `jr-db` reads at fill time
+/// and lowering does not have (ADR-0057 §3). Recording it here is the same "resolve across files in
+/// `jr-db`, hand `jr-mir` the answer" shape ADR-0018 §5 established, extended by one bit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImportedProc {
+    /// The procedure.
+    pub target: ProcRef,
+    /// Whether it receives the implicit context (ADR-0057 §3).
+    pub receives_context: bool,
 }
 
 impl ImportedProcs {
@@ -171,7 +277,24 @@ impl ImportedProcs {
 
     /// Records that an imported name is a procedure in another file.
     pub fn set(&mut self, import: ItemId, name: jr_base::Symbol, target: ProcRef) {
-        self.by_name.insert((import, name), target);
+        self.set_full(import, name, target, true);
+    }
+
+    /// Records a procedure with its context flag (ADR-0057 §3).
+    pub fn set_full(
+        &mut self,
+        import: ItemId,
+        name: jr_base::Symbol,
+        target: ProcRef,
+        receives_context: bool,
+    ) {
+        self.by_name.insert(
+            (import, name),
+            ImportedProc {
+                target,
+                receives_context,
+            },
+        );
     }
 
     /// Records a procedure by file and index.
@@ -189,6 +312,12 @@ impl ImportedProcs {
     /// consumer.
     #[must_use]
     pub fn get(&self, import: ItemId, name: jr_base::Symbol) -> Option<ProcRef> {
+        self.by_name.get(&(import, name)).map(|p| p.target)
+    }
+
+    /// The full resolved callee, including whether it takes a context (ADR-0057 §3).
+    #[must_use]
+    pub fn resolved(&self, import: ItemId, name: jr_base::Symbol) -> Option<ImportedProc> {
         self.by_name.get(&(import, name)).copied()
     }
 
