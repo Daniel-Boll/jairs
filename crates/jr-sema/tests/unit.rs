@@ -516,3 +516,24 @@ fn an_alias_of_an_alias_is_not_followed() {
         "a chain of aliases is deliberately not followed (ADR-0071 §5)"
     );
 }
+
+#[test]
+fn a_poisoned_context_suppresses_the_type_refusal() {
+    // `expect`'s rule, applied to E0261: poison propagates silently in both directions, because
+    // `file_diagnostics` does not gate later phases on earlier ones. Without it,
+    // `n: nosuchtype = Point;` reported E0212 *and* E0261 — two diagnostics for one mistake.
+    //
+    // Found by probing after the wave was committed, and worth a test rather than only a fix: this
+    // arm returns *before* reaching `expect`, so it has to know what `expect` knows, and a later
+    // refusal added to the same arm would have the same trap waiting.
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "Point :: struct {\n    x: s64;\n}\n\
+         main :: () {\n    n: nosuchtype = Point;\n}\n",
+    );
+    assert_eq!(
+        analysis.codes(),
+        vec!["E0212"],
+        "the unknown type is the one mistake; the type-as-value refusal must stay quiet"
+    );
+}

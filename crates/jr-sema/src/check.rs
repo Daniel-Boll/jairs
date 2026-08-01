@@ -840,7 +840,16 @@ impl Ctx<'_> {
                 // Refused here rather than in lowering for ADR-0039 §3a's reason: rejecting a
                 // construct is a semantic judgement, and a lowering refusal reports a
                 // compiler-internal message for a program that looks well-formed.
-                if ty == PoolId::TYPE && !self.type_is_allowed_here(scope, id) {
+                //
+                // **Silent when the context is already poisoned**, which is `expect`'s rule and not a
+                // politeness: `file_diagnostics` does not gate later phases on earlier ones, so
+                // `n: nosuchtype = Point;` would otherwise report E0212 *and* E0261 for one mistake.
+                // Checked here rather than left to `expect`, because this arm returns before reaching
+                // it — the refusal has to know the same thing `expect` knows.
+                if ty == PoolId::TYPE
+                    && expected != Some(PoolId::ERROR)
+                    && !self.type_is_allowed_here(scope, id)
+                {
                     self.reject_type_as_value(span);
                     return PoolId::ERROR;
                 }

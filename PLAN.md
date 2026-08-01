@@ -508,7 +508,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 **A type is a compile-time value, and using one at run time no longer compiles.** W4's third sub-wave
-(ADR-0071) closed a *silent miscompile* and added type aliases. **935 workspace tests**, all six gates
+(ADR-0071) closed a *silent miscompile* and added type aliases. **936 workspace tests**, all six gates
 green, plus **166 Neovim checks** verified rather than gated. See §1.5.
 
 **The bug was the wave.** `t := Point;` — a bare type name bound to a local — type-checked cleanly and
@@ -558,12 +558,17 @@ enough to act on: when a claim is about a representation, dump the representatio
       and no type annotation can resolve to `PoolId::TYPE`, because `resolve_type_name` reads a
       `SigEntry::type_value` and nothing sets that to the type of a type. So making `Type` spellable
       would have added one spelling whose every use is an error. §1 now says that instead.
-- [x] **Five unit tests (930 → 935), each teeth-checked by disabling the mechanism it claims to pin.** Disabling the
+- [x] **Six unit tests (930 → 936), each teeth-checked by disabling the mechanism it claims to pin.** Disabling the
       refusal fails exactly the two refusal tests; refusing everywhere fails exactly the three
       legal-position tests; disabling the alias fails exactly the identity test. Different flips, different
       failures — which is what distinguishes a test with teeth from one that passes on ambient behaviour.
 - [x] **No MIR change and no back-end change.** A `Type` value never reaches either, which is what §4's
       split buys and why this sub-wave added no engine risk.
+- [x] **One cascade found *after* the wave was committed, by probing rather than by reading.** E0261
+      returns before reaching `expect`, so it did not inherit `expect`'s rule that poison propagates
+      silently — and `n: nosuchtype = Point;` reported E0212 **and** E0261 for one mistake. The refusal
+      now checks what `expect` checks. Worth knowing generally: any refusal added to that arm has the
+      same trap waiting, because the arm's early return skips the one place that knows the rule.
 
 Two things worth carrying forward.
 

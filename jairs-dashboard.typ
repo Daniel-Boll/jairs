@@ -94,7 +94,7 @@
 #v(0.4em)
 #pill[6/6 gates green]
 #h(4pt)
-#pill[935 tests]
+#pill[936 tests]
 #h(4pt)
 #pill[ADR-0071 latest]
 #h(4pt)
@@ -104,7 +104,7 @@
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "935", "workspace, all passing"),
+  metric("Tests", "936", "workspace, all passing"),
   metric("Corpus", "160", "jr files, both engines"),
   metric("ADRs", "71", "0001 to 0071, immutable"),
   metric("Diagnostics", "92", "codes, E0262 next free"),
@@ -366,7 +366,7 @@
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 935. Corpus 116 to 160 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
+      Test count 900 to 936. Corpus 116 to 160 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
       closed*, and *W4 is open* with three of four sub-waves done: a `#run` reaches across files and into
       a body, an array length may name a constant, and a type is a value. *Twice now* a scheduled
       dependency turned out not to exist — W4.5's on comptime, and sub-wave 2's folding work. Remaining:
