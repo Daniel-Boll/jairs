@@ -639,3 +639,72 @@ naming rather than a coincidence.
 All four forks taken as recommended. ADR-0070 records them and amends ADR-0039 §3a. No new diagnostic
 code, no new pool item, no MIR change — after this, nothing downstream can tell how the length was
 written, which is the evidence it belongs where it was put.
+
+---
+
+## Wave: type values (ADR-0071), 2026-07-31 — W4 sub-wave 3, scoped
+
+### What running found: a silent miscompile, not a gap
+
+`t := Point;` — a bare type name bound to a local — **type-checks cleanly and compiles in both engines
+today**, exiting 0. Its MIR is `s0: type` and `v1: type = undef`: a placeholder stored into a slot whose
+type has *no runtime layout at all* (`layout_of` answers `ComptimeOnly` for `Item::TypeType`, whose docs
+call asking for its size "a category error"). That is PLAN §5's first failure mode exactly — a construct
+the grammar allows, no representation on the lowering path, filled in with a placeholder that is a
+legitimate value — so neither the verifier nor ADR-0017 §4's poison gate catches it.
+
+Only the MIR dump shows it. Third wave running that a false claim survived because nothing displayed the
+contradicting thing.
+
+The other half: `T :: Point;` (a type alias) fails with "compile-time evaluation failed: a file-level item
+has no value yet" — a const-eval internal for a natural construct, because `file_consts` deliberately does
+not treat a struct as an evaluation target.
+
+### Fork 1 — how much of RTTI belongs in this sub-wave
+
+- Options: **`Type` values only, deferring `type_info()` and `Any` (taken, recommended)**; all three
+  together; `Type` plus `type_info()`.
+- Why: the three divide on one question — *does the value exist at run time?* A `Type` does not
+  (`ComptimeOnly`), so it never reaches a back end and adds no engine risk. `type_info()` returns a struct
+  *describing* a type, which does exist at run time and needs that struct declared, populated and laid
+  out; `Any` is a `{type, pointer}` pair needing the same plus rules for what goes in and how it comes
+  out. So `Any` is not "more RTTI" — it is the first construct that makes a type into runtime data, and it
+  is what §5's "sema and the VM become mutually recursive" is actually about. Splitting here keeps this
+  sub-wave's claim checkable: afterwards, a type is a compile-time value and nothing else.
+
+### Fork 2 — where the runtime refusal lives
+
+- Options: **`jr-sema`, when a name's type comes back as `PoolId::TYPE` in a body (taken, recommended)**;
+  `jr-mir`'s `scan`; leave it and let the back end refuse.
+- Why: rejecting a construct is a semantic judgement — ADR-0039 §3a's reason for array lengths and
+  ADR-0017 §4's generally — and a lowering refusal produces a compiler-internal message for a
+  well-formed-looking program, which is exactly what the alias case was already doing. `type-errors/`
+  files must lower cleanly, so the diagnostic has to be sema's. Leaving it to the back end is what
+  produced the placeholder.
+
+### Fork 3 — where a type-valued constant's value comes from
+
+- Options: **`FileSignatures::type_value`, which the signature phase already computed (taken,
+  recommended)**; make a struct an ordinary const-eval target; a new side table.
+- Why: const-eval is downstream of *signatures* (ADR-0018 §3), so this reads a value that already exists
+  rather than inverting a phase — the same move ADR-0070 §1 made for an array length, available for the
+  same reason. Making a struct a const-eval target would mean evaluating something with nothing to
+  evaluate (its "value" is a declaration, as `wanted`'s docs argue), and the thunk would still have to
+  know it had produced a type rather than a number.
+
+### Fork 4 — how far the capability goes
+
+- Options: **one level of aliasing, no type comparison, no `Type` parameters (taken, recommended)**; add
+  `T == U`; allow a `Type` parameter.
+- Why: a chain (`B :: A` where `A :: Point`) needs a fixpoint and a cycle check, which is the same
+  machinery ADR-0070 §4 declined for a length chain. `T == U` is decidable and cheap — a `PoolId`
+  comparison — but its *meaning* is ADR-0015's type-identity question, and settling that in passing would
+  answer a design question this ADR has no argument for. A `Type` parameter is a second route to W5's
+  `$T`.
+
+### Resolution
+
+All four forks taken as recommended. ADR-0071 records them. **One new diagnostic code, E0261** (a type used
+at run time), so **E0262 becomes the first free code** — the wave's real content is removing a silent
+miscompile, which is why it ships separately rather than inside a larger RTTI change. No MIR change and no
+back-end change: a type value never reaches either.

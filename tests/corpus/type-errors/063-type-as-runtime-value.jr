@@ -1,0 +1,58 @@
+// EXPECT: E0261 — a type used where a runtime value was expected (ADR-0071 §3)
+//
+// **This file pins a silent miscompile, not a missing feature**, which is why the wave that added it was
+// worth shipping on its own. Before ADR-0071, `t := Point;` type-checked cleanly and *both engines exited
+// 0*. Its MIR was:
+//
+//     slots:
+//       s0: type          // a slot of a type with no runtime layout
+//     bb0(v0: *Context):
+//       v1: type = undef  // a placeholder for a category error
+//       store s0 <- v1
+//
+// That is PLAN.md §5's first named failure mode exactly: a construct the grammar allows, no
+// representation on the lowering path, filled in with a placeholder that is a **legitimate value**.
+// `Rvalue::Undef` is legitimate — `c: s64 = ---;` produces one — so neither the verifier nor ADR-0017
+// §4's poison gate could object, and nothing read the slot, so nothing failed.
+//
+// The type stored into has no runtime representation *at all*. `layout_of` answers
+// `LayoutError::ComptimeOnly` for `Item::TypeType`, whose own documentation says such types "exist only
+// during compilation" and that asking for their runtime size "is a category error, distinguished from
+// `Layout::ZERO` deliberately". So this was not a small slot — it was a slot of something that cannot be
+// stored, and the compiler was making one anyway.
+//
+// **Refused in sema, not in lowering**, for ADR-0039 §3a's reason and ADR-0017 §4's: rejecting a
+// construct is a semantic judgement, and a lowering refusal makes a well-formed-looking program report a
+// compiler-internal message. Files in this directory must lower cleanly, so the diagnostic has to be
+// sema's.
+//
+// **Distinct from E0214.** A mismatch says some *other* type was wanted; here nothing was wanted at all,
+// and the objection is that a type is not a value. Most positions were already covered by an ordinary
+// mismatch before this wave — `takes(Point)` was E0214, `if Point` was E0222, `Point()` was E0215 — and
+// they still are. What slipped through was every position with **no expectation to mismatch against**: a
+// `:=` binding, and a bare expression statement. Those are what E0261 catches.
+//
+// **One** refusal here, because this directory's contract is one diagnostic per file. The binding is the
+// case shown, since it is the one a person would actually write.
+//
+// Two positions that *do* accept a type are deliberately exercised in `valid/058` rather than here: the
+// receiver of a field access (`Colour.RED`) and the initialiser of a `::` constant (`T :: Point;`). They
+// are an allowlist in sema rather than a shape test, because the failure directions are not symmetric — a
+// missed legal position is a false error a reader can see and report, while a missed illegal one is the
+// placeholder above.
+//
+// **`Type` is not spellable, and the diagnostic says so by omission.** `t: Type;` reports E0212 (unknown
+// type name), which is accurate: `T : Type : Point;` does not parse at all — the grammar has no
+// annotated-`::` form — and no type annotation can resolve to `PoolId::TYPE`, because
+// `resolve_type_name` reads a `SigEntry::type_value` and no declaration sets that to the type of a type.
+// So E0261's help line names where a type *may* go rather than suggesting an annotation the parser would
+// reject.
+Point :: struct {
+    x: s64;
+}
+
+bind_a_type :: () {
+    // The refusal: a type bound to a local. No expectation to mismatch against, which is exactly why
+    // this was the case that got through.
+    t := Point;
+}

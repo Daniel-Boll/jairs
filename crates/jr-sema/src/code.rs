@@ -266,3 +266,20 @@ pub(crate) const E0259: &str = "E0259";
 /// Unreachable, and this is the diagnostic that makes E0258 worth having: without it every `switch`
 /// could end in `else` and the exhaustiveness check would never fire.
 pub(crate) const E0260: &str = "E0260";
+
+/// A type used where a runtime value was expected (ADR-0071 §3).
+///
+/// A type is a compile-time value (ADR-0012), and `jr_pool::LayoutError::ComptimeOnly` says the same
+/// thing from the layout side: `Item::TypeType` has no runtime size, and asking for one "is a category
+/// error". So a type cannot be stored, and `t := Point;` is asking for storage.
+///
+/// **This code exists because the case was a silent miscompile.** Before it, `t := Point;` type-checked
+/// cleanly and both engines exited 0, lowering to `s0: type` and `v1: type = undef` — a placeholder
+/// that is a *legitimate value*, so neither the verifier nor ADR-0017 §4's poison gate could catch it.
+/// That is this project's first named failure mode, and ADR-0017 §4's rule is that such a case refuses.
+///
+/// Distinct from E0214 because the objection is not that some *other* type was wanted — for `t :=
+/// Point;` nothing was wanted — but that a type is not a value at all. The message therefore names the
+/// positions that do accept a type rather than naming an expected type the reader could write: `Type`
+/// is deliberately not spellable (ADR-0071 §1), so there is no annotation to suggest.
+pub(crate) const E0261: &str = "E0261";

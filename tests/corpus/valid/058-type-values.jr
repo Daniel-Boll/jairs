@@ -1,0 +1,115 @@
+// A **type is a compile-time value** (ADR-0071), which is W4's third sub-wave — and the half of it that
+// adds a capability. The other half removes a silent miscompile and lives in `type-errors/063`.
+//
+// `Point :: struct { … }` has always been a *constant whose value is a type* (ADR-0012). What was
+// missing is the one thing that follows from saying so: binding that value to another name.
+//
+//     Pair :: Point;      // now legal, and `Pair` is usable everywhere `Point` is
+//
+// Before ADR-0071 this reported `error[E0230]: compile-time evaluation failed: a file-level item has no
+// value yet` — a const-eval internal, on a declaration that is perfectly correct. The cause was narrow:
+// `file_consts` deliberately does not treat a struct as an evaluation target, because a struct's "value
+// is a declaration rather than something to compute", so the thunk found no entry for `Point`.
+//
+// The fix reads the value from where it *already was*. `SigEntry::type_value` holds the resolved type of
+// every nominal declaration, computed in the signature phase — which const-eval is downstream of
+// (ADR-0018 §3) — so a type alias is interned from a value that exists rather than by inverting a phase.
+// That is exactly the move ADR-0070 §1 made for an array length, available for the same reason.
+//
+// Six things here are worth checking rather than assuming, and the `exit` gives each teeth:
+//
+//   * an alias is usable as a **local's type**, and the local really has the aliased layout;
+//   * as a **parameter type**, so a call through the alias passes the same aggregate;
+//   * as a **field type** of another struct, so the alias survives one level of nesting;
+//   * as an **element type** of an array, which is where a wrong stride would show;
+//   * as a **pointee**, so `*Pair` and `*Point` are one type rather than two;
+//   * an **enum** alias carries its members: `Shade.GREEN` is `Colour.GREEN`, the same constant.
+//
+// The last is the one that would fail quietly if the alias were a *new* nominal type rather than the
+// same one: ADR-0015 §1 makes a struct's identity its declaration site, so an alias must not create a
+// second identity. `c == Colour.GREEN` is what proves it did not — comparing across the two spellings
+// would be E0214 if they were different types.
+//
+// What is **not** here is a chain (`B :: Pair;`), which stays refused for the reason ADR-0070 §4 refused
+// a length chain: one level is a lookup, a chain needs a fixpoint and a cycle check. Nor is `Type`
+// spellable as an annotation — see `type-errors/063` for why that is a decision rather than an omission.
+#import "Basic";
+
+/// The aliased struct. Two fields rather than one, so a transposed alias would put a value in the
+/// wrong place instead of merely working.
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+/// The aliased enum, with three members so a bare `.GREEN` has somewhere to be wrong.
+Colour :: enum {
+    RED;
+    GREEN;
+    BLUE;
+}
+
+/// The alias itself. This declaration is the whole feature.
+Pair :: Point;
+
+/// And for the enum, so the member-access path is covered as well as the layout one.
+Shade :: Colour;
+
+/// The alias as a **field type**, one level of nesting deep.
+Holder :: struct {
+    p: Pair;
+}
+
+/// The alias as a **parameter type**, so a call passes the aggregate through the alias rather than
+/// through the name it aliases.
+takes :: (q: Pair) -> s64 {
+    return q.x + q.y;
+}
+
+main :: () {
+    n := 0;
+
+    // A local declared through the alias, with both fields written: a one-field struct would not
+    // notice a wrong offset.
+    p: Pair;
+    p.x = 3;
+    p.y = 4;
+    if takes(p) == 7 {
+        n = n + 1;
+    }
+
+    // An enum alias's member **is** the aliased enum's member — the same interned constant, not a
+    // second one. Compared across the two spellings, which is what proves the alias did not create a
+    // new nominal type (ADR-0015 §1).
+    c := Shade.GREEN;
+    if c == Colour.GREEN {
+        n = n + 2;
+    }
+
+    // Through a field whose type is the alias.
+    h: Holder;
+    h.p.x = 9;
+    if h.p.x == 9 {
+        n = n + 4;
+    }
+
+    // As an array element type, where a wrong stride would write into the neighbouring element.
+    arr: [2]Pair;
+    arr[1].y = 5;
+    if arr[1].y == 5 {
+        n = n + 8;
+    }
+
+    // Through a pointer, so `*Pair` and `*Point` are one type: `p` was declared as a `Pair` and this
+    // reads the field the `Point` layout puts there.
+    ptr := *p;
+    if ptr.x == 3 {
+        n = n + 16;
+    }
+
+    // Every assertion: 31.
+    if n == 31 {
+        exit(0);
+    }
+    exit(1);
+}

@@ -132,6 +132,20 @@ pub(crate) struct Ctx<'a> {
     /// finds. The same `(ExprScope, ExprId)` keying `operator_calls` and `filled_calls` use, for
     /// the same reason: an id alone does not say which arena it indexes.
     pub(crate) call_position: FxHashSet<(ExprScope, jr_hir::ExprId)>,
+    /// Expressions where a **type** is a legal thing to name (ADR-0071 §3).
+    ///
+    /// Exactly two positions, and both are recorded by the code that creates them rather than
+    /// inferred from the expression's shape:
+    ///
+    /// * the **receiver of a field access** — `Colour.RED`, whose receiver is the enum type used as a
+    ///   value (ADR-0041 §1);
+    /// * the **initialiser of a `::` constant** — `T :: Point;`, the one place a type value is bound.
+    ///
+    /// Everywhere else a `type`-typed name is E0261. An allowlist rather than a denylist because the
+    /// failure directions are not symmetric: a missed *legal* position is a false error the reader can
+    /// see and report, while a missed *illegal* one is the silent placeholder this wave exists to
+    /// remove. `call_position` above is the same mechanism for the same kind of reason.
+    pub(crate) type_position: FxHashSet<(ExprScope, jr_hir::ExprId)>,
 }
 
 impl<'a> Ctx<'a> {
@@ -147,6 +161,7 @@ impl<'a> Ctx<'a> {
     ) -> Self {
         Self {
             call_position: FxHashSet::default(),
+            type_position: FxHashSet::default(),
             hir,
             file,
             resolve,

@@ -5133,3 +5133,91 @@ proc main -> void {
     discard call extern proc1(1_s64)
     return
 }
+
+========================================
+058-type-values.jr
+========================================
+proc takes -> s64 {
+  params: v0: *Context, v1: Point
+  slots:
+    s0: Point  // temporary
+  bb0(v0: *Context, v1: Point):
+    store s0 <- v1
+    v2: s64 = load s0.0
+    v3: s64 = load s0.1
+    v4: s64 = v2 + v3
+    return v4
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: Point  // local 1
+    s1: Holder  // local 3
+    s2: [2]Point  // local 4
+  bb0(v0: *Context):
+    zero s0
+    store s0.0 <- 3_s64
+    store s0.1 <- 4_s64
+    v1: Point = load s0
+    v2: s64 = call proc0(v0, v1)
+    v3: bool = v2 == 7_s64
+    branch v3 ? bb1() : bb2()
+  bb1():
+    v4: s64 = 0_s64 + 1_s64
+    goto bb3(v4)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v6: s64):
+    v5: bool = 1_Colour == 1_Colour
+    branch v5 ? bb4() : bb5()
+  bb4():
+    v7: s64 = v6 + 2_s64
+    goto bb6(v7)
+  bb5():
+    goto bb6(v6)
+  bb6(v10: s64):
+    zero s1
+    store s1.0.0 <- 9_s64
+    v8: s64 = load s1.0.0
+    v9: bool = v8 == 9_s64
+    branch v9 ? bb7() : bb8()
+  bb7():
+    v11: s64 = v10 + 4_s64
+    goto bb9(v11)
+  bb8():
+    goto bb9(v10)
+  bb9(v14: s64):
+    zero s2
+    bounds_check 1_s64 < 2_s64
+    store s2[1_s64].1 <- 5_s64
+    bounds_check 1_s64 < 2_s64
+    v12: s64 = load s2[1_s64].1
+    v13: bool = v12 == 5_s64
+    branch v13 ? bb10() : bb11()
+  bb10():
+    v15: s64 = v14 + 8_s64
+    goto bb12(v15)
+  bb11():
+    goto bb12(v14)
+  bb12(v19: s64):
+    v16: *Point = addr s0
+    v17: s64 = load (v16).*.0
+    v18: bool = v17 == 3_s64
+    branch v18 ? bb13() : bb14()
+  bb13():
+    v20: s64 = v19 + 16_s64
+    goto bb15(v20)
+  bb14():
+    goto bb15(v19)
+  bb15(v21: s64):
+    v22: bool = v21 == 31_s64
+    branch v22 ? bb16() : bb17()
+  bb16():
+    discard call extern proc1(0_s64)
+    goto bb18()
+  bb17():
+    goto bb18()
+  bb18():
+    discard call extern proc1(1_s64)
+    return
+}

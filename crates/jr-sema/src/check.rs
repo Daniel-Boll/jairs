@@ -40,11 +40,11 @@ use rustc_hash::FxHashMap;
 use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
-    E0254, E0256, E0257, E0258, E0259, E0260,
+    E0254, E0256, E0257, E0258, E0259, E0260, E0261,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
-use crate::sigs::{FileSignatures, ProcSig};
+use crate::sigs::{FileSignatures, ProcSig, SigKind};
 
 // ---------------------------------------------------------------------------
 // Output
@@ -830,6 +830,20 @@ impl Ctx<'_> {
                     return PoolId::ERROR;
                 }
                 let ty = self.type_of_name(res);
+                // **A type used where a runtime value is expected is refused** (E0261, ADR-0071 §3).
+                // Before this, `t := Point;` type-checked cleanly and both engines exited 0, lowering
+                // to `s0: type` and `v1: type = undef` — a slot of a type with *no runtime layout*
+                // (`LayoutError::ComptimeOnly`) holding a placeholder that is a legitimate value. That
+                // is this project's first named failure mode, invisible to the verifier and to
+                // ADR-0017 §4's poison gate alike.
+                //
+                // Refused here rather than in lowering for ADR-0039 §3a's reason: rejecting a
+                // construct is a semantic judgement, and a lowering refusal reports a
+                // compiler-internal message for a program that looks well-formed.
+                if ty == PoolId::TYPE && !self.type_is_allowed_here(scope, id) {
+                    self.reject_type_as_value(span);
+                    return PoolId::ERROR;
+                }
                 self.expect(expected, ty, span)
             }
             Expr::Binary { op, lhs, rhs, span } => {
@@ -1400,6 +1414,32 @@ impl Ctx<'_> {
             }
             Res::Local(_) | Res::Param(_) | Res::Promoted { .. } | Res::Error => false,
         }
+    }
+
+    /// Whether a type is a legal thing to name at this expression (ADR-0071 §3).
+    ///
+    /// A lookup in `type_position`, which the two positions that accept one populate: a field
+    /// access's receiver and a `::` constant's initialiser. See that field's documentation for why
+    /// this is an allowlist.
+    fn type_is_allowed_here(&self, scope: ExprScope, id: ExprId) -> bool {
+        self.type_position.contains(&(scope, id))
+    }
+
+    /// Reports a type used where a runtime value was expected (E0261, ADR-0071 §3).
+    ///
+    /// The note names the positions that *do* accept a type rather than naming a type the reader
+    /// could annotate with, because `Type` is deliberately not spellable (ADR-0071 §1) — a help line
+    /// suggesting an annotation would name something the parser rejects. "Cannot be stored" without
+    /// saying where it *can* go is a diagnostic a reader cannot act on.
+    fn reject_type_as_value(&mut self, span: Span) {
+        self.diags.push(
+            Diagnostic::error(span, "a type is a compile-time value, not a runtime one")
+                .with_code(E0261)
+                .with_note("a type has no runtime representation, so there is nothing to store")
+                .with_help(
+                    "bind it with `::`, e.g. `T :: Point;`, or write it as a type annotation",
+                ),
+        );
     }
 
     fn type_of_name(&mut self, res: Res) -> PoolId {
@@ -2536,6 +2576,11 @@ impl Ctx<'_> {
         name: Symbol,
         name_span: Span,
     ) -> PoolId {
+        // The receiver is a position where a **type** is legal: `Colour.RED` names the enum type used
+        // as a value (ADR-0041 §1). Recorded before typing it, the way `check_call` records its callee,
+        // so that `check_expr`'s `Name` arm skips E0261 here while still typing and recording the
+        // receiver exactly as any other expression (ADR-0071 §3).
+        self.type_position.insert((scope, receiver));
         let mut ty = self.check_expr(scope, receiver, None);
         while let Some(inner) = self.pointee(ty) {
             ty = inner;
@@ -2810,6 +2855,40 @@ impl Ctx<'_> {
         }
 
         self.pool.view_of(elem)
+    }
+
+    /// The type an expression *denotes*, when it is a name bound to one (ADR-0071 §2).
+    ///
+    /// This is what makes `T :: Point;` an alias usable in a type annotation: `resolve_type_name`
+    /// reads a `SigEntry::type_value`, so a type-valued constant has to carry the type it denotes
+    /// rather than only `PoolId::TYPE`.
+    ///
+    /// **Reads the aliased name's own entry rather than re-resolving what `Point` means**, for the
+    /// reason `jr-mir` reads `TypeMap` instead of typing expressions: two implementations of one rule
+    /// are two chances to disagree. The signature phase already computed it.
+    ///
+    /// `None` for anything that is not a bare name — including a *chain* (`B :: A` where `A :: Point`),
+    /// because `A`'s entry is a `SigKind::Const` and following it would need a fixpoint and a cycle
+    /// check (ADR-0071 §5, the line ADR-0070 §4 drew for an array length).
+    pub(crate) fn aliased_type(&mut self, scope: ExprScope, expr: ExprId) -> Option<PoolId> {
+        let Expr::Name { res, .. } = self.expr_of(scope, expr) else {
+            return None;
+        };
+        let res = self.resolve.get(scope, expr).unwrap_or(res);
+        let entry = match res {
+            Res::Item(item) => self.entry_for_item(item)?,
+            Res::Imported(import, name) => self.entry_for_import(import, name)?,
+            // A local, a parameter, or a promoted field is never a type: Jairs has no nested type
+            // declarations, so none of them can put a type name in scope.
+            Res::Local(_) | Res::Param(_) | Res::Promoted { .. } | Res::Error => return None,
+        };
+        // Only a *nominal declaration* is followed. A `SigKind::Const` whose own `type_value` is set is
+        // exactly the alias chain §5 defers, so it is excluded by kind rather than by whether the field
+        // happens to be populated — which keeps the refusal true if a later wave populates more of them.
+        match entry.kind {
+            SigKind::Struct | SigKind::Union | SigKind::Variant | SigKind::Enum => entry.type_value,
+            SigKind::Const | SigKind::Var | SigKind::Proc | SigKind::Operator => None,
+        }
     }
 
     /// The enum an expression *denotes*, when it is a name bound to an enum type.

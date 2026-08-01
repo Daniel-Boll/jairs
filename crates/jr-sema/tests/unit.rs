@@ -397,3 +397,122 @@ fn a_foreign_library_that_is_not_a_system_library_records_nothing() {
         None
     );
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0071 — a type is a compile-time value
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_type_bound_to_a_local_is_refused() {
+    // The silent miscompile ADR-0071 §3 closes, and the reason the sub-wave shipped alone.
+    //
+    // Before E0261 this analysed **silently** and both engines exited 0, lowering to `s0: type` and
+    // `v1: type = undef` — a placeholder that is a legitimate value, stored into a slot of a type
+    // with no runtime layout at all (`LayoutError::ComptimeOnly`). PLAN §5's first named failure
+    // mode, invisible to the verifier and to ADR-0017 §4's poison gate alike.
+    //
+    // The `:=` form specifically, because that is what got through: every position *with* an
+    // expectation was already caught by an ordinary mismatch (`takes(Point)` is E0214, `if Point` is
+    // E0222), and a binding has no expectation to mismatch against.
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "Point :: struct {\n    x: s64;\n}\n\
+         main :: () {\n    t := Point;\n}\n",
+    );
+    assert_eq!(analysis.codes(), vec!["E0261"]);
+}
+
+#[test]
+fn a_type_named_as_a_bare_statement_is_refused() {
+    // The other expectation-free position. `Point;` is a statement whose result is discarded, so
+    // `check_stmt` imposes nothing — and it too analysed silently before this wave.
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "Point :: struct {\n    x: s64;\n}\n\
+         main :: () {\n    Point;\n}\n",
+    );
+    assert_eq!(analysis.codes(), vec!["E0261"]);
+}
+
+#[test]
+fn a_field_access_receiver_may_name_a_type() {
+    // The first of the two positions that *do* accept a type (ADR-0071 §3): `Colour.RED`'s receiver
+    // is the enum type used as a value (ADR-0041 §1).
+    //
+    // This is the test that would catch an over-broad refusal, and it is why the allowlist is
+    // populated by the code that creates each position rather than inferred from an expression's
+    // shape. Without the `type_position` entry, every enum member access in the corpus breaks.
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "Colour :: enum {\n    RED;\n    GREEN;\n}\n\
+         main :: () {\n    c := Colour.RED;\n}\n",
+    );
+    analysis.assert_silent();
+}
+
+#[test]
+fn a_type_valued_constant_denotes_the_type_it_aliases() {
+    // ADR-0071 §2, asserted on `type_value` rather than on silence — and the distinction has teeth.
+    //
+    // A `SigEntry` whose `ty` is `PoolId::TYPE` but whose `type_value` is `None` analyses perfectly
+    // quietly and then reports "`Pair` is a constant, not a type" (E0213) the moment anyone writes
+    // `p: Pair;`, because `resolve_type_name` reads exactly this field. So silence alone would pass
+    // with the alias half of the feature disabled; this asserts the *identity*.
+    //
+    // Compared against `Point`'s own entry, which is what proves an alias creates no second nominal
+    // type (ADR-0015 §1 makes identity the declaration site).
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "Point :: struct {\n    x: s64;\n}\n\
+         Pair :: Point;\n",
+    );
+    analysis.assert_silent();
+
+    let point = program.interner.get("Point").expect("`Point` is interned");
+    let pair = program.interner.get("Pair").expect("`Pair` is interned");
+    let denoted = analysis
+        .signatures
+        .lookup(pair)
+        .expect("`Pair` has a signature")
+        .type_value;
+    let aliased = analysis
+        .signatures
+        .lookup(point)
+        .expect("`Point` has a signature")
+        .type_value;
+    assert!(aliased.is_some(), "a struct denotes its own type");
+    assert_eq!(
+        denoted, aliased,
+        "an alias must denote the *same* type, not a second one"
+    );
+}
+
+#[test]
+fn an_alias_of_an_alias_is_not_followed() {
+    // ADR-0071 §5's deliberate limit, and the line ADR-0070 §4 drew for an array length: one level
+    // is a lookup, a chain needs a fixpoint and a cycle check.
+    //
+    // Asserted as `None` rather than as a diagnostic, because the refusal surfaces where the chain is
+    // *used* — `p: Second;` is E0213 — and pinning it here says which decision produced that.
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "Point :: struct {\n    x: s64;\n}\n\
+         First :: Point;\n\
+         Second :: First;\n",
+    );
+    analysis.assert_silent();
+
+    let second = program
+        .interner
+        .get("Second")
+        .expect("`Second` is interned");
+    assert_eq!(
+        analysis
+            .signatures
+            .lookup(second)
+            .expect("`Second` has a signature")
+            .type_value,
+        None,
+        "a chain of aliases is deliberately not followed (ADR-0071 §5)"
+    );
+}

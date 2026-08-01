@@ -130,25 +130,43 @@ enum Wanted {
     /// The `ItemId` is the *procedure's* item, used only to place a diagnostic: a body `#run` has no
     /// item of its own.
     BodyRun(ItemId, jr_hir::BodyId, ExprId),
+    /// A constant whose initialiser names a **type**: `T :: Point;` (ADR-0071 §2).
+    ///
+    /// Its own variant because it is the one target the VM never runs. Its value is read from
+    /// `SigEntry::type_value`, which the *signature* phase already computed — and const-eval is
+    /// downstream of signatures (ADR-0018 §3), so this reads a value that exists rather than inverting
+    /// a phase. That is the move ADR-0070 §1 made for an array length, available for the same reason.
+    ///
+    /// A variant rather than a special case inside [`Wanted::Item`] so that every match over `Wanted`
+    /// is forced to decide, which is the same discipline `BodyRun` above exists for. The round-robin
+    /// and the cycle detector need no change: a type alias is a target like any other, it simply
+    /// succeeds in the first round.
+    TypeAlias(ItemId, ExprId),
 }
 
 impl Wanted {
     const fn expr(self) -> ExprId {
         match self {
-            Self::Item(_, expr) | Self::Run(_, expr) | Self::BodyRun(_, _, expr) => expr,
+            Self::Item(_, expr)
+            | Self::Run(_, expr)
+            | Self::BodyRun(_, _, expr)
+            | Self::TypeAlias(_, expr) => expr,
         }
     }
 
     const fn item(self) -> ItemId {
         match self {
-            Self::Item(item, _) | Self::Run(item, _) | Self::BodyRun(item, _, _) => item,
+            Self::Item(item, _)
+            | Self::Run(item, _)
+            | Self::BodyRun(item, _, _)
+            | Self::TypeAlias(item, _) => item,
         }
     }
 
     /// Which expression arena [`Wanted::expr`] indexes (ADR-0069 §2).
     const fn scope(self) -> ExprScope {
         match self {
-            Self::Item(_, _) | Self::Run(_, _) => ExprScope::TopLevel,
+            Self::Item(_, _) | Self::Run(_, _) | Self::TypeAlias(_, _) => ExprScope::TopLevel,
             Self::BodyRun(_, body, _) => ExprScope::Body(body),
         }
     }
@@ -166,7 +184,7 @@ impl Wanted {
 /// excluded here rather than allowed to fail, because a failure would become E0230 on
 /// a declaration that is perfectly correct, which is exactly the kind of false
 /// positive that teaches people to ignore a diagnostic.
-fn wanted(hir: &FileHir) -> Vec<Wanted> {
+fn wanted(hir: &FileHir, signatures: &jr_sema::FileSignatures) -> Vec<Wanted> {
     let mut out = Vec::new();
     for (index, item) in hir.items.iter().enumerate() {
         let id = ItemId::from_usize(index);
@@ -174,7 +192,15 @@ fn wanted(hir: &FileHir) -> Vec<Wanted> {
             ItemKind::Const {
                 value: ConstValue::Expr(expr),
             } => {
-                if !is_directive(hir, *expr) {
+                if is_directive(hir, *expr) {
+                    // Excluded, per this function's docs.
+                } else if names_a_type(hir, signatures, *expr) {
+                    // `T :: Point;` — a type alias, whose value the signature phase already knows
+                    // (ADR-0071 §2). A target rather than an exclusion, because it genuinely has a
+                    // value: without it the thunk lowerer reported "a file-level item has no value
+                    // yet", a const-eval internal on a perfectly correct declaration.
+                    out.push(Wanted::TypeAlias(id, *expr));
+                } else {
                     out.push(Wanted::Item(id, *expr));
                 }
             }
@@ -216,6 +242,42 @@ fn is_directive(hir: &FileHir, expr: ExprId) -> bool {
     )
 }
 
+/// Whether a `::` initialiser names a type, making it a [`Wanted::TypeAlias`] (ADR-0071 §2).
+///
+/// Asked of the **signatures** rather than of the HIR, because "does this name denote a type" is a
+/// question the signature phase already answered — `SigEntry::type_value` is `Some` exactly for a name
+/// that does. Re-deriving it here would be a second implementation of ADR-0014 §3's resolution order,
+/// and a divergence would show up as a constant that evaluates in one phase's opinion and not the
+/// other's.
+///
+/// A bare name only: `T :: Point;` and nothing more elaborate. An expression *containing* a type is
+/// already refused elsewhere (E0261, ADR-0071 §3), so there is no case where this answering `false`
+/// hides one.
+fn names_a_type(hir: &FileHir, signatures: &jr_sema::FileSignatures, expr: ExprId) -> bool {
+    let Some(jr_hir::Expr::Name { name, .. }) = hir.exprs.get(expr.index()) else {
+        return false;
+    };
+    signatures
+        .lookup(*name)
+        .is_some_and(|entry| entry.type_value.is_some())
+}
+
+/// The type a `::` initialiser denotes, for a [`Wanted::TypeAlias`] (ADR-0071 §2).
+///
+/// The same lookup [`names_a_type`] does, returning the type rather than a yes — deliberately two
+/// functions over one field, so that the classification and the value cannot disagree about *which*
+/// entry they read.
+fn aliased_type(
+    hir: &FileHir,
+    signatures: &jr_sema::FileSignatures,
+    expr: ExprId,
+) -> Option<PoolId> {
+    let jr_hir::Expr::Name { name, .. } = hir.exprs.get(expr.index())? else {
+        return None;
+    };
+    signatures.lookup(*name)?.type_value
+}
+
 // ---------------------------------------------------------------------------
 // file_consts — tracked query
 // ---------------------------------------------------------------------------
@@ -236,7 +298,11 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     }
 
     let hir = file_hir(db, file);
-    let targets = wanted(hir.as_ref());
+    let resolve = resolved(db, file, search_paths).map;
+    let signatures = crate::sema::file_signatures(db, file, search_paths);
+    // **Signatures first**, because `wanted` asks them whether a `::` initialiser names a type
+    // (ADR-0071 §2). They were already computed one line below; only the order changed.
+    let targets = wanted(hir.as_ref(), signatures.signatures.as_ref());
     if targets.is_empty() {
         return ConstResult {
             values: Arc::new(ConstValues::new()),
@@ -244,8 +310,6 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
         };
     }
 
-    let resolve = resolved(db, file, search_paths).map;
-    let signatures = crate::sema::file_signatures(db, file, search_paths);
     let types = checked(db, file, search_paths).types;
     let imports = imported_procs(db, file, search_paths);
     let file_id = crate::queries::resolve_file_id(db, file);
@@ -392,7 +456,9 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
 
 fn known(values: &ConstValues, target: Wanted) -> bool {
     match target {
-        Wanted::Item(item, _) => values.item(item).is_some(),
+        // A type alias's value is keyed like any other named constant's, so nothing downstream has to
+        // know it was one (ADR-0071 §2).
+        Wanted::Item(item, _) | Wanted::TypeAlias(item, _) => values.item(item).is_some(),
         Wanted::Run(_, expr) => values.run(ExprScope::TopLevel, expr).is_some(),
         Wanted::BodyRun(_, body, expr) => values.run(ExprScope::Body(body), expr).is_some(),
     }
@@ -400,7 +466,7 @@ fn known(values: &ConstValues, target: Wanted) -> bool {
 
 fn record(values: &mut ConstValues, target: Wanted, value: PoolId) {
     match target {
-        Wanted::Item(item, expr) => {
+        Wanted::Item(item, expr) | Wanted::TypeAlias(item, expr) => {
             values.set_item(item, value);
             // Also key the initialiser expression, so that a `#run` *inside* a named
             // constant folds when lowering walks it rather than being re-evaluated.
@@ -434,6 +500,17 @@ fn evaluate(
     interner: &jr_base::Interner,
     pool: &mut Pool,
 ) -> Result<PoolId, String> {
+    // **A type alias needs no VM at all** (ADR-0071 §2). Its value is `SigEntry::type_value`, computed
+    // by the signature phase this query is downstream of (ADR-0018 §3) — so it is interned here and
+    // returned before a thunk is built. Handled at the top rather than inside the thunk lowerer because
+    // a thunk is MIR and a type value has no runtime representation to lower
+    // (`jr_pool::LayoutError::ComptimeOnly`): there is nothing for the VM to do.
+    if let Wanted::TypeAlias(_, expr) = target {
+        let denoted = aliased_type(hir, signatures, expr)
+            .ok_or_else(|| "a type alias does not name a type".to_owned())?;
+        return Ok(pool.type_value(denoted));
+    }
+
     let thunk_proc = jr_mir::thunk_ref(hir, file_id, target.expr().index());
     let body = jr_mir::lower_const(
         hir,
