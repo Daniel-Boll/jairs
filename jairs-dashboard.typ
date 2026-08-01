@@ -94,20 +94,20 @@
 #v(0.4em)
 #pill[6/6 gates green]
 #h(4pt)
-#pill[930 tests]
+#pill[935 tests]
 #h(4pt)
-#pill[ADR-0070 latest]
+#pill[ADR-0071 latest]
 #h(4pt)
-#pill(fill: rgb("#fdf2e6"), stroke: warn)[W4 open · 2 of 4 sub-waves done]
+#pill(fill: rgb("#fdf2e6"), stroke: warn)[W4 open · 3 of 4 sub-waves done]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "930", "workspace, all passing"),
-  metric("Corpus", "158", "jr files, both engines"),
-  metric("ADRs", "70", "0001 to 0070, immutable"),
-  metric("Diagnostics", "91", "codes, E0261 next free"),
+  metric("Tests", "935", "workspace, all passing"),
+  metric("Corpus", "160", "jr files, both engines"),
+  metric("ADRs", "71", "0001 to 0071, immutable"),
+  metric("Diagnostics", "92", "codes, E0262 next free"),
   metric("Editor checks", "166", "Neovim, verified not gated"),
 )
 
@@ -157,6 +157,13 @@
         of the optimized body.
       ]
     - #text(size: 7.4pt, fill: warn)[
+        *A well-typed placeholder is invisible to every gate this project has.* `t := Point;` — a type
+        bound to a local — type-checked cleanly and *both engines exited 0*, storing an undefined value
+        into a slot of a type with no runtime layout at all. Three of these now, and each was found by
+        asking a question no test asks: what does this lower to? The corpus checks exit codes and
+        snapshots the built MIR; a construct that is legal, silent and unread sits outside all of it.
+      ]
+    - #text(size: 7.4pt, fill: warn)[
         *A test naming an unimplemented thing has a one-wave shelf life.* The refused-body test has now
         had its construct replaced twice, both times because the wave after it implemented the gap it
         named. It uses something refused *by design* now. And one of this wave's own new tests passed
@@ -185,7 +192,9 @@
   ("switch with exhaustiveness checking over an enum; else", "patterns, ranges, guards; a jump table"),
   ("Multiple returns, named args, literal defaults", "#must; a multi-result call in a return"),
   ("import, foreign, system_library, #scope_module", "polymorphs, macros (W5)"),
-  ("Compile-time run at file scope or in a body, across files", "RTTI, insert, Code; folding into surrounding arithmetic"),
+  ("Compile-time run at file scope or in a body, across files", "type_info(), Any, insert, Code"),
+  ("A type as a compile-time value: T :: Point aliases one, usable anywhere Point is", "a chain B :: A; comparing types; Type as an annotation"),
+  ("A type in a runtime position is refused — it has no representation to store", ""),
   ("Traps name their source line and the live call chain", "a per-frame line; inlined frames (none exist)"),
   ("Bounds checks, strippable by build setting or #no_abc", "a per-index #no_abc; any other build setting"),
   ("context, a hidden parameter passed by pointer", ""),
@@ -287,7 +296,7 @@
   ),
   (
     "W4 Comptime", "in progress",
-    "Delivered in sub-waves, because a 10-14 week wave cannot be verified the way a one-ADR wave can. Two of four are done: a #run may call an imported procedure and appear in a body (ADR-0069), turning two internal compiler errors into working programs; and an array length may name a constant (ADR-0070), which replaced the scheduled aggressive const folding after probing showed const-prop already did it. Remaining: RTTI and Type values, then insert and Code. PLAN section 5 names this the project's top risk — sema and comptime become mutually recursive.",
+    "Delivered in sub-waves, because a 10-14 week wave cannot be verified the way a one-ADR wave can. Three of four are done: a #run may call an imported procedure and appear in a body (ADR-0069), turning two internal compiler errors into working programs; an array length may name a constant (ADR-0070), which replaced the scheduled aggressive const folding after probing showed const-prop already did it; and a type is a compile-time value (ADR-0071), which closed a silent miscompile — a type bound to a local compiled to an undefined value in a slot with no layout. RTTI split on one question: does the value exist at run time? A Type does not, so it shipped; type_info() and Any do, so they are next and need a runtime type representation. Then insert and Code. PLAN section 5 names this the project's top risk — sema and comptime become mutually recursive.",
   ),
   (
     "W4.5 Pattern matching", "done",
@@ -345,22 +354,23 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[Twenty-two waves shipped]
+    #sub[Twenty-three waves shipped]
     #text(size: 7.4pt)[
-      ADR-0049 through 0069: for and defer, using, aggregate returns, multiple returns, named and
+      ADR-0049 through 0071: for and defer, using, aggregate returns, multiple returns, named and
       default arguments, scope visibility, imported constants, float constants, context, the
       bounds-check build setting, indirect calls, null plus a memory source, the allocator
       protocol, push_context, pointer arithmetic, temporary storage, trap backtraces, switch,
-      tagged variants, compile-time run across files and in a body, and an array length from a
-      constant.
+      tagged variants, compile-time run across files and in a body, an array length from a
+      constant, and a type as a compile-time value.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 930. Corpus 116 to 158 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
-      closed*, and *W4 is open* with two of four sub-waves done: a `#run` reaches across files and into a
-      body, and an array length may name a constant. *Twice now* a scheduled dependency turned out not
-      to exist — W4.5's on comptime, and sub-wave 2's folding work. Remaining: RTTI, then insert.
+      Test count 900 to 935. Corpus 116 to 160 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
+      closed*, and *W4 is open* with three of four sub-waves done: a `#run` reaches across files and into
+      a body, an array length may name a constant, and a type is a value. *Twice now* a scheduled
+      dependency turned out not to exist — W4.5's on comptime, and sub-wave 2's folding work. Remaining:
+      `type_info()` and `Any`, then insert.
     ]
 
     #v(0.3em)
@@ -401,14 +411,14 @@
   #text(size: 7.4pt, weight: "bold", fill: warn)[THE THING WORTH YOUR DECISION]
   #v(0.15em)
   #text(size: 7.4pt)[
-    Fourteen waves sit uncommitted across five branches. Two waves ago a careless `git checkout`
-    reverted the tree-sitter grammar nine waves and cost an hour's reconstruction — the concrete price
-    of not committing. Committing each wave as it goes green would bound the damage from any future
-    slip to a single wave.
+    *Every wave is now committed as it greens*, on its own `feat/` branch, which closed the risk this box
+    used to name. Nothing has been merged: `main` is still at `ec150a5`, and twenty-three waves sit on
+    stacked branches ahead of it. That is a decision rather than a gap — merging needs your say-so, and
+    the per-wave commits mean no work is at risk while it waits.
   ]
   #v(0.15em)
   #text(size: 7.4pt, style: "italic")[
-    Recorded as a recommendation, not a change: the authorisation is yours to give.
+    The one open slice criterion is still a verified Linux x86-64 CI run, which needs a push.
   ]
 ]
 

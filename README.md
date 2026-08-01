@@ -18,7 +18,13 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after **an array length that names a constant** (ADR-0070): `N :: 4;  buf: [N]s64;` now
+Last updated after **a type as a compile-time value** (ADR-0071): `T :: Point;` binds a type to a name,
+and using a type where a *runtime* value is expected is now an error rather than a silent miscompile.
+`t := Point;` used to type-check cleanly and exit 0 in both engines while storing an undefined value into
+a slot of a type that has no runtime layout at all — the project's first named failure mode, and only a
+MIR dump would have shown it. `type_info()` and `Any` are deliberately a later sub-wave: both make a type
+into *runtime data*, which is a different size of problem than a type that only the compiler ever sees.
+On top of **an array length that names a constant** (ADR-0070): `N :: 4;  buf: [N]s64;` now
 resolves, which ADR-0039 refused for thirty ADRs on an argument that turned out to cover only *part* of
 what it forbade — a length needing evaluation still waits for the comptime sub-wave, but one that is
 already a literal one name away needs none. That sub-wave's scheduled work, "aggressive const folding",
@@ -57,7 +63,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 930 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
+`print_int` (ADR-0037). 935 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do
@@ -67,7 +73,7 @@ checks that are verified rather than gated.
 | Compile and run a program in the comptime VM | `jr run file.jr` | Register bytecode interpreter, no JIT tier |
 | Compile to a native executable | `jr build file.jr -o out` | arm64 macOS verified; x86-64 Linux configured in CI but **never run** |
 | Build without bounds checks | `jr build file.jr --no-bounds-check`, or `jr run` | ADR-0003's build setting, finally wired (ADR-0058). An out-of-range index is then undefined behaviour, which is the trade. `#no_abc` on a procedure does the same locally, whatever the build says; compile-time execution checks regardless |
-| Get rustc-grade diagnostics | `jr check file.jr` | 91 codes across lexer, parser, HIR, sema, MIR and const-eval. E0218 and E0212 suggest a near name; E0231 is the one *warning* — an unused `#import` |
+| Get rustc-grade diagnostics | `jr check file.jr` | 92 codes across lexer, parser, HIR, sema, MIR and const-eval. E0218 and E0212 suggest a near name; E0231 is the one *warning* — an unused `#import` |
 | Format source canonically | `jr fmt [--check] paths…` | The corpus is canonical under it, CI-enforced |
 | Inspect tokens or the CST | `jr parse file.jr` | Debug aid |
 | Measure language-server latency | `jr bench file.jr` | Reports min/median/p95 cold, warm and after an edit. **Reports, never judges** — no threshold, not a gate (ADR-0033) |
@@ -119,7 +125,9 @@ The authoritative version of this list is
 | integer literals (dec/hex/bin/oct, `_`), string literals + escapes | |
 | float literals: `1.5`, `1e9`, `1.5e-3`, `1_000.5` | float *printing* — `print_int` has no counterpart |
 | nesting block comments; `///` and `//!` doc comments, shown on hover | doc generation (`jr doc`) — nothing consumes docs but the language server |
-| `#run` at file scope or in a body, calling local or **imported** procedures, with loops and nested calls | RTTI, `#insert`, `#code`; folding a `#run` result into the arithmetic around it (**W4**, in sub-waves) |
+| `#run` at file scope or in a body, calling local or **imported** procedures, with loops and nested calls | `type_info()`, `Any`, `#insert`, `#code` (**W4**, in sub-waves) |
+| a **type as a compile-time value**: `T :: Point;` binds one, and `T` is usable wherever `Point` is — as an annotation, a parameter, a field, an array element, a pointee; an enum alias carries its members (ADR-0071) | a chain (`B :: A`); comparing types (`T == U`); a `Type` parameter; `Type` as an annotation, which does not parse |
+| using a type where a **runtime** value is expected is refused (E0261) — it has no runtime representation, so there is nothing to store | — |
 | `#import`, `#foreign`, `#system_library` | polymorphs `$T`, `#expand` macros (**W5**) |
 | overflow traps with a source location (ADR-0002, ADR-0020), and a **call chain** of the frames that were live (ADR-0066) | a per-frame line number; inlined frames, which have no runtime existence |
 | `context` — a hidden parameter passed by pointer, so a callee reads what its caller wrote; `#c_call` opts out and gets none | — |
