@@ -295,7 +295,19 @@ impl Ctx<'_> {
             // separate environment, so a local the insert declares is in `self.locals` for the statements
             // after it. Nothing here can tell they came from a string, which is the evidence lowering put
             // them in the enclosing body rather than in a nested one.
-            Stmt::Insert { stmts, span: _ } => {
+            Stmt::Insert {
+                stmts,
+                operand,
+                span: _,
+            } => {
+                // A **computed** operand is checked as an expression **expecting `string`** (ADR-0073 §1),
+                // so a non-`string` operand is an ordinary type mismatch at its own span rather than a
+                // bespoke refusal. Nothing here evaluates it — that is the operand pre-pass's job — but
+                // checking it means the error a reader sees is about *their* expression. `None` for a
+                // literal insert, whose text is already lowered into `stmts`.
+                if let Some(op) = operand {
+                    self.check_expr(scope, op, Some(PoolId::STRING));
+                }
                 for inner in stmts {
                     self.check_stmt(body, inner);
                 }

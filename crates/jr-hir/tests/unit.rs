@@ -1193,7 +1193,7 @@ fn only_insert(hir: &jr_hir::FileHir) -> (jr_base::Span, Vec<jr_hir::StmtId>) {
     };
     let mut found = None;
     for id in top {
-        if let Stmt::Insert { stmts, span } = body.stmt(*id) {
+        if let Stmt::Insert { stmts, span, .. } = body.stmt(*id) {
             assert!(found.is_none(), "this helper expects exactly one insert");
             found = Some((*span, stmts.clone()));
         }
@@ -1290,35 +1290,49 @@ fn insert_without_a_string_literal_is_e0262() {
 }
 
 #[test]
-fn a_computed_operand_and_a_missing_one_give_distinct_e0262_messages() {
-    // ADR-0073 §1: the parser now accepts `#insert S;`, so lowering must tell "a computed operand the
-    // pre-pass does not yet evaluate" apart from "nothing at all". Both are E0262 and both refuse (never
-    // a silent zero-statement lowering), but a reader who wrote a computed operand needs to know it is a
-    // *not-yet* rather than a *never*.
-    let (_, computed, _) = lower("main :: () { #insert S; }");
-    let computed_msg = computed
-        .iter()
-        .find(|d| d.code == Some("E0262"))
-        .map(|d| d.message.clone())
-        .expect("a computed operand is E0262");
+fn a_computed_operand_is_held_not_refused_at_lowering() {
+    // ADR-0073 §1: a computed operand is lowered into `Stmt::Insert { operand: Some(_), .. }` with no
+    // statements yet, rather than refused with E0262. Lowering itself is silent — the operand is a real
+    // expression to resolve and check, and the "not yet evaluated" refusal is `jr-mir`'s `scan`, not
+    // lowering's. This is what makes `#insert undefined;` an unresolved-name error rather than a blanket
+    // "needs a literal".
+    let (hir, diags, _) = lower("main :: () { #insert S; }");
     assert!(
-        computed_msg.contains("not evaluated yet"),
-        "a computed operand's message must say it is not-yet, got: {computed_msg:?}"
+        !diags.iter().any(|d| d.code == Some("E0262")),
+        "a computed operand must not be refused at lowering: {:?}",
+        diags.iter().map(|d| d.code).collect::<Vec<_>>()
     );
+    let body = sole_body(&hir);
+    let Stmt::Block(top, _) = body.stmt(body.root) else {
+        panic!("root is a block");
+    };
+    let insert = top
+        .iter()
+        .find_map(|id| match body.stmt(*id) {
+            Stmt::Insert { operand, stmts, .. } => Some((*operand, stmts.clone())),
+            _ => None,
+        })
+        .expect("an insert statement");
+    assert!(insert.0.is_some(), "the operand expression must be held");
+    assert!(
+        insert.1.is_empty(),
+        "a pending insert has no statements until the pre-pass expands it"
+    );
+}
 
-    let (_, missing, _) = lower("main :: () { #insert; }");
-    let missing_msg = missing
+#[test]
+fn a_missing_operand_is_still_e0262() {
+    // ADR-0072 §5 / ADR-0073 §1: `#insert;` with no operand at all stays a hard error at lowering,
+    // distinct from a *computed* operand (which lowering now accepts and holds).
+    let (_, diags, _) = lower("main :: () { #insert; }");
+    let msg = diags
         .iter()
         .find(|d| d.code == Some("E0262"))
         .map(|d| d.message.clone())
         .expect("a missing operand is E0262");
     assert!(
-        missing_msg.contains("needs a string literal"),
-        "a missing operand's message must ask for a literal, got: {missing_msg:?}"
-    );
-    assert_ne!(
-        computed_msg, missing_msg,
-        "the two E0262 cases must not read identically"
+        msg.contains("needs a string literal"),
+        "a missing operand asks for a literal, got: {msg:?}"
     );
 }
 
@@ -1368,6 +1382,7 @@ fn a_nested_insert_lowers_through_both_levels() {
     let Stmt::Insert {
         stmts: inner,
         span: inner_span,
+        ..
     } = body.stmt(outer[0])
     else {
         panic!("the outer insert's only statement is the inner `#insert`");

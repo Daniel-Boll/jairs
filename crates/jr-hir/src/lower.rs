@@ -1170,34 +1170,42 @@ impl<'a> BodyLowerCtx<'a> {
         }
 
         let Some(arg) = directive.string_arg() else {
-            // No *literal* string operand. Two cases, and the message distinguishes them (ADR-0073):
+            // No *literal* string operand. Two cases (ADR-0073 §1):
             //
-            //   * a **computed** operand — `#insert S;` or `#insert #run mk();` — which the parser now
-            //     accepts (ADR-0073 §1) but whose value the operand pre-pass does not yet evaluate. The
-            //     refusal is temporary and says so, rather than claiming the feature is out of scope.
-            //   * **nothing at all** — `#insert;` — which is the ADR-0072 §5 case and stays a hard error.
+            //   * a **computed** operand — `#insert S;` or `#insert #run mk();`. The operand is lowered
+            //     as an ordinary expression and held in `Stmt::Insert { operand: Some(_), .. }`, so it
+            //     **resolves and type-checks** like any expression: `#insert undefined;` is an
+            //     unresolved-name error, and a non-`string` operand is a type error, each at the
+            //     operand's own span rather than a blanket refusal. The operand pre-pass evaluates it to
+            //     a string and re-lowers; until then `jr-mir`'s `scan` refuses the body (ADR-0073 §1,
+            //     step 4) — which is why `stmts` is empty *and* `operand` is `Some`, a pending state
+            //     distinct from an empty literal insert.
+            //   * **nothing at all** — `#insert;` — the ADR-0072 §5 case, a hard error with no operand
+            //     to lower.
             //
-            // Both refuse rather than lower to zero statements, which would be the well-typed-placeholder
-            // silent miscompile AGENTS.md names: a legal-looking program that means nothing.
-            let has_operand = directive
+            // Neither lowers to zero statements *silently*: the pending insert is refused downstream by
+            // `scan`, the well-typed-placeholder miscompile AGENTS.md names being the thing that refusal
+            // exists to prevent.
+            let operand = directive
                 .syntax()
                 .children()
-                .any(|c| jr_syntax::ast::Expr::cast(c).is_some());
-            let diag = if has_operand {
-                Diagnostic::error(span, "a computed `#insert` operand is not evaluated yet")
-                    .with_code(E0262)
-                    .with_note(
-                        "the operand parses, but evaluating it needs the compile-time evaluator to run \
-                         before lowering — the pre-pass ADR-0073 §1 describes, still being built",
-                    )
-                    .with_help("for now, write the code as a string literal: `#insert \"x := 1;\";`")
-            } else {
-                Diagnostic::error(span, "`#insert` needs a string literal of Jairs source")
-                    .with_code(E0262)
-                    .with_help("write the code inline, e.g. `#insert \"x := 1;\";`")
+                .find_map(jr_syntax::ast::Expr::cast);
+            let Some(operand_expr) = operand else {
+                self.diags.push(
+                    Diagnostic::error(span, "`#insert` needs a string literal of Jairs source")
+                        .with_code(E0262)
+                        .with_help("write the code inline, e.g. `#insert \"x := 1;\";`"),
+                );
+                return self.alloc_stmt(Stmt::Error(span));
             };
-            self.diags.push(diag);
-            return self.alloc_stmt(Stmt::Error(span));
+            // Lowered with the directive's span override cleared, because the operand *is* real source in
+            // this file — unlike the inserted text, whose spans are offsets into a string (ADR-0072 §2).
+            let operand_id = self.lower_expr(&operand_expr);
+            return self.alloc_stmt(Stmt::Insert {
+                stmts: Vec::new(),
+                operand: Some(operand_id),
+                span,
+            });
         };
 
         // Decoded rather than merely unquoted, so `#insert "s := \"hi\";"` inserts what it looks like.
@@ -1252,7 +1260,13 @@ impl<'a> BodyLowerCtx<'a> {
 
         self.insert_depth = outer_depth;
         self.span_override = outer_override;
-        self.alloc_stmt(Stmt::Insert { stmts, span })
+        // A **literal** insert: its text is already lowered into `stmts`, so there is no operand
+        // expression to evaluate (ADR-0073 §1).
+        self.alloc_stmt(Stmt::Insert {
+            stmts,
+            operand: None,
+            span,
+        })
     }
 
     fn lower_block(&mut self, block: &Block) -> StmtId {

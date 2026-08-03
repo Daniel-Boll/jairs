@@ -948,7 +948,13 @@ impl<'a> ResolveCtx<'a> {
             // (ADR-0072 §1): no scope is pushed, so a name the insert declares is visible afterwards and
             // a name from the enclosing body is visible inside. Nothing here can tell they came from a
             // string, which is the evidence lowering put them in the right place.
-            Stmt::Insert { stmts, .. } => {
+            Stmt::Insert { stmts, operand, .. } => {
+                // A **computed** operand resolves like any expression (ADR-0073 §1), so
+                // `#insert undefined;` reports an unresolved name against the operand, not a bare
+                // refusal. `None` for a literal insert, whose statements are resolved below instead.
+                if let Some(op) = operand {
+                    self.resolve_body_expr(body_id, op);
+                }
                 for inner in stmts {
                     self.resolve_body_stmt(body_id, inner);
                 }

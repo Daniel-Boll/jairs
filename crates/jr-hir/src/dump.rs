@@ -374,9 +374,16 @@ impl<'a> Dumper<'a> {
             // Printed as its own node with the statements nested, so a snapshot shows *what an insert
             // became* — which is the only place the inserted text is visible after lowering, since every
             // statement carries the directive's span rather than one of its own (ADR-0072 §2).
-            Stmt::Insert { stmts, .. } => {
+            Stmt::Insert { stmts, operand, .. } => {
                 let stmts = stmts.clone();
-                self.line(&format!("Insert ({} stmts)", stmts.len()));
+                let operand = *operand;
+                // A **pending** computed insert (ADR-0073) prints its operand and no statements, so a
+                // dump shows the pre-expansion shape; a literal or expanded one prints its statements.
+                if let Some(op) = operand {
+                    self.line(&format!("Insert (computed operand e{})", op.index()));
+                } else {
+                    self.line(&format!("Insert ({} stmts)", stmts.len()));
+                }
                 self.indent += 1;
                 for inner in stmts {
                     self.dump_body_stmt(body, inner);

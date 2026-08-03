@@ -745,7 +745,22 @@ pub enum Stmt {
     /// downstream needs to — which is the evidence §1's "lowered where it is written" is the right model.
     Insert {
         /// The lowered statements, in order.
+        ///
+        /// **Empty while a computed operand is unexpanded** (ADR-0073): `#insert S;` whose operand is a
+        /// constant has no statements until the operand pre-pass evaluates `S` to a string and lowering
+        /// runs again. `operand` being `Some` is what distinguishes that pending state from a genuinely
+        /// empty literal insert (`#insert "";`, `operand: None`, no statements) — and `jr-mir`'s `scan`
+        /// refuses a body still holding a pending one, so empty `stmts` can never be mistaken for "insert
+        /// nothing" (the well-typed-placeholder miscompile AGENTS.md names).
         stmts: Vec<StmtId>,
+        /// The **computed** operand expression, when the insert has one (ADR-0073 §1).
+        ///
+        /// `None` for a literal `#insert "…";` — its text is parsed and lowered in place (ADR-0072), so
+        /// there is no operand expression. `Some` for `#insert <expr>;`, holding the operand lowered as
+        /// an ordinary expression so it *resolves and type-checks* like any other — which is how
+        /// `#insert undefined;` becomes an unresolved-name error rather than a bare refusal. The operand
+        /// pre-pass evaluates it to a string; until it does, `jr-mir`'s `scan` refuses the body.
+        operand: Option<ExprId>,
         /// Span of the `#insert` directive — **shared by every statement in `stmts`** (ADR-0072 §2).
         ///
         /// The directive is where that code entered the program, and it is the only span for it that is
