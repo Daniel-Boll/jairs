@@ -31,9 +31,9 @@ use jr_syntax::{
 
 use crate::hir::{
     AggregateKind, AssignOp, BinOp, Body, BodyId, ConstValue, Enum, EnumId, EnumMember, Expr,
-    ExprId, Field, FileHir, ForIterable, ForeignInfo, Item, ItemId, ItemKind, ItemScope, Literal,
-    Local, LocalId, Param, ParamId, Proc, ProcId, Res, Stmt, StmtId, Struct, StructId, TypeRef,
-    TypeRefId, UnOp,
+    ExprId, Field, FileHir, ForIterable, ForeignInfo, InsertOperands, Item, ItemId, ItemKind,
+    ItemScope, Literal, Local, LocalId, Param, ParamId, Proc, ProcId, Res, Stmt, StmtId, Struct,
+    StructId, TypeRef, TypeRefId, UnOp,
 };
 
 // ---------------------------------------------------------------------------
@@ -53,6 +53,20 @@ const E0209: &str = "E0209";
 const E0262: &str = "E0262";
 /// The text of an `#insert` does not parse (ADR-0072 §3).
 const E0263: &str = "E0263";
+/// `#insert` expansion nested deeper than [`MAX_INSERT_DEPTH`] (ADR-0073 §3).
+const E0264: &str = "E0264";
+
+/// How deep `#insert` expansion may nest before it is refused (ADR-0073 §3).
+///
+/// A **bound with a diagnostic**, not a stack-overflow: a compiler that hangs or aborts on a program is
+/// the one failure mode a compiler must never have, which is the argument `LayoutError::Recursive`
+/// already makes for a recursive struct and `E0199` for parser nesting.
+///
+/// Sixteen, matching `jr-db`'s `MAX_ROUNDS` for constant evaluation, because both bound "how many times
+/// may this feed itself" and a reader meeting one number twice has one thing to remember. Deliberately
+/// far above any *written* nest that can exist: ADR-0072 §5 measured that escaping doubles the text per
+/// level, so 16 levels of literal nesting is already ~32 KB of source and 40 would be ~10¹² bytes.
+const MAX_INSERT_DEPTH: u32 = 16;
 
 /// Directives that are legal in expression position.
 ///
@@ -90,6 +104,11 @@ struct LowerCtx<'a> {
     file: FileId,
     interner: &'a Interner,
     diags: Diagnostics,
+    /// Evaluated computed-`#insert` operands, threaded to each body (ADR-0073 §1, step 6).
+    ///
+    /// Empty in ordinary lowering, so a body behaves exactly as before; filled by the second lowering
+    /// the operand pre-pass drives, where each pending insert's text is now known and expanded in place.
+    operands: &'a InsertOperands,
 
     // File-level arenas
     items: Vec<Item>,
@@ -112,10 +131,11 @@ struct LowerCtx<'a> {
 }
 
 impl<'a> LowerCtx<'a> {
-    fn new(file: FileId, interner: &'a Interner) -> Self {
+    fn new(file: FileId, interner: &'a Interner, operands: &'a InsertOperands) -> Self {
         Self {
             file,
             interner,
+            operands,
             diags: Diagnostics::new(),
             items: Vec::new(),
             scope: ItemScope::new(),
@@ -458,7 +478,7 @@ impl<'a> LowerCtx<'a> {
     // ---- bodies ------------------------------------------------------------
 
     fn lower_body(&mut self, block: &Block, params: &[Param]) -> Body {
-        let mut bctx = BodyLowerCtx::new(self.file, self.interner);
+        let mut bctx = BodyLowerCtx::new(self.file, self.interner, self.operands);
 
         // Register parameters in the outermost scope
         for (i, param) in params.iter().enumerate() {
@@ -936,6 +956,12 @@ struct BodyLowerCtx<'a> {
     file: FileId,
     interner: &'a Interner,
     diags: Diagnostics,
+    /// Evaluated computed-`#insert` operands (ADR-0073 §1, step 6), keyed by directive span.
+    ///
+    /// Empty in ordinary lowering. When the operand pre-pass has evaluated a `#insert`'s operand, its
+    /// text is here, and `lower_insert` expands it in place exactly as the literal path does — otherwise
+    /// the insert stays pending and `jr-mir` refuses the body.
+    operands: &'a InsertOperands,
 
     exprs: Vec<Expr>,
     expr_spans: Vec<Span>,
@@ -963,13 +989,29 @@ struct BodyLowerCtx<'a> {
     /// Found by running, and it is exactly the clamping failure §2 was written to prevent. Catching it at
     /// the source is the only version that cannot be incomplete.
     span_override: Option<Span>,
+
+    /// How many `#insert` expansions enclose the statement being lowered (ADR-0073 §3).
+    ///
+    /// Zero in ordinary source. Incremented for the duration of each nested expansion, so it is the
+    /// *expansion depth* rather than a count of inserts: a file may contain any number of inserts, and
+    /// each may expand to [`MAX_INSERT_DEPTH`].
+    ///
+    /// **A literal `#insert` cannot exhaust this and that is not a reason to omit it.** ADR-0072 §5
+    /// established that escaping *doubles* the text at every level, so 18 levels of written nesting is
+    /// 512 KB of source and the file is its own bound. A **computed** operand removes that bound
+    /// entirely — a generated string can reproduce itself without growing, which is a quine — and
+    /// ADR-0072 §5 named this sub-wave as the one that owes the guard. Adding it before the computed
+    /// operand can produce one means the guard exists *when* the feature does, rather than after the
+    /// first hang.
+    insert_depth: u32,
 }
 
 impl<'a> BodyLowerCtx<'a> {
-    fn new(file: FileId, interner: &'a Interner) -> Self {
+    fn new(file: FileId, interner: &'a Interner, operands: &'a InsertOperands) -> Self {
         Self {
             file,
             interner,
+            operands,
             diags: Diagnostics::new(),
             exprs: Vec::new(),
             expr_spans: Vec::new(),
@@ -979,6 +1021,7 @@ impl<'a> BodyLowerCtx<'a> {
             params: Vec::new(),
             scope_stack: vec![Vec::new()],
             span_override: None,
+            insert_depth: 0,
         }
     }
 
@@ -1116,30 +1159,117 @@ impl<'a> BodyLowerCtx<'a> {
     /// offsets into the *inserted string*, and `jr-diag` clamps an out-of-range offset rather than
     /// rejecting it, so using one would silently underline source the user never wrote.
     fn lower_insert(&mut self, directive: &jr_syntax::ast::DirectiveExpr, span: Span) -> StmtId {
-        let Some(arg) = directive.string_arg() else {
-            // No string operand: either something else was written, or nothing was. Refused rather than
-            // treated as an empty insert, because `#insert compute()` is the *computed* form ADR-0072 §4
-            // defers and a silent no-op would make it look supported.
+        // **Checked before the operand is even looked at** (ADR-0073 §3), because the thing being
+        // bounded is the recursion itself: `lower_stmt` calls this, which calls `lower_stmt`, and an
+        // operand that reproduces itself would never reach a base case. Refused with a diagnostic
+        // rather than allowed to exhaust the stack — a compiler must not abort on a program.
+        if self.insert_depth >= MAX_INSERT_DEPTH {
             self.diags.push(
-                Diagnostic::error(span, "`#insert` needs a string literal of Jairs source")
-                    .with_code(E0262)
-                    .with_note(
-                        "only a literal is supported: a computed operand needs the compile-time \
-                                evaluator, which runs after lowering (ADR-0072 §4)",
-                    )
-                    .with_help("write the code inline, e.g. `#insert \"x := 1;\";`"),
+                Diagnostic::error(
+                    span,
+                    format!("`#insert` expanded more than {MAX_INSERT_DEPTH} levels deep"),
+                )
+                .with_code(E0264)
+                .with_note(
+                    "an insert whose text contains another expands recursively, and this one did not \
+                     stop",
+                )
+                .with_help(
+                    "a *literal* insert is bounded by its own text, so this usually means an insert's \
+                     operand reproduces itself",
+                ),
             );
             return self.alloc_stmt(Stmt::Error(span));
+        }
+
+        let Some(arg) = directive.string_arg() else {
+            // No *literal* string operand. Two cases (ADR-0073 §1):
+            //
+            //   * a **computed** operand — `#insert S;` or `#insert #run mk();`. The operand is lowered
+            //     as an ordinary expression and held in `Stmt::Insert { operand: Some(_), .. }`, so it
+            //     **resolves and type-checks** like any expression: `#insert undefined;` is an
+            //     unresolved-name error, and a non-`string` operand is a type error, each at the
+            //     operand's own span rather than a blanket refusal. The operand pre-pass evaluates it to
+            //     a string and re-lowers; until then `jr-mir`'s `scan` refuses the body (ADR-0073 §1,
+            //     step 4) — which is why `stmts` is empty *and* `operand` is `Some`, a pending state
+            //     distinct from an empty literal insert.
+            //   * **nothing at all** — `#insert;` — the ADR-0072 §5 case, a hard error with no operand
+            //     to lower.
+            //
+            // Neither lowers to zero statements *silently*: the pending insert is refused downstream by
+            // `scan`, the well-typed-placeholder miscompile AGENTS.md names being the thing that refusal
+            // exists to prevent.
+            let operand = directive
+                .syntax()
+                .children()
+                .find_map(jr_syntax::ast::Expr::cast);
+            let Some(operand_expr) = operand else {
+                self.diags.push(
+                    Diagnostic::error(span, "`#insert` needs a string literal of Jairs source")
+                        .with_code(E0262)
+                        .with_help("write the code inline, e.g. `#insert \"x := 1;\";`"),
+                );
+                return self.alloc_stmt(Stmt::Error(span));
+            };
+            // The operand is real source in this file, so it lowers with no span override — unlike the
+            // inserted text, whose spans are offsets into a string (ADR-0072 §2).
+            let operand_id = self.lower_expr(&operand_expr);
+
+            // If the pre-pass has evaluated this operand's text (keyed by the directive's span,
+            // ADR-0073 step 6), expand it in place exactly as a literal and clear `operand` to `None`:
+            // an expanded insert is *identical* to a literal one — statements in place, nothing left to
+            // evaluate — and clearing the operand is what makes it so. This matters for the empty case:
+            // `#insert EMPTY;` where `EMPTY` is `""` expands to **zero** statements, and if `operand`
+            // stayed `Some` that would be indistinguishable from the *pending* state (`operand: Some`,
+            // empty `stmts`) that `jr-mir` refuses. `operand: None` says "evaluated, and it was empty",
+            // which is legal — the same rule a literal `#insert "";` follows (ADR-0072 §5).
+            //
+            // `operand_id` is dropped, which costs a little dump provenance and is worth it: the
+            // alternative (a third field, "was expanded") is state that every match must thread through
+            // to say what `None` already says.
+            if let Some(text) = self.operands.get(span) {
+                let text = text.to_owned();
+                let _ = operand_id;
+                let stmts = self.expand_insert_text(&text, span);
+                return self.alloc_stmt(Stmt::Insert {
+                    stmts,
+                    operand: None,
+                    span,
+                });
+            }
+            // Not yet evaluated: *pending* — empty statements, `operand: Some`, refused by `jr-mir`'s
+            // `scan` so it can never be mistaken for "insert nothing".
+            return self.alloc_stmt(Stmt::Insert {
+                stmts: Vec::new(),
+                operand: Some(operand_id),
+                span,
+            });
         };
 
         // Decoded rather than merely unquoted, so `#insert "s := \"hi\";"` inserts what it looks like.
         // The same function every string literal goes through, which is what keeps one answer to "what
         // does this escape mean".
         let text = decode_string_impl(arg.text(), span, &mut self.diags);
+        let stmts = self.expand_insert_text(&text, span);
+        // A **literal** insert: its text is already lowered into `stmts`, so there is no operand
+        // expression to evaluate (ADR-0073 §1).
+        self.alloc_stmt(Stmt::Insert {
+            stmts,
+            operand: None,
+            span,
+        })
+    }
 
-        // Parsed as a statement list, not a source file: `n := 1;` is a `DECL_STMT` in a body and a
-        // file-level `VAR_DECL` at top level, and only the first is what a body consumes.
-        let parsed = jr_syntax::parse_stmts(&text, self.file);
+    /// Parses inserted `text` as a statement list and lowers it **into the enclosing scope** (ADR-0072
+    /// §1), returning the lowered statement ids. Shared by the literal path and the computed path once
+    /// the operand pre-pass has evaluated the text — the two differ only in *where the string came from*,
+    /// so the parse-and-lower is one function with one answer.
+    ///
+    /// `span` is the directive's, and every node produced takes it via `span_override` (ADR-0072 §2): the
+    /// inner parse's spans are offsets into `text`, which `jr-diag` would clamp onto unrelated bytes of
+    /// the real file.
+    fn expand_insert_text(&mut self, text: &str, span: Span) -> Vec<StmtId> {
+        let parsed = jr_syntax::parse_stmts(text, self.file);
         for diag in parsed.diagnostics().iter() {
             // Re-pointed at the directive and re-worded, because the inner diagnostic's span is an
             // offset into `text` and would land on unrelated bytes of the real file (ADR-0072 §3). The
@@ -1163,6 +1293,12 @@ impl<'a> BodyLowerCtx<'a> {
         let outer_override = self.span_override;
         self.span_override = Some(span);
 
+        // One level deeper for the duration, so an insert *inside* this text sees its true depth
+        // (ADR-0073 §3). Saved and restored rather than reset, for the same reason `span_override` is:
+        // this is a property of where lowering currently *is*, not of the file.
+        let outer_depth = self.insert_depth;
+        self.insert_depth = outer_depth + 1;
+
         // Lowered in the **enclosing** scope. `parse_stmts` roots the result in a `BLOCK`, so its
         // statements are reached through that node — but `lower_block` is deliberately not called on it,
         // since that would push a scope and hide every name the insert declares.
@@ -1176,8 +1312,9 @@ impl<'a> BodyLowerCtx<'a> {
             None => Vec::new(),
         };
 
+        self.insert_depth = outer_depth;
         self.span_override = outer_override;
-        self.alloc_stmt(Stmt::Insert { stmts, span })
+        stmts
     }
 
     fn lower_block(&mut self, block: &Block) -> StmtId {
@@ -2317,6 +2454,25 @@ pub fn lower_file(
     file: FileId,
     interner: &Interner,
 ) -> (FileHir, Diagnostics) {
+    // The ordinary entry point lowers with **no** evaluated inserts — every computed `#insert` stays
+    // pending, exactly as before this feature existed. The operand pre-pass calls
+    // [`lower_file_with_inserts`] instead once it has the strings (ADR-0073 §1, step 6).
+    lower_file_with_inserts(parse, file, interner, &InsertOperands::new())
+}
+
+/// Lowers a parsed tree into HIR, expanding each computed `#insert` whose operand `operands` has
+/// evaluated (ADR-0073 §1, step 6).
+///
+/// Identical to [`lower_file`] except that a pending computed insert whose directive span appears in
+/// `operands` is expanded in place — its evaluated text parsed and lowered like a literal — rather than
+/// left pending for `jr-mir` to refuse. Passing an empty map is exactly [`lower_file`], which is why the
+/// two share every line below.
+pub fn lower_file_with_inserts(
+    parse: &jr_syntax::Parse,
+    file: FileId,
+    interner: &Interner,
+    operands: &InsertOperands,
+) -> (FileHir, Diagnostics) {
     let syntax = parse.syntax();
     let Some(source_file) = SourceFile::cast(syntax) else {
         let mut diags = Diagnostics::new();
@@ -2341,7 +2497,7 @@ pub fn lower_file(
         );
     };
 
-    let mut ctx = LowerCtx::new(file, interner);
+    let mut ctx = LowerCtx::new(file, interner, operands);
 
     // Walked as **children** rather than through `source_file.items()`, because a `SCOPE_DECL` is
     // not an `Item` kind and that accessor would skip it — so every visibility marker would be

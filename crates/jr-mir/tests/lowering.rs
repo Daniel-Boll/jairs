@@ -388,6 +388,21 @@ fn a_body_referring_to_a_file_level_constant_is_refused() {
     );
 }
 
+#[test]
+fn a_body_with_a_pending_computed_insert_is_refused_not_lowered_to_nothing() {
+    // ADR-0073 §1, step 4: a `#insert S;` whose operand the pre-pass has not yet evaluated has empty
+    // `stmts`, and lowering it to nothing would be the well-typed-placeholder miscompile — the program
+    // would silently exit having inserted no code. `scan` refuses the body instead. This is the safety
+    // net that lets the E0262 refusal be replaced by real resolution of the operand: the failure it
+    // guards is the same one aggregate-parameter fields and braceless bodies each hit.
+    let mut program = Program::new();
+    let lowered = program.lower_clean("CODE :: \"n := 1;\";\nmain :: () { #insert CODE; }");
+    assert_eq!(
+        lowered.refusal(&program.interner, "main"),
+        Poisoned::Here("a computed `#insert` operand has not been evaluated")
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Aggregate parameters — the silent-miscompile regression
 // ---------------------------------------------------------------------------

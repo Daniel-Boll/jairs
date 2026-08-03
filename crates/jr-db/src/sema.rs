@@ -234,10 +234,98 @@ pub fn checked(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) -
     );
     drop(pool);
 
+    translate_check_output(output, own.types.as_ref())
+}
+
+/// Resolves and checks an **already-expanded** HIR, for `file_mir`'s computed-`#insert` branch
+/// (ADR-0073 §1, step 6).
+///
+/// The inserted statements are nodes the ordinary [`resolved`] and [`checked`] never saw, so MIR cannot
+/// be lowered from the expanded HIR with the unexpanded maps — it needs its own resolve and check over
+/// *that* tree. Not a salsa query, because it is parameterised by an HIR rather than by a file: both
+/// `jr_hir::resolve` and `jr_sema::check_file` take an explicit `&FileHir`, which is what makes this a
+/// function call rather than a parallel query stack.
+///
+/// **Signatures are reused, not recomputed.** `#insert` is body-scoped (ADR-0072 §5), so expansion cannot
+/// change a file's items — which is the same fact that keeps `imports_of`, `file_exports` and
+/// `file_signatures` off the expanded path entirely, and with them the import cycle (ADR-0054 §3).
+///
+/// **Returns this pass's diagnostics**, which the caller surfaces via `MirResult`. They are the only
+/// diagnostics that can exist for the expanded tree: the unexpanded resolve *withholds* unresolved-name
+/// errors in a body holding a pending insert (it cannot know what the insert will declare, ADR-0073 §1),
+/// so without reporting these a misspelling inside such a body would reach the user as "the compiler could
+/// not lower `main`" — an internal-sounding message for an ordinary typo.
+pub(crate) fn checked_expanded(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+    expanded: &jr_hir::FileHir,
+) -> (Arc<jr_hir::ResolveMap>, CheckResult, Diagnostics) {
+    let file_id = crate::queries::resolve_file_id(db, file);
+    let own = file_signatures(db, file, search_paths);
+    let interner = db.interner();
+
+    // The same import scopes `resolved` gathers, over the expanded tree.
+    let modules = imported_module_files(db, file, search_paths);
+    let export_scopes: Vec<(Arc<str>, Arc<jr_hir::ItemScope>)> = modules
+        .iter()
+        .map(|(name, module)| {
+            (
+                name.clone(),
+                crate::module_loader::file_exports(db, *module),
+            )
+        })
+        .collect();
+    let scope_refs: Vec<(&str, &jr_hir::ItemScope)> = export_scopes
+        .iter()
+        .map(|(name, scope)| (name.as_ref(), scope.as_ref()))
+        .collect();
+    let (resolve_map, resolve_diags) = jr_hir::resolve(expanded, &scope_refs, interner);
+
+    let imported: Vec<(Arc<str>, SignatureResult)> = modules
+        .into_iter()
+        .map(|(name, module)| (name, file_signatures(db, module, search_paths)))
+        .collect();
+    let imports: Vec<(&str, &FileSignatures)> = imported
+        .iter()
+        .map(|(name, sigs)| (name.as_ref(), sigs.signatures.as_ref()))
+        .collect();
+
+    let mut pool = lock_pool(db);
+    let output = jr_sema::check_file(
+        expanded,
+        file_id,
+        &resolve_map,
+        own.signatures.as_ref(),
+        &imports,
+        &mut pool,
+        interner,
+    );
+    drop(pool);
+
+    // The resolve's and the check's diagnostics together: the expanded tree is the only place either can
+    // see the inserted statements, so both are the caller's to report.
+    let mut diags = resolve_diags;
+    let result = translate_check_output(output, own.types.as_ref());
+    diags.extend(result.diagnostics.iter().cloned());
+
+    (Arc::new(resolve_map), result, diags)
+}
+
+/// Turns `jr-sema`'s [`jr_sema::CheckOutput`] into this crate's [`CheckResult`].
+///
+/// Shared by [`checked`] and by `file_mir`'s **expanded** branch, which re-checks a file whose computed
+/// `#insert`s have been expanded (ADR-0073 §1, step 6). One function rather than two copies, because the
+/// translations below are the single place `jr-sema`'s vocabulary becomes `jr-mir`'s — and two copies
+/// would be two chances for the expanded path to disagree with the ordinary one about what a call means.
+fn translate_check_output(
+    output: jr_sema::CheckOutput,
+    declaration_types: &jr_sema::TypeMap,
+) -> CheckResult {
     // One map for the whole file: the signature phase typed the declarations,
     // this phase typed the bodies, and neither typed the other's expressions.
     let mut types = output.types;
-    types.absorb(own.types.as_ref());
+    types.absorb(declaration_types);
 
     // Translated from `jr-sema`'s `(FileId, ProcId)` pairs into `jr-mir`'s `ProcRef`, which is
     // the one place that mapping belongs: `jr-sema` must not depend on `jr-mir`, and `jr-mir`

@@ -481,6 +481,13 @@ pub fn file_diagnostics(
     all.extend(unused.diagnostics().into_vec());
 
     let mir = crate::mir::file_mir(db, file, search_paths);
+    // Diagnostics only the **expanded** tree can produce (ADR-0073 §1): the unexpanded resolve withholds
+    // unresolved-name errors in a body holding a pending computed `#insert`, because it cannot know what
+    // the insert declares. Reported here rather than in `frontend_diagnostics` because expansion needs
+    // `insert_operands`, which that gate runs before — and this query already depends on `file_mir`, so it
+    // adds no edge. Without this a misspelling in such a body surfaced as "the compiler could not lower
+    // `main`", an internal-sounding message for an ordinary typo.
+    all.extend(mir.expanded_diagnostics.iter().cloned());
     if !mir.gated {
         let hir = file_hir(db, file);
         let interner = db.interner();

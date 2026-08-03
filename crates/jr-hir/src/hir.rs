@@ -745,7 +745,22 @@ pub enum Stmt {
     /// downstream needs to — which is the evidence §1's "lowered where it is written" is the right model.
     Insert {
         /// The lowered statements, in order.
+        ///
+        /// **Empty while a computed operand is unexpanded** (ADR-0073): `#insert S;` whose operand is a
+        /// constant has no statements until the operand pre-pass evaluates `S` to a string and lowering
+        /// runs again. `operand` being `Some` is what distinguishes that pending state from a genuinely
+        /// empty literal insert (`#insert "";`, `operand: None`, no statements) — and `jr-mir`'s `scan`
+        /// refuses a body still holding a pending one, so empty `stmts` can never be mistaken for "insert
+        /// nothing" (the well-typed-placeholder miscompile AGENTS.md names).
         stmts: Vec<StmtId>,
+        /// The **computed** operand expression, when the insert has one (ADR-0073 §1).
+        ///
+        /// `None` for a literal `#insert "…";` — its text is parsed and lowered in place (ADR-0072), so
+        /// there is no operand expression. `Some` for `#insert <expr>;`, holding the operand lowered as
+        /// an ordinary expression so it *resolves and type-checks* like any other — which is how
+        /// `#insert undefined;` becomes an unresolved-name error rather than a bare refusal. The operand
+        /// pre-pass evaluates it to a string; until it does, `jr-mir`'s `scan` refuses the body.
+        operand: Option<ExprId>,
         /// Span of the `#insert` directive — **shared by every statement in `stmts`** (ADR-0072 §2).
         ///
         /// The directive is where that code entered the program, and it is the only span for it that is
@@ -1178,6 +1193,48 @@ impl ItemScope {
 // ---------------------------------------------------------------------------
 // The whole-file HIR
 // ---------------------------------------------------------------------------
+
+/// The evaluated text of every computed `#insert` operand in one file (ADR-0073 §1).
+///
+/// Produced by `jr-db`'s `insert_operands` pre-pass — which evaluates each operand against the
+/// *unexpanded* HIR — and consumed by a second lowering that fills each pending [`Stmt::Insert`]'s
+/// statements. Empty for a file with no computed insert, which is every file today, so ordinary lowering
+/// passes `InsertOperands::default()` and behaves exactly as before.
+///
+/// **Keyed by the directive's [`Span`], not by an `ExprId` or `StmtId`** — and that is load-bearing, not
+/// incidental. Expanding one insert adds statements and expressions to the body, so a *later* insert's
+/// operand id differs between the pass that computed the value and the pass that consumes it; keying by
+/// id would attach the wrong text to the wrong insert, a miscompile that type-checks. A `Span` comes from
+/// source, so it is invariant across both lowerings.
+#[derive(Debug, Clone, Default)]
+pub struct InsertOperands {
+    by_span: std::collections::HashMap<Span, String>,
+}
+
+impl InsertOperands {
+    /// An empty map: no computed operand has a value, so every one stays pending and `jr-mir` refuses it.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records the evaluated text of the operand whose directive has this span.
+    pub fn set(&mut self, directive: Span, text: String) {
+        self.by_span.insert(directive, text);
+    }
+
+    /// The evaluated text for the `#insert` at `directive`, if the pre-pass computed one.
+    #[must_use]
+    pub fn get(&self, directive: Span) -> Option<&str> {
+        self.by_span.get(&directive).map(String::as_str)
+    }
+
+    /// Whether nothing has been evaluated — the ordinary case, lowered without expansion.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.by_span.is_empty()
+    }
+}
 
 /// The complete HIR for one source file.
 ///

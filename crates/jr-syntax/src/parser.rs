@@ -2109,6 +2109,25 @@ impl<'src> Parser<'src> {
                     self.bump(); // `#run`
                     self.parse_expr();
                     self.finish_node();
+                } else if text == "#insert" {
+                    // `#insert` takes an **operand expression**, not merely an optional string
+                    // (ADR-0073 §1). A bare string literal is still kept as a direct `STRING_LITERAL`
+                    // *token* child, so ADR-0072's `string_arg()` and its literal-lowering path are
+                    // untouched — the computed case parses a full expression instead, which is what
+                    // `#insert S;` needs and which the generic arm below cannot express.
+                    self.start_node(DIRECTIVE_EXPR);
+                    self.bump(); // `#insert`
+                    if self.at(STRING_LITERAL) {
+                        // The literal case, byte-for-byte the CST ADR-0072 lowers.
+                        self.bump();
+                    } else if self.at_set(EXPR_START) {
+                        // A computed operand: a name, a `#run`, a call. Lowered by ADR-0073's
+                        // pre-pass; a non-string value is refused there, not here, because whether
+                        // the operand is a string is a semantic judgement.
+                        self.parse_expr();
+                    }
+                    // Nothing after `#insert` at all is left to lowering, which reports E0262.
+                    self.finish_node();
                 } else {
                     // Any other directive used as an expression.
                     self.start_node(DIRECTIVE_EXPR);
@@ -2658,6 +2677,21 @@ mod tests {
     #[test]
     fn directive_expr() {
         check_no_errors(r#"libc :: #system_library "c";"#);
+    }
+
+    #[test]
+    fn insert_of_a_literal_string_parses() {
+        // ADR-0072: the literal case, unchanged by ADR-0073.
+        check_no_errors(r#"main :: () { #insert "n := 1;"; }"#);
+    }
+
+    #[test]
+    fn insert_of_a_computed_operand_parses() {
+        // ADR-0073 §1: a bare name after `#insert` used to be E0100 ("expected `;`"). It now parses
+        // as an operand expression, and whether it is a string is left to the pre-pass — the parser
+        // no longer refuses it.
+        check_no_errors(r#"main :: () { #insert S; }"#);
+        check_no_errors(r#"main :: () { #insert make_code(); }"#);
     }
 
     #[test]

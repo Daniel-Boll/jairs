@@ -337,6 +337,24 @@ struct ResolveCtx<'a> {
     /// A parameter's promotions are pushed once for the whole body, because a parameter is in
     /// scope throughout it.
     promotions: Vec<Promotion>,
+
+    /// Whether the body being resolved holds a **pending** computed `#insert` (ADR-0073 §1).
+    ///
+    /// When it does, an unresolved name is withheld rather than reported: the insert has not been
+    /// expanded yet, and the statements it will contribute may well be what declares that name —
+    /// `#insert CODE;` followed by `exit(n)`, where `CODE` is `"n := 41;"`, is the feature working.
+    ///
+    /// **Why suppression rather than resolving against the expanded tree.** Expansion needs the operand's
+    /// *value*, which needs const-eval, which runs downstream of resolution — so this pass genuinely
+    /// cannot see the inserted statements. Reporting E0201 here would make every working computed insert
+    /// an error. The expanded pass (`file_mir`'s branch, ADR-0073 step 6) resolves the real tree and its
+    /// `ResolveMap` is what MIR uses, so a name that truly does not resolve is still caught there — and a
+    /// body holding a pending insert is refused by `jr-mir`'s `scan` regardless, so nothing is silently
+    /// accepted.
+    ///
+    /// Scoped to the body, not the file: a name unresolved in a body *without* an insert is reported as
+    /// always.
+    body_has_pending_insert: bool,
 }
 
 impl<'a> ResolveCtx<'a> {
@@ -353,6 +371,7 @@ impl<'a> ResolveCtx<'a> {
             diags: Diagnostics::new(),
             map: ResolveMap::new(),
             promotions: Vec::new(),
+            body_has_pending_insert: false,
         }
     }
 
@@ -652,6 +671,14 @@ impl<'a> ResolveCtx<'a> {
                     );
                     return Res::Error;
                 }
+                // **Withheld when a pending computed `#insert` is in this body** (ADR-0073 §1): the
+                // insert's statements are not lowered yet and may be exactly what declares this name, so
+                // E0201 here would make every working computed insert an error. See
+                // `body_has_pending_insert` for why this pass cannot simply resolve the expanded tree, and
+                // for what still catches a name that genuinely does not resolve.
+                if self.body_has_pending_insert {
+                    return Res::Error;
+                }
                 // Not found anywhere.
                 let diag = Diagnostic::error(span, format!("unresolved name `{name_text}`"))
                     .with_code(E0201);
@@ -836,12 +863,21 @@ impl<'a> ResolveCtx<'a> {
 
     fn resolve_body(&mut self, body_id: BodyId) {
         let root = self.hir.bodies[body_id.index()].root;
+        // Whether *this* body holds an unexpanded computed `#insert` (ADR-0073 §1). Computed once per
+        // body rather than asked per name, and scoped to the body so a name unresolved in a body without
+        // an insert is reported exactly as before. Set before resolution starts, because the insert may
+        // appear *after* the name that reads what it declares — `#insert CODE;` then `exit(n)` is the
+        // ordinary shape, but a statement order the other way round must behave the same.
+        self.body_has_pending_insert = self.hir.bodies[body_id.index()].stmts.iter().any(
+            |stmt| matches!(stmt, Stmt::Insert { operand: Some(_), stmts, .. } if stmts.is_empty()),
+        );
         // A parameter is in scope for the whole body, so its promotions are pushed once around it.
         // The stack is cleared rather than truncated because bodies do not nest.
         self.promotions.clear();
         self.promotions = self.param_promotions(body_id);
         self.resolve_body_stmt(body_id, root);
         self.promotions.clear();
+        self.body_has_pending_insert = false;
     }
 
     fn resolve_body_stmt(&mut self, body_id: BodyId, stmt_id: StmtId) {
@@ -948,7 +984,13 @@ impl<'a> ResolveCtx<'a> {
             // (ADR-0072 §1): no scope is pushed, so a name the insert declares is visible afterwards and
             // a name from the enclosing body is visible inside. Nothing here can tell they came from a
             // string, which is the evidence lowering put them in the right place.
-            Stmt::Insert { stmts, .. } => {
+            Stmt::Insert { stmts, operand, .. } => {
+                // A **computed** operand resolves like any expression (ADR-0073 §1), so
+                // `#insert undefined;` reports an unresolved name against the operand, not a bare
+                // refusal. `None` for a literal insert, whose statements are resolved below instead.
+                if let Some(op) = operand {
+                    self.resolve_body_expr(body_id, op);
+                }
                 for inner in stmts {
                     self.resolve_body_stmt(body_id, inner);
                 }

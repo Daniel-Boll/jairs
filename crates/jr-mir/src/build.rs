@@ -479,6 +479,15 @@ fn scan(
     for id in &reach.stmts {
         match body.stmt(*id) {
             Stmt::Error(_) => return Some("the body contains recovered syntax"),
+            // A **pending** computed `#insert` — operand present, not yet expanded (ADR-0073 §1). Refused
+            // here, specifically, rather than lowered to its (empty) statements: lowering an unexpanded
+            // insert to nothing is the well-typed-placeholder miscompile AGENTS.md names — a legal-looking
+            // program that silently means nothing. This is the safety net the operand pre-pass removes by
+            // filling `stmts`; until it does, the body cannot be built. A *literal* or *expanded* insert
+            // (`operand: None`, or statements present) falls through to the representable arm below.
+            Stmt::Insert { operand: Some(_), stmts, .. } if stmts.is_empty() => {
+                return Some("a computed `#insert` operand has not been evaluated");
+            }
             Stmt::Block(_, _)
             // **Representable, and it must be**: an `#insert`'s statements are ordinary statements by the
             // time MIR sees them, so refusing here would refuse whatever the insert contained
@@ -1050,7 +1059,15 @@ impl Lower<'_> {
             // defers registered inside it; an insert deliberately does not, so a `defer` written in
             // inserted code runs when the *enclosing* scope is left — which is what "as if written here"
             // has to mean. This is the difference that made a distinct variant necessary.
-            Stmt::Insert { stmts, span: _ } => {
+            // Only reached for a *literal* or *expanded* insert; a pending computed one (`operand: Some`
+            // with empty `stmts`) never gets here, because `scan` refused the body first (ADR-0073 §1).
+            // The operand itself is not lowered — it is a compile-time string, consumed by the pre-pass,
+            // with no runtime effect.
+            Stmt::Insert {
+                stmts,
+                operand: _,
+                span: _,
+            } => {
                 for inner in stmts {
                     self.stmt(inner);
                 }

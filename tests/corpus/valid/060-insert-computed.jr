@@ -1,0 +1,63 @@
+// `#insert <expr>;` — a *computed* operand, whose text comes from a compile-time constant or a `#run`
+// (ADR-0073). W4's fifth sub-wave, and the point at which sema and the VM become mutually recursive: the
+// operand is evaluated in the bytecode VM *before* lowering can finish, which is the salsa cycle the wave
+// exists to break — broken by an acyclic pre-pass (`insert_operands`) rather than by fixed-point recovery.
+//
+// The literal form (ADR-0072, `valid/059`) is textual substitution after parsing. The computed form adds
+// one step before it: evaluate the operand to a string, then substitute. So everything `059` checks still
+// holds — the statements land in the *enclosing* scope, a local they declare is visible afterwards — and
+// this file adds the evaluation.
+//
+// Three things, each given teeth by the `exit`:
+//
+//   * a **named constant** operand (`CODE`), whose value is a string the signature phase records the type
+//     of but not the value of — so it genuinely runs const-eval, it is not a lookup;
+//   * a **`#run`** operand (`build()`), the form W4 §2.1 really means: the text is computed by executing a
+//     procedure at compile time;
+//   * the inserted code **reads and writes an enclosing local** (`n`), proving the substitution is into
+//     this scope and not a nested one — exactly as the literal form promises.
+//
+// What is deliberately *not* here: a non-string operand (a type error, E0214, in `imports/invalid/`), and
+// `#insert` at file scope (it would change the item tree — refused, ADR-0072 §5). Nesting past 16 levels
+// is E0264, but a computed operand cannot be written deeply enough to reach it by hand, so that bound has
+// its own unit test rather than a corpus file.
+#import "Basic";
+
+// A constant whose value is Jairs source. The signature phase knows its *type* is `string`; its *value*
+// is what the operand pre-pass evaluates.
+CODE :: "n = n + 10;";
+
+// An **empty** computed operand: it evaluates to the empty string and inserts nothing, which is legal —
+// the same rule a literal `#insert "";` follows. It is here because an empty *computed* operand is the
+// one case that distinguishes "evaluated, and it was empty" from "not yet evaluated": both leave the
+// insert with no statements, and only clearing the operand on expansion tells them apart (ADR-0073 §1).
+EMPTY :: "";
+
+// A computed operand whose text **itself contains an `#insert`** — a literal one, which expands
+// recursively when the outer text is lowered. So the computed and literal forms compose.
+NESTED :: "#insert \"n = n + 32;\";";
+
+// A procedure run at compile time to produce source text — the `#run` operand form.
+build :: () -> string {
+    return "n = n + 16;";
+}
+
+main :: () {
+    n := 0;
+
+    // A named-constant operand: `n = n + 10;` is spliced here, writing the enclosing `n`.
+    #insert CODE;
+
+    // An empty computed operand: inserts nothing, changes nothing.
+    #insert EMPTY;
+
+    // A `#run` operand: `build()` runs in the comptime VM, and its returned string is spliced.
+    #insert #run build();
+
+    // A nested computed operand: `NESTED`'s text is a literal `#insert`, which expands in turn.
+    #insert NESTED;
+
+    // 10 + 16 + 32 = 58. If any insert had its own scope, its write to `n` would not reach here — and if
+    // the empty insert were treated as *pending* rather than evaluated-empty, the body would be refused.
+    exit(n);
+}

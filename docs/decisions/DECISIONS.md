@@ -791,3 +791,58 @@ precisely the `is_stmt_kind` failure that destroyed source four times in one wav
 **Eight tests (936 → 944)**, each teeth-checked by disabling the mechanism it pins — neutering the span
 override fails exactly the two span tests, pushing a scope fails exactly the enclosing-scope test, and a
 defer scope fails exactly the exit-status test.
+
+---
+
+## Wave: `#insert` of a computed string (ADR-0073), 2026-08-03 — W4 sub-wave 5
+
+### What running found first
+
+PLAN §7 called W4's remainder "one problem with two faces". It is two problems, and probing separated them
+in minutes:
+
+* **A `#run`-computed *string* constant already works** — `S :: #run mk();` checks cleanly. So the value a
+  computed `#insert` needs is one const-eval already produces.
+* **A `#run`-computed *struct* is refused by name**: E0230, "a compile-time struct value arrives with a
+  later wave", because `jr-pool`'s `Item` has **no aggregate value variant at all**. `type_info()` returns
+  a struct, so it is blocked on a *representation*, not on a dependency direction. It is a different
+  sub-wave and the E0230 refusal is what to lift first.
+* **`#insert S;` does not parse today** — the parser wants `;` after `#insert`, so a bare name is E0100
+  *then* E0262. Unlike ADR-0072, this wave needs a grammar change, so gate 6 acquires work.
+* **`file_signatures` depends only on `file_hir` and `resolved`**, never on `checked` or `file_consts`.
+  That single fact is what makes an acyclic pre-pass possible, and it was read out of the query.
+
+The cycle is also sharper than ADR-0072 §4 drew it: `file_consts` is gated on `frontend_diagnostics`, which
+reaches `checked`, `resolved` **and `lower_file` directly**. So the loop closes through the *error gate*,
+not merely through the type checker.
+
+### Fork 1 — which sub-wave comes next
+
+- Options: **a computed `#insert` (taken, recommended)**; `type_info()` first; aggregate constants as their
+  own prerequisite-only wave.
+- Why: the computed `#insert` needs **no new pool variant** — only the dependency direction inverted — and
+  it is the wave's *named* deliverable (cycle detection with readable errors). `type_info()` needs a
+  describing struct in `modules/Basic`, a new aggregate-value representation, static data emission and a
+  layout: four decisions before one program runs. An aggregate-constants wave is smaller and independently
+  testable but ships no user-visible feature.
+
+### Fork 2 — how to break the cycle
+
+- Options: **a narrow acyclic pre-pass query (taken, recommended)**; salsa's fixed-point cycle recovery;
+  refuse with a better diagnostic and defer.
+- Why: **salsa 0.28.1 does support `cycle_fn`/`cycle_initial`**, which the plan never mentioned, and it is
+  the more general answer — it would also serve a `#run` reading another file's constant. Rejected on two
+  grounds. Convergence would have to be *proved*: an insert whose text declares what another insert's text
+  reads is a fixpoint whose termination is a property of the program, and a wrong fixpoint is a silently
+  wrong program. And decisively, opting a query into recovery **removes salsa's cycle panic as a guard** —
+  the panic that caught ADR-0069's mistake in three corpus tests at once. Disabling the project's best cycle
+  detector to gain a feature a narrow query delivers acyclically is a poor trade.
+
+### Resolution
+
+Both forks taken as recommended. ADR-0073 records them. The pre-pass evaluates **string-valued constants
+only** (§2), because a general one would be a second partial const-eval, and two evaluators that must agree
+is the shape ADR-0019 refuses for the two execution engines. This wave also owes the **depth bound**
+ADR-0072 §5 named: a computed operand can reproduce itself without growing, so the escaping argument that
+bounded a literal insert no longer applies. And it corrects the plan: a `#run` reading another file's
+constant does **not** come free, since the general mechanism that would deliver it is the one rejected.

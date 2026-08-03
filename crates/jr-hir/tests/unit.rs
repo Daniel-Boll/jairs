@@ -2,8 +2,8 @@
 
 use jr_base::{FileId, Interner};
 use jr_hir::{
-    BinOp, ConstValue, Expr, ItemKind, Literal, Res, Stmt, UnOp, dump::dump_hir, lower_file,
-    resolve,
+    BinOp, ConstValue, Expr, InsertOperands, ItemKind, Literal, Res, Stmt, UnOp, dump::dump_hir,
+    lower_file, lower_file_with_inserts, resolve,
 };
 use jr_syntax::parse;
 
@@ -1193,7 +1193,7 @@ fn only_insert(hir: &jr_hir::FileHir) -> (jr_base::Span, Vec<jr_hir::StmtId>) {
     };
     let mut found = None;
     for id in top {
-        if let Stmt::Insert { stmts, span } = body.stmt(*id) {
+        if let Stmt::Insert { stmts, span, .. } = body.stmt(*id) {
             assert!(found.is_none(), "this helper expects exactly one insert");
             found = Some((*span, stmts.clone()));
         }
@@ -1290,6 +1290,166 @@ fn insert_without_a_string_literal_is_e0262() {
 }
 
 #[test]
+fn a_computed_operand_is_held_not_refused_at_lowering() {
+    // ADR-0073 §1: a computed operand is lowered into `Stmt::Insert { operand: Some(_), .. }` with no
+    // statements yet, rather than refused with E0262. Lowering itself is silent — the operand is a real
+    // expression to resolve and check, and the "not yet evaluated" refusal is `jr-mir`'s `scan`, not
+    // lowering's. This is what makes `#insert undefined;` an unresolved-name error rather than a blanket
+    // "needs a literal".
+    let (hir, diags, _) = lower("main :: () { #insert S; }");
+    assert!(
+        !diags.iter().any(|d| d.code == Some("E0262")),
+        "a computed operand must not be refused at lowering: {:?}",
+        diags.iter().map(|d| d.code).collect::<Vec<_>>()
+    );
+    let body = sole_body(&hir);
+    let Stmt::Block(top, _) = body.stmt(body.root) else {
+        panic!("root is a block");
+    };
+    let insert = top
+        .iter()
+        .find_map(|id| match body.stmt(*id) {
+            Stmt::Insert { operand, stmts, .. } => Some((*operand, stmts.clone())),
+            _ => None,
+        })
+        .expect("an insert statement");
+    assert!(insert.0.is_some(), "the operand expression must be held");
+    assert!(
+        insert.1.is_empty(),
+        "a pending insert has no statements until the pre-pass expands it"
+    );
+}
+
+#[test]
+fn a_computed_operand_expands_when_its_text_is_supplied() {
+    // ADR-0073 §1, step 6: `lower_file_with_inserts` fills a pending insert's statements when the
+    // operand pre-pass has evaluated its text. This is exactly what the `jr-db` query will do — here the
+    // map is built by hand from the directive's span (the stable key, since the operand's `ExprId` shifts
+    // when a body expands). The two-pass shape: lower once to learn the pending insert's span, then
+    // re-lower with that span mapped to the text.
+    let source = "main :: () { #insert S; m := 0; }";
+    let interner = Interner::new();
+    let f = file();
+    let parsed = parse(source, f);
+
+    // First pass: the insert is pending, and its span is what the map must be keyed by.
+    let (hir, _) = lower_file(&parsed, f, &interner);
+    let body = &hir.bodies[0];
+    let Stmt::Block(top, _) = body.stmt(body.root) else {
+        panic!("root is a block");
+    };
+    let insert_span = top
+        .iter()
+        .find_map(|id| match body.stmt(*id) {
+            Stmt::Insert {
+                operand: Some(_),
+                span,
+                ..
+            } => Some(*span),
+            _ => None,
+        })
+        .expect("a pending computed insert");
+
+    // Second pass: supply the evaluated text for that span. `n := 7;` declares a local, so the expanded
+    // insert must produce one statement.
+    let mut operands = InsertOperands::new();
+    operands.set(insert_span, "n := 7;".to_owned());
+    let (expanded, diags) = lower_file_with_inserts(&parsed, f, &interner, &operands);
+    assert!(
+        diags.is_empty(),
+        "expansion must lower cleanly: {:?}",
+        diags.iter().map(|d| d.code).collect::<Vec<_>>()
+    );
+    let ebody = &expanded.bodies[0];
+    let Stmt::Block(etop, _) = ebody.stmt(ebody.root) else {
+        panic!("root is a block");
+    };
+    let (operand, filled) = etop
+        .iter()
+        .find_map(|id| match ebody.stmt(*id) {
+            Stmt::Insert { operand, stmts, .. } => Some((*operand, stmts.clone())),
+            _ => None,
+        })
+        .expect("the insert is still present, now expanded");
+    // An expanded insert is identical to a literal one: statements in place, `operand: None` — which is
+    // what tells `jr-mir` it is no longer pending (ADR-0073 §1). Keeping `operand: Some` would make an
+    // insert that expands to *zero* statements indistinguishable from an unevaluated one.
+    assert!(
+        operand.is_none(),
+        "an expanded insert clears its operand, marking it no longer pending"
+    );
+    assert_eq!(
+        filled.len(),
+        1,
+        "the supplied `n := 7;` must have lowered to one statement"
+    );
+}
+
+#[test]
+fn an_empty_computed_operand_expands_to_nothing_and_is_not_pending() {
+    // ADR-0073 §1: `#insert EMPTY;` where `EMPTY` is `""` evaluates to the empty string and expands to
+    // **zero** statements — legal, the same as a literal `#insert "";` (ADR-0072 §5). The bug this pins:
+    // if expansion left `operand: Some` with empty `stmts`, that is exactly the *pending* state
+    // `jr-mir`'s `scan` refuses, so an empty computed insert wrongly failed the body. Clearing the
+    // operand on expansion is what distinguishes "evaluated, and it was empty" from "not yet evaluated".
+    let source = "main :: () { #insert E; }";
+    let interner = Interner::new();
+    let f = file();
+    let parsed = parse(source, f);
+    let (hir, _) = lower_file(&parsed, f, &interner);
+    let span = {
+        let body = &hir.bodies[0];
+        let Stmt::Block(top, _) = body.stmt(body.root) else {
+            panic!("root is a block");
+        };
+        top.iter()
+            .find_map(|id| match body.stmt(*id) {
+                Stmt::Insert {
+                    operand: Some(_),
+                    span,
+                    ..
+                } => Some(*span),
+                _ => None,
+            })
+            .expect("a pending insert")
+    };
+
+    let mut operands = InsertOperands::new();
+    operands.set(span, String::new()); // the empty string
+    let (expanded, diags) = lower_file_with_inserts(&parsed, f, &interner, &operands);
+    assert!(diags.is_empty(), "an empty expansion is legal");
+    let ebody = &expanded.bodies[0];
+    let Stmt::Block(etop, _) = ebody.stmt(ebody.root) else {
+        panic!("root is a block");
+    };
+    let (operand, stmts) = etop
+        .iter()
+        .find_map(|id| match ebody.stmt(*id) {
+            Stmt::Insert { operand, stmts, .. } => Some((*operand, stmts.clone())),
+            _ => None,
+        })
+        .expect("the insert is present");
+    assert!(operand.is_none(), "evaluated-to-empty is not pending");
+    assert!(stmts.is_empty(), "an empty operand inserts no statements");
+}
+
+#[test]
+fn a_missing_operand_is_still_e0262() {
+    // ADR-0072 §5 / ADR-0073 §1: `#insert;` with no operand at all stays a hard error at lowering,
+    // distinct from a *computed* operand (which lowering now accepts and holds).
+    let (_, diags, _) = lower("main :: () { #insert; }");
+    let msg = diags
+        .iter()
+        .find(|d| d.code == Some("E0262"))
+        .map(|d| d.message.clone())
+        .expect("a missing operand is E0262");
+    assert!(
+        msg.contains("needs a string literal"),
+        "a missing operand asks for a literal, got: {msg:?}"
+    );
+}
+
+#[test]
 fn a_parse_error_in_inserted_text_is_e0263_and_names_the_offset() {
     let (_, diags, _) = lower(r#"main :: () { #insert "x := ;"; }"#);
     let insert_diags: Vec<_> = diags.iter().filter(|d| d.code == Some("E0263")).collect();
@@ -1335,6 +1495,7 @@ fn a_nested_insert_lowers_through_both_levels() {
     let Stmt::Insert {
         stmts: inner,
         span: inner_span,
+        ..
     } = body.stmt(outer[0])
     else {
         panic!("the outer insert's only statement is the inner `#insert`");
@@ -1344,6 +1505,45 @@ fn a_nested_insert_lowers_through_both_levels() {
     assert_eq!(
         *inner_span, span,
         "a nested insert's span is still the written directive's"
+    );
+}
+
+/// Builds an `n`-deep literal `#insert` nest, escaping once per level.
+///
+/// A helper because a 17-deep nest is a quarter-megabyte of source — writing it by hand is not an
+/// option, and embedding it would drown the test it serves.
+fn nested_insert(depth: usize) -> String {
+    let mut inner = "x := 1;".to_owned();
+    for _ in 0..depth {
+        let escaped = inner.replace('\\', "\\\\").replace('"', "\\\"");
+        inner = format!("#insert \"{escaped}\";");
+    }
+    format!("main :: () {{ {inner} }}")
+}
+
+#[test]
+fn a_nest_within_the_depth_bound_lowers_cleanly() {
+    // ADR-0073 §3: the bound is 16, so 16 levels must still work — a bound that refused a legal nest
+    // would be the false-error direction, worse than none.
+    let (_, diags, _) = lower(&nested_insert(16));
+    assert!(
+        diags.is_empty(),
+        "16 levels is within the bound and must lower cleanly: {:?}",
+        diags.iter().map(|d| d.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_nest_past_the_depth_bound_is_e0264_not_a_hang() {
+    // ADR-0073 §3: one level past the bound is refused with a diagnostic rather than exhausting the
+    // stack. A literal nest cannot in practice reach this — the text would be enormous — but the guard
+    // must exist *before* a computed operand can produce a self-reproducing string, which is the whole
+    // reason the bound is added in this sub-wave rather than the next.
+    let (_, diags, _) = lower(&nested_insert(17));
+    assert!(
+        diags.iter().any(|d| d.code == Some("E0264")),
+        "expected E0264, got {:?}",
+        diags.iter().map(|d| d.code).collect::<Vec<_>>()
     );
 }
 
