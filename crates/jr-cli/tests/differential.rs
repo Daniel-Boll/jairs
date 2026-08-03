@@ -293,6 +293,34 @@ fn an_aggregate_constant_lays_out_the_same_in_both_engines() {
     );
 }
 
+/// A constant aggregate holding **strings** must exit **0** in both engines (ADR-0075 §1).
+///
+/// Nine assertions summing to 511, so a dropped, duplicated or misplaced string changes the exit value
+/// rather than only the output. Asserting the value rather than mere agreement matters especially here: the
+/// text is interned once, and each engine then produces it independently — the VM through `read_string`
+/// while it is alive, the native back end by emitting the bytes as static data and pointing a `{data,
+/// count}` pair at them. A shared wrong offset would read one string where another was meant and look
+/// perfectly consistent across both.
+#[test]
+fn constant_strings_inside_an_aggregate_agree_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/062-constant-strings-in-aggregates.jr");
+
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    assert_eq!(
+        vm.status, 0,
+        "the VM exited {} — a string inside a constant aggregate did not read back as written",
+        vm.status
+    );
+    assert_eq!(
+        native.status, 0,
+        "the native back end exited {} — see the VM assertion above",
+        native.status
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Programs whose *result* is observable
 // ---------------------------------------------------------------------------

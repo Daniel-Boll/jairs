@@ -1,0 +1,155 @@
+// A **compile-time aggregate may hold a string** (ADR-0075 §1), which is W4's seventh sub-wave and the
+// half of it that unblocks the other half.
+//
+// ADR-0074 landed aggregate constants and closed by calling itself "the last thing between W4 and RTTI".
+// That claim was wrong, and typing one program found it:
+//
+//     Named :: struct { name: string; size: s64; }
+//     V :: #run mk();      // error[E0230]: a compile-time aggregate holding a string
+//                          //               arrives with a later wave
+//
+// A `Type_Info` carrying a type's *name* is exactly that shape, so RTTI was still blocked — on a refusal
+// ADR-0074 wrote itself. This is the fourth time a scheduled dependency has turned out not to hold
+// (ADR-0067 §0, ADR-0070 §0, ADR-0072 §5, ADR-0073 §0), and the first time the false claim was this
+// project's own ADR about the very next wave.
+//
+// **The gap was comptime-only.** The identical struct has always worked at run time, which is what said
+// the problem was not layout: `reduce` copied the result out as a flat byte image, and a `string` field's
+// bytes are a `{data, count}` pair pointing *into the VM's memory*. Interning happens after the VM is
+// dropped, so by then the pointer dangled. Refusing was right; the fix is to stop the image being flat.
+//
+// `Raw::Aggregate` now holds a **tree of reduced elements** rather than bytes, walked while the VM is
+// still alive — so a string element reaches `read_string` at the one moment it can still be read. That is
+// not a new mechanism: `reduce` already did exactly this for a *top-level* string. The decision was only
+// to apply it one level down, which is where the existing code stopped.
+//
+// Five things worth checking rather than assuming, and the `exit` gives each teeth:
+//
+//   * a string field of a struct constant survives, with its *contents* intact;
+//   * so does a **second** string field, so a single shared offset would show;
+//   * a string **nested two levels deep** works, since the walk recurses;
+//   * a string next to an `s64` in the same struct, so a wrong offset would read the integer's bytes;
+//   * an **array** of structs each holding a string, where a wrong stride would repeat one element.
+//
+// The exit value is the sum, so a silently dropped or duplicated string changes the number rather than
+// merely the output. Both engines must agree on it — and the *native* engine has to materialise a string
+// constant nested inside an aggregate, which is the part that would fail independently.
+#import "Basic";
+
+/// A string beside an integer: the ordering that catches a wrong offset, because reading `name` at
+/// `size`'s offset would produce a pointer-shaped nonsense rather than an error.
+Named :: struct {
+    name: string;
+    size: s64;
+}
+
+/// One level down, so the recursion has something to recurse into.
+Inner :: struct {
+    label: string;
+    n: s64;
+}
+
+/// Two strings and a nested struct that itself holds one. Three strings at three different offsets, so a
+/// single shared offset would show up as the same text three times.
+Outer :: struct {
+    head: string;
+    in: Inner;
+    tail: string;
+}
+
+mk_named :: () -> Named {
+    n: Named;
+    n.name = "s64";
+    n.size = 8;
+    return n;
+}
+
+mk_outer :: () -> Outer {
+    o: Outer;
+    o.head = "H";
+    o.in.label = "mid";
+    o.in.n = 5;
+    o.tail = "T";
+    return o;
+}
+
+/// An array of aggregates each holding a string, where a wrong element stride would repeat one entry.
+mk_pair :: () -> [2]Named {
+    a: [2]Named;
+    a[0].name = "first";
+    a[0].size = 1;
+    a[1].name = "second";
+    a[1].size = 2;
+    return a;
+}
+
+/// The constants. Each is a `#run` whose result is an aggregate holding text.
+NAMED :: #run mk_named();
+OUTER :: #run mk_outer();
+PAIR :: #run mk_pair();
+
+/// Compares two strings by contents, so an assertion is about the text rather than about a pointer.
+///
+/// Written here rather than in `Basic` because string comparison is not a decided part of the standard
+/// library yet, and this file needs only equality.
+same :: (a: string, b: string) -> bool {
+    if a.count != b.count {
+        return false;
+    }
+    i := 0;
+    while i < a.count {
+        p := a.data + i;
+        q := b.data + i;
+        if p.* != q.* {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+main :: () {
+    n := 0;
+
+    // The simple case: a string field beside an integer, both intact.
+    if same(NAMED.name, "s64") {
+        n = n + 1;
+    }
+    if NAMED.size == 8 {
+        n = n + 2;
+    }
+
+    // Two strings at two offsets in one struct. If they shared an offset these would be equal to each
+    // other rather than to what they were assigned.
+    if same(OUTER.head, "H") {
+        n = n + 4;
+    }
+    if same(OUTER.tail, "T") {
+        n = n + 8;
+    }
+
+    // Nested two levels deep, which is the recursion.
+    if same(OUTER.in.label, "mid") {
+        n = n + 16;
+    }
+    if OUTER.in.n == 5 {
+        n = n + 32;
+    }
+
+    // An array of structs holding strings: a wrong stride would make both elements read as the first.
+    if same(PAIR[0].name, "first") {
+        n = n + 64;
+    }
+    if same(PAIR[1].name, "second") {
+        n = n + 128;
+    }
+    if PAIR[0].size + PAIR[1].size == 3 {
+        n = n + 256;
+    }
+
+    // Every assertion: 511.
+    if n == 511 {
+        exit(0);
+    }
+    exit(1);
+}
