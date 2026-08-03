@@ -94,9 +94,9 @@
 #v(0.4em)
 #pill[6/6 gates green]
 #h(4pt)
-#pill[936 tests]
+#pill[944 tests]
 #h(4pt)
-#pill[ADR-0071 latest]
+#pill[ADR-0072 latest]
 #h(4pt)
 #pill(fill: rgb("#fdf2e6"), stroke: warn)[W4 open · 3 of 4 sub-waves done]
 
@@ -104,10 +104,10 @@
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "936", "workspace, all passing"),
-  metric("Corpus", "160", "jr files, both engines"),
-  metric("ADRs", "71", "0001 to 0071, immutable"),
-  metric("Diagnostics", "92", "codes, E0262 next free"),
+  metric("Tests", "944", "workspace, all passing"),
+  metric("Corpus", "162", "jr files, both engines"),
+  metric("ADRs", "72", "0001 to 0072, immutable"),
+  metric("Diagnostics", "94", "codes, E0264 next free"),
   metric("Editor checks", "166", "Neovim, verified not gated"),
 )
 
@@ -296,7 +296,7 @@
   ),
   (
     "W4 Comptime", "in progress",
-    "Delivered in sub-waves, because a 10-14 week wave cannot be verified the way a one-ADR wave can. Three of four are done: a #run may call an imported procedure and appear in a body (ADR-0069), turning two internal compiler errors into working programs; an array length may name a constant (ADR-0070), which replaced the scheduled aggressive const folding after probing showed const-prop already did it; and a type is a compile-time value (ADR-0071), which closed a silent miscompile — a type bound to a local compiled to an undefined value in a slot with no layout. RTTI split on one question: does the value exist at run time? A Type does not, so it shipped; type_info() and Any do, so they are next and need a runtime type representation. Then insert and Code. PLAN section 5 names this the project's top risk — sema and comptime become mutually recursive.",
+    "Delivered in sub-waves, because a 10-14 week wave cannot be verified the way a one-ADR wave can. All four have shipped something, and two are only partly done. A #run may call an imported procedure and appear in a body (ADR-0069), turning two internal compiler errors into working programs. An array length may name a constant (ADR-0070), which replaced the scheduled aggressive const folding after probing showed const-prop already did it. A type is a compile-time value (ADR-0071), which closed a silent miscompile — a type bound to a local compiled to an undefined value in a slot with no layout. And insert of a string literal lowers where it is written (ADR-0072), in the enclosing scope, every synthesized span pointing at the directive because jr-diag clamps an out-of-range offset rather than rejecting it. Both remainders are the same problem from two sides: type_info() and Any need a type to exist as runtime data, and a computed insert needs lowering to depend on const-eval that runs downstream of it — a salsa cycle. PLAN section 5 names this the project's top risk, and cycle detection with readable errors is the deliverable rather than the features.",
   ),
   (
     "W4.5 Pattern matching", "done",
@@ -354,23 +354,24 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[Twenty-three waves shipped]
+    #sub[Twenty-four waves shipped]
     #text(size: 7.4pt)[
-      ADR-0049 through 0071: for and defer, using, aggregate returns, multiple returns, named and
+      ADR-0049 through 0072: for and defer, using, aggregate returns, multiple returns, named and
       default arguments, scope visibility, imported constants, float constants, context, the
       bounds-check build setting, indirect calls, null plus a memory source, the allocator
       protocol, push_context, pointer arithmetic, temporary storage, trap backtraces, switch,
       tagged variants, compile-time run across files and in a body, an array length from a
-      constant, and a type as a compile-time value.
+      constant, a type as a compile-time value, and insert of a literal string.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 936. Corpus 116 to 160 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
-      closed*, and *W4 is open* with three of four sub-waves done: a `#run` reaches across files and into
-      a body, an array length may name a constant, and a type is a value. *Twice now* a scheduled
-      dependency turned out not to exist — W4.5's on comptime, and sub-wave 2's folding work. Remaining:
-      `type_info()` and `Any`, then insert.
+      Test count 900 to 944. Corpus 116 to 162 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
+      closed*, and *W4 is open* with all four sub-waves having shipped: a `#run` reaches across files and
+      into a body, an array length may name a constant, a type is a value, and `#insert` of a literal
+      lowers where it is written. *Three times now* a plan's stated reason turned out not to hold —
+      W4.5's dependency on comptime, sub-wave 2's folding work, and a nesting hang that escaping makes
+      impossible. Remaining: `type_info()`, `Any`, and a computed `#insert` — one cycle, two faces.
     ]
 
     #v(0.3em)
