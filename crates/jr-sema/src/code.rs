@@ -283,3 +283,30 @@ pub(crate) const E0260: &str = "E0260";
 /// positions that do accept a type rather than naming an expected type the reader could write: `Type`
 /// is deliberately not spellable (ADR-0071 §1), so there is no annotation to suggest.
 pub(crate) const E0261: &str = "E0261";
+
+/// `Type_Info` is missing from the standard library, or is not shaped as the compiler expects
+/// (ADR-0075 §2).
+///
+/// `type_info(T)` returns a `*Type_Info`, and ADR-0075 §2 declares that struct **in `modules/Basic`**
+/// rather than in the compiler, so that it is *spellable*: no compiler-declared type is (`t: Type;` and
+/// `c: Context;` both report E0212), and a reflection API whose type a program cannot name in a
+/// signature is not usable.
+///
+/// The price of that choice is a compiler dependency on a declaration it does not own, and this code is
+/// what keeps the price honest. The lookup validates the field names, types and order, so an edit to
+/// `Basic`'s `Type_Info` produces *this diagnostic naming the mismatch* rather than a read of whatever
+/// now sits at the old offset. A wrong offset would be a silent wrong value — this project's named
+/// failure mode — and ADR-0017 §4's rule is that such a case refuses instead.
+pub(crate) const E0265: &str = "E0265";
+
+/// `type_info` applied to a type with no runtime layout (ADR-0075 §4).
+///
+/// A `Type_Info` reports a `size` and an `alignment`, and `Item::TypeType` has neither: `layout_of`
+/// answers `LayoutError::ComptimeOnly`, whose documentation calls asking for such a size "a category
+/// error". So `type_info(Type)` has no answer to give.
+///
+/// Refused rather than reported as zero, for the reason `type-errors/063` exists: a plausible wrong
+/// number is worse than a refusal, because nothing downstream can tell it from a real answer. Distinct
+/// from E0261, which objects to a type being used as a *runtime value* — here the type is in a position
+/// that legitimately accepts one, and the objection is about which type it is.
+pub(crate) const E0266: &str = "E0266";

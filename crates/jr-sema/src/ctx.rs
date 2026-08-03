@@ -146,6 +146,13 @@ pub(crate) struct Ctx<'a> {
     /// see and report, while a missed *illegal* one is the silent placeholder this wave exists to
     /// remove. `call_position` above is the same mechanism for the same kind of reason.
     pub(crate) type_position: FxHashSet<(ExprScope, jr_hir::ExprId)>,
+    /// Which type each `type_info(T)` call describes (ADR-0075 §2).
+    ///
+    /// Recorded here because the argument is a *type*, and a type is not an operand: by the time
+    /// lowering sees the call there is nothing in the expression tree that carries a `PoolId`. Keyed the
+    /// way `operator_calls` and `filled_calls` are, for the same reason — an `ExprId` alone does not say
+    /// which arena it indexes.
+    pub(crate) type_info_calls: FxHashMap<(ExprScope, jr_hir::ExprId), PoolId>,
 }
 
 impl<'a> Ctx<'a> {
@@ -162,6 +169,7 @@ impl<'a> Ctx<'a> {
         Self {
             call_position: FxHashSet::default(),
             type_position: FxHashSet::default(),
+            type_info_calls: FxHashMap::default(),
             hir,
             file,
             resolve,

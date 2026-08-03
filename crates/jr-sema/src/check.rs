@@ -40,11 +40,37 @@ use rustc_hash::FxHashMap;
 use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
-    E0254, E0256, E0257, E0258, E0259, E0260, E0261,
+    E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
 use crate::sigs::{FileSignatures, ProcSig, SigKind};
+
+/// How a `Type_Info` field's type is checked.
+#[derive(Debug, Clone, Copy)]
+enum TypeInfoField {
+    /// It must be exactly this type.
+    Exact(PoolId),
+    /// It must be *some* enum, checked by shape because an enum's `PoolId` depends on where it is
+    /// declared — `Type_Info_Kind` lives beside `Type_Info` in `Basic`, so the compiler cannot name
+    /// its id in advance.
+    Enum,
+}
+
+/// The fields the compiler expects `Basic`'s `Type_Info` to have, in order (ADR-0075 §2).
+///
+/// **This is the contract with `modules/Basic`.** ADR-0075 §2 declares `Type_Info` in Jairs so it is
+/// *spellable* — no compiler-declared type is — and this list is what stops that choice from becoming a
+/// silent wrong offset: `type_info_struct` checks the declaration against it and raises E0265 on any
+/// mismatch, so editing the struct produces a diagnostic rather than a wrong read.
+///
+/// Keep it in step with `Type_Info` in `modules/Basic/module.jr`.
+const TYPE_INFO_FIELDS: &[(&str, TypeInfoField)] = &[
+    ("kind", TypeInfoField::Enum),
+    ("name", TypeInfoField::Exact(PoolId::STRING)),
+    ("size", TypeInfoField::Exact(PoolId::S64)),
+    ("alignment", TypeInfoField::Exact(PoolId::S64)),
+];
 
 // ---------------------------------------------------------------------------
 // Output
@@ -106,6 +132,12 @@ pub struct CheckOutput {
     /// **Absent for an all-positional call with no defaults**, so the common path pays nothing and
     /// `jr-mir` falls back to the source order — which for such a call is already correct.
     pub filled_calls: FxHashMap<(ExprScope, ExprId), Vec<ArgSlot>>,
+    /// The type each `type_info(T)` call describes (ADR-0075 §2).
+    ///
+    /// Recorded because a *type* is not an operand: nothing in the expression tree carries a `PoolId`,
+    /// so lowering could not recover the argument by looking at the call. This is the same reason
+    /// `operator_calls` is recorded rather than recomputed — one pass decides, and `jr-mir` reads.
+    pub type_info_calls: FxHashMap<(ExprScope, ExprId), PoolId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +240,7 @@ pub fn check_file(
         type_name_imports,
         operator_calls: ctx.operator_calls,
         filled_calls: ctx.filled_calls,
+        type_info_calls: ctx.type_info_calls,
     }
 }
 
@@ -2376,6 +2409,16 @@ impl Ctx<'_> {
         arg_names: &[Option<Symbol>],
         span: Span,
     ) -> PoolId {
+        // **`type_info(T)` is an intrinsic and is handled before anything else** (ADR-0075 §2),
+        // because its argument is a *type* and every path below types an argument as a runtime value —
+        // which is exactly the E0261 refusal. Intercepting here rather than teaching the general
+        // argument check about a special case keeps that refusal intact everywhere else.
+        //
+        // A call rather than a directive (`#type_info`) because a directive cannot be passed as a value
+        // or composed, and ADR-0071 already makes a type an argument-position value.
+        if self.is_type_info_call(scope, callee) {
+            return self.check_type_info(scope, id, callee, args, span);
+        }
         // The callee is in **call position**, where a `#foreign` procedure is a legal thing to
         // name — it is only illegal to take one as a *value* (E0256, ADR-0059 §5). This id is
         // recorded so `check_expr`'s `Name` arm skips the E0256 refusal for it, while still typing
@@ -2454,6 +2497,264 @@ impl Ctx<'_> {
         }
 
         ret
+    }
+
+    /// Whether this callee is the `type_info` intrinsic (ADR-0075 §2).
+    ///
+    /// Recognised **by name and only when the name resolves to nothing**, which is the whole of the
+    /// test: `type_info` is not declared anywhere, so a program that declares its own `type_info` gets
+    /// its own — the resolution succeeds and this returns false. Reserving the name outright would break
+    /// a program that already used it, for no gain.
+    fn is_type_info_call(&mut self, scope: ExprScope, callee: ExprId) -> bool {
+        let Expr::Name { name, res, .. } = self.expr_of(scope, callee) else {
+            return false;
+        };
+        if self.interner.resolve(name) != "type_info" {
+            return false;
+        }
+        matches!(self.resolve.get(scope, callee).unwrap_or(res), Res::Error)
+    }
+
+    /// Types `type_info(T)` and returns `*Type_Info` (ADR-0075 §2).
+    ///
+    /// The argument is a **type**, so it is marked as a type position before being checked — otherwise
+    /// the `Name` arm's E0261 would refuse it for being a type used as a runtime value, which is the
+    /// correct refusal in every position but this one.
+    fn check_type_info(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        // The callee names no procedure, so it is typed as `void` rather than left unrecorded: MIR
+        // reports "an expression was never typed" for a hole, and the callee is never lowered because
+        // the call folds to a constant.
+        self.types.set_expr(scope, callee, PoolId::VOID);
+
+        if args.len() != 1 {
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!(
+                        "`type_info` takes 1 argument, but {} {} supplied",
+                        args.len(),
+                        if args.len() == 1 { "was" } else { "were" }
+                    ),
+                )
+                .with_code(E0216),
+            );
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+
+        let arg = args[0];
+        // A type is legal *here*, and nowhere new: the allowlist gains one entry rather than E0261
+        // gaining an exception (ADR-0071 §3's asymmetry argument).
+        self.type_position.insert((scope, arg));
+
+        // **The described type is resolved before the argument is typed as an expression**, because a
+        // *builtin* name is not an expression at all: `s64` resolves to no declaration, so
+        // `check_expr` yields `ERROR` and bailing on that refused every `type_info(s64)`. Asking what
+        // type the name denotes first is what makes a builtin and a declared type take one path.
+        let described = self.described_type(scope, arg);
+
+        // Typed anyway, so the argument is recorded in the `TypeMap` — MIR reports "an expression was
+        // never typed" for a hole, even one it never lowers. `PoolId::TYPE` is what a name denoting a
+        // type has, which is exactly what this is.
+        self.types.set_expr(scope, arg, PoolId::TYPE);
+
+        // What it was asked about. A `type`-typed name carries the described type in its
+        // `SigEntry::type_value`, which is what `resolve_type_name` reads and what ADR-0071 §1 made a
+        // type value out of.
+        let Some(described) = described else {
+            self.diags.push(
+                Diagnostic::error(span, "`type_info` needs a type")
+                    .with_code(E0261)
+                    .with_note("its argument is the type to describe, e.g. `type_info(Point)`"),
+            );
+            return PoolId::ERROR;
+        };
+
+        // **A type with no runtime layout has no `size` to report** (E0266, ADR-0075 §4). Refused
+        // rather than reported as zero, for `type-errors/063`'s reason: a plausible wrong number cannot
+        // be told from a real one downstream.
+        if let Err(error) = jr_pool::layout_of(self.pool, jr_pool::TargetLayout::LP64, described) {
+            let text = self.describe(described);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`type_info` cannot describe `{text}`, which has no runtime layout"),
+                )
+                .with_code(E0266)
+                .with_note(format!("the layout is unavailable because {error}"))
+                .with_help(
+                    "a `Type_Info` reports a size and an alignment, and this type has neither",
+                ),
+            );
+            return PoolId::ERROR;
+        }
+
+        // The described type is recorded for lowering, which builds the constant.
+        self.type_info_calls.insert((scope, id), described);
+
+        // **By value, not by pointer** (ADR-0075 §2): the folded value is an `Item::AggregateValue`,
+        // which is a constant and has no address, so a `*Type_Info` would need a pointee to live
+        // somewhere. The MIR verifier caught the pointer version as `deref of a non-pointer`.
+        match self.type_info_struct(span) {
+            Some(info) => info,
+            None => PoolId::ERROR,
+        }
+    }
+
+    /// The type a `type`-valued expression names, if it names one.
+    ///
+    /// A **builtin** is matched by text, because `s64` is an ordinary identifier that resolves to no
+    /// declaration at all (`docs/spec/01-lexical.md` keeps the builtin names out of the lexer), so
+    /// `type_info(s64)` would otherwise be an unresolved name. Only a `Res::Error` takes that path: a
+    /// name that *did* resolve — to a local, a parameter or a value constant — is not a type, and trying
+    /// the builtin table for it would answer the wrong question.
+    ///
+    /// Matched here rather than by calling `resolve_type_name`, which reports **E0212** as a side effect:
+    /// `type_info(x)` for a local `x` then said "unknown type name `x`", which is wrong twice over — `x`
+    /// is perfectly well known, and the objection is that it is a value rather than a type. Returning
+    /// `None` lets the caller raise E0261, which says exactly that.
+    fn described_type(&mut self, scope: ExprScope, arg: ExprId) -> Option<PoolId> {
+        let Expr::Name { name, res, .. } = self.expr_of(scope, arg) else {
+            return None;
+        };
+        let res = self.resolve.get(scope, arg).unwrap_or(res);
+        match res {
+            Res::Item(item) => self.entry_for_item(item).and_then(|e| e.type_value),
+            Res::Imported(import, name) => self
+                .entry_for_import(import, name)
+                .and_then(|e| e.type_value),
+            // Unresolved: possibly a builtin, which has no declaration to have resolved to.
+            Res::Error => self.builtin_type_named(name),
+            // Resolved to something that is not a type. `None` here becomes E0261.
+            Res::Local(_) | Res::Param(_) | Res::Promoted { .. } => None,
+        }
+    }
+
+    /// The builtin type a name spells, without reporting anything if it spells none.
+    ///
+    /// The three lists are the ones `resolve_type_name` consults — `bool`/`string`, `IntKind::NAMES` and
+    /// `FloatKind::NAMES` — read here directly so that a miss is silent. `s64` and `u8` keep their
+    /// pre-interned ids for the reason `resolve_type_name` gives: the well-known prefix's indices are
+    /// pinned by a test and `PTR_U8` depends on them.
+    fn builtin_type_named(&mut self, name: Symbol) -> Option<PoolId> {
+        let text = self.interner.resolve(name);
+        match text {
+            "bool" => return Some(PoolId::BOOL),
+            "string" => return Some(PoolId::STRING),
+            "void" => return Some(PoolId::VOID),
+            _ => {}
+        }
+        if let Some(kind) = jr_pool::FloatKind::from_name(text) {
+            return Some(self.pool.intern(Item::FloatType { bits: kind.bits }));
+        }
+        let kind = jr_pool::IntKind::from_name(text)?;
+        Some(match (kind.signed, kind.bits) {
+            (true, 64) => PoolId::S64,
+            (false, 8) => PoolId::U8,
+            (signed, bits) => self.pool.intern(Item::IntType { signed, bits }),
+        })
+    }
+
+    /// The `Type_Info` struct type, looked up in the imported modules and **validated** (ADR-0075 §2).
+    ///
+    /// ADR-0075 §2 declares `Type_Info` in `modules/Basic` so that it is *spellable* — no
+    /// compiler-declared type is — and the price is this dependency on a declaration the compiler does
+    /// not own. The validation is what keeps the price honest: field names, types and order are checked,
+    /// so an edit to `Basic` produces E0265 naming the mismatch rather than a read of whatever now sits
+    /// at the old offset. A wrong offset would be a silent wrong value, which is the failure mode
+    /// ADR-0017 §4 says must refuse instead.
+    fn type_info_struct(&mut self, span: Span) -> Option<PoolId> {
+        // **Silent when no imported signatures were supplied at all**, which is `expect`'s rule about a
+        // poisoned context rather than a politeness. `Type_Info` lives in `Basic`, so a checker run
+        // *without* module resolution cannot possibly find it — and reporting E0265 there would be
+        // inventing a library error out of a missing input. `jr-sema`'s own corpus test runs exactly that
+        // way on purpose ("sema must stay silent about them rather than inventing type errors on
+        // poison"), and it is what caught this.
+        //
+        // Nothing is lost: a real program reaches this with `Basic` loaded, and a `type_info` in a file
+        // that imports nothing is refused anyway — the call yields `PoolId::ERROR` and MIR never sees a
+        // value, so `scan` refuses the body rather than lowering a placeholder.
+        if self.imports.is_empty() {
+            return None;
+        }
+        let name = self.interner.intern("Type_Info");
+        let entry = self
+            .imports
+            .iter()
+            .find_map(|(_, sigs)| sigs.lookup(name))
+            .or_else(|| self.sigs.lookup(name));
+        let Some(ty) = entry.and_then(|e| e.type_value) else {
+            self.report_type_info_shape(span, "it is not declared, or is not a type");
+            return None;
+        };
+        let Item::StructType { decl } = *self.pool.item(ty) else {
+            self.report_type_info_shape(span, "it is not a struct");
+            return None;
+        };
+        let Some(fields) = self.pool.struct_fields(decl).map(<[_]>::to_vec) else {
+            self.report_type_info_shape(span, "its fields are not recorded");
+            return None;
+        };
+        if fields.len() != TYPE_INFO_FIELDS.len() {
+            self.report_type_info_shape(
+                span,
+                &format!(
+                    "it has {} field(s), expected {}",
+                    fields.len(),
+                    TYPE_INFO_FIELDS.len()
+                ),
+            );
+            return None;
+        }
+        for (field, (want_name, want_ty)) in fields.iter().zip(TYPE_INFO_FIELDS) {
+            let got_name = self.interner.resolve(field.name).to_owned();
+            if got_name != *want_name {
+                self.report_type_info_shape(
+                    span,
+                    &format!("its field is named `{got_name}`, expected `{want_name}`"),
+                );
+                return None;
+            }
+            // `kind` is an enum declared beside it, so its type is checked by *shape* rather than
+            // against a fixed id: an enum's `PoolId` depends on its declaration site.
+            let ok = match *want_ty {
+                TypeInfoField::Enum => matches!(*self.pool.item(field.ty), Item::EnumType { .. }),
+                TypeInfoField::Exact(id) => field.ty == id,
+            };
+            if !ok {
+                let text = self.describe(field.ty);
+                self.report_type_info_shape(
+                    span,
+                    &format!(
+                        "its field `{want_name}` has type `{text}`, which is not what is expected"
+                    ),
+                );
+                return None;
+            }
+        }
+        Some(ty)
+    }
+
+    /// Reports E0265: `Type_Info` is missing or wrongly shaped (ADR-0075 §2).
+    fn report_type_info_shape(&mut self, span: Span, why: &str) {
+        self.diags.push(
+            Diagnostic::error(
+                span,
+                format!("the standard library's `Type_Info` is not usable: {why}"),
+            )
+            .with_code(E0265)
+            .with_note("`type_info` returns a `*Type_Info`, which is declared in `modules/Basic`")
+            .with_help("import \"Basic\", and keep its `Type_Info` in step with the compiler"),
+        );
     }
 
     /// The callee's per-procedure signature, when the callee names a procedure.

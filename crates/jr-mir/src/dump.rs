@@ -601,9 +601,15 @@ impl Dumper<'_> {
             }
             Item::StringType => String::from("string"),
             Item::FloatType { bits } => format!("float{bits}"),
-            Item::EnumType { decl, .. } => match self.signatures.type_name(id) {
+            // An **imported** enum's name is not in this file's `type_names` — those are recorded per
+            // file — so `Type_Info_Kind`, declared in `Basic`, fell through to the fallback below and
+            // printed its `DeclId`. A `DeclId` carries a `FileId`, which is assigned in database load
+            // order, so one new corpus file renumbered every occurrence: exactly the snapshot churn
+            // `AGENTS.md` forbids and the reason `extern proc3` exists. Bare `enum` instead — it says
+            // the shape without saying which, which is all a snapshot can honestly assert here.
+            Item::EnumType { .. } => match self.signatures.type_name(id) {
                 Some(name) => name.to_owned(),
-                None => format!("enum{decl:?}"),
+                None => String::from("enum"),
             },
             Item::ArrayType { elem, len } => format!("[{len}]{}", self.ty(*elem)),
             Item::ViewType { elem } => format!("[]{}", self.ty(*elem)),

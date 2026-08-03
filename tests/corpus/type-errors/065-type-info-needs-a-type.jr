@@ -1,0 +1,39 @@
+// EXPECT: E0261 — `type_info` applied to a value rather than a type (ADR-0075 §2)
+//
+// `type_info(T)` describes a **type**, and its argument position is the one place besides a field-access
+// receiver and a `::` initialiser where a type is a legal thing to name (ADR-0071 §3's allowlist gains one
+// entry). Passing a *value* there is the mirror-image mistake of `t := Point;`, and it gets the same code
+// for the same reason: the objection is not that some other type was wanted, it is that the two categories
+// have been swapped.
+//
+// **E0261 rather than E0212, and that took a fix.** The first implementation reached `resolve_type_name`
+// for any argument that did not resolve to a declaration, which reports E0212 as a side effect — so
+// `type_info(x)` for a local `x` said "unknown type name `x`". That is wrong twice over: `x` is perfectly
+// well known, and the complaint should be about what it *is*. The builtin lookup is now matched by text
+// with no diagnostic, and only for a name that genuinely resolved to nothing — which is the case a builtin
+// actually is, since `s64` is an ordinary identifier the lexer does not treat as a keyword.
+//
+// So the three outcomes are distinct, and each says what it means:
+//
+//   * `type_info(Point)` and `type_info(s64)` — fine, in `valid/063`;
+//   * `type_info(x)` where `x` is a local — **this file**, E0261;
+//   * `type_info(nosuchname)` — E0201 from name resolution, unchanged.
+//
+// **One** refusal here, because this directory's contract is one diagnostic per file, and the file must
+// lower cleanly — which it does: the call yields a poisoned type and the body is refused by MIR rather
+// than lowered to a placeholder.
+//
+// No `#import "Basic"`, because nothing here needs it and an unused import is E0231 — a *second*
+// diagnostic, which this directory's one-per-file contract does not allow. `type_info` is recognised by
+// the compiler rather than imported, so the refusal does not depend on a module being loaded.
+
+Point :: struct {
+    x: s64;
+}
+
+describes_a_value :: () {
+    // A local, so the name resolves — which is exactly what distinguishes this from an unresolved name.
+    x := 5;
+    // The refusal: `x` is a value, and `type_info` wants the type to describe.
+    info := type_info(x);
+}

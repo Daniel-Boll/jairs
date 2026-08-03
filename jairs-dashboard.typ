@@ -94,20 +94,20 @@
 #v(0.4em)
 #pill[6/6 gates green]
 #h(4pt)
-#pill[958 tests]
+#pill[960 tests]
 #h(4pt)
-#pill[ADR-0074 latest]
+#pill[ADR-0075 latest]
 #h(4pt)
-#pill(fill: rgb("#fdf2e6"), stroke: warn)[W4 open · 3 of 4 sub-waves done]
+#pill(fill: rgb("#fdf2e6"), stroke: warn)[W4 open · 7 sub-waves done]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "958", "workspace, all passing"),
-  metric("Corpus", "165", "jr files, both engines"),
-  metric("ADRs", "74", "0001 to 0074, immutable"),
-  metric("Diagnostics", "95", "codes, E0265 next free"),
+  metric("Tests", "960", "workspace, all passing"),
+  metric("Corpus", "168", "jr files, both engines"),
+  metric("ADRs", "75", "0001 to 0075, immutable"),
+  metric("Diagnostics", "97", "codes, E0267 next free"),
   metric("Editor checks", "166", "Neovim, verified not gated"),
 )
 
@@ -296,7 +296,7 @@
   ),
   (
     "W4 Comptime", "in progress",
-    "Delivered in sub-waves, because a 10-14 week wave cannot be verified the way a one-ADR wave can. Six have shipped. A #run may call an imported procedure and appear in a body (ADR-0069), turning two internal compiler errors into working programs. An array length may name a constant (ADR-0070), which replaced the scheduled aggressive const folding after probing showed const-prop already did it. A type is a compile-time value (ADR-0071), which closed a silent miscompile — a type bound to a local compiled to an undefined value in a slot with no layout. Insert of a string literal lowers where it is written (ADR-0072), in the enclosing scope, every synthesized span pointing at the directive because jr-diag clamps an out-of-range offset rather than rejecting it. And a computed insert (ADR-0073) evaluates its operand at compile time and splices the text — the point sema and the VM become mutually recursive, PLAN section 5's named top risk, broken by an acyclic pre-pass that reuses the constant evaluator and re-lowers only the affected bodies rather than by salsa fixed-point recovery. And an aggregate compile-time value (ADR-0074): a #run returning a struct or array interns as its element values rather than a byte image, because the pool is target-independent and an image is not — which is what type_info() and Any were really blocked on, so RTTI is now a schema decision rather than a representation one. What remains: #code and the Code type, a quoted syntax tree as a value; and type_info() then Any.",
+    "Delivered in sub-waves, because a 10-14 week wave cannot be verified the way a one-ADR wave can. Seven have shipped. A #run may call an imported procedure and appear in a body (ADR-0069), turning two internal compiler errors into working programs. An array length may name a constant (ADR-0070), which replaced the scheduled aggressive const folding after probing showed const-prop already did it. A type is a compile-time value (ADR-0071), which closed a silent miscompile — a type bound to a local compiled to an undefined value in a slot with no layout. Insert of a string literal lowers where it is written (ADR-0072), in the enclosing scope, every synthesized span pointing at the directive because jr-diag clamps an out-of-range offset rather than rejecting it. And a computed insert (ADR-0073) evaluates its operand at compile time and splices the text — the point sema and the VM become mutually recursive, PLAN section 5's named top risk, broken by an acyclic pre-pass that reuses the constant evaluator and re-lowers only the affected bodies rather than by salsa fixed-point recovery. An aggregate compile-time value (ADR-0074): a #run returning a struct or array interns as its element values rather than a byte image, because the pool is target-independent and an image is not. And type_info(T) (ADR-0075), reflection's first half: a type's kind, name, size and alignment, the numbers coming from the same layout_of every real layout decision uses, so reflection cannot disagree with the layout it describes. Type_Info is declared in modules/Basic in Jairs rather than inside the compiler, because it has to be spellable — no compiler-declared type can be named at all — and the resulting dependency on a declaration the compiler does not own is validated on lookup, so editing that struct is a diagnostic rather than a read of whatever now sits at the old offset. Getting there first needed a constant that may hold a string, which ADR-0074's own closing claim said was already done and was not: the fourth false scheduled dependency this project has found, and the first where the false claim was its own ADR about the very next wave. What remains: Any; per-kind detail in Type_Info, each member variable-length and wanting a memory-ownership decision; and #code, a quoted syntax tree as a value.",
   ),
   (
     "W4.5 Pattern matching", "done",
@@ -366,7 +366,7 @@
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 958. Corpus 116 to 165 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
+      Test count 900 to 960. Corpus 116 to 168 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
       closed*, and *W4 is open* with six sub-waves shipped: a `#run` reaches across files and into a body,
       an array length may name a constant, a type is a value, `#insert` of a literal lowers where it is
       written, and now a *computed* `#insert` evaluates its operand at compile time and splices it — the

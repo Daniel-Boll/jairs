@@ -81,6 +81,72 @@ reset_temporary_storage :: () {
     context.temp_mark = 0;
 }
 
+// ---------------------------------------------------------------------------
+// Runtime type information (ADR-0075)
+// ---------------------------------------------------------------------------
+//
+// `type_info(T)` returns a `*Type_Info` describing `T`. The struct is declared **here, in Jairs**,
+// rather than inside the compiler, and that is a deliberate decision with a cost.
+//
+// The reason is that a `Type_Info` must be *spellable*: a program that reflects has to be able to write
+// `info: *Type_Info` and read `info.name`. No compiler-declared type is spellable — `t: Type;` and
+// `c: Context;` both report E0212, because `Context`'s fields are a Rust `const` and a compiler-declared
+// type has no `DeclId` for name resolution to find (ADR-0057 §1). Declaring the struct in Jairs makes it
+// spellable for free: it is then an ordinary nominal declaration, and field access, layout, pointers and
+// `using` all apply with no new case in the compiler.
+//
+// The cost is that the compiler now depends on a declaration it does not own. That dependency is
+// **validated** rather than trusted: the compiler looks `Type_Info` up by name and checks its field
+// names, types and order, refusing with E0265 if they do not match what it expects. Editing this struct
+// therefore produces a diagnostic naming the mismatch, not a silent read of whatever is at offset 8 —
+// which matters because a wrong offset is this project's named failure mode and a refusal is not.
+//
+// Keep the fields, their types and their order in step with `jr-sema`'s `TYPE_INFO_FIELDS`.
+
+/// What kind of type a [`Type_Info`] describes.
+///
+/// An enum rather than an integer so that a `switch` over it is exhaustiveness-checked (ADR-0067),
+/// which is the whole reason to have a tag at all. The members are the shapes the language has;
+/// `#run`-only shapes such as the type of a type never reach here, because `type_info` refuses a type
+/// with no runtime layout (E0266).
+Type_Info_Kind :: enum {
+    VOID;
+    BOOL;
+    INTEGER;
+    FLOAT;
+    STRING;
+    POINTER;
+    ARRAY;
+    VIEW;
+    STRUCT;
+    UNION;
+    VARIANT;
+    ENUM;
+    PROCEDURE;
+}
+
+/// What the compiler knows about a type at run time (ADR-0075 §3).
+///
+/// Four fields, and `name` is the one that made this wave need ADR-0075 §1 first: a compile-time
+/// aggregate holding a string used to be refused, so a `Type_Info` could not carry a name.
+///
+/// Deliberately **without per-kind detail** — a struct's field list, an array's element type, a
+/// procedure's signature. Each of those is a variable-length member, so it wants a view or a
+/// pointer-and-count, and that raises a memory-ownership question (static data the back end emits,
+/// versus a comptime-built table) which is its own decision. `size` and `alignment` are enough to be
+/// useful — they are what `size_of` would give, which this language does not otherwise have — and the
+/// shape extends by adding fields, which does not break a reader that names only these four.
+Type_Info :: struct {
+    /// Which shape this type is.
+    kind: Type_Info_Kind;
+    /// The type's source name, or a builtin's spelling (`"s64"`).
+    name: string;
+    /// The type's runtime size in bytes.
+    size: s64;
+    /// The type's runtime alignment in bytes.
+    alignment: s64;
+}
+
 /// The standard output file descriptor.
 STDOUT :: 1;
 /// The standard error file descriptor.

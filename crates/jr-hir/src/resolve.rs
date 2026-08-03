@@ -355,6 +355,16 @@ struct ResolveCtx<'a> {
     /// Scoped to the body, not the file: a name unresolved in a body *without* an insert is reported as
     /// always.
     body_has_pending_insert: bool,
+    /// Whether the name being resolved is the argument of a `type_info` call (ADR-0075 §2).
+    ///
+    /// Such a name denotes a **type**, and a builtin type name resolves to no declaration at all — the
+    /// builtin names are ordinary identifiers rather than keywords — so E0201 would fire for
+    /// `type_info(s64)`. `jr-sema` resolves it instead, through the same `resolve_type_name` a type
+    /// annotation uses, which is what makes the two agree by construction.
+    ///
+    /// A flag rather than a set of expression ids because it is only ever read at the moment the argument
+    /// is resolved, and the nesting is one level deep: `type_info`'s argument is a name, not a call.
+    in_type_info_argument: bool,
 }
 
 impl<'a> ResolveCtx<'a> {
@@ -372,6 +382,7 @@ impl<'a> ResolveCtx<'a> {
             map: ResolveMap::new(),
             promotions: Vec::new(),
             body_has_pending_insert: false,
+            in_type_info_argument: false,
         }
     }
 
@@ -601,6 +612,25 @@ impl<'a> ResolveCtx<'a> {
         })
     }
 
+    /// Whether a call's callee is the `type_info` intrinsic (ADR-0075 §2).
+    ///
+    /// By name, and only when the name resolves to nothing — matching `jr-sema`'s recogniser, so a
+    /// program declaring its own `type_info` keeps it and the name is not reserved.
+    fn callee_is_type_info(&self, scope: ExprScope, callee: ExprId) -> bool {
+        let expr = match scope {
+            ExprScope::TopLevel => self.hir.exprs.get(callee.index()),
+            ExprScope::Body(body) => self
+                .hir
+                .bodies
+                .get(body.index())
+                .and_then(|b| b.exprs.get(callee.index())),
+        };
+        let Some(Expr::Name { name, .. }) = expr else {
+            return false;
+        };
+        self.interner.resolve(*name) == "type_info" && self.hir.scope.get(*name).is_none()
+    }
+
     /// Resolve a name to a `Res`, checking file scope then imports.
     ///
     /// Emits E0201 (unresolved) or E0211 (ambiguous) as appropriate.
@@ -677,6 +707,31 @@ impl<'a> ResolveCtx<'a> {
                 // `body_has_pending_insert` for why this pass cannot simply resolve the expanded tree, and
                 // for what still catches a name that genuinely does not resolve.
                 if self.body_has_pending_insert {
+                    return Res::Error;
+                }
+                // **`type_info` is a compiler intrinsic and has no declaration to find** (ADR-0075 §2),
+                // so an unresolved `type_info` is not a mistake — `jr-sema` recognises it by name and
+                // types the call itself. Withheld here rather than pre-declared in scope because there
+                // is nothing to declare: it takes a *type*, which no signature can express.
+                //
+                // This resolves to `Res::Error` exactly as before, which is also what sema's recogniser
+                // tests for: a program that declares its own `type_info` resolves to *that*, so the
+                // name is not reserved and such a program keeps working.
+                if self.interner.resolve(name) == "type_info" {
+                    return Res::Error;
+                }
+                // **The argument of a `type_info` call names a type, not a value** (ADR-0075 §2), and a
+                // *builtin* type name resolves to no declaration at all: the builtin names are ordinary
+                // identifiers rather than keywords (`docs/spec/01-lexical.md`), so `type_info(s64)`
+                // reported E0201 for a name that denotes a perfectly good type. `jr-sema`'s
+                // `resolve_type_name` is what turns it into one, and it needs a pool this pass has not
+                // got — so the refusal is withheld here and sema decides.
+                //
+                // Scoped to a `type_info` argument rather than to every unresolved builtin name, so that
+                // `x := s64;` elsewhere keeps its error. That is the same asymmetry ADR-0071 §3 argued
+                // for the type-position allowlist: a missed legal position is a visible false error, a
+                // missed illegal one is silent.
+                if self.in_type_info_argument {
                     return Res::Error;
                 }
                 // Not found anywhere.
@@ -805,10 +860,14 @@ impl<'a> ResolveCtx<'a> {
             Expr::Call { callee, args, .. } => {
                 let callee = *callee;
                 let args = args.clone();
+                let intrinsic = self.callee_is_type_info(ExprScope::TopLevel, callee);
                 self.resolve_top_expr(callee);
+                let outer = self.in_type_info_argument;
+                self.in_type_info_argument = intrinsic;
                 for arg in args {
                     self.resolve_top_expr(arg);
                 }
+                self.in_type_info_argument = outer;
             }
             Expr::Field { receiver, .. } => {
                 let receiver = *receiver;
@@ -1037,10 +1096,16 @@ impl<'a> ResolveCtx<'a> {
                 self.resolve_body_expr(body_id, operand);
             }
             Expr::Call { callee, args, .. } => {
+                let intrinsic = self.callee_is_type_info(ExprScope::Body(body_id), callee);
                 self.resolve_body_expr(body_id, callee);
+                // Only the *arguments* are in the intrinsic's type position; the callee is not, and it
+                // is resolved above with the flag still at its outer value.
+                let outer = self.in_type_info_argument;
+                self.in_type_info_argument = intrinsic;
                 for arg in args {
                     self.resolve_body_expr(body_id, arg);
                 }
+                self.in_type_info_argument = outer;
             }
             Expr::Field { receiver, .. } => {
                 self.resolve_body_expr(body_id, receiver);
