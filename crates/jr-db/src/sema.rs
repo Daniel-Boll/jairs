@@ -99,6 +99,17 @@ pub struct CheckResult {
     /// `file_consts` turns each entry into the `Type_Info` constant the call folds to.
     pub type_info_calls:
         Arc<rustc_hash::FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), jr_pool::PoolId>>,
+    /// Which `Any` operation each `any_of`/`any_as` call is, and the type it concerns (ADR-0076).
+    ///
+    /// Carried through from `jr-sema` beside [`CheckResult::type_info_calls`]. Separate because these
+    /// lower to real code rather than folding to a constant — `file_consts` turns each into an
+    /// [`jr_mir::AnyLowering`].
+    pub any_calls: Arc<
+        rustc_hash::FxHashMap<
+            (jr_hir::ExprScope, jr_hir::ExprId),
+            (jr_sema::AnyOp, jr_pool::PoolId),
+        >,
+    >,
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +374,7 @@ fn translate_check_output(
         operator_calls: Arc::new(operator_calls),
         filled_args: Arc::new(filled_args),
         type_info_calls: Arc::new(output.type_info_calls),
+        any_calls: Arc::new(output.any_calls),
     }
 }
 

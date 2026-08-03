@@ -487,10 +487,15 @@ fn scan(
 
     // Callees of calls that folded to a constant, which are never emitted (ADR-0075 §2). Computed here
     // rather than in `Reach::of`, which walks the HIR before any constant is known.
+    // A call folds if the const query gave it a value (`type_info`, `#run`) **or** an `Any` lowering
+    // (`any_of`/`any_as`, ADR-0076). Both name no procedure, so their callee is never emitted and must
+    // not be refused for lacking a resolution.
     let folded_callees: FxHashSet<ExprId> = reach
         .callee_of
         .iter()
-        .filter(|(_, call)| consts.run(scope, *call).is_some())
+        .filter(|(_, call)| {
+            consts.run(scope, *call).is_some() || consts.any_op(scope, *call).is_some()
+        })
         .map(|(callee, _)| *callee)
         .collect();
 
@@ -2404,6 +2409,12 @@ impl Lower<'_> {
                 if let Some(value) = self.consts.run(self.scope(), id) {
                     return Operand::Constant(value);
                 }
+                // **`any_of`/`any_as` lower to real code** (ADR-0076), recorded by `file_consts` as an
+                // `AnyLowering` rather than a value. Like `type_info` they name no procedure, so they are
+                // handled before `call_rvalue` refuses the body for a missing callee.
+                if let Some(op) = self.consts.any_op(self.scope(), id) {
+                    return self.lower_any(op, &args, ty, span);
+                }
                 match self.call_rvalue(id, callee, &args) {
                     Some(rvalue) => self.define(ty, rvalue, span),
                     None => {
@@ -3001,6 +3012,182 @@ impl Lower<'_> {
         }
     }
 
+    /// Lowers an `any_of`/`any_as` call to real code (ADR-0076).
+    ///
+    /// Neither is a constant, so unlike `type_info` they emit statements. `file_consts` decided *which*
+    /// operation and supplied the type facts (the `Type_Info` constant for `any_of`, the expected id for
+    /// `any_as`); this turns that into MIR.
+    fn lower_any(
+        &mut self,
+        op: crate::inputs::AnyLowering,
+        args: &[ExprId],
+        ty: PoolId,
+        span: MirSpan,
+    ) -> Operand {
+        match op {
+            crate::inputs::AnyLowering::Of { type_info } => self.any_of(type_info, args, ty, span),
+            crate::inputs::AnyLowering::As { type_id, result } => {
+                self.any_as(type_id, result, args, ty, span)
+            }
+        }
+    }
+
+    /// Lowers `any_of(p)` to an `Any` aggregate `{type, data}` (ADR-0076 §1).
+    ///
+    /// `type` is the address of the `Type_Info` constant spilled into a slot — a constant has no address,
+    /// so it must live somewhere for the `*Type_Info` field to point at, exactly as ADR-0075 §2 spills a
+    /// `type_info` result. `data` is the pointer argument with its type erased to `*u8`, which needs no
+    /// conversion instruction because a pointer's bits do not depend on its pointee (ADR-0076 §1) — it is
+    /// `Rvalue::Use` of the same operand at the `*u8`-typed field.
+    fn any_of(
+        &mut self,
+        type_info: PoolId,
+        args: &[ExprId],
+        any_ty: PoolId,
+        span: MirSpan,
+    ) -> Operand {
+        let [arg] = args else {
+            self.give_up("any_of takes one argument");
+            return self.define(any_ty, Rvalue::Undef, span);
+        };
+        let pointer = self.expr(*arg);
+
+        // The `Type_Info` constant spilled to a slot, so the `type` field can hold its address.
+        let ti_ty = self.pool.type_of(type_info);
+        let ti_slot = self.mir.push_slot(ti_ty, None, span);
+        self.emit(Statement::Store {
+            place: Place::slot(ti_slot),
+            value: Operand::Constant(type_info),
+            span,
+        });
+        let ti_ptr_ty = self.pool.pointer_to(ti_ty);
+        let ti_addr = self.define(ti_ptr_ty, Rvalue::Address(Place::slot(ti_slot)), span);
+
+        // The `Any` aggregate, built field by field the way `view_of` and `return_tuple` build theirs.
+        let slot = self.mir.push_slot(any_ty, None, span);
+        let any = Place::slot(slot);
+        self.emit(Statement::Zero {
+            place: any.clone(),
+            span,
+        });
+        self.emit(Statement::Store {
+            place: any.clone().project(Projection::Field(0)),
+            value: ti_addr,
+            span,
+        });
+        self.emit(Statement::Store {
+            place: any.clone().project(Projection::Field(1)),
+            value: pointer,
+            span,
+        });
+        self.define(any_ty, Rvalue::Load(any), span)
+    }
+
+    /// Lowers `any_as(a, T)` to a checked read (ADR-0076 §2, ADR-0077).
+    ///
+    /// Loads `a.type.id`, compares it to `T`'s pool id, and **traps** on mismatch — the same shape
+    /// ADR-0068's variant read takes, one level up: a tag says which read is valid, and the wrong one
+    /// traps rather than reinterpreting. On the matching edge it reads `a.data` as `*T` and loads the
+    /// value.
+    fn any_as(
+        &mut self,
+        type_id: u64,
+        result: PoolId,
+        args: &[ExprId],
+        _ty: PoolId,
+        span: MirSpan,
+    ) -> Operand {
+        let [any_arg, _type_arg] = args else {
+            self.give_up("any_as takes two arguments");
+            return self.define(result, Rvalue::Undef, span);
+        };
+        // The `Any` value must have a place, because reading `a.type` and `a.data` are projections and a
+        // projection needs an address. Sema typed the argument as `Any`, so an ordinary local or a
+        // returned aggregate has one; a literal does not, and there is no `Any` literal to worry about.
+        let Some((any_place, any_ty)) = self.place(*any_arg) else {
+            self.give_up("the `Any` argument of any_as has no place");
+            return self.define(result, Rvalue::Undef, span);
+        };
+
+        // The `Any` struct's field *types*, read from the pool rather than assumed — so a `Basic` whose
+        // `Any` was reshaped is caught by sema's E0265 rather than miscompiled here. Field 0 is `type`
+        // (a `*Type_Info`) and field 1 is `data` (a `*u8`).
+        let Item::StructType { decl } = *self.pool.item(any_ty) else {
+            self.give_up("the `Any` argument of any_as is not a struct");
+            return self.define(result, Rvalue::Undef, span);
+        };
+        let Some(fields) = self.pool.struct_fields(decl).map(<[_]>::to_vec) else {
+            self.give_up("`Any`'s fields are not recorded");
+            return self.define(result, Rvalue::Undef, span);
+        };
+        let Some(type_field_ty) = fields.first().map(|f| f.ty) else {
+            self.give_up("`Any` has no `type` field");
+            return self.define(result, Rvalue::Undef, span);
+        };
+
+        // `a.type` is a `*Type_Info`; load it, then read the `Type_Info`'s `id` field (field 0,
+        // ADR-0077 §1).
+        let type_field = any_place.clone().project(Projection::Field(0));
+        let type_ptr = self.define(type_field_ty, Rvalue::Load(type_field), span);
+        let id_place = Place::deref(type_ptr).project(Projection::Field(0));
+        let got_id = self.define(PoolId::S64, Rvalue::Load(id_place), span);
+
+        // Compare against the expected id and branch: mismatch traps, match reads the value.
+        let want_id = Operand::Constant(self.pool.int_value(PoolId::S64, type_id));
+        let matches = self.define(
+            PoolId::BOOL,
+            Rvalue::Binary {
+                op: BinOp::Eq,
+                lhs: got_id,
+                rhs: want_id,
+            },
+            span,
+        );
+
+        let Some(head) = self.current else {
+            return self.define(result, Rvalue::Undef, span);
+        };
+        let ok_bb = self.mir.push_block();
+        let trap_bb = self.mir.push_block();
+        self.mir.set_terminator(
+            head,
+            Terminator::Branch {
+                cond: matches,
+                then_: Target::new(ok_bb),
+                else_: Target::new(trap_bb),
+            },
+        );
+        self.ssa.seal_block(&mut self.mir, ok_bb);
+        self.ssa.seal_block(&mut self.mir, trap_bb);
+
+        // The mismatch edge traps, exactly as a wrong-variant read does (ADR-0068 §4).
+        self.mir
+            .set_terminator(trap_bb, Terminator::Unreachable(Unreachable::Trap));
+
+        // The matching edge reads `a.data` as `*T` and loads the value.
+        self.current = Some(ok_bb);
+        let data_ptr_ty = self.pool.pointer_to(result);
+        let data_field = any_place.project(Projection::Field(1));
+
+        // `a.data` is a `*u8`; reinterpret it as `*T`. A pointer's bits do not depend on its pointee
+        // (ADR-0076 §1), so this is the read-back mirror of `any_of`'s erasure — but a plain `Use` may
+        // not change an operand's type (the verifier says so), and no pointer-to-pointer conversion node
+        // exists. So the reinterpret goes **through a slot**, exactly as `any_of`'s erasure did in
+        // reverse: `Statement::Store` does not type-check the stored value against the place (it "needs
+        // layout to check", per `verify`), so storing the `*u8` value into a `*T` slot and loading it
+        // back retypes the identical bits without a conversion instruction either engine has to learn.
+        let slot = self.mir.push_slot(data_ptr_ty, None, span);
+        let data_u8 = self.define(data_ptr_ty, Rvalue::Load(data_field), span);
+        self.emit(Statement::Store {
+            place: Place::slot(slot),
+            value: data_u8,
+            span,
+        });
+        let data_typed = self.define(data_ptr_ty, Rvalue::Load(Place::slot(slot)), span);
+        let value_place = Place::deref(data_typed);
+        self.define(result, Rvalue::Load(value_place), span)
+    }
+
     /// Builds a call rvalue, or `None` if the callee is not one this wave lowers.
     fn call_rvalue(&mut self, call: ExprId, callee: ExprId, args: &[ExprId]) -> Option<Rvalue> {
         // A callee that names a procedure directly is a `Callee::Direct`; one that is a *value* of
@@ -3566,7 +3753,32 @@ impl Lower<'_> {
             let pointee = self.pointee(receiver_ty)?;
             (Place::deref(operand), pointee)
         } else {
-            self.place(receiver)?
+            match self.place(receiver) {
+                Some(found) => found,
+                // **An aggregate-valued receiver with no place is spilled into a slot** (ADR-0075 §2's
+                // move, generalised). `type_info(s64).id` reads a field of a `Type_Info` returned by
+                // value — a value, not a place, so a projection had nowhere to anchor and the body was
+                // refused with "a memory reference has no place". Storing the value into a fresh slot
+                // gives the projection an address, exactly as `Res::Item` does for an aggregate
+                // *constant*. Only aggregates: a scalar with no place is a real refusal (there is
+                // nothing to project), and this must not paper over it.
+                None if matches!(
+                    self.pool.item(receiver_ty),
+                    Item::StructType { .. } | Item::UnionType { .. } | Item::VariantType { .. }
+                ) =>
+                {
+                    let operand = self.expr(receiver);
+                    let span = MirSpan::Expr(self.scope(), receiver);
+                    let slot = self.mir.push_slot(receiver_ty, None, span);
+                    self.emit(Statement::Store {
+                        place: Place::slot(slot),
+                        value: operand,
+                        span,
+                    });
+                    (Place::slot(slot), receiver_ty)
+                }
+                None => return None,
+            }
         };
         while let Some(pointee) = self.pointee(ty) {
             place = place.project(Projection::Deref);

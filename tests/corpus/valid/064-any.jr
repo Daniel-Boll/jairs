@@ -1,0 +1,107 @@
+// **`Any`** (ADR-0076): a value whose type travels with it, so a procedure can take an argument whose
+// type it does not know and read it back safely. W4's eighth sub-wave, and the second half of RTTI.
+//
+// `any_of(*x)` erases: it builds `Any{type, data}` where `type` is a `*Type_Info` describing `x` and
+// `data` points at `x`. `any_as(a, T)` recovers: it checks the `Any`'s type is `T` and returns the value,
+// or **traps** if it is not. The check is the whole point — a read that ignored the type would make `Any`
+// a `void*` with extra steps.
+//
+// Three decisions are visible here, each argued in ADR-0076 and ADR-0077.
+//
+// **The erasing conversion is allowed only here.** `any_of(*p)` turns a `*Point` into the `*u8` that
+// `Any.data` holds, and a bare `cast(*u8, p)` stays refused (E0232). A general pointer cast would make
+// every pointer type interconvertible, so a wrong pointee type would be a silent wrong read — the
+// reinterpretation ADR-0045 §1 confined to `union`, put on every pointer unmarked. Nothing is
+// reinterpreted here: a pointer's bits do not depend on its pointee, so the erasure emits no code.
+//
+// **The read back is checked by a stable identity, not by a pointer.** Two `type_info(T)` calls have
+// different addresses (each spills its own slot, ADR-0075 §2), so `any_as` cannot compare `*Type_Info`
+// pointers. ADR-0077 added `Type_Info.id` — the type's pool id, the identity the whole compiler already
+// uses and identical in both engines because they share one pool — and `any_as` compares that. Comparing
+// by `name` would be *unsound*: a local `Point` and an imported one share a name and are different types
+// (ADR-0015 §1).
+//
+// **A mismatch traps, matching `variant`.** `any_as(a, Wrong)` traps exactly as reading the wrong case of
+// a tagged `variant` does (ADR-0068 §4) — a tag says which read is valid, and the wrong one traps rather
+// than reinterpreting. That path is exercised in `differential.rs` (a trap aborts the process, which a
+// corpus file that must exit 0 cannot show); here every `any_as` matches.
+//
+// Eight assertions, summing to 255 so any one failing changes the exit value. Both engines must agree —
+// and the native one has to materialise a `Type_Info` in static-ish form, erase a pointer and read it
+// back, all of which could fail independently of the VM.
+#import "Basic";
+
+/// Two fields, so a transposed read would put a value in the wrong place rather than merely working.
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+/// A different struct with the *same shape* (two `s64`s, size 16, align 8), which is what makes the
+/// identity check earn its keep: `size`/`alignment`/`kind` cannot tell it from `Point`, only `id` can.
+Pair :: struct {
+    a: s64;
+    b: s64;
+}
+
+/// Reads an `Any` it is told holds a `Point`, and sums it — the type-erased-argument use case.
+sum_point :: (a: Any) -> s64 {
+    p := any_as(a, Point);
+    return p.x + p.y;
+}
+
+main :: () {
+    n := 0;
+
+    // Round-trip a struct through `Any` and back.
+    p: Point;
+    p.x = 3;
+    p.y = 4;
+    a := any_of(*p);
+    q := any_as(a, Point);
+    if q.x == 3 {
+        n = n + 1;
+    }
+    if q.y == 4 {
+        n = n + 2;
+    }
+
+    // Through a procedure that took the `Any` without knowing its type.
+    if sum_point(a) == 7 {
+        n = n + 4;
+    }
+
+    // The `type` field is a real `*Type_Info`, readable through the `Any`.
+    if a.type.size == 16 {
+        n = n + 8;
+    }
+    if a.type.kind == Type_Info_Kind.STRUCT {
+        n = n + 16;
+    }
+
+    // A **builtin** erased and recovered — the path that has no declaration.
+    m: s64;
+    m = 99;
+    b := any_of(*m);
+    r := any_as(b, s64);
+    if r == 99 {
+        n = n + 32;
+    }
+    if b.type.id == type_info(s64).id {
+        n = n + 64;
+    }
+
+    // `Point` and `Pair` are the same shape but **different types**: their `id`s differ, which is exactly
+    // what a sound `any_as` relies on and a name/size comparison would get wrong.
+    ip := type_info(Point);
+    ir := type_info(Pair);
+    if ip.id != ir.id {
+        n = n + 128;
+    }
+
+    // Every assertion: 255.
+    if n == 255 {
+        exit(0);
+    }
+    exit(1);
+}

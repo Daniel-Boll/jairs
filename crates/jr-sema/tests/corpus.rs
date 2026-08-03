@@ -158,13 +158,25 @@ fn valid_corpus_files_produce_no_sema_diagnostics() {
     // `#import "Basic"` will have unresolved names, and sema must stay silent
     // about them rather than inventing type errors on poison. The version *with*
     // modules is covered end-to-end by the `jr-cli` corpus tests.
+    //
+    // **E0212 (unknown type name) is tolerated**, and only it, because it is the type-position analogue
+    // of the E0201 this test already tolerates without noticing: an unresolved name in an *expression*
+    // is a `jr-hir` diagnostic and never reaches `sema_diagnostics`, but an unresolved *type annotation*
+    // is `jr-sema`'s. `064-any.jr` is the first `valid/` file to annotate with an imported type
+    // (`a: Any`, from `Basic`), so without the import `Any` is genuinely unknown — the same "a name the
+    // import would provide" the comment above means. A real misspelled type is caught by the with-modules
+    // CLI corpus test; a mismatch (E0214) or any other code still fails here.
     let mut failures = Vec::new();
     for (name, text) in corpus_files("valid") {
         let mut program = Program::new();
         let analysis = program.analyse(&text);
-        if !analysis.sema_diagnostics.is_empty() {
-            let messages: Vec<String> = analysis
-                .sema_diagnostics
+        let real: Vec<&_> = analysis
+            .sema_diagnostics
+            .iter()
+            .filter(|d| d.code != Some("E0212"))
+            .collect();
+        if !real.is_empty() {
+            let messages: Vec<String> = real
                 .iter()
                 .map(|d| format!("{:?} {}", d.code, d.message))
                 .collect();

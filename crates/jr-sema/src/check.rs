@@ -40,11 +40,25 @@ use rustc_hash::FxHashMap;
 use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
-    E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266,
+    E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
 use crate::sigs::{FileSignatures, ProcSig, SigKind};
+
+/// A compiler intrinsic: a call the compiler recognises by name and types itself.
+///
+/// None is declared anywhere, which is what `intrinsic_named` tests: a program declaring its own
+/// `any_of` keeps it, so the names are not reserved (ADR-0075 §2, ADR-0076 §1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Intrinsic {
+    /// `type_info(T)` — a `Type_Info` describing `T` (ADR-0075 §2).
+    TypeInfo,
+    /// `any_of(p)` — an `Any` erasing the pointer `p` (ADR-0076 §1).
+    AnyOf,
+    /// `any_as(a, T)` — the value in `a`, trapping unless its type is `T` (ADR-0076 §2).
+    AnyAs,
+}
 
 /// How a `Type_Info` field's type is checked.
 #[derive(Debug, Clone, Copy)]
@@ -55,6 +69,10 @@ enum TypeInfoField {
     /// declared — `Type_Info_Kind` lives beside `Type_Info` in `Basic`, so the compiler cannot name
     /// its id in advance.
     Enum,
+    /// It must be a pointer to *some* struct, checked by shape for the same reason [`TypeInfoField::Enum`]
+    /// is: `Any::type` is a `*Type_Info`, and `Type_Info`'s own id depends on its declaration site, so the
+    /// compiler cannot name it in advance without looking it up first.
+    PointerToStruct,
 }
 
 /// The fields the compiler expects `Basic`'s `Type_Info` to have, in order (ADR-0075 §2).
@@ -65,7 +83,20 @@ enum TypeInfoField {
 /// mismatch, so editing the struct produces a diagnostic rather than a wrong read.
 ///
 /// Keep it in step with `Type_Info` in `modules/Basic/module.jr`.
+/// The fields the compiler expects `Basic`'s `Any` to have, in order (ADR-0076 §3).
+///
+/// The contract with `modules/Basic`, exactly as [`TYPE_INFO_FIELDS`] is — and the second client of that
+/// mechanism, which is the first evidence it generalises. `data` is a `*u8` because a pointer's layout
+/// does not depend on its pointee, so erasing one loses nothing.
+///
+/// Keep it in step with `Any` in `modules/Basic/module.jr`.
+const ANY_FIELDS: &[(&str, TypeInfoField)] = &[
+    ("type", TypeInfoField::PointerToStruct),
+    ("data", TypeInfoField::Exact(PoolId::PTR_U8)),
+];
+
 const TYPE_INFO_FIELDS: &[(&str, TypeInfoField)] = &[
+    ("id", TypeInfoField::Exact(PoolId::S64)),
     ("kind", TypeInfoField::Enum),
     ("name", TypeInfoField::Exact(PoolId::STRING)),
     ("size", TypeInfoField::Exact(PoolId::S64)),
@@ -138,6 +169,21 @@ pub struct CheckOutput {
     /// so lowering could not recover the argument by looking at the call. This is the same reason
     /// `operator_calls` is recorded rather than recomputed — one pass decides, and `jr-mir` reads.
     pub type_info_calls: FxHashMap<(ExprScope, ExprId), PoolId>,
+    /// Which `Any` operation each `any_of`/`any_as` call is, and the type it concerns (ADR-0076).
+    ///
+    /// Separate from [`CheckOutput::type_info_calls`], which means "replace this call with a `Type_Info`
+    /// constant". These calls lower to real code — an aggregate build for `any_of`, a compare-and-read for
+    /// `any_as` — so sharing one map folded a `Type_Info` into an `Any` and stored 40 bytes into 16.
+    pub any_calls: FxHashMap<(ExprScope, ExprId), (AnyOp, PoolId)>,
+}
+
+/// Which `Any` intrinsic a call is (ADR-0076).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnyOp {
+    /// `any_of(p)` — build an `Any` from a pointer, the payload type being the pointee.
+    Of,
+    /// `any_as(a, T)` — read an `Any` back as `T`, trapping unless its type matches.
+    As,
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +287,7 @@ pub fn check_file(
         operator_calls: ctx.operator_calls,
         filled_calls: ctx.filled_calls,
         type_info_calls: ctx.type_info_calls,
+        any_calls: ctx.any_calls,
     }
 }
 
@@ -2416,8 +2463,16 @@ impl Ctx<'_> {
         //
         // A call rather than a directive (`#type_info`) because a directive cannot be passed as a value
         // or composed, and ADR-0071 already makes a type an argument-position value.
-        if self.is_type_info_call(scope, callee) {
-            return self.check_type_info(scope, id, callee, args, span);
+        match self.intrinsic_named(scope, callee) {
+            Some(Intrinsic::TypeInfo) => {
+                return self.check_type_info(scope, id, callee, args, span);
+            }
+            // `any_of` and `any_as` are intercepted for the same reason one level weaker: `any_as`'s
+            // second argument is a *type*, and `any_of`'s pointer needs the erasing conversion §1
+            // allows here and nowhere else.
+            Some(Intrinsic::AnyOf) => return self.check_any_of(scope, id, callee, args, span),
+            Some(Intrinsic::AnyAs) => return self.check_any_as(scope, id, callee, args, span),
+            None => {}
         }
         // The callee is in **call position**, where a `#foreign` procedure is a legal thing to
         // name — it is only illegal to take one as a *value* (E0256, ADR-0059 §5). This id is
@@ -2499,20 +2554,29 @@ impl Ctx<'_> {
         ret
     }
 
-    /// Whether this callee is the `type_info` intrinsic (ADR-0075 §2).
+    /// Which compiler intrinsic a callee names, if any.
     ///
-    /// Recognised **by name and only when the name resolves to nothing**, which is the whole of the
-    /// test: `type_info` is not declared anywhere, so a program that declares its own `type_info` gets
-    /// its own — the resolution succeeds and this returns false. Reserving the name outright would break
-    /// a program that already used it, for no gain.
-    fn is_type_info_call(&mut self, scope: ExprScope, callee: ExprId) -> bool {
+    /// **By name, and only when the name resolves to nothing.** None of these is declared anywhere, so a
+    /// program that declares its own `any_of` gets its own — the resolution succeeds and this answers
+    /// `None`. Reserving the names outright would break a program that already used one, for no gain.
+    fn intrinsic_named(&mut self, scope: ExprScope, callee: ExprId) -> Option<Intrinsic> {
         let Expr::Name { name, res, .. } = self.expr_of(scope, callee) else {
-            return false;
+            return None;
         };
-        if self.interner.resolve(name) != "type_info" {
-            return false;
+        let intrinsic = match self.interner.resolve(name) {
+            "type_info" => Intrinsic::TypeInfo,
+            "any_of" => Intrinsic::AnyOf,
+            "any_as" => Intrinsic::AnyAs,
+            _ => return None,
+        };
+        match self.resolve.get(scope, callee).unwrap_or(res) {
+            Res::Error => Some(intrinsic),
+            Res::Item(_)
+            | Res::Imported(_, _)
+            | Res::Local(_)
+            | Res::Param(_)
+            | Res::Promoted { .. } => None,
         }
-        matches!(self.resolve.get(scope, callee).unwrap_or(res), Res::Error)
     }
 
     /// Types `type_info(T)` and returns `*Type_Info` (ADR-0075 §2).
@@ -2610,6 +2674,175 @@ impl Ctx<'_> {
         }
     }
 
+    /// Types `any_of(p)` and returns `Any` (ADR-0076 §1).
+    ///
+    /// The argument must be a **pointer**, and its pointee type is what the resulting `Any` carries. The
+    /// erasure to `*u8` happens *here and nowhere else*: a general `cast(*u8, p)` stays refused, because
+    /// allowing it would make every pointer type interconvertible and a wrong pointee a silent wrong read
+    /// rather than an error.
+    ///
+    /// Nothing is reinterpreted — a pointer's layout does not depend on its pointee — so this emits no
+    /// conversion at all. It is a statement in the type system, which is exactly why it can be safe here
+    /// and unsafe in general.
+    fn check_any_of(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        self.types.set_expr(scope, callee, PoolId::VOID);
+
+        if args.len() != 1 {
+            self.wrong_intrinsic_arity("any_of", 1, args.len(), span);
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+
+        let arg_ty = self.check_expr(scope, args[0], None);
+        if arg_ty == PoolId::ERROR {
+            return PoolId::ERROR;
+        }
+
+        // The pointee is what the `Any` will say it holds. A non-pointer is refused rather than
+        // silently taking the argument's address, because `any_of(x)` and `any_of(*x)` would then mean
+        // the same thing and one of them is a lie about lifetime.
+        let Item::PointerType(pointee) = *self.pool.item(arg_ty) else {
+            let text = self.describe(arg_ty);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`any_of` needs a pointer, but this is `{text}`"),
+                )
+                .with_code(E0267)
+                .with_note("an `Any` holds a pointer to the value, so the caller decides what it points at")
+                .with_help("take the address first, e.g. `any_of(*x)`"),
+            );
+            return PoolId::ERROR;
+        };
+
+        // The pointee needs a `Type_Info`, so it needs a runtime layout — the same refusal
+        // `type_info` makes, for the same reason (E0266).
+        if let Err(error) = jr_pool::layout_of(self.pool, jr_pool::TargetLayout::LP64, pointee) {
+            let text = self.describe(pointee);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`any_of` cannot erase `{text}`, which has no runtime layout"),
+                )
+                .with_code(E0266)
+                .with_note(format!("the layout is unavailable because {error}")),
+            );
+            return PoolId::ERROR;
+        }
+
+        // Recorded so lowering knows which `Type_Info` to build for the `type` field. A **separate** map
+        // from `type_info_calls`, and that separation is load-bearing: that map means "replace this call
+        // with a `Type_Info` constant", and folding one here stored a 40-byte `Type_Info` into a 16-byte
+        // `Any` — caught immediately as an internal error, but only because the sizes differed.
+        self.any_calls.insert((scope, id), (AnyOp::Of, pointee));
+
+        match self.any_struct(span) {
+            Some(any) => any,
+            None => PoolId::ERROR,
+        }
+    }
+
+    /// Types `any_as(a, T)` and returns `T` (ADR-0076 §2).
+    ///
+    /// Two arguments: an `Any` and a **type**. The type argument takes the same treatment
+    /// `type_info`'s does — marked a type position so E0261 does not refuse it, and resolved before the
+    /// argument is typed as an expression so a builtin works.
+    ///
+    /// The *check* is at run time and traps on mismatch (ADR-0068's rule for a tagged read, one level
+    /// up): sema cannot know which type an `Any` holds, which is the entire reason `Any` exists.
+    fn check_any_as(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        self.types.set_expr(scope, callee, PoolId::VOID);
+
+        if args.len() != 2 {
+            self.wrong_intrinsic_arity("any_as", 2, args.len(), span);
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+
+        // The `Any` operand, checked against the declared struct so a mismatch is an ordinary E0214.
+        let want = self.any_struct(span);
+        let got = self.check_expr(scope, args[0], want);
+        if got == PoolId::ERROR || want.is_none() {
+            return PoolId::ERROR;
+        }
+
+        let type_arg = args[1];
+        self.type_position.insert((scope, type_arg));
+        let wanted = self.described_type(scope, type_arg);
+        self.types.set_expr(scope, type_arg, PoolId::TYPE);
+
+        let Some(wanted) = wanted else {
+            self.diags.push(
+                Diagnostic::error(span, "`any_as` needs a type as its second argument")
+                    .with_code(E0261)
+                    .with_note("it is the type to read the `Any` back as, e.g. `any_as(a, Point)`"),
+            );
+            return PoolId::ERROR;
+        };
+
+        if let Err(error) = jr_pool::layout_of(self.pool, jr_pool::TargetLayout::LP64, wanted) {
+            let text = self.describe(wanted);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`any_as` cannot read `{text}`, which has no runtime layout"),
+                )
+                .with_code(E0266)
+                .with_note(format!("the layout is unavailable because {error}")),
+            );
+            return PoolId::ERROR;
+        }
+
+        // Recorded for lowering: it needs the expected type's `Type_Info` to compare against, and the
+        // type to give the result.
+        self.any_calls.insert((scope, id), (AnyOp::As, wanted));
+        wanted
+    }
+
+    /// Reports E0216 for an intrinsic called with the wrong number of arguments.
+    ///
+    /// Shared by the intrinsics so the wording is one sentence in one place: three copies of an arity
+    /// message is three chances for them to drift apart.
+    fn wrong_intrinsic_arity(&mut self, name: &str, want: usize, got: usize, span: Span) {
+        self.diags.push(
+            Diagnostic::error(
+                span,
+                format!(
+                    "`{name}` takes {want} argument{}, but {got} {} supplied",
+                    if want == 1 { "" } else { "s" },
+                    if got == 1 { "was" } else { "were" }
+                ),
+            )
+            .with_code(E0216),
+        );
+    }
+
+    /// The `Any` struct type, looked up in the imported modules and validated (ADR-0076 §3).
+    ///
+    /// The second client of ADR-0075 §2's mechanism, which is the first evidence it generalises rather
+    /// than being a one-off: same lookup, same E0265, a different field table.
+    fn any_struct(&mut self, span: Span) -> Option<PoolId> {
+        self.library_struct(span, "Any", ANY_FIELDS)
+    }
+
     /// The type a `type`-valued expression names, if it names one.
     ///
     /// A **builtin** is matched by text, because `s64` is an ordinary identifier that resolves to no
@@ -2673,6 +2906,20 @@ impl Ctx<'_> {
     /// at the old offset. A wrong offset would be a silent wrong value, which is the failure mode
     /// ADR-0017 §4 says must refuse instead.
     fn type_info_struct(&mut self, span: Span) -> Option<PoolId> {
+        self.library_struct(span, "Type_Info", TYPE_INFO_FIELDS)
+    }
+
+    /// Looks a **compiler-known library type** up in `modules/Basic` and validates its shape.
+    ///
+    /// Shared by `Type_Info` (ADR-0075 §2) and `Any` (ADR-0076 §3), because the mechanism is the same and
+    /// the only difference is the field table: one lookup, one E0265, one place the "silent without
+    /// imports" rule lives. Two copies would be two chances for the validation to drift.
+    fn library_struct(
+        &mut self,
+        span: Span,
+        type_name: &str,
+        want_fields: &[(&str, TypeInfoField)],
+    ) -> Option<PoolId> {
         // **Silent when no imported signatures were supplied at all**, which is `expect`'s rule about a
         // poisoned context rather than a politeness. `Type_Info` lives in `Basic`, so a checker run
         // *without* module resolution cannot possibly find it — and reporting E0265 there would be
@@ -2686,40 +2933,42 @@ impl Ctx<'_> {
         if self.imports.is_empty() {
             return None;
         }
-        let name = self.interner.intern("Type_Info");
+        let name = self.interner.intern(type_name);
         let entry = self
             .imports
             .iter()
             .find_map(|(_, sigs)| sigs.lookup(name))
             .or_else(|| self.sigs.lookup(name));
         let Some(ty) = entry.and_then(|e| e.type_value) else {
-            self.report_type_info_shape(span, "it is not declared, or is not a type");
+            self.report_library_shape(span, type_name, "it is not declared, or is not a type");
             return None;
         };
         let Item::StructType { decl } = *self.pool.item(ty) else {
-            self.report_type_info_shape(span, "it is not a struct");
+            self.report_library_shape(span, type_name, "it is not a struct");
             return None;
         };
         let Some(fields) = self.pool.struct_fields(decl).map(<[_]>::to_vec) else {
-            self.report_type_info_shape(span, "its fields are not recorded");
+            self.report_library_shape(span, type_name, "its fields are not recorded");
             return None;
         };
-        if fields.len() != TYPE_INFO_FIELDS.len() {
-            self.report_type_info_shape(
+        if fields.len() != want_fields.len() {
+            self.report_library_shape(
                 span,
+                type_name,
                 &format!(
                     "it has {} field(s), expected {}",
                     fields.len(),
-                    TYPE_INFO_FIELDS.len()
+                    want_fields.len()
                 ),
             );
             return None;
         }
-        for (field, (want_name, want_ty)) in fields.iter().zip(TYPE_INFO_FIELDS) {
+        for (field, (want_name, want_ty)) in fields.iter().zip(want_fields) {
             let got_name = self.interner.resolve(field.name).to_owned();
             if got_name != *want_name {
-                self.report_type_info_shape(
+                self.report_library_shape(
                     span,
+                    type_name,
                     &format!("its field is named `{got_name}`, expected `{want_name}`"),
                 );
                 return None;
@@ -2728,12 +2977,19 @@ impl Ctx<'_> {
             // against a fixed id: an enum's `PoolId` depends on its declaration site.
             let ok = match *want_ty {
                 TypeInfoField::Enum => matches!(*self.pool.item(field.ty), Item::EnumType { .. }),
+                TypeInfoField::PointerToStruct => match *self.pool.item(field.ty) {
+                    Item::PointerType(pointee) => {
+                        matches!(*self.pool.item(pointee), Item::StructType { .. })
+                    }
+                    _ => false,
+                },
                 TypeInfoField::Exact(id) => field.ty == id,
             };
             if !ok {
                 let text = self.describe(field.ty);
-                self.report_type_info_shape(
+                self.report_library_shape(
                     span,
+                    type_name,
                     &format!(
                         "its field `{want_name}` has type `{text}`, which is not what is expected"
                     ),
@@ -2744,16 +3000,21 @@ impl Ctx<'_> {
         Some(ty)
     }
 
-    /// Reports E0265: `Type_Info` is missing or wrongly shaped (ADR-0075 §2).
-    fn report_type_info_shape(&mut self, span: Span, why: &str) {
+    /// Reports E0265: a compiler-known library type is missing or wrongly shaped (ADR-0075 §2).
+    ///
+    /// Names the type, because there are two of them now (`Type_Info` and `Any`) and "the standard
+    /// library's type is not usable" would leave the reader to guess which.
+    fn report_library_shape(&mut self, span: Span, type_name: &str, why: &str) {
         self.diags.push(
             Diagnostic::error(
                 span,
-                format!("the standard library's `Type_Info` is not usable: {why}"),
+                format!("the standard library's `{type_name}` is not usable: {why}"),
             )
             .with_code(E0265)
-            .with_note("`type_info` returns a `*Type_Info`, which is declared in `modules/Basic`")
-            .with_help("import \"Basic\", and keep its `Type_Info` in step with the compiler"),
+            .with_note(format!("`{type_name}` is declared in `modules/Basic`"))
+            .with_help(format!(
+                "import \"Basic\", and keep its `{type_name}` in step with the compiler"
+            )),
         );
     }
 

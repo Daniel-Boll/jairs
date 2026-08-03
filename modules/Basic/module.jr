@@ -125,9 +125,9 @@ Type_Info_Kind :: enum {
     PROCEDURE;
 }
 
-/// What the compiler knows about a type at run time (ADR-0075 §3).
+/// What the compiler knows about a type at run time (ADR-0075 §3, ADR-0077).
 ///
-/// Four fields, and `name` is the one that made this wave need ADR-0075 §1 first: a compile-time
+/// Five fields since ADR-0077 added `id`; `name` is the one that made this wave need ADR-0075 §1 first: a compile-time
 /// aggregate holding a string used to be refused, so a `Type_Info` could not carry a name.
 ///
 /// Deliberately **without per-kind detail** — a struct's field list, an array's element type, a
@@ -137,6 +137,12 @@ Type_Info_Kind :: enum {
 /// useful — they are what `size_of` would give, which this language does not otherwise have — and the
 /// shape extends by adding fields, which does not break a reader that names only these four.
 Type_Info :: struct {
+    /// The type's canonical identity — its pool id, widened to `s64` (ADR-0077).
+    ///
+    /// An opaque token, not a number to do arithmetic on: two `type_info(T)` calls carry the same `id`
+    /// while two distinct types never do, which is what lets `any_as` check a value's type without
+    /// comparing pointers (two `type_info(T)` calls live in different slots, so their addresses differ).
+    id: s64;
     /// Which shape this type is.
     kind: Type_Info_Kind;
     /// The type's source name, or a builtin's spelling (`"s64"`).
@@ -145,6 +151,29 @@ Type_Info :: struct {
     size: s64;
     /// The type's runtime alignment in bytes.
     alignment: s64;
+}
+
+/// A value whose type is carried alongside it (ADR-0076 §3).
+///
+/// `Any` is how a procedure takes an argument whose type it does not know: the `type` says what the
+/// value is and `data` points at it. `any_of(*x)` builds one and `any_as(a, T)` reads it back, trapping
+/// if the type does not match — the check is the whole point of carrying the type, and a read that
+/// ignored it would make this a `void*` with extra steps.
+///
+/// Declared here rather than inside the compiler for the reason [`Type_Info`] is: a program has to be
+/// able to *name* it — `takes :: (a: Any)` is the entire use case — and no compiler-declared type is
+/// spellable. The compiler validates these fields on lookup, so editing them is a diagnostic rather
+/// than a wrong read.
+///
+/// **`data` is a `*u8` and nothing is reinterpreted.** A pointer's layout does not depend on what it
+/// points at, so erasing `*Point` to `*u8` loses no bits and emits no code — it is a statement in the
+/// type system only. That is why the conversion is allowed *here* and a general pointer cast is not
+/// (ADR-0076 §1): a general one would make a wrong pointee type a silent wrong read.
+Any :: struct {
+    /// What `data` points at.
+    type: *Type_Info;
+    /// The value itself, erased. Read it back with `any_as` rather than by casting.
+    data: *u8;
 }
 
 /// The standard output file descriptor.

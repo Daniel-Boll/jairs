@@ -96,3 +96,5 @@ The ADR numbers are stable and are referenced from code comments and
 | [0073](0073-insert-computed-operand.md) | `#insert` of a computed string; the cycle broken by a narrow pre-pass, not by salsa's fixed-point recovery | Accepted |
 | [0074](0074-aggregate-constants.md) | An aggregate compile-time value, interned field-wise rather than as a target-specific byte image | Accepted |
 | [0075](0075-type-info.md) | `type_info` returns a `Type_Info` declared in `Basic`; a constant may hold a string (corrects ADR-0074's closing claim) | Accepted |
+| [0076](0076-any.md) | `Any` is a `{type, pointer}` pair; a pointer converts to `*u8` only where a type is erased, and the read back is checked | Accepted |
+| [0077](0077-type-info-id.md) | `Type_Info` gains a stable `id` (the pool id) so a type has a runtime identity for `any_as` to check (amends ADR-0075 §3) | Accepted |

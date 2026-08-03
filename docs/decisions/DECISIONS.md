@@ -891,3 +891,68 @@ Fork taken as recommended. ADR-0074 records it. Scope is **struct and array**; `
 worth stating because after this `V :: #run mk();` works while `V :: P.{1, 2};` still does not parse.
 `Item` gains its first **recursive** value variant, so every exhaustive walk must decide what a nested
 aggregate means — the mechanism that found ADR-0068's two wrong answers.
+
+---
+
+## Wave: `Any` (ADR-0076, ADR-0077), 2026-08-03
+
+Recommended option taken automatically per the standing request; the user restated during this wave
+that the recommended choice should always be taken and logged here for later review, without blocking.
+
+### Fork 1 — which wave next (after ADR-0075)
+
+- Options: **pointer conversions then `Any` (taken, recommended)**; pointer conversions alone; per-kind
+  `Type_Info` detail; `#code`/`Code`.
+- Why: probing showed the `{*Type_Info, *u8}` pair `Any` needs already works for a `u8` (erase, store,
+  read back — exit 8), so the only blocker is that a `*T` cannot become the erased `*u8`: `cast` refuses
+  it (E0232). That is the honest remaining piece, and doing the conversion *and* `Any` in one wave reaches
+  a user-visible capability, which ADR-0075 named as the next step. `#code` was rejected as this wave
+  because it does not even parse — it needs new grammar across parser, CST, tree-sitter and formatter, the
+  widest surface of the three. Per-kind detail is independent of the pointer question and can come later.
+
+### Fork 2 — how a pointer erases to `*u8`
+
+- Options: **implicit `*T` → `*u8` only at an `Any` boundary (taken, recommended)**; a general
+  `cast(*u8, p)`; a `reinterpret`/`transmute` keyword.
+- Why: a general pointer cast makes every pointer type interconvertible, so a wrong pointee type becomes a
+  silent wrong read — the reinterpretation ADR-0045 §1 confined to `union`, put on every pointer unmarked.
+  `Any` needs one direction of one conversion, with a *checked* inverse (Fork 4); a general cast supplies
+  the forward step and leaves the reverse unchecked, the worst split. A `transmute` keyword is a bigger
+  feature than `Any` needs and would have to answer cross-size questions no user is waiting on. Implicit
+  rather than `xx`, because an `Any` parameter already declares the callee does not know the type — marking
+  it twice reads as though something lossy happened, and nothing is lost (ADR-0057's argument for the
+  implicit context parameter).
+
+### Fork 3 — where `Any` is declared
+
+- Options: **in `modules/Basic`, validated on lookup (taken, recommended)**; a compiler-declared
+  structural type like `Context`.
+- Why: ADR-0075 §2's argument, unchanged and now load-bearing twice — a `Type_Info`/`Any` a program must
+  *name* has to be spellable, and no compiler-declared type is (`t: Type;`, `c: Context;` both E0212). The
+  validation mechanism (E0265) gains a second client, the first evidence it generalises.
+
+### Fork 4 — how `any_as` establishes type identity at run time (ADR-0077)
+
+- Options: **add a stable `id: s64` (the pool id) to `Type_Info` (taken, recommended)**; emit each
+  `Type_Info` as deduplicated static data so pointers compare equal; compare by `name` string; defer
+  `any_as` to a follow-up sub-wave.
+- Why: running proved two `type_info(Point)` calls have **different addresses** (ADR-0075 by-value return
+  spills a fresh slot each time), so pointer comparison is out — which ADR-0076 §2 already anticipated by
+  saying "compare what it says". But the four-field schema *says* nothing usable: `kind` is too coarse,
+  `size`/`alignment` collide (`Point` and `[2]s64` are both 16/8), and `name` is **unsound** because
+  nominal identity is a declaration site, not a spelling (ADR-0015 §1) — a local `Point` and an imported
+  one share a name and are different types, so matching on it is the silent bad read the check exists to
+  prevent. The pool id is *the* identity the whole compiler already uses and is identical in both engines
+  because they share one pool, so `any_as` becomes a plain integer compare the differential checks like any
+  other. Static-data dedup would also work but drags in the memory-ownership decision ADR-0075 §2 deferred.
+  This amends ADR-0075 §3's schema, so it gets its own ADR (ADR-0077) the way ADR-0018 §5 amends ADR-0017,
+  rather than an edit to ADR-0075.
+
+### Resolution
+
+Forks taken as recommended. ADR-0076 records `Any` and the erasing conversion; ADR-0077 records the
+`Type_Info.id` amendment. `any_of(p)` erases a pointer, `any_as(a, T)` reads it back trapping on an
+`id` mismatch (ADR-0068's tagged-read rule, one level up). Deliberately absent: every value coercing to
+`Any` implicitly (a literal has no address, so it would need a materialised temporary — the storage
+decision deferred again); an `Any` in a compile-time constant (interning a pointer, which has no
+comptime value, ADR-0074 §2); a general pointer cast; `transmute`.
