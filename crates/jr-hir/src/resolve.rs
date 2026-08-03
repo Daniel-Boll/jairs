@@ -103,6 +103,16 @@ const E0250: &str = "E0250";
 /// `#scope_module`.
 const E0253: &str = "E0253";
 
+/// Whether a name is a compiler intrinsic, which has no declaration to resolve to.
+///
+/// `type_info` (ADR-0075 §2), `any_of` and `any_as` (ADR-0076). Listed here rather than in `jr-sema`'s
+/// `Intrinsic` because this crate cannot depend on that one; the two lists must agree, and the corpus is
+/// what says they do — a name withheld here but unrecognised there is an unresolved-name error that
+/// reaches MIR, which refuses the body rather than miscompiling it.
+fn is_intrinsic_name(name: &str) -> bool {
+    matches!(name, "type_info" | "any_of" | "any_as")
+}
+
 // ---------------------------------------------------------------------------
 // ResolveMap
 // ---------------------------------------------------------------------------
@@ -612,11 +622,11 @@ impl<'a> ResolveCtx<'a> {
         })
     }
 
-    /// Whether a call's callee is the `type_info` intrinsic (ADR-0075 §2).
+    /// Whether a call's callee is a compiler intrinsic (ADR-0075 §2, ADR-0076 §1).
     ///
     /// By name, and only when the name resolves to nothing — matching `jr-sema`'s recogniser, so a
     /// program declaring its own `type_info` keeps it and the name is not reserved.
-    fn callee_is_type_info(&self, scope: ExprScope, callee: ExprId) -> bool {
+    fn callee_is_intrinsic(&self, scope: ExprScope, callee: ExprId) -> bool {
         let expr = match scope {
             ExprScope::TopLevel => self.hir.exprs.get(callee.index()),
             ExprScope::Body(body) => self
@@ -628,7 +638,7 @@ impl<'a> ResolveCtx<'a> {
         let Some(Expr::Name { name, .. }) = expr else {
             return false;
         };
-        self.interner.resolve(*name) == "type_info" && self.hir.scope.get(*name).is_none()
+        is_intrinsic_name(self.interner.resolve(*name)) && self.hir.scope.get(*name).is_none()
     }
 
     /// Resolve a name to a `Res`, checking file scope then imports.
@@ -717,7 +727,7 @@ impl<'a> ResolveCtx<'a> {
                 // This resolves to `Res::Error` exactly as before, which is also what sema's recogniser
                 // tests for: a program that declares its own `type_info` resolves to *that*, so the
                 // name is not reserved and such a program keeps working.
-                if self.interner.resolve(name) == "type_info" {
+                if is_intrinsic_name(self.interner.resolve(name)) {
                     return Res::Error;
                 }
                 // **The argument of a `type_info` call names a type, not a value** (ADR-0075 §2), and a
@@ -860,7 +870,7 @@ impl<'a> ResolveCtx<'a> {
             Expr::Call { callee, args, .. } => {
                 let callee = *callee;
                 let args = args.clone();
-                let intrinsic = self.callee_is_type_info(ExprScope::TopLevel, callee);
+                let intrinsic = self.callee_is_intrinsic(ExprScope::TopLevel, callee);
                 self.resolve_top_expr(callee);
                 let outer = self.in_type_info_argument;
                 self.in_type_info_argument = intrinsic;
@@ -1096,7 +1106,7 @@ impl<'a> ResolveCtx<'a> {
                 self.resolve_body_expr(body_id, operand);
             }
             Expr::Call { callee, args, .. } => {
-                let intrinsic = self.callee_is_type_info(ExprScope::Body(body_id), callee);
+                let intrinsic = self.callee_is_intrinsic(ExprScope::Body(body_id), callee);
                 self.resolve_body_expr(body_id, callee);
                 // Only the *arguments* are in the intrinsic's type position; the callee is not, and it
                 // is resolved above with the flag still at its outer value.

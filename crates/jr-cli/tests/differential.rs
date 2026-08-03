@@ -347,6 +347,71 @@ fn type_info_reports_the_same_layout_in_both_engines() {
     );
 }
 
+/// `Any` must round-trip a value through erasure and recovery identically in both engines (ADR-0076).
+///
+/// Eight assertions summing to 255, so a dropped or mislaid field changes the exit value. The erasure
+/// (`any_of`) reinterprets a `*T` as `*u8` and the recovery (`any_as`) reinterprets it back and loads —
+/// both through a slot, because a plain use may not change a pointer's type. A layout disagreement about
+/// where `data` sits, or a `Type_Info` field read at the wrong offset, would give both a consistent wrong
+/// number; asserting the value is what catches it.
+#[test]
+fn any_round_trips_a_value_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/064-any.jr");
+
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    assert_eq!(
+        vm.status, 0,
+        "the VM exited {} — an `Any` did not round-trip a value as written",
+        vm.status
+    );
+    assert_eq!(
+        native.status, 0,
+        "the native back end exited {} — see the VM assertion above",
+        native.status
+    );
+}
+
+/// `any_as` with the wrong type must **trap**, identically in both engines (ADR-0076 §2, ADR-0077).
+///
+/// This is the half `valid/064` cannot show, because a trap aborts the process and a corpus file must
+/// exit 0. It is the whole point of carrying the type: the recovered type is checked against the `Any`'s
+/// `id`, and a mismatch traps rather than reinterpreting — the same guarantee ADR-0068's `variant` gives,
+/// one level up. Both engines exit 4 on a trap (ADR-0019 §2), and comparing the two is what says the
+/// check fires in the same place rather than one engine reinterpreting silently.
+#[test]
+fn any_as_traps_on_a_type_mismatch_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = concat!(
+        "#import \"Basic\";\n\n",
+        "Point :: struct { x: s64; y: s64; }\n",
+        "Other :: struct { a: s64; }\n\n",
+        "main :: () {\n",
+        "    p: Point;\n",
+        "    p.x = 7;\n",
+        "    a := any_of(*p);\n",
+        // `a` holds a `Point`; reading it as `Other` must trap, not reinterpret `p.x`'s bits.
+        "    o := any_as(a, Other);\n",
+        "    exit(o.a);\n",
+        "}\n",
+    );
+    let (vm, native) = both_engines(source, dir.path(), "anymismatch");
+    assert_eq!(
+        vm.status, 4,
+        "the VM must trap on an `any_as` type mismatch"
+    );
+    assert_eq!(
+        native.status, 4,
+        "native code must trap on an `any_as` type mismatch rather than reinterpreting"
+    );
+    assert_eq!(
+        vm, native,
+        "the two engines disagree about the mismatch trap"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Programs whose *result* is observable
 // ---------------------------------------------------------------------------

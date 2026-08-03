@@ -332,7 +332,10 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     // one: a file whose only compile-time work is a `type_info` has no `wanted` target at all, and
     // returning here left its call unfolded — which `scan` then refused as "a name failed to resolve",
     // the callee naming no procedure. Found by running the feature's own probe.
-    if targets.is_empty() && checked_file.type_info_calls.is_empty() {
+    if targets.is_empty()
+        && checked_file.type_info_calls.is_empty()
+        && checked_file.any_calls.is_empty()
+    {
         return ConstResult {
             values: Arc::new(ConstValues::new()),
             diagnostics: Arc::new(Diagnostics::new()),
@@ -401,6 +404,33 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
             // failure and never lowered to a placeholder: without a recorded value `scan` refuses the
             // body, which is the honest outcome.
             Err(why) => type_info_failures.push(why),
+        }
+    }
+
+    // **`any_of` and `any_as` lower to real code** (ADR-0076), unlike `type_info` which folds to a
+    // constant — so they record *how* to lower rather than a value. `any_of` needs a `Type_Info`
+    // constant to spill for its `type` field, built here where the pool is mutable; `any_as` needs only
+    // the expected type's id (ADR-0077), which is the pool id itself.
+    for ((scope, expr), (op, ty)) in checked_file.any_calls.iter() {
+        let mut all_sigs: Vec<&jr_sema::FileSignatures> = vec![signatures.signatures.as_ref()];
+        all_sigs.extend(modules.iter().map(|m| m.signatures.as_ref()));
+        match op {
+            jr_sema::AnyOp::Of => match type_info_value(&mut pool, interner, &all_sigs, *ty) {
+                Ok(type_info) => {
+                    values.set_any_op(*scope, *expr, jr_mir::AnyLowering::Of { type_info });
+                }
+                Err(why) => type_info_failures.push(why),
+            },
+            jr_sema::AnyOp::As => {
+                values.set_any_op(
+                    *scope,
+                    *expr,
+                    jr_mir::AnyLowering::As {
+                        type_id: u64::from(ty.as_u32()),
+                        result: *ty,
+                    },
+                );
+            }
         }
     }
 
@@ -806,15 +836,27 @@ fn type_info_value(
         .ok_or_else(|| "the standard library's `Type_Info` is not usable".to_owned())?;
     let fields = struct_fields_of(pool, info_ty)
         .ok_or_else(|| "`Type_Info`'s fields are not recorded".to_owned())?;
+    // The `kind` field's type, found **by name** rather than by position: ADR-0077 added `id` at the
+    // front, so `kind` is no longer field 0, and reading it by index silently interned the enum value
+    // into the wrong field's type. Sema's `TYPE_INFO_FIELDS` already pins the names, so a lookup here
+    // cannot disagree with a `Type_Info` that passed validation.
+    let kind_name_sym = interner.intern("kind");
     let kind_ty = fields
-        .first()
+        .iter()
+        .find(|f| f.name == kind_name_sym)
         .map(|f| f.ty)
         .ok_or_else(|| "`Type_Info` has no `kind` field".to_owned())?;
     let kind_value = enum_member_value(pool, interner, kind_ty, kind_name).ok_or_else(|| {
         format!("`Type_Info_Kind` has no member `{kind_name}`, which the compiler expects")
     })?;
 
+    // The `id` field is the described type's own `PoolId`, widened to `s64` (ADR-0077 §1): the identity
+    // `any_as` compares. It is `described` itself — the pool id the whole compiler already uses — so two
+    // `type_info(T)` calls agree while two distinct types never do, and both engines see the same value
+    // because they share one pool.
+    let id = u64::from(described.as_u32());
     let elements = vec![
+        pool.int_value(PoolId::S64, id),
         pool.int_value(kind_ty, kind_value),
         pool.str_value(&name),
         pool.int_value(PoolId::S64, layout.size),

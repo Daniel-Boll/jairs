@@ -77,7 +77,8 @@ pub use dump::{dump_body, dump_body_spans, dump_file};
 pub use forward::forward_stores;
 pub use inline::{Callees, MAX_INLINE_STATEMENTS, inline_body, is_inlinable};
 pub use inputs::{
-    ConstValues, FilledArg, FilledArgs, ImportedProc, ImportedProcs, ImportedValues, OperatorCalls,
+    AnyLowering, ConstValues, FilledArg, FilledArgs, ImportedProc, ImportedProcs, ImportedValues,
+    OperatorCalls,
 };
 pub use mir::{
     BinOp, BlockData, BlockId, Callee, Facts, FileMir, MirBody, MirSpan, NumKind, Operand, Place,

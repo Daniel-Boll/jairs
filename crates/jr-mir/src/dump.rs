@@ -505,6 +505,28 @@ impl Dumper<'_> {
     /// Total, and deliberately non-panicking: an id from a foreign pool would make
     /// [`Pool::item`] panic, and a dump that crashes is useless exactly when it is
     /// most needed.
+    /// The index of the `id` field if `ty` is a `Type_Info`, else `None` (ADR-0077).
+    ///
+    /// Detected by **field-type shape** — `[s64, enum, string, s64, s64]` — rather than by name, because
+    /// the `Dumper` holds no interner and `Type_Info` is imported from `Basic` anyway, so its name is not
+    /// in this file's `type_names` (the reason the enum fallback prints bare `enum`). The point is only to
+    /// mask the churny pool id in the leading field; misidentifying another struct of that exact shape
+    /// would at worst mask its first `s64`, a snapshot-cosmetic risk rather than a correctness one — and
+    /// no other struct in the corpus has an enum as its second field beside those four scalars.
+    fn type_info_id_field(&self, ty: PoolId) -> Option<usize> {
+        let Item::StructType { decl } = self.pool.item(ty) else {
+            return None;
+        };
+        let fields = self.pool.struct_fields(*decl)?;
+        let [id, kind, name, size, align] = fields else {
+            return None;
+        };
+        let scalar = |f: &jr_pool::Field| f.ty == PoolId::S64;
+        let is_enum = matches!(self.pool.item(kind.ty), Item::EnumType { .. });
+        (scalar(id) && is_enum && name.ty == PoolId::STRING && scalar(size) && scalar(align))
+            .then_some(0)
+    }
+
     fn constant(&self, id: PoolId) -> String {
         if id.index() >= self.pool.len() {
             return format!("<foreign {}>", id.index());
@@ -549,8 +571,24 @@ impl Dumper<'_> {
             // snapshot needs to show: the bytes are produced per target by each back end, so the elements
             // are the only rendering that is the same thing both engines were given. A nested aggregate
             // recurses through this same arm, because the elements are interned values like any other.
-            Item::AggregateValue { elements, .. } => {
-                let parts: Vec<String> = elements.iter().map(|e| self.constant(*e)).collect();
+            Item::AggregateValue { ty, elements } => {
+                // A `Type_Info`'s `id` field is a **pool id** (ADR-0077), which is an intern-order index:
+                // printing it verbatim churns the snapshot, because a corpus file interned earlier shifts
+                // every later id — the same `FileId` hazard `proc_ref` and the enum fallback avoid. So the
+                // `id` element of a `Type_Info` renders as a stable `#id` token: the value is real and
+                // both engines agree on it, but its *number* is not a stable thing to assert.
+                let id_field = self.type_info_id_field(*ty);
+                let parts: Vec<String> = elements
+                    .iter()
+                    .enumerate()
+                    .map(|(index, e)| {
+                        if id_field == Some(index) {
+                            String::from("#id")
+                        } else {
+                            self.constant(*e)
+                        }
+                    })
+                    .collect();
                 format!("{{{}}}", parts.join(", "))
             }
             // A *type* used as a constant operand is not something lowering

@@ -310,3 +310,14 @@ pub(crate) const E0265: &str = "E0265";
 /// from E0261, which objects to a type being used as a *runtime value* — here the type is in a position
 /// that legitimately accepts one, and the objection is about which type it is.
 pub(crate) const E0266: &str = "E0266";
+
+/// `any_of` applied to something that is not a pointer (ADR-0076 §1).
+///
+/// An `Any` holds a **pointer** to the value it erases, so the caller decides what is pointed at and the
+/// lifetime is visible in the source. `any_of(x)` for a non-pointer `x` is refused rather than having the
+/// compiler take the address silently: `any_of(x)` and `any_of(*x)` would then mean the same thing, and
+/// one of them is a lie about how long the pointee lives.
+///
+/// Distinct from E0214 because no particular pointer type was wanted — any pointer will do — so there is
+/// no "expected" type to name.
+pub(crate) const E0267: &str = "E0267";

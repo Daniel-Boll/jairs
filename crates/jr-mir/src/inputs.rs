@@ -143,6 +143,31 @@ impl OperatorCalls {
 pub struct ConstValues {
     items: FxHashMap<ItemId, PoolId>,
     runs: FxHashMap<(ExprScope, ExprId), PoolId>,
+    any_ops: FxHashMap<(ExprScope, ExprId), AnyLowering>,
+}
+
+/// How the MIR builder should lower one `any_of`/`any_as` call (ADR-0076).
+///
+/// Carried on [`ConstValues`] because `file_consts` is where the `Type_Info` constant is built and the
+/// type ids are known — the same query that folds a `#run`, reused rather than a new channel threaded
+/// through five `lower_file` call sites. Unlike a `#run`, an `Any` call lowers to *real code*, so this
+/// says *how* rather than *to what value*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnyLowering {
+    /// `any_of(p)` — build `{type, data}` where `type` is the address of this spilled `Type_Info`
+    /// constant and `data` is the pointer argument erased to `*u8` (ADR-0076 §1).
+    Of {
+        /// The `Type_Info` constant describing the pointee, to spill into a slot for the `type` field.
+        type_info: PoolId,
+    },
+    /// `any_as(a, T)` — trap unless `a.type.id` equals `type_id`, then read `a.data` as `*result`
+    /// (ADR-0076 §2, ADR-0077).
+    As {
+        /// The expected type's pool id, widened — what `a.type.id` must equal.
+        type_id: u64,
+        /// The result type `T`, so the builder can build `*T` for the deref.
+        result: PoolId,
+    },
 }
 
 impl ConstValues {
@@ -179,6 +204,17 @@ impl ConstValues {
         self.runs.get(&(scope, expr)).copied()
     }
 
+    /// Records how one `any_of`/`any_as` call should lower (ADR-0076).
+    pub fn set_any_op(&mut self, scope: ExprScope, expr: ExprId, op: AnyLowering) {
+        self.any_ops.insert((scope, expr), op);
+    }
+
+    /// How an `any_of`/`any_as` call should lower, if it is one.
+    #[must_use]
+    pub fn any_op(&self, scope: ExprScope, expr: ExprId) -> Option<AnyLowering> {
+        self.any_ops.get(&(scope, expr)).copied()
+    }
+
     /// The number of recorded values.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -188,7 +224,7 @@ impl ConstValues {
     /// Whether nothing has a value.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.items.is_empty() && self.runs.is_empty()
+        self.items.is_empty() && self.runs.is_empty() && self.any_ops.is_empty()
     }
 }
 
