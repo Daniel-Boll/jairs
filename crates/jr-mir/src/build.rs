@@ -274,6 +274,13 @@ struct Reach {
     /// else: `f()` is a direct call, but bare `f` would be a procedure value, and
     /// a procedure value has no representation this wave.
     callees: FxHashSet<ExprId>,
+    /// Each callee expression paired with the **call** it belongs to.
+    ///
+    /// Collected because whether a callee needs lowering depends on the *call*: one the const query
+    /// gave a value to folds whole (`type_info(T)`, ADR-0075 §2), so its callee is never emitted and
+    /// must not be refused for naming no procedure. This pass has no `ConstValues` — it walks the HIR
+    /// alone — so it records the pairing and `scan`, which does have one, asks the question.
+    callee_of: Vec<(ExprId, ExprId)>,
     /// Locals whose declaration is reachable.
     locals: Vec<LocalId>,
 }
@@ -284,6 +291,7 @@ impl Reach {
             stmts: Vec::new(),
             exprs: Vec::new(),
             callees: FxHashSet::default(),
+            callee_of: Vec::new(),
             locals: Vec::new(),
         };
         let mut stmt_work = vec![body.root];
@@ -424,6 +432,7 @@ impl Reach {
                     span: _,
                 } => {
                     out.callees.insert(*callee);
+                    out.callee_of.push((*callee, id));
                     expr_work.push(*callee);
                     expr_work.extend(args.iter().copied());
                 }
@@ -475,6 +484,15 @@ fn scan(
     imported_values: &crate::inputs::ImportedValues,
 ) -> Option<&'static str> {
     let scope = ExprScope::Body(body_id);
+
+    // Callees of calls that folded to a constant, which are never emitted (ADR-0075 §2). Computed here
+    // rather than in `Reach::of`, which walks the HIR before any constant is known.
+    let folded_callees: FxHashSet<ExprId> = reach
+        .callee_of
+        .iter()
+        .filter(|(_, call)| consts.run(scope, *call).is_some())
+        .map(|(callee, _)| *callee)
+        .collect();
 
     for id in &reach.stmts {
         match body.stmt(*id) {
@@ -564,7 +582,14 @@ fn scan(
                 // Asked of the `TypeMap` rather than of the `Res`, because that is the one
                 // question with the same answer for a local and an imported declaration.
                 let denotes_a_type = types.expr_type(scope, *id) == Some(PoolId::TYPE);
+                // **The callee of a call that folded to a constant is never emitted** (ADR-0075 §2).
+                // `type_info(T)` names no procedure, so its callee stays `Res::Error` — and refusing the
+                // body for it would refuse every program that reflects. Recognised by the *fold* rather
+                // than by the name, so this stays true of any call the const query values, and a
+                // genuinely unresolved callee (which gets no value) is still refused.
+                let folds_to_a_constant = folded_callees.contains(id);
                 if !denotes_a_type
+                    && !folds_to_a_constant
                     && let Some(reason) = scan_name(
                         hir,
                         signatures,
@@ -2371,13 +2396,22 @@ impl Lower<'_> {
                 args,
                 arg_names: _,
                 span: _,
-            } => match self.call_rvalue(id, callee, &args) {
-                Some(rvalue) => self.define(ty, rvalue, span),
-                None => {
-                    self.give_up("a call has no resolvable callee");
-                    self.define(ty, Rvalue::Undef, span)
+            } => {
+                // **A `type_info(T)` call is a constant** (ADR-0075 §2), evaluated by `jr-db` and
+                // recorded against this expression exactly as a `#run`'s value is — so it needs no
+                // callee, which is just as well because it names no procedure. Checked before
+                // `call_rvalue`, which would otherwise refuse the body for having no callee.
+                if let Some(value) = self.consts.run(self.scope(), id) {
+                    return Operand::Constant(value);
                 }
-            },
+                match self.call_rvalue(id, callee, &args) {
+                    Some(rvalue) => self.define(ty, rvalue, span),
+                    None => {
+                        self.give_up("a call has no resolvable callee");
+                        self.define(ty, Rvalue::Undef, span)
+                    }
+                }
+            }
             Expr::Cast {
                 ty: _,
                 operand,

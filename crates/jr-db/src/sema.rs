@@ -92,6 +92,13 @@ pub struct CheckResult {
     /// The positional argument list of every call using a named argument or a default
     /// (ADR-0053 §1).
     pub filled_args: Arc<jr_mir::FilledArgs>,
+    /// The type each `type_info(T)` call describes (ADR-0075 §2).
+    ///
+    /// Carried through from `jr-sema` because a *type* is not an operand — nothing in the expression
+    /// tree holds a `PoolId` — so const-eval could not recover the argument by looking at the call.
+    /// `file_consts` turns each entry into the `Type_Info` constant the call folds to.
+    pub type_info_calls:
+        Arc<rustc_hash::FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), jr_pool::PoolId>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +362,7 @@ fn translate_check_output(
         type_name_imports: Arc::from(output.type_name_imports),
         operator_calls: Arc::new(operator_calls),
         filled_args: Arc::new(filled_args),
+        type_info_calls: Arc::new(output.type_info_calls),
     }
 }
 

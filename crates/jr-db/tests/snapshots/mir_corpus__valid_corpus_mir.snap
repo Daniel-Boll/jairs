@@ -5621,3 +5621,150 @@ proc main -> void {
     discard call extern proc1(1_s64)
     return
 }
+
+========================================
+063-type-info.jr
+========================================
+proc same -> bool {
+  params: v0: *Context, v1: string, v2: string
+  slots:
+    s0: string  // temporary
+    s1: string  // temporary
+    s2: *u8  // temporary
+    s3: *u8  // temporary
+  bb0(v0: *Context, v1: string, v2: string):
+    store s0 <- v1
+    store s1 <- v2
+    v3: s64 = load s0.count
+    v4: s64 = load s1.count
+    v5: bool = v3 != v4
+    branch v5 ? bb1() : bb2()
+  bb1():
+    return false
+  bb2():
+    goto bb3()
+  bb3():
+    goto bb4(0_s64)
+  bb4(v6: s64):
+    v7: s64 = load s0.count
+    v8: bool = v6 < v7
+    branch v8 ? bb5() : bb6()
+  bb5():
+    v9: *u8 = load s0.data
+    store s2 <- v9
+    v10: *u8 = addr s2[v6]
+    v11: *u8 = load s1.data
+    store s3 <- v11
+    v12: *u8 = addr s3[v6]
+    v13: u8 = load (v10).*
+    v14: u8 = load (v12).*
+    v15: bool = v13 != v14
+    branch v15 ? bb8() : bb9()
+  bb8():
+    return false
+  bb9():
+    goto bb10()
+  bb10():
+    v16: s64 = v6 + 1_s64
+    goto bb4(v16)
+  bb6():
+    goto bb7()
+  bb7():
+    return true
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: structDeclId(18:0)  // local 1
+    s1: structDeclId(18:0)  // local 2
+    s2: structDeclId(18:0)  // local 3
+    s3: structDeclId(18:0)  // local 4
+  bb0(v0: *Context):
+    store s0 <- {8_enum, "Point", 16_s64, 8_s64}
+    v1: string = load s0.1
+    v2: bool = call proc0(v0, v1, "Point")
+    branch v2 ? bb1() : bb2()
+  bb1():
+    v3: s64 = 0_s64 + 1_s64
+    goto bb3(v3)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v6: s64):
+    v4: s64 = load s0.2
+    v5: bool = v4 == 16_s64
+    branch v5 ? bb4() : bb5()
+  bb4():
+    v7: s64 = v6 + 2_s64
+    goto bb6(v7)
+  bb5():
+    goto bb6(v6)
+  bb6(v10: s64):
+    v8: s64 = load s0.3
+    v9: bool = v8 == 8_s64
+    branch v9 ? bb7() : bb8()
+  bb7():
+    v11: s64 = v10 + 4_s64
+    goto bb9(v11)
+  bb8():
+    goto bb9(v10)
+  bb9(v14: s64):
+    v12: enum = load s0.0
+    v13: bool = v12 == 8_enum
+    branch v13 ? bb10() : bb11()
+  bb10():
+    v15: s64 = v14 + 8_s64
+    goto bb12(v15)
+  bb11():
+    goto bb12(v14)
+  bb12(v18: s64):
+    store s1 <- {2_enum, "s64", 8_s64, 8_s64}
+    v16: string = load s1.1
+    v17: bool = call proc0(v0, v16, "s64")
+    branch v17 ? bb13() : bb14()
+  bb13():
+    v19: s64 = v18 + 16_s64
+    goto bb15(v19)
+  bb14():
+    goto bb15(v18)
+  bb15(v22: s64):
+    v20: s64 = load s1.2
+    v21: bool = v20 == 8_s64
+    branch v21 ? bb16() : bb17()
+  bb16():
+    v23: s64 = v22 + 32_s64
+    goto bb18(v23)
+  bb17():
+    goto bb18(v22)
+  bb18(v26: s64):
+    store s2 <- {11_enum, "Colour", 8_s64, 8_s64}
+    v24: enum = load s2.0
+    v25: bool = v24 == 11_enum
+    branch v25 ? bb19() : bb20()
+  bb19():
+    v27: s64 = v26 + 64_s64
+    goto bb21(v27)
+  bb20():
+    goto bb21(v26)
+  bb21(v31: s64):
+    v28: structDeclId(18:0) = load s0
+    store s3 <- v28
+    v29: s64 = load s3.2
+    v30: bool = v29 == 16_s64
+    branch v30 ? bb22() : bb23()
+  bb22():
+    v32: s64 = v31 + 128_s64
+    goto bb24(v32)
+  bb23():
+    goto bb24(v31)
+  bb24(v33: s64):
+    v34: bool = v33 == 255_s64
+    branch v34 ? bb25() : bb26()
+  bb25():
+    discard call extern proc1(0_s64)
+    goto bb27()
+  bb26():
+    goto bb27()
+  bb27():
+    discard call extern proc1(1_s64)
+    return
+}

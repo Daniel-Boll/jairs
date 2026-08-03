@@ -321,6 +321,32 @@ fn constant_strings_inside_an_aggregate_agree_in_both_engines() {
     );
 }
 
+/// `type_info(T)` must report the **same** size, alignment and kind in both engines (ADR-0075 §2).
+///
+/// Eight assertions summing to 255, so a single wrong field changes the exit value. This is the assertion
+/// that matters most for RTTI: the numbers come from `layout_of`, which is also what every *actual* layout
+/// decision in both engines is computed from — so if `type_info(Point).size` disagreed with the space a
+/// `Point` really occupies, reflection would be confidently lying, and only asserting the value catches it.
+#[test]
+fn type_info_reports_the_same_layout_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/063-type-info.jr");
+
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    assert_eq!(
+        vm.status, 0,
+        "the VM exited {} — a `Type_Info` field did not read back as the compiler's own layout says",
+        vm.status
+    );
+    assert_eq!(
+        native.status, 0,
+        "the native back end exited {} — see the VM assertion above",
+        native.status
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Programs whose *result* is observable
 // ---------------------------------------------------------------------------

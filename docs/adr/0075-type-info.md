@@ -1,4 +1,4 @@
-# ADR-0075: `type_info` returns a pointer to a compiler-built `Type_Info`, and a constant may hold a string
+# ADR-0075: `type_info` returns a `Type_Info` declared in `Basic`, and a constant may hold a string
 
 - **Status:** Accepted
 - **Date:** 2026-08-03
@@ -75,13 +75,29 @@ arrangement that keeps evaluation and interning separable.
 
 ### 2. `Type_Info` is a **compiler-built nominal struct**, and `type_info` is a compiler intrinsic
 
-`type_info(T)` takes a type and returns a `*Type_Info`. The struct is declared **in `modules/Basic`**, as
+`type_info(T)` takes a type and returns a **`Type_Info` by value**. The struct is declared **in `modules/Basic`**, as
 ordinary Jairs source — and the compiler finds it by the mechanism §0 says does not exist yet, which this
 wave adds narrowly: a single by-name lookup of `Type_Info` in the loaded module graph, resolved once and
 cached, failing with a diagnostic if it is absent or shaped wrongly.
 
+**By value rather than by pointer, and this section first said pointer.** The MIR verifier caught it
+within minutes of the first working build: `info := type_info(Point)` produced `deref of a non-pointer`,
+because the value `type_info` folds to is an `Item::AggregateValue` — a *constant*, which has no address.
+A `*Type_Info` therefore needs somewhere for the pointee to live, and the honest options are a stack slot
+(which dangles the moment the frame returns, so `return type_info(T)` would hand back a dead pointer) or
+static data the back end emits per described type (real, but it is a *storage* decision, and a second one
+in a wave that already has two). By value needs neither: an aggregate return is ADR-0051's `sret`
+mechanism, which already works for every other struct-returning procedure.
+
+Nothing is lost, because §4 had already declined to promise that two `type_info(T)` calls yield the same
+pointer — so no pointer identity was on offer to give up. A program that wants one writes
+`info := type_info(Point); p := *info;` and gets a pointer to its own copy, which is honest about the
+lifetime. The verifier's objection is the reason this is recorded as a correction rather than as the
+original plan: a placeholder that type-checked would have been the silent-miscompile failure mode, and
+this project's rule is that such a case refuses instead.
+
 **Why in `Basic` rather than as a `Context`-style compiler `const`.** A `Type_Info` must be *spellable*:
-a program that reflects has to write `info: *Type_Info` and read `info.name`. §0 established that no
+a program that reflects has to write `info: Type_Info` and read `info.name`. §0 established that no
 compiler-declared type is spellable and that fixing that in general would mean giving compiler-declared
 types a `DeclId` and a resolvable `type_value` — a change to name resolution for one type's benefit.
 Declaring the struct in Jairs makes it spellable **for free**, because it is then an ordinary nominal
@@ -96,7 +112,7 @@ mismatch rather than reading whatever is at offset 8. A wrong offset would be a 
 is this project's named failure mode; a refusal is not.
 
 **Rejected: `Type_Info` as a `CONTEXT_FIELD_TYPES`-style structural type.** Symmetric with `Context` and
-needs no lookup — and it would be **unspellable**, so a program could obtain a `*Type_Info` and have no
+needs no lookup — and it would be **unspellable**, so a program could obtain a `Type_Info` and have no
 way to declare a variable of that type or name it in a signature. Reflection you cannot write down is not
 reflection.
 

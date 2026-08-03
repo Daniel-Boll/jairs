@@ -1,0 +1,121 @@
+// **`type_info(T)`** (ADR-0075 §2): what the compiler knows about a type, as a value a program can read.
+// W4's seventh sub-wave, and the first half of RTTI — `Any` is still owed.
+//
+// This is what ADR-0071 §3's refusal was always pointing at. A *type* has no runtime representation, so
+// `t := Point;` is E0261 and must stay so; but a *description* of a type is ordinary data, and that is
+// what this returns:
+//
+//     info := type_info(Point);
+//     info.size        // 16
+//     info.name        // "Point"
+//     info.kind        // Type_Info_Kind.STRUCT
+//
+// Three decisions are visible here, each argued in ADR-0075.
+//
+// **`Type_Info` is declared in `modules/Basic`, in Jairs, not inside the compiler.** The reason is that it
+// has to be *spellable*: a program that reflects needs to write `info: Type_Info` and pass one around.
+// Probing found that **no** compiler-declared type is spellable — `t: Type;` and `c: Context;` both report
+// E0212, because `Context`'s fields are a Rust `const` and such a type has no `DeclId` for name resolution
+// to find (ADR-0057 §1). Declaring it in Jairs makes it an ordinary nominal struct, so field access,
+// layout and pointers all work with no new case.
+//
+// The price is that the compiler depends on a declaration it does not own, and the price is paid honestly:
+// the lookup **validates** field names, types and order, so editing `Basic`'s `Type_Info` produces E0265
+// naming the mismatch rather than a read of whatever now sits at the old offset. A wrong offset would be a
+// silent wrong value — this project's named failure mode — and a refusal is not.
+//
+// **It returns a `Type_Info` by value, and ADR-0075 §2 first said pointer.** The MIR verifier caught that
+// within minutes: the folded value is an `Item::AggregateValue`, a *constant*, which has no address, so
+// `info := type_info(Point)` reported `deref of a non-pointer`. A `*Type_Info` would need the pointee to
+// live somewhere — a stack slot dangles when the frame returns, and static data per type is a storage
+// decision this wave declined to also make. By value needs neither: an aggregate return is ADR-0051's
+// `sret`, which already works. Nothing was lost, because §4 never promised two calls share a pointer.
+//
+// **A builtin needs no declaration.** `type_info(s64)` works, and it took two withheld refusals to get
+// there: the builtin names are ordinary identifiers rather than keywords, so `s64` resolves to *nothing*
+// and E0201 fired on it. Sema resolves it through the same `resolve_type_name` a type annotation uses,
+// which is what makes `type_info(s64).size` and `x: s64` agree by construction rather than by a second
+// table.
+//
+// Eight assertions, summing to 255 so that any one failing changes the exit value. What is deliberately
+// *not* here: per-kind detail (a struct's field list, an array's element type), which ADR-0075 §3 leaves
+// out because each is a variable-length member and wants a memory-ownership decision of its own.
+#import "Basic";
+
+/// Two `s64` fields: size 16, alignment 8. A one-field struct would not distinguish size from alignment.
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+/// An enum, so the `ENUM` kind has something to report and a named type's name is not always a struct's.
+Colour :: enum {
+    RED;
+    GREEN;
+    BLUE;
+}
+
+/// Compares two strings by contents, since `name` is text rather than a pointer to compare.
+same :: (a: string, b: string) -> bool {
+    if a.count != b.count {
+        return false;
+    }
+    i := 0;
+    while i < a.count {
+        p := a.data + i;
+        q := b.data + i;
+        if p.* != q.* {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+main :: () {
+    n := 0;
+
+    // A **declared struct**: name from its declaration, size and alignment from the layout the rest of
+    // the compiler uses, so a disagreement here would be a disagreement about every `Point` ever laid out.
+    p := type_info(Point);
+    if same(p.name, "Point") {
+        n = n + 1;
+    }
+    if p.size == 16 {
+        n = n + 2;
+    }
+    if p.alignment == 8 {
+        n = n + 4;
+    }
+    if p.kind == Type_Info_Kind.STRUCT {
+        n = n + 8;
+    }
+
+    // A **builtin**, which has no declaration at all — the case that needed E0201 withheld twice.
+    i := type_info(s64);
+    if same(i.name, "s64") {
+        n = n + 16;
+    }
+    if i.size == 8 {
+        n = n + 32;
+    }
+
+    // An **enum**, so `kind` distinguishes two named types rather than only naming them.
+    c := type_info(Colour);
+    if c.kind == Type_Info_Kind.ENUM {
+        n = n + 64;
+    }
+
+    // A `Type_Info` is an ordinary value: it copies, and a copy reads the same. This is the part that
+    // would fail if it were a pointer into a dead frame, which is why it is worth an assertion.
+    q := p;
+    if q.size == 16 {
+        n = n + 128;
+    }
+
+    // Every assertion: 255.
+    if n == 255 {
+        exit(0);
+    }
+    exit(1);
+}

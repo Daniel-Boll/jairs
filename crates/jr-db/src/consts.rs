@@ -326,14 +326,20 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     // **Signatures first**, because `wanted` asks them whether a `::` initialiser names a type
     // (ADR-0071 §2). They were already computed one line below; only the order changed.
     let targets = wanted(hir.as_ref(), signatures.signatures.as_ref());
-    if targets.is_empty() {
+
+    let checked_file = checked(db, file, search_paths);
+    // **A `type_info(T)` call needs a value too** (ADR-0075 §2), so the early return has to account for
+    // one: a file whose only compile-time work is a `type_info` has no `wanted` target at all, and
+    // returning here left its call unfolded — which `scan` then refused as "a name failed to resolve",
+    // the callee naming no procedure. Found by running the feature's own probe.
+    if targets.is_empty() && checked_file.type_info_calls.is_empty() {
         return ConstResult {
             values: Arc::new(ConstValues::new()),
             diagnostics: Arc::new(Diagnostics::new()),
         };
     }
 
-    let types = checked(db, file, search_paths).types;
+    let types = checked_file.types.clone();
     let imports = imported_procs(db, file, search_paths);
     let file_id = crate::queries::resolve_file_id(db, file);
     let interner = db.interner();
@@ -372,6 +378,31 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     let mut pool = crate::sema::lock_pool(db);
     let mut values = ConstValues::new();
     let mut failures: Vec<(Wanted, String)> = Vec::new();
+    let mut type_info_failures: Vec<String> = Vec::new();
+
+    // **`type_info(T)` folds to an interned `Type_Info` aggregate** (ADR-0075 §2), built here because
+    // this is where the pool is mutable and the described type is known. It needs no VM: every field is
+    // something the pool can already answer — the kind from the type's own `Item`, the name from the
+    // signatures, and the size and alignment from `layout_of`. So it is not a round-robin target and
+    // cannot fail to converge; it is recorded before the loop and is simply available.
+    //
+    // Keyed as a `run` value, the channel a `#run` already uses, so `jr-mir` reads it with the mechanism
+    // it has rather than a second one.
+    for ((scope, expr), described) in checked_file.type_info_calls.iter() {
+        // The imported signatures are searched **as well as** this file's, because `Type_Info` is
+        // declared in `Basic` and so is almost never local: looking only at the own file reported
+        // "`Type_Info` is not usable" for every correct program, found by running the probe.
+        let mut all_sigs: Vec<&jr_sema::FileSignatures> = vec![signatures.signatures.as_ref()];
+        all_sigs.extend(modules.iter().map(|m| m.signatures.as_ref()));
+        match type_info_value(&mut pool, interner, &all_sigs, *described) {
+            Ok(value) => values.set_run(*scope, *expr, value),
+            // Sema already refused a type with no layout (E0266), so a failure here is an internal
+            // inconsistency rather than a user error. Reported as E0230 like any other const-eval
+            // failure and never lowered to a placeholder: without a recorded value `scan` refuses the
+            // body, which is the honest outcome.
+            Err(why) => type_info_failures.push(why),
+        }
+    }
 
     for _round in 0..MAX_ROUNDS {
         let remaining: Vec<Wanted> = targets
@@ -468,6 +499,21 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
                     "`#run` and file-level constants are evaluated in the bytecode VM, which \
                      consumes the same MIR the back end does",
                 ),
+        );
+    }
+
+    // A `type_info` that sema accepted and this could not build (ADR-0075 §2). Placed at the file's
+    // first item rather than at the call, because the value is keyed by expression and this query does
+    // not hold the body's spans — and it is unreachable in practice, since sema has already checked the
+    // layout and the struct's shape. Reported rather than dropped so the case cannot be silent.
+    for reason in type_info_failures {
+        let Some(span) = hir.items.first().map(|item| item.span) else {
+            continue;
+        };
+        diagnostics.push(
+            Diagnostic::error(span, format!("compile-time evaluation failed: {reason}"))
+                .with_code(E0230)
+                .with_note("`type_info` builds a `Type_Info` value at compile time (ADR-0075 §2)"),
         );
     }
 
@@ -715,6 +761,164 @@ fn intern_aggregate(pool: &mut Pool, ty: PoolId, raws: &[Raw]) -> Result<PoolId,
         elements.push(intern_element(pool, elem_ty, raw)?);
     }
     Ok(pool.aggregate_value(ty, elements))
+}
+
+/// Builds the `Type_Info` constant describing `described` (ADR-0075 §2).
+///
+/// **No VM is involved**, which is what makes `type_info` cheap and total: every field is something the
+/// pool can already answer. The kind comes from the described type's own `Item`, the name from the
+/// signatures' `type_name` (falling back to the compiler's own rendering for a builtin, which has no
+/// declaration to have recorded a name), and the size and alignment from `layout_of`.
+///
+/// The result is an `Item::AggregateValue` — the representation ADR-0074 added — whose `name` element is
+/// an `Item::StrValue`, which is the thing ADR-0075 §1 had to make possible first.
+///
+/// The layout is asked for `LP64`, matching the target of every engine in the slice. That is a **target
+/// fact inside a compile-time value**, and it is the one place this wave knowingly bakes one in: a
+/// `Type_Info` reports a *size*, so it cannot be target-independent the way ADR-0074 §1 kept the rest of
+/// the pool. Recorded here rather than hidden, because a second target would need this reconsidered.
+fn type_info_value(
+    pool: &mut Pool,
+    interner: &jr_base::Interner,
+    signatures: &[&jr_sema::FileSignatures],
+    described: PoolId,
+) -> Result<PoolId, String> {
+    let target = jr_pool::TargetLayout::LP64;
+    let layout = jr_pool::layout_of(pool, target, described)
+        .map_err(|e| format!("`type_info`'s argument has no layout: {e}"))?;
+
+    let kind_name = type_info_kind_name(pool, described)
+        .ok_or_else(|| "`type_info` cannot describe this shape".to_owned())?;
+    // A **declared** type's name comes from the signatures, which recorded it; a builtin has no
+    // declaration, so its spelling is derived from its `Item`. Only the shapes a `Type_Info` can describe
+    // need a name here, because the others were refused above.
+    let name = signatures
+        .iter()
+        .find_map(|sigs| sigs.type_name(described))
+        .map(ToOwned::to_owned)
+        .or_else(|| builtin_type_name(pool, described))
+        .unwrap_or_else(|| kind_name.to_lowercase());
+
+    // The `kind` field's own type and value, read from the `Type_Info_Kind` enum declared beside
+    // `Type_Info` in `Basic`. Read rather than assumed: the member values are the enum's, so a
+    // reordering of the declaration changes the numbers and this follows it.
+    let info_ty = type_info_struct_type(interner, signatures)
+        .ok_or_else(|| "the standard library's `Type_Info` is not usable".to_owned())?;
+    let fields = struct_fields_of(pool, info_ty)
+        .ok_or_else(|| "`Type_Info`'s fields are not recorded".to_owned())?;
+    let kind_ty = fields
+        .first()
+        .map(|f| f.ty)
+        .ok_or_else(|| "`Type_Info` has no `kind` field".to_owned())?;
+    let kind_value = enum_member_value(pool, interner, kind_ty, kind_name).ok_or_else(|| {
+        format!("`Type_Info_Kind` has no member `{kind_name}`, which the compiler expects")
+    })?;
+
+    let elements = vec![
+        pool.int_value(kind_ty, kind_value),
+        pool.str_value(&name),
+        pool.int_value(PoolId::S64, layout.size),
+        pool.int_value(PoolId::S64, u64::from(layout.align)),
+    ];
+    Ok(pool.aggregate_value(info_ty, elements))
+}
+
+/// The source spelling of a **builtin** type, which has no declaration to have recorded a name.
+///
+/// Only the scalar builtins are answered. A composite — `*Point`, `[2]s64` — would need its element
+/// rendered too, and ADR-0075 §3 leaves per-kind detail out of this wave, so such a type falls back to
+/// its kind rather than to a half-built spelling that looks like a real name.
+fn builtin_type_name(pool: &Pool, ty: PoolId) -> Option<String> {
+    match *pool.item(ty) {
+        jr_pool::Item::VoidType => Some("void".to_owned()),
+        jr_pool::Item::BoolType => Some("bool".to_owned()),
+        jr_pool::Item::IntType { signed, bits } => {
+            Some(format!("{}{bits}", if signed { 's' } else { 'u' }))
+        }
+        jr_pool::Item::FloatType { bits } => Some(format!("float{bits}")),
+        jr_pool::Item::StringType => Some("string".to_owned()),
+        _ => None,
+    }
+}
+
+/// The `Type_Info_Kind` member name for a type's shape (ADR-0075 §3).
+///
+/// Exhaustive over `Item` rather than using a `_` arm, so that adding a type variant is a compile error
+/// here — the discipline that has caught real bugs in this project. A *value* variant is not a type and
+/// answers `None`, as does a type with no runtime form, which sema has already refused with E0266.
+fn type_info_kind_name(pool: &Pool, ty: PoolId) -> Option<&'static str> {
+    match *pool.item(ty) {
+        jr_pool::Item::VoidType => Some("VOID"),
+        jr_pool::Item::BoolType => Some("BOOL"),
+        jr_pool::Item::IntType { .. } => Some("INTEGER"),
+        jr_pool::Item::FloatType { .. } => Some("FLOAT"),
+        jr_pool::Item::StringType => Some("STRING"),
+        jr_pool::Item::PointerType(..) => Some("POINTER"),
+        jr_pool::Item::ArrayType { .. } => Some("ARRAY"),
+        jr_pool::Item::ViewType { .. } => Some("VIEW"),
+        jr_pool::Item::StructType { .. } => Some("STRUCT"),
+        jr_pool::Item::UnionType { .. } => Some("UNION"),
+        jr_pool::Item::VariantType { .. } => Some("VARIANT"),
+        jr_pool::Item::EnumType { .. } => Some("ENUM"),
+        jr_pool::Item::ProcType { .. } => Some("PROCEDURE"),
+        // No runtime form, so no `Type_Info`: sema refuses these with E0266 before reaching here.
+        jr_pool::Item::TypeType
+        | jr_pool::Item::ErrorType
+        | jr_pool::Item::ForeignLibraryType
+        | jr_pool::Item::ContextType
+        | jr_pool::Item::ResultsType { .. } => None,
+        // A value is not a type.
+        jr_pool::Item::VoidValue
+        | jr_pool::Item::BoolValue(..)
+        | jr_pool::Item::IntValue { .. }
+        | jr_pool::Item::FloatValue { .. }
+        | jr_pool::Item::StrValue(..)
+        | jr_pool::Item::TypeValue(..)
+        | jr_pool::Item::ProcValue { .. }
+        | jr_pool::Item::ForeignLibraryValue(..)
+        | jr_pool::Item::AggregateValue { .. } => None,
+    }
+}
+
+/// Looks `Type_Info` up in the signatures, without validating it.
+///
+/// The validation lives in `jr-sema`, which reports E0265 — this runs after that check has passed, so a
+/// `None` here means the same thing and is reported as a const-eval failure.
+fn type_info_struct_type(
+    interner: &jr_base::Interner,
+    signatures: &[&jr_sema::FileSignatures],
+) -> Option<PoolId> {
+    let name = interner.intern("Type_Info");
+    signatures
+        .iter()
+        .find_map(|sigs| sigs.lookup(name))
+        .and_then(|entry| entry.type_value)
+}
+
+/// The fields of a struct type, if it is one and they are recorded.
+fn struct_fields_of(pool: &Pool, ty: PoolId) -> Option<Vec<jr_pool::Field>> {
+    let jr_pool::Item::StructType { decl } = *pool.item(ty) else {
+        return None;
+    };
+    pool.struct_fields(decl).map(<[_]>::to_vec)
+}
+
+/// The value of a named member of an enum type.
+fn enum_member_value(
+    pool: &Pool,
+    interner: &jr_base::Interner,
+    enum_ty: PoolId,
+    member: &str,
+) -> Option<u64> {
+    let jr_pool::Item::EnumType { decl, .. } = *pool.item(enum_ty) else {
+        return None;
+    };
+    pool.enum_members(decl)?
+        .iter()
+        .find(|m| interner.resolve(m.name) == member)
+        // `EnumMember::value` is an `i64` and `int_value` takes raw bits, so the cast is the
+        // two's-complement encoding rather than a conversion — the same move `Colour.RED` makes.
+        .map(|m| m.value as u64)
 }
 
 /// Interns one already-reduced element of an aggregate constant (ADR-0074 §1, ADR-0075 §1).
