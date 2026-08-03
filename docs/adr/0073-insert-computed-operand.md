@@ -140,3 +140,16 @@ must never have, which is the argument `LayoutError::Recursive` already makes fo
   program that is *legal at every individual step*.
 - **PLAN §7's framing of W4's remainder was wrong and is corrected**: the two remaining features are not
   one problem, and the one that looked harder (this) is the one that needs no new representation.
+
+### Implementation note: the blast radius is smaller than §1 drew
+
+§1 proposed a `file_hir_with_inserts` feeding the whole front end. Reading the consumers shows that is
+more than needed, and the reason narrows the remaining work. **`#insert` is body-scoped** (ADR-0072 §5
+refuses it at file scope), so an expanded insert cannot change a file's *items* — and `imports_of`,
+`file_exports` and `file_signatures` each walk **only items**, verified by reading them. So none of those
+queries, nor anything downstream of them alone, is affected by expansion; only the **body-consuming**
+queries — `checked` and `file_mir` — need the expanded bodies. The pre-pass therefore feeds the
+body-lowering path specifically, not `file_hir` wholesale, which both shrinks the change and keeps
+`imports_of`/`file_exports`/`file_signatures` — the very queries whose item-only shape prevents the
+import cycle (ADR-0054 §3) — untouched. This is a refinement within §1's acyclic-pre-pass decision, not a
+departure from it.
