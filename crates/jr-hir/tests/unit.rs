@@ -1347,6 +1347,45 @@ fn a_nested_insert_lowers_through_both_levels() {
     );
 }
 
+/// Builds an `n`-deep literal `#insert` nest, escaping once per level.
+///
+/// A helper because a 17-deep nest is a quarter-megabyte of source — writing it by hand is not an
+/// option, and embedding it would drown the test it serves.
+fn nested_insert(depth: usize) -> String {
+    let mut inner = "x := 1;".to_owned();
+    for _ in 0..depth {
+        let escaped = inner.replace('\\', "\\\\").replace('"', "\\\"");
+        inner = format!("#insert \"{escaped}\";");
+    }
+    format!("main :: () {{ {inner} }}")
+}
+
+#[test]
+fn a_nest_within_the_depth_bound_lowers_cleanly() {
+    // ADR-0073 §3: the bound is 16, so 16 levels must still work — a bound that refused a legal nest
+    // would be the false-error direction, worse than none.
+    let (_, diags, _) = lower(&nested_insert(16));
+    assert!(
+        diags.is_empty(),
+        "16 levels is within the bound and must lower cleanly: {:?}",
+        diags.iter().map(|d| d.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_nest_past_the_depth_bound_is_e0264_not_a_hang() {
+    // ADR-0073 §3: one level past the bound is refused with a diagnostic rather than exhausting the
+    // stack. A literal nest cannot in practice reach this — the text would be enormous — but the guard
+    // must exist *before* a computed operand can produce a self-reproducing string, which is the whole
+    // reason the bound is added in this sub-wave rather than the next.
+    let (_, diags, _) = lower(&nested_insert(17));
+    assert!(
+        diags.iter().any(|d| d.code == Some("E0264")),
+        "expected E0264, got {:?}",
+        diags.iter().map(|d| d.code).collect::<Vec<_>>()
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Dump
 // ---------------------------------------------------------------------------

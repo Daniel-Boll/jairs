@@ -53,6 +53,20 @@ const E0209: &str = "E0209";
 const E0262: &str = "E0262";
 /// The text of an `#insert` does not parse (ADR-0072 §3).
 const E0263: &str = "E0263";
+/// `#insert` expansion nested deeper than [`MAX_INSERT_DEPTH`] (ADR-0073 §3).
+const E0264: &str = "E0264";
+
+/// How deep `#insert` expansion may nest before it is refused (ADR-0073 §3).
+///
+/// A **bound with a diagnostic**, not a stack-overflow: a compiler that hangs or aborts on a program is
+/// the one failure mode a compiler must never have, which is the argument `LayoutError::Recursive`
+/// already makes for a recursive struct and `E0199` for parser nesting.
+///
+/// Sixteen, matching `jr-db`'s `MAX_ROUNDS` for constant evaluation, because both bound "how many times
+/// may this feed itself" and a reader meeting one number twice has one thing to remember. Deliberately
+/// far above any *written* nest that can exist: ADR-0072 §5 measured that escaping doubles the text per
+/// level, so 16 levels of literal nesting is already ~32 KB of source and 40 would be ~10¹² bytes.
+const MAX_INSERT_DEPTH: u32 = 16;
 
 /// Directives that are legal in expression position.
 ///
@@ -963,6 +977,21 @@ struct BodyLowerCtx<'a> {
     /// Found by running, and it is exactly the clamping failure §2 was written to prevent. Catching it at
     /// the source is the only version that cannot be incomplete.
     span_override: Option<Span>,
+
+    /// How many `#insert` expansions enclose the statement being lowered (ADR-0073 §3).
+    ///
+    /// Zero in ordinary source. Incremented for the duration of each nested expansion, so it is the
+    /// *expansion depth* rather than a count of inserts: a file may contain any number of inserts, and
+    /// each may expand to [`MAX_INSERT_DEPTH`].
+    ///
+    /// **A literal `#insert` cannot exhaust this and that is not a reason to omit it.** ADR-0072 §5
+    /// established that escaping *doubles* the text at every level, so 18 levels of written nesting is
+    /// 512 KB of source and the file is its own bound. A **computed** operand removes that bound
+    /// entirely — a generated string can reproduce itself without growing, which is a quine — and
+    /// ADR-0072 §5 named this sub-wave as the one that owes the guard. Adding it before the computed
+    /// operand can produce one means the guard exists *when* the feature does, rather than after the
+    /// first hang.
+    insert_depth: u32,
 }
 
 impl<'a> BodyLowerCtx<'a> {
@@ -979,6 +1008,7 @@ impl<'a> BodyLowerCtx<'a> {
             params: Vec::new(),
             scope_stack: vec![Vec::new()],
             span_override: None,
+            insert_depth: 0,
         }
     }
 
@@ -1116,6 +1146,29 @@ impl<'a> BodyLowerCtx<'a> {
     /// offsets into the *inserted string*, and `jr-diag` clamps an out-of-range offset rather than
     /// rejecting it, so using one would silently underline source the user never wrote.
     fn lower_insert(&mut self, directive: &jr_syntax::ast::DirectiveExpr, span: Span) -> StmtId {
+        // **Checked before the operand is even looked at** (ADR-0073 §3), because the thing being
+        // bounded is the recursion itself: `lower_stmt` calls this, which calls `lower_stmt`, and an
+        // operand that reproduces itself would never reach a base case. Refused with a diagnostic
+        // rather than allowed to exhaust the stack — a compiler must not abort on a program.
+        if self.insert_depth >= MAX_INSERT_DEPTH {
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`#insert` expanded more than {MAX_INSERT_DEPTH} levels deep"),
+                )
+                .with_code(E0264)
+                .with_note(
+                    "an insert whose text contains another expands recursively, and this one did not \
+                     stop",
+                )
+                .with_help(
+                    "a *literal* insert is bounded by its own text, so this usually means an insert's \
+                     operand reproduces itself",
+                ),
+            );
+            return self.alloc_stmt(Stmt::Error(span));
+        }
+
         let Some(arg) = directive.string_arg() else {
             // No string operand: either something else was written, or nothing was. Refused rather than
             // treated as an empty insert, because `#insert compute()` is the *computed* form ADR-0072 §4
@@ -1163,6 +1216,12 @@ impl<'a> BodyLowerCtx<'a> {
         let outer_override = self.span_override;
         self.span_override = Some(span);
 
+        // One level deeper for the duration, so an insert *inside* this text sees its true depth
+        // (ADR-0073 §3). Saved and restored rather than reset, for the same reason `span_override` is:
+        // this is a property of where lowering currently *is*, not of the file.
+        let outer_depth = self.insert_depth;
+        self.insert_depth = outer_depth + 1;
+
         // Lowered in the **enclosing** scope. `parse_stmts` roots the result in a `BLOCK`, so its
         // statements are reached through that node — but `lower_block` is deliberately not called on it,
         // since that would push a scope and hide every name the insert declares.
@@ -1176,6 +1235,7 @@ impl<'a> BodyLowerCtx<'a> {
             None => Vec::new(),
         };
 
+        self.insert_depth = outer_depth;
         self.span_override = outer_override;
         self.alloc_stmt(Stmt::Insert { stmts, span })
     }
