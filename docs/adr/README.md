@@ -93,3 +93,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0070](0070-array-length-from-a-constant.md) | An array length may name a literal-valued constant (amends ADR-0039 §3a) | Accepted |
 | [0071](0071-type-values.md) | A type is a compile-time value; using one at run time is refused | Accepted |
 | [0072](0072-insert.md) | `#insert` of a literal string, lowered where it is written | Accepted |
+| [0073](0073-insert-computed-operand.md) | `#insert` of a computed string; the cycle broken by a narrow pre-pass, not by salsa's fixed-point recovery | Accepted |
