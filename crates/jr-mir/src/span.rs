@@ -87,6 +87,8 @@ fn stmt_span(stmt: &jr_hir::Stmt) -> Span {
         Stmt::Break(_, span) | Stmt::Continue(_, span) | Stmt::Defer(_, span) => *span,
         Stmt::PushContext(_, span) => *span,
         Stmt::Switch { span, .. } => *span,
+        // The `#insert` directive's own span, which every statement inside it shares (ADR-0072 §2).
+        Stmt::Insert { span, .. } => *span,
         Stmt::Assign { span, .. }
         | Stmt::If { span, .. }
         | Stmt::While { span, .. }

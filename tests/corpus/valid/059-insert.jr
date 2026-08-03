@@ -1,0 +1,92 @@
+// `#insert "…"` — statements parsed from a string literal and lowered **where the directive is written**
+// (ADR-0072). W4's fourth sub-wave, scoped to a *literal* operand.
+//
+// The model is one sentence: an insert is textual substitution that happens after parsing rather than
+// before. Its statements go into the *enclosing* scope, not a nested one — so a local an insert declares
+// is visible afterwards, and a name from the enclosing body is visible inside.
+//
+// That is why the HIR gained a `Stmt::Insert` rather than reusing `Stmt::Block`, and a block would have
+// been wrong in **two separate ways**, each of which this file pins:
+//
+//   * `jr-mir` treats a block as a **defer scope**, so a `defer` inside an insert would run at the
+//     insert's end rather than the enclosing body's;
+//   * lowering pushes a **name scope** for a block, so a local the insert declared would be invisible on
+//     the next line — the exact thing the feature promises works.
+//
+// Both were verified by running rather than by reading: the `defer` here reports **64** on the way out of
+// `main`, which is only possible if the deferred statement belongs to `main`'s scope — the last `n = n + 1`
+// happens after the `defer` was written and is still counted.
+//
+// Seven things worth checking, and the `exit` gives each teeth:
+//
+//   * a **single statement** declares a local the following real code reads (`n := 2 + 3`);
+//   * **several statements** in one insert, including one that reads a local declared by the *previous*
+//     statement of the same insert;
+//   * an **empty** insert is legal and inserts nothing — refusing it would be a rule about a program that
+//     means exactly what it says;
+//   * a name declared by **one insert is visible to another**, so inserts are not scoped against each
+//     other either;
+//   * **control flow** survives: an `if` and a `for` inside inserted text lower like any other;
+//   * an **escape sequence** is decoded, so `\"hi\"` inserts a string literal rather than the six
+//     characters around it — the operand goes through the same decoder every string literal does;
+//   * a **nested** insert works, and needed no code: the recursion falls out of statement lowering. It
+//     cannot run away, because escaping *doubles* the text at every level, so a literal insert is bounded
+//     by the file it is written in (ADR-0072 §5).
+//
+// What is **not** here is a computed operand (`#insert build_it()`), which is where sema and the VM become
+// mutually recursive — lowering would have to ask a query that runs downstream of it, closing
+// `file_hir → file_consts → checked → resolved → file_hir`. That is a salsa cycle and its own sub-wave.
+// `type-errors/064` and `065` hold the refusals.
+#import "Basic";
+
+main :: () {
+    n := 0;
+
+    // One statement, declaring a local that the *next* real line reads. If an insert were a scope, this
+    // would be an unresolved name.
+    #insert "five := 2 + 3;";
+    if five == 5 {
+        n = n + 1;
+    }
+
+    // Several statements in one insert, the second reading the first's local.
+    #insert "a := 10; b := a + 1;";
+    if b == 11 {
+        n = n + 2;
+    }
+
+    // An empty insert: legal, and inserts nothing.
+    #insert "";
+
+    // A name from one insert, read by another — inserts are not scoped against each other.
+    #insert "c := b + 1;";
+    if c == 12 {
+        n = n + 4;
+    }
+
+    // Control flow inside inserted text, including a loop. `total` is declared and used entirely within
+    // the insert; `n` is the enclosing body's, so the insert also *writes* an outer local.
+    #insert "total := 0; for i: 0..4 { total = total + i; } if total == 6 { n = n + 8; }";
+
+    // An escape sequence, decoded by the same path every string literal takes — so this inserts a
+    // `string` and reads its `.count`, rather than inserting six literal characters.
+    #insert "greeting := \"hi\"; if greeting.count == 2 { n = n + 16; }";
+
+    // Nested: the inner insert's text is itself an `#insert`. No depth bound is needed, because the
+    // escaping makes the text grow exponentially with depth.
+    #insert "#insert \"nested := 32;\";";
+    if nested == 32 {
+        n = n + 32;
+    }
+
+    // A `defer` in inserted code, which runs when **`main`** is left rather than when the insert ends.
+    // This is the observation that made `Stmt::Insert` necessary: with a `Stmt::Block` it would run here,
+    // and `n` would be 64 before the checks above finished.
+    #insert "defer exit(n);";
+
+    // The six checks above sum to 63, and this line makes it **64** — which is the point of putting a
+    // statement after the `defer`: the deferred `exit(n)` reads `n` as it is when `main` is *left*, not as
+    // it was when the `defer` was written. An insert whose statements formed their own scope would have
+    // run the `exit` here instead, reporting 63, so the expected value distinguishes the two designs.
+    n = n + 1;
+}

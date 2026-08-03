@@ -110,6 +110,12 @@ pub(crate) const E0112: &str = "E0112";
 pub(crate) const E0113: &str = "E0113";
 
 /// A token that cannot start a statement, inside a block.
+///
+/// Also raised by `parse_stmts` for the same fault in an `#insert`'s text (ADR-0072 §1), which is a
+/// *reuse* rather than a new code because the fault is identical — a token where a statement belongs —
+/// and the position differs only in which text it indexes. `jr-hir` re-points and re-words it as **E0263**
+/// before a reader sees it, since this code's span is an offset into the inserted string rather than a
+/// position in any file (ADR-0072 §3).
 pub(crate) const E0114: &str = "E0114";
 
 /// A `{` that is never closed. Reported at the `{`.

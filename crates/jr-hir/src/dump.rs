@@ -371,6 +371,18 @@ impl<'a> Dumper<'a> {
                 self.dump_body_stmt(body, inner);
                 self.indent -= 1;
             }
+            // Printed as its own node with the statements nested, so a snapshot shows *what an insert
+            // became* — which is the only place the inserted text is visible after lowering, since every
+            // statement carries the directive's span rather than one of its own (ADR-0072 §2).
+            Stmt::Insert { stmts, .. } => {
+                let stmts = stmts.clone();
+                self.line(&format!("Insert ({} stmts)", stmts.len()));
+                self.indent += 1;
+                for inner in stmts {
+                    self.dump_body_stmt(body, inner);
+                }
+                self.indent -= 1;
+            }
             Stmt::Switch { value, arms, .. } => {
                 let value = *value;
                 let arms = arms.clone();

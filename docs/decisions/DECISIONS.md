@@ -708,3 +708,86 @@ All four forks taken as recommended. ADR-0071 records them. **One new diagnostic
 at run time), so **E0262 becomes the first free code** — the wave's real content is removing a silent
 miscompile, which is why it ships separately rather than inside a larger RTTI change. No MIR change and no
 back-end change: a type value never reaches either.
+
+---
+
+## Wave: `#insert` (ADR-0072), 2026-07-31 — W4 sub-wave 4, scoped
+
+### What running found first
+
+`#insert` and `#code` are both genuinely absent (E0209 and E0100 respectively) — worth checking, because
+the previous two sub-waves each found their scheduled work already delivered (ADR-0067 §0, ADR-0070 §0).
+Three further facts, checked rather than assumed:
+
+* **`jr-hir` already depends on `jr-syntax`** and `jr_syntax::parse` is public, so lowering can parse a
+  string of source with no new dependency. That is why a *literal* `#insert` needs none of W4's mutual
+  recursion.
+* **The parser already produces the node.** `#insert "text"` parses as the generic `DIRECTIVE_EXPR` with a
+  `string_arg`, because the lexer is deliberately permissive about `#anything`. No grammar change, no
+  lexer change, no new `SyntaxKind` — so gate 6 has nothing new to check and `grammar.js` is untouched.
+* **A `Span` is `(FileId, TextRange)` into a real file, and out-of-range offsets are *clamped*, not
+  rejected** — `jr-diag`'s renderer takes `.min(primary_len)` so it "never panics". So a span into
+  synthesized text is caught by nothing: it silently underlines real source the user did not write and
+  says the error is there. This single fact decides the whole design.
+
+### Fork 1 — how much of sub-wave 4 to take
+
+- Options: **`#insert "literal"` only, spans pointing at the directive (taken, recommended)**; `#insert` of
+  a computed string; `Code` as a first-class value first; skip to a deferred item.
+- Why: a computed operand is where sema and the VM become mutually recursive, and the reason is a
+  dependency *direction* rather than difficulty — lowering produces the HIR that `resolved` consumes,
+  which `checked` consumes, which `file_consts` consumes, so `#insert build_it()` would need
+  `file_hir → file_consts → checked → resolved → file_hir`. That is a salsa cycle, the same shape ADR-0069
+  §1 had to restructure around. A `Code` value needs a representation for a quoted syntax tree, whose first
+  question is ADR-0071 §4's — does it exist at run time? — and it is only useful once something can splice
+  it. The literal form is the smallest thing that is genuinely `#insert`, and it needs no VM at all.
+
+### Fork 2 — what a diagnostic inside inserted code points at
+
+- Options: **the `#insert` directive, plus a note naming the offset in the inserted text (taken,
+  recommended)**; a synthesized `FileId` for the inserted text; the directive and nothing more.
+- Why: the directive's span is *honest* — the `#insert` is where that code entered the program, there is no
+  other place it exists — and always in range, so the clamping above can never fire on it. A synthesized
+  `FileId` gives genuinely-real spans and the better message, and was rejected on cost: a `FileId` is a
+  load-order index (AGENTS.md forbids printing one into a snapshot for this reason), and four subsystems
+  would have to learn about a file with no path — the `SourceMap`, the module loader, salsa's inputs and
+  the LSP's document store. It can be added later without changing what programs mean. Saying nothing more
+  produces a diagnostic the reader cannot act on the moment an insert has two statements, which is
+  ADR-0043's "true and useless" failure.
+
+### Resolution
+
+Both forks taken as recommended. ADR-0072 records them, and §5 lists what is deliberately absent: a
+computed *or named* operand (refused even when the string might already be known, so the refusal does not
+depend on how the string was written), `#code`/`Code`, `#insert` at file scope (it would change the item
+tree, so the signature phase would see declarations no file walk produced), and — as drafted — a nested `#insert`.
+
+**That last one was wrong, and running it is what showed why.** Nesting *works*, with no code: the
+recursion falls out of `lower_stmt` calling itself. And it cannot run away, because **escaping doubles the
+text at every level** — 12 levels is 8 KB of source, 18 levels is 512 KB, 40 levels would be ~10¹² bytes.
+A literal `#insert` is bounded by the file it is written in, so no depth bound is needed. (My first attempt
+to test this generated a 40-level file and appeared to hang; the file had never been written, and the real
+lesson was about the exponent.) A depth bound *will* be owed when the computed operand of §4 arrives, since
+a generated string can reproduce itself without growing. Two new codes, so **E0264 becomes the
+first free code**. Lowered in `jr-hir` rather than spliced pre-parse, so the CST stays lossless — a
+pre-parse splice would leave no node for the directive, and the formatter would delete it, which is
+precisely the `is_stmt_kind` failure that destroyed source four times in one wave.
+
+### Three things implementing it changed
+
+* **E0262's corpus file went to `imports/invalid/`, and the rule is the stage rather than the imports.**
+  `type-errors/`' harness requires its files to "parse, lower and resolve cleanly" *before* checking the
+  code they declare, and E0262 comes out of **lowering** — so the file failed two `jr-sema` corpus tests as
+  first written. ADR-0050's `using` refusals are in `imports/invalid/` for the same reason, so this used a
+  precedent rather than weakening a contract.
+* **E0263 re-words the parser's E0114 rather than adding a parser code.** Same fault — a token where a
+  statement belongs — differing only in which text the offset indexes.
+* **The number that distinguishes the two designs was asserted nowhere.** The corpus differential checks
+  only that both engines *agree*, and giving an insert its own defer scope makes both exit **63** in
+  agreement — whole suite green but for one MIR snapshot diff. Verified by making that change. `#insert`'s
+  corpus program must exit **64**, and that now has its own test instead of resting on a snapshot a
+  reviewer could accept. Generalising §5's lesson: when a claim is about behaviour, assert the behaviour.
+
+**Eight tests (936 → 944)**, each teeth-checked by disabling the mechanism it pins — neutering the span
+override fails exactly the two span tests, pushing a scope fails exactly the enclosing-scope test, and a
+defer scope fails exactly the exit-status test.

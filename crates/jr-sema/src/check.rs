@@ -291,6 +291,15 @@ impl Ctx<'_> {
             // (ADR-0063 §4). The message names `push_context` so the diagnostic points at what was
             // written. The block is checked regardless, so a body error inside it is still reported.
             Stmt::Switch { value, arms, span } => self.check_switch(body, value, &arms, span),
+            // An `#insert`'s statements are checked **as if written here** (ADR-0072 §1) — no scope, no
+            // separate environment, so a local the insert declares is in `self.locals` for the statements
+            // after it. Nothing here can tell they came from a string, which is the evidence lowering put
+            // them in the enclosing body rather than in a nested one.
+            Stmt::Insert { stmts, span: _ } => {
+                for inner in stmts {
+                    self.check_stmt(body, inner);
+                }
+            }
             Stmt::PushContext(inner, span) => {
                 if self.body_is_c_call(body) {
                     self.diags.push(

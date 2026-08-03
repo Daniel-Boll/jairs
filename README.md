@@ -18,7 +18,15 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after **a type as a compile-time value** (ADR-0071): `T :: Point;` binds a type to a name,
+Last updated after **`#insert` of a literal string** (ADR-0072): `#insert "n := 2 + 3;";` parses its
+operand as Jairs source and lowers the statements **where the directive is written** — same scope, so the
+next line can read `n`. Every synthesized node's span is the `#insert` itself, because inserted code has no
+position in any file and `jr-diag` *clamps* an out-of-range offset rather than rejecting it, so a
+synthesized span would silently underline source the user never wrote. Nesting works and needed no code;
+it cannot run away because escaping doubles the text at every level, so a written insert is bounded by its
+file. A *computed* operand (`#insert build_it()`) is deliberately a later sub-wave: it needs lowering to
+depend on const-eval, which runs downstream of it, and that is the salsa cycle W4 exists to break. On top
+of **a type as a compile-time value** (ADR-0071): `T :: Point;` binds a type to a name,
 and using a type where a *runtime* value is expected is now an error rather than a silent miscompile.
 `t := Point;` used to type-check cleanly and exit 0 in both engines while storing an undefined value into
 a slot of a type that has no runtime layout at all — the project's first named failure mode, and only a
@@ -63,7 +71,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 936 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
+`print_int` (ADR-0037). 944 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do
@@ -125,7 +133,8 @@ The authoritative version of this list is
 | integer literals (dec/hex/bin/oct, `_`), string literals + escapes | |
 | float literals: `1.5`, `1e9`, `1.5e-3`, `1_000.5` | float *printing* — `print_int` has no counterpart |
 | nesting block comments; `///` and `//!` doc comments, shown on hover | doc generation (`jr doc`) — nothing consumes docs but the language server |
-| `#run` at file scope or in a body, calling local or **imported** procedures, with loops and nested calls | `type_info()`, `Any`, `#insert`, `#code` (**W4**, in sub-waves) |
+| `#run` at file scope or in a body, calling local or **imported** procedures, with loops and nested calls | `type_info()`, `Any`, `#code` (**W4**, in sub-waves) |
+| `#insert "…"` of a **string literal**, lowered where it is written — same scope, so a local it declares is visible after it; nesting works, and every diagnostic points at the directive and names its offset into the inserted text (ADR-0072) | a **computed** or named operand (`#insert build_it()`), which needs lowering to depend on const-eval — the W4 cycle; `#insert` at file scope, which would change the item tree; `#code` and the `Code` type |
 | a **type as a compile-time value**: `T :: Point;` binds one, and `T` is usable wherever `Point` is — as an annotation, a parameter, a field, an array element, a pointee; an enum alias carries its members (ADR-0071) | a chain (`B :: A`); comparing types (`T == U`); a `Type` parameter; `Type` as an annotation, which does not parse |
 | using a type where a **runtime** value is expected is refused (E0261) — it has no runtime representation, so there is nothing to store | — |
 | `#import`, `#foreign`, `#system_library` | polymorphs `$T`, `#expand` macros (**W5**) |

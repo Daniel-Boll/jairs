@@ -5221,3 +5221,82 @@ proc main -> void {
     discard call extern proc1(1_s64)
     return
 }
+
+========================================
+059-insert.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: string  // local 7
+  bb0(v0: *Context):
+    v1: s64 = 2_s64 + 3_s64
+    v2: bool = v1 == 5_s64
+    branch v2 ? bb1() : bb2()
+  bb1():
+    v3: s64 = 0_s64 + 1_s64
+    goto bb3(v3)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v6: s64):
+    v4: s64 = 10_s64 + 1_s64
+    v5: bool = v4 == 11_s64
+    branch v5 ? bb4() : bb5()
+  bb4():
+    v7: s64 = v6 + 2_s64
+    goto bb6(v7)
+  bb5():
+    goto bb6(v6)
+  bb6(v11: s64):
+    v9: s64 = v4 + 1_s64
+    v10: bool = v9 == 12_s64
+    branch v10 ? bb7() : bb8()
+  bb7():
+    v12: s64 = v11 + 4_s64
+    goto bb9(v12)
+  bb8():
+    goto bb9(v11)
+  bb9(v21: s64):
+    goto bb10(0_s64, 0_s64)
+  bb10(v13: s64, v15: s64):
+    v14: bool = v13 < 4_s64
+    branch v14 ? bb11() : bb13()
+  bb11():
+    v16: s64 = v15 + v13
+    goto bb12()
+  bb12():
+    v18: s64 = v13 + 1_s64
+    goto bb10(v18, v16)
+  bb13():
+    goto bb14()
+  bb14():
+    v19: bool = v15 == 6_s64
+    branch v19 ? bb15() : bb16()
+  bb15():
+    v22: s64 = v21 + 8_s64
+    goto bb17(v22)
+  bb16():
+    goto bb17(v21)
+  bb17(v25: s64):
+    store s0 <- "hi"
+    v23: s64 = load s0.count
+    v24: bool = v23 == 2_s64
+    branch v24 ? bb18() : bb19()
+  bb18():
+    v26: s64 = v25 + 16_s64
+    goto bb20(v26)
+  bb19():
+    goto bb20(v25)
+  bb20(v28: s64):
+    v27: bool = 32_s64 == 32_s64
+    branch v27 ? bb21() : bb22()
+  bb21():
+    v29: s64 = v28 + 32_s64
+    goto bb23(v29)
+  bb22():
+    goto bb23(v28)
+  bb23(v30: s64):
+    v31: s64 = v30 + 1_s64
+    discard call extern proc1(v31)
+    return
+}

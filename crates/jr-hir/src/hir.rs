@@ -731,6 +731,28 @@ pub enum Stmt {
         /// Span of the whole statement.
         span: Span,
     },
+    /// `#insert "…";` — statements parsed from a string literal (ADR-0072 §1).
+    ///
+    /// Holds the statements the inserted text lowered to, **in the enclosing scope**. Deliberately not a
+    /// [`Stmt::Block`], which would be wrong twice over: `jr-mir` treats a block as a *defer scope*, so a
+    /// `defer` inside an insert would run at the insert's end rather than the enclosing body's; and
+    /// lowering pushes a *name* scope for a block, so a local the insert declares would be invisible
+    /// afterwards — which is exactly the thing ADR-0072 §1 promises works (`#insert "n := 1;"` then
+    /// `exit(n)`).
+    ///
+    /// Its own variant rather than a flag, so every exhaustive match decides what an insert means. The
+    /// statements are already lowered: nothing downstream can tell they came from a string, and nothing
+    /// downstream needs to — which is the evidence §1's "lowered where it is written" is the right model.
+    Insert {
+        /// The lowered statements, in order.
+        stmts: Vec<StmtId>,
+        /// Span of the `#insert` directive — **shared by every statement in `stmts`** (ADR-0072 §2).
+        ///
+        /// The directive is where that code entered the program, and it is the only span for it that is
+        /// in range: `jr-diag` *clamps* an out-of-range offset rather than rejecting it, so a synthesized
+        /// span would silently underline source the user never wrote.
+        span: Span,
+    },
     /// Error recovery placeholder.
     Error(Span),
 }

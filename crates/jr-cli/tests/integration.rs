@@ -314,6 +314,10 @@ fn imports_invalid_corpus_fails() {
         // Here rather than under `type-errors/` because reaching the case needs the import resolved,
         // and a same-file version tests a path that already worked.
         "imports/invalid/010-foreign-allocator.jr",
+        // `#insert` with no string-literal operand (ADR-0072 §5). Here for the same stage reason as
+        // the `using` refusals above: E0262 comes out of **lowering**, so `type-errors/`' harness would
+        // fail it for not lowering cleanly before ever checking the code it declares.
+        "imports/invalid/011-insert-needs-a-literal.jr",
     ] {
         let code = check_with_modules(vec![corpus_path(file)], Some("modules"));
         assert_eq!(code, 1, "{file} must report an error");

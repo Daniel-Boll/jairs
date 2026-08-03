@@ -17,4 +17,4 @@ pub mod parser;
 
 pub use kind::{JairsLanguage, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 pub use lexer::{LexOutput, Token, lex};
-pub use parser::{Parse, dump_tree, parse};
+pub use parser::{Parse, dump_tree, parse, parse_stmts};

@@ -97,6 +97,36 @@ pub fn parse(text: &str, file: FileId) -> Parse {
     Parse { green, diagnostics }
 }
 
+/// Parses `text` as a **statement list**, for `#insert` (ADR-0072 §1).
+///
+/// The root is a `BLOCK`, so the result has exactly the shape body lowering already consumes — a
+/// sequence of `DECL_STMT`, `EXPR_STMT` and the rest. [`parse`] cannot serve: it parses a *source file*,
+/// where `n := 2 + 3;` is a file-level `VAR_DECL` rather than a `DECL_STMT`, so lowering it into a body
+/// would need a second translation from items to statements.
+///
+/// # Why this rather than wrapping the text in braces
+///
+/// Synthesising `"{" + text + "}"` would reuse [`parse`] unchanged and was rejected: every offset in the
+/// result would be shifted by one, and ADR-0072 §3 reports a diagnostic's position *as an offset into the
+/// inserted text*. A reported offset one past the truth is worse than none, because the reader trusts it.
+///
+/// Spans are attributed to `file`, which for an `#insert` is the file the directive is written in — so
+/// they are offsets into the *inserted string* and mean nothing as positions in that file. The caller is
+/// responsible for not using them as spans; ADR-0072 §2 has every synthesized node take the directive's
+/// span instead, and §3 uses these only as the offset a note names.
+///
+/// Never fails, for the same reason [`parse`] does not: an unparseable statement becomes an `ERROR` node
+/// and a diagnostic.
+#[must_use]
+pub fn parse_stmts(text: &str, file: FileId) -> Parse {
+    let lex_out = lex(text, file);
+    let mut p = Parser::new(text, &lex_out.tokens, file);
+    p.parse_stmt_list();
+    let (green, mut diagnostics) = p.finish();
+    diagnostics.extend(lex_out.diagnostics.into_vec());
+    Parse { green, diagnostics }
+}
+
 // ---------------------------------------------------------------------------
 // Token sets for recovery
 // ---------------------------------------------------------------------------
@@ -541,6 +571,29 @@ impl<'src> Parser<'src> {
     // =========================================================================
 
     // ---- source file -------------------------------------------------------
+
+    /// Parses a bare statement list into a `BLOCK`, for [`parse_stmts`].
+    ///
+    /// `parse_block` cannot serve: it expects a `{` to bump and reports "unclosed `{`" without one.
+    /// This is that loop with the braces removed — deliberately a near-copy rather than a shared
+    /// helper, because the two differ in their *terminator* (`}` versus EOF) and threading that
+    /// through would make the common path pay for a case it never takes.
+    fn parse_stmt_list(&mut self) {
+        self.start_node(BLOCK);
+        while !self.at(EOF) {
+            if !self.parse_stmt() {
+                let before = self.pos;
+                let span = self.current_span();
+                self.error(span, "unexpected token in inserted code", E0114);
+                self.recover_until(STMT_START, true);
+                self.force_progress(before);
+            }
+        }
+        // Trailing trivia, so the tree is lossless over the inserted text too — the same flush
+        // `parse_source_file` ends with, and for the same reason.
+        self.flush_trivia();
+        self.finish_node();
+    }
 
     fn parse_source_file(&mut self) {
         self.start_node(SOURCE_FILE);

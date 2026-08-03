@@ -200,6 +200,41 @@ fn the_slice_exit_criterion_produces_output_in_both_engines() {
     assert_eq!(native.status, 0);
 }
 
+/// `#insert`'s corpus program must exit **64**, not merely exit the same way twice (ADR-0072 §1).
+///
+/// **The corpus differential cannot check this and it is worth being precise about why.** That test
+/// asserts the two engines *agree*; a `Stmt::Insert` lowered with a defer scope of its own makes both
+/// engines exit **63**, in perfect agreement, and the whole suite stays green except for a MIR snapshot
+/// diff that a reviewer can accept without noticing. Verified by making exactly that change: 63 in both
+/// engines, one snapshot to review.
+///
+/// 63 versus 64 is the difference between the two designs `Stmt::Insert` exists to separate. The
+/// program's `defer exit(n)` is written inside inserted text, and the `n = n + 1` after it is not: if the
+/// insert were a scope, the `exit` would run at the insert's end and report 63, and because it is not,
+/// the `exit` runs when **`main`** is left and reports 64. So this one number is the assertion that the
+/// inserted `defer` belongs to the enclosing body — which is the claim ADR-0072 §1 makes and the reason
+/// a block was not reused.
+#[test]
+fn an_inserted_defer_runs_when_the_enclosing_body_is_left() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/059-insert.jr");
+
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    assert_eq!(
+        vm.status, 64,
+        "the VM exited {} — 63 means the inserted `defer` ran at the insert's end \
+         rather than at `main`'s, i.e. the insert was given a scope of its own",
+        vm.status
+    );
+    assert_eq!(
+        native.status, 64,
+        "the native back end exited {} — see the VM assertion above",
+        native.status
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Programs whose *result* is observable
 // ---------------------------------------------------------------------------

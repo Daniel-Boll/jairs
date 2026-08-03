@@ -49,6 +49,10 @@ const E0207: &str = "E0207";
 const E0208: &str = "E0208";
 /// A directive used where it is not valid.
 const E0209: &str = "E0209";
+/// `#insert` with an operand that is not a string literal (ADR-0072 §5).
+const E0262: &str = "E0262";
+/// The text of an `#insert` does not parse (ADR-0072 §3).
+const E0263: &str = "E0263";
 
 /// Directives that are legal in expression position.
 ///
@@ -943,6 +947,22 @@ struct BodyLowerCtx<'a> {
     /// Scope stack: each frame is a list of (name, entry) pairs.
     /// Innermost frame is last. Shadowing is allowed (spec §023).
     scope_stack: Vec<Vec<(Symbol, ScopeEntry)>>,
+
+    /// The span every node gets while lowering an `#insert`, if one is in progress (ADR-0072 §2).
+    ///
+    /// Set to the directive's span for the duration, so `span_of_node` and `span_of_token` answer with
+    /// it instead of the syntax node's own range — which for inserted text is an offset into the
+    /// *string*, meaningless as a position in this file and silently **clamped** by `jr-diag` rather
+    /// than rejected.
+    ///
+    /// Overriding the two span helpers rather than rewriting spans afterwards, and the difference is not
+    /// stylistic: a `Span` lives in sixteen `Expr` fields, nineteen `Stmt` variants, `Local::name_span`
+    /// and `Param::name_span`, and a rewriter would have to find all of them. The first attempt here
+    /// rewrote the `expr_spans` arena and missed `Expr::Name`'s own `span` field — which is the one the
+    /// *resolver* reads, so an unresolved name in inserted code reported against lines 1–2 of the file.
+    /// Found by running, and it is exactly the clamping failure §2 was written to prevent. Catching it at
+    /// the source is the only version that cannot be incomplete.
+    span_override: Option<Span>,
 }
 
 impl<'a> BodyLowerCtx<'a> {
@@ -958,15 +978,18 @@ impl<'a> BodyLowerCtx<'a> {
             type_refs: Vec::new(),
             params: Vec::new(),
             scope_stack: vec![Vec::new()],
+            span_override: None,
         }
     }
 
     fn span_of_node(&self, node: &SyntaxNode) -> Span {
-        Span::new(self.file, node.text_range())
+        self.span_override
+            .unwrap_or_else(|| Span::new(self.file, node.text_range()))
     }
 
     fn span_of_token(&self, tok: &SyntaxToken) -> Span {
-        Span::new(self.file, tok.text_range())
+        self.span_override
+            .unwrap_or_else(|| Span::new(self.file, tok.text_range()))
     }
 
     fn intern(&self, text: &str) -> Symbol {
@@ -1080,6 +1103,83 @@ impl<'a> BodyLowerCtx<'a> {
         }
     }
 
+    /// Lowers `#insert "…";` (ADR-0072).
+    ///
+    /// Four steps, and the order matters: decode the operand, refuse a non-literal, parse the text as a
+    /// *statement list*, then lower those statements **into the current scope**.
+    ///
+    /// No scope is pushed. That is the feature: `#insert "n := 1;"` followed by `exit(n)` must resolve,
+    /// which is why this produces a [`Stmt::Insert`] rather than a [`Stmt::Block`] — see that variant's
+    /// docs for the two separate ways a block would have been wrong.
+    ///
+    /// Every statement's span is the directive's, per ADR-0072 §2: the spans the inner parse produced are
+    /// offsets into the *inserted string*, and `jr-diag` clamps an out-of-range offset rather than
+    /// rejecting it, so using one would silently underline source the user never wrote.
+    fn lower_insert(&mut self, directive: &jr_syntax::ast::DirectiveExpr, span: Span) -> StmtId {
+        let Some(arg) = directive.string_arg() else {
+            // No string operand: either something else was written, or nothing was. Refused rather than
+            // treated as an empty insert, because `#insert compute()` is the *computed* form ADR-0072 §4
+            // defers and a silent no-op would make it look supported.
+            self.diags.push(
+                Diagnostic::error(span, "`#insert` needs a string literal of Jairs source")
+                    .with_code(E0262)
+                    .with_note(
+                        "only a literal is supported: a computed operand needs the compile-time \
+                                evaluator, which runs after lowering (ADR-0072 §4)",
+                    )
+                    .with_help("write the code inline, e.g. `#insert \"x := 1;\";`"),
+            );
+            return self.alloc_stmt(Stmt::Error(span));
+        };
+
+        // Decoded rather than merely unquoted, so `#insert "s := \"hi\";"` inserts what it looks like.
+        // The same function every string literal goes through, which is what keeps one answer to "what
+        // does this escape mean".
+        let text = decode_string_impl(arg.text(), span, &mut self.diags);
+
+        // Parsed as a statement list, not a source file: `n := 1;` is a `DECL_STMT` in a body and a
+        // file-level `VAR_DECL` at top level, and only the first is what a body consumes.
+        let parsed = jr_syntax::parse_stmts(&text, self.file);
+        for diag in parsed.diagnostics().iter() {
+            // Re-pointed at the directive and re-worded, because the inner diagnostic's span is an
+            // offset into `text` and would land on unrelated bytes of the real file (ADR-0072 §3). The
+            // offset is carried in a note, which is the part a reader needs to find their mistake.
+            let offset = u32::from(diag.primary.span.range.start());
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("inserted code does not parse: {}", diag.message),
+                )
+                .with_code(E0263)
+                .with_note(format!("in inserted code, at offset {offset}"))
+                .with_note(format!("the inserted text was: {text}")),
+            );
+        }
+
+        // **Every span produced below is the directive's** (ADR-0072 §2), set here rather than fixed up
+        // afterwards — see `span_override`'s docs for why a fix-up cannot be made complete. Saved and
+        // restored rather than cleared, so a nested lowering that is *not* an insert still works if one
+        // ever reaches here.
+        let outer_override = self.span_override;
+        self.span_override = Some(span);
+
+        // Lowered in the **enclosing** scope. `parse_stmts` roots the result in a `BLOCK`, so its
+        // statements are reached through that node — but `lower_block` is deliberately not called on it,
+        // since that would push a scope and hide every name the insert declares.
+        let stmts = match jr_syntax::ast::Block::cast(parsed.syntax()) {
+            Some(block) => block
+                .stmts()
+                .map(|inner| self.lower_stmt(&inner))
+                .collect::<Vec<_>>(),
+            // `parse_stmts` always roots a `BLOCK`, so this is unreachable; recorded rather than
+            // `expect`ed, because a panic in lowering is the one failure a user cannot act on.
+            None => Vec::new(),
+        };
+
+        self.span_override = outer_override;
+        self.alloc_stmt(Stmt::Insert { stmts, span })
+    }
+
     fn lower_block(&mut self, block: &Block) -> StmtId {
         let span = self.span_of_node(block.syntax());
         self.push_scope();
@@ -1103,6 +1203,14 @@ impl<'a> BodyLowerCtx<'a> {
                 self.lower_local_tuple(d.syntax(), span)
             }
             AstStmt::Decl(d) => self.lower_decl_stmt(d, span),
+            // An `#insert "…";` statement is intercepted **before** the ordinary expression path
+            // (ADR-0072 §1): its operand is source text to parse, not a value to lower. Recognised by
+            // the directive's name, because the parser gives every `#name "arg"` the same generic node
+            // — which is what lets a directive be added without a grammar change.
+            AstStmt::Expr(e) if insert_directive(e).is_some() => {
+                let directive = insert_directive(e).expect("the guard just matched");
+                self.lower_insert(&directive, span)
+            }
             AstStmt::Expr(e) => {
                 let expr_id = e
                     .expr()
@@ -2264,6 +2372,23 @@ pub fn lower_file(
     }
 
     ctx.finish()
+}
+
+/// The `#insert` directive an expression statement *is*, if it is one (ADR-0072 §1).
+///
+/// Matched on the directive's **name**, because the parser gives every `#name "arg"` the same generic
+/// `DIRECTIVE_EXPR` node — the permissiveness that lets a directive be added without a grammar or lexer
+/// change, and which `DIRECTIVES_VALID_AS_EXPRESSIONS` documents the cost of.
+///
+/// `None` for anything else, including a nested `#insert` inside a larger expression: `x := #insert "…"`
+/// is not an insert, it is an `#insert` in value position, and it reaches the ordinary directive path
+/// where E0209 refuses it. That is deliberate — an insert produces *statements*, so it has no value.
+fn insert_directive(stmt: &jr_syntax::ast::ExprStmt) -> Option<jr_syntax::ast::DirectiveExpr> {
+    let AstExpr::Directive(directive) = stmt.expr()? else {
+        return None;
+    };
+    let token = directive.directive_token()?;
+    (token.text().trim_start_matches('#') == "insert").then_some(directive)
 }
 
 /// Rejects directives that are not valid in expression position.

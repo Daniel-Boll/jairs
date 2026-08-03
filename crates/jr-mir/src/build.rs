@@ -297,7 +297,11 @@ impl Reach {
             }
             out.stmts.push(id);
             match body.stmt(id) {
-                Stmt::Block(ids, _) => stmt_work.extend(ids.iter().copied()),
+                // An `#insert`'s statements are reached exactly as a block's — the difference between
+                // the two is scoping, which is decided in `jr-hir`, not reachability (ADR-0072 §1).
+                Stmt::Block(ids, _) | Stmt::Insert { stmts: ids, .. } => {
+                    stmt_work.extend(ids.iter().copied())
+                }
                 // The destructuring forms reach their call and their targets, so both are walked
                 // (ADR-0052 §2). A `_` discard reaches nothing, which is what `None` records.
                 Stmt::LocalTuple { targets, call, .. } => {
@@ -476,6 +480,10 @@ fn scan(
         match body.stmt(*id) {
             Stmt::Error(_) => return Some("the body contains recovered syntax"),
             Stmt::Block(_, _)
+            // **Representable, and it must be**: an `#insert`'s statements are ordinary statements by the
+            // time MIR sees them, so refusing here would refuse whatever the insert contained
+            // (ADR-0072 §1). The insert itself carries nothing to lower.
+            | Stmt::Insert { .. }
             // Representable: a destructuring statement lowers to a call plus field reads, and a
             // multi-value return to stores through the results slot — all shapes MIR already has
             // (ADR-0052 §1), which is why nothing here needs refusing.
@@ -1036,6 +1044,16 @@ impl Lower<'_> {
                 // block already ran them on its way out, and `self.current` is `None` there.
                 self.run_defers_from(depth);
                 self.defers.truncate(depth);
+            }
+            // An `#insert`'s statements are emitted in sequence with **no defer scope of their own**
+            // (ADR-0072 §1, and `Stmt::Insert`'s docs). `Stmt::Block` above marks a depth and runs the
+            // defers registered inside it; an insert deliberately does not, so a `defer` written in
+            // inserted code runs when the *enclosing* scope is left — which is what "as if written here"
+            // has to mean. This is the difference that made a distinct variant necessary.
+            Stmt::Insert { stmts, span: _ } => {
+                for inner in stmts {
+                    self.stmt(inner);
+                }
             }
             Stmt::Local(local, _) => self.local_decl(local),
             // Constructed by nothing today. Matched explicitly so that the day

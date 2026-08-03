@@ -944,6 +944,15 @@ impl<'a> ResolveCtx<'a> {
             // The deferred statement is resolved once, where it was written — `jr-mir` duplicates
             // its *lowering*, not its identity (ADR-0049 §3).
             Stmt::Defer(inner, _) => self.resolve_body_stmt(body_id, inner),
+            // An `#insert`'s statements resolve **as if written here**, which is the whole model
+            // (ADR-0072 §1): no scope is pushed, so a name the insert declares is visible afterwards and
+            // a name from the enclosing body is visible inside. Nothing here can tell they came from a
+            // string, which is the evidence lowering put them in the right place.
+            Stmt::Insert { stmts, .. } => {
+                for inner in stmts {
+                    self.resolve_body_stmt(body_id, inner);
+                }
+            }
             // A `push_context` block resolves like any block: its `context` reads and calls bind to
             // the same names as outside the wrapper (ADR-0063). The copy that isolates them is a
             // `jr-mir` concern, invisible to resolution.

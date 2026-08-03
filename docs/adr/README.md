@@ -92,3 +92,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0069](0069-run-across-files-and-in-a-body.md) | A `#run` may call an imported procedure and appear in a body; W4 is split into sub-waves | Accepted |
 | [0070](0070-array-length-from-a-constant.md) | An array length may name a literal-valued constant (amends ADR-0039 §3a) | Accepted |
 | [0071](0071-type-values.md) | A type is a compile-time value; using one at run time is refused | Accepted |
+| [0072](0072-insert.md) | `#insert` of a literal string, lowered where it is written | Accepted |

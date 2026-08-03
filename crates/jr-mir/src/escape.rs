@@ -241,7 +241,11 @@ fn addr_taken(body: &Body) -> (FxHashSet<LocalId>, FxHashSet<jr_hir::ParamId>) {
 
     while let Some(stmt_id) = stmt_worklist.pop() {
         match body.stmt(stmt_id) {
-            Stmt::Block(stmts, _) => stmt_worklist.extend(stmts.iter().copied()),
+            // Walked as a block is: escape analysis cares which expressions exist, not how they were
+            // scoped or where their text came from (ADR-0072 §1).
+            Stmt::Block(stmts, _) | Stmt::Insert { stmts, .. } => {
+                stmt_worklist.extend(stmts.iter().copied())
+            }
             Stmt::Local(local, _) => {
                 if let Some(init) = body.local(*local).init {
                     expr_worklist.push((init, false));
