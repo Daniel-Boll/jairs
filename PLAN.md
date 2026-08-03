@@ -542,8 +542,19 @@ Neovim checks**. See §1.5.
       **Step 5 — `insert_operands(file, search_paths)` in `jr-db`.** For each pending `Stmt::Insert`
       (operand `Some`, `stmts` empty), evaluate the operand with the existing thunk machinery
       (`evaluate`/`lower_const`, keyed as a `BodyRun`-shaped target) against the unexpanded `checked`,
-      refusing a non-`string` result. Returns a map keyed by `(BodyId, operand ExprId)` → interned
-      string. Gate on `frontend_diagnostics` like `file_consts`, so a file with errors evaluates nothing.
+      refusing a non-`string` result. Gate on `frontend_diagnostics` like `file_consts`, so a file with
+      errors evaluates nothing.
+
+      **A correctness trap found while mapping step 6, worth stating because it is the kind of thing that
+      makes this the top-risk item: the map must NOT be keyed by `ExprId` or `StmtId`.** Two computed
+      inserts in one body: expanding the first *adds statements and expressions*, so the second insert's
+      operand `ExprId` is a **different index** in the expanded lowering than in the unexpanded one where
+      the value was computed. Keying by id would silently attach the wrong string to the wrong insert (a
+      miscompile that type-checks). Key by the directive's **`Span`** — a CST `TextRange`, invariant
+      across both lowerings because it comes from the source, not the arena. `Stmt::Insert` already
+      carries that span. (This is the same lesson `ConstValues` learned keying `#run` by `(ExprScope,
+      ExprId)` and the reason `MirSpan` carries a scope — but here even the id is unstable, so the span is
+      the only stable key.)
 
       **Step 6 — the expanded lowering.** A `lower_file` variant (or an added default-empty
       `InsertOperands` param) that, when an operand's string is known, `parse_stmts` + lowers it in place
