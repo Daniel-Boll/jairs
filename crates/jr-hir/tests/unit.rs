@@ -2,8 +2,8 @@
 
 use jr_base::{FileId, Interner};
 use jr_hir::{
-    BinOp, ConstValue, Expr, ItemKind, Literal, Res, Stmt, UnOp, dump::dump_hir, lower_file,
-    resolve,
+    BinOp, ConstValue, Expr, InsertOperands, ItemKind, Literal, Res, Stmt, UnOp, dump::dump_hir,
+    lower_file, lower_file_with_inserts, resolve,
 };
 use jr_syntax::parse;
 
@@ -1317,6 +1317,68 @@ fn a_computed_operand_is_held_not_refused_at_lowering() {
     assert!(
         insert.1.is_empty(),
         "a pending insert has no statements until the pre-pass expands it"
+    );
+}
+
+#[test]
+fn a_computed_operand_expands_when_its_text_is_supplied() {
+    // ADR-0073 §1, step 6: `lower_file_with_inserts` fills a pending insert's statements when the
+    // operand pre-pass has evaluated its text. This is exactly what the `jr-db` query will do — here the
+    // map is built by hand from the directive's span (the stable key, since the operand's `ExprId` shifts
+    // when a body expands). The two-pass shape: lower once to learn the pending insert's span, then
+    // re-lower with that span mapped to the text.
+    let source = "main :: () { #insert S; m := 0; }";
+    let interner = Interner::new();
+    let f = file();
+    let parsed = parse(source, f);
+
+    // First pass: the insert is pending, and its span is what the map must be keyed by.
+    let (hir, _) = lower_file(&parsed, f, &interner);
+    let body = &hir.bodies[0];
+    let Stmt::Block(top, _) = body.stmt(body.root) else {
+        panic!("root is a block");
+    };
+    let insert_span = top
+        .iter()
+        .find_map(|id| match body.stmt(*id) {
+            Stmt::Insert {
+                operand: Some(_),
+                span,
+                ..
+            } => Some(*span),
+            _ => None,
+        })
+        .expect("a pending computed insert");
+
+    // Second pass: supply the evaluated text for that span. `n := 7;` declares a local, so the expanded
+    // insert must produce one statement.
+    let mut operands = InsertOperands::new();
+    operands.set(insert_span, "n := 7;".to_owned());
+    let (expanded, diags) = lower_file_with_inserts(&parsed, f, &interner, &operands);
+    assert!(
+        diags.is_empty(),
+        "expansion must lower cleanly: {:?}",
+        diags.iter().map(|d| d.code).collect::<Vec<_>>()
+    );
+    let ebody = &expanded.bodies[0];
+    let Stmt::Block(etop, _) = ebody.stmt(ebody.root) else {
+        panic!("root is a block");
+    };
+    let filled = etop
+        .iter()
+        .find_map(|id| match ebody.stmt(*id) {
+            Stmt::Insert {
+                operand: Some(_),
+                stmts,
+                ..
+            } => Some(stmts.clone()),
+            _ => None,
+        })
+        .expect("the insert is still present, now expanded");
+    assert_eq!(
+        filled.len(),
+        1,
+        "the supplied `n := 7;` must have lowered to one statement, no longer pending"
     );
 }
 

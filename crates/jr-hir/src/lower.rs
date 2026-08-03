@@ -31,9 +31,9 @@ use jr_syntax::{
 
 use crate::hir::{
     AggregateKind, AssignOp, BinOp, Body, BodyId, ConstValue, Enum, EnumId, EnumMember, Expr,
-    ExprId, Field, FileHir, ForIterable, ForeignInfo, Item, ItemId, ItemKind, ItemScope, Literal,
-    Local, LocalId, Param, ParamId, Proc, ProcId, Res, Stmt, StmtId, Struct, StructId, TypeRef,
-    TypeRefId, UnOp,
+    ExprId, Field, FileHir, ForIterable, ForeignInfo, InsertOperands, Item, ItemId, ItemKind,
+    ItemScope, Literal, Local, LocalId, Param, ParamId, Proc, ProcId, Res, Stmt, StmtId, Struct,
+    StructId, TypeRef, TypeRefId, UnOp,
 };
 
 // ---------------------------------------------------------------------------
@@ -104,6 +104,11 @@ struct LowerCtx<'a> {
     file: FileId,
     interner: &'a Interner,
     diags: Diagnostics,
+    /// Evaluated computed-`#insert` operands, threaded to each body (ADR-0073 §1, step 6).
+    ///
+    /// Empty in ordinary lowering, so a body behaves exactly as before; filled by the second lowering
+    /// the operand pre-pass drives, where each pending insert's text is now known and expanded in place.
+    operands: &'a InsertOperands,
 
     // File-level arenas
     items: Vec<Item>,
@@ -126,10 +131,11 @@ struct LowerCtx<'a> {
 }
 
 impl<'a> LowerCtx<'a> {
-    fn new(file: FileId, interner: &'a Interner) -> Self {
+    fn new(file: FileId, interner: &'a Interner, operands: &'a InsertOperands) -> Self {
         Self {
             file,
             interner,
+            operands,
             diags: Diagnostics::new(),
             items: Vec::new(),
             scope: ItemScope::new(),
@@ -472,7 +478,7 @@ impl<'a> LowerCtx<'a> {
     // ---- bodies ------------------------------------------------------------
 
     fn lower_body(&mut self, block: &Block, params: &[Param]) -> Body {
-        let mut bctx = BodyLowerCtx::new(self.file, self.interner);
+        let mut bctx = BodyLowerCtx::new(self.file, self.interner, self.operands);
 
         // Register parameters in the outermost scope
         for (i, param) in params.iter().enumerate() {
@@ -950,6 +956,12 @@ struct BodyLowerCtx<'a> {
     file: FileId,
     interner: &'a Interner,
     diags: Diagnostics,
+    /// Evaluated computed-`#insert` operands (ADR-0073 §1, step 6), keyed by directive span.
+    ///
+    /// Empty in ordinary lowering. When the operand pre-pass has evaluated a `#insert`'s operand, its
+    /// text is here, and `lower_insert` expands it in place exactly as the literal path does — otherwise
+    /// the insert stays pending and `jr-mir` refuses the body.
+    operands: &'a InsertOperands,
 
     exprs: Vec<Expr>,
     expr_spans: Vec<Span>,
@@ -995,10 +1007,11 @@ struct BodyLowerCtx<'a> {
 }
 
 impl<'a> BodyLowerCtx<'a> {
-    fn new(file: FileId, interner: &'a Interner) -> Self {
+    fn new(file: FileId, interner: &'a Interner, operands: &'a InsertOperands) -> Self {
         Self {
             file,
             interner,
+            operands,
             diags: Diagnostics::new(),
             exprs: Vec::new(),
             expr_spans: Vec::new(),
@@ -1198,9 +1211,23 @@ impl<'a> BodyLowerCtx<'a> {
                 );
                 return self.alloc_stmt(Stmt::Error(span));
             };
-            // Lowered with the directive's span override cleared, because the operand *is* real source in
-            // this file — unlike the inserted text, whose spans are offsets into a string (ADR-0072 §2).
+            // The operand is real source in this file, so it lowers with no span override — unlike the
+            // inserted text, whose spans are offsets into a string (ADR-0072 §2).
             let operand_id = self.lower_expr(&operand_expr);
+
+            // If the pre-pass has evaluated this operand's text (keyed by the directive's span,
+            // ADR-0073 step 6), expand it in place exactly as a literal — the operand id is kept so the
+            // dump still shows where the code came from and the pending-refusal path stays symmetric.
+            // Otherwise the insert is *pending*: empty statements, `operand: Some`, refused by `jr-mir`.
+            if let Some(text) = self.operands.get(span) {
+                let text = text.to_owned();
+                let stmts = self.expand_insert_text(&text, span);
+                return self.alloc_stmt(Stmt::Insert {
+                    stmts,
+                    operand: Some(operand_id),
+                    span,
+                });
+            }
             return self.alloc_stmt(Stmt::Insert {
                 stmts: Vec::new(),
                 operand: Some(operand_id),
@@ -1212,10 +1239,26 @@ impl<'a> BodyLowerCtx<'a> {
         // The same function every string literal goes through, which is what keeps one answer to "what
         // does this escape mean".
         let text = decode_string_impl(arg.text(), span, &mut self.diags);
+        let stmts = self.expand_insert_text(&text, span);
+        // A **literal** insert: its text is already lowered into `stmts`, so there is no operand
+        // expression to evaluate (ADR-0073 §1).
+        self.alloc_stmt(Stmt::Insert {
+            stmts,
+            operand: None,
+            span,
+        })
+    }
 
-        // Parsed as a statement list, not a source file: `n := 1;` is a `DECL_STMT` in a body and a
-        // file-level `VAR_DECL` at top level, and only the first is what a body consumes.
-        let parsed = jr_syntax::parse_stmts(&text, self.file);
+    /// Parses inserted `text` as a statement list and lowers it **into the enclosing scope** (ADR-0072
+    /// §1), returning the lowered statement ids. Shared by the literal path and the computed path once
+    /// the operand pre-pass has evaluated the text — the two differ only in *where the string came from*,
+    /// so the parse-and-lower is one function with one answer.
+    ///
+    /// `span` is the directive's, and every node produced takes it via `span_override` (ADR-0072 §2): the
+    /// inner parse's spans are offsets into `text`, which `jr-diag` would clamp onto unrelated bytes of
+    /// the real file.
+    fn expand_insert_text(&mut self, text: &str, span: Span) -> Vec<StmtId> {
+        let parsed = jr_syntax::parse_stmts(text, self.file);
         for diag in parsed.diagnostics().iter() {
             // Re-pointed at the directive and re-worded, because the inner diagnostic's span is an
             // offset into `text` and would land on unrelated bytes of the real file (ADR-0072 §3). The
@@ -1260,13 +1303,7 @@ impl<'a> BodyLowerCtx<'a> {
 
         self.insert_depth = outer_depth;
         self.span_override = outer_override;
-        // A **literal** insert: its text is already lowered into `stmts`, so there is no operand
-        // expression to evaluate (ADR-0073 §1).
-        self.alloc_stmt(Stmt::Insert {
-            stmts,
-            operand: None,
-            span,
-        })
+        stmts
     }
 
     fn lower_block(&mut self, block: &Block) -> StmtId {
@@ -2406,6 +2443,25 @@ pub fn lower_file(
     file: FileId,
     interner: &Interner,
 ) -> (FileHir, Diagnostics) {
+    // The ordinary entry point lowers with **no** evaluated inserts — every computed `#insert` stays
+    // pending, exactly as before this feature existed. The operand pre-pass calls
+    // [`lower_file_with_inserts`] instead once it has the strings (ADR-0073 §1, step 6).
+    lower_file_with_inserts(parse, file, interner, &InsertOperands::new())
+}
+
+/// Lowers a parsed tree into HIR, expanding each computed `#insert` whose operand `operands` has
+/// evaluated (ADR-0073 §1, step 6).
+///
+/// Identical to [`lower_file`] except that a pending computed insert whose directive span appears in
+/// `operands` is expanded in place — its evaluated text parsed and lowered like a literal — rather than
+/// left pending for `jr-mir` to refuse. Passing an empty map is exactly [`lower_file`], which is why the
+/// two share every line below.
+pub fn lower_file_with_inserts(
+    parse: &jr_syntax::Parse,
+    file: FileId,
+    interner: &Interner,
+    operands: &InsertOperands,
+) -> (FileHir, Diagnostics) {
     let syntax = parse.syntax();
     let Some(source_file) = SourceFile::cast(syntax) else {
         let mut diags = Diagnostics::new();
@@ -2430,7 +2486,7 @@ pub fn lower_file(
         );
     };
 
-    let mut ctx = LowerCtx::new(file, interner);
+    let mut ctx = LowerCtx::new(file, interner, operands);
 
     // Walked as **children** rather than through `source_file.items()`, because a `SCOPE_DECL` is
     // not an `Item` kind and that accessor would skip it — so every visibility marker would be

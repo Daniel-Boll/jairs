@@ -1194,6 +1194,48 @@ impl ItemScope {
 // The whole-file HIR
 // ---------------------------------------------------------------------------
 
+/// The evaluated text of every computed `#insert` operand in one file (ADR-0073 §1).
+///
+/// Produced by `jr-db`'s `insert_operands` pre-pass — which evaluates each operand against the
+/// *unexpanded* HIR — and consumed by a second lowering that fills each pending [`Stmt::Insert`]'s
+/// statements. Empty for a file with no computed insert, which is every file today, so ordinary lowering
+/// passes `InsertOperands::default()` and behaves exactly as before.
+///
+/// **Keyed by the directive's [`Span`], not by an `ExprId` or `StmtId`** — and that is load-bearing, not
+/// incidental. Expanding one insert adds statements and expressions to the body, so a *later* insert's
+/// operand id differs between the pass that computed the value and the pass that consumes it; keying by
+/// id would attach the wrong text to the wrong insert, a miscompile that type-checks. A `Span` comes from
+/// source, so it is invariant across both lowerings.
+#[derive(Debug, Clone, Default)]
+pub struct InsertOperands {
+    by_span: std::collections::HashMap<Span, String>,
+}
+
+impl InsertOperands {
+    /// An empty map: no computed operand has a value, so every one stays pending and `jr-mir` refuses it.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records the evaluated text of the operand whose directive has this span.
+    pub fn set(&mut self, directive: Span, text: String) {
+        self.by_span.insert(directive, text);
+    }
+
+    /// The evaluated text for the `#insert` at `directive`, if the pre-pass computed one.
+    #[must_use]
+    pub fn get(&self, directive: Span) -> Option<&str> {
+        self.by_span.get(&directive).map(String::as_str)
+    }
+
+    /// Whether nothing has been evaluated — the ordinary case, lowered without expansion.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.by_span.is_empty()
+    }
+}
+
 /// The complete HIR for one source file.
 ///
 /// Owns all arenas. After lowering, call [`resolve`](fn@crate::resolve) to fill in name
