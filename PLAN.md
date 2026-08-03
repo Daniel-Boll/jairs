@@ -507,67 +507,61 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 ## 7. Immediate next actions
 
-**W4 sub-wave 5 is *open and partly built* (ADR-0073): a computed `#insert` operand.** Two increments have
-landed on `feat/insert-computed`, both gate-green and committed, and the hard core is scoped but not yet
-built. **948 workspace tests**, all six gates green, **166 Neovim checks**. See §1.5.
+**W4 sub-wave 5 is *open and mostly built* (ADR-0073): a computed `#insert` operand.** The whole front-end
+half has landed on `feat/insert-computed`, gate-green and committed; what remains is the operand
+*evaluator* (steps 5–6 of the build order below). **951 workspace tests**, all six gates green, **166
+Neovim checks**. See §1.5.
 
 - [x] **The compiler's parser accepts `#insert <expr>;`** — a bare name after `#insert` was E0100 before
       it could reach lowering. The literal-string CST is byte-for-byte unchanged, so ADR-0072's lowering
-      is untouched; a computed operand parses as a full expression, and lowering still refuses it (E0262)
-      so there is no silent miscompile while the evaluator is built. The tree-sitter grammar needed *no*
-      change — it parses every directive generically — so gate 6 is untouched; an ADR draft claim to the
-      contrary was corrected by running `tree-sitter parse`.
+      is untouched. The tree-sitter grammar needed *no* change — it parses every directive generically —
+      so gate 6 is untouched; an ADR draft claim to the contrary was corrected by running `tree-sitter
+      parse`.
+- [x] **A computed operand resolves and type-checks** (steps 1–4). `Stmt::Insert` gained
+      `operand: Option<ExprId>`; the operand is lowered as an ordinary expression, so `#insert undefined;`
+      is **E0201** and `#insert x;` (x: s64) is **E0214** expecting `string` — real front-end diagnostics,
+      not a blanket E0262. MIR's `scan` refuses a *pending* insert (operand present, `stmts` still empty)
+      with a specific reason. That refusal is the safety net: teeth-checked, disabling it makes
+      `#insert S;` silently exit 0 having inserted nothing — the well-typed-placeholder miscompile. `#insert;`
+      with no operand stays E0262.
 - [x] **A depth bound, E0264** (ADR-0073 §3): `#insert` expansion refused past 16 levels with a
       diagnostic, not a stack overflow. Added *before* the computed operand that can exhaust it, because a
       generated string can reproduce itself without growing (a quine) — the guard the literal form did not
       need. Teeth-checked: 16 lowers, 17 is E0264.
-- [ ] **The `insert_operands` pre-pass is the remaining core, and it is PLAN §5's named top risk.** It must
-      evaluate an operand's *string value* — verified necessary: `SigEntry` carries a constant's type, not
-      its value, so const-eval genuinely has to run. The cycle to break is
-      `file_consts → frontend_diagnostics → checked → resolved → file_hir`, and ADR-0073 §1 chose a narrow
-      **acyclic pre-pass** over salsa's fixed-point recovery (which exists in 0.28.1 but would remove the
-      cycle panic that caught ADR-0069's bug). The shape: a query depending only on `file_signatures`
-      (which reaches only `file_hir` and `resolved`, never `checked` — verified) evaluates string-valued
-      constants, and the body-lowering path consumes the results. **The blast radius is smaller than
-      ADR-0073 §1 drew** (see its implementation note): `#insert` is body-scoped, and `imports_of`,
-      `file_exports` and `file_signatures` walk *only items*, so only `checked` and `file_mir` need the
-      expanded bodies — not `file_hir` wholesale.
+- [ ] **The operand *evaluator* is the remaining core, and it is PLAN §5's named top risk** (build-order
+      steps 5–6). The front-end half above already resolves and type-checks the operand and refuses a
+      pending insert; what is left is to compute the operand's string and re-lower with it.
 
-      **Why the pre-pass and the HIR change are one atomic increment, established by tracing the code:**
-      making a computed insert hold its operand needs a `Stmt::Insert { operand: Option<ExprId>, .. }`
-      field (so the operand *resolves and type-checks* like any expression, giving `#insert undefined;` a
-      real unresolved-name error), the four `Stmt::Insert` match arms updated, and MIR's `scan` refusing a
-      still-pending one. But a `scan` refusal surfaces as **E0245** ("a body the compiler could not
-      lower"), which is *vaguer* than today's specific **E0262** — so landing the field without the
-      evaluator would either leave a dead field (house style forbids scaffolding) or regress the
-      diagnostic. The field, the arms, the `scan` refusal and the pre-pass query must land together. The
-      guarded failure mode throughout is the well-typed placeholder: a computed insert must **never** lower
-      to zero statements silently, which is why `operand: Some` marks the pending state distinctly from an
-      empty literal insert (`operand: None`, no statements).
+      **The crux, verified by reading `checked`:** the operand is a plain expression *in the unexpanded
+      HIR*, and the ordinary `checked` already types it (it calls `file_hir` directly). So the evaluator
+      does **not** need an expanded `checked` — it types and evaluates the operand against the unexpanded
+      front end, exactly as `file_consts` evaluates a `BodyRun`. Only the inserted **statements** are new,
+      and they are checked in the *expanded* pass. This is what keeps the graph acyclic: `insert_operands`
+      → ordinary `checked` → `file_hir` (unexpanded), no loop.
 
-      **The turn-key build order** (each step compiles; the diagnostic-quality tension means steps 1–6
-      land as one commit):
-      1. `Stmt::Insert` gains `operand: Option<ExprId>`; the four match arms (`resolve`, `check`,
-         `mir/build` reach + lower, `mir/escape`, `mir/span`, `dump`) updated — a literal insert keeps
-         `operand: None` and behaves exactly as today.
-      2. `lower_insert`'s computed branch lowers the operand as an ordinary `Expr` and returns
-         `Stmt::Insert { stmts: vec![], operand: Some(id), span }` instead of E0262.
-      3. `resolve` and `check` visit `operand` when `Some`, so `#insert undefined;` is a real
-         unresolved-name error and a non-`string` operand is a type error at the operand's own span.
-      4. MIR `scan` refuses a body containing a `Stmt::Insert` with `operand: Some` **and** empty
-         `stmts` — the pending state — with a *specific* reason, not the generic E0245. (This is the step
-         that replaces today's E0262; give it its own message so the diagnostic does not regress.)
-      5. `insert_operands(file, search_paths)` query in `jr-db`: for each pending insert, evaluate its
-         operand via the existing thunk machinery (reusing `evaluate`/`lower_const`) under
-         `file_signatures` only, refusing a non-`string` result. Returns a map keyed by the operand
-         `ExprId`.
-      6. A `lower_file` variant (or an added param, default-empty) consumes that map: when an operand's
-         string is known, it `parse_stmts` + lowers in place exactly as ADR-0072's literal path, filling
-         `stmts` and clearing the pending state. Rewire **only** `checked` and `file_mir` onto this
-         expanded HIR — never `imports_of`/`file_exports`/`file_signatures` (item-only, and rewiring them
-         reintroduces the import cycle).
-      7. Corpus: a `valid/` program with a computed insert that runs, and an `imports/invalid/` file for
-         the non-string-operand refusal. Depth-bound (E0264) already guards the quine.
+      **Step 5 — `insert_operands(file, search_paths)` in `jr-db`.** For each pending `Stmt::Insert`
+      (operand `Some`, `stmts` empty), evaluate the operand with the existing thunk machinery
+      (`evaluate`/`lower_const`, keyed as a `BodyRun`-shaped target) against the unexpanded `checked`,
+      refusing a non-`string` result. Returns a map keyed by `(BodyId, operand ExprId)` → interned
+      string. Gate on `frontend_diagnostics` like `file_consts`, so a file with errors evaluates nothing.
+
+      **Step 6 — the expanded lowering.** A `lower_file` variant (or an added default-empty
+      `InsertOperands` param) that, when an operand's string is known, `parse_stmts` + lowers it in place
+      exactly as ADR-0072's literal path, filling `stmts` and clearing the pending state. **Rewire only
+      `file_mir`** onto this expanded HIR (via a new `expanded_file_hir` query that depends on
+      `insert_operands`); `checked` for the *operand* stays unexpanded, and the inserted statements get
+      checked as part of building their MIR. Never rewire
+      `imports_of`/`file_exports`/`file_signatures` — item-only, and rewiring them reintroduces the import
+      cycle (ADR-0054 §3).
+
+      **Step 7 — corpus.** A `valid/` program with a computed insert that runs (assert its exit code, per
+      [[jairs-assert-behaviour-not-agreement]] — the differential only checks agreement), and an
+      `imports/invalid/` file for the non-string-operand refusal (E0214 is a *sema* diagnostic, so it
+      could go in `type-errors/` — but the pending-insert path is lowering, so confirm which stage fires
+      first). Depth-bound E0264 already guards the quine.
+
+      **The safety net stays until step 6 lands:** MIR's `scan` refuses a pending insert, so a computed
+      insert is diagnosed, never miscompiled, at every intermediate commit.
 
 ---
 
