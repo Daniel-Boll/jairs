@@ -1216,18 +1216,29 @@ impl<'a> BodyLowerCtx<'a> {
             let operand_id = self.lower_expr(&operand_expr);
 
             // If the pre-pass has evaluated this operand's text (keyed by the directive's span,
-            // ADR-0073 step 6), expand it in place exactly as a literal — the operand id is kept so the
-            // dump still shows where the code came from and the pending-refusal path stays symmetric.
-            // Otherwise the insert is *pending*: empty statements, `operand: Some`, refused by `jr-mir`.
+            // ADR-0073 step 6), expand it in place exactly as a literal and clear `operand` to `None`:
+            // an expanded insert is *identical* to a literal one — statements in place, nothing left to
+            // evaluate — and clearing the operand is what makes it so. This matters for the empty case:
+            // `#insert EMPTY;` where `EMPTY` is `""` expands to **zero** statements, and if `operand`
+            // stayed `Some` that would be indistinguishable from the *pending* state (`operand: Some`,
+            // empty `stmts`) that `jr-mir` refuses. `operand: None` says "evaluated, and it was empty",
+            // which is legal — the same rule a literal `#insert "";` follows (ADR-0072 §5).
+            //
+            // `operand_id` is dropped, which costs a little dump provenance and is worth it: the
+            // alternative (a third field, "was expanded") is state that every match must thread through
+            // to say what `None` already says.
             if let Some(text) = self.operands.get(span) {
                 let text = text.to_owned();
+                let _ = operand_id;
                 let stmts = self.expand_insert_text(&text, span);
                 return self.alloc_stmt(Stmt::Insert {
                     stmts,
-                    operand: Some(operand_id),
+                    operand: None,
                     span,
                 });
             }
+            // Not yet evaluated: *pending* — empty statements, `operand: Some`, refused by `jr-mir`'s
+            // `scan` so it can never be mistaken for "insert nothing".
             return self.alloc_stmt(Stmt::Insert {
                 stmts: Vec::new(),
                 operand: Some(operand_id),

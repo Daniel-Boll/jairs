@@ -1364,22 +1364,73 @@ fn a_computed_operand_expands_when_its_text_is_supplied() {
     let Stmt::Block(etop, _) = ebody.stmt(ebody.root) else {
         panic!("root is a block");
     };
-    let filled = etop
+    let (operand, filled) = etop
         .iter()
         .find_map(|id| match ebody.stmt(*id) {
-            Stmt::Insert {
-                operand: Some(_),
-                stmts,
-                ..
-            } => Some(stmts.clone()),
+            Stmt::Insert { operand, stmts, .. } => Some((*operand, stmts.clone())),
             _ => None,
         })
         .expect("the insert is still present, now expanded");
+    // An expanded insert is identical to a literal one: statements in place, `operand: None` — which is
+    // what tells `jr-mir` it is no longer pending (ADR-0073 §1). Keeping `operand: Some` would make an
+    // insert that expands to *zero* statements indistinguishable from an unevaluated one.
+    assert!(
+        operand.is_none(),
+        "an expanded insert clears its operand, marking it no longer pending"
+    );
     assert_eq!(
         filled.len(),
         1,
-        "the supplied `n := 7;` must have lowered to one statement, no longer pending"
+        "the supplied `n := 7;` must have lowered to one statement"
     );
+}
+
+#[test]
+fn an_empty_computed_operand_expands_to_nothing_and_is_not_pending() {
+    // ADR-0073 §1: `#insert EMPTY;` where `EMPTY` is `""` evaluates to the empty string and expands to
+    // **zero** statements — legal, the same as a literal `#insert "";` (ADR-0072 §5). The bug this pins:
+    // if expansion left `operand: Some` with empty `stmts`, that is exactly the *pending* state
+    // `jr-mir`'s `scan` refuses, so an empty computed insert wrongly failed the body. Clearing the
+    // operand on expansion is what distinguishes "evaluated, and it was empty" from "not yet evaluated".
+    let source = "main :: () { #insert E; }";
+    let interner = Interner::new();
+    let f = file();
+    let parsed = parse(source, f);
+    let (hir, _) = lower_file(&parsed, f, &interner);
+    let span = {
+        let body = &hir.bodies[0];
+        let Stmt::Block(top, _) = body.stmt(body.root) else {
+            panic!("root is a block");
+        };
+        top.iter()
+            .find_map(|id| match body.stmt(*id) {
+                Stmt::Insert {
+                    operand: Some(_),
+                    span,
+                    ..
+                } => Some(*span),
+                _ => None,
+            })
+            .expect("a pending insert")
+    };
+
+    let mut operands = InsertOperands::new();
+    operands.set(span, String::new()); // the empty string
+    let (expanded, diags) = lower_file_with_inserts(&parsed, f, &interner, &operands);
+    assert!(diags.is_empty(), "an empty expansion is legal");
+    let ebody = &expanded.bodies[0];
+    let Stmt::Block(etop, _) = ebody.stmt(ebody.root) else {
+        panic!("root is a block");
+    };
+    let (operand, stmts) = etop
+        .iter()
+        .find_map(|id| match ebody.stmt(*id) {
+            Stmt::Insert { operand, stmts, .. } => Some((*operand, stmts.clone())),
+            _ => None,
+        })
+        .expect("the insert is present");
+    assert!(operand.is_none(), "evaluated-to-empty is not pending");
+    assert!(stmts.is_empty(), "an empty operand inserts no statements");
 }
 
 #[test]

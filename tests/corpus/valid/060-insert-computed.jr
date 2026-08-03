@@ -27,9 +27,19 @@
 // is what the operand pre-pass evaluates.
 CODE :: "n = n + 10;";
 
+// An **empty** computed operand: it evaluates to the empty string and inserts nothing, which is legal —
+// the same rule a literal `#insert "";` follows. It is here because an empty *computed* operand is the
+// one case that distinguishes "evaluated, and it was empty" from "not yet evaluated": both leave the
+// insert with no statements, and only clearing the operand on expansion tells them apart (ADR-0073 §1).
+EMPTY :: "";
+
+// A computed operand whose text **itself contains an `#insert`** — a literal one, which expands
+// recursively when the outer text is lowered. So the computed and literal forms compose.
+NESTED :: "#insert \"n = n + 32;\";";
+
 // A procedure run at compile time to produce source text — the `#run` operand form.
 build :: () -> string {
-    return "n = n + 32;";
+    return "n = n + 16;";
 }
 
 main :: () {
@@ -38,10 +48,16 @@ main :: () {
     // A named-constant operand: `n = n + 10;` is spliced here, writing the enclosing `n`.
     #insert CODE;
 
+    // An empty computed operand: inserts nothing, changes nothing.
+    #insert EMPTY;
+
     // A `#run` operand: `build()` runs in the comptime VM, and its returned string is spliced.
     #insert #run build();
 
-    // The inserted code declared nothing new here, but read and wrote `n` — so if either insert had been
-    // given its own scope, these writes would not reach the `n` this `exit` sees.
+    // A nested computed operand: `NESTED`'s text is a literal `#insert`, which expands in turn.
+    #insert NESTED;
+
+    // 10 + 16 + 32 = 58. If any insert had its own scope, its write to `n` would not reach here — and if
+    // the empty insert were treated as *pending* rather than evaluated-empty, the body would be refused.
     exit(n);
 }
