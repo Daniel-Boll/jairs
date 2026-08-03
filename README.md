@@ -18,14 +18,23 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after **`#insert` of a literal string** (ADR-0072): `#insert "n := 2 + 3;";` parses its
-operand as Jairs source and lowers the statements **where the directive is written** — same scope, so the
-next line can read `n`. Every synthesized node's span is the `#insert` itself, because inserted code has no
-position in any file and `jr-diag` *clamps* an out-of-range offset rather than rejecting it, so a
-synthesized span would silently underline source the user never wrote. Nesting works and needed no code;
-it cannot run away because escaping doubles the text at every level, so a written insert is bounded by its
-file. A *computed* operand (`#insert build_it()`) is deliberately a later sub-wave: it needs lowering to
-depend on const-eval, which runs downstream of it, and that is the salsa cycle W4 exists to break. On top
+Last updated after **`#insert` of a computed string** (ADR-0073): `#insert CODE;` and
+`#insert #run build();` evaluate the operand's text at compile time and splice it into the enclosing
+scope. This is the point W4 called its top risk — sema and the VM become mutually recursive, because
+lowering cannot finish until the operand is evaluated and the evaluator runs on lowered code — and the
+cycle is broken by an acyclic pre-pass (`insert_operands`) that reuses the constant evaluator and re-lowers
+only the affected bodies, not by fixed-point recovery. The operand is held as an ordinary expression, so
+`#insert undefined;` is an unresolved-name error and a non-string operand is a type error, each at the
+operand's own span; a pending insert the evaluator has not reached is *refused*, never lowered to nothing,
+so a computed insert is diagnosed rather than miscompiled at every step. Building it caught the formatter
+silently dropping a computed operand — `#insert CODE;` → `#insert;` — the same lossy-CST failure the
+literal wave guarded against. On top of **`#insert` of a literal string** (ADR-0072): `#insert "n := 2 + 3;";`
+parses its operand as Jairs source and lowers the statements **where the directive is written** — same
+scope, so the next line can read `n`. Every synthesized node's span is the `#insert` itself, because
+inserted code has no position in any file and `jr-diag` *clamps* an out-of-range offset rather than
+rejecting it, so a synthesized span would silently underline source the user never wrote. Nesting works and
+needed no code; it cannot run away because escaping doubles the text at every level, so a written insert is
+bounded by its file. On top
 of **a type as a compile-time value** (ADR-0071): `T :: Point;` binds a type to a name,
 and using a type where a *runtime* value is expected is now an error rather than a silent miscompile.
 `t := Point;` used to type-check cleanly and exit 0 in both engines while storing an undefined value into
@@ -71,7 +80,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 944 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
+`print_int` (ADR-0037). 954 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do
@@ -81,7 +90,7 @@ checks that are verified rather than gated.
 | Compile and run a program in the comptime VM | `jr run file.jr` | Register bytecode interpreter, no JIT tier |
 | Compile to a native executable | `jr build file.jr -o out` | arm64 macOS verified; x86-64 Linux configured in CI but **never run** |
 | Build without bounds checks | `jr build file.jr --no-bounds-check`, or `jr run` | ADR-0003's build setting, finally wired (ADR-0058). An out-of-range index is then undefined behaviour, which is the trade. `#no_abc` on a procedure does the same locally, whatever the build says; compile-time execution checks regardless |
-| Get rustc-grade diagnostics | `jr check file.jr` | 92 codes across lexer, parser, HIR, sema, MIR and const-eval. E0218 and E0212 suggest a near name; E0231 is the one *warning* — an unused `#import` |
+| Get rustc-grade diagnostics | `jr check file.jr` | 95 codes across lexer, parser, HIR, sema, MIR and const-eval. E0218 and E0212 suggest a near name; E0231 and E0245 are *warnings* — an unused `#import`, and a body the compiler could not lower |
 | Format source canonically | `jr fmt [--check] paths…` | The corpus is canonical under it, CI-enforced |
 | Inspect tokens or the CST | `jr parse file.jr` | Debug aid |
 | Measure language-server latency | `jr bench file.jr` | Reports min/median/p95 cold, warm and after an edit. **Reports, never judges** — no threshold, not a gate (ADR-0033) |
@@ -134,7 +143,8 @@ The authoritative version of this list is
 | float literals: `1.5`, `1e9`, `1.5e-3`, `1_000.5` | float *printing* — `print_int` has no counterpart |
 | nesting block comments; `///` and `//!` doc comments, shown on hover | doc generation (`jr doc`) — nothing consumes docs but the language server |
 | `#run` at file scope or in a body, calling local or **imported** procedures, with loops and nested calls | `type_info()`, `Any`, `#code` (**W4**, in sub-waves) |
-| `#insert "…"` of a **string literal**, lowered where it is written — same scope, so a local it declares is visible after it; nesting works, and every diagnostic points at the directive and names its offset into the inserted text (ADR-0072) | a **computed** or named operand (`#insert build_it()`), which needs lowering to depend on const-eval — the W4 cycle; `#insert` at file scope, which would change the item tree; `#code` and the `Code` type |
+| `#insert "…"` of a **string literal**, lowered where it is written — same scope, so a local it declares is visible after it; nesting works, and every diagnostic points at the directive and names its offset into the inserted text (ADR-0072) | `#insert` at file scope, which would change the item tree; `#code` and the `Code` type |
+| `#insert <expr>;` of a **computed** operand — a constant or a `#run` whose text is evaluated at compile time and spliced (ADR-0073). The operand resolves and type-checks like any expression (`#insert undefined;` → E0201; a non-string → E0214), and a pending insert the evaluator has not reached is refused, never miscompiled. This is where sema and the VM become mutually recursive; the cycle is broken by an acyclic pre-pass | a **cross-file** `#run` value (its own decision, ADR-0073 §4); expansion past 16 levels (E0264) |
 | a **type as a compile-time value**: `T :: Point;` binds one, and `T` is usable wherever `Point` is — as an annotation, a parameter, a field, an array element, a pointee; an enum alias carries its members (ADR-0071) | a chain (`B :: A`); comparing types (`T == U`); a `Type` parameter; `Type` as an annotation, which does not parse |
 | using a type where a **runtime** value is expected is refused (E0261) — it has no runtime representation, so there is nothing to store | — |
 | `#import`, `#foreign`, `#system_library` | polymorphs `$T`, `#expand` macros (**W5**) |

@@ -153,3 +153,40 @@ body-lowering path specifically, not `file_hir` wholesale, which both shrinks th
 `imports_of`/`file_exports`/`file_signatures` — the very queries whose item-only shape prevents the
 import cycle (ADR-0054 §3) — untouched. This is a refinement within §1's acyclic-pre-pass decision, not a
 departure from it.
+
+### What building it actually did
+
+- **`Stmt::Insert` gained `operand: Option<ExprId>`.** A literal insert has `None`; a computed one holds
+  its operand lowered as an ordinary expression, so `#insert undefined;` is **E0201** and a non-`string`
+  operand is **E0214** at the operand's own span — real front-end diagnostics rather than a blanket
+  refusal. The operand is checked *expecting* `string`, which is why the mismatch reads like any other.
+- **The evaluation runs INLINE in `file_mir`, with no new salsa queries.** The one thing §1 got wrong in
+  spirit: it imagined an `expanded_file_hir` query stack. But `jr_hir::resolve` and `jr_sema::check_file`
+  both take an *explicit* `&FileHir`, so when `insert_operands(file)` is non-empty, `file_mir` calls
+  `lower_file_with_inserts`, then re-resolves and re-checks *that* tree (a shared `checked_expanded`), and
+  lowers it. Signatures are reused, because `#insert` cannot change items. A file with no computed insert
+  takes the ordinary path untouched — zero cost, zero risk.
+- **The `insert_operands` query reuses `file_consts`' evaluator** via a `Wanted::InsertOperand` target, so
+  there is one evaluator and one cycle detector (the discipline that put body `#run`s in `file_consts`
+  rather than a second query). It reads the values back and keys them by directive span.
+- **The graph is acyclic, and the cycle I feared while building did not exist.** `frontend_diagnostics` is
+  mir-free (only `file_diagnostics` reaches `file_mir`), so `insert_operands → file_consts →
+  frontend_diagnostics` never loops back — exactly what §1 claimed, confirmed by reading the graph rather
+  than trusting it.
+- **The unexpanded resolve withholds E0201 in a body holding a pending insert**, because it cannot know
+  what the insert will declare (`#insert CODE;` then `exit(n)` where `CODE` declares `n`). The *expanded*
+  resolve reports the real errors, carried out through `MirResult::expanded_diagnostics` and surfaced by
+  `file_diagnostics` — otherwise a misspelling in such a body read as "the compiler could not lower
+  `main`", an internal message for an ordinary typo.
+- **An expanded insert clears `operand` to `None`**, making it identical to a literal insert. This is not
+  cosmetic: an insert whose operand evaluates to `""` expands to *zero* statements, and if `operand` stayed
+  `Some` that would be the *pending* state `scan` refuses. Clearing it distinguishes "evaluated, and it was
+  empty" from "not yet evaluated" — found by probing the empty case after the feature landed.
+- **`jr-fmt` was silently dropping a computed operand** — `#insert CODE;` formatted to `#insert;`, the
+  CST-preservation failure ADR-0072 §1 warned of, now for the operand syntax. The `DIRECTIVE_EXPR`
+  formatter emitted only a bare `STRING_LITERAL` token; it now formats an operand *expression* too. Caught
+  by the corpus `jr fmt` gate the day `060` was added.
+- **The safety net held at every intermediate commit.** From "the parser accepts it" through to the
+  evaluator landing, a computed insert was *diagnosed* (E0262, then E0201/E0214, then the specific `scan`
+  refusal) and never silently miscompiled — teeth-checked by disabling expansion, which makes `scan` refuse
+  the body rather than lower it to nothing.
