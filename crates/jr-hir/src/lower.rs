@@ -1170,18 +1170,33 @@ impl<'a> BodyLowerCtx<'a> {
         }
 
         let Some(arg) = directive.string_arg() else {
-            // No string operand: either something else was written, or nothing was. Refused rather than
-            // treated as an empty insert, because `#insert compute()` is the *computed* form ADR-0072 §4
-            // defers and a silent no-op would make it look supported.
-            self.diags.push(
-                Diagnostic::error(span, "`#insert` needs a string literal of Jairs source")
+            // No *literal* string operand. Two cases, and the message distinguishes them (ADR-0073):
+            //
+            //   * a **computed** operand — `#insert S;` or `#insert #run mk();` — which the parser now
+            //     accepts (ADR-0073 §1) but whose value the operand pre-pass does not yet evaluate. The
+            //     refusal is temporary and says so, rather than claiming the feature is out of scope.
+            //   * **nothing at all** — `#insert;` — which is the ADR-0072 §5 case and stays a hard error.
+            //
+            // Both refuse rather than lower to zero statements, which would be the well-typed-placeholder
+            // silent miscompile AGENTS.md names: a legal-looking program that means nothing.
+            let has_operand = directive
+                .syntax()
+                .children()
+                .any(|c| jr_syntax::ast::Expr::cast(c).is_some());
+            let diag = if has_operand {
+                Diagnostic::error(span, "a computed `#insert` operand is not evaluated yet")
                     .with_code(E0262)
                     .with_note(
-                        "only a literal is supported: a computed operand needs the compile-time \
-                                evaluator, which runs after lowering (ADR-0072 §4)",
+                        "the operand parses, but evaluating it needs the compile-time evaluator to run \
+                         before lowering — the pre-pass ADR-0073 §1 describes, still being built",
                     )
-                    .with_help("write the code inline, e.g. `#insert \"x := 1;\";`"),
-            );
+                    .with_help("for now, write the code as a string literal: `#insert \"x := 1;\";`")
+            } else {
+                Diagnostic::error(span, "`#insert` needs a string literal of Jairs source")
+                    .with_code(E0262)
+                    .with_help("write the code inline, e.g. `#insert \"x := 1;\";`")
+            };
+            self.diags.push(diag);
             return self.alloc_stmt(Stmt::Error(span));
         };
 

@@ -1290,6 +1290,39 @@ fn insert_without_a_string_literal_is_e0262() {
 }
 
 #[test]
+fn a_computed_operand_and_a_missing_one_give_distinct_e0262_messages() {
+    // ADR-0073 §1: the parser now accepts `#insert S;`, so lowering must tell "a computed operand the
+    // pre-pass does not yet evaluate" apart from "nothing at all". Both are E0262 and both refuse (never
+    // a silent zero-statement lowering), but a reader who wrote a computed operand needs to know it is a
+    // *not-yet* rather than a *never*.
+    let (_, computed, _) = lower("main :: () { #insert S; }");
+    let computed_msg = computed
+        .iter()
+        .find(|d| d.code == Some("E0262"))
+        .map(|d| d.message.clone())
+        .expect("a computed operand is E0262");
+    assert!(
+        computed_msg.contains("not evaluated yet"),
+        "a computed operand's message must say it is not-yet, got: {computed_msg:?}"
+    );
+
+    let (_, missing, _) = lower("main :: () { #insert; }");
+    let missing_msg = missing
+        .iter()
+        .find(|d| d.code == Some("E0262"))
+        .map(|d| d.message.clone())
+        .expect("a missing operand is E0262");
+    assert!(
+        missing_msg.contains("needs a string literal"),
+        "a missing operand's message must ask for a literal, got: {missing_msg:?}"
+    );
+    assert_ne!(
+        computed_msg, missing_msg,
+        "the two E0262 cases must not read identically"
+    );
+}
+
+#[test]
 fn a_parse_error_in_inserted_text_is_e0263_and_names_the_offset() {
     let (_, diags, _) = lower(r#"main :: () { #insert "x := ;"; }"#);
     let insert_diags: Vec<_> = diags.iter().filter(|d| d.code == Some("E0263")).collect();
