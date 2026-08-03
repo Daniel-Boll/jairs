@@ -545,6 +545,30 @@ built. **948 workspace tests**, all six gates green, **166 Neovim checks**. See 
       to zero statements silently, which is why `operand: Some` marks the pending state distinctly from an
       empty literal insert (`operand: None`, no statements).
 
+      **The turn-key build order** (each step compiles; the diagnostic-quality tension means steps 1–6
+      land as one commit):
+      1. `Stmt::Insert` gains `operand: Option<ExprId>`; the four match arms (`resolve`, `check`,
+         `mir/build` reach + lower, `mir/escape`, `mir/span`, `dump`) updated — a literal insert keeps
+         `operand: None` and behaves exactly as today.
+      2. `lower_insert`'s computed branch lowers the operand as an ordinary `Expr` and returns
+         `Stmt::Insert { stmts: vec![], operand: Some(id), span }` instead of E0262.
+      3. `resolve` and `check` visit `operand` when `Some`, so `#insert undefined;` is a real
+         unresolved-name error and a non-`string` operand is a type error at the operand's own span.
+      4. MIR `scan` refuses a body containing a `Stmt::Insert` with `operand: Some` **and** empty
+         `stmts` — the pending state — with a *specific* reason, not the generic E0245. (This is the step
+         that replaces today's E0262; give it its own message so the diagnostic does not regress.)
+      5. `insert_operands(file, search_paths)` query in `jr-db`: for each pending insert, evaluate its
+         operand via the existing thunk machinery (reusing `evaluate`/`lower_const`) under
+         `file_signatures` only, refusing a non-`string` result. Returns a map keyed by the operand
+         `ExprId`.
+      6. A `lower_file` variant (or an added param, default-empty) consumes that map: when an operand's
+         string is known, it `parse_stmts` + lowers in place exactly as ADR-0072's literal path, filling
+         `stmts` and clearing the pending state. Rewire **only** `checked` and `file_mir` onto this
+         expanded HIR — never `imports_of`/`file_exports`/`file_signatures` (item-only, and rewiring them
+         reintroduces the import cycle).
+      7. Corpus: a `valid/` program with a computed insert that runs, and an `imports/invalid/` file for
+         the non-string-operand refusal. Depth-bound (E0264) already guards the quine.
+
 ---
 
 ### Prior handoff — `#insert` of a literal string (ADR-0072, sub-wave 4)
