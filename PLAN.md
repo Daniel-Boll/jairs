@@ -556,14 +556,27 @@ Neovim checks**. See §1.5.
       ExprId)` and the reason `MirSpan` carries a scope — but here even the id is unstable, so the span is
       the only stable key.)
 
-      **Step 6 — the expanded lowering.** A `lower_file` variant (or an added default-empty
-      `InsertOperands` param) that, when an operand's string is known, `parse_stmts` + lowers it in place
-      exactly as ADR-0072's literal path, filling `stmts` and clearing the pending state. **Rewire only
-      `file_mir`** onto this expanded HIR (via a new `expanded_file_hir` query that depends on
-      `insert_operands`); `checked` for the *operand* stays unexpanded, and the inserted statements get
-      checked as part of building their MIR. Never rewire
+      **Step 6 — the expanded lowering — is DONE in `jr-hir` and pending in `jr-db`.**
+      `jr_hir::lower_file_with_inserts(parse, file, interner, &InsertOperands)` expands a pending insert
+      whose directive span is in the map (span-keyed per the trap above), sharing `expand_insert_text`
+      with the literal path; `lower_file` is it with an empty map. A unit test proves the two-pass shape.
+      What remains is the `jr-db` side: an `insert_operands` query, an `expanded_file_hir` that calls
+      `lower_file_with_inserts`, and rewiring `file_mir` onto it. Never rewire
       `imports_of`/`file_exports`/`file_signatures` — item-only, and rewiring them reintroduces the import
       cycle (ADR-0054 §3).
+
+      **A second cycle edge, found while mapping the `jr-db` wiring and NOT in ADR-0073 — resolve it
+      before writing the query.** `frontend_diagnostics` calls `file_mir` (module_loader.rs:483, for the
+      E0245 refused-body warnings). So if `file_mir` is rewired onto an `expanded_file_hir` that depends
+      on `insert_operands → file_consts`, and `file_consts` gates on `frontend_diagnostics` — which calls
+      `file_mir` — the loop closes: `file_mir → expanded_file_hir → insert_operands → file_consts →
+      frontend_diagnostics → file_mir`. The break: `insert_operands` must **not** gate on the full
+      `frontend_diagnostics`. It needs only that parse/lower/resolve/check are clean — a *mir-free*
+      frontend check (parse_diagnostics + lower + resolved + signatures + checked, i.e.
+      `frontend_diagnostics` minus its `file_mir` block). Factor that mir-free check out and gate both
+      `insert_operands` and `file_consts`' operand evaluation on it. The `file_consts` scaffolding for the
+      operand values already exists in git history at commit before the revert (Wanted::InsertOperand);
+      re-apply it against the mir-free gate.
 
       **Step 7 — corpus.** A `valid/` program with a computed insert that runs (assert its exit code, per
       [[jairs-assert-behaviour-not-agreement]] — the differential only checks agreement), and an
