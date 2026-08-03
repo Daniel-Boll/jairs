@@ -708,7 +708,11 @@ impl Compiler<'_> {
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
-            | Item::ForeignLibraryValue(_) => Shape::Aggregate,
+            | Item::ForeignLibraryValue(_)
+            // A value reaching a *type* classifier is already a compiler fault, and this arm's
+            // conservative answer is the safe one: an aggregate is read by size, so a wrong
+            // classification here reads too few bytes rather than too many (ADR-0074 §1).
+            | Item::AggregateValue { .. } => Shape::Aggregate,
         }
     }
 }

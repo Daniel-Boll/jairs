@@ -846,3 +846,48 @@ is the shape ADR-0019 refuses for the two execution engines. This wave also owes
 ADR-0072 §5 named: a computed operand can reproduce itself without growing, so the escaping argument that
 bounded a literal insert no longer applies. And it corrects the plan: a `#run` reading another file's
 constant does **not** come free, since the general mechanism that would deliver it is the one rejected.
+
+---
+
+## Wave: aggregate constants (ADR-0074), 2026-08-03 — W4 sub-wave 6
+
+### What running found first
+
+```
+P :: struct { x: s64; y: s64; }
+V :: #run mk();      // error[E0230]: a compile-time struct value arrives with a later wave
+```
+
+* **The gap is in `jr-pool` alone.** `Item` has eight value variants and not one of them is an aggregate,
+  which is exactly what `reduce` says when it refuses.
+* **Both engines can already hold one**: the VM has `Value::Aggregate(Vec<u8>)` (it builds one for a string
+  today) and `jr-codegen-clif` already emits static data via `define_data`. So this is a representation
+  decision, not a back-end one.
+* **The refusal covers arrays too and its message does not say so** — a `#run` returning `[2]s64` is told
+  about structs.
+* **`string` already works**, because `reduce` special-cases it and interns the *text* rather than bytes.
+  That is the shape the decision generalises.
+
+### The fork — how an aggregate constant is represented
+
+- Options: **the field values, in order, as `Item::AggregateValue(Vec<PoolId>)` (taken, recommended)**; the
+  byte image the VM already produced; a side table keyed by declaration.
+- Why: **the pool is target-independent** — `layout_of(pool, target, ty)` takes a `TargetLayout` and the
+  `Pool` holds none — so a byte image would put a target fact inside the shared pool. The VM writes those
+  bytes with `write_le` at offsets for one target, so interning them would bake in the host's padding and
+  pointer width; a cross-compile would then read plausible wrong values rather than fail, and every target
+  in the slice being `LP64` is exactly why it would go unnoticed. Field-wise interning has no target in it,
+  and `field_offset(pool, target, …)` already turns it into bytes at the point that knows which target is
+  meant. A declaration-keyed side table works for field *types* (which belong to the declaration) and not
+  for values, since two constants of one type differ — the key would have to be the constant, which is what
+  `intern` already is.
+
+### Resolution
+
+Fork taken as recommended. ADR-0074 records it. Scope is **struct and array**; `string` keeps `StrValue`
+(its contents are its identity and its runtime form is a pointer, which has no compile-time value), and a
+**union constant is refused** because untagged storage makes "which field is valid" unanswerable
+(ADR-0045 §1). A struct or array **literal** stays absent — that is ADR-0039 §6's syntax question, and
+worth stating because after this `V :: #run mk();` works while `V :: P.{1, 2};` still does not parse.
+`Item` gains its first **recursive** value variant, so every exhaustive walk must decide what a nested
+aggregate means — the mechanism that found ADR-0068's two wrong answers.

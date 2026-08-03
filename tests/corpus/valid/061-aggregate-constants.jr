@@ -1,0 +1,93 @@
+// An **aggregate compile-time value**: a `#run` that returns a struct or an array (ADR-0074). W4's sixth
+// sub-wave, and the prerequisite `type_info()` and `Any` were really blocked on — a describing struct
+// returned from the compiler *is* an aggregate constant, so it could not exist until this did.
+//
+// Before this, `V :: #run mk();` where `mk` returned a struct reported E0230, "a compile-time struct value
+// arrives with a later wave", because `jr-pool`'s `Item` had no aggregate value variant at all. The
+// refusal covered arrays too and its message did not say so.
+//
+// The representation is the **element values, in order** — `Item::AggregateValue { ty, elements }` — and
+// deliberately *not* the byte image the VM already had. The pool is target-independent (`layout_of` takes a
+// `TargetLayout`; the pool holds none), so interning bytes would put one target's padding and pointer width
+// into a shared table, and a cross-compile would then read plausible wrong values rather than fail. Each
+// engine turns the values into bytes itself, at the point that knows which target is meant: the VM writes
+// them at `field_offset`, and the native back end materialises a stack slot the same way it does for a
+// string's `{data, count}` pair. Two materialisations from one shared value is ADR-0019's arrangement, and
+// this file is what says they agree.
+//
+// Four things, each given teeth by the `exit`:
+//
+//   * a **struct** constant, read field by field (`POINT.x`, `POINT.y`);
+//   * an **array** constant, read by index (`SIZES[0]`, `SIZES[1]`) — the shape whose refusal message used
+//     to talk about structs;
+//   * a **nested** aggregate, a struct holding a struct, which needed no special case: an element is an
+//     interned value like any other, so the representation recurses by construction;
+//   * a field read through a **local copy** (`p := POINT;`), which is the path that spills the constant
+//     into a slot — a constant is an operand and a field projection needs an address, so reading `POINT.x`
+//     at all required giving an aggregate-valued item a place.
+//
+// What is **not** here: a struct or array *literal* (`P.{1, 2}`, `[1, 2, 3]`), which is ADR-0039 §6's
+// syntax question and still does not parse — this wave gives a `#run` result somewhere to live, it does not
+// add a way to write one directly. And a **union** constant, refused because untagged storage makes "which
+// field is valid" unanswerable (ADR-0074 §4); `type-errors/065` holds that refusal.
+#import "Basic";
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+Nested :: struct {
+    inner: Point;
+    scale: s64;
+}
+
+/// Returns a struct, so its value must be interned as an aggregate.
+make_point :: () -> Point {
+    p: Point;
+    p.x = 3;
+    p.y = 4;
+    return p;
+}
+
+/// Returns a fixed array — the shape whose refusal used to be reported as a struct's.
+make_sizes :: () -> [3]s64 {
+    a: [3]s64;
+    a[0] = 5;
+    a[1] = 6;
+    a[2] = 7;
+    return a;
+}
+
+/// A struct holding a struct: the element is itself an aggregate, and the representation recurses.
+make_nested :: () -> Nested {
+    n: Nested;
+    n.inner.x = 1;
+    n.inner.y = 2;
+    n.scale = 10;
+    return n;
+}
+
+POINT :: #run make_point();
+SIZES :: #run make_sizes();
+NESTED :: #run make_nested();
+
+main :: () {
+    // A struct constant, read field by field. Reading a field of a constant is what needed the constant
+    // to have a *place*: a projection needs an address, and an operand has none.
+    total := POINT.x + POINT.y;
+
+    // An array constant, read by index.
+    total = total + SIZES[0] + SIZES[1] + SIZES[2];
+
+    // A nested aggregate, two levels deep.
+    total = total + NESTED.inner.x + NESTED.inner.y + NESTED.scale;
+
+    // And through a local copy, which exercises the whole aggregate rather than one field: if the
+    // constant's bytes were laid out differently by the two engines, this is where they would disagree.
+    p := POINT;
+    total = total + p.x + p.y;
+
+    // 3+4 + 5+6+7 + 1+2+10 + 3+4 = 45.
+    exit(total);
+}

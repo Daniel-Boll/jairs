@@ -18,7 +18,14 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after **`#insert` of a computed string** (ADR-0073): `#insert CODE;` and
+Last updated after **an aggregate compile-time value** (ADR-0074): `V :: #run mk();` where `mk` returns a
+struct or an array now works, which is what `type_info()` and `Any` were really blocked on — a describing
+struct the compiler manufactures *is* an aggregate constant. It interns as its **element values**, not as the
+byte image the compile-time VM already had, because the type pool is target-independent and a byte image is
+not: interning bytes would put one target's padding and pointer width into a shared table, and a
+cross-compile would then read plausible wrong values rather than fail. Each engine turns the values into
+bytes itself, at the point that knows which target is meant. A *union* constant is refused, because untagged
+storage makes "which field is valid" unanswerable. On top of **`#insert` of a computed string** (ADR-0073): `#insert CODE;` and
 `#insert #run build();` evaluate the operand's text at compile time and splice it into the enclosing
 scope. This is the point W4 called its top risk — sema and the VM become mutually recursive, because
 lowering cannot finish until the operand is evaluated and the evaluator runs on lowered code — and the
@@ -80,7 +87,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 954 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
+`print_int` (ADR-0037). 958 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do
@@ -143,6 +150,7 @@ The authoritative version of this list is
 | float literals: `1.5`, `1e9`, `1.5e-3`, `1_000.5` | float *printing* — `print_int` has no counterpart |
 | nesting block comments; `///` and `//!` doc comments, shown on hover | doc generation (`jr doc`) — nothing consumes docs but the language server |
 | `#run` at file scope or in a body, calling local or **imported** procedures, with loops and nested calls | `type_info()`, `Any`, `#code` (**W4**, in sub-waves) |
+| a `#run` returning a **struct or array**, interned as its element values and materialised by both engines (ADR-0074) | a `#run` returning a **union** — untagged storage makes "which field is valid" unanswerable; a struct or array *literal* (`P.{1, 2}`), which is a separate syntax question |
 | `#insert "…"` of a **string literal**, lowered where it is written — same scope, so a local it declares is visible after it; nesting works, and every diagnostic points at the directive and names its offset into the inserted text (ADR-0072) | `#insert` at file scope, which would change the item tree; `#code` and the `Code` type |
 | `#insert <expr>;` of a **computed** operand — a constant or a `#run` whose text is evaluated at compile time and spliced (ADR-0073). The operand resolves and type-checks like any expression (`#insert undefined;` → E0201; a non-string → E0214), and a pending insert the evaluator has not reached is refused, never miscompiled. This is where sema and the VM become mutually recursive; the cycle is broken by an acyclic pre-pass | a **cross-file** `#run` value (its own decision, ADR-0073 §4); expansion past 16 levels (E0264) |
 | a **type as a compile-time value**: `T :: Point;` binds one, and `T` is usable wherever `Point` is — as an annotation, a parameter, a field, an array element, a pointee; an enum alias carries its members (ADR-0071) | a chain (`B :: A`); comparing types (`T == U`); a `Type` parameter; `Type` as an annotation, which does not parse |

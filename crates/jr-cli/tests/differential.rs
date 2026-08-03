@@ -266,6 +266,33 @@ fn a_computed_insert_splices_evaluated_text() {
     );
 }
 
+/// An aggregate constant must exit **45**, and both engines must build its bytes the same way (ADR-0074).
+///
+/// The corpus differential says the two agree; this says *what* they agree on, which matters more here
+/// than usual. The pool interns an aggregate constant as its **element values**, deliberately not as a byte
+/// image, so each engine lays those values out itself — the VM writing at `field_offset`, the native back
+/// end materialising a stack slot. A disagreement about padding or element order would give both a
+/// consistent-looking wrong number, which is exactly what an agreement-only test cannot see.
+#[test]
+fn an_aggregate_constant_lays_out_the_same_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/061-aggregate-constants.jr");
+
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    assert_eq!(
+        vm.status, 45,
+        "the VM exited {} — an aggregate constant's fields did not read back as written",
+        vm.status
+    );
+    assert_eq!(
+        native.status, 45,
+        "the native back end exited {} — see the VM assertion above",
+        native.status
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Programs whose *result* is observable
 // ---------------------------------------------------------------------------

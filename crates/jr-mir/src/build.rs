@@ -896,7 +896,9 @@ impl Lower<'_> {
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
-            | Item::ForeignLibraryValue(_) => None,
+            | Item::ForeignLibraryValue(_)
+            // An aggregate *value* is not a pointer type, like every other value (ADR-0074 §1).
+            | Item::AggregateValue { .. } => None,
         }
     }
 
@@ -1408,7 +1410,9 @@ impl Lower<'_> {
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
-            | Item::ForeignLibraryValue(_) => None,
+            | Item::ForeignLibraryValue(_)
+            // An aggregate *value* is not a pointer type, like every other value (ADR-0074 §1).
+            | Item::AggregateValue { .. } => None,
         }
     }
 
@@ -3237,7 +3241,33 @@ impl Lower<'_> {
                     // projection (ADR-0050 §2). This is what makes `x = 1` work inside a
                     // procedure taking a `using` parameter.
                     Res::Promoted { .. } => self.res_place(&res),
-                    Res::Item(_) | Res::Imported(_, _) | Res::Error => None,
+                    // A file-level constant whose value is an **aggregate** gets a place, by spilling the
+                    // constant into a slot once (ADR-0074). Without it `V.x` — reading a field of a
+                    // `#run`-computed struct — refused the body with "a memory reference has no place",
+                    // because a field projection needs an address and a constant is an operand. The same
+                    // spill an aggregate *parameter* gets at entry, and for the same reason.
+                    //
+                    // A **scalar** constant still has none, and must not: it is an operand, and giving it
+                    // a slot would put every `LIMIT :: 4096;` in memory for nothing.
+                    Res::Item(item) => {
+                        let value = self.consts.item(item)?;
+                        if !matches!(
+                            self.pool.item(value),
+                            jr_pool::Item::AggregateValue { .. }
+                        ) {
+                            return None;
+                        }
+                        let ty = self.pool.type_of(value);
+                        let span = MirSpan::Expr(self.scope(), expr);
+                        let slot = self.mir.push_slot(ty, None, span);
+                        self.emit(Statement::Store {
+                            place: Place::slot(slot),
+                            value: Operand::Constant(value),
+                            span,
+                        });
+                        Some((Place::slot(slot), ty))
+                    }
+                    Res::Imported(_, _) | Res::Error => None,
                 }
             }
             Expr::Deref(inner, _) => {

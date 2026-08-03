@@ -5318,3 +5318,92 @@ proc main -> void {
     discard call extern proc1(v3)
     return
 }
+
+========================================
+061-aggregate-constants.jr
+========================================
+proc make_point -> Point {
+  params: v0: *Context
+  slots:
+    s0: Point  // local 0
+  bb0(v0: *Context):
+    zero s0
+    store s0.0 <- 3_s64
+    store s0.1 <- 4_s64
+    v1: Point = load s0
+    return v1
+}
+proc make_sizes -> [3]s64 {
+  params: v0: *Context
+  slots:
+    s0: [3]s64  // local 0
+  bb0(v0: *Context):
+    zero s0
+    bounds_check 0_s64 < 3_s64
+    store s0[0_s64] <- 5_s64
+    bounds_check 1_s64 < 3_s64
+    store s0[1_s64] <- 6_s64
+    bounds_check 2_s64 < 3_s64
+    store s0[2_s64] <- 7_s64
+    v1: [3]s64 = load s0
+    return v1
+}
+proc make_nested -> Nested {
+  params: v0: *Context
+  slots:
+    s0: Nested  // local 0
+  bb0(v0: *Context):
+    zero s0
+    store s0.0.0 <- 1_s64
+    store s0.0.1 <- 2_s64
+    store s0.1 <- 10_s64
+    v1: Nested = load s0
+    return v1
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: Point  // temporary
+    s1: Point  // temporary
+    s2: [3]s64  // temporary
+    s3: [3]s64  // temporary
+    s4: [3]s64  // temporary
+    s5: Nested  // temporary
+    s6: Nested  // temporary
+    s7: Nested  // temporary
+    s8: Point  // local 1
+  bb0(v0: *Context):
+    store s0 <- {3_s64, 4_s64}
+    v1: s64 = load s0.0
+    store s1 <- {3_s64, 4_s64}
+    v2: s64 = load s1.1
+    v3: s64 = v1 + v2
+    store s2 <- {5_s64, 6_s64, 7_s64}
+    bounds_check 0_s64 < 3_s64
+    v4: s64 = load s2[0_s64]
+    v5: s64 = v3 + v4
+    store s3 <- {5_s64, 6_s64, 7_s64}
+    bounds_check 1_s64 < 3_s64
+    v6: s64 = load s3[1_s64]
+    v7: s64 = v5 + v6
+    store s4 <- {5_s64, 6_s64, 7_s64}
+    bounds_check 2_s64 < 3_s64
+    v8: s64 = load s4[2_s64]
+    v9: s64 = v7 + v8
+    store s5 <- {{1_s64, 2_s64}, 10_s64}
+    v10: s64 = load s5.0.0
+    v11: s64 = v9 + v10
+    store s6 <- {{1_s64, 2_s64}, 10_s64}
+    v12: s64 = load s6.0.1
+    v13: s64 = v11 + v12
+    store s7 <- {{1_s64, 2_s64}, 10_s64}
+    v14: s64 = load s7.1
+    v15: s64 = v13 + v14
+    store s8 <- {3_s64, 4_s64}
+    v16: s64 = load s8.0
+    v17: s64 = v15 + v16
+    v18: s64 = load s8.1
+    v19: s64 = v17 + v18
+    discard call extern proc1(v19)
+    return
+}

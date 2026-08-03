@@ -468,6 +468,34 @@ pub enum Item {
         /// The library name, as written.
         StrId,
     ),
+    /// A struct or fixed-array compile-time value: its **element values, in order** (ADR-0074 §1).
+    ///
+    /// The first *recursive* value variant — an element may itself be an aggregate, and a [`PoolId`]
+    /// already expresses that, because interning is recursive by construction. So `[2]P` interns as an
+    /// `AggregateValue` of two `AggregateValue`s, with no bespoke tree to maintain.
+    ///
+    /// **Deliberately not the byte image**, though `jr-db`'s `reduce` already has one from the VM. The
+    /// pool is **target-independent** — `layout_of(pool, target, ty)` takes a [`crate::TargetLayout`] and
+    /// the pool holds none — so a byte image would put a target fact inside the shared pool: the VM writes
+    /// it at offsets for *one* target, and a cross-compile would read plausible wrong values rather than
+    /// fail. Every target in the slice being `LP64` is exactly why that would go unnoticed. Interning the
+    /// values instead leaves `field_offset(pool, target, …)` to produce bytes at the point that knows which
+    /// target is meant (ADR-0074 §1).
+    ///
+    /// `string` is **not** one of these: it interns as [`Item::StrValue`], because its contents are its
+    /// identity and its runtime form is a pointer, which has no compile-time value (ADR-0074 §2). A union
+    /// is not one either — untagged storage makes "which field is valid" unanswerable (§4).
+    ///
+    /// **Carries its type**, for the reason [`Item::IntValue`] does: one shape can have many types. Two
+    /// distinct struct types with identically-typed fields would otherwise produce the same element list
+    /// and *intern to one id* — so `type_of` could not answer, and a constant of one type would silently
+    /// stand in for the other. Interning is by the whole key, so the type is part of the identity.
+    AggregateValue {
+        /// The aggregate's type: a struct or fixed-array type.
+        ty: PoolId,
+        /// The element values, in declaration order for a struct and index order for an array.
+        elements: Vec<PoolId>,
+    },
 }
 
 impl Item {
@@ -510,7 +538,9 @@ impl Item {
             | Self::StrValue(_)
             | Self::TypeValue(_)
             | Self::ProcValue { .. }
-            | Self::ForeignLibraryValue(_) => false,
+            | Self::ForeignLibraryValue(_)
+            // An aggregate constant is a value (ADR-0074 §1), whatever its elements are.
+            | Self::AggregateValue { .. } => false,
         }
     }
 }

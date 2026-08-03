@@ -94,9 +94,9 @@
 #v(0.4em)
 #pill[6/6 gates green]
 #h(4pt)
-#pill[954 tests]
+#pill[958 tests]
 #h(4pt)
-#pill[ADR-0073 latest]
+#pill[ADR-0074 latest]
 #h(4pt)
 #pill(fill: rgb("#fdf2e6"), stroke: warn)[W4 open · 3 of 4 sub-waves done]
 
@@ -104,9 +104,9 @@
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "954", "workspace, all passing"),
-  metric("Corpus", "164", "jr files, both engines"),
-  metric("ADRs", "73", "0001 to 0073, immutable"),
+  metric("Tests", "958", "workspace, all passing"),
+  metric("Corpus", "165", "jr files, both engines"),
+  metric("ADRs", "74", "0001 to 0074, immutable"),
   metric("Diagnostics", "95", "codes, E0265 next free"),
   metric("Editor checks", "166", "Neovim, verified not gated"),
 )
@@ -296,7 +296,7 @@
   ),
   (
     "W4 Comptime", "in progress",
-    "Delivered in sub-waves, because a 10-14 week wave cannot be verified the way a one-ADR wave can. Five have shipped. A #run may call an imported procedure and appear in a body (ADR-0069), turning two internal compiler errors into working programs. An array length may name a constant (ADR-0070), which replaced the scheduled aggressive const folding after probing showed const-prop already did it. A type is a compile-time value (ADR-0071), which closed a silent miscompile — a type bound to a local compiled to an undefined value in a slot with no layout. Insert of a string literal lowers where it is written (ADR-0072), in the enclosing scope, every synthesized span pointing at the directive because jr-diag clamps an out-of-range offset rather than rejecting it. And a computed insert (ADR-0073) evaluates its operand at compile time and splices the text — the point sema and the VM become mutually recursive, PLAN section 5's named top risk, broken by an acyclic pre-pass that reuses the constant evaluator and re-lowers only the affected bodies rather than by salsa fixed-point recovery. What remains was thought one problem and is two: #code and the Code type, a quoted syntax tree as a value; and type_info() and Any, blocked not on this cycle but on the pool having no aggregate-constant representation at all.",
+    "Delivered in sub-waves, because a 10-14 week wave cannot be verified the way a one-ADR wave can. Six have shipped. A #run may call an imported procedure and appear in a body (ADR-0069), turning two internal compiler errors into working programs. An array length may name a constant (ADR-0070), which replaced the scheduled aggressive const folding after probing showed const-prop already did it. A type is a compile-time value (ADR-0071), which closed a silent miscompile — a type bound to a local compiled to an undefined value in a slot with no layout. Insert of a string literal lowers where it is written (ADR-0072), in the enclosing scope, every synthesized span pointing at the directive because jr-diag clamps an out-of-range offset rather than rejecting it. And a computed insert (ADR-0073) evaluates its operand at compile time and splices the text — the point sema and the VM become mutually recursive, PLAN section 5's named top risk, broken by an acyclic pre-pass that reuses the constant evaluator and re-lowers only the affected bodies rather than by salsa fixed-point recovery. And an aggregate compile-time value (ADR-0074): a #run returning a struct or array interns as its element values rather than a byte image, because the pool is target-independent and an image is not — which is what type_info() and Any were really blocked on, so RTTI is now a schema decision rather than a representation one. What remains: #code and the Code type, a quoted syntax tree as a value; and type_info() then Any.",
   ),
   (
     "W4.5 Pattern matching", "done",
@@ -354,27 +354,28 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[Twenty-five waves shipped]
+    #sub[Twenty-six waves shipped]
     #text(size: 7.4pt)[
-      ADR-0049 through 0073: for and defer, using, aggregate returns, multiple returns, named and
+      ADR-0049 through 0074: for and defer, using, aggregate returns, multiple returns, named and
       default arguments, scope visibility, imported constants, float constants, context, the
       bounds-check build setting, indirect calls, null plus a memory source, the allocator
       protocol, push_context, pointer arithmetic, temporary storage, trap backtraces, switch,
       tagged variants, compile-time run across files and in a body, an array length from a
-      constant, a type as a compile-time value, and insert of a literal and a computed string.
+      constant, a type as a compile-time value, insert of a literal and a computed string, and an aggregate compile-time value.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 954. Corpus 116 to 164 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
-      closed*, and *W4 is open* with five sub-waves shipped: a `#run` reaches across files and into a body,
+      Test count 900 to 958. Corpus 116 to 165 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
+      closed*, and *W4 is open* with six sub-waves shipped: a `#run` reaches across files and into a body,
       an array length may name a constant, a type is a value, `#insert` of a literal lowers where it is
       written, and now a *computed* `#insert` evaluates its operand at compile time and splices it — the
       point sema and the VM become mutually recursive, the cycle broken by an acyclic pre-pass. *Three
       times* a plan's stated reason turned out not to hold — W4.5's dependency on comptime, sub-wave 2's
-      folding work, and a nesting hang escaping makes impossible. Remaining: `#code`/`Code`, and
-      `type_info()`/`Any` — blocked on an aggregate-constant representation, a *different* problem from the
-      insert cycle.
+      folding work, and a nesting hang escaping makes impossible. An *aggregate* compile-time value now
+      interns too — as its element values, never a byte image, because the pool is target-independent —
+      which is what RTTI was really blocked on. Remaining: `#code`/`Code`, then `type_info()` and `Any`,
+      now a *schema* decision rather than a representation one.
     ]
 
     #v(0.3em)

@@ -398,6 +398,35 @@ fn fixture_modules_check_cleanly() {
 
 /// And the positive half: every file in `type-errors/` must be rejected.
 ///
+/// A `#run` returning a **union** is refused, and it is the one aggregate shape that must be (ADR-0074 §4).
+///
+/// A union is untagged (ADR-0045 §1), so its bytes do not say which field is live — and an aggregate
+/// constant is interned as its *element values*, which would mean picking one silently. That is the
+/// reinterpretation ADR-0045 allows only for a runtime read the programmer wrote, never for a value the
+/// compiler manufactures.
+///
+/// Not a corpus file: E0230 is `jr-db`'s const-eval code, and no corpus directory holds one — `type-errors/`
+/// is for `jr-sema` and `cfg-errors/` for `jr-mir`, so filing it in either would break that directory's
+/// stage contract. Checked here by exit code instead.
+#[test]
+fn a_run_returning_a_union_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("union_const.jr");
+    fs::write(
+        &path,
+        "U :: union { a: s64; b: s64; }\n\
+         mk :: () -> U { u: U; u.a = 1; return u; }\n\
+         V :: #run mk();\n\
+         main :: () { }\n",
+    )
+    .unwrap();
+    assert_eq!(
+        check_with_modules(vec![path], None),
+        1,
+        "a union constant has no defined field to read, so it must be refused"
+    );
+}
+
 /// Rejected *by sema*, not by the parser — `jr-sema`'s corpus test asserts these
 /// files parse cleanly, so a parser-caused failure would show up there first.
 #[test]
