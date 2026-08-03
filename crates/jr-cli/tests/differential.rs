@@ -235,6 +235,35 @@ fn an_inserted_defer_runs_when_the_enclosing_body_is_left() {
     );
 }
 
+/// A **computed** `#insert` must exit **42** (ADR-0073). `060-insert-computed.jr` splices a named
+/// constant's text and a `#run`'s returned text, each writing an enclosing local, summing to 42.
+///
+/// Asserted as a value, not merely as agreement, for the same reason as the defer test above: the corpus
+/// differential checks the two engines against *each other*, and the failure modes here — an operand that
+/// evaluates to the wrong string, or an insert lowered to no statements — would show *both* engines a
+/// consistent wrong answer. This test is the one that says the computed text was spliced and run, and it
+/// is the end-to-end proof that the operand pre-pass, the expansion, and both back ends agree with the
+/// VM that evaluated the operand at compile time.
+#[test]
+fn a_computed_insert_splices_evaluated_text() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/060-insert-computed.jr");
+
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    assert_eq!(
+        vm.status, 42,
+        "the VM exited {} — a computed `#insert` did not splice its evaluated text (10 + 32 = 42)",
+        vm.status
+    );
+    assert_eq!(
+        native.status, 42,
+        "the native back end exited {} — see the VM assertion above",
+        native.status
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Programs whose *result* is observable
 // ---------------------------------------------------------------------------

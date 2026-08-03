@@ -5300,3 +5300,20 @@ proc main -> void {
     discard call extern proc1(v31)
     return
 }
+
+========================================
+060-insert-computed.jr
+========================================
+proc build -> string {
+  params: v0: *Context
+  bb0(v0: *Context):
+    return "n = n + 32;"
+}
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = 0_s64 + 10_s64
+    v2: s64 = v1 + 32_s64
+    discard call extern proc1(v2)
+    return
+}

@@ -280,6 +280,17 @@ pub struct MirResult {
     /// that cannot tell those apart would report an empty program as a correct
     /// one, which is the sort of silence that hides a build failure.
     pub gated: bool,
+    /// Diagnostics from resolving and checking the **expanded** tree, when a computed `#insert` was
+    /// expanded (ADR-0073 §1, step 6). Empty otherwise.
+    ///
+    /// Carried here rather than reported by `frontend_diagnostics` because expansion needs
+    /// `insert_operands`, which the frontend gate runs *before* — so these are the diagnostics only the
+    /// post-expansion tree can produce, and `file_diagnostics` (which already depends on this query) is
+    /// where they surface. Without this a misspelled name inside a body holding a computed insert reached
+    /// the user as "the compiler could not lower `main`", an internal-sounding message for an ordinary
+    /// typo: the unexpanded resolve withholds E0201 there (it cannot know what the insert declares), so
+    /// the expanded resolve is the only pass that can report it.
+    pub expanded_diagnostics: Arc<jr_diag::Diagnostics>,
 }
 
 // ---------------------------------------------------------------------------
@@ -297,13 +308,52 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
         return MirResult {
             mir: Arc::new(FileMir::new()),
             gated: true,
+            // Nothing was expanded: the gate ran before the operand pre-pass.
+            expanded_diagnostics: Arc::new(jr_diag::Diagnostics::new()),
         };
     }
 
-    let hir = file_hir(db, file);
-    let own_resolve = resolved(db, file, search_paths).map;
+    // **Computed `#insert`s, expanded** (ADR-0073 §1, step 6). When the operand pre-pass has evaluated an
+    // operand's text, the file is re-lowered with it — and the inserted statements are nodes the ordinary
+    // `resolved`/`checked` never saw, so they need a resolve and a check over *that* tree. Empty for every
+    // file with no computed insert, which takes the ordinary path below at zero cost.
+    //
+    // Acyclic: `insert_operands` reaches `file_consts` → `frontend_diagnostics`, which is mir-free (only
+    // `file_diagnostics` calls this query), so nothing here loops back.
+    let operands = crate::consts::insert_operands(db, file, search_paths);
+    #[allow(clippy::type_complexity)]
+    let expanded: Option<(
+        Arc<FileHir>,
+        Arc<jr_hir::ResolveMap>,
+        crate::sema::CheckResult,
+        jr_diag::Diagnostics,
+    )> = if operands.is_empty() {
+        None
+    } else {
+        let parse = crate::parse_file(db, file);
+        let file_id = crate::queries::resolve_file_id(db, file);
+        let interner = db.interner();
+        let (tree, _diags) =
+            jr_hir::lower_file_with_inserts(&parse, file_id, interner, operands.as_ref());
+        let tree = Arc::new(tree);
+        let (resolve_map, check, diags) =
+            crate::sema::checked_expanded(db, file, search_paths, tree.as_ref());
+        Some((tree, resolve_map, check, diags))
+    };
+
+    let hir = match &expanded {
+        Some((tree, _, _, _)) => tree.clone(),
+        None => file_hir(db, file),
+    };
+    let own_resolve = match &expanded {
+        Some((_, resolve_map, _, _)) => resolve_map.clone(),
+        None => resolved(db, file, search_paths).map,
+    };
     let own = crate::sema::file_signatures(db, file, search_paths);
-    let checked_file = checked(db, file, search_paths);
+    let checked_file = match &expanded {
+        Some((_, _, check, _)) => check.clone(),
+        None => checked(db, file, search_paths),
+    };
     let types = checked_file.types;
     let operators = checked_file.operator_calls;
     let filled = checked_file.filled_args;
@@ -333,6 +383,9 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
     MirResult {
         mir: Arc::new(lowered),
         gated: false,
+        // The expanded tree's own resolve/check diagnostics, which only this pass can produce
+        // (ADR-0073 §1). Empty when no computed `#insert` was expanded.
+        expanded_diagnostics: Arc::new(expanded.map(|(_, _, _, diags)| diags).unwrap_or_default()),
     }
 }
 
@@ -502,6 +555,9 @@ pub fn optimized_file_mir(
     MirResult {
         mir: Arc::new(out),
         gated: false,
+        // The optimiser consumes already-expanded MIR, so expansion diagnostics were reported by the
+        // built-MIR query this one reads.
+        expanded_diagnostics: Arc::new(jr_diag::Diagnostics::new()),
     }
 }
 

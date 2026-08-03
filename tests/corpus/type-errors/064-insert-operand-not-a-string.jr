@@ -1,0 +1,24 @@
+// EXPECT: E0214 — a computed `#insert` operand that is not a string (ADR-0073 §2)
+//
+// `#insert <expr>;` takes an operand that evaluates to a **string** of Jairs source (ADR-0073). The
+// operand is lowered as an ordinary expression and *checked expecting `string`*, so an operand of the
+// wrong type is an ordinary type mismatch — E0214, at the operand's own span — rather than a bespoke
+// refusal. That is the payoff of holding the operand as a real expression: `#insert x` where `x: s64`
+// reads exactly like any other place a `string` was wanted and an `s64` was given.
+//
+// **Why this is E0214 and lives in `type-errors/`, not E0262 in `imports/invalid/`.** E0262
+// (`imports/invalid/011`) is for an operand that is *not an expression at all* — a bare `#insert;`, a
+// lowering-stage refusal. A computed operand of the wrong type gets *past* lowering cleanly (it is a
+// well-formed expression) and is caught by the type checker, which is the stage `type-errors/` is for.
+// The two refusals are at different stages and so live in different directories, the same rule that put
+// ADR-0050's `using` refusals where they are.
+//
+// **Why the bad operand is an `s64` local rather than, say, a bool literal.** A local makes the mismatch
+// unmistakably about the *value's* type rather than about some literal's ambiguous type (ADR-0016 §1): an
+// integer literal takes its type from context, so `#insert 5` might invite a "what type is 5" distraction,
+// while `x: s64` has one settled type and the error is only ever "that is an `s64`, not a `string`".
+main :: () {
+    x := 5;
+    // E0214: `x` is an `s64`, and a computed `#insert` operand must be a `string`.
+    #insert x;
+}

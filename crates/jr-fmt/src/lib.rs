@@ -1529,7 +1529,16 @@ impl Formatter {
                 {
                     self.emit(dir.text());
                 }
-                if let Some(arg) = node
+                // A directive's operand is either a bare `STRING_LITERAL` *token* (the literal `#insert`
+                // and `#system_library "c"`) or a full **operand expression** (`#insert CODE;`,
+                // `#insert #run build();` — ADR-0073 §1). Emitting only the string token silently *dropped*
+                // a computed operand, rewriting `#insert CODE;` to `#insert;` — the CST-preservation
+                // failure ADR-0072 §1 warned of, now for the operand syntax. A child expression node is
+                // formatted; a bare string token is emitted verbatim.
+                if let Some(operand) = node.children().find(|n| is_expr_kind(n.kind())) {
+                    self.emit(" ");
+                    self.format_expr(&operand);
+                } else if let Some(arg) = node
                     .children_with_tokens()
                     .filter_map(|e| e.into_token())
                     .find(|t| t.kind() == STRING_LITERAL)

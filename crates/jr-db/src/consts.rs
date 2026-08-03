@@ -142,6 +142,14 @@ enum Wanted {
     /// and the cycle detector need no change: a type alias is a target like any other, it simply
     /// succeeds in the first round.
     TypeAlias(ItemId, ExprId),
+    /// The **operand of a computed `#insert`** inside a body (ADR-0073 §1, step 5).
+    ///
+    /// `#insert S;` and `#insert #run mk();` each hold their operand as an ordinary body expression, and
+    /// evaluating it is exactly evaluating a [`Wanted::BodyRun`] — same scope, same thunk. Its own variant
+    /// only so the insert-operand query can pick these out of `ConstValues` afterwards and key them by the
+    /// directive's *span* (invariant across the re-lowering that consumes them; the operand's `ExprId` is
+    /// not). The last field is that directive span.
+    InsertOperand(ItemId, jr_hir::BodyId, ExprId, jr_base::Span),
 }
 
 impl Wanted {
@@ -150,7 +158,8 @@ impl Wanted {
             Self::Item(_, expr)
             | Self::Run(_, expr)
             | Self::BodyRun(_, _, expr)
-            | Self::TypeAlias(_, expr) => expr,
+            | Self::TypeAlias(_, expr)
+            | Self::InsertOperand(_, _, expr, _) => expr,
         }
     }
 
@@ -159,7 +168,8 @@ impl Wanted {
             Self::Item(item, _)
             | Self::Run(item, _)
             | Self::BodyRun(item, _, _)
-            | Self::TypeAlias(item, _) => item,
+            | Self::TypeAlias(item, _)
+            | Self::InsertOperand(item, _, _, _) => item,
         }
     }
 
@@ -167,7 +177,7 @@ impl Wanted {
     const fn scope(self) -> ExprScope {
         match self {
             Self::Item(_, _) | Self::Run(_, _) | Self::TypeAlias(_, _) => ExprScope::TopLevel,
-            Self::BodyRun(_, body, _) => ExprScope::Body(body),
+            Self::BodyRun(_, body, _) | Self::InsertOperand(_, body, _, _) => ExprScope::Body(body),
         }
     }
 }
@@ -228,6 +238,19 @@ fn wanted(hir: &FileHir, signatures: &jr_sema::FileSignatures) -> Vec<Wanted> {
         for (expr_index, expr) in body.exprs.iter().enumerate() {
             if matches!(expr, jr_hir::Expr::Run(_, _)) {
                 out.push(Wanted::BodyRun(id, body_id, ExprId::from_usize(expr_index)));
+            }
+        }
+        // And every **computed `#insert` operand** in this body (ADR-0073 §1, step 5): a pending insert
+        // holds its operand expression, evaluated exactly as a body `#run`. Keyed additionally by the
+        // directive's span, the one identifier stable across the re-lowering that consumes it.
+        for stmt in &body.stmts {
+            if let jr_hir::Stmt::Insert {
+                operand: Some(op),
+                span,
+                ..
+            } = stmt
+            {
+                out.push(Wanted::InsertOperand(id, body_id, *op, *span));
             }
         }
     }
@@ -454,13 +477,73 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     }
 }
 
+// ---------------------------------------------------------------------------
+// insert_operands — tracked query (ADR-0073 §1, step 5)
+// ---------------------------------------------------------------------------
+
+/// The evaluated text of every computed `#insert` operand in a file, keyed by directive span.
+///
+/// This is the input `expanded_file_hir` hands to [`jr_hir::lower_file_with_inserts`]. It reuses
+/// [`file_consts`], which already evaluates each operand as a body `#run` in its round-robin — so there
+/// is **one** evaluator and one cycle detector, the same discipline that put body `#run`s in `file_consts`
+/// rather than a second query (ADR-0069 §2). This query only *reads back* the values `file_consts`
+/// computed and re-keys them by span, resolving each string `PoolId` to its text.
+///
+/// **Acyclic:** it depends on `file_consts` → `frontend_diagnostics`, which is mir-free (it ends at
+/// `checked`; only `file_diagnostics` reaches `file_mir`). So rewiring `file_mir` onto an expanded HIR
+/// that depends on this query never loops back to `file_mir` — verified by reading the query graph, and
+/// the reason ADR-0073 §1's acyclic-pre-pass claim holds.
+///
+/// A non-`string` operand is **not** reported here: `checked` already reported it (E0214, the operand is
+/// checked expecting `string`), so this query silently omits it and the insert stays pending, which
+/// `jr-mir`'s `scan` refuses — one diagnostic, at the operand's own span.
+///
+/// Uses `no_eq` to match the rest of this crate's queries.
+#[salsa::tracked(returns(clone), no_eq)]
+pub fn insert_operands(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+) -> Arc<jr_hir::InsertOperands> {
+    let consts = file_consts(db, file, search_paths);
+    let hir = file_hir(db, file);
+    let signatures = crate::sema::file_signatures(db, file, search_paths);
+    let mut operands = jr_hir::InsertOperands::new();
+
+    // Re-walk the same targets `file_consts` evaluated, keeping only the insert operands — each carries
+    // the directive span this map is keyed by. The value is in `consts.values` under the operand's
+    // `(Body, ExprId)` key, exactly where `record` put it.
+    let pool = crate::sema::lock_pool(db);
+    for target in wanted(hir.as_ref(), signatures.signatures.as_ref()) {
+        let Wanted::InsertOperand(_, body, expr, span) = target else {
+            continue;
+        };
+        let Some(value) = consts.values.run(ExprScope::Body(body), expr) else {
+            // The operand did not evaluate to a value (a non-string, a trap, a refusal). Left out, so
+            // the insert stays pending; the reason was already reported by `checked` or `file_consts`.
+            continue;
+        };
+        // Only a *string* operand expands. A non-string reaching here would be a `checked` bug, since the
+        // operand is checked expecting `string`; guarded rather than trusted, because a wrong expansion is
+        // a miscompile.
+        if let jr_pool::Item::StrValue(str_id) = pool.item(value) {
+            operands.set(span, pool.resolve_str(*str_id).to_owned());
+        }
+    }
+    drop(pool);
+
+    Arc::new(operands)
+}
+
 fn known(values: &ConstValues, target: Wanted) -> bool {
     match target {
         // A type alias's value is keyed like any other named constant's, so nothing downstream has to
         // know it was one (ADR-0071 §2).
         Wanted::Item(item, _) | Wanted::TypeAlias(item, _) => values.item(item).is_some(),
         Wanted::Run(_, expr) => values.run(ExprScope::TopLevel, expr).is_some(),
-        Wanted::BodyRun(_, body, expr) => values.run(ExprScope::Body(body), expr).is_some(),
+        Wanted::BodyRun(_, body, expr) | Wanted::InsertOperand(_, body, expr, _) => {
+            values.run(ExprScope::Body(body), expr).is_some()
+        }
     }
 }
 
@@ -473,7 +556,9 @@ fn record(values: &mut ConstValues, target: Wanted, value: PoolId) {
             values.set_run(ExprScope::TopLevel, expr, value);
         }
         Wanted::Run(_, expr) => values.set_run(ExprScope::TopLevel, expr, value),
-        Wanted::BodyRun(_, body, expr) => values.set_run(ExprScope::Body(body), expr, value),
+        Wanted::BodyRun(_, body, expr) | Wanted::InsertOperand(_, body, expr, _) => {
+            values.set_run(ExprScope::Body(body), expr, value)
+        }
     }
 }
 
