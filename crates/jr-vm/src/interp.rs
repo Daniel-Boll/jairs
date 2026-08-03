@@ -535,6 +535,12 @@ impl<'a> Vm<'a> {
             // from the type at every use.
             Item::FloatValue { ty: _, bits } => Ok(Value::Scalar(bits)),
             Item::StrValue(str_id) => self.string_value(str_id),
+            // An aggregate constant is turned into bytes **here**, per target (ADR-0074 §1): the pool
+            // interned the element *values*, deliberately not a byte image, because the pool is
+            // target-independent and an image is not. This is the one place the VM turns the one into the
+            // other, and `jr-codegen-clif` has its own — two materialisations from one shared value, which
+            // is ADR-0019's arrangement and what the differential harness checks.
+            Item::AggregateValue { ty, .. } => self.aggregate_value(id, ty),
             // A **procedure value** encodes its `ProcRef` as a scalar (ADR-0059 §4): the VM's
             // proc pointer is not a code address but a handle it decodes at the indirect call.
             // The bits differ from the native back end's real address, and that is allowed —
@@ -598,6 +604,74 @@ impl<'a> Vm<'a> {
         let mut bytes = vec![0u8; usize::try_from(layout.size).unwrap_or(16)];
         write_le(&mut bytes, data_offset, data.size, address);
         write_le(&mut bytes, count_offset, count_layout.size, count);
+        Ok(Value::Aggregate(bytes))
+    }
+
+    /// The byte image of an aggregate constant, in this program's target layout (ADR-0074 §1).
+    ///
+    /// The pool interned the element *values*; this writes each into the image at its own offset, which is
+    /// the conversion the pool deliberately does not do — offsets are a *target* answer
+    /// (`field_offset(pool, target, …)`) and the pool holds no target.
+    ///
+    /// A **struct** asks the pool for each field's offset; an **array** uses the element layout's size as
+    /// the stride, which is the same rule `layout_of` used to compute the array's size, so the two cannot
+    /// disagree about where element *n* begins. A nested element recurses through [`Self::constant`], so an
+    /// array of structs needs no special case.
+    fn aggregate_value(&mut self, id: PoolId, ty: PoolId) -> Result<Value, VmError> {
+        let target = self.program.target;
+        let layout = jr_pool::layout_of(self.pool, target, ty)
+            .map_err(|e| VmError::internal(format!("an aggregate constant has no layout: {e}")))?;
+        let Item::AggregateValue { elements, .. } = self.pool.item(id) else {
+            return Err(VmError::internal("an aggregate constant changed shape"));
+        };
+        let elements = elements.clone();
+
+        // The element offsets, resolved before any element is materialised: `constant` below takes
+        // `&mut self`, and the pool borrow must end first.
+        let mut placements: Vec<(u64, u64)> = Vec::with_capacity(elements.len());
+        if let Item::ArrayType { elem, .. } = *self.pool.item(ty) {
+            let elem_layout = jr_pool::layout_of(self.pool, target, elem).map_err(|e| {
+                VmError::internal(format!("an array constant's element has no layout: {e}"))
+            })?;
+            for index in 0..elements.len() {
+                placements.push((elem_layout.size * index as u64, elem_layout.size));
+            }
+        } else {
+            for index in 0..elements.len() {
+                let (offset, field) = jr_pool::field_offset(self.pool, target, ty, index as u32)
+                    .map_err(|e| {
+                        VmError::internal(format!(
+                            "an aggregate constant's field has no offset: {e}"
+                        ))
+                    })?;
+                placements.push((offset, field.size));
+            }
+        }
+
+        let mut bytes = vec![0u8; usize::try_from(layout.size).unwrap_or(0)];
+        for (element, (offset, size)) in elements.into_iter().zip(placements) {
+            match self.constant(element)? {
+                // A scalar element is its bits, written little-endian at its offset — the same
+                // `write_le` a string's `{data, count}` uses, so there is one byte-order answer.
+                Value::Scalar(bits) => write_le(&mut bytes, offset, size, bits),
+                // A **nested** aggregate is already an image of its own; it is copied in whole.
+                Value::Aggregate(inner) => {
+                    let start = usize::try_from(offset).unwrap_or(0);
+                    let end = start.saturating_add(inner.len()).min(bytes.len());
+                    if start < end {
+                        bytes[start..end].copy_from_slice(&inner[..end - start]);
+                    }
+                }
+                // `void` occupies no bytes, so an element of it writes nothing rather than being an
+                // error — the same rule `Layout::ZERO` states from the layout side.
+                Value::Void => {}
+                Value::Undefined => {
+                    return Err(VmError::internal(
+                        "an aggregate constant holds an uninitialised element",
+                    ));
+                }
+            }
+        }
         Ok(Value::Aggregate(bytes))
     }
 

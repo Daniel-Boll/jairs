@@ -441,7 +441,11 @@ fn layout_at_depth(
         | Item::StrValue(_)
         | Item::TypeValue(_)
         | Item::ProcValue { .. }
-        | Item::ForeignLibraryValue(_) => Err(LayoutError::NotAType(ty)),
+        | Item::ForeignLibraryValue(_)
+        // An aggregate *value* has no layout of its own — its **type** has one, and that arm already
+        // works (ADR-0074's consequences). Asking this of the value is the same category error as
+        // asking it of an `IntValue`, so it answers the same way.
+        | Item::AggregateValue { .. } => Err(LayoutError::NotAType(ty)),
     }
 }
 

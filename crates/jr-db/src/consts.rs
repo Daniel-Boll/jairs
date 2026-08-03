@@ -681,7 +681,101 @@ fn evaluate(
                 .map_err(|_| "a compile-time string was not valid UTF-8".to_owned())?;
             pool.str_value(&text)
         }
+        Raw::Aggregate(bytes) => intern_aggregate(pool, ty, &bytes)?,
     })
+}
+
+/// Interns an aggregate constant from the byte image the VM produced (ADR-0074 §1).
+///
+/// The inverse of `jr-vm`'s `aggregate_value`: it reads each element out of the image at the element's own
+/// offset and interns it, so what lands in the pool is the **element values** rather than the bytes. That
+/// is the whole point — the bytes are a *target* answer and the pool is target-independent, so keeping them
+/// would put one target's padding and pointer width into a shared table.
+///
+/// Recursive, because an element may itself be an aggregate: `[2]P` reads two sub-images and interns each
+/// the same way, with no special case.
+///
+/// A **union** is refused (ADR-0074 §4): its fields overlap, so which one the bytes represent is
+/// unanswerable, and picking one silently is exactly the reinterpretation ADR-0045 §1 allows only for a
+/// runtime read the programmer wrote.
+fn intern_aggregate(pool: &mut Pool, ty: PoolId, bytes: &[u8]) -> Result<PoolId, String> {
+    // Comptime execution uses the *host* layout, matching the VM that produced these bytes.
+    let target = jr_pool::TargetLayout::host();
+
+    // Element types and offsets first, so the immutable pool borrow ends before interning begins.
+    let placements: Vec<(PoolId, u64, u64)> = match *pool.item(ty) {
+        jr_pool::Item::ArrayType { elem, len } => {
+            let elem_layout = jr_pool::layout_of(pool, target, elem)
+                .map_err(|e| format!("an array constant's element has no layout: {e}"))?;
+            (0..len)
+                .map(|index| (elem, elem_layout.size * index, elem_layout.size))
+                .collect()
+        }
+        jr_pool::Item::StructType { decl } | jr_pool::Item::VariantType { decl } => {
+            let fields = pool
+                .struct_fields(decl)
+                .ok_or_else(|| "a struct constant's fields are not recorded".to_owned())?
+                .to_vec();
+            let mut out = Vec::with_capacity(fields.len());
+            for (index, field) in fields.iter().enumerate() {
+                let (offset, layout) = jr_pool::field_offset(pool, target, ty, index as u32)
+                    .map_err(|e| format!("a struct constant's field has no offset: {e}"))?;
+                out.push((field.ty, offset, layout.size));
+            }
+            out
+        }
+        // A union's fields overlap, so the bytes do not say which is live (ADR-0074 §4).
+        jr_pool::Item::UnionType { .. } => {
+            return Err("a compile-time union value has no defined field to read".to_owned());
+        }
+        _ => return Err("a compile-time aggregate of this shape is not supported".to_owned()),
+    };
+
+    let mut elements = Vec::with_capacity(placements.len());
+    for (elem_ty, offset, size) in placements {
+        let start = usize::try_from(offset).unwrap_or(0);
+        let end = start.saturating_add(usize::try_from(size).unwrap_or(0));
+        let slice = bytes
+            .get(start..end)
+            .ok_or_else(|| "a compile-time aggregate is shorter than its layout".to_owned())?;
+        elements.push(intern_element(pool, elem_ty, slice)?);
+    }
+    Ok(pool.aggregate_value(ty, elements))
+}
+
+/// Interns one element of an aggregate constant from its own bytes (ADR-0074 §1).
+///
+/// A scalar is decoded little-endian, exactly as `jr-vm`'s `write_le` wrote it, so the two directions
+/// share one byte-order answer. A nested aggregate recurses into [`intern_aggregate`]. A `string` element
+/// is refused: its bytes are a `{data, count}` pair pointing into the VM's memory, and that pointer has no
+/// meaning once the VM is gone — the same reason `string` interns by contents rather than as an aggregate
+/// (ADR-0074 §2).
+fn intern_element(pool: &mut Pool, ty: PoolId, bytes: &[u8]) -> Result<PoolId, String> {
+    if ty == PoolId::STRING {
+        return Err(
+            "a compile-time aggregate holding a string arrives with a later wave".to_owned(),
+        );
+    }
+    match *pool.item(ty) {
+        jr_pool::Item::ArrayType { .. }
+        | jr_pool::Item::StructType { .. }
+        | jr_pool::Item::UnionType { .. }
+        | jr_pool::Item::VariantType { .. } => intern_aggregate(pool, ty, bytes),
+        jr_pool::Item::VoidType => Ok(PoolId::VOID_VALUE),
+        _ => {
+            let mut buf = [0u8; 8];
+            let take = bytes.len().min(8);
+            buf[..take].copy_from_slice(&bytes[..take]);
+            let bits = u64::from_le_bytes(buf);
+            if ty == PoolId::BOOL {
+                return Ok(pool.bool_value(bits != 0));
+            }
+            if jr_pool::FloatKind::of(pool, ty).is_some() {
+                return Ok(pool.float_value(ty, bits));
+            }
+            Ok(pool.int_value(ty, bits))
+        }
+    }
 }
 
 /// A result reduced to something that outlives the VM.
@@ -692,6 +786,12 @@ fn evaluate(
 enum Raw {
     Void,
     Bool(bool),
+    /// A struct or fixed-array constant's **byte image**, copied out of the VM (ADR-0074 §1).
+    ///
+    /// Bytes rather than interned elements, because interning needs `&mut Pool` and the VM holds `&Pool`
+    /// — the same two-step this whole type exists for. `intern_aggregate` turns them into element values
+    /// once the VM is gone.
+    Aggregate(Vec<u8>),
     Int(u64),
     /// A float's raw IEEE-754 bits, kept distinct from [`Raw::Int`] even though the VM holds both as
     /// a scalar (ADR-0040 §3).
@@ -730,12 +830,11 @@ fn reduce(vm: &Vm<'_>, value: &Value, ty: PoolId, is_float: bool) -> Result<Raw,
             Ok(Raw::Int(*bits))
         }
         Value::Aggregate(_) if ty == PoolId::STRING => Ok(Raw::Str(vm.read_string(value)?)),
-        // A struct computed at compile time would need the pool to intern an aggregate
-        // value, which ADR-0015's `Item` has no variant for. Nothing in the corpus
-        // does it.
-        Value::Aggregate(_) => Err(VmError::unsupported_public(
-            "a compile-time struct value arrives with a later wave",
-        )),
+        // A struct or array computed at compile time (ADR-0074 §1). The **bytes** are copied out here,
+        // because that is all the VM can give while it borrows the pool; turning them into interned
+        // element values happens after, in `intern_aggregate`, which needs `&mut Pool`. A union is
+        // refused there rather than here, because deciding needs the pool.
+        Value::Aggregate(bytes) => Ok(Raw::Aggregate(bytes.clone())),
         Value::Undefined => Err(VmError::unsupported_public(
             "the expression evaluated to no value",
         )),

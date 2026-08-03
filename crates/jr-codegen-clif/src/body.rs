@@ -506,11 +506,103 @@ impl Translator<'_, '_> {
                 let pointer = pointer_type(self.ctx.target);
                 Ok(Some(self.builder.ins().func_addr(pointer, func)))
             }
+            // An aggregate constant is materialised into a stack slot, element by element, and its
+            // **address** is the value — exactly as a string's `{data, count}` pair is (ADR-0074). The pool
+            // interned the element *values* rather than a byte image, deliberately, because the pool is
+            // target-independent; this is the native half of turning one into the other, and `jr-vm`'s
+            // `aggregate_value` is the other half. Two materialisations from one shared value is
+            // ADR-0019's arrangement, and the differential harness is what says they agree.
+            Item::AggregateValue { ty, .. } => self.aggregate_constant(id, ty).map(Some),
             _ => Err(CodegenError::Unsupported {
                 proc: self.proc,
                 what: "a type or library used as a runtime value".to_owned(),
             }),
         }
+    }
+
+    /// Materialises an aggregate constant into a stack slot, returning its address (ADR-0074 §1).
+    ///
+    /// Each element is written at its own offset — from `field_offset` for a struct, or the element
+    /// layout's size as a stride for an array, which is the same rule `layout_of` used for the array's
+    /// size, so the two cannot disagree about where element *n* begins. A nested element recurses through
+    /// [`Self::constant`], whose aggregate arm returns an address; that sub-image is then copied in, which
+    /// is why this needs `memcpy`-shaped stores rather than one `store` per element.
+    fn aggregate_constant(
+        &mut self,
+        id: jr_pool::PoolId,
+        ty: jr_pool::PoolId,
+    ) -> Result<ClifValue, CodegenError> {
+        let layout = jr_pool::layout_of(self.ctx.pool, self.ctx.target, ty)
+            .map_err(|reason| CodegenError::NoLayout { ty, reason })?;
+        let Item::AggregateValue { elements, .. } = self.ctx.pool.item(id) else {
+            return Err(CodegenError::Internal(
+                "an aggregate constant changed shape".to_owned(),
+            ));
+        };
+        let elements = elements.clone();
+
+        // Element types and offsets, gathered before anything is emitted.
+        let mut placements: Vec<(jr_pool::PoolId, u64)> = Vec::with_capacity(elements.len());
+        if let Item::ArrayType { elem, .. } = *self.ctx.pool.item(ty) {
+            let elem_layout = jr_pool::layout_of(self.ctx.pool, self.ctx.target, elem)
+                .map_err(|reason| CodegenError::NoLayout { ty: elem, reason })?;
+            for index in 0..elements.len() {
+                placements.push((elem, elem_layout.size * index as u64));
+            }
+        } else {
+            for (index, element) in elements.iter().enumerate() {
+                let (offset, _) = jr_pool::field_offset(
+                    self.ctx.pool,
+                    self.ctx.target,
+                    ty,
+                    u32::try_from(index).unwrap_or(0),
+                )
+                .map_err(|reason| CodegenError::NoLayout { ty, reason })?;
+                // The **element's own** type rather than the field's, because they are the same thing
+                // when the constant is well-formed and this one is what was actually interned.
+                placements.push((self.ctx.pool.type_of(*element), offset));
+            }
+        }
+
+        let size = u32::try_from(layout.size)
+            .map_err(|_| CodegenError::Internal("an aggregate larger than a u32".to_owned()))?;
+        let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            size,
+            layout.align.trailing_zeros().try_into().unwrap_or(0),
+        ));
+        let pointer = pointer_type(self.ctx.target);
+        let base = self.builder.ins().stack_addr(pointer, slot, 0);
+        let flags = MemFlagsData::new();
+
+        for (element, (elem_ty, offset)) in elements.into_iter().zip(placements) {
+            let offset_i32 = i32::try_from(offset).unwrap_or(0);
+            match Repr::of(self.ctx.pool, self.ctx.target, elem_ty)? {
+                // A scalar element is one store at its offset.
+                Repr::Scalar { .. } => {
+                    let Some(value) = self.constant(element)? else {
+                        continue;
+                    };
+                    self.builder.ins().store(flags, value, base, offset_i32);
+                }
+                // A **nested** aggregate's `constant` yields an *address*, so the bytes are copied
+                // rather than stored — the element is already an image of itself. `copy` is the same
+                // helper every other aggregate move in this file uses, so Cranelift makes one judgement
+                // about inline stores versus a `memcpy` call.
+                Repr::Aggregate { size, align } => {
+                    let Some(source) = self.constant(element)? else {
+                        continue;
+                    };
+                    // `iadd_imm_s`: the offset is a non-negative field offset, and the signed form is the one
+                    // that matches `store`'s own signed displacement.
+                    let destination = self.builder.ins().iadd_imm_s(base, i64::from(offset_i32));
+                    self.copy(destination, source, size, align);
+                }
+                // A `void` element occupies no bytes, so it writes nothing.
+                Repr::Void => {}
+            }
+        }
+        Ok(base)
     }
 
     /// Builds a `{data, count}` pair for a string literal (ADR-0004).

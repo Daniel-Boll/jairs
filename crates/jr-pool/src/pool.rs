@@ -275,10 +275,13 @@ impl Pool {
             Item::StrValue(_) => PoolId::STRING,
             Item::TypeValue(_) => PoolId::TYPE,
             Item::ForeignLibraryValue(_) => PoolId::FOREIGN_LIBRARY,
-            // These carry their own type, because one shape can have many.
+            // These carry their own type, because one shape can have many. An aggregate constant is here
+            // for exactly that reason: two struct types with identically-typed fields have the same
+            // element list, so without a `ty` in the key they would intern to one id (ADR-0074 §1).
             Item::IntValue { ty, .. }
             | Item::FloatValue { ty, .. }
-            | Item::ProcValue { ty, .. } => *ty,
+            | Item::ProcValue { ty, .. }
+            | Item::AggregateValue { ty, .. } => *ty,
         }
     }
 
@@ -502,6 +505,19 @@ impl Pool {
         self.intern(Item::StrValue(str_id))
     }
 
+    /// Interns an aggregate compile-time value from its element values (ADR-0074 §1).
+    ///
+    /// `elements` are in declaration order for a struct and index order for an array; each is itself an
+    /// interned value, so a nested aggregate needs no special case. `ty` is part of the key, because two
+    /// struct types with identically-typed fields would otherwise intern to one id — see
+    /// [`Item::AggregateValue`].
+    ///
+    /// Deliberately takes the *values* rather than a byte image: the pool is target-independent, and a
+    /// byte image is not (ADR-0074 §1).
+    pub fn aggregate_value(&mut self, ty: PoolId, elements: Vec<PoolId>) -> PoolId {
+        self.intern(Item::AggregateValue { ty, elements })
+    }
+
     /// Interns a type as a compile-time value (ADR-0012, wave W4).
     ///
     /// # Panics
@@ -569,7 +585,9 @@ impl Pool {
             | Item::FloatValue { .. }
             | Item::StrValue(_)
             | Item::TypeValue(_)
-            | Item::ProcValue { .. } => None,
+            | Item::ProcValue { .. }
+            // An aggregate constant names no library (ADR-0074 §1).
+            | Item::AggregateValue { .. } => None,
         }
     }
 

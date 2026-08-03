@@ -822,7 +822,10 @@ impl<'a> Ctx<'a> {
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
-            | Item::ForeignLibraryValue(_) => self.describe(self.pool.type_of(ty)),
+            | Item::ForeignLibraryValue(_)
+            // An aggregate constant falls through like every other value: a diagnostic naming a "type"
+            // wants `Point`, not a rendering of the constant's contents (ADR-0074 §1).
+            | Item::AggregateValue { .. } => self.describe(self.pool.type_of(ty)),
         }
     }
 

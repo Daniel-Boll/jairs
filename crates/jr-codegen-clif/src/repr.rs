@@ -167,7 +167,11 @@ impl Repr {
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
-            | Item::ForeignLibraryValue(_) => Err(CodegenError::NoLayout {
+            | Item::ForeignLibraryValue(_)
+            // A *value* has no representation of its own — its **type** does, and that arm already
+            // works. Asking this of an aggregate constant is the same category error as asking it of
+            // an `IntValue` (ADR-0074 §1).
+            | Item::AggregateValue { .. } => Err(CodegenError::NoLayout {
                 ty,
                 reason: layout_of(pool, target, ty)
                     .err()

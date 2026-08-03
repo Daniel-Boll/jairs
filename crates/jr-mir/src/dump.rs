@@ -545,6 +545,14 @@ impl Dumper<'_> {
             Item::ForeignLibraryValue(str_id) => {
                 format!("library({:?})", self.pool.resolve_str(*str_id))
             }
+            // An aggregate constant prints its **elements**, recursively (ADR-0074 §1) — which is what a
+            // snapshot needs to show: the bytes are produced per target by each back end, so the elements
+            // are the only rendering that is the same thing both engines were given. A nested aggregate
+            // recurses through this same arm, because the elements are interned values like any other.
+            Item::AggregateValue { elements, .. } => {
+                let parts: Vec<String> = elements.iter().map(|e| self.constant(*e)).collect();
+                format!("{{{}}}", parts.join(", "))
+            }
             // A *type* used as a constant operand is not something lowering
             // produces, but rendering it is cheaper than deciding it cannot happen.
             Item::VoidType
@@ -648,7 +656,9 @@ impl Dumper<'_> {
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
-            | Item::ForeignLibraryValue(_) => format!("<value {}>", id.index()),
+            | Item::ForeignLibraryValue(_)
+            // A value where a *type* was being rendered (ADR-0074 §1).
+            | Item::AggregateValue { .. } => format!("<value {}>", id.index()),
         }
     }
 }

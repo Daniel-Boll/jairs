@@ -303,10 +303,12 @@ impl Decl<'_> {
         self.value_text(value)
     }
 
-    /// A constant's value as source-like text, or `None` if it is not a scalar.
+    /// A constant's value as source-like text, or `None` if there is nothing useful to print.
     ///
-    /// Deliberately narrow: an aggregate constant would need the layout rules to print,
-    /// and a hover card is not worth that. `None` renders the type alone.
+    /// **An aggregate constant renders its elements** (ADR-0074 §1), which this used to say was not worth
+    /// it because "an aggregate constant would need the layout rules to print". That was true when the only
+    /// possible representation was a byte image; interning the *element values* instead means the elements
+    /// are right there, and `{7, 0}` on a hover card is strictly better than the type alone.
     fn value_text(&self, value: PoolId) -> Option<String> {
         if value.index() >= self.pool.len() {
             return None;
@@ -325,6 +327,14 @@ impl Decl<'_> {
             Item::FloatValue { ty, bits } => jr_pool::FloatKind::of(self.pool, *ty)
                 .map(|kind| format!("{:?}", kind.decode(*bits))),
             Item::StrValue(id) => Some(format!("\"{}\"", escape(self.pool.resolve_str(*id)))),
+            // Elements, recursively, so a nested aggregate reads as `{{1, 2}, {3, 4}}` (ADR-0074 §1).
+            // An element that renders nothing is skipped rather than omitted silently — printing
+            // `{7, }` would be worse than `{7}`, and both are better than the type alone.
+            Item::AggregateValue { elements, .. } => {
+                let parts: Vec<String> =
+                    elements.iter().filter_map(|e| self.value_text(*e)).collect();
+                Some(format!("{{{}}}", parts.join(", ")))
+            }
             Item::VoidValue
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
@@ -475,7 +485,9 @@ pub fn type_name(pool: &Pool, signatures: &FileSignatures, ty: PoolId) -> String
         | Item::StrValue(_)
         | Item::TypeValue(_)
         | Item::ProcValue { .. }
-        | Item::ForeignLibraryValue(_) => String::from("<value>"),
+        | Item::ForeignLibraryValue(_)
+        // A value where a *type* was expected (ADR-0074 §1).
+        | Item::AggregateValue { .. } => String::from("<value>"),
     }
 }
 

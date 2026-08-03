@@ -168,3 +168,61 @@ fn re_interning_does_not_grow_the_pool() {
     }
     assert_eq!(pool.len(), settled);
 }
+
+// ---------------------------------------------------------------------------
+// Aggregate values (ADR-0074)
+// ---------------------------------------------------------------------------
+
+/// The `ty` field is part of the key, and this is why it exists (ADR-0074 §1).
+///
+/// Two distinct struct types with identically-typed fields produce the *same* element list. Without the
+/// type in the key they would intern to one id — so `type_of` could not answer, and a constant of one type
+/// would silently stand in for the other. Written as a test rather than trusted, because the failure is a
+/// wrong value rather than an error.
+#[test]
+fn two_struct_types_with_the_same_elements_are_different_values() {
+    let mut pool = Pool::new();
+    let first = pool.struct_type(jr_pool::DeclId::new(jr_base::FileId::from_usize(0), 0));
+    let second = pool.struct_type(jr_pool::DeclId::new(jr_base::FileId::from_usize(0), 1));
+    assert_ne!(first, second, "two declarations are two nominal types");
+
+    let one = pool.int_value(PoolId::S64, 1);
+    let two = pool.int_value(PoolId::S64, 2);
+
+    let a = pool.aggregate_value(first, vec![one, two]);
+    let b = pool.aggregate_value(second, vec![one, two]);
+    assert_ne!(
+        a, b,
+        "same elements, different types: these must be different values"
+    );
+    assert_eq!(pool.type_of(a), first);
+    assert_eq!(pool.type_of(b), second);
+}
+
+/// An aggregate value de-duplicates like every other, and a *nested* one needs no special case —
+/// an element is an interned value, so the recursion is the pool's (ADR-0074 §1).
+#[test]
+fn aggregate_values_deduplicate_and_nest() {
+    let mut pool = Pool::new();
+    let ty = pool.struct_type(jr_pool::DeclId::new(jr_base::FileId::from_usize(0), 0));
+    let outer_ty = pool.struct_type(jr_pool::DeclId::new(jr_base::FileId::from_usize(0), 1));
+    let one = pool.int_value(PoolId::S64, 1);
+
+    let inner = pool.aggregate_value(ty, vec![one]);
+    assert_eq!(
+        inner,
+        pool.aggregate_value(ty, vec![one]),
+        "re-interning the same aggregate yields the same id"
+    );
+
+    // The nested case: an element that is itself an aggregate.
+    let outer = pool.aggregate_value(outer_ty, vec![inner]);
+    let Item::AggregateValue { elements, .. } = pool.item(outer).clone() else {
+        panic!("expected an aggregate value");
+    };
+    assert_eq!(elements, vec![inner], "the element is the inner aggregate");
+    assert!(
+        !pool.is_type(outer),
+        "an aggregate constant is a value, not a type"
+    );
+}
