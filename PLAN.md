@@ -507,9 +507,38 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 ## 7. Immediate next actions
 
+**W4 sub-wave 5 is *open and partly built* (ADR-0073): a computed `#insert` operand.** Two increments have
+landed on `feat/insert-computed`, both gate-green and committed, and the hard core is scoped but not yet
+built. **948 workspace tests**, all six gates green, **166 Neovim checks**. See §1.5.
+
+- [x] **The compiler's parser accepts `#insert <expr>;`** — a bare name after `#insert` was E0100 before
+      it could reach lowering. The literal-string CST is byte-for-byte unchanged, so ADR-0072's lowering
+      is untouched; a computed operand parses as a full expression, and lowering still refuses it (E0262)
+      so there is no silent miscompile while the evaluator is built. The tree-sitter grammar needed *no*
+      change — it parses every directive generically — so gate 6 is untouched; an ADR draft claim to the
+      contrary was corrected by running `tree-sitter parse`.
+- [x] **A depth bound, E0264** (ADR-0073 §3): `#insert` expansion refused past 16 levels with a
+      diagnostic, not a stack overflow. Added *before* the computed operand that can exhaust it, because a
+      generated string can reproduce itself without growing (a quine) — the guard the literal form did not
+      need. Teeth-checked: 16 lowers, 17 is E0264.
+- [ ] **The `insert_operands` pre-pass is the remaining core, and it is PLAN §5's named top risk.** It must
+      evaluate an operand's *string value* — verified necessary: `SigEntry` carries a constant's type, not
+      its value, so const-eval genuinely has to run. The cycle to break is
+      `file_consts → frontend_diagnostics → checked → resolved → file_hir`, and ADR-0073 §1 chose a narrow
+      **acyclic pre-pass** over salsa's fixed-point recovery (which exists in 0.28.1 but would remove the
+      cycle panic that caught ADR-0069's bug). The shape: a query depending only on `file_signatures`
+      (which reaches only `file_hir` and `resolved`, never `checked` — verified) evaluates string-valued
+      constants, and a second lowering entry point consumes the results. This threads a new input through
+      ~22 `file_hir` call sites, and the failure mode to guard is the well-typed placeholder: a computed
+      insert must **never** lower to zero statements silently — MIR's `scan` must refuse an unfilled one,
+      the way it refuses recovered syntax. That is why the E0262 refusal stays until the pre-pass is whole.
+
+---
+
+### Prior handoff — `#insert` of a literal string (ADR-0072, sub-wave 4)
+
 **`#insert "…"` works: a string literal of Jairs source, parsed and lowered where the directive is
-written.** W4's fourth sub-wave (ADR-0072), scoped deliberately to a *literal* operand. **944 workspace
-tests**, all six gates green, plus **166 Neovim checks** verified rather than gated. See §1.5.
+written.** Scoped deliberately to a *literal* operand.
 
 **The model is one sentence:** an insert is textual substitution that happens *after* parsing rather than
 before. Its statements go into the **enclosing** scope, so a local an insert declares is visible on the
