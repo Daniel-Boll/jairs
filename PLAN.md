@@ -528,10 +528,22 @@ built. **948 workspace tests**, all six gates green, **166 Neovim checks**. See 
       **acyclic pre-pass** over salsa's fixed-point recovery (which exists in 0.28.1 but would remove the
       cycle panic that caught ADR-0069's bug). The shape: a query depending only on `file_signatures`
       (which reaches only `file_hir` and `resolved`, never `checked` — verified) evaluates string-valued
-      constants, and a second lowering entry point consumes the results. This threads a new input through
-      ~22 `file_hir` call sites, and the failure mode to guard is the well-typed placeholder: a computed
-      insert must **never** lower to zero statements silently — MIR's `scan` must refuse an unfilled one,
-      the way it refuses recovered syntax. That is why the E0262 refusal stays until the pre-pass is whole.
+      constants, and the body-lowering path consumes the results. **The blast radius is smaller than
+      ADR-0073 §1 drew** (see its implementation note): `#insert` is body-scoped, and `imports_of`,
+      `file_exports` and `file_signatures` walk *only items*, so only `checked` and `file_mir` need the
+      expanded bodies — not `file_hir` wholesale.
+
+      **Why the pre-pass and the HIR change are one atomic increment, established by tracing the code:**
+      making a computed insert hold its operand needs a `Stmt::Insert { operand: Option<ExprId>, .. }`
+      field (so the operand *resolves and type-checks* like any expression, giving `#insert undefined;` a
+      real unresolved-name error), the four `Stmt::Insert` match arms updated, and MIR's `scan` refusing a
+      still-pending one. But a `scan` refusal surfaces as **E0245** ("a body the compiler could not
+      lower"), which is *vaguer* than today's specific **E0262** — so landing the field without the
+      evaluator would either leave a dead field (house style forbids scaffolding) or regress the
+      diagnostic. The field, the arms, the `scan` refusal and the pre-pass query must land together. The
+      guarded failure mode throughout is the well-typed placeholder: a computed insert must **never** lower
+      to zero statements silently, which is why `operand: Some` marks the pending state distinctly from an
+      empty literal insert (`operand: None`, no statements).
 
 ---
 
