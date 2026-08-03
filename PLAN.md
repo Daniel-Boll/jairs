@@ -556,27 +556,35 @@ Neovim checks**. See §1.5.
       ExprId)` and the reason `MirSpan` carries a scope — but here even the id is unstable, so the span is
       the only stable key.)
 
-      **Step 6 — the expanded lowering — is DONE in `jr-hir` and pending in `jr-db`.**
+      **Step 6 — the expanded lowering — is DONE in `jr-hir`; one `jr-db` piece remains.**
       `jr_hir::lower_file_with_inserts(parse, file, interner, &InsertOperands)` expands a pending insert
       whose directive span is in the map (span-keyed per the trap above), sharing `expand_insert_text`
-      with the literal path; `lower_file` is it with an empty map. A unit test proves the two-pass shape.
-      What remains is the `jr-db` side: an `insert_operands` query, an `expanded_file_hir` that calls
-      `lower_file_with_inserts`, and rewiring `file_mir` onto it. Never rewire
-      `imports_of`/`file_exports`/`file_signatures` — item-only, and rewiring them reintroduces the import
-      cycle (ADR-0054 §3).
+      with the literal path; `lower_file` is it with an empty map, tested.
 
-      **A second cycle edge, found while mapping the `jr-db` wiring and NOT in ADR-0073 — resolve it
-      before writing the query.** `frontend_diagnostics` calls `file_mir` (module_loader.rs:483, for the
-      E0245 refused-body warnings). So if `file_mir` is rewired onto an `expanded_file_hir` that depends
-      on `insert_operands → file_consts`, and `file_consts` gates on `frontend_diagnostics` — which calls
-      `file_mir` — the loop closes: `file_mir → expanded_file_hir → insert_operands → file_consts →
-      frontend_diagnostics → file_mir`. The break: `insert_operands` must **not** gate on the full
-      `frontend_diagnostics`. It needs only that parse/lower/resolve/check are clean — a *mir-free*
-      frontend check (parse_diagnostics + lower + resolved + signatures + checked, i.e.
-      `frontend_diagnostics` minus its `file_mir` block). Factor that mir-free check out and gate both
-      `insert_operands` and `file_consts`' operand evaluation on it. The `file_consts` scaffolding for the
-      operand values already exists in git history at commit before the revert (Wanted::InsertOperand);
-      re-apply it against the mir-free gate.
+      **The graph is acyclic — verified, so do not re-worry it.** `file_mir` is reached only by
+      `file_diagnostics` (the full collector, module_loader.rs:483), **not** by `frontend_diagnostics`,
+      which ends mir-free at its `checked` call (the split is deliberate: MIR gates on the frontend, so the
+      frontend must not include MIR). `checked` and `file_signatures` are mir-free too. So
+      `insert_operands → file_consts → frontend_diagnostics → {resolved, checked, signatures}` never
+      reaches `file_mir` — as ADR-0073 §1 claimed.
+
+      **The `insert_operands` query is BUILT and stashed** (`git stash` top of stack, "WIP on
+      feat/insert-computed" at ccd9ec6 — touches only `crates/jr-db/src/consts.rs`: it adds
+      `Wanted::InsertOperand`, collects them in `wanted()`, and adds the `insert_operands` query that reads
+      each value back from `file_consts` and resolves the string, keyed by span). It was held out of a
+      commit only because it had **no consumer yet** (an orphan `#[salsa::tracked]` fn is scaffolding).
+      `git stash pop` it together with step 6's consumer, so the two land in one commit.
+
+      **The one remaining piece — the expanded lowering runs INLINE in `file_mir`, no new salsa queries.**
+      Both `jr_hir::resolve(&FileHir, imports, interner)` and `jr_sema::check_file(&FileHir, …)` take an
+      **explicit** HIR (verified), so when `insert_operands(file)` is non-empty, `file_mir` should:
+      `lower_file_with_inserts` → re-`resolve` the expanded HIR → re-`check_file` it → lower *that*.
+      Signatures are item-level and unaffected, so they are reused as-is. The cost is duplicating
+      `checked`'s import-gathering and its `operator_calls`/`filled_args` translation (~40 lines) inside
+      `file_mir`'s expanded branch — factor a shared helper rather than copying. When `insert_operands` is
+      empty (every file today), `file_mir` takes its current path unchanged, so there is zero cost and zero
+      risk for non-insert files. Never rewire `imports_of`/`file_exports`/`file_signatures` — item-only,
+      and rewiring them reintroduces the import cycle (ADR-0054 §3).
 
       **Step 7 — corpus.** A `valid/` program with a computed insert that runs (assert its exit code, per
       [[jairs-assert-behaviour-not-agreement]] — the differential only checks agreement), and an
