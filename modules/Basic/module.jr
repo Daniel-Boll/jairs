@@ -34,6 +34,53 @@ malloc :: (size: s64) -> *u8 #foreign libc "malloc";
 /// program can `free` unconditionally.
 free :: (p: *u8) #foreign libc "free";
 
+/// The size of the temporary-storage arena, in bytes (ADR-0065 §2).
+///
+/// Fixed rather than growable: a growable arena would either move on `realloc` — invalidating every
+/// pointer `talloc` already returned — or need a block list, which is more than the slice wants. 64
+/// KiB is enough for the scratch uses here; a later wave can make it a context field.
+TEMP_REGION_SIZE :: 65536;
+
+/// Allocates `n` bytes from the per-context temporary-storage arena (ADR-0065).
+///
+/// The bytes stay valid until the next [`reset_temporary_storage`]; there is no per-piece free. This
+/// is the allocator for scratch space a computation throws away wholesale — building a string to
+/// print, say — where freeing each piece would be noise.
+///
+/// The arena is `context.temp_data`, a region lazily `malloc`'d on first use (it is null in a fresh
+/// context, ADR-0057 §5), and `context.temp_mark` is the bump cursor — a *byte count*, so the next
+/// allocation is at `temp_data + temp_mark`. Returns `null` on a failed `malloc` or when the region is
+/// full, matching [`malloc`]'s convention (ADR-0065 §3): running out of scratch is a resource
+/// condition a caller may handle, not a bug that should trap.
+///
+/// It reads the context, so it travels with the call: a callee's `talloc` uses its caller's arena.
+talloc :: (n: s64) -> *u8 {
+    if context.temp_data == null {
+        context.temp_data = malloc(TEMP_REGION_SIZE);
+        if context.temp_data == null {
+            return null;
+        }
+    }
+    if context.temp_mark + n > TEMP_REGION_SIZE {
+        return null;
+    }
+    // `*u8 + s64` is byte arithmetic (element-scaled on a `*u8`, which is what a byte arena wants,
+    // ADR-0064 §2), so this is the address `temp_mark` bytes into the region.
+    p := context.temp_data + context.temp_mark;
+    context.temp_mark = context.temp_mark + n;
+    return p;
+}
+
+/// Rewinds the temporary-storage cursor, freeing everything [`talloc`] handed out at once (ADR-0065).
+///
+/// It does **not** release the region — the `malloc`'d 64 KiB stays for the program's life, because
+/// reuse is the point of an arena. It rewinds `context.temp_mark` to 0, so the next `talloc` hands out
+/// from the start again. A pointer from before the reset is dangling afterwards, exactly as it would
+/// be after a `free` — the arena's contract is "valid until the next reset".
+reset_temporary_storage :: () {
+    context.temp_mark = 0;
+}
+
 /// The standard output file descriptor.
 STDOUT :: 1;
 /// The standard error file descriptor.

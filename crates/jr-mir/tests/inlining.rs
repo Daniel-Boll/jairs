@@ -36,7 +36,8 @@ fn spans(body: &MirBody) -> Vec<MirSpan> {
                 | Statement::Store { span, .. }
                 | Statement::Discard { span, .. }
                 | Statement::Zero { span, .. }
-                | Statement::BoundsCheck { span, .. } => out.push(*span),
+                | Statement::BoundsCheck { span, .. }
+                | Statement::TagCheck { span, .. } => out.push(*span),
                 Statement::Nop => {}
             }
         }
@@ -54,6 +55,7 @@ fn calls(body: &MirBody) -> usize {
                 Statement::Store { .. }
                 | Statement::Zero { .. }
                 | Statement::BoundsCheck { .. }
+                | Statement::TagCheck { .. }
                 | Statement::Nop => continue,
             };
             if matches!(rvalue, Rvalue::Call { .. }) {

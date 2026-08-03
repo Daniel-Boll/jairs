@@ -432,6 +432,7 @@ fn layout_at_depth(
         // engines would be *invisible*, since both would read plausible bits from the wrong
         // place rather than crashing.
         Item::UnionType { decl } => union_layout_at_depth(pool, target, *decl, depth),
+        Item::VariantType { decl } => variant_layout_at_depth(pool, target, *decl, depth),
 
         Item::VoidValue
         | Item::BoolValue(_)
@@ -474,6 +475,58 @@ fn union_layout_at_depth(
     })
 }
 
+/// The layout of a `variant`: a leading tag byte, then the union of its cases (ADR-0068 §3).
+///
+/// Built from the *existing* pieces rather than a new algorithm — the cases' union is
+/// [`union_layout_at_depth`], and the tag is one byte before it — so this crate gains a case and no new
+/// layout rule. The tag sits at offset **0** (§3): a leading field's offset does not depend on what
+/// follows, so nothing has to derive a position from the case count.
+///
+/// The whole thing takes the cases' alignment, so the payload starts at that alignment and the tag's
+/// byte is usually absorbed by the padding the union needed anyway — which is why the size cost
+/// ADR-0045 §1 warned about is real but small.
+fn variant_layout_at_depth(
+    pool: &Pool,
+    target: TargetLayout,
+    decl: DeclId,
+    depth: u32,
+) -> Result<Layout, LayoutError> {
+    let cases = union_layout_at_depth(pool, target, decl, depth)?;
+    // The payload begins after the tag, rounded up to the payload's own alignment.
+    let align = cases.align.max(TAG_ALIGN);
+    let payload_at = align_up(u64::from(TAG_SIZE), align);
+    Ok(Layout {
+        size: align_up(payload_at + cases.size, align),
+        align,
+    })
+}
+
+/// The byte offset a `variant`'s payload starts at (ADR-0068 §3).
+///
+/// Every case shares it, because a variant is a tag plus a *union* — so this is the one number both
+/// engines need to reach a case, and it is computed here rather than in either of them (ADR-0018 §2).
+///
+/// # Errors
+/// [`LayoutError`] when the variant's cases have no layout.
+pub fn variant_payload_offset(
+    pool: &Pool,
+    target: TargetLayout,
+    decl: DeclId,
+) -> Result<u64, LayoutError> {
+    let cases = union_layout_at_depth(pool, target, decl, 0)?;
+    let align = cases.align.max(TAG_ALIGN);
+    Ok(align_up(u64::from(TAG_SIZE), align))
+}
+
+/// The size of a `variant`'s tag, in bytes (ADR-0068 §3).
+///
+/// One byte: no variant the language can express has more than 256 cases, and a wider tag would cost
+/// size for a range nothing reaches.
+pub const TAG_SIZE: u8 = 1;
+
+/// The alignment of a `variant`'s tag — one byte, like its size.
+pub const TAG_ALIGN: u32 = 1;
+
 fn struct_layout_at_depth(
     pool: &Pool,
     target: TargetLayout,
@@ -492,18 +545,35 @@ fn struct_layout_at_depth(
 
 /// The field types of [`Item::ContextType`], in order (ADR-0057 §1).
 ///
-/// One field today. A `const` rather than a function so that layout, field lookup and both engines
-/// read the *same* list — three copies of "what fields does a context have" would be three chances to
-/// disagree, which is the duplication ADR-0052 found for field types across three crates.
-pub const CONTEXT_FIELD_TYPES: &[PoolId] = &[PoolId::ALLOC_FN, PoolId::FREE_FN, PoolId::S64];
+/// A `const` rather than a function so that layout, field lookup and both engines read the *same*
+/// list — three copies of "what fields does a context have" would be three chances to disagree, which
+/// is the duplication ADR-0052 found for field types across three crates.
+///
+/// The two temporary-storage fields (ADR-0065) cost no new well-known id: `temp_data` is
+/// [`PoolId::PTR_U8`] and `temp_mark` is [`PoolId::S64`], both already well-known — unlike the
+/// allocator's proc-pointer types, which had to be pre-interned. So `WELL_KNOWN_COUNT` does not move.
+pub const CONTEXT_FIELD_TYPES: &[PoolId] = &[
+    PoolId::ALLOC_FN,
+    PoolId::FREE_FN,
+    PoolId::S64,
+    PoolId::PTR_U8,
+    PoolId::S64,
+];
 
 /// The field *names* of [`Item::ContextType`], parallel to [`CONTEXT_FIELD_TYPES`].
 ///
-/// Three fields as of ADR-0062 §2: the two halves of an allocator and its own state word. Flattened
-/// into the context rather than nested in an `Allocator` struct, because a nested struct type would
-/// need a `DeclId` a compiler-declared type has not got — the same problem ADR-0057 §1 met and solved
-/// by going structural.
-pub const CONTEXT_FIELD_NAMES: &[&str] = &["allocator", "allocator_free", "allocator_data"];
+/// Five fields: the two halves of an allocator and its state word (ADR-0062 §2), then the temporary
+/// storage arena's region pointer and bump cursor (ADR-0065). Flattened into the context rather than
+/// nested, because a nested struct type would need a `DeclId` a compiler-declared type has not got —
+/// the same problem ADR-0057 §1 met and solved by going structural. `temp_mark` is a *byte count*
+/// (the next allocation is at `temp_data + temp_mark`), so a reset is one integer store.
+pub const CONTEXT_FIELD_NAMES: &[&str] = &[
+    "allocator",
+    "allocator_free",
+    "allocator_data",
+    "temp_data",
+    "temp_mark",
+];
 
 /// The layout of a sequence of fields laid out in order, C-style.
 ///
@@ -560,6 +630,22 @@ pub fn field_offset(
             .get(index as usize)
             .ok_or(LayoutError::NotAType(ty))?;
         return Ok((0, layout_of(pool, target, field.ty)?));
+    }
+
+    // **Every case of a variant is at the payload offset**, which is the same line one step along: a
+    // variant is a tag followed by a union, so its cases overlap each other but sit *after* the tag
+    // (ADR-0068 §3). Getting this wrong would read the tag as part of a case, or a case as the tag —
+    // a silent wrong-address bug of exactly the kind the union arm above warns about, which is why
+    // the offset is computed here and in neither engine.
+    if let Item::VariantType { decl } = pool.item(ty) {
+        let fields = pool
+            .struct_fields(*decl)
+            .ok_or(LayoutError::UnresolvedStruct(*decl))?;
+        let field = fields
+            .get(index as usize)
+            .ok_or(LayoutError::NotAType(ty))?;
+        let at = variant_payload_offset(pool, target, *decl)?;
+        return Ok((at, layout_of(pool, target, field.ty)?));
     }
 
     // A results aggregate's fields are laid out in order exactly as a struct's, and its element
@@ -686,6 +772,52 @@ mod tests {
             .collect();
         pool.set_struct_fields(decl, fields);
         ty
+    }
+
+    /// A variant of the given case types at `decl`, for the layout tests.
+    fn variant_of(pool: &mut Pool, interner: &Interner, index: u32, tys: &[PoolId]) -> PoolId {
+        let decl = DeclId::new(FileId::from_usize(0), index);
+        let ty = pool.variant_type(decl);
+        let fields = tys
+            .iter()
+            .enumerate()
+            .map(|(i, t)| Field::new(interner.intern(&format!("f{i}")), *t))
+            .collect();
+        pool.set_struct_fields(decl, fields);
+        ty
+    }
+
+    #[test]
+    fn a_variant_is_a_tag_then_the_union_of_its_cases() {
+        // ADR-0068 §3. Two `s64` cases: the union is 8 bytes aligned 8, so the tag's byte is padded
+        // out to 8 and the whole thing is 16. Every case sits at the payload offset, **not** at 0 —
+        // reading a case at 0 would read the tag, which is the silent wrong-address bug the ADR
+        // warns about.
+        let interner = Interner::new();
+        let mut pool = Pool::new();
+        let ty = variant_of(&mut pool, &interner, 60, &[PoolId::S64, PoolId::S64]);
+        assert_eq!(
+            layout_of(&pool, T, ty),
+            Ok(Layout { size: 16, align: 8 }),
+            "a tag byte padded to the cases' alignment, then the cases"
+        );
+        for index in 0..2 {
+            let (offset, _) = field_offset(&pool, T, ty, index).expect("a variant case");
+            assert_eq!(offset, 8, "case {index} must sit past the tag");
+        }
+    }
+
+    #[test]
+    fn a_variant_of_bytes_puts_its_cases_right_after_the_tag() {
+        // The case where the padding does *not* absorb the tag: `u8` cases align to 1, so the payload
+        // starts at byte 1 and the whole variant is 2 bytes. This is the arithmetic that would be
+        // hidden by only ever testing 8-aligned cases.
+        let interner = Interner::new();
+        let mut pool = Pool::new();
+        let ty = variant_of(&mut pool, &interner, 61, &[PoolId::U8, PoolId::U8]);
+        assert_eq!(layout_of(&pool, T, ty), Ok(Layout { size: 2, align: 1 }));
+        let (offset, _) = field_offset(&pool, T, ty, 0).expect("a variant case");
+        assert_eq!(offset, 1, "a byte case sits immediately after the tag");
     }
 
     #[test]

@@ -1,0 +1,96 @@
+// `push_context` (ADR-0063) — a block with its own copy of the context, the sixth feature of W3 and
+// the one that makes ADR-0057 §2's isolation claim real.
+//
+// ADR-0057 §2 said "a caller's context is not affected by its callee's writes… each Jairs procedure
+// that modifies the context does so on a copy it owns." That was never true: the context is one
+// object reached by pointer, so a callee's write to a field is visible to its caller too — and corpus
+// `050` relies on exactly that (a counting allocator accumulates into `allocator_data` and `main`
+// reads the total back). `push_context` is the construct that gives a block a real copy: writes
+// inside it are its own, and the enclosing scope's context is restored on exit.
+//
+// Five things here are worth checking rather than assuming, and each is what the harness gives the
+// file teeth for through its exit status:
+//
+//   * a write **inside** the block does not leak **out** — `main` sets `allocator_data` to 7, the
+//     block sets it to 99, and after the block it is 7 again. This is the isolation, and it is the
+//     whole point;
+//   * the context is still **shared downward inside the block** — a callee's write is visible to its
+//     caller *within* the block (the shared-context behaviour is unchanged; `push_context` scopes it,
+//     it does not turn it off), so `callee_writes` setting 42 is seen by the block;
+//   * a **`defer` inside the block runs against the pushed context** (ADR-0063 §3): the free happens
+//     at block exit, while the copy is still the current context, so it releases through the same
+//     allocator that allocated;
+//   * a value **computed inside the block and read after it** is fine — the copy is a lowering-time
+//     concern, invisible to ordinary locals, so `n` accumulates across the boundary;
+//   * both engines agree. The copy is the same aggregate `Load`/`Store` that `b := a` lowers, which
+//     both back ends already memcpy (ADR-0039 §4a), so there is no engine-specific path to diverge.
+//
+// The `exit` at the end is what makes this observable under the differential harness: a leaked write,
+// a lost restore, or a `defer` that ran against the wrong context is a different exit status.
+#import "Basic";
+
+/// An allocator that records how many bytes it was asked for, in `allocator_data` — the same shape
+/// `050`'s `counting_alloc` has. Used here to prove a `defer`'d free inside the block runs against the
+/// pushed context, and that the state word it moves is the block's copy rather than the caller's.
+recording_alloc :: (n: s64) -> *u8 {
+    context.allocator_data = context.allocator_data + n;
+    return malloc(n);
+}
+
+/// The release half.
+recording_free :: (p: *u8) {
+    free(p);
+}
+
+/// A callee that writes the context. It never sees the `push_context`; it just writes a field. Its
+/// write is visible to its caller because the context is shared by pointer — which is the behaviour
+/// `push_context` scopes rather than removes.
+callee_writes :: () {
+    context.allocator_data = 42;
+}
+
+main :: () {
+    n := 0;
+
+    // Before the block: set the field to 7 in the caller's own context.
+    context.allocator_data = 7;
+
+    push_context {
+        // Inside: this is a *copy*. Writing it does not touch the caller's context.
+        context.allocator_data = 99;
+
+        // A callee's write is still visible to us — the context is shared downward, and
+        // `push_context` scopes that sharing rather than turning it off.
+        callee_writes();
+        if context.allocator_data == 42 {
+            n = n + 1;
+        }
+
+        // Install an allocator in the copy, allocate through it, and free at block exit. The `defer`
+        // runs against this pushed context (ADR-0063 §3), so it frees through `recording_free`.
+        context.allocator = recording_alloc;
+        context.allocator_free = recording_free;
+        context.allocator_data = 0;
+        p := context.allocator(10);
+        defer context.allocator_free(p);
+        if p == null {
+            exit(1);
+        }
+        // The recording allocator moved the copy's state word.
+        if context.allocator_data == 10 {
+            n = n + 2;
+        }
+    }
+
+    // After the block: the copy is gone and the caller's context is restored. `allocator_data` is 7
+    // again — the block's 99, the callee's 42 and the allocator's 10 all lived in the copy.
+    if context.allocator_data == 7 {
+        n = n + 4;
+    }
+
+    // `n` accumulated across the block boundary — an ordinary local, unaffected by the context copy.
+    if n == 7 {
+        exit(0);
+    }
+    exit(2);
+}

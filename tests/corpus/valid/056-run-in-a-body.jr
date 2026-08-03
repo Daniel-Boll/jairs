@@ -1,0 +1,86 @@
+// A `#run` inside a procedure **body** (ADR-0069 §2) — the other half of W4's first sub-wave.
+//
+// Before this, `n := #run add(2, 3);` refused with "`#run` has no value until jr-vm (ADR-0016 §4)":
+// only *file-level* constants were evaluated, so a body `#run` had no value to lower to. Now
+// `file_consts` collects them too, in the same round-robin and behind the same cycle detector — because
+// two places evaluating `#run` would be two chances to disagree about what a `#run` means.
+//
+// Six things here are worth checking rather than assuming, and the `exit` gives each teeth:
+//
+//   * a body `#run` **computes at compile time** and the body contains the result — it is not a call the
+//     body performs (ADR-0069 §2 rejects that reading explicitly);
+//   * a body's expressions live in **its own arena**, which starts at index 0 exactly as the file's
+//     does — so every map lookup had to learn the scope. Reading the wrong arena finds a *different
+//     expression* rather than failing, which is why the thunk carries the scope rather than assuming
+//     file level;
+//   * a `#run` whose callee **loops** works, which it already did at file scope;
+//   * a `#run` may appear **more than once** in one body, and each gets its own value;
+//   * a `#run` in a body and one at file scope coexist, evaluated by the same query;
+//   * both engines agree, because both receive the same constant — there is no comptime call left in the
+//     MIR for them to disagree about.
+//
+// What a body `#run` may *not* do is exactly what a file-scope one may not do (ADR-0069 §3): a
+// `#foreign` call is refused by ADR-0006, and a call that omits a defaulted argument is refused because
+// const-eval runs before the check phase that fills it. The position changed; the rules did not.
+#import "Basic";
+
+/// Plain arithmetic, for the simplest body `#run`.
+add :: (a: s64, b: s64) -> s64 {
+    return a + b;
+}
+
+/// A **loop** in the callee, so the body case covers what the file-scope case already did: the
+/// interpreter runs real control flow, not just folded arithmetic.
+sum_to :: (n: s64) -> s64 {
+    t := 0;
+    i := 0;
+    while i < n {
+        t = t + i;
+        i = i + 1;
+    }
+    return t;
+}
+
+/// A file-scope `#run` in the same file, so both kinds are evaluated by one query in one round.
+FILE_LEVEL :: #run add(10, 20);
+
+main :: () {
+    n := 0;
+
+    // The simplest case: a value computed while compiling.
+    a := #run add(2, 3);
+    if a == 5 {
+        n = n + 1;
+    }
+
+    // A second `#run` in the same body gets its own value — they are keyed by expression, so two in one
+    // body cannot collide.
+    b := #run add(4, 4);
+    if b == 8 {
+        n = n + 2;
+    }
+
+    // A loop in the callee.
+    c := #run sum_to(5);
+    if c == 10 {
+        n = n + 4;
+    }
+
+    // Nested calls and arithmetic around the call, both of which already worked at file scope — checked
+    // here because the *position* is what changed, and a claim about one position is not one about both.
+    d := #run add(add(1, 2), 3) * 2;
+    if d == 12 {
+        n = n + 8;
+    }
+
+    // The file-scope constant, so this file proves the two kinds coexist.
+    if FILE_LEVEL == 30 {
+        n = n + 16;
+    }
+
+    // Every assertion: 31.
+    if n == 31 {
+        exit(0);
+    }
+    exit(1);
+}

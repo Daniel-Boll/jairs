@@ -752,6 +752,175 @@ if has_parser then
       buf = vim.api.nvim_get_current_buf()
     end
 
+    -- `push_context` (ADR-0063). The same failure mode as `context` above, and checked the same way:
+    -- `push_context` is a legal identifier, so omitting the grammar rule would not produce an ERROR
+    -- node — it would parse as a `name_expr` followed by a stray block, and the keyword would
+    -- mis-colour as a variable while every gate stayed green. So this asserts the node type
+    -- (`push_context_stmt`), the absence of a `name_expr` reading, and the keyword highlight.
+    local pc_file = root .. "/tests/corpus/valid/051-push-context.jr"
+    if vim.uv.fs_stat(pc_file) then
+      vim.cmd.edit(vim.fn.fnameescape(pc_file))
+      local pc_buf = vim.api.nvim_get_current_buf()
+      local pc_ok, pc_parser = pcall(vim.treesitter.get_parser, pc_buf, "jairs")
+      if pc_ok and pc_parser then
+        local pc_tree = pc_parser:parse()[1]
+        check("the push_context corpus file parses with no ERROR node", not pc_tree:root():has_error())
+
+        local pc_kinds = {}
+        local function pc_walk(node)
+          pc_kinds[node:type()] = (pc_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            pc_walk(child)
+          end
+        end
+        pc_walk(pc_tree:root())
+        -- Exactly one `push_context` block is written in that file (in `main`).
+        check("`push_context` produces a push_context_stmt node", (pc_kinds.push_context_stmt or 0) == 1)
+
+        -- And `push_context` must not have been read as a name — the silent divergence the `context`
+        -- check guards against, here for the keyword introduced this wave.
+        local pc_saw_as_name = false
+        local function pc_name_walk(node)
+          if node:type() == "name_expr"
+            and vim.treesitter.get_node_text(node, pc_buf) == "push_context" then
+            pc_saw_as_name = true
+          end
+          for child in node:iter_children() do
+            pc_name_walk(child)
+          end
+        end
+        pc_name_walk(pc_tree:root())
+        check("`push_context` is not parsed as an ordinary name", not pc_saw_as_name)
+
+        local pc_query_ok, pc_query = pcall(vim.treesitter.query.get, "jairs", "highlights")
+        if pc_query_ok and pc_query then
+          local pc_kw, pc_res = false, false
+          for id, node in pc_query:iter_captures(pc_tree:root(), pc_buf, 0, -1) do
+            local capture = pc_query.captures[id]
+            local text = vim.treesitter.get_node_text(node, pc_buf)
+            if text == "push_context" then
+              if capture == "keyword" then
+                pc_kw = true
+              elseif capture == "keyword.reserved" then
+                pc_res = true
+              end
+            end
+          end
+          check("`push_context` highlights as a keyword", pc_kw)
+          check("`push_context` is not highlighted as reserved", not pc_res)
+        end
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- `switch` and `case` (ADR-0067). Same failure mode as `context` and `push_context`: both are
+    -- legal identifiers, so omitting the grammar rules would not produce an ERROR node — a `switch`
+    -- would parse as a name followed by a stray block, and the keywords would mis-colour as variables
+    -- while every gate stayed green. So this checks the node types and the keyword highlights.
+    local sw_file = root .. "/tests/corpus/valid/054-switch.jr"
+    if vim.uv.fs_stat(sw_file) then
+      vim.cmd.edit(vim.fn.fnameescape(sw_file))
+      local sw_buf = vim.api.nvim_get_current_buf()
+      local sw_ok, sw_parser = pcall(vim.treesitter.get_parser, sw_buf, "jairs")
+      if sw_ok and sw_parser then
+        local sw_tree = sw_parser:parse()[1]
+        check("the switch corpus file parses with no ERROR node", not sw_tree:root():has_error())
+
+        local sw_kinds = {}
+        local function sw_walk(node)
+          sw_kinds[node:type()] = (sw_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            sw_walk(child)
+          end
+        end
+        sw_walk(sw_tree:root())
+        -- Four switches in that file: describe, describe_qualified, classify, from_call.
+        check("tree-sitter produces switch_stmt", (sw_kinds.switch_stmt or 0) == 4)
+        -- Thirteen arms: 3 + 3 + 3 (two cases and an else) + 3 (two cases and an else) = 12, plus none
+        -- stray. Counted rather than merely present, because an arm rule that swallowed the next arm
+        -- would still produce *some* switch_arm nodes.
+        check("tree-sitter produces one switch_arm per arm", (sw_kinds.switch_arm or 0) == 12)
+
+        -- And neither keyword may be read as an ordinary name.
+        local sw_as_name = false
+        local function sw_name_walk(node)
+          if node:type() == "name_expr" then
+            local text = vim.treesitter.get_node_text(node, sw_buf)
+            if text == "switch" or text == "case" then
+              sw_as_name = true
+            end
+          end
+          for child in node:iter_children() do
+            sw_name_walk(child)
+          end
+        end
+        sw_name_walk(sw_tree:root())
+        check("`switch`/`case` are not parsed as ordinary names", not sw_as_name)
+
+        local sw_q_ok, sw_q = pcall(vim.treesitter.query.get, "jairs", "highlights")
+        if sw_q_ok and sw_q then
+          local saw_switch, saw_case = false, false
+          for id, node in sw_q:iter_captures(sw_tree:root(), sw_buf, 0, -1) do
+            local capture = sw_q.captures[id]
+            local text = vim.treesitter.get_node_text(node, sw_buf)
+            if capture == "keyword" and text == "switch" then
+              saw_switch = true
+            end
+            if capture == "keyword" and text == "case" then
+              saw_case = true
+            end
+          end
+          check("`switch` highlights as a keyword", saw_switch)
+          check("`case` highlights as a keyword", saw_case)
+        end
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
+    -- `variant` (ADR-0068). A legal identifier like `switch`, `context` and `push_context` before it,
+    -- so omitting the grammar rule would mis-colour it rather than produce an ERROR node. This also
+    -- pins that a `variant` and a `union` produce *different* node kinds: they are structurally
+    -- identical in the syntax and only the keyword distinguishes them, so a shared rule would make a
+    -- tagged type indistinguishable from an untagged one in an editor.
+    local va_file = root .. "/tests/corpus/valid/055-variant.jr"
+    if vim.uv.fs_stat(va_file) then
+      vim.cmd.edit(vim.fn.fnameescape(va_file))
+      local va_buf = vim.api.nvim_get_current_buf()
+      local va_ok, va_parser = pcall(vim.treesitter.get_parser, va_buf, "jairs")
+      if va_ok and va_parser then
+        local va_tree = va_parser:parse()[1]
+        check("the variant corpus file parses with no ERROR node", not va_tree:root():has_error())
+
+        local va_kinds = {}
+        local function va_walk(node)
+          va_kinds[node:type()] = (va_kinds[node:type()] or 0) + 1
+          for child in node:iter_children() do
+            va_walk(child)
+          end
+        end
+        va_walk(va_tree:root())
+        check("tree-sitter produces variant_type", (va_kinds.variant_type or 0) == 1)
+        -- The same file declares a union, and the two must not collapse into one kind.
+        check("a union in the same file stays a union_type", (va_kinds.union_type or 0) == 1)
+
+        local va_q_ok, va_q = pcall(vim.treesitter.query.get, "jairs", "highlights")
+        if va_q_ok and va_q then
+          local saw = false
+          for id, node in va_q:iter_captures(va_tree:root(), va_buf, 0, -1) do
+            if va_q.captures[id] == "keyword"
+              and vim.treesitter.get_node_text(node, va_buf) == "variant" then
+              saw = true
+            end
+          end
+          check("`variant` highlights as a keyword", saw)
+        end
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
     -- `#no_abc` (ADR-0058 §3). Two things the drift gate cannot see.
     --
     -- The **ordering** one is why this block exists. `#c_call` and `#no_abc` are legal in either

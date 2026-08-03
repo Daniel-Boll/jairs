@@ -182,6 +182,7 @@ module.exports = grammar({
       choice(
         $.struct_type,
         $.union_type,
+        $.variant_type,
         $.enum_type,
         $.proc,
         seq($._expr, ";"),
@@ -268,6 +269,7 @@ module.exports = grammar({
         $.name_type,
         $.struct_type,
         $.union_type,
+        $.variant_type,
         $.enum_type,
         $.proc_type,
       ),
@@ -360,6 +362,14 @@ module.exports = grammar({
         field("fields", $.field_list),
       ),
 
+    // variant { … } (ADR-0068 §1) — a union's shape plus a tag. The tag is layout, not syntax, so
+    // this differs from `union_type` only in the keyword and the node name.
+    variant_type: ($) =>
+      seq(
+        "variant",
+        field("fields", $.field_list),
+      ),
+
     field_list: ($) => seq("{", repeat($.field), "}"),
 
     // struct field: `name : type ;`, or `using name : type ;` to embed (ADR-0050 §1).
@@ -378,6 +388,8 @@ module.exports = grammar({
         $.while_stmt,
         $.for_stmt,
         $.defer_stmt,
+        $.push_context_stmt,
+        $.switch_stmt,
         $.return_stmt,
         $.break_stmt,
         $.continue_stmt,
@@ -454,6 +466,34 @@ module.exports = grammar({
 
     // `defer stmt;` or `defer { }` (ADR-0049 §3).
     defer_stmt: ($) => seq("defer", field("body", $._single_stmt)),
+
+    // switch e { case v; … else; … } (ADR-0067). An arm's body is a run of statements ending at the
+    // next `case`, the next `else`, or the closing brace — the same statement-list shape a block has,
+    // so no new body kind enters the grammar.
+    switch_stmt: ($) =>
+      seq(
+        "switch",
+        field("value", $._expr),
+        "{",
+        repeat($.switch_arm),
+        "}",
+      ),
+
+    switch_arm: ($) =>
+      seq(
+        choice(
+          seq("case", field("value", $._expr)),
+          "else",
+        ),
+        ";",
+        repeat($._stmt),
+      ),
+
+    // push_context { … } (ADR-0063) — a block with its own copy of the context. The body is a
+    // braced block only, never a braceless single statement: the parser requires the braces so a
+    // context swap has a visible scope.
+    push_context_stmt: ($) =>
+      seq("push_context", field("body", $.block)),
 
     return_stmt: ($) =>
       seq(

@@ -40,11 +40,11 @@ use rustc_hash::FxHashMap;
 use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
-    E0254, E0256, E0257,
+    E0254, E0256, E0257, E0258, E0259, E0260, E0261,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
-use crate::sigs::{FileSignatures, ProcSig};
+use crate::sigs::{FileSignatures, ProcSig, SigKind};
 
 // ---------------------------------------------------------------------------
 // Output
@@ -285,6 +285,37 @@ impl Ctx<'_> {
             // its lowering across exit paths, not its typing (ADR-0049 §3) — so a type error in a
             // `defer` is reported once rather than once per way out of the scope.
             Stmt::Defer(inner, _) => self.check_stmt(body, inner),
+            // `push_context { … }` copies the context on entry (ADR-0063), so it needs one to copy.
+            // A `#c_call` procedure has none, and this is the same refusal as `context` itself there
+            // — E0254, reused because it means exactly "this needs a context and there isn't one"
+            // (ADR-0063 §4). The message names `push_context` so the diagnostic points at what was
+            // written. The block is checked regardless, so a body error inside it is still reported.
+            Stmt::Switch { value, arms, span } => self.check_switch(body, value, &arms, span),
+            // An `#insert`'s statements are checked **as if written here** (ADR-0072 §1) — no scope, no
+            // separate environment, so a local the insert declares is in `self.locals` for the statements
+            // after it. Nothing here can tell they came from a string, which is the evidence lowering put
+            // them in the enclosing body rather than in a nested one.
+            Stmt::Insert { stmts, span: _ } => {
+                for inner in stmts {
+                    self.check_stmt(body, inner);
+                }
+            }
+            Stmt::PushContext(inner, span) => {
+                if self.body_is_c_call(body) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            "`push_context` is not available in a `#c_call` procedure",
+                        )
+                        .with_code(E0254)
+                        .with_note(
+                            "a `#c_call` procedure receives no implicit context to copy (ADR-0057 §3)",
+                        )
+                        .with_help("remove the `#c_call`, or manage the resource explicitly"),
+                    );
+                }
+                self.check_stmt(body, inner);
+            }
             // A label names a *loop*, not a value, so there is nothing to type. Whether the label
             // exists is `jr-mir`'s question, because its loop stack is the only place a loop's
             // identity lives (ADR-0049 §2).
@@ -808,6 +839,29 @@ impl Ctx<'_> {
                     return PoolId::ERROR;
                 }
                 let ty = self.type_of_name(res);
+                // **A type used where a runtime value is expected is refused** (E0261, ADR-0071 §3).
+                // Before this, `t := Point;` type-checked cleanly and both engines exited 0, lowering
+                // to `s0: type` and `v1: type = undef` — a slot of a type with *no runtime layout*
+                // (`LayoutError::ComptimeOnly`) holding a placeholder that is a legitimate value. That
+                // is this project's first named failure mode, invisible to the verifier and to
+                // ADR-0017 §4's poison gate alike.
+                //
+                // Refused here rather than in lowering for ADR-0039 §3a's reason: rejecting a
+                // construct is a semantic judgement, and a lowering refusal reports a
+                // compiler-internal message for a program that looks well-formed.
+                //
+                // **Silent when the context is already poisoned**, which is `expect`'s rule and not a
+                // politeness: `file_diagnostics` does not gate later phases on earlier ones, so
+                // `n: nosuchtype = Point;` would otherwise report E0212 *and* E0261 for one mistake.
+                // Checked here rather than left to `expect`, because this arm returns before reaching
+                // it — the refusal has to know the same thing `expect` knows.
+                if ty == PoolId::TYPE
+                    && expected != Some(PoolId::ERROR)
+                    && !self.type_is_allowed_here(scope, id)
+                {
+                    self.reject_type_as_value(span);
+                    return PoolId::ERROR;
+                }
                 self.expect(expected, ty, span)
             }
             Expr::Binary { op, lhs, rhs, span } => {
@@ -1067,8 +1121,30 @@ impl Ctx<'_> {
             return PoolId::ERROR;
         }
 
-        // A context that is not an enum is a *different* problem from having none, so it gets
-        // its own wording with the type named — conflating them would misdirect the reader
+        // **A bare member against a `variant` names one of its cases** (ADR-0068 §5). The same idea
+        // ADR-0046 built this for — the context supplies the namespace the source omitted — with a
+        // variant's case list as the namespace instead of an enum's members. Handled before the enum
+        // gate below so that a `switch v { case .i; … }` resolves rather than being told it needs an
+        // enum, and the *type* is the variant, because that is what the arm is compared against.
+        if let Item::VariantType { decl } = *self.pool.item(target) {
+            let known = self
+                .pool
+                .struct_fields(decl)
+                .is_some_and(|cases| cases.iter().any(|case| case.name == name));
+            if known {
+                return target;
+            }
+            let text = self.interner.resolve(name).to_owned();
+            let ty_text = self.describe(target);
+            self.diags.push(
+                Diagnostic::error(name_span, format!("`{ty_text}` has no case `{text}`"))
+                    .with_code(E0244),
+            );
+            return PoolId::ERROR;
+        }
+
+        // A context that is neither an enum nor a variant is a *different* problem from having none,
+        // so it gets its own wording with the type named — conflating them would misdirect the reader
         // (ADR-0046 §4).
         let Item::EnumType { decl, flags } = *self.pool.item(target) else {
             let text = self.describe(target);
@@ -1358,6 +1434,32 @@ impl Ctx<'_> {
         }
     }
 
+    /// Whether a type is a legal thing to name at this expression (ADR-0071 §3).
+    ///
+    /// A lookup in `type_position`, which the two positions that accept one populate: a field
+    /// access's receiver and a `::` constant's initialiser. See that field's documentation for why
+    /// this is an allowlist.
+    fn type_is_allowed_here(&self, scope: ExprScope, id: ExprId) -> bool {
+        self.type_position.contains(&(scope, id))
+    }
+
+    /// Reports a type used where a runtime value was expected (E0261, ADR-0071 §3).
+    ///
+    /// The note names the positions that *do* accept a type rather than naming a type the reader
+    /// could annotate with, because `Type` is deliberately not spellable (ADR-0071 §1) — a help line
+    /// suggesting an annotation would name something the parser rejects. "Cannot be stored" without
+    /// saying where it *can* go is a diagnostic a reader cannot act on.
+    fn reject_type_as_value(&mut self, span: Span) {
+        self.diags.push(
+            Diagnostic::error(span, "a type is a compile-time value, not a runtime one")
+                .with_code(E0261)
+                .with_note("a type has no runtime representation, so there is nothing to store")
+                .with_help(
+                    "bind it with `::`, e.g. `T :: Point;`, or write it as a type annotation",
+                ),
+        );
+    }
+
     fn type_of_name(&mut self, res: Res) -> PoolId {
         match res {
             Res::Local(local) => self
@@ -1454,10 +1556,11 @@ impl Ctx<'_> {
         while let Some(inner) = self.pointee(ty) {
             ty = inner;
         }
-        // Only a struct, deliberately: `Item::UnionType` is *not* matched here even though
-        // `check_field` treats the two alike, because ADR-0050 §5 refuses `using` on a union and
-        // resolution has already reported it. Accepting one here would give a value to a promotion
-        // that was supposed to have been refused.
+        // Only a struct, deliberately: `Item::UnionType` and `Item::VariantType` are *not* matched
+        // here even though `check_field` treats all three alike, because ADR-0050 §5 refuses `using`
+        // on a union — and a variant is refused for the same reason plus a stronger one: promoting a
+        // case into scope would make a name read a field the tag may say is not live. Resolution has
+        // already reported it; accepting one here would give a value to a promotion that was refused.
         let decl = match self.pool.item(ty) {
             Item::StructType { decl } => *decl,
             _ => return PoolId::ERROR,
@@ -1561,6 +1664,25 @@ impl Ctx<'_> {
             | BinOp::WrapAdd
             | BinOp::WrapSub
             | BinOp::WrapMul => {
+                // **Pointer arithmetic, before the numeric path** (ADR-0064). A pointer operand must
+                // not be unified with an integer one, so this is decided by typing each operand with
+                // no shared expectation and asking whether either is a pointer. Only `+` and `-`
+                // apply; `*`, `/`, `%` and the wrapping forms on a pointer fall through to the
+                // rejection below, which is what E0223 means for them.
+                //
+                // **Skipped when a concrete numeric type is expected**, because then the expression
+                // *is* numeric — `sum: s64 = xx tiny + 1;` must push `s64` inward so the autocast has
+                // a context (E0242 otherwise), and a pointer result could never satisfy an `s64`
+                // annotation anyway. So the speculative untyped probe below only runs when the result
+                // could actually be a pointer: no expectation, or a pointer expectation.
+                let numeric_context =
+                    expected.is_some_and(|ty| self.is_numeric(ty) && self.pointee(ty).is_none());
+                if matches!(op, BinOp::Add | BinOp::Sub)
+                    && !numeric_context
+                    && let Some(result) = self.check_pointer_arithmetic(scope, op, lhs, rhs, span)
+                {
+                    return self.expect(expected, result, span);
+                }
                 // Push a *numeric* context inward so that `g: u8 = 1 + 2;` types both
                 // literals as `u8`, and `f: float32 = 1.5 + 2.5;` types both as `float32`,
                 // rather than defaulting either and then complaining.
@@ -1640,6 +1762,286 @@ impl Ctx<'_> {
                 self.check_expr(scope, lhs, Some(PoolId::BOOL));
                 self.check_expr(scope, rhs, Some(PoolId::BOOL));
                 self.expect(expected, PoolId::BOOL, span)
+            }
+        }
+    }
+
+    /// Checks `switch e { case v; … else; … }` (ADR-0067).
+    ///
+    /// Three jobs, in this order because each depends on the last: type the scrutinee, check every arm's
+    /// value *against that type* — which is what lets a bare `.RED` resolve, since the scrutinee's type
+    /// is the expected type `check_bare_member` wants (§2) — and then judge the set of arms as a whole.
+    ///
+    /// The set judgement is where the diagnostics live: a duplicate value or a second `else` is E0259,
+    /// an enum `switch` missing members is E0258, and an `else` on one that names them all is E0260. The
+    /// last is what makes the first worth having, since otherwise every `switch` could end in `else`.
+    fn check_switch(
+        &mut self,
+        body: BodyId,
+        value: ExprId,
+        arms: &[jr_hir::SwitchArm],
+        span: Span,
+    ) {
+        let scope = ExprScope::Body(body);
+        let scrutinee = self.check_expr(scope, value, None);
+
+        // Which enum this is, if any. Only an enum has a finite member set to be exhaustive over (§3);
+        // an `s64` switch is legal and simply needs an `else` to be total.
+        let enum_decl = match self.pool.item(scrutinee) {
+            Item::EnumType { decl, flags } => Some((*decl, *flags)),
+            _ => None,
+        };
+        // **A variant is exhaustible too**, over its *cases* rather than an enum's members (ADR-0068
+        // §5). Its case names come from the struct side table, so the same set-judgement below serves
+        // both — which is why this wave adds no diagnostic: E0258 and E0260 already say the right
+        // things about "handles every member of".
+        let variant_cases: Option<Vec<Symbol>> = match self.pool.item(scrutinee) {
+            Item::VariantType { decl } => Some(
+                self.pool
+                    .struct_fields(*decl)
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|case| case.name)
+                    .collect(),
+            ),
+            _ => None,
+        };
+
+        // Members named so far, and their arms' spans, so a duplicate is reported against the *later*
+        // arm — the earlier one is the one that works.
+        let mut seen_members: Vec<Symbol> = Vec::new();
+        let mut seen_else: Option<Span> = None;
+
+        for arm in arms {
+            match arm.value {
+                None => {
+                    // A second `else` can never run.
+                    if seen_else.is_some() {
+                        self.diags.push(
+                            Diagnostic::error(arm.span, "this `switch` already has an `else`")
+                                .with_code(E0259)
+                                .with_note("a second catch-all can never run"),
+                        );
+                    }
+                    seen_else = Some(arm.span);
+                }
+                Some(case) => {
+                    // Checked against the scrutinee's type, which is what resolves a bare `.RED` and
+                    // what rejects a case of the wrong type through the ordinary mismatch (E0214).
+                    let want = (scrutinee != PoolId::ERROR).then_some(scrutinee);
+                    self.check_expr(scope, case, want);
+                    // For an enum, remember *which* member so exhaustiveness and duplicate detection
+                    // have something to compare. A case whose member cannot be named — a computed
+                    // value, or an error — contributes nothing rather than a wrong entry.
+                    if (enum_decl.is_some() || variant_cases.is_some())
+                        && let Some(name) = self.case_member_name(body, case)
+                    {
+                        if seen_members.contains(&name) {
+                            let text = self.interner.resolve(name).to_owned();
+                            self.diags.push(
+                                Diagnostic::error(
+                                    arm.span,
+                                    format!("`{text}` is already handled by an earlier `case`"),
+                                )
+                                .with_code(E0259)
+                                .with_note("a duplicate case can never run"),
+                            );
+                        } else {
+                            seen_members.push(name);
+                        }
+                    }
+                }
+            }
+            self.check_stmt(body, arm.body);
+        }
+
+        // A variant's set judgement, the same shape as the enum one below but over its cases
+        // (ADR-0068 §5). Written out rather than folded into one generic pass because the two get their
+        // names from different tables, and a shared helper taking `Vec<Symbol>` would hide which.
+        if let Some(cases) = &variant_cases {
+            let missing: Vec<String> = cases
+                .iter()
+                .filter(|name| !seen_members.contains(name))
+                .map(|name| self.interner.resolve(*name).to_owned())
+                .collect();
+            let text = self.describe(scrutinee);
+            match (missing.is_empty(), seen_else) {
+                (true, Some(else_span)) => {
+                    self.diags.push(
+                        Diagnostic::error(
+                            else_span,
+                            format!("this `else` can never run: every case of `{text}` is handled"),
+                        )
+                        .with_code(E0260)
+                        .with_help("remove the `else`"),
+                    );
+                }
+                (false, None) => {
+                    let list = missing.join("`, `");
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            format!("this `switch` does not handle every case of `{text}`"),
+                        )
+                        .with_code(E0258)
+                        .with_note(format!("missing: `{list}`"))
+                        .with_help("add a `case` for each, or an `else` arm"),
+                    );
+                }
+                (true, None) | (false, Some(_)) => {}
+            }
+        }
+
+        // The set judgement. Only for an enum: §3 restricts exhaustiveness to the type whose member set
+        // is finite and known, which is what makes the diagnostic true rather than approximate.
+        if let Some((decl, flags)) = enum_decl {
+            let missing: Vec<String> = self
+                .pool
+                .enum_members(decl)
+                .unwrap_or(&[])
+                .iter()
+                .filter(|member| !seen_members.contains(&member.name))
+                .map(|member| self.interner.resolve(member.name).to_owned())
+                .collect();
+            let ty = self.pool.enum_type(decl, flags);
+            let text = self.describe(ty);
+
+            match (missing.is_empty(), seen_else) {
+                // Every member named *and* an `else`: the `else` cannot run (§4).
+                (true, Some(else_span)) => {
+                    self.diags.push(
+                        Diagnostic::error(
+                            else_span,
+                            format!(
+                                "this `else` can never run: every member of `{text}` is handled"
+                            ),
+                        )
+                        .with_code(E0260)
+                        .with_help("remove the `else`"),
+                    );
+                }
+                // Members missing and no `else`: not exhaustive. The names *are* the fix, so they are
+                // listed rather than counted.
+                (false, None) => {
+                    let list = missing.join("`, `");
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            format!("this `switch` does not handle every member of `{text}`"),
+                        )
+                        .with_code(E0258)
+                        .with_note(format!("missing: `{list}`"))
+                        .with_help("add a `case` for each, or an `else` arm"),
+                    );
+                }
+                // Exhaustive by members, or made total by an `else`.
+                (true, None) | (false, Some(_)) => {}
+            }
+        }
+    }
+
+    /// The enum member an arm's `case` value names, if it names one syntactically (ADR-0067 §3).
+    ///
+    /// Reads the *expression* rather than a folded value, because exhaustiveness is about which members
+    /// were written: `case .RED` and `case Colour.RED` are the two spellings, and both carry the name.
+    ///
+    /// `None` for anything else — a computed value, a variable, an error — which contributes nothing to
+    /// the member set rather than a wrong entry. That makes a `switch` whose arms are computed
+    /// *non*-exhaustive, which is the honest answer: nothing here can prove it covers the members.
+    fn case_member_name(&self, body: BodyId, case: ExprId) -> Option<Symbol> {
+        match self.hir.body(body).exprs.get(case.index())? {
+            // `case .RED` — a bare member, resolved from the scrutinee's type.
+            Expr::Member { name, .. } => Some(*name),
+            // `case Colour.RED` — qualified. The receiver is the enum, which the arm's type check
+            // already agreed with, so the field name is the member.
+            Expr::Field { name, .. } => Some(*name),
+            _ => None,
+        }
+    }
+
+    /// Types `p + n`, `n + p`, `p - n` and `p - q` (ADR-0064), or returns `None` for the numeric path.
+    ///
+    /// Called only for `+` and `-`, and only *before* the numeric handling, because a pointer operand
+    /// must not be unified with an integer one — so each operand is typed with **no shared
+    /// expectation** and the shape decided from the pair. `None` means "neither operand is a pointer",
+    /// which hands the operation back to the ordinary numeric path unchanged; the hot case (`s64 +
+    /// s64`) takes it after two `pointee` checks that both say no.
+    ///
+    /// `jr-mir` re-derives which of the three forms this is from the operands' recorded types rather
+    /// than a side table — the same "read the `TypeMap`, do not recompute" discipline the overload
+    /// path uses (ADR-0048 §5).
+    fn check_pointer_arithmetic(
+        &mut self,
+        scope: ExprScope,
+        op: BinOp,
+        lhs: ExprId,
+        rhs: ExprId,
+        span: Span,
+    ) -> Option<PoolId> {
+        // Typed with no expectation, so an integer operand defaults to `s64` and a pointer keeps its
+        // type — the two are never made to match.
+        let left = self.check_expr(scope, lhs, None);
+        let right = self.check_expr(scope, rhs, None);
+        let left_ptr = self.pointee(left);
+        let right_ptr = self.pointee(right);
+
+        match (left_ptr, right_ptr) {
+            // Neither is a pointer: not our case, back to the numeric path. The operands are already
+            // typed, and re-typing them there with a numeric expectation is harmless — `check_expr`
+            // overwrites the same `TypeMap` entry with the same or a more specific type.
+            (None, None) => None,
+            // Both pointers. `p + q` is meaningless; `p - q` (the pointer difference) is deferred to
+            // its own wave (ADR-0064 §5), because its element-count result needs the stride, which is
+            // layout `jr-mir` does not carry. Both are E0223 — the operator does not fit here.
+            (Some(_), Some(_)) => {
+                let text = self.describe(left);
+                self.reject_operator(op, &text, span);
+                Some(PoolId::ERROR)
+            }
+            // `p + n` or `p - n`: pointer on the left, integer on the right. Result is the pointer.
+            (Some(_), None) => {
+                if self.int_info(right).is_some() {
+                    Some(left)
+                } else {
+                    let rtext = self.describe(right);
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            format!("a pointer can only be offset by an integer, not `{rtext}`"),
+                        )
+                        .with_code(E0223),
+                    );
+                    Some(PoolId::ERROR)
+                }
+            }
+            // `n + p`: integer on the left, pointer on the right. Legal only for `+` — `n - p` is
+            // "an integer minus a pointer", which has no meaning (the distance is `p - n`, the other
+            // order). Result is the pointer.
+            (None, Some(_)) => {
+                if op == BinOp::Add && self.int_info(left).is_some() {
+                    Some(right)
+                } else if op == BinOp::Sub {
+                    let ltext = self.describe(left);
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            format!("cannot subtract a pointer from `{ltext}`"),
+                        )
+                        .with_code(E0223)
+                        .with_note("write `p - n` to move a pointer back, not `n - p`"),
+                    );
+                    Some(PoolId::ERROR)
+                } else {
+                    let ltext = self.describe(left);
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            format!("a pointer can only be offset by an integer, not `{ltext}`"),
+                        )
+                        .with_code(E0223),
+                    );
+                    Some(PoolId::ERROR)
+                }
             }
         }
     }
@@ -2192,6 +2594,11 @@ impl Ctx<'_> {
         name: Symbol,
         name_span: Span,
     ) -> PoolId {
+        // The receiver is a position where a **type** is legal: `Colour.RED` names the enum type used
+        // as a value (ADR-0041 §1). Recorded before typing it, the way `check_call` records its callee,
+        // so that `check_expr`'s `Name` arm skips E0261 here while still typing and recording the
+        // receiver exactly as any other expression (ADR-0071 §3).
+        self.type_position.insert((scope, receiver));
         let mut ty = self.check_expr(scope, receiver, None);
         while let Some(inner) = self.pointee(ty) {
             ty = inner;
@@ -2206,8 +2613,12 @@ impl Ctx<'_> {
         let receiver_kind = match self.pool.item(ty) {
             Item::StringType => ReceiverKind::Str,
             // A union's field access *is* a struct's: same field list, same side table, same
-            // diagnostics. Only the offsets differ, and those are `jr-pool`'s (ADR-0045 §5).
-            Item::StructType { decl } | Item::UnionType { decl } => ReceiverKind::Struct(*decl),
+            // diagnostics. Only the offsets differ, and those are `jr-pool`'s (ADR-0045 §5). A
+            // variant's cases are a field list too (ADR-0068 §1), so it joins them — what differs is
+            // the tag check MIR emits on the *read*, which is not a typing question.
+            Item::StructType { decl } | Item::UnionType { decl } | Item::VariantType { decl } => {
+                ReceiverKind::Struct(*decl)
+            }
             // The context's fields are the compiler's, not a side table's — there is no `DeclId` to
             // key one on (ADR-0057 §1), so this is its own receiver kind rather than a `Struct`.
             Item::ContextType => ReceiverKind::Context,
@@ -2464,6 +2875,40 @@ impl Ctx<'_> {
         self.pool.view_of(elem)
     }
 
+    /// The type an expression *denotes*, when it is a name bound to one (ADR-0071 §2).
+    ///
+    /// This is what makes `T :: Point;` an alias usable in a type annotation: `resolve_type_name`
+    /// reads a `SigEntry::type_value`, so a type-valued constant has to carry the type it denotes
+    /// rather than only `PoolId::TYPE`.
+    ///
+    /// **Reads the aliased name's own entry rather than re-resolving what `Point` means**, for the
+    /// reason `jr-mir` reads `TypeMap` instead of typing expressions: two implementations of one rule
+    /// are two chances to disagree. The signature phase already computed it.
+    ///
+    /// `None` for anything that is not a bare name — including a *chain* (`B :: A` where `A :: Point`),
+    /// because `A`'s entry is a `SigKind::Const` and following it would need a fixpoint and a cycle
+    /// check (ADR-0071 §5, the line ADR-0070 §4 drew for an array length).
+    pub(crate) fn aliased_type(&mut self, scope: ExprScope, expr: ExprId) -> Option<PoolId> {
+        let Expr::Name { res, .. } = self.expr_of(scope, expr) else {
+            return None;
+        };
+        let res = self.resolve.get(scope, expr).unwrap_or(res);
+        let entry = match res {
+            Res::Item(item) => self.entry_for_item(item)?,
+            Res::Imported(import, name) => self.entry_for_import(import, name)?,
+            // A local, a parameter, or a promoted field is never a type: Jairs has no nested type
+            // declarations, so none of them can put a type name in scope.
+            Res::Local(_) | Res::Param(_) | Res::Promoted { .. } | Res::Error => return None,
+        };
+        // Only a *nominal declaration* is followed. A `SigKind::Const` whose own `type_value` is set is
+        // exactly the alias chain §5 defers, so it is excluded by kind rather than by whether the field
+        // happens to be populated — which keeps the refusal true if a later wave populates more of them.
+        match entry.kind {
+            SigKind::Struct | SigKind::Union | SigKind::Variant | SigKind::Enum => entry.type_value,
+            SigKind::Const | SigKind::Var | SigKind::Proc | SigKind::Operator => None,
+        }
+    }
+
     /// The enum an expression *denotes*, when it is a name bound to an enum type.
     ///
     /// A receiver like `Colour` has type `type` (ADR-0012), so the type alone cannot say
@@ -2530,13 +2975,14 @@ impl Ctx<'_> {
             // Only `count`. Listing `data` would suggest a pseudo-field arrays do not have
             // (ADR-0039 §5), which is worse than no suggestion.
             Item::ArrayType { .. } | Item::ViewType { .. } => vec![String::from("count")],
-            Item::StructType { decl } | Item::UnionType { decl } => self
-                .pool
-                .struct_fields(*decl)
-                .unwrap_or(&[])
-                .iter()
-                .map(|f| self.interner.resolve(f.name).to_owned())
-                .collect(),
+            Item::StructType { decl } | Item::UnionType { decl } | Item::VariantType { decl } => {
+                self.pool
+                    .struct_fields(*decl)
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|f| self.interner.resolve(f.name).to_owned())
+                    .collect()
+            }
             _ => Vec::new(),
         };
 

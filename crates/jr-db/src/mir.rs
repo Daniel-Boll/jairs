@@ -572,6 +572,7 @@ fn same_file_callees(body: &jr_mir::MirBody, file: FileId) -> Vec<jr_hir::ProcId
                 jr_mir::Statement::Store { .. }
                 | jr_mir::Statement::Zero { .. }
                 | jr_mir::Statement::BoundsCheck { .. }
+                | jr_mir::Statement::TagCheck { .. }
                 | jr_mir::Statement::Nop => {}
             }
         }

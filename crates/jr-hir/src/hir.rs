@@ -99,6 +99,17 @@ pub enum TypeRef {
         /// report a lowering error, which `tests/corpus/type-errors/` explicitly forbids
         /// its files from doing (ADR-0039 §3a).
         len: Option<u64>,
+        /// The **name** the length was written as, when it was a bare name rather than a literal
+        /// (ADR-0070 §1).
+        ///
+        /// Carried so that `jr-sema` can resolve it to a constant and read that constant's literal — a
+        /// lookup needing no evaluation and therefore no dependency on `jr-db` or `jr-vm`, which is what
+        /// makes `[N]s64` resolvable a sub-wave before `[2 + 2]s64` (ADR-0039 §3a is amended here rather
+        /// than reversed).
+        ///
+        /// `None` when the length was a literal (then `len` is `Some`) or an expression that is neither —
+        /// `[2 + 2]u8` names nothing to look up, and sema reports it.
+        len_name: Option<Symbol>,
         /// Span of the length expression, for the diagnostic sema raises.
         ///
         /// Carried because a `TypeRef` has no span of its own (ADR-0013), so without this
@@ -140,8 +151,12 @@ pub enum TypeRef {
     Struct(StructId),
     /// An inline union type `union { ... }` (ADR-0045).
     ///
-    /// Indexes the same arena `TypeRef::Struct` does — see `Struct::is_union`.
+    /// Indexes the same arena `TypeRef::Struct` does — see `Struct::kind`.
     Union(StructId),
+    /// An inline variant type `variant { ... }` (ADR-0068 §1).
+    ///
+    /// The same arena again, for the reason `Struct::kind` documents.
+    Variant(StructId),
     /// An inline enum type `enum { ... }` (ADR-0041).
     Enum(EnumId),
     /// A type that could not be lowered (error recovery).
@@ -695,8 +710,65 @@ pub enum Stmt {
     /// Holds the deferred statement unlowered-in-place: `jr-mir` emits it before *every* terminator
     /// that leaves the enclosing scope, so the same `StmtId` is lowered once per exit path.
     Defer(StmtId, Span),
+    /// `push_context { … }` (ADR-0063) — a block whose statements run against a copy of the context.
+    ///
+    /// Holds the block statement. `jr-mir` copies the context into a fresh slot on entry, points
+    /// `context` at the copy for the block's duration, and restores the outer pointer on exit — a
+    /// lowering-time swap with no new MIR node. A separate variant rather than a flag on
+    /// [`Stmt::Block`], so every exhaustive match decides what a context scope means.
+    PushContext(StmtId, Span),
+    /// `switch e { case v; … else; … }` (ADR-0067).
+    ///
+    /// The arms are values compared with `==`, not patterns (§2), so each carries an expression and the
+    /// block it runs. The `else` arm's `value` is `None` — an absent value *is* the catch-all (§4), which
+    /// is why no separate variant or flag distinguishes it.
+    Switch {
+        /// The value being matched.
+        value: ExprId,
+        /// The arms, in source order. Order matters: it is the order the comparisons are tried, and the
+        /// order a duplicate-case diagnostic reports against.
+        arms: Vec<SwitchArm>,
+        /// Span of the whole statement.
+        span: Span,
+    },
+    /// `#insert "…";` — statements parsed from a string literal (ADR-0072 §1).
+    ///
+    /// Holds the statements the inserted text lowered to, **in the enclosing scope**. Deliberately not a
+    /// [`Stmt::Block`], which would be wrong twice over: `jr-mir` treats a block as a *defer scope*, so a
+    /// `defer` inside an insert would run at the insert's end rather than the enclosing body's; and
+    /// lowering pushes a *name* scope for a block, so a local the insert declares would be invisible
+    /// afterwards — which is exactly the thing ADR-0072 §1 promises works (`#insert "n := 1;"` then
+    /// `exit(n)`).
+    ///
+    /// Its own variant rather than a flag, so every exhaustive match decides what an insert means. The
+    /// statements are already lowered: nothing downstream can tell they came from a string, and nothing
+    /// downstream needs to — which is the evidence §1's "lowered where it is written" is the right model.
+    Insert {
+        /// The lowered statements, in order.
+        stmts: Vec<StmtId>,
+        /// Span of the `#insert` directive — **shared by every statement in `stmts`** (ADR-0072 §2).
+        ///
+        /// The directive is where that code entered the program, and it is the only span for it that is
+        /// in range: `jr-diag` *clamps* an out-of-range offset rather than rejecting it, so a synthesized
+        /// span would silently underline source the user never wrote.
+        span: Span,
+    },
     /// Error recovery placeholder.
     Error(Span),
+}
+
+/// One arm of a [`Stmt::Switch`] (ADR-0067 §1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchArm {
+    /// The value this arm matches, or `None` for the `else` catch-all (ADR-0067 §4).
+    ///
+    /// A *value*, not a pattern: it is compared with `==`, which is why a bare `.RED` works here
+    /// unchanged — the scrutinee's type is the expected type it resolves against (§2).
+    pub value: Option<ExprId>,
+    /// The statements this arm runs, as a block.
+    pub body: StmtId,
+    /// Span of the arm's header, for a diagnostic that points at one arm.
+    pub span: Span,
 }
 
 // ---------------------------------------------------------------------------
@@ -862,16 +934,46 @@ pub struct ForeignInfo {
 // ---------------------------------------------------------------------------
 
 /// A struct type definition.
+/// Which aggregate form a [`Struct`] node is (ADR-0068 §2).
+///
+/// All three share one arena, for the reason [`Struct::kind`] documents. They differ in *semantics*
+/// rather than in a detail, which is why each has its own keyword rather than an attribute on one form
+/// (ADR-0068 §1, following ADR-0043 §1's precedent for `enum_flags`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateKind {
+    /// `struct { … }` — fields at increasing offsets.
+    Struct,
+    /// `union { … }` — every field at offset 0, **untagged**, so reading a field other than the one
+    /// last written reinterprets bits (ADR-0045 §1). Costs nothing and checks nothing.
+    Union,
+    /// `variant { … }` — a leading tag plus the union of the cases (ADR-0068 §3).
+    ///
+    /// A write sets the tag and a read checks it, so reading the wrong field traps rather than
+    /// reinterpreting. Bigger than the equivalent `union` by the tag, and that size cost is the
+    /// choice a program makes by writing this form (ADR-0045 §1's surviving objection).
+    Variant,
+}
+
+/// A struct, union or variant type definition.
+///
+/// One node for all three forms, distinguished by [`Struct::kind`] — see that field for why the
+/// sharing is load-bearing rather than a convenience.
 #[derive(Debug, Clone)]
 pub struct Struct {
-    /// Whether this is a `union` rather than a `struct` (ADR-0045 §4).
+    /// Which of the three aggregate forms this is (ADR-0045 §4, ADR-0068 §2).
     ///
     /// A field on the shared node rather than a second arena, and that is **load-bearing**: a
     /// `DeclId` is `(file, index-within-its-arena)` and says nothing about *which* arena
     /// (ADR-0041 §4a). A separate `unions: Vec<Union>` would make a struct at index 0 and a
     /// union at index 0 the same `DeclId`, and they share `Pool::struct_fields` — so the two
-    /// field lists would silently overwrite each other. One arena makes that unrepresentable.
-    pub is_union: bool,
+    /// field lists would silently overwrite each other. One arena makes that unrepresentable,
+    /// which is why `variant` joined the same arena rather than getting a third.
+    ///
+    /// An **enum rather than the `is_union: bool` it replaced** (ADR-0068 §2): three forms do not
+    /// fit in a bool, and two bools would admit the nonsense "union and variant". Every reader
+    /// becomes an exhaustive match, so a fourth form is a compile error at each site that must
+    /// decide rather than a `false` silently meaning "struct".
+    pub kind: AggregateKind,
     /// The fields.
     pub fields: Vec<Field>,
     /// Span of the whole struct.
@@ -977,9 +1079,14 @@ pub enum ConstValue {
     /// A union type: `name :: union { fields }` (ADR-0045).
     ///
     /// Its own `ConstValue` variant even though it indexes the *same* arena `Struct` does,
-    /// because a consumer deciding what to intern needs to know which — and `Struct::is_union`
+    /// because a consumer deciding what to intern needs to know which — and `Struct::kind`
     /// would make that a second lookup rather than a match.
     Union(StructId),
+    /// A variant type: `name :: variant { fields }` (ADR-0068 §1).
+    ///
+    /// Its own variant for the reason `Union` has one: what a consumer interns differs, and a match
+    /// says so where a field lookup would not.
+    Variant(StructId),
     /// An operator overload: `operator + :: (a: T, b: T) -> T { … }` (ADR-0048 §1).
     ///
     /// A `ProcId` like [`ConstValue::Proc`], because an overload **is** an ordinary procedure —

@@ -135,7 +135,8 @@ impl Repr {
             | Item::StructType { .. }
             // A union is an aggregate: it lives in memory and is passed by copy, exactly as a
             // struct is. Its size is its largest field's, which `layout_of` already knows.
-            | Item::UnionType { .. }
+        | Item::UnionType { .. }
+        | Item::VariantType { .. }
             | Item::ArrayType { .. }
             // **A results aggregate, which is what makes ADR-0052 free in this crate.** Answering
             // `Aggregate` here is the entire back-end change for multiple returns: ADR-0051's

@@ -30,9 +30,10 @@ use jr_syntax::{
 };
 
 use crate::hir::{
-    AssignOp, BinOp, Body, BodyId, ConstValue, Enum, EnumId, EnumMember, Expr, ExprId, Field,
-    FileHir, ForIterable, ForeignInfo, Item, ItemId, ItemKind, ItemScope, Literal, Local, LocalId,
-    Param, ParamId, Proc, ProcId, Res, Stmt, StmtId, Struct, StructId, TypeRef, TypeRefId, UnOp,
+    AggregateKind, AssignOp, BinOp, Body, BodyId, ConstValue, Enum, EnumId, EnumMember, Expr,
+    ExprId, Field, FileHir, ForIterable, ForeignInfo, Item, ItemId, ItemKind, ItemScope, Literal,
+    Local, LocalId, Param, ParamId, Proc, ProcId, Res, Stmt, StmtId, Struct, StructId, TypeRef,
+    TypeRefId, UnOp,
 };
 
 // ---------------------------------------------------------------------------
@@ -48,6 +49,10 @@ const E0207: &str = "E0207";
 const E0208: &str = "E0208";
 /// A directive used where it is not valid.
 const E0209: &str = "E0209";
+/// `#insert` with an operand that is not a string literal (ADR-0072 §5).
+const E0262: &str = "E0262";
+/// The text of an `#insert` does not parse (ADR-0072 §3).
+const E0263: &str = "E0263";
 
 /// Directives that are legal in expression position.
 ///
@@ -218,6 +223,7 @@ impl<'a> LowerCtx<'a> {
                 self.alloc_top_type_ref(TypeRef::Array {
                     elem,
                     len,
+                    len_name: lower_array_len_name(a, self.interner),
                     len_span,
                 })
             }
@@ -243,6 +249,10 @@ impl<'a> LowerCtx<'a> {
                 let union_id = self.lower_union_type(u);
                 self.alloc_top_type_ref(TypeRef::Union(union_id))
             }
+            TypeExpr::Variant(v) => {
+                let variant_id = self.lower_variant_type(v);
+                self.alloc_top_type_ref(TypeRef::Variant(variant_id))
+            }
             TypeExpr::Enum(e) => {
                 let enum_id = self.lower_enum_type(e);
                 self.alloc_top_type_ref(TypeRef::Enum(enum_id))
@@ -254,26 +264,36 @@ impl<'a> LowerCtx<'a> {
 
     fn lower_struct_type(&mut self, s: &StructType) -> StructId {
         let span = self.span_of_node(s.syntax());
-        self.lower_fields_into_struct(span, s.field_list(), false)
+        self.lower_fields_into_struct(span, s.field_list(), AggregateKind::Struct)
     }
 
     /// Lowers `union { i: s64; f: float64; }` (ADR-0045).
     ///
-    /// Allocates into the **same arena** `lower_struct_type` does, with `is_union` set. That is
+    /// Allocates into the **same arena** `lower_struct_type` does, with the kind set. That is
     /// not a shortcut: a `DeclId` is an index within its arena and does not record which arena
     /// (ADR-0041 §4a), and unions share `Pool::struct_fields` with structs — so two arenas would
-    /// let a struct and a union at the same index overwrite each other's field lists.
+    /// let a struct and a union at the same index overwrite each other's field lists. `variant`
+    /// joined the same arena for the same reason (ADR-0068 §2).
     fn lower_union_type(&mut self, u: &jr_syntax::ast::UnionType) -> StructId {
         let span = self.span_of_node(u.syntax());
-        self.lower_fields_into_struct(span, u.field_list(), true)
+        self.lower_fields_into_struct(span, u.field_list(), AggregateKind::Union)
     }
 
-    /// The field loop both aggregate forms share.
+    /// Lowers `variant { i: s64; f: float64; }` (ADR-0068 §1).
+    ///
+    /// The same arena and the same field loop as the other two forms; only the kind differs, which is
+    /// what makes the tag a *layout* question (ADR-0068 §3) rather than a different HIR shape.
+    fn lower_variant_type(&mut self, v: &jr_syntax::ast::VariantType) -> StructId {
+        let span = self.span_of_node(v.syntax());
+        self.lower_fields_into_struct(span, v.field_list(), AggregateKind::Variant)
+    }
+
+    /// The field loop all three aggregate forms share.
     fn lower_fields_into_struct(
         &mut self,
         span: jr_base::Span,
         field_list: Option<jr_syntax::ast::FieldList>,
-        is_union: bool,
+        kind: AggregateKind,
     ) -> StructId {
         let mut fields = Vec::new();
 
@@ -299,7 +319,7 @@ impl<'a> LowerCtx<'a> {
         }
 
         self.alloc_struct(Struct {
-            is_union,
+            kind,
             fields,
             span,
             type_refs: Vec::new(),
@@ -799,6 +819,11 @@ impl<'a> LowerCtx<'a> {
             ItemKind::Const {
                 value: ConstValue::Union(union_id),
             }
+        } else if let Some(va) = cd.variant_type() {
+            let variant_id = self.lower_variant_type(&va);
+            ItemKind::Const {
+                value: ConstValue::Variant(variant_id),
+            }
         } else if let Some(en) = cd.enum_type() {
             let enum_id = self.lower_enum_type(&en);
             ItemKind::Const {
@@ -922,6 +947,22 @@ struct BodyLowerCtx<'a> {
     /// Scope stack: each frame is a list of (name, entry) pairs.
     /// Innermost frame is last. Shadowing is allowed (spec §023).
     scope_stack: Vec<Vec<(Symbol, ScopeEntry)>>,
+
+    /// The span every node gets while lowering an `#insert`, if one is in progress (ADR-0072 §2).
+    ///
+    /// Set to the directive's span for the duration, so `span_of_node` and `span_of_token` answer with
+    /// it instead of the syntax node's own range — which for inserted text is an offset into the
+    /// *string*, meaningless as a position in this file and silently **clamped** by `jr-diag` rather
+    /// than rejected.
+    ///
+    /// Overriding the two span helpers rather than rewriting spans afterwards, and the difference is not
+    /// stylistic: a `Span` lives in sixteen `Expr` fields, nineteen `Stmt` variants, `Local::name_span`
+    /// and `Param::name_span`, and a rewriter would have to find all of them. The first attempt here
+    /// rewrote the `expr_spans` arena and missed `Expr::Name`'s own `span` field — which is the one the
+    /// *resolver* reads, so an unresolved name in inserted code reported against lines 1–2 of the file.
+    /// Found by running, and it is exactly the clamping failure §2 was written to prevent. Catching it at
+    /// the source is the only version that cannot be incomplete.
+    span_override: Option<Span>,
 }
 
 impl<'a> BodyLowerCtx<'a> {
@@ -937,15 +978,18 @@ impl<'a> BodyLowerCtx<'a> {
             type_refs: Vec::new(),
             params: Vec::new(),
             scope_stack: vec![Vec::new()],
+            span_override: None,
         }
     }
 
     fn span_of_node(&self, node: &SyntaxNode) -> Span {
-        Span::new(self.file, node.text_range())
+        self.span_override
+            .unwrap_or_else(|| Span::new(self.file, node.text_range()))
     }
 
     fn span_of_token(&self, tok: &SyntaxToken) -> Span {
-        Span::new(self.file, tok.text_range())
+        self.span_override
+            .unwrap_or_else(|| Span::new(self.file, tok.text_range()))
     }
 
     fn intern(&self, text: &str) -> Symbol {
@@ -1034,6 +1078,7 @@ impl<'a> BodyLowerCtx<'a> {
                 self.alloc_type_ref(TypeRef::Array {
                     elem,
                     len,
+                    len_name: lower_array_len_name(a, self.interner),
                     len_span,
                 })
             }
@@ -1050,12 +1095,89 @@ impl<'a> BodyLowerCtx<'a> {
                 let ret = p.ret().map(|t| self.lower_type_expr(&t));
                 self.alloc_type_ref(TypeRef::Proc { params, ret })
             }
-            TypeExpr::Struct(_) | TypeExpr::Union(_) | TypeExpr::Enum(_) => {
+            TypeExpr::Struct(_) | TypeExpr::Union(_) | TypeExpr::Variant(_) | TypeExpr::Enum(_) => {
                 // An inline aggregate type inside a body is unusual, and both arenas would
                 // have to agree about where it lives; refused rather than half-lowered.
                 self.alloc_type_ref(TypeRef::Error)
             }
         }
+    }
+
+    /// Lowers `#insert "…";` (ADR-0072).
+    ///
+    /// Four steps, and the order matters: decode the operand, refuse a non-literal, parse the text as a
+    /// *statement list*, then lower those statements **into the current scope**.
+    ///
+    /// No scope is pushed. That is the feature: `#insert "n := 1;"` followed by `exit(n)` must resolve,
+    /// which is why this produces a [`Stmt::Insert`] rather than a [`Stmt::Block`] — see that variant's
+    /// docs for the two separate ways a block would have been wrong.
+    ///
+    /// Every statement's span is the directive's, per ADR-0072 §2: the spans the inner parse produced are
+    /// offsets into the *inserted string*, and `jr-diag` clamps an out-of-range offset rather than
+    /// rejecting it, so using one would silently underline source the user never wrote.
+    fn lower_insert(&mut self, directive: &jr_syntax::ast::DirectiveExpr, span: Span) -> StmtId {
+        let Some(arg) = directive.string_arg() else {
+            // No string operand: either something else was written, or nothing was. Refused rather than
+            // treated as an empty insert, because `#insert compute()` is the *computed* form ADR-0072 §4
+            // defers and a silent no-op would make it look supported.
+            self.diags.push(
+                Diagnostic::error(span, "`#insert` needs a string literal of Jairs source")
+                    .with_code(E0262)
+                    .with_note(
+                        "only a literal is supported: a computed operand needs the compile-time \
+                                evaluator, which runs after lowering (ADR-0072 §4)",
+                    )
+                    .with_help("write the code inline, e.g. `#insert \"x := 1;\";`"),
+            );
+            return self.alloc_stmt(Stmt::Error(span));
+        };
+
+        // Decoded rather than merely unquoted, so `#insert "s := \"hi\";"` inserts what it looks like.
+        // The same function every string literal goes through, which is what keeps one answer to "what
+        // does this escape mean".
+        let text = decode_string_impl(arg.text(), span, &mut self.diags);
+
+        // Parsed as a statement list, not a source file: `n := 1;` is a `DECL_STMT` in a body and a
+        // file-level `VAR_DECL` at top level, and only the first is what a body consumes.
+        let parsed = jr_syntax::parse_stmts(&text, self.file);
+        for diag in parsed.diagnostics().iter() {
+            // Re-pointed at the directive and re-worded, because the inner diagnostic's span is an
+            // offset into `text` and would land on unrelated bytes of the real file (ADR-0072 §3). The
+            // offset is carried in a note, which is the part a reader needs to find their mistake.
+            let offset = u32::from(diag.primary.span.range.start());
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("inserted code does not parse: {}", diag.message),
+                )
+                .with_code(E0263)
+                .with_note(format!("in inserted code, at offset {offset}"))
+                .with_note(format!("the inserted text was: {text}")),
+            );
+        }
+
+        // **Every span produced below is the directive's** (ADR-0072 §2), set here rather than fixed up
+        // afterwards — see `span_override`'s docs for why a fix-up cannot be made complete. Saved and
+        // restored rather than cleared, so a nested lowering that is *not* an insert still works if one
+        // ever reaches here.
+        let outer_override = self.span_override;
+        self.span_override = Some(span);
+
+        // Lowered in the **enclosing** scope. `parse_stmts` roots the result in a `BLOCK`, so its
+        // statements are reached through that node — but `lower_block` is deliberately not called on it,
+        // since that would push a scope and hide every name the insert declares.
+        let stmts = match jr_syntax::ast::Block::cast(parsed.syntax()) {
+            Some(block) => block
+                .stmts()
+                .map(|inner| self.lower_stmt(&inner))
+                .collect::<Vec<_>>(),
+            // `parse_stmts` always roots a `BLOCK`, so this is unreachable; recorded rather than
+            // `expect`ed, because a panic in lowering is the one failure a user cannot act on.
+            None => Vec::new(),
+        };
+
+        self.span_override = outer_override;
+        self.alloc_stmt(Stmt::Insert { stmts, span })
     }
 
     fn lower_block(&mut self, block: &Block) -> StmtId {
@@ -1081,6 +1203,14 @@ impl<'a> BodyLowerCtx<'a> {
                 self.lower_local_tuple(d.syntax(), span)
             }
             AstStmt::Decl(d) => self.lower_decl_stmt(d, span),
+            // An `#insert "…";` statement is intercepted **before** the ordinary expression path
+            // (ADR-0072 §1): its operand is source text to parse, not a value to lower. Recognised by
+            // the directive's name, because the parser gives every `#name "arg"` the same generic node
+            // — which is what lets a directive be added without a grammar change.
+            AstStmt::Expr(e) if insert_directive(e).is_some() => {
+                let directive = insert_directive(e).expect("the guard just matched");
+                self.lower_insert(&directive, span)
+            }
             AstStmt::Expr(e) => {
                 let expr_id = e
                     .expr()
@@ -1105,6 +1235,51 @@ impl<'a> BodyLowerCtx<'a> {
                     .map(|b| self.lower_control_body(&b))
                     .unwrap_or_else(|| self.alloc_stmt(Stmt::Error(span)));
                 self.alloc_stmt(Stmt::Defer(inner, span))
+            }
+            // `push_context { … }` (ADR-0063). The body is lowered as an ordinary block — its
+            // statements resolve names and types exactly as they would outside the wrapper — and
+            // `jr-mir` is where the context copy and the pointer swap live. Holding the block rather
+            // than inlining its statements keeps the scope one identity, so the copy happens once.
+            // `switch e { case v; … }` (ADR-0067). Each arm's value is lowered as an ordinary
+            // expression — cases are values, not patterns (§2) — and its statements become a block, so
+            // an arm's scope is a block's scope and needs no new rule.
+            AstStmt::Switch(sw) => {
+                let value = sw
+                    .value()
+                    .map(|e| self.lower_expr(&e))
+                    .unwrap_or_else(|| self.alloc_expr(Expr::Error(span), span));
+                let arms = sw
+                    .arms()
+                    .map(|arm| {
+                        let arm_span = self.span_of_node(arm.syntax());
+                        // The `else` arm has no value, and that absence is the catch-all. A malformed
+                        // `case ;` also has none, so `is_else` reads the *keyword* — treating a syntax
+                        // error as a catch-all would make it silently exhaustive.
+                        let value = if arm.is_else() {
+                            None
+                        } else {
+                            Some(arm.value().map(|e| self.lower_expr(&e)).unwrap_or_else(|| {
+                                self.alloc_expr(Expr::Error(arm_span), arm_span)
+                            }))
+                        };
+                        let stmts: Vec<StmtId> =
+                            arm.body().map(|stmt| self.lower_stmt(&stmt)).collect();
+                        let body = self.alloc_stmt(Stmt::Block(stmts, arm_span));
+                        crate::hir::SwitchArm {
+                            value,
+                            body,
+                            span: arm_span,
+                        }
+                    })
+                    .collect();
+                self.alloc_stmt(Stmt::Switch { value, arms, span })
+            }
+            AstStmt::PushContext(p) => {
+                let inner = p
+                    .block()
+                    .map(|b| self.lower_block(&b))
+                    .unwrap_or_else(|| self.alloc_stmt(Stmt::Error(span)));
+                self.alloc_stmt(Stmt::PushContext(inner, span))
             }
             // `label: for …` — the label is carried *on the loop* rather than in a wrapper
             // statement, so `jr-mir`'s loop stack has it without walking outward for a parent.
@@ -1876,6 +2051,20 @@ fn lower_assign_op(kind: SyntaxKind) -> AssignOp {
 /// Shared by the top-level and body type-lowering paths so that `[COUNT]u8` behaves
 /// identically wherever it is written; the two paths have separate arenas and had already
 /// drifted once for pointers.
+/// The bare **name** an array length was written as, if it was one (ADR-0070 §1).
+///
+/// `None` for a literal (which `lower_array_len` reads) and for anything else — `[2 + 2]u8` names nothing
+/// to look up, so sema reports it rather than this guessing.
+///
+/// Lowering only *reads* the name; whether it resolves to a usable constant is a semantic judgement and
+/// therefore sema's, which is the same split ADR-0039 §3a drew for the literal.
+fn lower_array_len_name(ty: &ArrayType, interner: &Interner) -> Option<Symbol> {
+    let AstExpr::Name(name) = ty.len()? else {
+        return None;
+    };
+    Some(interner.intern(name.name_token()?.text()))
+}
+
 fn lower_array_len(
     ty: &ArrayType,
     len_span: Span,
@@ -2183,6 +2372,23 @@ pub fn lower_file(
     }
 
     ctx.finish()
+}
+
+/// The `#insert` directive an expression statement *is*, if it is one (ADR-0072 §1).
+///
+/// Matched on the directive's **name**, because the parser gives every `#name "arg"` the same generic
+/// `DIRECTIVE_EXPR` node — the permissiveness that lets a directive be added without a grammar or lexer
+/// change, and which `DIRECTIVES_VALID_AS_EXPRESSIONS` documents the cost of.
+///
+/// `None` for anything else, including a nested `#insert` inside a larger expression: `x := #insert "…"`
+/// is not an insert, it is an `#insert` in value position, and it reaches the ordinary directive path
+/// where E0209 refuses it. That is deliberate — an insert produces *statements*, so it has no value.
+fn insert_directive(stmt: &jr_syntax::ast::ExprStmt) -> Option<jr_syntax::ast::DirectiveExpr> {
+    let AstExpr::Directive(directive) = stmt.expr()? else {
+        return None;
+    };
+    let token = directive.directive_token()?;
+    (token.text().trim_start_matches('#') == "insert").then_some(directive)
 }
 
 /// Rejects directives that are not valid in expression position.

@@ -1,0 +1,67 @@
+// A `#run` calling an **imported** procedure (ADR-0069 §1) — the first W4 sub-wave, and the first time
+// this compiler executes a library procedure *while compiling*.
+//
+// Before this, `#run area(...)` on an imported `area` reported
+//
+//     error[E0230]: compile-time evaluation failed: internal compiler error:
+//     no routine for file 1 proc 11
+//
+// which is compiler internals shown to a user who wrote a reasonable program. The cause was one line:
+// `file_consts` put *its own file's* bytecode in the comptime program and no other, so an imported
+// callee had none. `run_main` and `build` already walk every reachable file for exactly this reason.
+//
+// Three things here are worth checking rather than assuming:
+//
+//   * an imported procedure is **callable at compile time**, and the value lands in a constant;
+//   * the callee takes the implicit **context** (ADR-0057 §4), which the thunk must pass — an imported
+//     callee answered "no context" through a `target.file == self.file` gate that was correct only while
+//     a cross-file `#run` was impossible, and the interpreter then said "called a procedure taking 2
+//     arguments with 1". A silent argument-count mismatch, so putting the bytecode in the program was
+//     not enough on its own;
+//   * the imported callee takes a **struct parameter**, so the cross-file path carries an aggregate
+//     rather than only scalars.
+//
+// **No `#import "Basic"`**, matching every other file in this directory: its harnesses resolve against
+// `tests/corpus/modules` only, so importing the bundled standard library is E0210 there. The values are
+// therefore accumulated and compared rather than exited on — `valid/056` is the file that makes a `#run`
+// observable to the differential harness.
+#import "Shapes";
+
+/// A rectangle measured at **compile time**, through a procedure in another file.
+///
+/// `area` lives in `Shapes`, not here — that is the whole point of this file.
+AREA :: #run area(make(3, 4));
+
+/// A second one, so the cross-file path is exercised more than once in a single round of const-eval.
+WIDE :: #run area(make(10, 2));
+
+/// Local, because a `#run` cannot use a struct literal yet: the aggregate is assembled by a procedure in
+/// *this* file and handed to the imported one, which exercises the cross-file argument path.
+make :: (w: s64, h: s64) -> Rect {
+    r: Rect;
+    r.w = w;
+    r.h = h;
+    return r;
+}
+
+main :: () {
+    n := 0;
+
+    // 3 * 4, computed while compiling.
+    if AREA == 12 {
+        n = n + 1;
+    }
+    // 10 * 2, likewise.
+    if WIDE == 20 {
+        n = n + 2;
+    }
+    // And the module's own constant still crosses, so this file does not accidentally test only `#run`.
+    if SHAPES_VERSION == 1 {
+        n = n + 4;
+    }
+
+    // Accumulated rather than exited on, per the directory's convention above.
+    if n == 7 {
+        return;
+    }
+}

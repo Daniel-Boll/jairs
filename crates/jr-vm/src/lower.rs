@@ -278,6 +278,16 @@ impl Compiler<'_> {
                 });
                 Ok(())
             }
+            // The place is planned down to the variant itself; the tag sits at its offset 0 (ADR-0068
+            // §3), so no extra step is added here.
+            Statement::TagCheck { place, case, .. } => {
+                let plan = self.plan(place)?;
+                self.emit(Instr::TagCheck {
+                    place: plan,
+                    case: *case,
+                });
+                Ok(())
+            }
             // A discarded rvalue must still be *evaluated*: ADR-0002 makes overflow
             // trap, so `a + b;` in statement position is observable even though
             // nothing reads the sum. Only a call has effects beyond that, but
@@ -605,6 +615,12 @@ impl Compiler<'_> {
                     }
                     ty = PoolId::S64;
                 }
+                // A variant's tag is at offset 0 — it is the *leading* field (ADR-0068 §3), which is
+                // why nothing has to be computed here. The type becomes `u8`, so a load through this
+                // reads one byte rather than a case's width.
+                Projection::VariantTag => {
+                    ty = PoolId::U8;
+                }
             }
         }
 
@@ -637,7 +653,9 @@ impl Compiler<'_> {
         }
         // A union's field list is a struct's, so this accepts both; only `field_offset`
         // distinguishes them, and that is `jr-pool`'s (ADR-0045 §5).
-        let (Item::StructType { decl } | Item::UnionType { decl }) = self.pool.item(ty) else {
+        let (Item::StructType { decl } | Item::UnionType { decl } | Item::VariantType { decl }) =
+            self.pool.item(ty)
+        else {
             return Err(VmError::internal("a field of a non-aggregate"));
         };
         self.pool
@@ -670,7 +688,8 @@ impl Compiler<'_> {
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
             | Item::StructType { .. }
-            | Item::UnionType { .. }
+        | Item::UnionType { .. }
+        | Item::VariantType { .. }
             // A results aggregate is bytes laid out like a struct's (ADR-0052 §1), so it reads as
             // one. Classifying it as a scalar would read one word where several live — a wrong
             // number of bytes rather than a failure, which is what this match is exhaustive to
@@ -717,7 +736,8 @@ fn statement_span(stmt: &Statement) -> MirSpan {
         | Statement::Store { span, .. }
         | Statement::Discard { span, .. }
         | Statement::Zero { span, .. }
-        | Statement::BoundsCheck { span, .. } => *span,
+        | Statement::BoundsCheck { span, .. }
+        | Statement::TagCheck { span, .. } => *span,
         Statement::Nop => MirSpan::Synthetic,
     }
 }

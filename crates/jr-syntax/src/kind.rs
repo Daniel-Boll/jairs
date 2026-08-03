@@ -132,6 +132,32 @@ pub enum SyntaxKind {
     /// reserved block would mean immediately having to remember to exclude it — the trap `cast`,
     /// `enum`, `union` and `xx` each walked into from the other side.
     OPERATOR_KW,
+    /// `push_context` — real syntax as of ADR-0063.
+    ///
+    /// Placed **after** `NULL_KW`, like `CONTEXT_KW` and `OPERATOR_KW`, which puts it *outside*
+    /// [`SyntaxKind::is_reserved_keyword`]'s range: it was never reserved (no wave ever emitted a
+    /// "arrives later" refusal for it), so adding it to that block would mean immediately having to
+    /// remember to exclude it — the trap `cast`, `enum`, `union` and `xx` each walked into.
+    PUSH_CONTEXT_KW,
+    /// `switch` — real syntax as of ADR-0067.
+    ///
+    /// Placed **after** `NULL_KW`, like `CONTEXT_KW` and `PUSH_CONTEXT_KW`, which puts it *outside*
+    /// [`SyntaxKind::is_reserved_keyword`]'s range: it was never reserved — no wave ever emitted an
+    /// "arrives later" refusal for it — so adding it to that block would mean immediately having to
+    /// remember to exclude it.
+    SWITCH_KW,
+    /// `case` — real syntax as of ADR-0067, and only meaningful inside a `switch`.
+    ///
+    /// Lexed as its own keyword rather than matched as an identifier, so that `case` opening an arm is a
+    /// *token* the grammar can key on. Matching text would make a variable called `case` silently start
+    /// an arm — the trap `context` walked into from the other side (ADR-0057).
+    CASE_KW,
+    /// `variant` — real syntax as of ADR-0068, the tagged aggregate form.
+    ///
+    /// Its own keyword rather than an attribute on `union`, because the two differ in *semantics* —
+    /// a variant carries a tag, costs a check per read and is bigger — and ADR-0045 §1 instructed
+    /// exactly this, "the way `enum_flags` is different from `enum`".
+    VARIANT_KW,
 
     // ---- delimiters ------------------------------------------------------
     /// `(`
@@ -337,6 +363,11 @@ pub enum SyntaxKind {
     /// two differ in *layout*, and every consumer that computes an offset must branch on it.
     /// It shares `FIELD_LIST`/`FIELD`, because a union's fields *are* a struct's fields.
     UNION_TYPE,
+    /// `variant { … }` (ADR-0068 §1) — a tagged aggregate.
+    ///
+    /// Structurally identical to `UNION_TYPE`; the difference is entirely in what the tag makes the
+    /// compiler emit, so the node kinds differ only so that lowering can tell them apart.
+    VARIANT_TYPE,
     /// `enum { RED; GREEN; }` (ADR-0041).
     ///
     /// A *type*, like `STRUCT_TYPE`, because ADR-0012 makes `Colour :: enum { … }` an
@@ -432,6 +463,25 @@ pub enum SyntaxKind {
     RANGE_EXPR,
     /// `defer stmt;` (ADR-0049 §3).
     DEFER_STMT,
+    /// `push_context { … }` (ADR-0063) — a block with its own copy of the context.
+    ///
+    /// Wraps a `BLOCK`. Its own node rather than a flag on `BLOCK`, so every exhaustive match over
+    /// statements is forced to decide what a context scope means rather than treating it as an
+    /// ordinary block that happens to swap a pointer.
+    PUSH_CONTEXT_STMT,
+    /// `switch e { case v; … else; … }` (ADR-0067) — a value match with exhaustiveness checking.
+    ///
+    /// Holds the scrutinee expression and one [`SyntaxKind::SWITCH_ARM`] per arm.
+    SWITCH_STMT,
+    /// One arm of a `switch`: `case v;` or `else;`, then the statements it runs (ADR-0067 §1).
+    ///
+    /// Its own node rather than a flat run of statements under `SWITCH_STMT`, because an arm has an
+    /// identity — a value, a body, and a position the exhaustiveness check reports against. A flat list
+    /// would make "which arm does this statement belong to" a counting exercise.
+    ///
+    /// The `else` arm is a `SWITCH_ARM` with no value expression, which is what distinguishes it: an
+    /// absent value *is* the catch-all, so nothing needs a second node kind.
+    SWITCH_ARM,
     /// `label:` before a `for` or `while` (ADR-0049 §2).
     ///
     /// A label names a *loop* and is deliberately not an expression name: it is resolved against
@@ -603,6 +653,10 @@ impl SyntaxKind {
             "enum_flags" => Self::FLAGS_KW,
             "operator" => Self::OPERATOR_KW,
             "context" => Self::CONTEXT_KW,
+            "push_context" => Self::PUSH_CONTEXT_KW,
+            "switch" => Self::SWITCH_KW,
+            "case" => Self::CASE_KW,
+            "variant" => Self::VARIANT_KW,
             "union" => Self::UNION_KW,
             "for" => Self::FOR_KW,
             "defer" => Self::DEFER_KW,
@@ -634,6 +688,10 @@ impl SyntaxKind {
             Self::FLAGS_KW => "enum_flags",
             Self::OPERATOR_KW => "operator",
             Self::CONTEXT_KW => "context",
+            Self::PUSH_CONTEXT_KW => "push_context",
+            Self::SWITCH_KW => "switch",
+            Self::CASE_KW => "case",
+            Self::VARIANT_KW => "variant",
             Self::UNION_KW => "union",
             Self::FOR_KW => "for",
             Self::DEFER_KW => "defer",

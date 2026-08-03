@@ -86,6 +86,7 @@ fn calls_left(
                 jr_mir::Statement::Store { .. }
                 | jr_mir::Statement::Zero { .. }
                 | jr_mir::Statement::BoundsCheck { .. }
+                | jr_mir::Statement::TagCheck { .. }
                 | jr_mir::Statement::Nop => continue,
             };
             if matches!(rvalue, jr_mir::Rvalue::Call { .. }) {
@@ -254,6 +255,60 @@ fn a_body_outside_the_closure_still_inlines_the_same_callee() {
     // callee, same threshold, different caller: `runtime` is not reachable from any
     // `#run`, so it gets the inlined version.
     let (db, search, file, config) = program(FROZEN_AND_FREE);
+    assert_eq!(
+        calls_left(&db, file, search, config, "runtime"),
+        0,
+        "a caller outside the closure must be optimised normally"
+    );
+}
+
+/// A `#run` inside a **body** whose callee itself calls something (ADR-0069 §2).
+///
+/// `comptime` is the shape that matters: `unchanged` compares a body against its built form, so a
+/// *leaf* callee would pass whether frozen or not — nothing inlines into a body with no calls. The
+/// first version of this test asserted exactly that vacuous property and still passed with the whole
+/// body walk disabled, which is why the callee here has a call of its own.
+const BODY_RUN: &str = "\
+leaf :: (a: s64) -> s64 { return a + 1; }\n\
+comptime :: () -> s64 { return leaf(1); }\n\
+runtime :: () -> s64 { return leaf(2); }\n\
+main :: () {\n\
+\x20   n := #run comptime();\n\
+\x20   m := runtime();\n\
+\x20   if n + m == 5 { return; }\n\
+}\n";
+
+#[test]
+fn a_body_run_freezes_its_callee_too() {
+    // ADR-0069 §2 put a `#run` in a body, which means the closure ADR-0021 §2 protects has a second
+    // kind of root. Missing it would be **silent**: the inlined body is still correct at run time, and
+    // only the comptime result could differ — the exact hazard §2 wrote the closure for.
+    let (db, search, file, config) = program(BODY_RUN);
+    assert!(
+        !file_mir(&db, file, search).gated,
+        "the program must check, or the test proves nothing"
+    );
+    assert!(
+        unchanged(&db, file, search, config, "comptime"),
+        "a callee a body `#run` reaches must not be rewritten"
+    );
+    assert_eq!(
+        calls_left(&db, file, search, config, "comptime"),
+        1,
+        "and its call must still be a call"
+    );
+}
+
+#[test]
+fn a_body_run_does_not_freeze_the_whole_file() {
+    // The counterweight, and the reason this closure is computed from the `#run`'s *subtree* rather
+    // than from every call in the body. The first implementation walked whole body arenas — a file-level
+    // arena holds only file-level expressions, so walking all of it is cheap, but a body's holds
+    // everything — and froze almost every procedure in the program, which disabled the bounds-check
+    // strip and broke two tests in this file.
+    //
+    // `runtime` is not reachable from the `#run`, so it must still be optimised.
+    let (db, search, file, config) = program(BODY_RUN);
     assert_eq!(
         calls_left(&db, file, search, config, "runtime"),
         0,

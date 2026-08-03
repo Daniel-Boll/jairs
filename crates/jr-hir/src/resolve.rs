@@ -534,6 +534,7 @@ impl<'a> ResolveCtx<'a> {
                 | crate::hir::TypeRef::Proc { .. }
                 | crate::hir::TypeRef::Struct(_)
                 | crate::hir::TypeRef::Union(_)
+                | crate::hir::TypeRef::Variant(_)
                 | crate::hir::TypeRef::Enum(_)
                 | crate::hir::TypeRef::Error => return None,
             }
@@ -943,6 +944,31 @@ impl<'a> ResolveCtx<'a> {
             // The deferred statement is resolved once, where it was written — `jr-mir` duplicates
             // its *lowering*, not its identity (ADR-0049 §3).
             Stmt::Defer(inner, _) => self.resolve_body_stmt(body_id, inner),
+            // An `#insert`'s statements resolve **as if written here**, which is the whole model
+            // (ADR-0072 §1): no scope is pushed, so a name the insert declares is visible afterwards and
+            // a name from the enclosing body is visible inside. Nothing here can tell they came from a
+            // string, which is the evidence lowering put them in the right place.
+            Stmt::Insert { stmts, .. } => {
+                for inner in stmts {
+                    self.resolve_body_stmt(body_id, inner);
+                }
+            }
+            // A `push_context` block resolves like any block: its `context` reads and calls bind to
+            // the same names as outside the wrapper (ADR-0063). The copy that isolates them is a
+            // `jr-mir` concern, invisible to resolution.
+            Stmt::PushContext(inner, _) => self.resolve_body_stmt(body_id, inner),
+            // A `switch`'s arms resolve like any block, and each arm's *value* like any expression —
+            // cases are values, not patterns (ADR-0067 §2), so a bare `.RED` needs nothing special here:
+            // `jr-sema` supplies its enum from the scrutinee's type.
+            Stmt::Switch { value, arms, .. } => {
+                self.resolve_body_expr(body_id, value);
+                for arm in arms {
+                    if let Some(case) = arm.value {
+                        self.resolve_body_expr(body_id, case);
+                    }
+                    self.resolve_body_stmt(body_id, arm.body);
+                }
+            }
             Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
         }
     }

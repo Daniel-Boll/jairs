@@ -363,6 +363,13 @@ impl Dumper<'_> {
                     self.span(*span)
                 )
             }
+            Statement::TagCheck { place, case, span } => {
+                format!(
+                    "tag_check {}.tag == {case}{}",
+                    self.place(place),
+                    self.span(*span)
+                )
+            }
             Statement::Nop => String::from("nop"),
         }
     }
@@ -460,6 +467,7 @@ impl Dumper<'_> {
                 // array's is a constant, which is the one thing a reader checks here.
                 Projection::ViewData => text.push_str(".view_data"),
                 Projection::ViewCount => text.push_str(".view_count"),
+                Projection::VariantTag => text.push_str(".tag"),
             }
         }
         text
@@ -555,6 +563,7 @@ impl Dumper<'_> {
             | Item::PointerType(_)
             | Item::StructType { .. }
             | Item::UnionType { .. }
+            | Item::VariantType { .. }
             | Item::ProcType { .. } => format!("type({})", self.ty(id)),
         }
     }
@@ -610,6 +619,12 @@ impl Dumper<'_> {
             Item::UnionType { decl } => match self.signatures.type_name(id) {
                 Some(name) => name.to_owned(),
                 None => format!("union{decl:?}"),
+            },
+            // Likewise prints `variant`, so a dump cannot make one look like a union — the two differ
+            // in the tag, which is exactly the thing a wrong offset would hide (ADR-0068 §3).
+            Item::VariantType { decl } => match self.signatures.type_name(id) {
+                Some(name) => name.to_owned(),
+                None => format!("variant{decl:?}"),
             },
             Item::StructType { decl } => match self.signatures.type_name(id) {
                 Some(name) => name.to_owned(),

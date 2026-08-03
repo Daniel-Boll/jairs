@@ -1,0 +1,12 @@
+// EXPECT: E0254 — `push_context` in a `#c_call` procedure (ADR-0063 §4)
+//
+// `push_context` copies the context on entry (ADR-0063), so it needs one to copy. A `#c_call`
+// procedure receives no implicit context — that is the whole meaning of the opt-out (ADR-0001) — so
+// there is nothing to copy, and this is the same refusal as `context` itself in a `#c_call` procedure
+// (`052-context-in-c-call.jr`): E0254, reused because it means exactly "this needs a context and
+// there isn't one". The message names `push_context` rather than `context` so the diagnostic points
+// at what was written.
+raw :: () #c_call {
+    push_context {
+    }
+}

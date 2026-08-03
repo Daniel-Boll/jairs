@@ -1,0 +1,27 @@
+// EXPECT: E0258 — a `switch` on an enum that does not handle every member (ADR-0067 §3)
+//
+// The point of adding matching is that the compiler can *prove* a case is handled, so a missing member
+// is an error rather than a warning — a warning would leave the proof optional, which is the same
+// "behaviour depends on something invisible" ADR-0014 §3 refuses.
+//
+// The message names the members that are missing rather than counting them, because the missing name
+// *is* the fix and a count makes the reader re-derive it. Here `BLUE` is unhandled.
+//
+// Only an enum is checked this way: an `s64` has no finite member set, so a `switch` on one is legal
+// without the check and needs an `else` to be total (see `valid/054`'s `classify`).
+Colour :: enum {
+    RED;
+    GREEN;
+    BLUE;
+}
+
+pick :: (c: Colour) -> s64 {
+    r := 0;
+    switch c {
+        case .RED;
+            r = 1;
+        case .GREEN;
+            r = 2;
+    }
+    return r;
+}

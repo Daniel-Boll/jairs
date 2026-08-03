@@ -1,0 +1,42 @@
+// EXPECT: E0262 — `#insert` with no string-literal operand (ADR-0072 §5)
+//
+// **Filed here rather than under `type-errors/`, and the rule is the stage rather than the imports.**
+// That directory's harness asserts its files "parse, lower and resolve cleanly" and then report exactly
+// their declared code *from `jr-sema`*. E0262 is a **lowering** diagnostic, so a file expecting it fails
+// the first half of that contract before the second is ever reached — which is exactly what happened when
+// this file was first written into `type-errors/`: two tests failed, one saying the file did not lower
+// cleanly and one saying it reported nothing. ADR-0050's three `using` refusals (E0250) are in this
+// directory for the same reason, and this file importing nothing is what that precedent already permits.
+//
+// `#insert` takes a **string literal** of Jairs source and nothing else. This wave deliberately stops
+// there, and the reason is a dependency *direction* rather than difficulty.
+//
+// A computed operand — `#insert build_it();` — is the feature W4 §2.1 really means. Lowering produces the
+// HIR that `resolved` consumes, which `checked` consumes, which `file_consts` consumes; so an `#insert`
+// asking for a computed value would need `file_hir` to depend on `file_consts`, closing
+//
+//     file_hir → file_consts → checked → resolved → file_hir
+//
+// which is a salsa cycle. It is the same shape ADR-0069 §1 hit and had to restructure around, and it rests
+// on the same fact ADR-0018 §3 established and both ADR-0070 §1 and ADR-0071 §2 relied on: const-eval runs
+// *downstream* of the front end. Breaking it is its own sub-wave, and PLAN §5 calls it the project's top
+// risk.
+//
+// **A named constant is refused too**, even though its value is a string the signature phase may already
+// know — because accepting the easy case would make the refusal depend on how the string was written,
+// which is a rule nobody could predict from the error message. `#insert CODE;` where `CODE :: "x := 1;"`
+// therefore fails as well; it is not the case shown here only because it *also* fails to parse (the
+// parser expects a `;` after `#insert`, so a bare name produces an E0100 first), and this directory's
+// contract is one diagnostic per file.
+//
+// **Why the bare form is what this file shows.** `#insert;` is the one non-literal spelling that reaches
+// lowering cleanly and produces exactly one diagnostic. It is also the honest minimum: the refusal is
+// about the *absence of a literal*, not about any particular thing written in its place.
+//
+// The message names the reason rather than only the rule, because "needs a string literal" alone would
+// read as an arbitrary restriction — a reader who wrote `#insert build_it()` deserves to know that the
+// evaluator runs after lowering, which is a fact about the compiler they can act on by inlining the text.
+main :: () {
+    // E0262: no string literal to parse.
+    #insert;
+}

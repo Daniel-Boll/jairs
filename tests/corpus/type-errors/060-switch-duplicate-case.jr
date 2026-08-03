@@ -1,0 +1,27 @@
+// EXPECT: E0259 — a duplicate `case` value in one `switch` (ADR-0067 §4)
+//
+// The second `.RED` arm can never run, and an arm that cannot run is a statement the reader believes
+// does. Reported against the *later* arm, since the earlier one is the one that works.
+//
+// Every member is named here — `RED` twice, `GREEN`, `BLUE` — so this file isolates the duplicate rather
+// than also tripping E0258's exhaustiveness check.
+Colour :: enum {
+    RED;
+    GREEN;
+    BLUE;
+}
+
+pick :: (c: Colour) -> s64 {
+    r := 0;
+    switch c {
+        case .RED;
+            r = 1;
+        case .RED;
+            r = 2;
+        case .GREEN;
+            r = 3;
+        case .BLUE;
+            r = 4;
+    }
+    return r;
+}

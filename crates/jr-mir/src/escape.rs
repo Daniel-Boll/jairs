@@ -164,6 +164,7 @@ pub(crate) fn is_register_representable(pool: &Pool, ty: PoolId) -> bool {
         | Item::ResultsType { .. }
         | Item::ContextType
         | Item::StructType { .. }
+        | Item::VariantType { .. }
         | Item::UnionType { .. }
         | Item::ProcType { .. }
         | Item::VoidValue
@@ -240,7 +241,11 @@ fn addr_taken(body: &Body) -> (FxHashSet<LocalId>, FxHashSet<jr_hir::ParamId>) {
 
     while let Some(stmt_id) = stmt_worklist.pop() {
         match body.stmt(stmt_id) {
-            Stmt::Block(stmts, _) => stmt_worklist.extend(stmts.iter().copied()),
+            // Walked as a block is: escape analysis cares which expressions exist, not how they were
+            // scoped or where their text came from (ADR-0072 §1).
+            Stmt::Block(stmts, _) | Stmt::Insert { stmts, .. } => {
+                stmt_worklist.extend(stmts.iter().copied())
+            }
             Stmt::Local(local, _) => {
                 if let Some(init) = body.local(*local).init {
                     expr_worklist.push((init, false));
@@ -318,6 +323,22 @@ fn addr_taken(body: &Body) -> (FxHashSet<LocalId>, FxHashSet<jr_hir::ParamId>) {
                 stmt_worklist.push(*loop_body);
             }
             Stmt::Defer(inner, _) => stmt_worklist.push(*inner),
+            // A `push_context` block's statements are walked like any block's. The context copy it
+            // introduces is a synthesised slot no *local* names, so nothing here promotes it — the
+            // block's own locals are reached through `inner` (ADR-0063 §2).
+            Stmt::PushContext(inner, _) => stmt_worklist.push(*inner),
+            // A `switch`'s scrutinee and every arm's case value are ordinary operands, and each arm's
+            // body is a block — nothing here takes an address, so nothing is promoted differently
+            // (ADR-0067 §6).
+            Stmt::Switch { value, arms, .. } => {
+                expr_worklist.push((*value, false));
+                for arm in arms {
+                    if let Some(case) = arm.value {
+                        expr_worklist.push((case, false));
+                    }
+                    stmt_worklist.push(arm.body);
+                }
+            }
             Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
         }
     }

@@ -161,6 +161,18 @@ pub struct Vm<'a> {
     captured: Vec<u8>,
     /// The instruction currently executing, for [`Vm::trap_site`].
     at: Option<TrapSite>,
+    /// The procedures whose frames are live, outermost first (ADR-0066 §1).
+    ///
+    /// Pushed and popped in [`Vm::call`], beside `depth` — which this deliberately does *not* replace:
+    /// `depth` also counts frames the shadow stack does not distinguish, and conflating "how deep are
+    /// we" with "what is the chain" would make `MAX_DEPTH` depend on this feature.
+    frames: Vec<ProcRef>,
+    /// The chain as it stood when a trap was raised, innermost frame last.
+    ///
+    /// Snapshotted once, by the innermost frame to observe a [`VmError::Trap`], because `frames` is
+    /// unwound as the error propagates and a caller reading it afterwards would see only its own
+    /// prefix. `None` until something traps.
+    trap_frames: Option<Vec<ProcRef>>,
 }
 
 impl<'a> Vm<'a> {
@@ -178,6 +190,8 @@ impl<'a> Vm<'a> {
             strings: FxHashMap::default(),
             captured: Vec::new(),
             at: None,
+            frames: Vec::new(),
+            trap_frames: None,
         };
         vm.intern_strings()?;
         Ok(vm)
@@ -215,6 +229,25 @@ impl<'a> Vm<'a> {
     #[must_use]
     pub const fn trap_site(&self) -> Option<TrapSite> {
         self.at
+    }
+
+    /// The procedure frames that were live when a trap was raised, **innermost first**.
+    ///
+    /// Valid only after a call returned [`VmError::Trap`], for the reason [`Vm::trap_site`] is: the
+    /// snapshot is taken at the trap and nothing resets it. Empty when nothing trapped.
+    ///
+    /// Reversed here rather than at the push site, because innermost-first is a *rendering* order
+    /// (ADR-0066 §2) while the stack's natural order is outermost-first — and one of the two has to
+    /// flip, so it flips at the boundary where the meaning changes.
+    ///
+    /// Returns identities rather than names for the reason [`TrapSite`] does: resolving a `ProcRef` to
+    /// a name needs the file's HIR, which the VM does not have.
+    #[must_use]
+    pub fn trap_frames(&self) -> Vec<ProcRef> {
+        match &self.trap_frames {
+            Some(frames) => frames.iter().rev().copied().collect(),
+            None => Vec::new(),
+        }
     }
 
     /// The VM's memory, for inspecting a result that lives there.
@@ -293,10 +326,28 @@ impl<'a> Vm<'a> {
             .routine(target)
             .ok_or_else(|| ice::no_such_routine(target))?;
         self.depth += 1;
+        // **The shadow call stack** (ADR-0066 §1): the frames a trap reports. Pushed here rather than
+        // in `execute`, so a `#foreign` call is on it too while it runs — and popped unconditionally
+        // below, including on the error path, because a trap propagating out of a callee must not leave
+        // its frame behind for a later trap to report.
+        //
+        // `ProcRef` rather than a name: one word, already both engines' identity for a procedure, and
+        // names are resolved for *rendering* by the side holding the HIR (ADR-0020 §4's split).
+        self.frames.push(target);
         let result = match routine {
             Routine::Bytecode(code) => self.execute(code, args),
             Routine::Foreign(foreign) => self.foreign(foreign, args),
         };
+        // **The chain is snapshotted on the way out of the frame that trapped**, not on every
+        // instruction: `self.at` is updated per instruction (see `execute`), and cloning the stack that
+        // often would make every arithmetic op allocate. Instead the *innermost* frame to see a `Trap`
+        // records the whole live stack, and outer frames leave that snapshot alone as the error
+        // propagates — so the recorded chain is the one that existed at the trap rather than the
+        // partially-unwound one an outer frame would see.
+        if matches!(result, Err(VmError::Trap(_))) && self.trap_frames.is_none() {
+            self.trap_frames = Some(self.frames.clone());
+        }
+        self.frames.pop();
         self.depth -= 1;
         result
     }
@@ -409,6 +460,17 @@ impl<'a> Vm<'a> {
                         return Err(VmError::Trap(Trap::IndexOutOfBounds));
                     }
                 }
+                // The tag is one byte at the variant's own offset (ADR-0068 §3), so this reads a byte
+                // and compares it with the case the source named. A mismatch is the trap that makes a
+                // variant safer than a union — the whole point of the form.
+                Instr::TagCheck { place, case } => {
+                    let address = self.address(frame, place)?;
+                    let bytes = self.memory.read(address, u64::from(jr_pool::TAG_SIZE))?;
+                    let tag = u64::from(*bytes.first().unwrap_or(&0));
+                    if tag != u64::from(*case) {
+                        return Err(VmError::Trap(Trap::WrongVariantCase));
+                    }
+                }
                 Instr::Store { place, value } => {
                     let value = self.operand(frame, *value)?;
                     let address = self.address(frame, place)?;
@@ -513,6 +575,7 @@ impl<'a> Vm<'a> {
             | Item::ViewType { .. }
             | Item::StructType { .. }
             | Item::UnionType { .. }
+            | Item::VariantType { .. }
             | Item::ProcType { .. } => Err(VmError::internal(
                 "a type was used where a value constant belongs",
             )),

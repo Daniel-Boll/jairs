@@ -97,6 +97,36 @@ pub fn parse(text: &str, file: FileId) -> Parse {
     Parse { green, diagnostics }
 }
 
+/// Parses `text` as a **statement list**, for `#insert` (ADR-0072 §1).
+///
+/// The root is a `BLOCK`, so the result has exactly the shape body lowering already consumes — a
+/// sequence of `DECL_STMT`, `EXPR_STMT` and the rest. [`parse`] cannot serve: it parses a *source file*,
+/// where `n := 2 + 3;` is a file-level `VAR_DECL` rather than a `DECL_STMT`, so lowering it into a body
+/// would need a second translation from items to statements.
+///
+/// # Why this rather than wrapping the text in braces
+///
+/// Synthesising `"{" + text + "}"` would reuse [`parse`] unchanged and was rejected: every offset in the
+/// result would be shifted by one, and ADR-0072 §3 reports a diagnostic's position *as an offset into the
+/// inserted text*. A reported offset one past the truth is worse than none, because the reader trusts it.
+///
+/// Spans are attributed to `file`, which for an `#insert` is the file the directive is written in — so
+/// they are offsets into the *inserted string* and mean nothing as positions in that file. The caller is
+/// responsible for not using them as spans; ADR-0072 §2 has every synthesized node take the directive's
+/// span instead, and §3 uses these only as the offset a note names.
+///
+/// Never fails, for the same reason [`parse`] does not: an unparseable statement becomes an `ERROR` node
+/// and a diagnostic.
+#[must_use]
+pub fn parse_stmts(text: &str, file: FileId) -> Parse {
+    let lex_out = lex(text, file);
+    let mut p = Parser::new(text, &lex_out.tokens, file);
+    p.parse_stmt_list();
+    let (green, mut diagnostics) = p.finish();
+    diagnostics.extend(lex_out.diagnostics.into_vec());
+    Parse { green, diagnostics }
+}
+
 // ---------------------------------------------------------------------------
 // Token sets for recovery
 // ---------------------------------------------------------------------------
@@ -542,6 +572,29 @@ impl<'src> Parser<'src> {
 
     // ---- source file -------------------------------------------------------
 
+    /// Parses a bare statement list into a `BLOCK`, for [`parse_stmts`].
+    ///
+    /// `parse_block` cannot serve: it expects a `{` to bump and reports "unclosed `{`" without one.
+    /// This is that loop with the braces removed — deliberately a near-copy rather than a shared
+    /// helper, because the two differ in their *terminator* (`}` versus EOF) and threading that
+    /// through would make the common path pay for a case it never takes.
+    fn parse_stmt_list(&mut self) {
+        self.start_node(BLOCK);
+        while !self.at(EOF) {
+            if !self.parse_stmt() {
+                let before = self.pos;
+                let span = self.current_span();
+                self.error(span, "unexpected token in inserted code", E0114);
+                self.recover_until(STMT_START, true);
+                self.force_progress(before);
+            }
+        }
+        // Trailing trivia, so the tree is lossless over the inserted text too — the same flush
+        // `parse_source_file` ends with, and for the same reason.
+        self.flush_trivia();
+        self.finish_node();
+    }
+
     fn parse_source_file(&mut self) {
         self.start_node(SOURCE_FILE);
         while !self.at(EOF) {
@@ -721,6 +774,10 @@ impl<'src> Parser<'src> {
             // `union { ... }` — a struct's shape with one layout rule changed (ADR-0045).
             UNION_KW => {
                 self.parse_union_type();
+            }
+            // `variant { ... }` — a union's shape with a tag (ADR-0068 §1).
+            VARIANT_KW => {
+                self.parse_variant_type();
             }
             L_PAREN => {
                 // Genuinely ambiguous: after `::`, a `(` may open a procedure's
@@ -1191,6 +1248,9 @@ impl<'src> Parser<'src> {
             UNION_KW => {
                 self.parse_union_type();
             }
+            VARIANT_KW => {
+                self.parse_variant_type();
+            }
             L_PAREN => {
                 self.parse_proc_type();
             }
@@ -1300,6 +1360,32 @@ impl<'src> Parser<'src> {
         self.expect(R_BRACE);
         self.finish_node(); // FIELD_LIST
         self.finish_node(); // UNION_TYPE
+    }
+
+    /// Parses `variant { i: s64; f: float64; }` (ADR-0068 §1).
+    ///
+    /// The **same loop** a union's fields take, because a case is written like a field — what differs
+    /// is the layout (a leading tag, §3) and the check on a read (§4), neither of which is syntax. Its
+    /// own node kind only so that lowering can tell the two apart.
+    fn parse_variant_type(&mut self) {
+        self.start_node(VARIANT_TYPE);
+        self.bump(); // `variant`
+        self.start_node(FIELD_LIST);
+        self.expect(L_BRACE);
+        while !self.at(R_BRACE) && !self.at(EOF) {
+            if self.at(IDENT) || self.at(USING_KW) {
+                self.parse_field();
+            } else {
+                let before = self.pos;
+                let span = self.current_span();
+                self.error(span, "expected a field name", E0112);
+                self.recover_until(TokenSet::new(&[IDENT, R_BRACE]), true);
+                self.force_progress(before);
+            }
+        }
+        self.expect(R_BRACE);
+        self.finish_node(); // FIELD_LIST
+        self.finish_node(); // VARIANT_TYPE
     }
 
     /// Parses `enum { RED; GREEN :: 10; }` (ADR-0041 §3).
@@ -1458,6 +1544,14 @@ impl<'src> Parser<'src> {
             }
             DEFER_KW => {
                 self.parse_defer_stmt();
+                true
+            }
+            PUSH_CONTEXT_KW => {
+                self.parse_push_context_stmt();
+                true
+            }
+            SWITCH_KW => {
+                self.parse_switch_stmt();
                 true
             }
             RETURN_KW => {
@@ -1628,6 +1722,84 @@ impl<'src> Parser<'src> {
         if !self.parse_stmt() {
             let span = self.current_span();
             self.error(span, "expected a statement after `defer`", E0127);
+        }
+        self.finish_node();
+    }
+
+    /// Parses `push_context { … }` (ADR-0063).
+    ///
+    /// The body is a **braced block**, not the braceless single statement `parse_body` also allows:
+    /// `push_context` names a scope, and a scope with no braces would be a context swap that lasts
+    /// exactly one statement, which reads as a mistake rather than an intent. Requiring the braces
+    /// makes the scope visible, and it matches Jai, whose `push_context` always takes a block.
+    fn parse_push_context_stmt(&mut self) {
+        self.start_node(PUSH_CONTEXT_STMT);
+        self.bump(); // `push_context`
+        if self.at(L_BRACE) {
+            self.parse_block();
+        } else {
+            let span = self.current_span();
+            self.error(span, "expected `{` after `push_context`", E0116);
+        }
+        self.finish_node();
+    }
+
+    /// Parses `switch e { case v; … else; … }` (ADR-0067).
+    ///
+    /// An arm is `case <expr>;` — or `else;` — followed by the statements it runs, which end at the
+    /// next `case`, the next `else`, or the closing brace. That reuses the statement-list parsing every
+    /// block has, so no new body shape enters the grammar (ADR-0067 §1); braces per arm would be noise
+    /// on the common one-statement arm.
+    fn parse_switch_stmt(&mut self) {
+        self.start_node(SWITCH_STMT);
+        self.bump(); // `switch`
+        self.parse_expr();
+        if self.at(L_BRACE) {
+            self.bump(); // `{`
+            // Arms until the closing brace. A token that begins neither an arm nor `}` is reported
+            // once and skipped, so one stray token does not turn the rest of the switch into garbage.
+            while !self.at(R_BRACE) && !self.at(EOF) {
+                if self.at(CASE_KW) || self.at(ELSE_KW) {
+                    self.parse_switch_arm();
+                } else {
+                    let span = self.current_span();
+                    self.error(span, "expected `case`, `else` or `}` in a `switch`", E0116);
+                    self.bump();
+                }
+            }
+            self.expect(R_BRACE);
+        } else {
+            let span = self.current_span();
+            self.error(span, "expected `{` after a `switch`'s value", E0116);
+        }
+        self.finish_node();
+    }
+
+    /// Parses one `switch` arm: `case v;` or `else;`, then its statements (ADR-0067 §1).
+    ///
+    /// The `else` arm is the same node with **no value expression** — an absent value *is* the
+    /// catch-all, so it needs no second node kind and every consumer distinguishes the two by asking
+    /// whether a value is there.
+    fn parse_switch_arm(&mut self) {
+        self.start_node(SWITCH_ARM);
+        let is_case = self.at(CASE_KW);
+        self.bump(); // `case` or `else`
+        if is_case {
+            if self.at_set(EXPR_START) {
+                self.parse_expr();
+            } else {
+                let span = self.current_span();
+                self.error(span, "expected a value after `case`", E0116);
+            }
+        }
+        // The `;` closes the arm's *header*, not the arm: what follows is the body.
+        self.expect(SEMICOLON);
+        // Statements until the next arm or the end of the switch. `parse_stmt` returning false means
+        // the token starts no statement, which the enclosing loop reports.
+        while !self.at(R_BRACE) && !self.at(CASE_KW) && !self.at(ELSE_KW) && !self.at(EOF) {
+            if !self.parse_stmt() {
+                break;
+            }
         }
         self.finish_node();
     }
@@ -2026,6 +2198,13 @@ impl<'src> Parser<'src> {
             // `union` joined `enum` here when ADR-0045 landed: it is real syntax and a
             // *type*, so in expression position the message must say which kind rather than
             // claiming a feature the user is using has not arrived.
+            VARIANT_KW => {
+                let span = self.current_span();
+                self.error(span, "`variant` is a type, not an expression", E0121);
+                self.start_node(ERROR);
+                self.bump();
+                self.finish_node();
+            }
             UNION_KW => {
                 let span = self.current_span();
                 self.error(span, "`union` is a type, not an expression", E0121);
@@ -2142,7 +2321,7 @@ impl<'src> Parser<'src> {
 /// a type" at the `(` and the whole declaration collapsed, exactly as `#c_call` and the array
 /// keywords did before their entries were added.
 const TYPE_START: TokenSet = TokenSet::new(&[
-    STAR, IDENT, STRUCT_KW, ENUM_KW, FLAGS_KW, UNION_KW, L_BRACK, L_PAREN,
+    STAR, IDENT, STRUCT_KW, ENUM_KW, FLAGS_KW, UNION_KW, VARIANT_KW, L_BRACK, L_PAREN,
 ]);
 
 /// The operators ADR-0048 §2 permits an overload for.

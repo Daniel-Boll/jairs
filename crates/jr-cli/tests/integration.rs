@@ -314,6 +314,10 @@ fn imports_invalid_corpus_fails() {
         // Here rather than under `type-errors/` because reaching the case needs the import resolved,
         // and a same-file version tests a path that already worked.
         "imports/invalid/010-foreign-allocator.jr",
+        // `#insert` with no string-literal operand (ADR-0072 §5). Here for the same stage reason as
+        // the `using` refusals above: E0262 comes out of **lowering**, so `type-errors/`' harness would
+        // fail it for not lowering cleanly before ever checking the code it declares.
+        "imports/invalid/011-insert-needs-a-literal.jr",
     ] {
         let code = check_with_modules(vec![corpus_path(file)], Some("modules"));
         assert_eq!(code, 1, "{file} must report an error");
@@ -548,20 +552,25 @@ fn a_refused_body_is_a_diagnostic_rather_than_a_crash() {
     // the interpreter's own lookup — `internal compiler error: no routine for file 0 proc 0`,
     // on a program `jr check` had just called clean.
     //
-    // The construct used here is a **`#run` inside a body**, which ADR-0016 §4 refuses: a `#run`
-    // has no value until `jr-vm` evaluates it, and only *file-level* ones are evaluated. W4 owns
-    // arbitrary `#run`, so this stays refused for several waves yet.
+    // The construct is a **directive in a body** — `h := #system_library "c";` — and it is chosen
+    // because ADR-0016 §3 refuses it *by design*: a directive has an opaque handle type and no runtime
+    // value, so no wave will make this lower. That matters, because this test has now had its construct
+    // replaced **twice** for the same reason:
     //
-    // It used to be a reference to an *imported constant*, chosen "so this test survives that fix
-    // rather than dying with it" — and **ADR-0055 was that fix**, so the construct had to change.
-    // The comment predicted its own obsolescence and the prediction came true one wave later; the
-    // lesson is that a test naming a *specific* gap outlives the gap only if the gap outlives the
-    // test, which no gap should.
+    //   * first an imported constant, chosen "so this test survives that fix rather than dying with
+    //     it" — and ADR-0055 was that fix;
+    //   * then a `#run` inside a body, described here as staying "refused for several waves yet" —
+    //     and ADR-0069 §2 made it work one wave later.
+    //
+    // Both comments predicted their own obsolescence and both predictions came true immediately. The
+    // lesson, now paid for twice: a test that needs a refused body must name something refused **by
+    // design**, not something merely unimplemented — because every unimplemented thing is one wave
+    // from working, and the test's real subject is the crash, not the gap.
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("main.jr");
     std::fs::write(
         &path,
-        "#import \"Basic\";\n\nmain :: () {\n    n := #run 7;\n    exit(n);\n}\n",
+        "#import \"Basic\";\n\nmain :: () {\n    h := #system_library \"c\";\n    exit(0);\n}\n",
     )
     .unwrap();
 

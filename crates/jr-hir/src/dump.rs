@@ -21,8 +21,8 @@
 use jr_base::Interner;
 
 use crate::hir::{
-    AssignOp, BinOp, Body, BodyId, ConstValue, Expr, ExprId, FileHir, ForIterable, ItemKind,
-    Literal, Res, Stmt, StmtId, TypeRef, TypeRefId, UnOp,
+    AggregateKind, AssignOp, BinOp, Body, BodyId, ConstValue, Expr, ExprId, FileHir, ForIterable,
+    ItemKind, Literal, Res, Stmt, StmtId, TypeRef, TypeRefId, UnOp,
 };
 
 /// Produces a human-readable dump of the HIR for one file.
@@ -128,9 +128,16 @@ impl<'a> Dumper<'a> {
                             self.indent -= 1;
                         }
                     }
-                    ConstValue::Struct(sid) | ConstValue::Union(sid) => {
+                    ConstValue::Struct(sid) | ConstValue::Union(sid) | ConstValue::Variant(sid) => {
                         let s = &self.hir.structs[sid.index()];
-                        let keyword = if s.is_union { "Union" } else { "Struct" };
+                        // One arm for all three forms, reading the keyword from `kind` — a match
+                        // rather than a chain of ifs, so a fourth form is a compile error here
+                        // (ADR-0068 §2).
+                        let keyword = match s.kind {
+                            AggregateKind::Struct => "Struct",
+                            AggregateKind::Union => "Union",
+                            AggregateKind::Variant => "Variant",
+                        };
                         self.line(&format!("Item[{i}] Const {name} :: {keyword} {{"));
                         self.indent += 1;
                         for f in &s.fields {
@@ -357,6 +364,47 @@ impl<'a> Dumper<'a> {
                 self.dump_body_stmt(body, inner);
                 self.indent -= 1;
             }
+            Stmt::PushContext(inner, _) => {
+                let inner = *inner;
+                self.line("PushContext");
+                self.indent += 1;
+                self.dump_body_stmt(body, inner);
+                self.indent -= 1;
+            }
+            // Printed as its own node with the statements nested, so a snapshot shows *what an insert
+            // became* — which is the only place the inserted text is visible after lowering, since every
+            // statement carries the directive's span rather than one of its own (ADR-0072 §2).
+            Stmt::Insert { stmts, .. } => {
+                let stmts = stmts.clone();
+                self.line(&format!("Insert ({} stmts)", stmts.len()));
+                self.indent += 1;
+                for inner in stmts {
+                    self.dump_body_stmt(body, inner);
+                }
+                self.indent -= 1;
+            }
+            Stmt::Switch { value, arms, .. } => {
+                let value = *value;
+                let arms = arms.clone();
+                let text = self.fmt_body_expr(body, value);
+                self.line(&format!("Switch {text}"));
+                self.indent += 1;
+                for arm in &arms {
+                    // The `else` arm prints as `else` rather than as an arm with no value, because a
+                    // reader of a dump should not have to infer the catch-all from an absence.
+                    match arm.value {
+                        Some(value) => {
+                            let case = self.fmt_body_expr(body, value);
+                            self.line(&format!("case {case}"));
+                        }
+                        None => self.line("else"),
+                    }
+                    self.indent += 1;
+                    self.dump_body_stmt(body, arm.body);
+                    self.indent -= 1;
+                }
+                self.indent -= 1;
+            }
             Stmt::Return(expr, _) => {
                 let s = expr
                     .map(|e| self.fmt_body_expr(body, e))
@@ -519,6 +567,7 @@ fn fmt_type_ref_impl(
         TypeRef::Proc { params, .. } => format!("({} params) -> _", params.len()),
         TypeRef::Struct(sid) => format!("struct#{}", sid.index()),
         TypeRef::Union(sid) => format!("union#{}", sid.index()),
+        TypeRef::Variant(sid) => format!("variant#{}", sid.index()),
         TypeRef::Enum(eid) => format!("enum#{}", eid.index()),
         TypeRef::Error => "<error>".to_owned(),
     }

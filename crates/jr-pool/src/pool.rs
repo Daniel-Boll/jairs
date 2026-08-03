@@ -267,6 +267,7 @@ impl Pool {
             | Item::EnumType { .. }
             | Item::StructType { .. }
             | Item::UnionType { .. }
+            | Item::VariantType { .. }
             | Item::ProcType { .. } => PoolId::TYPE,
 
             Item::VoidValue => PoolId::VOID,
@@ -438,6 +439,14 @@ impl Pool {
         self.intern(Item::UnionType { decl })
     }
 
+    /// Interns the nominal variant type declared at `decl` (ADR-0068 §1).
+    ///
+    /// Its cases go in the *same* side table a struct's fields do, because a case list is a field
+    /// list — what differs is the layout (a leading tag, §3) and the check on a read (§4).
+    pub fn variant_type(&mut self, decl: DeclId) -> PoolId {
+        self.intern(Item::VariantType { decl })
+    }
+
     /// Records the resolved fields of the struct declared at `decl`.
     ///
     /// Replaces any fields already recorded, so re-analysing a file is safe.
@@ -552,6 +561,7 @@ impl Pool {
             | Item::EnumType { .. }
             | Item::StructType { .. }
             | Item::UnionType { .. }
+            | Item::VariantType { .. }
             | Item::ProcType { .. }
             | Item::VoidValue
             | Item::BoolValue(_)

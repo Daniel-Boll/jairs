@@ -159,6 +159,17 @@ pub enum Instr {
         /// The number of elements.
         len: Operand,
     },
+    /// Traps unless the variant at `place` has its tag set to `case` (ADR-0068 §4).
+    ///
+    /// The place is a plan whose steps end at the variant itself — the tag is at its offset 0 — so the
+    /// interpreter reads one byte there and compares. A [`PlacePlan`] rather than an address, because a
+    /// place may be reached through a deref whose pointer is in a register.
+    TagCheck {
+        /// Where the variant lives.
+        place: PlacePlan,
+        /// The case index the read expects.
+        case: u32,
+    },
     /// `dest <- lhs op rhs`. Never `&&` or `||`: MIR has no such operator, because
     /// short-circuiting is control flow.
     Binary {

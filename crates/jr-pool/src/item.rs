@@ -380,6 +380,16 @@ pub enum Item {
         /// Where the union was declared. This alone is the identity.
         decl: DeclId,
     },
+    /// A `variant { … }` type, nominal for the reason [`Item::StructType`] and [`Item::UnionType`]
+    /// are: two variants with identical cases in two files are two types (ADR-0068 §1).
+    ///
+    /// A **separate variant** rather than a flag on `UnionType`, because the two have different
+    /// layouts (a variant carries a leading tag, §3) and different access semantics (a read is
+    /// checked, §4) — so a consumer that treated them alike would be wrong about both size and cost.
+    VariantType {
+        /// The declaration site that gives this variant its identity.
+        decl: DeclId,
+    },
     /// A procedure type.
     ///
     /// Identity is the parameter types, the return type, the context kind
@@ -490,6 +500,7 @@ impl Item {
             | Self::EnumType { .. }
             | Self::StructType { .. }
             | Self::UnionType { .. }
+            | Self::VariantType { .. }
             | Self::ProcType { .. } => true,
 
             Self::VoidValue

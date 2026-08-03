@@ -61,8 +61,8 @@ pub mod resolve;
 pub use hir::{
     AssignOp, BinOp, Body, BodyId, ConstValue, Enum, EnumId, EnumMember, Expr, ExprId, Field,
     FieldId, FileHir, ForIterable, ForeignInfo, Item, ItemId, ItemKind, ItemScope, Literal, Local,
-    LocalId, Param, ParamId, Proc, ProcId, Res, Stmt, StmtId, Struct, StructId, TypeRef, TypeRefId,
-    UnOp,
+    LocalId, Param, ParamId, Proc, ProcId, Res, Stmt, StmtId, Struct, StructId, SwitchArm, TypeRef,
+    TypeRefId, UnOp,
 };
 pub use lower::lower_file;
 pub use resolve::{ExprScope, ResolveMap, resolve};

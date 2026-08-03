@@ -46,6 +46,33 @@ use jr_mir::{ConstValues, ImportedProcs, Poisoned};
 use jr_pool::{Pool, PoolId};
 use jr_vm::{Mode, Routine, Value, Vm, VmError};
 
+/// One imported file's front end, for the comptime program (ADR-0069 §1).
+///
+/// **The MIR is not here, and that is the whole point.** The first attempt held an `Arc<FileMir>` from
+/// `file_mir`, which salsa rejected outright with a dependency-graph cycle:
+///
+/// ```text
+/// file_consts(A) -> file_mir(B) -> imported_values(B) -> file_consts(A)
+/// ```
+///
+/// because `file_mir` folds *imported constants*, which needs the importer's `file_consts`. So this
+/// carries the inputs and the MIR is lowered here instead, with the same empty
+/// `ImportedValues`/`OperatorCalls`/`FilledArgs` this module already passes for its own file — which is
+/// the honest position: const-eval runs before the check phase that fills those, for the importer and
+/// the imported file alike (ADR-0018 §3).
+///
+/// ADR-0069 §1's claim that supplying routines "adds no dependency that was not already there" was
+/// therefore *wrong about `file_mir`* and right about the principle: `imported_procs` and `checked` are
+/// already called from here, and lowering from them introduces nothing new.
+struct ModuleFrontend {
+    id: jr_base::FileId,
+    hir: Arc<FileHir>,
+    resolve: Arc<jr_hir::ResolveMap>,
+    types: Arc<jr_sema::TypeMap>,
+    signatures: Arc<jr_sema::FileSignatures>,
+    imports: Arc<ImportedProcs>,
+}
+
 use crate::{
     Db, SourceFile,
     mir::imported_procs,
@@ -94,18 +121,53 @@ enum Wanted {
     /// A bare top-level `#run f();`, run for its effects. It has no name to key on,
     /// so its value is keyed by the expression.
     Run(ItemId, ExprId),
+    /// A `#run` inside a procedure body (ADR-0069 §2), keyed by the body and the expression.
+    ///
+    /// Its own variant rather than a `Run` with a scope field, so that every match over `Wanted` is
+    /// forced to decide which arena an expression belongs to — a body's expressions and the file's both
+    /// start at index 0, so confusing them reads a different expression rather than failing.
+    ///
+    /// The `ItemId` is the *procedure's* item, used only to place a diagnostic: a body `#run` has no
+    /// item of its own.
+    BodyRun(ItemId, jr_hir::BodyId, ExprId),
+    /// A constant whose initialiser names a **type**: `T :: Point;` (ADR-0071 §2).
+    ///
+    /// Its own variant because it is the one target the VM never runs. Its value is read from
+    /// `SigEntry::type_value`, which the *signature* phase already computed — and const-eval is
+    /// downstream of signatures (ADR-0018 §3), so this reads a value that exists rather than inverting
+    /// a phase. That is the move ADR-0070 §1 made for an array length, available for the same reason.
+    ///
+    /// A variant rather than a special case inside [`Wanted::Item`] so that every match over `Wanted`
+    /// is forced to decide, which is the same discipline `BodyRun` above exists for. The round-robin
+    /// and the cycle detector need no change: a type alias is a target like any other, it simply
+    /// succeeds in the first round.
+    TypeAlias(ItemId, ExprId),
 }
 
 impl Wanted {
     const fn expr(self) -> ExprId {
         match self {
-            Self::Item(_, expr) | Self::Run(_, expr) => expr,
+            Self::Item(_, expr)
+            | Self::Run(_, expr)
+            | Self::BodyRun(_, _, expr)
+            | Self::TypeAlias(_, expr) => expr,
         }
     }
 
     const fn item(self) -> ItemId {
         match self {
-            Self::Item(item, _) | Self::Run(item, _) => item,
+            Self::Item(item, _)
+            | Self::Run(item, _)
+            | Self::BodyRun(item, _, _)
+            | Self::TypeAlias(item, _) => item,
+        }
+    }
+
+    /// Which expression arena [`Wanted::expr`] indexes (ADR-0069 §2).
+    const fn scope(self) -> ExprScope {
+        match self {
+            Self::Item(_, _) | Self::Run(_, _) | Self::TypeAlias(_, _) => ExprScope::TopLevel,
+            Self::BodyRun(_, body, _) => ExprScope::Body(body),
         }
     }
 }
@@ -122,7 +184,7 @@ impl Wanted {
 /// excluded here rather than allowed to fail, because a failure would become E0230 on
 /// a declaration that is perfectly correct, which is exactly the kind of false
 /// positive that teaches people to ignore a diagnostic.
-fn wanted(hir: &FileHir) -> Vec<Wanted> {
+fn wanted(hir: &FileHir, signatures: &jr_sema::FileSignatures) -> Vec<Wanted> {
     let mut out = Vec::new();
     for (index, item) in hir.items.iter().enumerate() {
         let id = ItemId::from_usize(index);
@@ -130,12 +192,43 @@ fn wanted(hir: &FileHir) -> Vec<Wanted> {
             ItemKind::Const {
                 value: ConstValue::Expr(expr),
             } => {
-                if !is_directive(hir, *expr) {
+                if is_directive(hir, *expr) {
+                    // Excluded, per this function's docs.
+                } else if names_a_type(hir, signatures, *expr) {
+                    // `T :: Point;` — a type alias, whose value the signature phase already knows
+                    // (ADR-0071 §2). A target rather than an exclusion, because it genuinely has a
+                    // value: without it the thunk lowerer reported "a file-level item has no value
+                    // yet", a const-eval internal on a perfectly correct declaration.
+                    out.push(Wanted::TypeAlias(id, *expr));
+                } else {
                     out.push(Wanted::Item(id, *expr));
                 }
             }
             ItemKind::Run { expr } => out.push(Wanted::Run(id, *expr)),
             ItemKind::Const { .. } | ItemKind::Var { .. } | ItemKind::Import { .. } => {}
+        }
+    }
+    // Then every `#run` inside a body (ADR-0069 §2). Collected in the same query as the file-scope ones
+    // so there is **one** round-robin and one cycle detector: two places evaluating `#run` would be two
+    // chances to disagree about what a `#run` means.
+    for (index, item) in hir.items.iter().enumerate() {
+        let id = ItemId::from_usize(index);
+        let ItemKind::Const {
+            value: ConstValue::Proc(proc),
+        } = &item.kind
+        else {
+            continue;
+        };
+        let Some(body_id) = hir.procs.get(proc.index()).and_then(|p| p.body) else {
+            continue;
+        };
+        let Some(body) = hir.bodies.get(body_id.index()) else {
+            continue;
+        };
+        for (expr_index, expr) in body.exprs.iter().enumerate() {
+            if matches!(expr, jr_hir::Expr::Run(_, _)) {
+                out.push(Wanted::BodyRun(id, body_id, ExprId::from_usize(expr_index)));
+            }
         }
     }
     out
@@ -147,6 +240,42 @@ fn is_directive(hir: &FileHir, expr: ExprId) -> bool {
         hir.exprs.get(expr.index()),
         Some(jr_hir::Expr::Directive { .. })
     )
+}
+
+/// Whether a `::` initialiser names a type, making it a [`Wanted::TypeAlias`] (ADR-0071 §2).
+///
+/// Asked of the **signatures** rather than of the HIR, because "does this name denote a type" is a
+/// question the signature phase already answered — `SigEntry::type_value` is `Some` exactly for a name
+/// that does. Re-deriving it here would be a second implementation of ADR-0014 §3's resolution order,
+/// and a divergence would show up as a constant that evaluates in one phase's opinion and not the
+/// other's.
+///
+/// A bare name only: `T :: Point;` and nothing more elaborate. An expression *containing* a type is
+/// already refused elsewhere (E0261, ADR-0071 §3), so there is no case where this answering `false`
+/// hides one.
+fn names_a_type(hir: &FileHir, signatures: &jr_sema::FileSignatures, expr: ExprId) -> bool {
+    let Some(jr_hir::Expr::Name { name, .. }) = hir.exprs.get(expr.index()) else {
+        return false;
+    };
+    signatures
+        .lookup(*name)
+        .is_some_and(|entry| entry.type_value.is_some())
+}
+
+/// The type a `::` initialiser denotes, for a [`Wanted::TypeAlias`] (ADR-0071 §2).
+///
+/// The same lookup [`names_a_type`] does, returning the type rather than a yes — deliberately two
+/// functions over one field, so that the classification and the value cannot disagree about *which*
+/// entry they read.
+fn aliased_type(
+    hir: &FileHir,
+    signatures: &jr_sema::FileSignatures,
+    expr: ExprId,
+) -> Option<PoolId> {
+    let jr_hir::Expr::Name { name, .. } = hir.exprs.get(expr.index())? else {
+        return None;
+    };
+    signatures.lookup(*name)?.type_value
 }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +298,11 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     }
 
     let hir = file_hir(db, file);
-    let targets = wanted(hir.as_ref());
+    let resolve = resolved(db, file, search_paths).map;
+    let signatures = crate::sema::file_signatures(db, file, search_paths);
+    // **Signatures first**, because `wanted` asks them whether a `::` initialiser names a type
+    // (ADR-0071 §2). They were already computed one line below; only the order changed.
+    let targets = wanted(hir.as_ref(), signatures.signatures.as_ref());
     if targets.is_empty() {
         return ConstResult {
             values: Arc::new(ConstValues::new()),
@@ -177,12 +310,41 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
         };
     }
 
-    let resolve = resolved(db, file, search_paths).map;
-    let signatures = crate::sema::file_signatures(db, file, search_paths);
     let types = checked(db, file, search_paths).types;
     let imports = imported_procs(db, file, search_paths);
     let file_id = crate::queries::resolve_file_id(db, file);
     let interner = db.interner();
+
+    // **Every other reachable file's compiled form**, so a `#run` calling an imported procedure has
+    // that procedure's bytecode (ADR-0069 §1). Without it the interpreter reported
+    // `internal compiler error: no routine for file N proc M` — compiler internals shown to a user who
+    // wrote a reasonable program.
+    //
+    // This is **not** the cross-file dependency this module refuses below: that refusal is about reading
+    // another file's constant *values* (`ImportedValues` stays empty, and the argument is at the
+    // `lower_file` call). A routine is not a value, and `imported_procs` already resolves cross-file
+    // procedures for the ordinary runtime path — so this supplies code for a call sema already agreed
+    // exists, and adds no dependency that was not already there.
+    //
+    // Gathered before the pool is locked, because the lock must never be held across a nested query
+    // call — the same rule `build` and `run_main` follow.
+    let mut modules = Vec::new();
+    for other in crate::run::reachable_files(db, file, search_paths) {
+        if other == file {
+            continue;
+        }
+        if frontend_diagnostics(db, other, search_paths).has_errors() {
+            continue;
+        }
+        modules.push(ModuleFrontend {
+            id: crate::queries::resolve_file_id(db, other),
+            hir: file_hir(db, other),
+            resolve: resolved(db, other, search_paths).map,
+            types: checked(db, other, search_paths).types,
+            signatures: crate::sema::file_signatures(db, other, search_paths).signatures,
+            imports: imported_procs(db, other, search_paths),
+        });
+    }
 
     let mut pool = crate::sema::lock_pool(db);
     let mut values = ConstValues::new();
@@ -250,6 +412,8 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
                 signatures.signatures.as_ref(),
                 imports.as_ref(),
                 &values,
+                &modules,
+                interner,
                 &mut pool,
             ) {
                 Ok(value) => {
@@ -292,20 +456,24 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
 
 fn known(values: &ConstValues, target: Wanted) -> bool {
     match target {
-        Wanted::Item(item, _) => values.item(item).is_some(),
+        // A type alias's value is keyed like any other named constant's, so nothing downstream has to
+        // know it was one (ADR-0071 §2).
+        Wanted::Item(item, _) | Wanted::TypeAlias(item, _) => values.item(item).is_some(),
         Wanted::Run(_, expr) => values.run(ExprScope::TopLevel, expr).is_some(),
+        Wanted::BodyRun(_, body, expr) => values.run(ExprScope::Body(body), expr).is_some(),
     }
 }
 
 fn record(values: &mut ConstValues, target: Wanted, value: PoolId) {
     match target {
-        Wanted::Item(item, expr) => {
+        Wanted::Item(item, expr) | Wanted::TypeAlias(item, expr) => {
             values.set_item(item, value);
             // Also key the initialiser expression, so that a `#run` *inside* a named
             // constant folds when lowering walks it rather than being re-evaluated.
             values.set_run(ExprScope::TopLevel, expr, value);
         }
         Wanted::Run(_, expr) => values.set_run(ExprScope::TopLevel, expr, value),
+        Wanted::BodyRun(_, body, expr) => values.set_run(ExprScope::Body(body), expr, value),
     }
 }
 
@@ -328,14 +496,28 @@ fn evaluate(
     signatures: &jr_sema::FileSignatures,
     imports: &ImportedProcs,
     values: &ConstValues,
+    modules: &[ModuleFrontend],
+    interner: &jr_base::Interner,
     pool: &mut Pool,
 ) -> Result<PoolId, String> {
+    // **A type alias needs no VM at all** (ADR-0071 §2). Its value is `SigEntry::type_value`, computed
+    // by the signature phase this query is downstream of (ADR-0018 §3) — so it is interned here and
+    // returned before a thunk is built. Handled at the top rather than inside the thunk lowerer because
+    // a thunk is MIR and a type value has no runtime representation to lower
+    // (`jr_pool::LayoutError::ComptimeOnly`): there is nothing for the VM to do.
+    if let Wanted::TypeAlias(_, expr) = target {
+        let denoted = aliased_type(hir, signatures, expr)
+            .ok_or_else(|| "a type alias does not name a type".to_owned())?;
+        return Ok(pool.type_value(denoted));
+    }
+
     let thunk_proc = jr_mir::thunk_ref(hir, file_id, target.expr().index());
     let body = jr_mir::lower_const(
         hir,
         file_id,
         thunk_proc,
         target.expr(),
+        target.scope(),
         resolve,
         types,
         values,
@@ -348,12 +530,40 @@ fn evaluate(
     })?;
 
     let ty = types
-        .expr_type(ExprScope::TopLevel, target.expr())
+        .expr_type(target.scope(), target.expr())
         .ok_or_else(|| "the expression was never typed".to_owned())?;
 
     let mut program = jr_vm::comptime_program();
     jr_vm::add_file(&mut program, file_id, hir, mir, signatures, pool)
         .map_err(|e: VmError| e.to_string())?;
+    // Then every imported file, so a cross-file call resolves (ADR-0069 §1). Lowered here rather than
+    // taken from `file_mir`, for the cycle reason `ModuleFrontend` documents — and with the same empty
+    // maps this module passes for its own file, so an imported callee is subject to exactly the same
+    // const-eval restrictions as a local one.
+    for module in modules {
+        let module_mir = jr_mir::lower_file(
+            module.hir.as_ref(),
+            module.resolve.as_ref(),
+            module.types.as_ref(),
+            module.signatures.as_ref(),
+            &ConstValues::new(),
+            module.imports.as_ref(),
+            &jr_mir::ImportedValues::new(),
+            &jr_mir::OperatorCalls::new(),
+            &jr_mir::FilledArgs::new(),
+            interner,
+            pool,
+        );
+        jr_vm::add_file(
+            &mut program,
+            module.id,
+            module.hir.as_ref(),
+            &module_mir,
+            module.signatures.as_ref(),
+            pool,
+        )
+        .map_err(|e: VmError| e.to_string())?;
+    }
     program.insert(Routine::Bytecode(
         jr_vm::compile(&body, pool, program.target()).map_err(|e: VmError| e.to_string())?,
     ));

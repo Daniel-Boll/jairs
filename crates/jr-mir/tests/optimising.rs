@@ -33,6 +33,7 @@ fn has_rvalue(body: &MirBody, mut pred: impl FnMut(&Rvalue) -> bool) -> bool {
             Statement::Store { .. }
             | Statement::Zero { .. }
             | Statement::BoundsCheck { .. }
+            | Statement::TagCheck { .. }
             | Statement::Nop => false,
         })
 }

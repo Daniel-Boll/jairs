@@ -163,9 +163,21 @@ pub fn run_main(
             let location = vm
                 .trap_site()
                 .and_then(|site| trap_location(db, &inputs, site));
+            // **The call chain the trap happened in** (ADR-0066). Resolved here for the same reason the
+            // location is: turning a `ProcRef` into a name needs the file's HIR, which the VM has not
+            // got. A frame whose name cannot be resolved is dropped rather than rendered as a
+            // placeholder — an unnamed line in a backtrace tells a reader nothing and would differ from
+            // native, which resolves the same names at compile time.
+            let frames: Vec<String> = vm
+                .trap_frames()
+                .into_iter()
+                .filter_map(|frame| proc_name(db, &inputs, frame))
+                .collect();
+            let frames: Vec<&str> = frames.iter().map(String::as_str).collect();
             RunOutcome::Failed(jr_base::trap_message(
                 &error.to_string(),
                 location.as_deref(),
+                &frames,
             ))
         }
     })
@@ -257,6 +269,33 @@ fn trap_location(db: &dyn Db, inputs: &[FileInput], site: jr_vm::TrapSite) -> Op
         .and_then(|id| hir.bodies.get(id.index()));
     let span = jr_mir::resolve_span(hir, body, site.span)?;
     Some(jr_base::render_location(&db.source_map(), span))
+}
+
+/// The source name of a procedure, for a backtrace frame (ADR-0066 §2).
+///
+/// Found by scanning the file's items for the constant whose value *is* this procedure, which is the
+/// same walk [`main_of`] does and for the same reason: procedures are constants (ADR-0012), so a `Proc`
+/// carries no name of its own and the name lives on the item that binds it.
+///
+/// `None` when the procedure's file is not among the inputs, or when no item binds it — an anonymous
+/// procedure has no name to print, and a placeholder would be worse than omitting the frame.
+fn proc_name(db: &dyn Db, inputs: &[FileInput], target: ProcRef) -> Option<String> {
+    let hir = inputs
+        .iter()
+        .find_map(|(file_id, hir, _, _)| (*file_id == target.file).then_some(hir))?;
+    let interner = db.interner();
+    hir.items.iter().find_map(|item| {
+        let ItemKind::Const {
+            value: ConstValue::Proc(proc),
+        } = &item.kind
+        else {
+            return None;
+        };
+        if *proc != target.proc {
+            return None;
+        }
+        Some(interner.resolve(item.name?).to_owned())
+    })
 }
 
 /// Whether the `main` of `root` receives the implicit context (ADR-0057 §3).

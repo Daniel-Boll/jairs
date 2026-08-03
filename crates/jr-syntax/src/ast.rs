@@ -121,6 +121,7 @@ ast_node!(ProcType, PROC_TYPE);
 ast_node!(ProcTypeParams, PROC_TYPE_PARAMS);
 ast_node!(StructType, STRUCT_TYPE);
 ast_node!(UnionType, UNION_TYPE);
+ast_node!(VariantType, VARIANT_TYPE);
 ast_node!(EnumType, ENUM_TYPE);
 ast_node!(MemberList, MEMBER_LIST);
 ast_node!(Member, MEMBER);
@@ -141,6 +142,9 @@ ast_node!(NamedArg, NAMED_ARG);
 ast_node!(ForStmt, FOR_STMT);
 ast_node!(RangeExpr, RANGE_EXPR);
 ast_node!(DeferStmt, DEFER_STMT);
+ast_node!(PushContextStmt, PUSH_CONTEXT_STMT);
+ast_node!(SwitchStmt, SWITCH_STMT);
+ast_node!(SwitchArm, SWITCH_ARM);
 ast_node!(LoopLabel, LOOP_LABEL);
 ast_node!(ReturnStmt, RETURN_STMT);
 ast_node!(BreakStmt, BREAK_STMT);
@@ -233,6 +237,8 @@ pub enum TypeExpr {
     Struct(StructType),
     /// `union { ... }` (ADR-0045)
     Union(UnionType),
+    /// `variant { … }` (ADR-0068 §1)
+    Variant(VariantType),
     /// `enum { ... }`
     Enum(EnumType),
 }
@@ -248,6 +254,7 @@ impl AstNode for TypeExpr {
                 | NAME_TYPE
                 | STRUCT_TYPE
                 | UNION_TYPE
+                | VARIANT_TYPE
                 | ENUM_TYPE
         )
     }
@@ -261,6 +268,7 @@ impl AstNode for TypeExpr {
             NAME_TYPE => Some(Self::Name(NameType(node))),
             STRUCT_TYPE => Some(Self::Struct(StructType(node))),
             UNION_TYPE => Some(Self::Union(UnionType(node))),
+            VARIANT_TYPE => Some(Self::Variant(VariantType(node))),
             ENUM_TYPE => Some(Self::Enum(EnumType(node))),
             _ => None,
         }
@@ -275,6 +283,7 @@ impl AstNode for TypeExpr {
             Self::Name(n) => n.syntax(),
             Self::Struct(n) => n.syntax(),
             Self::Union(n) => n.syntax(),
+            Self::Variant(n) => n.syntax(),
             Self::Enum(n) => n.syntax(),
         }
     }
@@ -309,6 +318,10 @@ pub enum Stmt {
     For(ForStmt),
     /// `defer stmt;` (ADR-0049 §3)
     Defer(DeferStmt),
+    /// `push_context { … }` (ADR-0063)
+    PushContext(PushContextStmt),
+    /// `switch e { case v; … }` (ADR-0067)
+    Switch(SwitchStmt),
     /// `label: for …` or `label: while …` (ADR-0049 §2)
     Labelled(LoopLabel),
 }
@@ -328,6 +341,8 @@ impl AstNode for Stmt {
                 | CONTINUE_STMT
                 | FOR_STMT
                 | DEFER_STMT
+                | PUSH_CONTEXT_STMT
+                | SWITCH_STMT
                 | LOOP_LABEL
         )
     }
@@ -345,6 +360,8 @@ impl AstNode for Stmt {
             CONTINUE_STMT => Some(Self::Continue(ContinueStmt(node))),
             FOR_STMT => Some(Self::For(ForStmt(node))),
             DEFER_STMT => Some(Self::Defer(DeferStmt(node))),
+            PUSH_CONTEXT_STMT => Some(Self::PushContext(PushContextStmt(node))),
+            SWITCH_STMT => Some(Self::Switch(SwitchStmt(node))),
             LOOP_LABEL => Some(Self::Labelled(LoopLabel(node))),
             _ => None,
         }
@@ -363,6 +380,8 @@ impl AstNode for Stmt {
             Self::Continue(n) => n.syntax(),
             Self::For(n) => n.syntax(),
             Self::Defer(n) => n.syntax(),
+            Self::PushContext(n) => n.syntax(),
+            Self::Switch(n) => n.syntax(),
             Self::Labelled(n) => n.syntax(),
         }
     }
@@ -522,6 +541,11 @@ impl ConstDecl {
 
     /// The `union { … }` value, if this declaration is a union type (ADR-0045).
     pub fn union_type(&self) -> Option<UnionType> {
+        child_node(&self.0)
+    }
+
+    /// The variant value, if this constant is a variant type (ADR-0068 §1).
+    pub fn variant_type(&self) -> Option<VariantType> {
         child_node(&self.0)
     }
 
@@ -840,6 +864,54 @@ impl DeferStmt {
         control_body(&self.0)
     }
 }
+impl PushContextStmt {
+    /// The block whose statements run against a copy of the context (ADR-0063).
+    ///
+    /// A `Block` rather than a [`ControlBody`]: the parser requires braces (a braceless context swap
+    /// reads as a mistake), so there is only ever the one shape and no need for the two-shape helper
+    /// `defer` and `if` share.
+    pub fn block(&self) -> Option<Block> {
+        self.0.children().find_map(Block::cast)
+    }
+}
+impl SwitchStmt {
+    /// The value being matched (ADR-0067 §1).
+    ///
+    /// The *first* expression child, because an arm's `case` value is also an expression child of the
+    /// switch's subtree — but an arm's lives under a `SWITCH_ARM`, so `children()` at this level sees
+    /// only the scrutinee.
+    pub fn value(&self) -> Option<Expr> {
+        child_node(&self.0)
+    }
+
+    /// The arms, in source order.
+    pub fn arms(&self) -> impl Iterator<Item = SwitchArm> + '_ {
+        child_nodes(&self.0)
+    }
+}
+impl SwitchArm {
+    /// The value this arm matches, or `None` for the `else` arm (ADR-0067 §4).
+    ///
+    /// An absent value *is* the catch-all — that is what distinguishes `else;` from `case v;` without a
+    /// second node kind — so a consumer asks this rather than looking for a keyword.
+    pub fn value(&self) -> Option<Expr> {
+        child_node(&self.0)
+    }
+
+    /// Whether this is the `else` arm.
+    ///
+    /// Reads the keyword rather than inferring it from a missing value, because a malformed
+    /// `case ;` also has no value and is *not* a catch-all — treating it as one would make a syntax
+    /// error silently exhaustive.
+    pub fn is_else(&self) -> bool {
+        child_token(&self.0, ELSE_KW).is_some()
+    }
+
+    /// The statements this arm runs.
+    pub fn body(&self) -> impl Iterator<Item = Stmt> + '_ {
+        child_nodes(&self.0)
+    }
+}
 impl LoopLabel {
     /// The label name.
     pub fn name(&self) -> Option<Name> {
@@ -901,6 +973,16 @@ impl UnionType {
     ///
     /// The *same* `FieldList` node a struct has, because a union's fields are a struct's
     /// fields — only the layout differs (ADR-0045 §5).
+    pub fn field_list(&self) -> Option<FieldList> {
+        child_node(&self.0)
+    }
+}
+impl VariantType {
+    /// The field list — a variant's *cases*.
+    ///
+    /// The same `FieldList` node the other two forms have, because a case is written like a field.
+    /// What differs is the layout (a leading tag, ADR-0068 §3) and the check on a read (§4), neither of
+    /// which is visible in the syntax.
     pub fn field_list(&self) -> Option<FieldList> {
         child_node(&self.0)
     }

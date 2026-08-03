@@ -334,7 +334,7 @@ proc main -> void {
 proc main -> void {
   params: v0: *Context
   bb0(v0: *Context):
-    discard call extern proc4(v0, "imported\n")
+    discard call extern proc6(v0, "imported\n")
     return
 }
 
@@ -435,7 +435,7 @@ proc main -> void {
     v5: bool = v4 > 5_s64
     branch v5 ? bb1() : bb2()
   bb1():
-    discard call extern proc4(v0, "hello from Jairs\n")
+    discard call extern proc6(v0, "hello from Jairs\n")
     goto bb3()
   bb2():
     goto bb3()
@@ -455,7 +455,7 @@ proc main -> void {
     v11: bool = v10 == 9_s64
     branch v11 ? bb8() : bb9()
   bb8():
-    discard call extern proc6(v0, "arithmetic and pointers agree")
+    discard call extern proc8(v0, "arithmetic and pointers agree")
     goto bb10()
   bb9():
     goto bb10()
@@ -508,7 +508,7 @@ proc main -> void {
     v4: bool = v3 == 7_s64
     branch v4 ? bb1() : bb2()
   bb1():
-    discard call extern proc4(v0, "doc comments are trivia\n")
+    discard call extern proc6(v0, "doc comments are trivia\n")
     goto bb3()
   bb2():
     goto bb3()
@@ -4341,5 +4341,962 @@ proc main -> void {
     goto bb24()
   bb24():
     discard call extern proc1(1_s64)
+    return
+}
+
+========================================
+051-push-context.jr
+========================================
+proc recording_alloc -> *u8 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: s64 = load (v0).*.2
+    v3: s64 = v2 + v1
+    store (v0).*.2 <- v3
+    v4: *u8 = call extern proc2(v1)
+    return v4
+}
+proc recording_free -> void {
+  params: v0: *Context, v1: *u8
+  bb0(v0: *Context, v1: *u8):
+    discard call extern proc3(v1)
+    return
+}
+proc callee_writes -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    store (v0).*.2 <- 42_s64
+    return
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: Context  // temporary
+  bb0(v0: *Context):
+    store (v0).*.2 <- 7_s64
+    v1: Context = load (v0).*
+    store s0 <- v1
+    v2: *Context = addr s0
+    store (v2).*.2 <- 99_s64
+    discard call proc2(v2)
+    v3: s64 = load (v2).*.2
+    v4: bool = v3 == 42_s64
+    branch v4 ? bb1() : bb2()
+  bb1():
+    v5: s64 = 0_s64 + 1_s64
+    goto bb3(v5)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v12: s64):
+    store (v2).*.0 <- proc0
+    store (v2).*.1 <- proc1
+    store (v2).*.2 <- 0_s64
+    v6: (s64) -> *u8 = load (v2).*.0
+    v7: *u8 = call (v6)(v2, 10_s64)
+    v8: bool = v7 == 0_*u8
+    branch v8 ? bb4() : bb5()
+  bb4():
+    discard call extern proc1(1_s64)
+    goto bb6()
+  bb5():
+    goto bb6()
+  bb6():
+    v9: s64 = load (v2).*.2
+    v10: bool = v9 == 10_s64
+    branch v10 ? bb7() : bb8()
+  bb7():
+    v13: s64 = v12 + 2_s64
+    goto bb9(v13)
+  bb8():
+    goto bb9(v12)
+  bb9(v19: s64):
+    v14: (*u8) -> void = load (v2).*.1
+    discard call (v14)(v2, v7)
+    v17: s64 = load (v0).*.2
+    v18: bool = v17 == 7_s64
+    branch v18 ? bb10() : bb11()
+  bb10():
+    v20: s64 = v19 + 4_s64
+    goto bb12(v20)
+  bb11():
+    goto bb12(v19)
+  bb12(v21: s64):
+    v22: bool = v21 == 7_s64
+    branch v22 ? bb13() : bb14()
+  bb13():
+    discard call extern proc1(0_s64)
+    goto bb15()
+  bb14():
+    goto bb15()
+  bb15():
+    discard call extern proc1(2_s64)
+    return
+}
+
+========================================
+052-pointer-arithmetic.jr
+========================================
+proc walk_s64 -> s64 {
+  params: v0: *Context
+  slots:
+    s0: [4]s64  // local 0
+    s1: *s64  // temporary
+    s2: *s64  // temporary
+    s3: *s64  // temporary
+    s4: *s64  // temporary
+    s5: *s64  // temporary
+  bb0(v0: *Context):
+    zero s0
+    bounds_check 0_s64 < 4_s64
+    v1: *s64 = addr s0[0_s64]
+    goto bb1(0_s64)
+  bb1(v2: s64):
+    v3: bool = v2 < 4_s64
+    branch v3 ? bb2() : bb3()
+  bb2():
+    store s1 <- v1
+    v5: *s64 = addr s1[v2]
+    v6: s64 = v2 + 1_s64
+    v7: s64 = v6 * 10_s64
+    store (v5).* <- v7
+    v8: s64 = v2 + 1_s64
+    goto bb1(v8)
+  bb3():
+    goto bb4()
+  bb4():
+    store s2 <- v1
+    v9: *s64 = addr s2[2_s64]
+    v10: s64 = load (v9).*
+    v11: bool = v10 == 30_s64
+    branch v11 ? bb5() : bb6()
+  bb5():
+    v12: s64 = 0_s64 + 1_s64
+    goto bb7(v12)
+  bb6():
+    goto bb7(0_s64)
+  bb7(v17: s64):
+    store s3 <- v1
+    v14: *s64 = addr s3[2_s64]
+    v15: s64 = load (v14).*
+    v16: bool = v15 == 30_s64
+    branch v16 ? bb8() : bb9()
+  bb8():
+    v18: s64 = v17 + 2_s64
+    goto bb10(v18)
+  bb9():
+    goto bb10(v17)
+  bb10(v25: s64):
+    store s4 <- v1
+    v20: *s64 = addr s4[3_s64]
+    v21: s64 = -2_s64
+    store s5 <- v20
+    v22: *s64 = addr s5[v21]
+    v23: s64 = load (v22).*
+    v24: bool = v23 == 20_s64
+    branch v24 ? bb11() : bb12()
+  bb11():
+    v26: s64 = v25 + 4_s64
+    goto bb13(v26)
+  bb12():
+    goto bb13(v25)
+  bb13(v27: s64):
+    return v27
+}
+proc bump -> s64 {
+  params: v0: *Context
+  slots:
+    s0: *u8  // temporary
+    s1: *u8  // temporary
+    s2: *u8  // temporary
+  bb0(v0: *Context):
+    v1: *u8 = call extern proc2(64_s64)
+    v2: bool = v1 == 0_*u8
+    branch v2 ? bb1() : bb2()
+  bb1():
+    return 0_s64
+  bb2():
+    goto bb3()
+  bb3():
+    store s0 <- v1
+    v3: *u8 = addr s0[8_s64]
+    store (v1).* <- 111_u8
+    store (v3).* <- 222_u8
+    store s1 <- v1
+    v4: *u8 = addr s1[0_s64]
+    store s2 <- v1
+    v5: *u8 = addr s2[8_s64]
+    v6: u8 = load (v4).*
+    v7: bool = v6 == 111_u8
+    branch v7 ? bb4() : bb5()
+  bb4():
+    v8: s64 = 0_s64 + 8_s64
+    goto bb6(v8)
+  bb5():
+    goto bb6(0_s64)
+  bb6(v12: s64):
+    v10: u8 = load (v5).*
+    v11: bool = v10 == 222_u8
+    branch v11 ? bb7() : bb8()
+  bb7():
+    v13: s64 = v12 + 16_s64
+    goto bb9(v13)
+  bb8():
+    goto bb9(v12)
+  bb9(v16: s64):
+    discard call extern proc3(v1)
+    return v16
+}
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call proc0(v0)
+    v2: s64 = call proc1(v0)
+    v3: s64 = v1 + v2
+    v4: bool = v3 == 31_s64
+    branch v4 ? bb1() : bb2()
+  bb1():
+    discard call extern proc1(0_s64)
+    goto bb3()
+  bb2():
+    goto bb3()
+  bb3():
+    discard call extern proc1(1_s64)
+    return
+}
+
+========================================
+053-temporary-storage.jr
+========================================
+proc fill_via_talloc -> *u8 {
+  params: v0: *Context, v1: u8
+  bb0(v0: *Context, v1: u8):
+    v2: *u8 = call extern proc4(v0, 8_s64)
+    v3: bool = v2 == 0_*u8
+    branch v3 ? bb1() : bb2()
+  bb1():
+    return 0_*u8
+  bb2():
+    goto bb3()
+  bb3():
+    store (v2).* <- v1
+    return v2
+}
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: *u8 = call extern proc4(v0, 8_s64)
+    v2: bool = v1 == 0_*u8
+    branch v2 ? bb1() : bb2()
+  bb1():
+    discard call extern proc1(1_s64)
+    goto bb3()
+  bb2():
+    goto bb3()
+  bb3():
+    store (v1).* <- 11_u8
+    v4: *u8 = call proc0(v0, 22_u8)
+    v5: bool = v4 == 0_*u8
+    branch v5 ? bb4() : bb5()
+  bb4():
+    discard call extern proc1(1_s64)
+    goto bb6()
+  bb5():
+    goto bb6()
+  bb6():
+    v7: u8 = load (v1).*
+    v8: bool = v7 == 11_u8
+    branch v8 ? bb7() : bb8()
+  bb7():
+    v11: s64 = 0_s64 + 1_s64
+    goto bb9(v11)
+  bb8():
+    goto bb9(0_s64)
+  bb9(v16: s64):
+    v14: u8 = load (v4).*
+    v15: bool = v14 == 22_u8
+    branch v15 ? bb10() : bb11()
+  bb10():
+    v17: s64 = v16 + 2_s64
+    goto bb12(v17)
+  bb11():
+    goto bb12(v16)
+  bb12(v27: s64):
+    discard call extern proc5(v0)
+    v18: *u8 = call extern proc4(v0, 8_s64)
+    v19: bool = v18 == 0_*u8
+    branch v19 ? bb13() : bb14()
+  bb13():
+    discard call extern proc1(1_s64)
+    goto bb15()
+  bb14():
+    goto bb15()
+  bb15():
+    store (v18).* <- 33_u8
+    v24: u8 = load (v1).*
+    v25: bool = v24 == 33_u8
+    branch v25 ? bb16() : bb17()
+  bb16():
+    v28: s64 = v27 + 4_s64
+    goto bb18(v28)
+  bb17():
+    goto bb18(v27)
+  bb18(v32: s64):
+    v29: s64 = 65536_s64 + 1_s64
+    v30: *u8 = call extern proc4(v0, v29)
+    v31: bool = v30 == 0_*u8
+    branch v31 ? bb19() : bb20()
+  bb19():
+    v33: s64 = v32 + 8_s64
+    goto bb21(v33)
+  bb20():
+    goto bb21(v32)
+  bb21(v34: s64):
+    v35: bool = v34 == 15_s64
+    branch v35 ? bb22() : bb23()
+  bb22():
+    discard call extern proc1(0_s64)
+    goto bb24()
+  bb23():
+    goto bb24()
+  bb24():
+    discard call extern proc1(1_s64)
+    return
+}
+
+========================================
+054-switch.jr
+========================================
+proc describe -> s64 {
+  params: v0: *Context, v1: Colour
+  bb0(v0: *Context, v1: Colour):
+    v2: bool = v1 == 0_Colour
+    branch v2 ? bb2() : bb3()
+  bb2():
+    goto bb1(1_s64)
+  bb3():
+    v3: bool = v1 == 1_Colour
+    branch v3 ? bb4() : bb5()
+  bb4():
+    goto bb1(2_s64)
+  bb5():
+    v4: bool = v1 == 2_Colour
+    branch v4 ? bb6() : bb7()
+  bb6():
+    goto bb1(4_s64)
+  bb7():
+    goto bb1(0_s64)
+  bb1(v5: s64):
+    return v5
+}
+proc describe_qualified -> s64 {
+  params: v0: *Context, v1: Colour
+  bb0(v0: *Context, v1: Colour):
+    v2: bool = v1 == 0_Colour
+    branch v2 ? bb2() : bb3()
+  bb2():
+    goto bb1(1_s64)
+  bb3():
+    v3: bool = v1 == 1_Colour
+    branch v3 ? bb4() : bb5()
+  bb4():
+    goto bb1(2_s64)
+  bb5():
+    v4: bool = v1 == 2_Colour
+    branch v4 ? bb6() : bb7()
+  bb6():
+    goto bb1(4_s64)
+  bb7():
+    goto bb1(0_s64)
+  bb1(v5: s64):
+    return v5
+}
+proc classify -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: bool = v1 == 1_s64
+    branch v2 ? bb2() : bb3()
+  bb2():
+    goto bb1(10_s64)
+  bb3():
+    v3: bool = v1 == 2_s64
+    branch v3 ? bb4() : bb5()
+  bb4():
+    goto bb1(20_s64)
+  bb5():
+    goto bb1(30_s64)
+  bb1(v4: s64):
+    return v4
+}
+proc two -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    return 2_s64
+}
+proc from_call -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call proc3(v0)
+    v2: bool = v1 == 1_s64
+    branch v2 ? bb2() : bb3()
+  bb2():
+    goto bb1(100_s64)
+  bb3():
+    v3: bool = v1 == 2_s64
+    branch v3 ? bb4() : bb5()
+  bb4():
+    goto bb1(200_s64)
+  bb5():
+    goto bb1(300_s64)
+  bb1(v4: s64):
+    return v4
+}
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call proc0(v0, 0_Colour)
+    v2: bool = v1 == 1_s64
+    branch v2 ? bb1() : bb2()
+  bb1():
+    v3: s64 = 0_s64 + 1_s64
+    goto bb3(v3)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v6: s64):
+    v4: s64 = call proc0(v0, 1_Colour)
+    v5: bool = v4 == 2_s64
+    branch v5 ? bb4() : bb5()
+  bb4():
+    v7: s64 = v6 + 2_s64
+    goto bb6(v7)
+  bb5():
+    goto bb6(v6)
+  bb6(v10: s64):
+    v8: s64 = call proc0(v0, 2_Colour)
+    v9: bool = v8 == 4_s64
+    branch v9 ? bb7() : bb8()
+  bb7():
+    v11: s64 = v10 + 4_s64
+    goto bb9(v11)
+  bb8():
+    goto bb9(v10)
+  bb9(v14: s64):
+    v12: s64 = call proc1(v0, 1_Colour)
+    v13: bool = v12 == 2_s64
+    branch v13 ? bb10() : bb11()
+  bb10():
+    v15: s64 = v14 + 8_s64
+    goto bb12(v15)
+  bb11():
+    goto bb12(v14)
+  bb12(v18: s64):
+    v16: s64 = call proc2(v0, 2_s64)
+    v17: bool = v16 == 20_s64
+    branch v17 ? bb13() : bb14()
+  bb13():
+    v19: s64 = v18 + 16_s64
+    goto bb15(v19)
+  bb14():
+    goto bb15(v18)
+  bb15(v22: s64):
+    v20: s64 = call proc2(v0, 99_s64)
+    v21: bool = v20 == 30_s64
+    branch v21 ? bb16() : bb17()
+  bb16():
+    v23: s64 = v22 + 32_s64
+    goto bb18(v23)
+  bb17():
+    goto bb18(v22)
+  bb18(v26: s64):
+    v24: s64 = call proc4(v0)
+    v25: bool = v24 == 200_s64
+    branch v25 ? bb19() : bb20()
+  bb19():
+    v27: s64 = v26 + 64_s64
+    goto bb21(v27)
+  bb20():
+    goto bb21(v26)
+  bb21(v28: s64):
+    v29: bool = v28 == 127_s64
+    branch v29 ? bb22() : bb23()
+  bb22():
+    discard call extern proc1(0_s64)
+    goto bb24()
+  bb23():
+    goto bb24()
+  bb24():
+    discard call extern proc1(1_s64)
+    return
+}
+
+========================================
+055-variant.jr
+========================================
+proc which -> s64 {
+  params: v0: *Context, v1: V
+  slots:
+    s0: V  // temporary
+  bb0(v0: *Context, v1: V):
+    store s0 <- v1
+    v2: u8 = load s0.tag
+    v3: bool = v2 == 0_u8
+    branch v3 ? bb2() : bb3()
+  bb2():
+    goto bb1(1_s64)
+  bb3():
+    v4: bool = v2 == 1_u8
+    branch v4 ? bb4() : bb5()
+  bb4():
+    goto bb1(2_s64)
+  bb5():
+    goto bb1(0_s64)
+  bb1(v5: s64):
+    return v5
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: V  // local 1
+    s1: V  // local 2
+    s2: U  // local 3
+  bb0(v0: *Context):
+    zero s0
+    store s0.tag <- 0_u8
+    store s0.0 <- 7_s64
+    tag_check s0.tag == 0
+    v1: s64 = load s0.0
+    v2: bool = v1 == 7_s64
+    branch v2 ? bb1() : bb2()
+  bb1():
+    v3: s64 = 0_s64 + 1_s64
+    goto bb3(v3)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v7: s64):
+    v4: V = load s0
+    v5: s64 = call proc0(v0, v4)
+    v6: bool = v5 == 1_s64
+    branch v6 ? bb4() : bb5()
+  bb4():
+    v8: s64 = v7 + 2_s64
+    goto bb6(v8)
+  bb5():
+    goto bb6(v7)
+  bb6(v11: s64):
+    store s0.tag <- 1_u8
+    store s0.1 <- 9_s64
+    tag_check s0.tag == 1
+    v9: s64 = load s0.1
+    v10: bool = v9 == 9_s64
+    branch v10 ? bb7() : bb8()
+  bb7():
+    v12: s64 = v11 + 4_s64
+    goto bb9(v12)
+  bb8():
+    goto bb9(v11)
+  bb9(v16: s64):
+    v13: V = load s0
+    v14: s64 = call proc0(v0, v13)
+    v15: bool = v14 == 2_s64
+    branch v15 ? bb10() : bb11()
+  bb10():
+    v17: s64 = v16 + 8_s64
+    goto bb12(v17)
+  bb11():
+    goto bb12(v16)
+  bb12(v26: s64):
+    zero s1
+    store s1.tag <- 0_u8
+    store s1.0 <- 1_s64
+    v18: V = load s1
+    v19: s64 = call proc0(v0, v18)
+    v20: bool = v19 == 1_s64
+    branch v20 ? bb13() : bb14()
+  bb13():
+    v22: V = load s0
+    v23: s64 = call proc0(v0, v22)
+    v24: bool = v23 == 2_s64
+    goto bb15(v24)
+  bb14():
+    goto bb15(false)
+  bb15(v21: bool):
+    branch v21 ? bb16() : bb17()
+  bb16():
+    v27: s64 = v26 + 16_s64
+    goto bb18(v27)
+  bb17():
+    goto bb18(v26)
+  bb18(v30: s64):
+    zero s2
+    store s2.0 <- 5_s64
+    v28: s64 = load s2.1
+    v29: bool = v28 == 5_s64
+    branch v29 ? bb19() : bb20()
+  bb19():
+    v31: s64 = v30 + 32_s64
+    goto bb21(v31)
+  bb20():
+    goto bb21(v30)
+  bb21(v32: s64):
+    v33: bool = v32 == 63_s64
+    branch v33 ? bb22() : bb23()
+  bb22():
+    discard call extern proc1(0_s64)
+    goto bb24()
+  bb23():
+    goto bb24()
+  bb24():
+    discard call extern proc1(1_s64)
+    return
+}
+
+========================================
+056-run-in-a-body.jr
+========================================
+proc add -> s64 {
+  params: v0: *Context, v1: s64, v2: s64
+  bb0(v0: *Context, v1: s64, v2: s64):
+    v3: s64 = v1 + v2
+    return v3
+}
+proc sum_to -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    goto bb1(0_s64, 0_s64)
+  bb1(v2: s64, v4: s64):
+    v3: bool = v2 < v1
+    branch v3 ? bb2() : bb3()
+  bb2():
+    v5: s64 = v4 + v2
+    v6: s64 = v2 + 1_s64
+    goto bb1(v6, v5)
+  bb3():
+    goto bb4()
+  bb4():
+    return v4
+}
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: bool = 5_s64 == 5_s64
+    branch v1 ? bb1() : bb2()
+  bb1():
+    v2: s64 = 0_s64 + 1_s64
+    goto bb3(v2)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v4: s64):
+    v3: bool = 8_s64 == 8_s64
+    branch v3 ? bb4() : bb5()
+  bb4():
+    v5: s64 = v4 + 2_s64
+    goto bb6(v5)
+  bb5():
+    goto bb6(v4)
+  bb6(v7: s64):
+    v6: bool = 10_s64 == 10_s64
+    branch v6 ? bb7() : bb8()
+  bb7():
+    v8: s64 = v7 + 4_s64
+    goto bb9(v8)
+  bb8():
+    goto bb9(v7)
+  bb9(v10: s64):
+    v9: bool = 12_s64 == 12_s64
+    branch v9 ? bb10() : bb11()
+  bb10():
+    v11: s64 = v10 + 8_s64
+    goto bb12(v11)
+  bb11():
+    goto bb12(v10)
+  bb12(v13: s64):
+    v12: bool = 30_s64 == 30_s64
+    branch v12 ? bb13() : bb14()
+  bb13():
+    v14: s64 = v13 + 16_s64
+    goto bb15(v14)
+  bb14():
+    goto bb15(v13)
+  bb15(v15: s64):
+    v16: bool = v15 == 31_s64
+    branch v16 ? bb16() : bb17()
+  bb16():
+    discard call extern proc1(0_s64)
+    goto bb18()
+  bb17():
+    goto bb18()
+  bb18():
+    discard call extern proc1(1_s64)
+    return
+}
+
+========================================
+057-array-length-constant.jr
+========================================
+proc total -> s64 {
+  params: v0: *Context, v1: [4]s64
+  slots:
+    s0: [4]s64  // temporary
+    s1: s64  // temporary
+  bb0(v0: *Context, v1: [4]s64):
+    store s0 <- v1
+    store s1 <- 0_s64
+    goto bb1(0_s64)
+  bb1(v6: s64):
+    v2: s64 = load s1
+    v3: bool = v2 < 4_s64
+    branch v3 ? bb2() : bb4()
+  bb2():
+    v4: s64 = load s1
+    bounds_check v4 < 4_s64
+    v5: s64 = load s0[v4]
+    v7: s64 = v6 + v5
+    goto bb3()
+  bb3():
+    v8: s64 = load s1
+    v9: s64 = v8 + 1_s64
+    store s1 <- v9
+    goto bb1(v7)
+  bb4():
+    goto bb5()
+  bb5():
+    return v6
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: [4]s64  // local 1
+    s1: [4]bool  // local 2
+    s2: [4][2]s64  // local 3
+  bb0(v0: *Context):
+    zero s0
+    bounds_check 0_s64 < 4_s64
+    store s0[0_s64] <- 1_s64
+    bounds_check 1_s64 < 4_s64
+    store s0[1_s64] <- 2_s64
+    bounds_check 2_s64 < 4_s64
+    store s0[2_s64] <- 3_s64
+    bounds_check 3_s64 < 4_s64
+    store s0[3_s64] <- 4_s64
+    v1: [4]s64 = load s0
+    v2: s64 = call proc0(v0, v1)
+    v3: bool = v2 == 10_s64
+    branch v3 ? bb1() : bb2()
+  bb1():
+    v4: s64 = 0_s64 + 1_s64
+    goto bb3(v4)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v6: s64):
+    v5: bool = 4_s64 == 4_s64
+    branch v5 ? bb4() : bb5()
+  bb4():
+    v7: s64 = v6 + 2_s64
+    goto bb6(v7)
+  bb5():
+    goto bb6(v6)
+  bb6(v9: s64):
+    zero s1
+    bounds_check 3_s64 < 4_s64
+    store s1[3_s64] <- true
+    bounds_check 3_s64 < 4_s64
+    v8: bool = load s1[3_s64]
+    branch v8 ? bb7() : bb8()
+  bb7():
+    v10: s64 = v9 + 4_s64
+    goto bb9(v10)
+  bb8():
+    goto bb9(v9)
+  bb9(v13: s64):
+    zero s2
+    bounds_check 3_s64 < 4_s64
+    bounds_check 1_s64 < 2_s64
+    store s2[3_s64][1_s64] <- 7_s64
+    bounds_check 3_s64 < 4_s64
+    bounds_check 1_s64 < 2_s64
+    v11: s64 = load s2[3_s64][1_s64]
+    v12: bool = v11 == 7_s64
+    branch v12 ? bb10() : bb11()
+  bb10():
+    v14: s64 = v13 + 8_s64
+    goto bb12(v14)
+  bb11():
+    goto bb12(v13)
+  bb12(v15: s64):
+    v16: bool = v15 == 15_s64
+    branch v16 ? bb13() : bb14()
+  bb13():
+    discard call extern proc1(0_s64)
+    goto bb15()
+  bb14():
+    goto bb15()
+  bb15():
+    discard call extern proc1(1_s64)
+    return
+}
+
+========================================
+058-type-values.jr
+========================================
+proc takes -> s64 {
+  params: v0: *Context, v1: Point
+  slots:
+    s0: Point  // temporary
+  bb0(v0: *Context, v1: Point):
+    store s0 <- v1
+    v2: s64 = load s0.0
+    v3: s64 = load s0.1
+    v4: s64 = v2 + v3
+    return v4
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: Point  // local 1
+    s1: Holder  // local 3
+    s2: [2]Point  // local 4
+  bb0(v0: *Context):
+    zero s0
+    store s0.0 <- 3_s64
+    store s0.1 <- 4_s64
+    v1: Point = load s0
+    v2: s64 = call proc0(v0, v1)
+    v3: bool = v2 == 7_s64
+    branch v3 ? bb1() : bb2()
+  bb1():
+    v4: s64 = 0_s64 + 1_s64
+    goto bb3(v4)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v6: s64):
+    v5: bool = 1_Colour == 1_Colour
+    branch v5 ? bb4() : bb5()
+  bb4():
+    v7: s64 = v6 + 2_s64
+    goto bb6(v7)
+  bb5():
+    goto bb6(v6)
+  bb6(v10: s64):
+    zero s1
+    store s1.0.0 <- 9_s64
+    v8: s64 = load s1.0.0
+    v9: bool = v8 == 9_s64
+    branch v9 ? bb7() : bb8()
+  bb7():
+    v11: s64 = v10 + 4_s64
+    goto bb9(v11)
+  bb8():
+    goto bb9(v10)
+  bb9(v14: s64):
+    zero s2
+    bounds_check 1_s64 < 2_s64
+    store s2[1_s64].1 <- 5_s64
+    bounds_check 1_s64 < 2_s64
+    v12: s64 = load s2[1_s64].1
+    v13: bool = v12 == 5_s64
+    branch v13 ? bb10() : bb11()
+  bb10():
+    v15: s64 = v14 + 8_s64
+    goto bb12(v15)
+  bb11():
+    goto bb12(v14)
+  bb12(v19: s64):
+    v16: *Point = addr s0
+    v17: s64 = load (v16).*.0
+    v18: bool = v17 == 3_s64
+    branch v18 ? bb13() : bb14()
+  bb13():
+    v20: s64 = v19 + 16_s64
+    goto bb15(v20)
+  bb14():
+    goto bb15(v19)
+  bb15(v21: s64):
+    v22: bool = v21 == 31_s64
+    branch v22 ? bb16() : bb17()
+  bb16():
+    discard call extern proc1(0_s64)
+    goto bb18()
+  bb17():
+    goto bb18()
+  bb18():
+    discard call extern proc1(1_s64)
+    return
+}
+
+========================================
+059-insert.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: string  // local 7
+  bb0(v0: *Context):
+    v1: s64 = 2_s64 + 3_s64
+    v2: bool = v1 == 5_s64
+    branch v2 ? bb1() : bb2()
+  bb1():
+    v3: s64 = 0_s64 + 1_s64
+    goto bb3(v3)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v6: s64):
+    v4: s64 = 10_s64 + 1_s64
+    v5: bool = v4 == 11_s64
+    branch v5 ? bb4() : bb5()
+  bb4():
+    v7: s64 = v6 + 2_s64
+    goto bb6(v7)
+  bb5():
+    goto bb6(v6)
+  bb6(v11: s64):
+    v9: s64 = v4 + 1_s64
+    v10: bool = v9 == 12_s64
+    branch v10 ? bb7() : bb8()
+  bb7():
+    v12: s64 = v11 + 4_s64
+    goto bb9(v12)
+  bb8():
+    goto bb9(v11)
+  bb9(v21: s64):
+    goto bb10(0_s64, 0_s64)
+  bb10(v13: s64, v15: s64):
+    v14: bool = v13 < 4_s64
+    branch v14 ? bb11() : bb13()
+  bb11():
+    v16: s64 = v15 + v13
+    goto bb12()
+  bb12():
+    v18: s64 = v13 + 1_s64
+    goto bb10(v18, v16)
+  bb13():
+    goto bb14()
+  bb14():
+    v19: bool = v15 == 6_s64
+    branch v19 ? bb15() : bb16()
+  bb15():
+    v22: s64 = v21 + 8_s64
+    goto bb17(v22)
+  bb16():
+    goto bb17(v21)
+  bb17(v25: s64):
+    store s0 <- "hi"
+    v23: s64 = load s0.count
+    v24: bool = v23 == 2_s64
+    branch v24 ? bb18() : bb19()
+  bb18():
+    v26: s64 = v25 + 16_s64
+    goto bb20(v26)
+  bb19():
+    goto bb20(v25)
+  bb20(v28: s64):
+    v27: bool = 32_s64 == 32_s64
+    branch v27 ? bb21() : bb22()
+  bb21():
+    v29: s64 = v28 + 32_s64
+    goto bb23(v29)
+  bb22():
+    goto bb23(v28)
+  bb23(v30: s64):
+    v31: s64 = v30 + 1_s64
+    discard call extern proc1(v31)
     return
 }

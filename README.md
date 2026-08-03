@@ -18,9 +18,48 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after **the allocator protocol** (ADR-0062): `context.allocator` is a procedure pointer a
-program installs in one line, and a callee allocates through it without knowing which — the
-placeholder ADR-0057 left, now real. The fifth feature of **wave W3** after `null` and a memory source
+Last updated after **`#insert` of a literal string** (ADR-0072): `#insert "n := 2 + 3;";` parses its
+operand as Jairs source and lowers the statements **where the directive is written** — same scope, so the
+next line can read `n`. Every synthesized node's span is the `#insert` itself, because inserted code has no
+position in any file and `jr-diag` *clamps* an out-of-range offset rather than rejecting it, so a
+synthesized span would silently underline source the user never wrote. Nesting works and needed no code;
+it cannot run away because escaping doubles the text at every level, so a written insert is bounded by its
+file. A *computed* operand (`#insert build_it()`) is deliberately a later sub-wave: it needs lowering to
+depend on const-eval, which runs downstream of it, and that is the salsa cycle W4 exists to break. On top
+of **a type as a compile-time value** (ADR-0071): `T :: Point;` binds a type to a name,
+and using a type where a *runtime* value is expected is now an error rather than a silent miscompile.
+`t := Point;` used to type-check cleanly and exit 0 in both engines while storing an undefined value into
+a slot of a type that has no runtime layout at all — the project's first named failure mode, and only a
+MIR dump would have shown it. `type_info()` and `Any` are deliberately a later sub-wave: both make a type
+into *runtime data*, which is a different size of problem than a type that only the compiler ever sees.
+On top of **an array length that names a constant** (ADR-0070): `N :: 4;  buf: [N]s64;` now
+resolves, which ADR-0039 refused for thirty ADRs on an argument that turned out to cover only *part* of
+what it forbade — a length needing evaluation still waits for the comptime sub-wave, but one that is
+already a literal one name away needs none. That sub-wave's scheduled work, "aggressive const folding",
+was found already delivered by const-prop. On top of **`#run` across files and in a body** (ADR-0069),
+which **opened wave W4 — Comptime**,
+the wave PLAN §5 calls the project's top risk and which is therefore delivered in sub-waves. A `#run` may
+now call an imported procedure — the first time this compiler executes a library procedure *while
+compiling* — and appear inside a procedure body, where the body receives the computed value. Two internal
+compiler errors became actionable messages in the process. On top of `variant`, a tagged union with a
+checked read (ADR-0068), which **completed wave W4.5 — Pattern matching**: a write sets the tag, reading a different case *traps* instead of
+reinterpreting bits, and `switch` destructures it by case. `union` is untouched and still reinterprets,
+which is what makes the variant's check a choice rather than a language-wide cost. On top of `switch`
+with exhaustiveness checking (ADR-0067), which **opened W4.5 a wave earlier than planned**: PLAN placed
+it after W4 "because exhaustiveness diagnostics want comptime type info" — checking showed that was a
+want rather than a need, so the wave moved forward and §2.1 records the amendment. And on top of
+traps with backtraces (ADR-0066), which **completed wave W3 — Runtime core**: a
+trap now names the procedure frames that were live beneath it, innermost first, and both engines emit
+byte-identical bytes — the VM from a shadow stack it resolves against the HIR, native from name pointers
+its generated helper walks at trap time. Inlined frames do not appear, because at run time they did not
+exist, and ADR-0066 §4 says so rather than reconstructing them. On top of temporary storage (ADR-0065):
+`talloc(n)` hands out bytes from a per-context bump arena, valid until `reset_temporary_storage()` — a
+feature that composes three prior waves rather than adding machinery. And pointer arithmetic
+(ADR-0064): `p + n`, `n + p` and `p - n` on a `*T`, element-scaled and unchecked. And `push_context`
+(ADR-0063): a block gets its own copy of the context, restored on exit — the isolation ADR-0057 §2
+claimed but never had. And the allocator protocol (ADR-0062): `context.allocator` is a procedure
+pointer a program installs in one line, and a callee allocates through it without knowing
+which. All on top of `null` and a memory source
 (ADR-0060/0061), indirect calls (ADR-0059), the implicit `context` (ADR-0057) and the bounds-check
 build setting (ADR-0058, which finished ADR-0003) — on top of
 imported constant values (ADR-0055) and a float-constant codegen fix (ADR-0056), `#scope_module`
@@ -32,7 +71,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 919 workspace tests; six CI gates green on macOS arm64, plus 151 Neovim
+`print_int` (ADR-0037). 944 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do
@@ -42,13 +81,13 @@ checks that are verified rather than gated.
 | Compile and run a program in the comptime VM | `jr run file.jr` | Register bytecode interpreter, no JIT tier |
 | Compile to a native executable | `jr build file.jr -o out` | arm64 macOS verified; x86-64 Linux configured in CI but **never run** |
 | Build without bounds checks | `jr build file.jr --no-bounds-check`, or `jr run` | ADR-0003's build setting, finally wired (ADR-0058). An out-of-range index is then undefined behaviour, which is the trade. `#no_abc` on a procedure does the same locally, whatever the build says; compile-time execution checks regardless |
-| Get rustc-grade diagnostics | `jr check file.jr` | 88 codes across lexer, parser, HIR, sema, MIR and const-eval. E0218 and E0212 suggest a near name; E0231 is the one *warning* — an unused `#import` |
+| Get rustc-grade diagnostics | `jr check file.jr` | 92 codes across lexer, parser, HIR, sema, MIR and const-eval. E0218 and E0212 suggest a near name; E0231 is the one *warning* — an unused `#import` |
 | Format source canonically | `jr fmt [--check] paths…` | The corpus is canonical under it, CI-enforced |
 | Inspect tokens or the CST | `jr parse file.jr` | Debug aid |
 | Measure language-server latency | `jr bench file.jr` | Reports min/median/p95 cold, warm and after an edit. **Reports, never judges** — no threshold, not a gate (ADR-0033) |
 | Print a number | `print_int(n)` from `modules/Basic` | Written in Jairs, and still recursive — both the `[N]u8` buffer and the `[]u8` view it wanted now exist, so nothing in the language is missing; converting it is its own change. Traps on the most negative `s64`, which cannot be negated (ADR-0002) |
 | Call libc from Jairs | `#foreign` / `#system_library` | Through libffi at run time (refused at comptime, ADR-0006). `modules/Basic` binds `write`, `exit`, `malloc`, `free`; the VM satisfies `malloc`/`free` from its own region (ADR-0061) so a pointer round-trips there too |
-| Fold a compile-time call | `COMPUTED :: #run add(2, 3)` | One *trivial* `#run`: a call or a constant expression, same file only |
+| Fold a compile-time call | `COMPUTED :: #run add(2, 3)`, or `n := #run add(2, 3)` in a body | Nested calls, arithmetic around a call, a loop in the callee and an **imported** callee all work (ADR-0069). Still refused: a `#foreign` call (ADR-0006), an operator overload, a default or named argument, and reading another file's constant — all because const-eval precedes the check phase |
 | Import a module | `#import "Basic";` | One module = one file, flat imports, cycles legal. Procedures, types, enum members and **constants' values** all cross the boundary; an imported struct's *fields* do not, so `using` on one is refused. `#scope_module` hides a declaration from importers, and `modules/Basic` uses it for its own internals |
 | Edit in Neovim, with highlighting, diagnostics, hover, goto-definition, completion, rename, code actions, signature help and inlay hints | `editors/nvim/` | Two lines in `init.lua` and one build script; no plugin manager. Neovim **0.11+** — every capability is on a stock 0.11 default binding (`K`, `gd`, `gra`, `grn`, `grr`, `gO`, `<C-s>`), so there are no keymaps to add. Works on a standalone `.jr` file too, not only inside a checkout. See [`editors/nvim/README.md`](editors/nvim/README.md) |
 | Use any other LSP editor | `jr lsp` | Speaks LSP 3.17 over stdio. The repository packages for Neovim only and **will not ship a VS Code extension** (ADR-0036) — point your client at the command yourself |
@@ -63,18 +102,20 @@ The authoritative version of this list is
 
 | Works | Absent (wave) |
 |---|---|
-| `s8 s16 s32 s64`, `u8 u16 u32 u64`, `bool`, `string`, `*T`, `null` | pointer arithmetic (`p + 1`), still deliberately none |
+| `s8 s16 s32 s64`, `u8 u16 u32 u64`, `bool`, `string`, `*T`, `null` | pointer *difference* `p - q`; unchecked, so past-end is UB |
 | `float32`, `float64` — plain IEEE-754, no traps | `%` on floats, `is_nan`, math intrinsics (**W7**) |
 | `cast(T, x)` between any two numeric types, and `xx` where the context gives the type | pointer conversions — `xx` is no more powerful than `cast` |
 | `struct { … }`, one level, nominal | |
-| `union { … }`, nominal, **untagged** — every field at offset 0 | a *tagged* variant type (**W2**, once pattern matching exists) |
-| `enum { RED; GREEN :: 5; }`, nominal, namespaced members, and bare `.RED` from context | `.RED` in a `switch`, since there is no `switch` (**W2**) |
+| `union { … }`, nominal, **untagged** — every field at offset 0, so a cross-field read reinterprets | |
+| `variant { … }` — a tagged union: a write sets the tag, reading another case **traps**, `switch` destructures it (ADR-0068) | a recursive variant; one in a `#foreign` signature; eliding the check inside a matching arm |
+| `enum { RED; GREEN :: 5; }`, nominal, namespaced members, and bare `.RED` from context — including as a `switch` case (ADR-0067) | |
 | `enum_flags { READ; WRITE; }` — powers of two, combines with `& \| ^ ~` | building one from a computed integer (`cast(Perm, 3)` is refused) |
 | procedures, one result or several: `-> (s64, bool)`, `q, ok := f();`, `_` to discard | `#must` (its own ADR); a multi-result call as a `return` operand |
 | a procedure as a **value**: `f := add`, a `(s64, s64) -> s64` parameter or **struct field**, `f(...)` calls through it; `(T)` with no arrow for a void return | a cross-file or `#foreign` procedure value; comparing or printing one; a `#c_call` proc-pointer type |
 | named arguments `f(b = 2, a = 1)` and literal defaults `(b: s64 = 10)` | a non-literal default; a named argument on a cross-file call, or in a `#run` |
 | `::` constant, `:=` inferred, `: T = v` typed, `---` uninit | |
 | `if` / `else if` / `else`, `while`, `return` | |
+| `switch e { case v; … else; … }` over an enum or an integer, **exhaustiveness-checked** for an enum, no fallthrough (ADR-0067) | patterns, ranges, guards; a multi-value `case`; `switch` as an expression |
 | `for x: buf`, `for x, i: buf`, `for i: 0..n`, `for < x: buf`; over arrays, views and ranges | iterate-by-reference `for *x`, a range as a value, `for` over a user type (**a later wave**) |
 | `break` / `continue`, labelled (`break outer`) or not; `defer` at every scope exit | |
 | `using p: Point` promotes a struct's fields; `using base: Point;` embeds them, transitively | `using` on an enum, a module, or an **imported** struct |
@@ -87,16 +128,22 @@ The authoritative version of this list is
 | `=` and compound `+= -= *= /= %= +%= -%= *%= &= \|= ^= <<= >>=` | |
 | `a.b.c` field access, auto-deref through pointers | dynamic arrays `[..]T` (**a later wave**) |
 | `[]T` views: `buf[]`, `xs[i]`, `xs.count`, writes through to the array, **returned from a procedure** | sub-slicing `buf[1..3]`, `==` on views |
-| `[N]T` fixed arrays: `a[i]`, `.count`, zeroed by default, bounds-checked — and `#no_abc` or `--no-bounds-check` to stop checking | array literals `[1, 2, 3]` (**a later wave**); a per-*index* `#no_abc` |
+| `[N]T` fixed arrays: `a[i]`, `.count`, zeroed by default, bounds-checked — and `#no_abc` or `--no-bounds-check` to stop checking. `N` may be a literal or a **named constant** (ADR-0070) | a length needing evaluation — arithmetic, `#run`, a chain, or another file's constant; array literals `[1, 2, 3]`; a per-*index* `#no_abc` |
 | calls, nested; a discarded call is a statement | |
 | integer literals (dec/hex/bin/oct, `_`), string literals + escapes | |
 | float literals: `1.5`, `1e9`, `1.5e-3`, `1_000.5` | float *printing* — `print_int` has no counterpart |
 | nesting block comments; `///` and `//!` doc comments, shown on hover | doc generation (`jr doc`) — nothing consumes docs but the language server |
-| one trivial `#run` | arbitrary `#run`, RTTI, `#insert`, `#code` (**W4**) |
+| `#run` at file scope or in a body, calling local or **imported** procedures, with loops and nested calls | `type_info()`, `Any`, `#code` (**W4**, in sub-waves) |
+| `#insert "…"` of a **string literal**, lowered where it is written — same scope, so a local it declares is visible after it; nesting works, and every diagnostic points at the directive and names its offset into the inserted text (ADR-0072) | a **computed** or named operand (`#insert build_it()`), which needs lowering to depend on const-eval — the W4 cycle; `#insert` at file scope, which would change the item tree; `#code` and the `Code` type |
+| a **type as a compile-time value**: `T :: Point;` binds one, and `T` is usable wherever `Point` is — as an annotation, a parameter, a field, an array element, a pointee; an enum alias carries its members (ADR-0071) | a chain (`B :: A`); comparing types (`T == U`); a `Type` parameter; `Type` as an annotation, which does not parse |
+| using a type where a **runtime** value is expected is refused (E0261) — it has no runtime representation, so there is nothing to store | — |
 | `#import`, `#foreign`, `#system_library` | polymorphs `$T`, `#expand` macros (**W5**) |
-| overflow traps with a source location (ADR-0002, ADR-0020) | backtraces (**W3**) |
-| `context` — a hidden parameter passed by pointer, so a callee reads what its caller wrote; `#c_call` opts out and gets none | `push_context`, so an allocator a callee installs stays installed for its caller; temporary storage (**W3**) |
-| `context.allocator` / `.allocator_free` / `.allocator_data` — install an allocator, and a callee allocates through it without knowing which | a *bump* allocator, which needs pointer arithmetic; a `#foreign` procedure installed directly (wrap it) |
+| overflow traps with a source location (ADR-0002, ADR-0020), and a **call chain** of the frames that were live (ADR-0066) | a per-frame line number; inlined frames, which have no runtime existence |
+| `context` — a hidden parameter passed by pointer, so a callee reads what its caller wrote; `#c_call` opts out and gets none | — |
+| `push_context { … }` — a block with its own copy of the context, so a write inside it is restored on exit (ADR-0063) | — |
+| `context.allocator` / `.allocator_free` / `.allocator_data` — install an allocator, and a callee allocates through it without knowing which | a `#foreign` procedure installed directly (wrap it) |
+| `p + n`, `n + p`, `p - n` on a `*T` — element-scaled, unchecked; a bump allocator advances a pointer (ADR-0064) | `p - q` (deferred); `p[n]` sugar; pointer ordering `< >` |
+| `talloc(n)` / `reset_temporary_storage()` — a per-context bump arena, valid until reset, no per-piece free (ADR-0065) | hands out `*u8` only (a wider store needs a pointer cast) |
 
 ADR-0008 chose Jai's **error model** — several return values plus `#must` — and the first half now
 exists: a procedure returns a value and a flag, and the caller must name both. `#must`, which makes
@@ -170,13 +217,12 @@ ignoring the flag a compile error, is owed its own ADR. There is no GC and no RA
   cannot shadow an existing name — C's rule would be worse here than in C, because ADR-0014's
   flat import merge would let an imported enum's members enlarge the name space every
   identifier resolves against.
-- **Bare `.RED` does not work yet, and that is a planned gap rather than an oversight.** Jai
-  allows `c: Colour = .RED;`. ADR-0041 §2 records the five concrete steps it needs — a syntax
-  node, an HIR expression, a sema rule on the context path, an audit of every place a type is
-  pushed inward, and a decision about `switch` — because it asks the context for a *namespace
-  to resolve a name in* rather than a type to give an untyped value, which is a new resolution
-  rule and not a new literal. `Colour.RED` stays valid forever, so nothing written today breaks
-  when `.RED` lands.
+- **Bare `.RED` works, and its last owed decision is now taken.** `c: Colour = .RED;` landed with
+  `xx` autocast (ADR-0046); ADR-0041 §2 listed five steps it needed, and the fifth — "a decision
+  about `switch`" — was owed until ADR-0067 made `case .RED` legal. It asks the context for a
+  *namespace to resolve a name in* rather than a type to give an untyped value, which is why it was
+  a resolution rule rather than a new literal. `Colour.RED` stays valid, so both spellings work and
+  the corpus proves they compile to identical MIR.
 - **An enum's numbering is Jai's, including the part that surprises people.** Members
   auto-number from 0, an explicit value is allowed, and **later members continue from it** —
   `enum { A; B :: 10; C; }` is 0, 10, 11, not 0, 10, 2. Duplicate values are legal. Ordering
@@ -324,7 +370,7 @@ ignoring the flag a compile error, is owed its own ADR. There is no GC and no RA
 - **ADR-0002's arithmetic has two implementations, not one.** `jr-pool` owns the one
   both *evaluators* share; `jr-codegen-clif` keeps its own because it emits code rather
   than evaluating. The pair is held equal by `differential.rs` and nothing else.
-- **Neovim integration is verified on one machine, not gated.** The 151 checks need an
+- **Neovim integration is verified on one machine, not gated.** The 166 checks need an
   editor, and Neovim is not a build dependency of this workspace, so `cargo test` cannot
   run them. No other editor is packaged for, deliberately (ADR-0036). They also need the
   *installed* parser to be current: `editors/nvim/build.sh` is a separate artefact from the

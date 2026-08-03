@@ -243,3 +243,43 @@ pub(crate) const E0256: &str = "E0256";
 /// no context at all. Distinct from E0214 "mismatched types" because the objection is specifically
 /// that a *pointer* was needed, which the note says.
 pub(crate) const E0257: &str = "E0257";
+
+/// A `switch` on an enum that does not name every member (ADR-0067 §3).
+///
+/// The point of adding matching is that the compiler can *prove* a case is handled, so a missing
+/// member is an error rather than a warning — a warning would leave the proof optional, the same
+/// "behaviour depends on something invisible" ADR-0014 §3 refuses.
+///
+/// The message names the members that are missing rather than counting them, because the missing name
+/// *is* the fix and a count makes the reader re-derive it. Only raised for an enum scrutinee: an `s64`
+/// has no finite member set to be exhaustive over, so it needs an `else` instead.
+pub(crate) const E0258: &str = "E0258";
+
+/// A duplicate `case` value, or a second `else`, in one `switch` (ADR-0067 §4).
+///
+/// The second arm can never run, and an arm that cannot run is a statement the reader believes does.
+/// Reported against the *later* arm, since the earlier one is the one that works.
+pub(crate) const E0259: &str = "E0259";
+
+/// An `else` arm on a `switch` that already names every member of its enum (ADR-0067 §4).
+///
+/// Unreachable, and this is the diagnostic that makes E0258 worth having: without it every `switch`
+/// could end in `else` and the exhaustiveness check would never fire.
+pub(crate) const E0260: &str = "E0260";
+
+/// A type used where a runtime value was expected (ADR-0071 §3).
+///
+/// A type is a compile-time value (ADR-0012), and `jr_pool::LayoutError::ComptimeOnly` says the same
+/// thing from the layout side: `Item::TypeType` has no runtime size, and asking for one "is a category
+/// error". So a type cannot be stored, and `t := Point;` is asking for storage.
+///
+/// **This code exists because the case was a silent miscompile.** Before it, `t := Point;` type-checked
+/// cleanly and both engines exited 0, lowering to `s0: type` and `v1: type = undef` — a placeholder
+/// that is a *legitimate value*, so neither the verifier nor ADR-0017 §4's poison gate could catch it.
+/// That is this project's first named failure mode, and ADR-0017 §4's rule is that such a case refuses.
+///
+/// Distinct from E0214 because the objection is not that some *other* type was wanted — for `t :=
+/// Point;` nothing was wanted — but that a type is not a value at all. The message therefore names the
+/// positions that do accept a type rather than naming an expected type the reader could write: `Type`
+/// is deliberately not spellable (ADR-0071 §1), so there is no annotation to suggest.
+pub(crate) const E0261: &str = "E0261";

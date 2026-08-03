@@ -468,6 +468,16 @@ pub enum Projection {
     /// (ADR-0039 §5). That difference is the whole point of a view, which is why it needs a
     /// projection at all.
     ViewCount,
+    /// A `variant`'s tag byte, of type `u8` (ADR-0068 §3).
+    ///
+    /// Its own projection rather than `Field(n)`, because the tag is **not a case**: no source
+    /// expression names it (§5 keeps `v.tag` unspellable), and giving it a field index would put it in
+    /// the same numbering the cases use — so a `Field(0)` would be ambiguous between the tag and the
+    /// first case, which is exactly the kind of silent wrong-address bug ADR-0045 §3 warns about.
+    ///
+    /// Reachable only from lowering: a write to a case emits a store through this, and a read of a case
+    /// emits a load through it to compare (§4).
+    VariantTag,
 }
 
 /// The kind of a numeric value: an integer or a float (ADR-0040 §3).
@@ -714,6 +724,28 @@ pub enum Statement {
         /// would have to be replaced rather than extended (ADR-0039 §1).
         len: Operand,
         /// Where it came from — the span of the *index*, so the trap names it.
+        span: MirSpan,
+    },
+    /// Traps unless a `variant`'s tag names the case being read (ADR-0068 §4).
+    ///
+    /// An explicit statement rather than a side effect of [`Projection::Field`], for the reason
+    /// [`Statement::BoundsCheck`] is one (ADR-0003): the check is a *unit* a pass can reason about, and
+    /// a projection that trapped invisibly would make every field read a possible trap in every pass
+    /// that walks a place.
+    ///
+    /// Unlike a bounds check this is **not** strippable by a build setting: ADR-0003's flag removes a
+    /// check that is redundant with a proof the programmer has, whereas a variant's tag is the only
+    /// thing that knows which case is live — removing it removes the type's meaning. A program that
+    /// wants no check writes `union` (ADR-0068 §4).
+    ///
+    /// Produces no value, so like `BoundsCheck` it is **not** deletable by DCE: its whole effect is a
+    /// possible trap.
+    TagCheck {
+        /// The variant place whose tag is read — the place *without* the case projection.
+        place: Place,
+        /// The case index the read expects.
+        case: u32,
+        /// Where it came from — the span of the field access, so the trap names it.
         span: MirSpan,
     },
     /// A statement that has been removed.
@@ -1290,6 +1322,7 @@ impl MirBody {
                         remap_operand_slots(index, &remap);
                         remap_operand_slots(len, &remap);
                     }
+                    Statement::TagCheck { place, .. } => remap_place_slots(place, &remap),
                     Statement::Nop => {}
                 }
             }
@@ -1403,7 +1436,8 @@ fn remap_place_slots(place: &mut Place, remap: &[Option<SlotId>]) {
             | Projection::StringData
             | Projection::StringCount
             | Projection::ViewData
-            | Projection::ViewCount => {}
+            | Projection::ViewCount
+            | Projection::VariantTag => {}
         }
     }
 }

@@ -1,10 +1,32 @@
-// EXPECT: E0233 — an array length that is not an integer literal (ADR-0039 §3a)
-// `jr-sema` has no constant evaluator: ADR-0018 §3 puts const-eval in `jr-db` over the
-// bytecode VM, which is *downstream* of where a type annotation is resolved. So the
-// length is read during lowering and only a literal is accepted. `[COUNT]u8` becomes
-// possible in the wave that makes sema and comptime mutually recursive (W4).
-COUNT :: 4;
+// EXPECT: E0233 — an array length that needs the compile-time evaluator (ADR-0039 §3a, ADR-0070 §2)
+//
+// **This file's construct changed with ADR-0070.** It used to be `COUNT :: 4;` with `buf: [COUNT]u8;`,
+// which is now *legal*: for a constant whose initialiser is already an integer literal there is nothing
+// to evaluate, so sema resolves the name against the file scope and reads the literal out of the HIR —
+// no `jr-db`, no `jr-vm`, no inversion of ADR-0018 §3's phase order.
+//
+// What remains refused is a length that needs an actual **value**, which is where ADR-0039 §3a's argument
+// still holds exactly as written: const-eval runs in `jr-db` over the bytecode VM, *downstream* of where
+// a type annotation is resolved, so sema cannot compute one.
+//
+// **One** refusal here, because this directory's contract is one diagnostic per file. The arithmetic case
+// is the one shown, and the other two ways of needing a value are refused identically:
+//
+//   * a `#run` length, which needs the evaluator by definition;
+//   * a constant naming another constant (`B :: A` where `A :: 4`) — one level further than sema follows,
+//     because a chain needs a fixpoint and a cycle check, which is the same machinery (ADR-0070 §4).
+//
+// Folding `SUM` here would mean a *second* constant folder beside ADR-0022's, which is the duplication
+// ADR-0018 §2 refuses for layout and ADR-0020 §2 for trap messages. All three become possible in the
+// sub-wave that makes sema and comptime mutually recursive, which PLAN.md §5 lists as the project's top
+// risk.
+LITERAL :: 4;
+SUM :: 2 + 2;
 
 main :: () {
-    buf: [COUNT]u8;
+    // Legal now, and here so the file shows the line rather than only one side of it.
+    ok: [LITERAL]u8;
+
+    // E0233: the length names a constant, but not one whose value is already a literal.
+    a: [SUM]u8;
 }

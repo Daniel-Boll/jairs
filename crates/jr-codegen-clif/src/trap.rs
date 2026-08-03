@@ -77,6 +77,12 @@ pub enum TrapKind {
     /// [`TrapKind::UninitialisedRead`], nothing reports this statically in general — a
     /// *literal* index out of range is E0236, but a computed one is only knowable here.
     IndexOutOfBounds,
+    /// A `variant`'s case was read while its tag named a different one (ADR-0068 §4).
+    ///
+    /// Nothing reports this statically — which case is live is not decidable — so this is the runtime
+    /// half of a check that has no compile-time half at all, unlike [`TrapKind::IndexOutOfBounds`]
+    /// whose literal cases are E0236.
+    WrongVariantCase,
 }
 
 impl TrapKind {
@@ -126,6 +132,7 @@ impl TrapKind {
             Self::DivideByZero => "division by zero",
             Self::ShiftOutOfRange => "shift count out of range",
             Self::IndexOutOfBounds => "index out of bounds",
+            Self::WrongVariantCase => "read the wrong variant case",
             Self::Deliberate => "reached a deliberate trap",
             Self::StrayJump => "a `break` or `continue` outside a loop was reached",
             Self::FellOffEnd => "control reached the end of a procedure that must return a value",

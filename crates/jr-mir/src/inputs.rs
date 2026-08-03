@@ -321,6 +321,22 @@ impl ImportedProcs {
         self.by_name.get(&(import, name)).copied()
     }
 
+    /// Whether the imported procedure at `target` receives the implicit context (ADR-0057 §3).
+    ///
+    /// Keyed by [`ProcRef`] rather than by `(import, name)`, because a caller that already resolved the
+    /// callee has the reference and not the name it was imported under — which is the position
+    /// `thunk.rs` is in when it decides whether to pass a context (ADR-0069 §1).
+    ///
+    /// `false` for a procedure this map does not hold, which is the safe direction: a call that passes
+    /// no context to a callee expecting one is an argument-count mismatch the interpreter reports,
+    /// whereas passing one to a `#c_call` callee would corrupt its first argument.
+    #[must_use]
+    pub fn receives_context(&self, target: ProcRef) -> bool {
+        self.by_name
+            .values()
+            .any(|p| p.target == target && p.receives_context)
+    }
+
     /// The number of resolved imported procedures.
     #[must_use]
     pub fn len(&self) -> usize {

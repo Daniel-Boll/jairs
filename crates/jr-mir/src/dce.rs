@@ -173,6 +173,7 @@ fn used_values(body: &MirBody) -> FxHashSet<ValueId> {
                     note_operand(index, &mut used);
                     note_operand(len, &mut used);
                 }
+                Statement::TagCheck { place, .. } => note_place(place, &mut used),
                 Statement::Nop => {}
             }
         }
@@ -226,7 +227,8 @@ fn note_place(place: &Place, used: &mut FxHashSet<ValueId>) {
             | Projection::StringData
             | Projection::StringCount
             | Projection::ViewData
-            | Projection::ViewCount => {}
+            | Projection::ViewCount
+            | Projection::VariantTag => {}
         }
     }
 }
@@ -292,6 +294,12 @@ fn drop_dead_stores(body: &mut MirBody) -> bool {
                 // `024-hello.jr`'s `Point` from being optimised away entirely. The program
                 // stayed correct and the optimisation silently stopped happening, which is
                 // what the optimized-MIR snapshot is for.
+                // **A `TagCheck` *reads* the tag, so it observes its slot.** Grouping it with the
+                // writes below — the first draft of this change did — made DCE see nothing reading the
+                // variant and delete *both* the tag store and the value store, so a correct read
+                // trapped with `tag=0`. The stores vanished silently and only the trap showed it,
+                // which is the "well-typed placeholder" failure mode reached through a dead-code pass.
+                Statement::TagCheck { place, .. } => note_place_slots(place, &mut observed),
                 Statement::Store { .. }
                 | Statement::Zero { .. }
                 | Statement::BoundsCheck { .. }
@@ -360,9 +368,14 @@ fn drop_unused_slots(body: &mut MirBody) -> bool {
                 Statement::Assign { rvalue, .. } | Statement::Discard { rvalue, .. } => {
                     note_rvalue_slots(rvalue, &mut used);
                 }
-                Statement::Store { place, .. } | Statement::Zero { place, .. } => {
-                    note_place_slots(place, &mut used)
-                }
+                // **`TagCheck` belongs here, not with `BoundsCheck`**: it carries a `Place`, so the
+                // slot that place names is observed. Grouping it with the operand-only checks dropped
+                // the slot and then panicked in `remap_place_slots` with "a live place named a dropped
+                // slot" — the verifier catching an omission rather than a wrong answer, which is what
+                // it is for.
+                Statement::Store { place, .. }
+                | Statement::Zero { place, .. }
+                | Statement::TagCheck { place, .. } => note_place_slots(place, &mut used),
                 Statement::BoundsCheck { .. } => {}
                 Statement::Nop => {}
             }

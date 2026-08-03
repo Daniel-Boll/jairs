@@ -84,10 +84,15 @@ pub fn build_object(
 
     // Phase 1: declare everything, so a cross-file call has a symbol to reference.
     for (file_id, hir, _, signatures) in &inputs {
+        // The source name of every procedure this file binds, for a backtrace frame (ADR-0066 §3).
+        // Built here because resolving a `Symbol` needs the interner, which `jr-codegen` has no
+        // database to ask — the same reason a trap's *location* is resolved on this side (ADR-0020 §3).
+        let names = proc_names(db, hir.as_ref());
         let input = FileInput {
             file: *file_id,
             hir: hir.as_ref(),
             signatures: signatures.as_ref(),
+            names: &names,
         };
         let own_entry = (*file_id == entry.file).then_some(entry.proc);
         for decl in declarations(&input, &pool, own_entry) {
@@ -137,6 +142,34 @@ pub fn build_object(
 #[must_use]
 pub fn entry_of(db: &dyn Db, root: SourceFile) -> Option<ProcId> {
     main_of(db, root).map(|reference| reference.proc)
+}
+
+/// The source name of every procedure a file binds, indexed by [`ProcId`] (ADR-0066 §3).
+///
+/// Procedures are constants (ADR-0012), so a `Proc` carries no name of its own and the name lives on
+/// the item binding it — the same walk `main_of` does, done once per file instead of once per lookup
+/// because a backtrace may name any of them.
+///
+/// A slice parallel to `hir.procs` rather than a map, matching what `declarations` iterates: an entry
+/// is `None` for a procedure no item binds, and its frame is then omitted rather than printed as a
+/// placeholder, because an unnamed line in a backtrace tells a reader nothing.
+fn proc_names(db: &dyn Db, hir: &jr_hir::FileHir) -> Vec<Option<String>> {
+    let interner = db.interner();
+    let mut out = vec![None; hir.procs.len()];
+    for item in &hir.items {
+        let jr_hir::ItemKind::Const {
+            value: jr_hir::ConstValue::Proc(proc),
+        } = &item.kind
+        else {
+            continue;
+        };
+        if let Some(name) = item.name
+            && let Some(slot) = out.get_mut(proc.index())
+        {
+            *slot = Some(interner.resolve(name).to_owned());
+        }
+    }
+    out
 }
 
 /// Resolves the trap locations of one body.

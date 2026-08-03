@@ -136,6 +136,13 @@ pub enum Trap {
     /// code raises a trap through a helper taking a pointer to a constant string
     /// (ADR-0039 §2).
     IndexOutOfBounds,
+    /// A `variant`'s case was read while its tag named a different one (ADR-0068 §4).
+    ///
+    /// The tag is the only thing that knows which case is live, so this is the trap that turns an
+    /// undetectable bit reinterpretation — what a `union` does, by design (ADR-0045 §1) — into a
+    /// located failure. Not statically decidable, which is why it is a trap rather than a diagnostic:
+    /// the last write may be in another procedure, behind a pointer, or in a loop.
+    WrongVariantCase,
     /// A memory access was out of bounds or misaligned.
     ///
     /// Reachable from a valid program: `ptr := *sum;` followed by arithmetic on the
@@ -163,6 +170,7 @@ impl fmt::Display for Trap {
             ),
             Self::UninitialisedRead => write!(f, "read a value that was never assigned"),
             Self::IndexOutOfBounds => write!(f, "index out of bounds"),
+            Self::WrongVariantCase => write!(f, "read the wrong variant case"),
             Self::BadAddress { address, size } => {
                 write!(f, "invalid access of {size} bytes at address {address:#x}")
             }

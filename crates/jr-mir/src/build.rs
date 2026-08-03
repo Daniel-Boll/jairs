@@ -236,6 +236,7 @@ pub fn lower_body(
         param_slots: FxHashMap::default(),
         param_tys: Vec::new(),
         bounds_checks: !proc_data.no_abc,
+        variant_cases: FxHashMap::default(),
         context: None,
         current: None,
         loops: Vec::new(),
@@ -296,7 +297,11 @@ impl Reach {
             }
             out.stmts.push(id);
             match body.stmt(id) {
-                Stmt::Block(ids, _) => stmt_work.extend(ids.iter().copied()),
+                // An `#insert`'s statements are reached exactly as a block's — the difference between
+                // the two is scoping, which is decided in `jr-hir`, not reachability (ADR-0072 §1).
+                Stmt::Block(ids, _) | Stmt::Insert { stmts: ids, .. } => {
+                    stmt_work.extend(ids.iter().copied())
+                }
                 // The destructuring forms reach their call and their targets, so both are walked
                 // (ADR-0052 §2). A `_` discard reaches nothing, which is what `None` records.
                 Stmt::LocalTuple { targets, call, .. } => {
@@ -367,6 +372,16 @@ impl Reach {
                     stmt_work.push(*inner);
                 }
                 Stmt::Defer(inner, _) => stmt_work.push(*inner),
+                Stmt::PushContext(inner, _) => stmt_work.push(*inner),
+                Stmt::Switch { value, arms, .. } => {
+                    expr_work.push(*value);
+                    for arm in arms {
+                        if let Some(case) = arm.value {
+                            expr_work.push(case);
+                        }
+                        stmt_work.push(arm.body);
+                    }
+                }
                 Stmt::Return(value, _) => {
                     if let Some(value) = value {
                         expr_work.push(*value);
@@ -465,6 +480,10 @@ fn scan(
         match body.stmt(*id) {
             Stmt::Error(_) => return Some("the body contains recovered syntax"),
             Stmt::Block(_, _)
+            // **Representable, and it must be**: an `#insert`'s statements are ordinary statements by the
+            // time MIR sees them, so refusing here would refuse whatever the insert contained
+            // (ADR-0072 §1). The insert itself carries nothing to lower.
+            | Stmt::Insert { .. }
             // Representable: a destructuring statement lowers to a call plus field reads, and a
             // multi-value return to stores through the results slot — all shapes MIR already has
             // (ADR-0052 §1), which is why nothing here needs refusing.
@@ -481,6 +500,13 @@ fn scan(
             | Stmt::Break(_, _)
             | Stmt::Continue(_, _)
             | Stmt::For { .. }
+            // Representable: a `push_context` block lowers to an aggregate copy into a fresh slot
+            // and a compile-time swap of which pointer `context` reads — no new MIR node (ADR-0063
+            // §2), so there is nothing here to refuse.
+            | Stmt::PushContext(_, _)
+            // Representable: a `switch` lowers to the branch chain an `if`/`else if` over the same
+            // comparisons already produces (ADR-0067 §6), so there is nothing to refuse either.
+            | Stmt::Switch { .. }
             | Stmt::Defer(_, _) => {}
         }
     }
@@ -755,6 +781,14 @@ struct Lower<'a> {
     /// index and the `for` element. Two lookups of one fact is how the two sites come to disagree,
     /// and the dangerous direction is silent: an unchecked store.
     bounds_checks: bool,
+    /// Which case each variant-field place names, filled by `project_field` (ADR-0068 §4).
+    ///
+    /// Keyed by the whole `Place`, because that is what `assign` has when it decides whether to emit a
+    /// tag store — and a `Place`'s type is not recoverable from the place alone, so the alternative
+    /// would be a second implementation of projection typing.
+    ///
+    /// Empty for every program that declares no variant.
+    variant_cases: FxHashMap<Place, u32>,
     /// The hidden context parameter's value, for a procedure that receives one (ADR-0057 §2).
     ///
     /// `None` for a `#c_call` procedure, which is what makes `context` unlowerable there — and sema
@@ -844,6 +878,7 @@ impl Lower<'_> {
             | Item::EnumType { .. }
             | Item::StructType { .. }
             | Item::UnionType { .. }
+            | Item::VariantType { .. }
             | Item::ProcType { .. }
             | Item::VoidValue
             | Item::BoolValue(_)
@@ -1010,6 +1045,16 @@ impl Lower<'_> {
                 self.run_defers_from(depth);
                 self.defers.truncate(depth);
             }
+            // An `#insert`'s statements are emitted in sequence with **no defer scope of their own**
+            // (ADR-0072 §1, and `Stmt::Insert`'s docs). `Stmt::Block` above marks a depth and runs the
+            // defers registered inside it; an insert deliberately does not, so a `defer` written in
+            // inserted code runs when the *enclosing* scope is left — which is what "as if written here"
+            // has to mean. This is the difference that made a distinct variant necessary.
+            Stmt::Insert { stmts, span: _ } => {
+                for inner in stmts {
+                    self.stmt(inner);
+                }
+            }
             Stmt::Local(local, _) => self.local_decl(local),
             // Constructed by nothing today. Matched explicitly so that the day
             // lowering starts producing it, this arm is the thing to change rather
@@ -1043,6 +1088,8 @@ impl Lower<'_> {
                 label,
                 span: _,
             } => self.for_stmt(value, index, &iterable, reverse, body, label),
+            Stmt::Switch { value, arms, .. } => self.switch_stmt(value, &arms),
+            Stmt::PushContext(inner, _) => self.push_context_stmt(inner),
             // Registered, not lowered: the statements run at every *exit* from the enclosing
             // scope, so `block` emits them before each terminator that leaves (ADR-0049 §3).
             Stmt::Defer(inner, _) => self.defers.push(inner),
@@ -1054,6 +1101,53 @@ impl Lower<'_> {
             Stmt::Continue(label, _) => self.jump(false, label, id),
             Stmt::Error(_) => {}
         }
+    }
+
+    /// Lowers `push_context { body }` (ADR-0063).
+    ///
+    /// A **copy plus a compile-time pointer swap**, and no new MIR node. The current context is one
+    /// object reached by `self.context` (a `*Context`); this copies it into a fresh slot and points
+    /// `context` at the copy for the block, so a write inside the block lands in the copy and the
+    /// caller's context is untouched — which is the isolation ADR-0057 §2 claimed and did not have.
+    ///
+    /// The restore is the swap-back of `self.context`, not a runtime save/restore: because it is
+    /// *which SSA operand* later code reads, leaving the block on any path (fall through, `return`,
+    /// `break`, `continue`) resumes with the outer pointer already in place. The block's own defers
+    /// run against the copy, because `Stmt::Block` emits them before this method restores the pointer
+    /// (ADR-0063 §3) — the fall-through order that puts the copy still in scope when they run.
+    fn push_context_stmt(&mut self, inner: StmtId) {
+        // Sema refused `push_context` in a `#c_call` procedure (E0254), so `None` here would mean the
+        // two disagree — `give_up` says so rather than lowering a swap of a pointer that is not there,
+        // which is ADR-0017 §4's rule and the project's first named failure mode.
+        let Some(outer) = self.context else {
+            self.give_up("`push_context` in a procedure that receives no context");
+            return;
+        };
+
+        // The copy: load the whole `Context` aggregate through the current pointer and store it into
+        // a fresh slot. This is the identical `Load`/`Store` pair that lowers `b := a` for any
+        // aggregate, which both engines already memcpy (ADR-0039 §4a).
+        let ctx_ty = self.pool.context_type();
+        let ctx_ptr_ty = self.pool.context_pointer();
+        let span = MirSpan::Synthetic;
+        let slot = self.mir.push_slot(ctx_ty, None, span);
+        let value = self.define(ctx_ty, Rvalue::Load(Place::deref(outer)), span);
+        self.emit(Statement::Store {
+            place: Place::slot(slot),
+            value,
+            span,
+        });
+        // The block reads `context` as the address of the copy.
+        let inner_ptr = self.define(ctx_ptr_ty, Rvalue::Address(Place::slot(slot)), span);
+        self.context = Some(inner_ptr);
+
+        self.stmt(inner);
+
+        // Restore the outer context for whatever follows on the fall-through path. On a path that
+        // left the block (`self.current` is `None`), there is nothing after it in this scope, so the
+        // restore is harmless — the next statement lowered belongs to an outer scope that reads its
+        // own `self.context` value from before this block anyway.
+        self.context = Some(outer);
     }
 
     /// Lowers `return a, b;` (ADR-0052 §1).
@@ -1287,7 +1381,8 @@ impl Lower<'_> {
             | Item::ResultsType { .. }
             | Item::ContextType
             | Item::StructType { .. }
-            | Item::UnionType { .. }
+        | Item::UnionType { .. }
+        | Item::VariantType { .. }
             | Item::ProcType { .. }
             | Item::VoidValue
             | Item::BoolValue(_)
@@ -1388,7 +1483,36 @@ impl Lower<'_> {
                 )
             }
         };
+        // **A write to a variant's case sets the tag** (ADR-0068 §4), before the value store so that a
+        // trap in the value's own evaluation cannot leave the tag claiming a case that was never
+        // written. `variant_case_written` answers `None` for every other assignment, so an ordinary
+        // struct or union store pays one `is_variant` check.
+        if let Some((base, index)) = self.variant_case_written(&place) {
+            let tag = self.pool.int_value(PoolId::U8, u64::from(index));
+            self.emit(Statement::Store {
+                place: base.project(Projection::VariantTag),
+                value: Operand::Constant(tag),
+                span,
+            });
+        }
         self.emit(Statement::Store { place, value, span });
+    }
+
+    /// The variant place and case index a store writes, if it writes a variant's case (ADR-0068 §4).
+    ///
+    /// `None` for every other place, which is the common case: an assignment to a struct field, a
+    /// local, an array element or a union field all answer `None` and emit no tag store.
+    ///
+    /// The answer comes from a map `project_field` fills as it builds a place, rather than from
+    /// re-deriving the receiver's type here: a `Place`'s type is not recoverable from the place alone
+    /// (its base is a slot or an operand and its steps carry no types), and re-deriving it would be a
+    /// second implementation of projection typing — two chances to disagree about which aggregate a
+    /// field belongs to, which for a variant means writing the tag of the wrong object.
+    fn variant_case_written(&self, place: &Place) -> Option<(Place, u32)> {
+        let index = *self.variant_cases.get(place)?;
+        let mut base = place.clone();
+        base.projection.pop();
+        Some((base, index))
     }
 
     fn return_stmt(&mut self, value: Option<ExprId>) {
@@ -1528,6 +1652,217 @@ impl Lower<'_> {
 
         self.ssa.seal_block(&mut self.mir, join);
         self.current = (then_fell_through || else_fell_through).then_some(join);
+    }
+
+    /// Lowers `switch e { case v; … else; … }` (ADR-0067 §6) to the branch chain an `if`/`else if` over
+    /// the same comparisons already produces — **no new MIR node**, and no back-end change.
+    ///
+    /// The scrutinee is evaluated **once**, into one operand every arm's comparison reads. That is not
+    /// only an optimisation: evaluating it per arm would run its side effects once per test, so a
+    /// `switch f() { … }` would call `f` several times. The chain shape is what makes that natural —
+    /// the operand is computed before the first test block.
+    ///
+    /// Each arm gets a test block and a body block; every body jumps to one join. An `else` arm's body
+    /// is the last test's false edge, so it needs no comparison. A `switch` with no `else` whose
+    /// comparisons all fail falls through to the join, which is what an unmatched non-enum `switch`
+    /// does — and an enum one cannot get there, because sema proved the members are covered (§3).
+    fn switch_stmt(&mut self, value: ExprId, arms: &[jr_hir::SwitchArm]) {
+        // **A variant switches on its tag, not on its value** (ADR-0068 §5): a variant is an aggregate
+        // and has no comparable value, so what the arms distinguish is which case is live — which is
+        // exactly what the tag holds. Each arm's case becomes that case's *index*, so the chain is the
+        // same `==` tests an enum switch builds and neither back end learns anything new.
+        if self.pointee(self.ty(value)).is_none()
+            && matches!(self.pool.item(self.ty(value)), Item::VariantType { .. })
+        {
+            self.variant_switch(value, arms);
+            return;
+        }
+        // Evaluated once, before any test (see above).
+        let scrutinee = self.expr(value);
+        let Some(mut current) = self.current else {
+            return;
+        };
+
+        let join = self.mir.push_block();
+        let mut any_fell_through = false;
+        // The `else` arm, if there is one: it has no comparison and runs when every test failed, so it
+        // is held back and lowered into the final false edge.
+        let (cases, else_arm): (Vec<&jr_hir::SwitchArm>, Option<&jr_hir::SwitchArm>) = {
+            let mut cases = Vec::with_capacity(arms.len());
+            let mut fallback = None;
+            for arm in arms {
+                if arm.value.is_some() {
+                    cases.push(arm);
+                } else if fallback.is_none() {
+                    // A second `else` is E0259, so sema already refused it; taking the first keeps this
+                    // lowering total rather than depending on that.
+                    fallback = Some(arm);
+                }
+            }
+            (cases, fallback)
+        };
+
+        for arm in cases {
+            let Some(case) = arm.value else { continue };
+            self.current = Some(current);
+            let case_operand = self.expr(case);
+            let Some(test) = self.current else { return };
+
+            let body_bb = self.mir.push_block();
+            // A `next` block even for the last arm, so each branch edge lands on a single-predecessor
+            // block — targeting the join directly would make a critical edge, which `verify` rejects
+            // (the same reason `if_stmt` always creates an `else` block).
+            let next_bb = self.mir.push_block();
+
+            let cond = self.define(
+                PoolId::BOOL,
+                Rvalue::Binary {
+                    op: BinOp::Eq,
+                    lhs: scrutinee,
+                    rhs: case_operand,
+                },
+                self.span(case),
+            );
+            self.mir.set_terminator(
+                test,
+                Terminator::Branch {
+                    cond,
+                    then_: Target::new(body_bb),
+                    else_: Target::new(next_bb),
+                },
+            );
+            self.ssa.seal_block(&mut self.mir, body_bb);
+            self.ssa.seal_block(&mut self.mir, next_bb);
+
+            self.current = Some(body_bb);
+            self.stmt(arm.body);
+            any_fell_through |= self.goto(join);
+
+            current = next_bb;
+        }
+
+        // Whatever is left after every test is the `else` arm's body, or nothing.
+        self.current = Some(current);
+        if let Some(arm) = else_arm {
+            self.stmt(arm.body);
+        }
+        any_fell_through |= self.goto(join);
+
+        self.ssa.seal_block(&mut self.mir, join);
+        self.current = any_fell_through.then_some(join);
+    }
+
+    /// Lowers `switch v { case .i; … }` over a variant, comparing the **tag** (ADR-0068 §5).
+    ///
+    /// Structurally the same chain [`Self::switch_stmt`] builds, with two differences: the scrutinee is
+    /// the tag loaded once from the variant's place, and each arm's value is the *case index* the arm
+    /// names rather than an expression it evaluates — a case is a name in the variant's namespace, not
+    /// a value (ADR-0067 §2's rule, applied to a different namespace).
+    ///
+    /// No `TagCheck` is emitted for the comparison itself: reading the tag is not reading a case, so
+    /// there is nothing for a check to be right or wrong about.
+    fn variant_switch(&mut self, value: ExprId, arms: &[jr_hir::SwitchArm]) {
+        let Some((place, ty)) = self.place(value) else {
+            self.give_up("a `switch` over a variant that has no place");
+            return;
+        };
+        let Item::VariantType { decl } = *self.pool.item(ty) else {
+            self.give_up("a variant `switch` on a non-variant");
+            return;
+        };
+        let cases = match self.pool.struct_fields(decl) {
+            Some(cases) => cases.to_vec(),
+            None => {
+                self.give_up("a variant whose cases were never resolved");
+                return;
+            }
+        };
+        let span = self.span(value);
+        // The tag, loaded once — the same single-evaluation property `switch_stmt` has, and for the
+        // same reason: a per-arm load would re-read a tag the arms cannot change.
+        let tag = self.define(
+            PoolId::U8,
+            Rvalue::Load(place.project(Projection::VariantTag)),
+            span,
+        );
+        let Some(mut current) = self.current else {
+            return;
+        };
+
+        let join = self.mir.push_block();
+        let mut any_fell_through = false;
+        let mut fallback: Option<StmtId> = None;
+
+        for arm in arms {
+            let Some(case) = arm.value else {
+                if fallback.is_none() {
+                    fallback = Some(arm.body);
+                }
+                continue;
+            };
+            // Which case the arm names. `None` means sema let through something that is not a case
+            // name, which `give_up` refuses rather than lowering as a comparison against a value.
+            let Some(index) = self
+                .switch_case_name(case)
+                .and_then(|name| cases.iter().position(|c| c.name == name))
+            else {
+                self.give_up("a variant `switch` arm that names no case");
+                return;
+            };
+            let index = u32::try_from(index).unwrap_or(u32::MAX);
+
+            self.current = Some(current);
+            let Some(test) = self.current else { return };
+            let body_bb = self.mir.push_block();
+            let next_bb = self.mir.push_block();
+
+            let wanted = self.pool.int_value(PoolId::U8, u64::from(index));
+            let cond = self.define(
+                PoolId::BOOL,
+                Rvalue::Binary {
+                    op: BinOp::Eq,
+                    lhs: tag,
+                    rhs: Operand::Constant(wanted),
+                },
+                span,
+            );
+            self.mir.set_terminator(
+                test,
+                Terminator::Branch {
+                    cond,
+                    then_: Target::new(body_bb),
+                    else_: Target::new(next_bb),
+                },
+            );
+            self.ssa.seal_block(&mut self.mir, body_bb);
+            self.ssa.seal_block(&mut self.mir, next_bb);
+
+            self.current = Some(body_bb);
+            self.stmt(arm.body);
+            any_fell_through |= self.goto(join);
+
+            current = next_bb;
+        }
+
+        self.current = Some(current);
+        if let Some(body) = fallback {
+            self.stmt(body);
+        }
+        any_fell_through |= self.goto(join);
+        self.ssa.seal_block(&mut self.mir, join);
+        self.current = any_fell_through.then_some(join);
+    }
+
+    /// The case name a variant `switch` arm writes, if it writes one (ADR-0068 §5).
+    ///
+    /// A bare `.i` is an [`Expr::Member`]; a qualified `V.i` is an [`Expr::Field`]. Anything else names
+    /// no case, and the caller refuses rather than comparing against a value.
+    fn switch_case_name(&self, case: ExprId) -> Option<Symbol> {
+        match self.body.expr(case) {
+            Expr::Member { name, .. } => Some(*name),
+            Expr::Field { name, .. } => Some(*name),
+            _ => None,
+        }
     }
 
     fn while_stmt(&mut self, cond: ExprId, body: StmtId, label: Option<Symbol>) {
@@ -2086,7 +2421,19 @@ impl Lower<'_> {
                 }
             },
             Expr::Field { .. } | Expr::Index { .. } | Expr::Deref(_, _) => match self.place(id) {
-                Some((place, _)) => self.define(ty, Rvalue::Load(place), span),
+                Some((place, _)) => {
+                    // **A read of a variant's case checks the tag first** (ADR-0068 §4). Before the
+                    // load, so a wrong-case read traps rather than returning reinterpreted bits — which
+                    // is the entire difference between `variant` and `union`.
+                    if let Some((base, case)) = self.variant_case_written(&place) {
+                        self.emit(Statement::TagCheck {
+                            place: base,
+                            case,
+                            span,
+                        });
+                    }
+                    self.define(ty, Rvalue::Load(place), span)
+                }
                 None => {
                     // Never `Undef`: that would read as a legitimate uninitialised
                     // value and pass the verifier, which is how a field of an
@@ -2217,6 +2564,18 @@ impl Lower<'_> {
         ty: PoolId,
         span: MirSpan,
     ) -> Operand {
+        // **Pointer offset, before the numeric path** (ADR-0064). `p + n`, `n + p` and `p - n` lower
+        // to the address of the pointer's pointee indexed by `n` — the back ends scale the index by
+        // the element stride, so no size is needed here (ADR-0017 §5). Recognised by the *result*
+        // type being a pointer, which sema set only for these forms; `p - q` is deferred and refused
+        // in sema, so a pointer result with `Sub` is always `p - n`.
+        if matches!(op, jr_hir::BinOp::Add | jr_hir::BinOp::Sub)
+            && self.pointee(ty).is_some()
+            && let Some(result) = self.pointer_offset(op, lhs, rhs, ty, span)
+        {
+            return result;
+        }
+
         // `&&` and `||` are control flow, not operators: MIR's `BinOp` has no
         // variant for them, which is what makes forgetting to short-circuit a
         // compile error rather than a silent semantic change.
@@ -2257,6 +2616,65 @@ impl Lower<'_> {
             },
             span,
         )
+    }
+
+    /// Lowers `p + n`, `n + p` and `p - n` (ADR-0064) to the address of the pointer's pointee indexed
+    /// by `n` — the shape `*p.*[n]` builds, which both back ends scale by the element stride.
+    ///
+    /// `None` would mean sema typed the result a pointer without either operand being one, which
+    /// cannot happen — but it is returned rather than a placeholder, per ADR-0017 §4, so a future
+    /// change that broke the invariant refuses the body rather than lowering a wrong address.
+    ///
+    /// No `BoundsCheck`: a raw pointer has no length to check against (ADR-0064 §3). The back ends'
+    /// stride scaling is why no size appears here (ADR-0017 §5).
+    fn pointer_offset(
+        &mut self,
+        op: jr_hir::BinOp,
+        lhs: ExprId,
+        rhs: ExprId,
+        ty: PoolId,
+        span: MirSpan,
+    ) -> Option<Operand> {
+        // Which operand is the pointer? Its recorded type is a pointer; the other is the integer
+        // offset. `n + p` puts the pointer on the right, and only `+` allows that (sema refused
+        // `n - p`), so a `Sub` here is always `p - n` with the pointer on the left.
+        let (ptr_expr, off_expr) = if self.pointee(self.ty(lhs)).is_some() {
+            (lhs, rhs)
+        } else {
+            (rhs, lhs)
+        };
+
+        let ptr_operand = self.expr(ptr_expr);
+        let mut offset = self.expr(off_expr);
+
+        // `p - n` moves back, so the index is `-n`. An ordinary negation on the integer, emitted
+        // before the index, so there is one scaled-address path rather than a second for subtraction.
+        if op == jr_hir::BinOp::Sub {
+            let off_ty = self.ty(off_expr);
+            offset = self.define(
+                off_ty,
+                Rvalue::Unary {
+                    op: UnOp::Neg,
+                    operand: offset,
+                },
+                span,
+            );
+        }
+
+        // **Index a slot holding the pointer, exactly as a view indexes its `data` word.** Both back
+        // ends' `Projection::Index` scale by the element stride when the place's type at that step is
+        // a *pointer* — they load the pointer and add `n * stride(pointee)` (ADR-0044 §2's view path).
+        // A raw pointer value is not in memory, so it is spilled to a fresh slot of the pointer type
+        // first; then `Place::slot(slot).Index(n)` is that same load-then-scale, and `Rvalue::Address`
+        // of it is `p + n` — with no size computed here (ADR-0017 §5) and no `BoundsCheck` (§3).
+        let slot = self.mir.push_slot(ty, None, span);
+        self.emit(Statement::Store {
+            place: Place::slot(slot),
+            value: ptr_operand,
+            span,
+        });
+        let place = Place::slot(slot).project(Projection::Index(offset));
+        Some(self.define(ty, Rvalue::Address(place), span))
     }
 
     /// Lowers `&&` (`short_on = false`) or `||` (`short_on = true`).
@@ -3012,7 +3430,11 @@ impl Lower<'_> {
             return Some((place.project(Projection::Field(index)), field_ty));
         }
         let decl = match self.pool.item(ty) {
-            Item::StructType { decl } | Item::UnionType { decl } => *decl,
+            // All three aggregate forms keep their fields in one side table (ADR-0068 §2), so a
+            // field lookup reaches them the same way.
+            Item::StructType { decl } | Item::UnionType { decl } | Item::VariantType { decl } => {
+                *decl
+            }
             _ => return None,
         };
         let fields = self.pool.struct_fields(decl)?.to_vec();
@@ -3021,7 +3443,14 @@ impl Lower<'_> {
         if let Some(index) = fields.iter().position(|field| field.name == name) {
             let field_ty = fields[index].ty;
             let index = u32::try_from(index).ok()?;
-            return Some((place.project(Projection::Field(index)), field_ty));
+            let projected = place.project(Projection::Field(index));
+            // Remembered here, where the receiver's *type* is in hand, so that `assign` can emit the
+            // tag store without re-deriving it (ADR-0068 §4). Recorded only for a variant, so the map
+            // stays empty for every program that declares none.
+            if matches!(self.pool.item(ty), Item::VariantType { .. }) {
+                self.variant_cases.insert(projected.clone(), index);
+            }
+            return Some((projected, field_ty));
         }
         // **Then a field of a `using`-embedded base**, which is what makes `e.x` reach
         // `e.base.x` (ADR-0050 §4). Missing this was not a compile error: sema accepted `e.x`

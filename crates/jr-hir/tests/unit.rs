@@ -2,7 +2,8 @@
 
 use jr_base::{FileId, Interner};
 use jr_hir::{
-    BinOp, ConstValue, Expr, ItemKind, Literal, Res, UnOp, dump::dump_hir, lower_file, resolve,
+    BinOp, ConstValue, Expr, ItemKind, Literal, Res, Stmt, UnOp, dump::dump_hir, lower_file,
+    resolve,
 };
 use jr_syntax::parse;
 
@@ -1165,6 +1166,184 @@ main :: () {
         resolve_diags.is_empty(),
         "cycle modules must resolve cleanly: {:?}",
         resolve_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `#insert` (ADR-0072)
+// ---------------------------------------------------------------------------
+
+/// The single body of a one-procedure file.
+///
+/// `FileHir::bodies` is walked rather than the item list, because reaching a body through an item means
+/// matching `ItemKind` — and these tests are about `#insert`, not about how a procedure is filed.
+fn sole_body(hir: &jr_hir::FileHir) -> &jr_hir::Body {
+    assert_eq!(hir.bodies.len(), 1, "these tests lower one procedure");
+    &hir.bodies[0]
+}
+
+/// The `Stmt::Insert` in a body whose root block holds exactly one, with its statement ids.
+///
+/// A helper because every test below needs the same two steps — find the body, then find the insert
+/// inside its root block — and doing it inline would bury what each test is actually asserting.
+fn only_insert(hir: &jr_hir::FileHir) -> (jr_base::Span, Vec<jr_hir::StmtId>) {
+    let body = sole_body(hir);
+    let Stmt::Block(top, _) = body.stmt(body.root) else {
+        panic!("a body's root is always a block");
+    };
+    let mut found = None;
+    for id in top {
+        if let Stmt::Insert { stmts, span } = body.stmt(*id) {
+            assert!(found.is_none(), "this helper expects exactly one insert");
+            found = Some((*span, stmts.clone()));
+        }
+    }
+    found.expect("an `#insert` statement")
+}
+
+#[test]
+fn insert_lowers_its_text_to_statements() {
+    // The feature at its smallest: the operand is parsed as Jairs and becomes real statements.
+    let (hir, diags, _) = lower(r#"main :: () { #insert "a := 1; b := 2;"; }"#);
+    assert!(
+        diags.is_empty(),
+        "a literal insert must lower cleanly: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let (_, stmts) = only_insert(&hir);
+    assert_eq!(stmts.len(), 2, "both inserted statements must be lowered");
+}
+
+#[test]
+fn insert_declares_into_the_enclosing_scope() {
+    // ADR-0072 §1's promise, and the reason `Stmt::Insert` is not a `Stmt::Block`: a local an insert
+    // declares is visible to the code *after* it. Asserted through resolution rather than through the
+    // HIR shape, because "is visible" is a statement about resolution.
+    let source = r#"main :: () { #insert "n := 5;"; m := n + 1; }"#;
+    let interner = Interner::new();
+    let f = file();
+    let parsed = parse(source, f);
+    let (hir, lower_diags) = lower_file(&parsed, f, &interner);
+    assert!(lower_diags.is_empty());
+    let (map, resolve_diags) = resolve(&hir, &[], &interner);
+    assert!(
+        resolve_diags.is_empty(),
+        "`n` is declared by the insert and must resolve after it: {:?}",
+        resolve_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    // Not merely "no diagnostic": the read must actually bind to a *local*. Without this, the test
+    // would still pass if resolution had silently stopped reporting anything.
+    assert!(
+        map.resolutions
+            .iter()
+            .any(|(_, res)| matches!(res, Res::Local(_))),
+        "the read of `n` must resolve to a local"
+    );
+}
+
+#[test]
+fn insert_gives_every_synthesized_statement_the_directive_span() {
+    // ADR-0072 §2. The spans the inner parse produced are offsets into the *string*; `jr-diag` clamps
+    // an out-of-range offset rather than rejecting it, so using one would underline source the user
+    // never wrote. This is the test that would have caught the `Expr::Name` field the first attempt
+    // missed, so it checks an expression's span and not only a statement's.
+    let source = r#"main :: () { x := 0; #insert "aaaaaaaa := 1; bbbbbbbb := aaaaaaaa;"; }"#;
+    let (hir, diags, _) = lower(source);
+    assert!(diags.is_empty());
+    let (span, stmts) = only_insert(&hir);
+
+    // The directive's own range, found in the real source rather than recomputed.
+    let start = source
+        .find("#insert")
+        .expect("the directive is in the source");
+    assert_eq!(
+        u32::from(span.range.start()) as usize,
+        start,
+        "the insert's span must start at the `#insert` token"
+    );
+
+    let body = sole_body(&hir);
+    for id in &stmts {
+        let Stmt::Local(local_id, stmt_span) = body.stmt(*id) else {
+            panic!("both inserted statements are local declarations");
+        };
+        assert_eq!(*stmt_span, span, "a synthesized statement's span");
+        let local = body.local(*local_id);
+        assert_eq!(local.name_span, span, "a synthesized local's name span");
+        let init = local.init.expect("both have initialisers");
+        assert_eq!(
+            body.expr_span(init),
+            span,
+            "a synthesized expression's span"
+        );
+    }
+}
+
+#[test]
+fn insert_without_a_string_literal_is_e0262() {
+    let (_, diags, _) = lower("main :: () { #insert; }");
+    assert!(
+        diags.iter().any(|d| d.code == Some("E0262")),
+        "expected E0262, got {:?}",
+        diags.iter().map(|d| d.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_parse_error_in_inserted_text_is_e0263_and_names_the_offset() {
+    let (_, diags, _) = lower(r#"main :: () { #insert "x := ;"; }"#);
+    let insert_diags: Vec<_> = diags.iter().filter(|d| d.code == Some("E0263")).collect();
+    assert!(
+        !insert_diags.is_empty(),
+        "expected E0263, got {:?}",
+        diags.iter().map(|d| d.code).collect::<Vec<_>>()
+    );
+    // ADR-0072 §3: the span cannot say where in the string the fault is, so a note must.
+    assert!(
+        insert_diags.iter().any(|d| {
+            d.notes
+                .iter()
+                .any(|(_, note)| note.contains("in inserted code, at offset"))
+        }),
+        "E0263 must name the offset into the inserted text, since its span cannot"
+    );
+}
+
+#[test]
+fn an_empty_insert_inserts_nothing_and_is_not_an_error() {
+    // ADR-0072 §5: refusing this would be a rule about a program that means exactly what it says.
+    let (hir, diags, _) = lower(r#"main :: () { #insert ""; }"#);
+    assert!(diags.is_empty(), "an empty insert is legal");
+    let (_, stmts) = only_insert(&hir);
+    assert!(stmts.is_empty(), "an empty insert lowers to no statements");
+}
+
+#[test]
+fn a_nested_insert_lowers_through_both_levels() {
+    // ADR-0072 §5: nesting needed no code — the recursion falls out of `lower_stmt` calling itself —
+    // and this is what says so, rather than the claim resting on having run one corpus file.
+    // `r##"…"##`, because the operand contains `"#` — which would close an `r#"…"#` raw string early.
+    let (hir, diags, _) = lower(r##"main :: () { #insert "#insert \"deep := 1;\";"; }"##);
+    assert!(
+        diags.is_empty(),
+        "a nested insert must lower cleanly: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let (span, outer) = only_insert(&hir);
+    assert_eq!(outer.len(), 1, "the outer insert holds the inner one");
+    let body = sole_body(&hir);
+    let Stmt::Insert {
+        stmts: inner,
+        span: inner_span,
+    } = body.stmt(outer[0])
+    else {
+        panic!("the outer insert's only statement is the inner `#insert`");
+    };
+    assert_eq!(inner.len(), 1, "the inner insert declares `deep`");
+    // Both levels report the *outer* directive, which is the only span in the real file.
+    assert_eq!(
+        *inner_span, span,
+        "a nested insert's span is still the written directive's"
     );
 }
 

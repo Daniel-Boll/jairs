@@ -83,3 +83,13 @@ The ADR numbers are stable and are referenced from code comments and
 | [0060](0060-null-and-a-memory-source.md) | `null` is a context-typed pointer literal, and `malloc`/`free` reach libc | Accepted |
 | [0061](0061-vm-malloc-from-its-own-region.md) | The VM satisfies `malloc`/`free` from its own region (corrects ADR-0060 §4) | Accepted |
 | [0062](0062-the-allocator-protocol.md) | `context.allocator` is a struct of procedure pointers | Accepted |
+| [0063](0063-push-context.md) | `push_context` gives a block its own copy of the context (amends ADR-0057 §2) | Accepted |
+| [0064](0064-pointer-arithmetic.md) | Pointer offset (`p + n`, `p - n`) is element-scaled, unchecked, and lowers to an indexed address | Accepted |
+| [0065](0065-temporary-storage.md) | Temporary storage is a lazily-allocated bump arena in two context fields | Accepted |
+| [0066](0066-trap-backtraces.md) | A trap reports the call chain of the frames that still exist | Accepted |
+| [0067](0067-switch-and-exhaustiveness.md) | `switch` with exhaustiveness from the pool, and W4.5 moves before W4 (amends §2.1's order) | Accepted |
+| [0068](0068-tagged-variants.md) | `variant` is a tagged union with a checked read, destructured by `switch` (completes W4.5) | Accepted |
+| [0069](0069-run-across-files-and-in-a-body.md) | A `#run` may call an imported procedure and appear in a body; W4 is split into sub-waves | Accepted |
+| [0070](0070-array-length-from-a-constant.md) | An array length may name a literal-valued constant (amends ADR-0039 §3a) | Accepted |
+| [0071](0071-type-values.md) | A type is a compile-time value; using one at run time is refused | Accepted |
+| [0072](0072-insert.md) | `#insert` of a literal string, lowered where it is written | Accepted |

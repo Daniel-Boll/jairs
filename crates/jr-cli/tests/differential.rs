@@ -200,6 +200,41 @@ fn the_slice_exit_criterion_produces_output_in_both_engines() {
     assert_eq!(native.status, 0);
 }
 
+/// `#insert`'s corpus program must exit **64**, not merely exit the same way twice (ADR-0072 §1).
+///
+/// **The corpus differential cannot check this and it is worth being precise about why.** That test
+/// asserts the two engines *agree*; a `Stmt::Insert` lowered with a defer scope of its own makes both
+/// engines exit **63**, in perfect agreement, and the whole suite stays green except for a MIR snapshot
+/// diff that a reviewer can accept without noticing. Verified by making exactly that change: 63 in both
+/// engines, one snapshot to review.
+///
+/// 63 versus 64 is the difference between the two designs `Stmt::Insert` exists to separate. The
+/// program's `defer exit(n)` is written inside inserted text, and the `n = n + 1` after it is not: if the
+/// insert were a scope, the `exit` would run at the insert's end and report 63, and because it is not,
+/// the `exit` runs when **`main`** is left and reports 64. So this one number is the assertion that the
+/// inserted `defer` belongs to the enclosing body — which is the claim ADR-0072 §1 makes and the reason
+/// a block was not reused.
+#[test]
+fn an_inserted_defer_runs_when_the_enclosing_body_is_left() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/059-insert.jr");
+
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    assert_eq!(
+        vm.status, 64,
+        "the VM exited {} — 63 means the inserted `defer` ran at the insert's end \
+         rather than at `main`'s, i.e. the insert was given a scope of its own",
+        vm.status
+    );
+    assert_eq!(
+        native.status, 64,
+        "the native back end exited {} — see the VM assertion above",
+        native.status
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Programs whose *result* is observable
 // ---------------------------------------------------------------------------
@@ -634,7 +669,7 @@ fn a_trap_names_its_source_location_identically_in_both_engines() {
     let native = run_natively(&path, dir.path());
 
     let expected = format!(
-        "error: addition overflowed\n  --> {}:6:10\n",
+        "error: addition overflowed\n  --> {}:6:10\n  in main\n",
         path.display()
     );
     assert_eq!(vm.stderr, expected, "the VM's located trap message changed");
@@ -665,7 +700,10 @@ fn a_division_by_zero_names_its_own_line() {
     let vm = run_in_vm(&path);
     let native = run_natively(&path, dir.path());
 
-    let expected = format!("error: division by zero\n  --> {}:7:10\n", path.display());
+    let expected = format!(
+        "error: division by zero\n  --> {}:7:10\n  in main\n",
+        path.display()
+    );
     assert_eq!(vm.stderr, expected);
     assert_eq!(native.stderr, expected);
     assert_eq!(vm, native);
@@ -703,8 +741,11 @@ fn a_trap_inside_an_inlined_leaf_names_the_call_in_both_engines() {
     let vm = run_in_vm(&path);
     let native = run_natively(&path, dir.path());
 
+    // `bump` was inlined, so it has **no runtime frame** and does not appear in the
+    // chain — only `main` does (ADR-0066 §4). That absence is the same claim the line
+    // number makes, checked a second way.
     let expected = format!(
-        "error: addition overflowed\n  --> {}:10:10\n",
+        "error: addition overflowed\n  --> {}:10:10\n  in main\n",
         path.display()
     );
     assert_eq!(
@@ -744,13 +785,176 @@ fn a_trap_inside_a_callee_that_was_not_inlined_names_its_own_line() {
     let vm = run_in_vm(&path);
     let native = run_natively(&path, dir.path());
 
+    // `bump` was *not* inlined, so it has a real frame and the chain names it above
+    // `main` — the negative control for the inlined case, now visible in the backtrace
+    // as well as in the line number (ADR-0066 §4).
     let expected = format!(
-        "error: addition overflowed\n  --> {}:7:12\n",
+        "error: addition overflowed\n  --> {}:7:12\n  in bump\n  in main\n",
         path.display()
     );
     assert_eq!(vm.stderr, expected);
     assert_eq!(native.stderr, expected);
     assert_eq!(vm, native);
+}
+
+// ---------------------------------------------------------------------------
+// Backtraces (ADR-0066)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_recursive_trap_reports_every_live_frame_in_both_engines() {
+    // The case the whole feature is for, and the one the other trap tests cannot show:
+    // a chain several frames deep that the inliner *cannot* flatten, because
+    // `countdown` calls itself and `is_inlinable` refuses any callee that makes a call
+    // (ADR-0021 §4). So four real frames exist at the trap, and the backtrace must
+    // name all four plus `main`.
+    //
+    // It also pins the two engines' *mechanisms* against each other, which is the
+    // point of asserting it here: the VM pushes a `ProcRef` in `Vm::call` and renders
+    // names from the HIR afterwards, while native writes a name pointer into a mutable
+    // global and its generated helper walks that array at trap time. Nothing but this
+    // comparison keeps two such different implementations producing the same bytes
+    // (ADR-0020 §2's argument, now applied to a chain rather than a line).
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("backtrace.jr");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  countdown :: (n: s64) -> s64 {\n\
+                  \x20   if n <= 0 {\n\
+                  \x20       return 1 / n;\n\
+                  \x20   }\n\
+                  \x20   return countdown(n - 1);\n\
+                  }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   exit(countdown(3));\n\
+                  }\n";
+    std::fs::write(&path, source).expect("a writable temporary directory");
+
+    let vm = run_in_vm(&path);
+    let native = run_natively(&path, dir.path());
+
+    // Innermost first (ADR-0066 §2): the trapping frame leads, then its callers out to
+    // `main`. Four `countdown` frames, because the recursion is entered with 3, 2, 1
+    // and 0 — the last of which divides by zero.
+    let expected = format!(
+        "error: division by zero\n  --> {}:5:16\n  in countdown\n  in countdown\n  in countdown\n  in countdown\n  in main\n",
+        path.display()
+    );
+    assert_eq!(
+        vm.stderr, expected,
+        "the VM's backtrace lost or gained a frame"
+    );
+    assert_eq!(
+        native.stderr, expected,
+        "native's backtrace disagrees with the VM's"
+    );
+    assert_eq!(vm.status, 4);
+    assert_eq!(native.status, 4);
+}
+
+#[test]
+fn a_trap_with_no_jairs_caller_names_only_main() {
+    // The shallow end, and a real asymmetry between the engines that had to be fixed
+    // rather than asserted around: `main`'s frame is pushed by its *caller*, and
+    // native's caller is the C entry shim while the VM's is `run_main`. Without the
+    // shim pushing it, native printed one frame fewer than the VM here — which is
+    // exactly what this comparison exists to catch.
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("mainonly.jr");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   a := 0;\n\
+                  \x20   exit(1 / a);\n\
+                  }\n";
+    std::fs::write(&path, source).expect("a writable temporary directory");
+
+    let vm = run_in_vm(&path);
+    let native = run_natively(&path, dir.path());
+
+    let expected = format!(
+        "error: division by zero\n  --> {}:5:10\n  in main\n",
+        path.display()
+    );
+    assert_eq!(vm.stderr, expected);
+    assert_eq!(native.stderr, expected);
+    assert_eq!(vm, native);
+}
+
+// ---------------------------------------------------------------------------
+// Tagged variants (ADR-0068)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reading_the_wrong_variant_case_traps_identically_in_both_engines() {
+    // The whole point of the `variant` form, and a corpus program cannot check it: the trap ends the
+    // program, and a file in `valid/` must run to completion. So the trap lives here, where both
+    // engines' stderr is compared byte for byte (ADR-0020 §2).
+    //
+    // Two cases of the *same* type, deliberately: if the tag were ignored, reading `f` after writing
+    // `i` would quietly return 7, which same-typed cases make indistinguishable from a correct read.
+    // So this shape is the one that can only pass if the tag is really consulted.
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("wrongcase.jr");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  V :: variant {\n\
+                  \x20   i: s64;\n\
+                  \x20   f: s64;\n\
+                  }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   v: V;\n\
+                  \x20   v.i = 7;\n\
+                  \x20   exit(v.f);\n\
+                  }\n";
+    std::fs::write(&path, source).expect("a writable temporary directory");
+
+    let vm = run_in_vm(&path);
+    let native = run_natively(&path, dir.path());
+
+    let expected = format!(
+        "error: read the wrong variant case\n  --> {}:11:10\n  in main\n",
+        path.display()
+    );
+    assert_eq!(vm.stderr, expected, "the VM's wrong-case trap changed");
+    assert_eq!(
+        native.stderr, expected,
+        "native disagrees with the VM about a wrong-case read"
+    );
+    assert_eq!(vm.status, 4);
+    assert_eq!(native.status, 4);
+}
+
+#[test]
+fn the_same_program_written_with_a_union_reinterprets_instead_of_trapping() {
+    // The negative control, and what makes the test above mean something: `union` is *unchanged* by
+    // ADR-0068 (ADR-0045 §1's bargain still stands), so the identical program with `union` returns the
+    // bits and never traps. If this ever traps, `union` has silently become a `variant`.
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("reinterpret.jr");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  U :: union {\n\
+                  \x20   i: s64;\n\
+                  \x20   f: s64;\n\
+                  }\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   u: U;\n\
+                  \x20   u.i = 7;\n\
+                  \x20   exit(u.f);\n\
+                  }\n";
+    std::fs::write(&path, source).expect("a writable temporary directory");
+
+    let vm = run_in_vm(&path);
+    let native = run_natively(&path, dir.path());
+
+    assert_eq!(vm.stderr, "", "a union read must not trap");
+    assert_eq!(native.stderr, "");
+    assert_eq!(vm.status, 7, "a union reinterprets the bits it was given");
+    assert_eq!(native.status, 7);
 }
 
 // ---------------------------------------------------------------------------
@@ -781,7 +985,7 @@ fn a_dead_expression_that_overflows_still_traps_in_both_engines() {
     let native = run_natively(&path, dir.path());
 
     let expected = format!(
-        "error: addition overflowed\n  --> {}:7:13\n",
+        "error: addition overflowed\n  --> {}:7:13\n  in main\n",
         path.display()
     );
     assert_eq!(vm.stderr, expected, "the VM lost a dead expression's trap");

@@ -132,6 +132,20 @@ pub(crate) struct Ctx<'a> {
     /// finds. The same `(ExprScope, ExprId)` keying `operator_calls` and `filled_calls` use, for
     /// the same reason: an id alone does not say which arena it indexes.
     pub(crate) call_position: FxHashSet<(ExprScope, jr_hir::ExprId)>,
+    /// Expressions where a **type** is a legal thing to name (ADR-0071 §3).
+    ///
+    /// Exactly two positions, and both are recorded by the code that creates them rather than
+    /// inferred from the expression's shape:
+    ///
+    /// * the **receiver of a field access** — `Colour.RED`, whose receiver is the enum type used as a
+    ///   value (ADR-0041 §1);
+    /// * the **initialiser of a `::` constant** — `T :: Point;`, the one place a type value is bound.
+    ///
+    /// Everywhere else a `type`-typed name is E0261. An allowlist rather than a denylist because the
+    /// failure directions are not symmetric: a missed *legal* position is a false error the reader can
+    /// see and report, while a missed *illegal* one is the silent placeholder this wave exists to
+    /// remove. `call_position` above is the same mechanism for the same kind of reason.
+    pub(crate) type_position: FxHashSet<(ExprScope, jr_hir::ExprId)>,
 }
 
 impl<'a> Ctx<'a> {
@@ -147,6 +161,7 @@ impl<'a> Ctx<'a> {
     ) -> Self {
         Self {
             call_position: FxHashSet::default(),
+            type_position: FxHashSet::default(),
             hir,
             file,
             resolve,
@@ -284,15 +299,23 @@ impl<'a> Ctx<'a> {
             TypeRef::Array {
                 elem,
                 len,
+                len_name,
                 len_span,
             } => {
                 let element = self.resolve_type(scope, elem, span);
-                let Some(n) = len else {
-                    // Lowering reached the length *token* and found it was not a usable
-                    // literal, but says nothing (ADR-0039 §3a). This is where it is
-                    // reported, because rejecting a type is a semantic judgement and
-                    // because `type-errors/` files must lower cleanly.
-                    self.array_length_not_literal(len_span);
+                // A literal length is already known; otherwise the length may still be a **name** that
+                // resolves to a literal-valued constant (ADR-0070 §1), which needs a HIR lookup rather
+                // than an evaluation — so it happens here without inverting ADR-0018 §3's phase order.
+                let resolved_len = match len {
+                    Some(n) => Some(n),
+                    None => len_name.and_then(|name| self.constant_array_length(name)),
+                };
+                let Some(n) = resolved_len else {
+                    // Lowering reached the length *token* and found it was neither a usable
+                    // literal nor a name resolving to one, but says nothing (ADR-0039 §3a).
+                    // This is where it is reported, because rejecting a type is a semantic
+                    // judgement and because `type-errors/` files must lower cleanly.
+                    self.array_length_not_literal(len_name.is_some(), len_span);
                     return PoolId::ERROR;
                 };
                 // Flat poison, for the same reason `*<unknown>` is flat above: one
@@ -370,6 +393,13 @@ impl<'a> Ctx<'a> {
                 let ty = self.union_type(sid);
                 // The *same* body resolution: a union's fields are a struct's fields and live
                 // in the same side table (ADR-0045 §4, §5).
+                self.resolve_struct_body(sid, ty, span);
+                ty
+            }
+            TypeRef::Variant(sid) => {
+                let ty = self.variant_type(sid);
+                // The same body resolution again: a variant's *cases* are a field list, so they live
+                // in the same side table (ADR-0068 §1). Only the layout and the read check differ.
                 self.resolve_struct_body(sid, ty, span);
                 ty
             }
@@ -502,6 +532,15 @@ impl<'a> Ctx<'a> {
     pub(crate) fn union_type(&mut self, sid: StructId) -> PoolId {
         let decl = DeclId::new(self.file, sid.as_u32());
         self.pool.union_type(decl)
+    }
+
+    /// The interned type of the variant declared at `sid` (ADR-0068 §1).
+    ///
+    /// Takes a [`StructId`] because all three aggregate forms share the struct arena — see
+    /// `Struct::kind` for why that sharing is load-bearing.
+    pub(crate) fn variant_type(&mut self, sid: StructId) -> PoolId {
+        let decl = DeclId::new(self.file, sid.as_u32());
+        self.pool.variant_type(decl)
     }
 
     /// The interned type of the enum declared at `eid`.
@@ -657,21 +696,66 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// The length a name denotes, when it names a constant whose initialiser is an integer literal
+    /// (ADR-0070 §1).
+    ///
+    /// **No evaluation happens here**, which is the whole reason this is available a sub-wave before
+    /// `[2 + 2]u8` is: the literal is already in the HIR, and this crate depends on neither `jr-db` nor
+    /// `jr-vm` (ADR-0039 §3a's constraint, still honoured). A length that needs a *value* — arithmetic, a
+    /// `#run`, or a constant in another file — answers `None` here and is refused.
+    ///
+    /// One level of indirection only: `B :: A` where `A :: 4` answers `None` rather than following the
+    /// chain, because a chain needs a fixpoint and a cycle check, which is the evaluation machinery this
+    /// deliberately avoids (ADR-0070 §4).
+    fn constant_array_length(&self, name: Symbol) -> Option<u64> {
+        let item = self.hir.scope.get(name)?;
+        let jr_hir::ItemKind::Const {
+            value: jr_hir::ConstValue::Expr(expr),
+        } = &self.hir.items.get(item.index())?.kind
+        else {
+            return None;
+        };
+        let jr_hir::Expr::Literal(jr_hir::Literal::Int { value, .. }, _) =
+            self.hir.exprs.get(expr.index())?
+        else {
+            return None;
+        };
+        // A negative length, or one past `u64`, fails here exactly as a negative *literal* length does —
+        // the value takes the same path once known, so ADR-0039 §3's checks are unchanged.
+        u64::try_from(*value).ok()
+    }
+
     /// Reports an array length that is not a usable integer literal (ADR-0039 §3a).
     ///
     /// The message does not name the offending text: a `TypeRef` carries no way back to
     /// the source, and the span already points at it. Naming the *reason* is what matters,
     /// because "write a literal" is not obvious advice unless you know why.
-    fn array_length_not_literal(&mut self, span: Span) {
-        self.diags.push(
-            Diagnostic::error(span, "an array length must be an integer literal")
+    fn array_length_not_literal(&mut self, was_a_name: bool, span: Span) {
+        // **The message names which side of the line the reader is on** (ADR-0070 §3). A
+        // literal-valued constant is accepted now, so "must be an integer literal" would be simply
+        // false — and a reader told a rule that is no longer true cannot act on it.
+        let diag = if was_a_name {
+            Diagnostic::error(span, "this array length is not a usable constant")
                 .with_code(E0233)
                 .with_note(
-                    "a named constant or a computed length needs the compile-time \
-                     evaluator, which arrives with full `#run` in wave W4",
+                    "a length may be an integer literal, or a name for a constant whose value is \
+                     one — a computed constant, a `#run`, or one from another file needs the \
+                     compile-time evaluator, which sema runs before",
                 )
-                .with_help("write the length as a literal, e.g. `[20]u8`"),
-        );
+                .with_help("give the constant a literal value, e.g. `N :: 20;`")
+        } else {
+            Diagnostic::error(
+                span,
+                "an array length must be a literal or a named constant",
+            )
+            .with_code(E0233)
+            .with_note(
+                "an arithmetic or `#run` length needs the compile-time evaluator, which sema \
+                     runs before (ADR-0018 §3)",
+            )
+            .with_help("write the length as a literal, e.g. `[20]u8`, or name a constant")
+        };
+        self.diags.push(diag);
     }
 
     /// The element type and length of `ty`, if it is an array.
@@ -717,6 +801,9 @@ impl<'a> Ctx<'a> {
             Item::UnionType { .. } => self
                 .type_name(ty)
                 .map_or_else(|| "union".to_owned(), str::to_owned),
+            Item::VariantType { .. } => self
+                .type_name(ty)
+                .map_or_else(|| "variant".to_owned(), str::to_owned),
             // The declared name, from the same source the struct case reads, so a hover and
             // a diagnostic cannot disagree about what a nominal type is called.
             Item::EnumType { .. } => self
@@ -877,7 +964,7 @@ impl<'a> Ctx<'a> {
             SigKind::Operator => "an operator overload",
             // Unreachable while `type_value` is `Some` for exactly these kinds,
             // but spelled out so that adding a kind is a compile error.
-            SigKind::Struct | SigKind::Union | SigKind::Enum => "a type",
+            SigKind::Struct | SigKind::Union | SigKind::Variant | SigKind::Enum => "a type",
         };
         self.diags.push(
             Diagnostic::error(span, format!("`{name}` is {what}, not a type")).with_code(E0213),

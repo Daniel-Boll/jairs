@@ -354,7 +354,7 @@ impl Formatter {
                     self.format_proc(&child);
                     return;
                 }
-                STRUCT_TYPE | UNION_TYPE => {
+                STRUCT_TYPE | UNION_TYPE | VARIANT_TYPE => {
                     self.format_struct_type(&child);
                     return;
                 }
@@ -580,10 +580,13 @@ impl Formatter {
     /// overlapping fields turned into non-overlapping ones, which is precisely the mistake
     /// ADR-0043 caught when a literal `"enum"` rewrote an `enum_flags` (§7's standing trap).
     fn format_struct_type(&mut self, node: &SyntaxNode) {
-        self.emit(if node.kind() == UNION_TYPE {
-            "union {"
-        } else {
-            "struct {"
+        // A **match on the kind**, not a two-way `if`: the third form arrived (ADR-0068) and an
+        // `else` branch meaning "struct" turned every `variant` into a `struct` — which is exactly the
+        // mistake this function's own docs warn about for `enum_flags`, made again one form later.
+        self.emit(match node.kind() {
+            UNION_TYPE => "union {",
+            VARIANT_TYPE => "variant {",
+            _ => "struct {",
         });
         if let Some(field_list) = node.children().find(|n| n.kind() == FIELD_LIST) {
             let has_fields = field_list.children().any(|n| n.kind() == FIELD);
@@ -837,7 +840,7 @@ impl Formatter {
                     self.format_type(&elem);
                 }
             }
-            STRUCT_TYPE | UNION_TYPE => {
+            STRUCT_TYPE | UNION_TYPE | VARIANT_TYPE => {
                 self.format_struct_type(node);
             }
             ENUM_TYPE => {
@@ -1041,6 +1044,62 @@ impl Formatter {
                 // its own indent and newline, putting the statement on the line below `defer`.
                 if let Some(inner) = node.children().find(|n| is_stmt_kind(n.kind())) {
                     self.format_single_stmt_inline(&inner);
+                }
+                self.newline();
+            }
+            SWITCH_STMT => {
+                self.emit_indent();
+                self.emit("switch ");
+                // The scrutinee is the switch's *own* expression child; an arm's case value lives under
+                // a `SWITCH_ARM`, so `children()` here sees only this one (ADR-0067 §1).
+                if let Some(value) = node.children().find(|n| is_expr_kind(n.kind())) {
+                    self.format_expr(&value);
+                }
+                self.emit(" {");
+                self.newline();
+                self.indent += 1;
+                for arm in node.children().filter(|n| n.kind() == SWITCH_ARM) {
+                    self.emit_indent();
+                    // An absent value is the `else` arm — but a *malformed* `case ;` also has none, so
+                    // the keyword decides, exactly as `SwitchArm::is_else` does. Printing `else` for a
+                    // broken `case` would change what the source says.
+                    let is_else = arm
+                        .children_with_tokens()
+                        .filter_map(|e| e.into_token())
+                        .any(|t| t.kind() == ELSE_KW);
+                    if is_else {
+                        self.emit("else;");
+                    } else {
+                        self.emit("case ");
+                        if let Some(value) = arm.children().find(|n| is_expr_kind(n.kind())) {
+                            self.format_expr(&value);
+                        }
+                        self.emit(";");
+                    }
+                    self.newline();
+                    // The arm's statements, indented under its header. Each is a full statement, so
+                    // `format_stmt` emits its own indent and newline.
+                    self.indent += 1;
+                    for stmt in arm.children().filter(|n| is_stmt_kind(n.kind())) {
+                        self.format_stmt(&stmt);
+                    }
+                    self.indent -= 1;
+                }
+                self.indent -= 1;
+                self.emit_indent();
+                self.emit("}");
+                self.newline();
+            }
+            PUSH_CONTEXT_STMT => {
+                self.emit_indent();
+                self.emit("push_context ");
+                // The body is always a braced block (the parser requires it, ADR-0063 §1), so it is
+                // formatted exactly as a `while`'s block is — `format_block` for the braces and the
+                // indented statements. Emitting nothing for a missing block would drop the whole
+                // construct, which is the formatter-loses-a-statement failure the last waves keep
+                // hitting; this file has no such default, so a `BLOCK` child is found or nothing is.
+                if let Some(body) = node.children().find(|n| n.kind() == BLOCK) {
+                    self.format_block(&body);
                 }
                 self.newline();
             }
@@ -1624,6 +1683,7 @@ fn is_type_kind(kind: SyntaxKind) -> bool {
             | POINTER_TYPE
             | STRUCT_TYPE
             | UNION_TYPE
+            | VARIANT_TYPE
             | ARRAY_TYPE
             | VIEW_TYPE
             | ENUM_TYPE
@@ -1647,6 +1707,8 @@ fn is_stmt_kind(kind: SyntaxKind) -> bool {
             | WHILE_STMT
             | FOR_STMT
             | DEFER_STMT
+            | PUSH_CONTEXT_STMT
+            | SWITCH_STMT
             | LOOP_LABEL
             | RETURN_STMT
             | BREAK_STMT

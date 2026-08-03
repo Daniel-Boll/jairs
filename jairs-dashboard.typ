@@ -94,21 +94,21 @@
 #v(0.4em)
 #pill[6/6 gates green]
 #h(4pt)
-#pill[919 tests]
+#pill[944 tests]
 #h(4pt)
-#pill[ADR-0062 latest]
+#pill[ADR-0072 latest]
 #h(4pt)
-#pill(fill: rgb("#fdf2e6"), stroke: warn)[W3 in progress · 14 waves uncommitted]
+#pill(fill: rgb("#fdf2e6"), stroke: warn)[W4 open · 3 of 4 sub-waves done]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "919", "workspace, all passing"),
-  metric("Corpus", "144", "jr files, both engines"),
-  metric("ADRs", "62", "0001 to 0062, immutable"),
-  metric("Diagnostics", "88", "codes, E0258 next free"),
-  metric("Editor checks", "151", "Neovim, verified not gated"),
+  metric("Tests", "944", "workspace, all passing"),
+  metric("Corpus", "162", "jr files, both engines"),
+  metric("ADRs", "72", "0001 to 0072, immutable"),
+  metric("Diagnostics", "94", "codes, E0264 next free"),
+  metric("Editor checks", "166", "Neovim, verified not gated"),
 )
 
 // ---------------------------------------------------------------------------
@@ -144,19 +144,30 @@
         one shared formatter.
       ]
     - #text(size: 7.4pt)[
-        *MIR snapshots pin the exact instruction sequence* for all 138 files. Last wave they changed for every file
-        that calls anything; this wave they are what shows a `#no_abc` procedure lowering without
-        the check its neighbour keeps.
+        *A plan's stated reason is checkable.* W4.5 was scheduled after W4 because exhaustiveness
+        "wants comptime type info". Three greps and a two-line program showed it does not: the enum
+        member set is already in the pool during checking. The wave moved forward and the table records
+        the amendment — a wave order resting on a dependency that does not exist is a plan contradicting
+        itself.
       ]
     - #text(size: 7.4pt)[
-        *Every fix is verified by reverting it* and watching the test fail. A test that passes
-        without its fix is worse than none — and this wave two grammar rules were reverted to prove
-        their checks had teeth.
+        *Check the query a claim is about.* "The arithmetic around a `#run` is not folded" was true of the
+        *built* MIR and false of the *optimized* one — and the corpus only ever snapshots the built
+        query, so nothing the tests display would have shown it. A claim about optimisation needs a probe
+        of the optimized body.
       ]
     - #text(size: 7.4pt, fill: warn)[
-        *The gates cannot see everything.* `context` is a legal identifier, so a tree-sitter grammar
-        that had never heard of it still parsed the corpus cleanly while meaning something else. Gate
-        6 was green throughout. That class of drift is now checked on the node type instead.
+        *A well-typed placeholder is invisible to every gate this project has.* `t := Point;` — a type
+        bound to a local — type-checked cleanly and *both engines exited 0*, storing an undefined value
+        into a slot of a type with no runtime layout at all. Three of these now, and each was found by
+        asking a question no test asks: what does this lower to? The corpus checks exit codes and
+        snapshots the built MIR; a construct that is legal, silent and unread sits outside all of it.
+      ]
+    - #text(size: 7.4pt, fill: warn)[
+        *A test naming an unimplemented thing has a one-wave shelf life.* The refused-body test has now
+        had its construct replaced twice, both times because the wave after it implemented the gap it
+        named. It uses something refused *by design* now. And one of this wave's own new tests passed
+        vacuously until it was teeth-checked.
       ]
   ],
 )
@@ -168,24 +179,31 @@
 #section[The language today]
 
 #let lang = (
-  ("Full integer tower, bool, string, pointers", "pointer arithmetic, deliberately none"),
+  ("Full integer tower, bool, string, pointers", "pointer difference p - q, deferred"),
   ("float32 and float64, plain IEEE-754, no traps", "percent on floats, is_nan, math (W7)"),
   ("struct, nominal, one level", ""),
-  ("union, nominal, untagged, fields at offset 0", "a tagged variant type (W4.5)"),
-  ("enum and enum_flags, namespaced, bare dot-member", "explicit backing type; a switch (W4.5)"),
-  ("Fixed arrays and views, bounds-checked, returnable", "array literals, sub-slicing"),
+  ("union, nominal, untagged — a cross-field read reinterprets", ""),
+  ("variant — a tagged union: a wrong-case read traps, switch destructures", "a recursive variant; eliding the check in an arm"),
+  ("enum and enum_flags, namespaced, bare dot-member, switch cases", "an explicit backing type"),
+  ("Fixed arrays and views, bounds-checked; a length may name a constant", "a length needing evaluation; array literals"),
   ("cast and xx from context; operator overloading", "unary, index and call overloading"),
   ("Trapping arithmetic, wrapping variants, bitwise", "transmute; float printing"),
   ("if, else, while, for, break, continue, defer, using", ""),
+  ("switch with exhaustiveness checking over an enum; else", "patterns, ranges, guards; a jump table"),
   ("Multiple returns, named args, literal defaults", "#must; a multi-result call in a return"),
   ("import, foreign, system_library, #scope_module", "polymorphs, macros (W5)"),
-  ("One trivial compile-time run, folded", "arbitrary run, RTTI, insert (W4)"),
-  ("Traps name their source line", "backtraces (W3)"),
+  ("Compile-time run at file scope or in a body, across files", "type_info(), Any, insert, Code"),
+  ("A type as a compile-time value: T :: Point aliases one, usable anywhere Point is", "a chain B :: A; comparing types; Type as an annotation"),
+  ("A type in a runtime position is refused — it has no representation to store", ""),
+  ("Traps name their source line and the live call chain", "a per-frame line; inlined frames (none exist)"),
   ("Bounds checks, strippable by build setting or #no_abc", "a per-index #no_abc; any other build setting"),
-  ("context, a hidden parameter passed by pointer", "allocators, temp storage (W3)"),
+  ("context, a hidden parameter passed by pointer", ""),
   ("Procedures as values: call, pass, return, struct field", "a cross-file or foreign proc value; comparing one"),
-  ("null, a context-typed pointer literal; malloc and free", "pointer arithmetic; cast to a pointer"),
-  ("An allocator in the context, installed and called through", "push_context; a bump allocator; temp storage (W3)"),
+  ("null, a context-typed pointer literal; malloc and free", "cast to a pointer"),
+  ("An allocator in the context, installed and called through", ""),
+  ("Pointer offset p + n, n + p, p - n — element-scaled, unchecked", "the difference p - q; p[n]; ordering"),
+  ("push_context, a block with its own copy of the context", ""),
+  ("talloc / reset_temporary_storage — a per-context bump arena", "hands out *u8 only; alignment; a growable region"),
 )
 
 #table(
@@ -233,7 +251,7 @@
   ("Cranelift back end", "works", "Aggregate returns via sret; indirect calls via func_addr"),
   ("LLVM back end", "not started", "W8 owns it"),
   ("Language server", "12 caps", "Diagnostics, hover, goto, completion, rename, actions, hints"),
-  ("Neovim integration", "works", "Runtimepath dir, no plugin manager; 151 checks"),
+  ("Neovim integration", "works", "Runtimepath dir, no plugin manager; 166 checks"),
   ("Driver", "stub", "Should consume the workspace notion that now exists"),
 )
 
@@ -273,16 +291,16 @@
     "for with it and it_index, labelled break, defer, using, multiple returns, named and default arguments, #scope_module. Closed by ADR-0054; ADR-0055 then closed a gap six corpus files had carried for eleven waves.",
   ),
   (
-    "W3 Runtime core", "in progress",
-    "Five of six done. context (ADR-0057), the bounds-check build setting (ADR-0058, finishing ADR-0003), indirect calls (ADR-0059), null plus a memory source (ADR-0060/0061), and the allocator protocol (ADR-0062) — a program installs an allocator in the context and a callee allocates through it without knowing which. Remaining: temporary storage (which wants push_context too) and traps with backtraces.",
+    "W3 Runtime core", "done",
+    "context (ADR-0057), the bounds-check build setting (ADR-0058, finishing ADR-0003), indirect calls (ADR-0059), null plus a memory source (ADR-0060/0061), the allocator protocol (ADR-0062), push_context (ADR-0063), pointer arithmetic (ADR-0064), temporary storage (ADR-0065), and traps with backtraces (ADR-0066) — a trap names the frames that were live, byte-identically in both engines. Closed by ADR-0066; a source-level backtrace with inlined frames is deferred, because inlined frames have no runtime existence.",
   ),
   (
-    "W4 Comptime", "not started",
-    "Arbitrary compile-time execution, RTTI and Type values, insert, code. PLAN section 5 names this the project's top risk: sema and comptime become mutually recursive.",
+    "W4 Comptime", "in progress",
+    "Delivered in sub-waves, because a 10-14 week wave cannot be verified the way a one-ADR wave can. All four have shipped something, and two are only partly done. A #run may call an imported procedure and appear in a body (ADR-0069), turning two internal compiler errors into working programs. An array length may name a constant (ADR-0070), which replaced the scheduled aggressive const folding after probing showed const-prop already did it. A type is a compile-time value (ADR-0071), which closed a silent miscompile — a type bound to a local compiled to an undefined value in a slot with no layout. And insert of a string literal lowers where it is written (ADR-0072), in the enclosing scope, every synthesized span pointing at the directive because jr-diag clamps an out-of-range offset rather than rejecting it. Both remainders are the same problem from two sides: type_info() and Any need a type to exist as runtime data, and a computed insert needs lowering to depend on const-eval that runs downstream of it — a salsa cycle. PLAN section 5 names this the project's top risk, and cycle detection with readable errors is the deliverable rather than the features.",
   ),
   (
-    "W4.5 Pattern matching", "not started",
-    "switch with exhaustiveness, a bare dot-member as a case, and a tagged variant type. Was missing from the wave table entirely — two accepted ADRs deferred decisions to it while no wave scheduled it.",
+    "W4.5 Pattern matching", "done",
+    "switch with exhaustiveness checking, a bare dot-member as a case (settling ADR-0041 §2 step 5), and a tagged variant type (ADR-0067, ADR-0068). Reordered ahead of W4 after checking showed its stated dependency on comptime was a want rather than a need. The variant follows ADR-0045 §1's own instruction — a different declaration form, not a change to union — and union is untouched, still untagged and still one word smaller.",
   ),
   (
     "W5 Polymorphism", "not started",
@@ -336,19 +354,24 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[Fourteen waves shipped]
+    #sub[Twenty-four waves shipped]
     #text(size: 7.4pt)[
-      ADR-0049 through 0062: for and defer, using, aggregate returns, multiple returns, named and
+      ADR-0049 through 0072: for and defer, using, aggregate returns, multiple returns, named and
       default arguments, scope visibility, imported constants, float constants, context, the
-      bounds-check build setting, indirect calls, null plus a memory source, and the allocator
-      protocol.
+      bounds-check build setting, indirect calls, null plus a memory source, the allocator
+      protocol, push_context, pointer arithmetic, temporary storage, trap backtraces, switch,
+      tagged variants, compile-time run across files and in a body, an array length from a
+      constant, a type as a compile-time value, and insert of a literal string.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 919. Corpus 116 to 144 files. Neovim checks 103 to 151. W2 closed; W3 opened
-      and five of its six features landed. A program can now install an allocator in the context and
-      a callee allocates through it without knowing which.
+      Test count 900 to 944. Corpus 116 to 162 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
+      closed*, and *W4 is open* with all four sub-waves having shipped: a `#run` reaches across files and
+      into a body, an array length may name a constant, a type is a value, and `#insert` of a literal
+      lowers where it is written. *Three times now* a plan's stated reason turned out not to hold —
+      W4.5's dependency on comptime, sub-wave 2's folding work, and a nesting hang that escaping makes
+      impossible. Remaining: `type_info()`, `Any`, and a computed `#insert` — one cycle, two faces.
     ]
 
     #v(0.3em)
@@ -389,14 +412,14 @@
   #text(size: 7.4pt, weight: "bold", fill: warn)[THE THING WORTH YOUR DECISION]
   #v(0.15em)
   #text(size: 7.4pt)[
-    Fourteen waves sit uncommitted across five branches. Two waves ago a careless `git checkout`
-    reverted the tree-sitter grammar nine waves and cost an hour's reconstruction — the concrete price
-    of not committing. Committing each wave as it goes green would bound the damage from any future
-    slip to a single wave.
+    *Every wave is now committed as it greens*, on its own `feat/` branch, which closed the risk this box
+    used to name. Nothing has been merged: `main` is still at `ec150a5`, and twenty-three waves sit on
+    stacked branches ahead of it. That is a decision rather than a gap — merging needs your say-so, and
+    the per-wave commits mean no work is at risk while it waits.
   ]
   #v(0.15em)
   #text(size: 7.4pt, style: "italic")[
-    Recorded as a recommendation, not a change: the authorisation is yours to give.
+    The one open slice criterion is still a verified Linux x86-64 CI run, which needs a push.
   ]
 ]
 

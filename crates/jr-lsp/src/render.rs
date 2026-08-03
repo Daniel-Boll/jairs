@@ -116,6 +116,7 @@ impl Decl<'_> {
                 }
                 ConstValue::Struct(_) => Some(self.struct_signature(&name, "struct")),
                 ConstValue::Union(_) => Some(self.struct_signature(&name, "union")),
+                ConstValue::Variant(_) => Some(self.struct_signature(&name, "variant")),
                 ConstValue::Enum(id) => Some(self.enum_signature(&name, *id)),
                 ConstValue::Expr(_) => Some(self.const_signature(&name, item_id)),
             },
@@ -187,9 +188,9 @@ impl Decl<'_> {
             .and_then(|sym| self.sigs.lookup(sym))
             .and_then(|entry| entry.type_value)
             .and_then(|ty| match self.pool.item(ty) {
-                Item::StructType { decl } | Item::UnionType { decl } => {
-                    self.pool.struct_fields(*decl)
-                }
+                Item::StructType { decl }
+                | Item::UnionType { decl }
+                | Item::VariantType { decl } => self.pool.struct_fields(*decl),
                 _ => None,
             });
 
@@ -280,7 +281,7 @@ impl Decl<'_> {
                 |entry| match entry.kind {
                     // A struct or enum name used as a value has type `type` (ADR-0012),
                     // which is not what a reader wants to see on its own declaration.
-                    SigKind::Struct | SigKind::Union | SigKind::Enum => entry
+                    SigKind::Struct | SigKind::Union | SigKind::Variant | SigKind::Enum => entry
                         .type_value
                         .map_or_else(|| String::from("type"), |ty| self.type_name_of(ty)),
                     SigKind::Const | SigKind::Var | SigKind::Proc | SigKind::Operator => {
@@ -343,7 +344,8 @@ impl Decl<'_> {
             | Item::ViewType { .. }
             | Item::EnumType { .. }
             | Item::StructType { .. }
-            | Item::UnionType { .. }
+        | Item::UnionType { .. }
+        | Item::VariantType { .. }
             | Item::ProcType { .. } => None,
         }
     }
@@ -444,6 +446,9 @@ pub fn type_name(pool: &Pool, signatures: &FileSignatures, ty: PoolId) -> String
         Item::UnionType { decl } => signatures
             .type_name(ty)
             .map_or_else(|| format!("union{decl:?}"), ToOwned::to_owned),
+        Item::VariantType { decl } => signatures
+            .type_name(ty)
+            .map_or_else(|| format!("variant{decl:?}"), ToOwned::to_owned),
         Item::ProcType {
             params,
             ret,

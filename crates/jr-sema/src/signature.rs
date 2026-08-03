@@ -248,6 +248,22 @@ impl Ctx<'_> {
                         item,
                     })
                 }
+                // The same shape a third time (ADR-0068 §1): a variant's cases are a field list, so
+                // the body resolution and the recorded name are a union's. `SigKind::Variant` is what
+                // makes a consumer able to tell them apart without a second lookup.
+                ConstValue::Variant(sid) => {
+                    let ty = self.variant_type(sid);
+                    let interner = self.interner;
+                    self.sigs
+                        .insert_type_name(ty, interner.resolve(name).to_owned());
+                    self.resolve_struct_body(sid, ty, span);
+                    Some(SigEntry {
+                        ty: PoolId::TYPE,
+                        type_value: Some(ty),
+                        kind: SigKind::Variant,
+                        item,
+                    })
+                }
                 // The same shape as the struct arm, and for the same reasons: the type name is
                 // recorded so a diagnostic can spell it, and the body is resolved *after* the
                 // type has an ID (ADR-0041 §4).
@@ -265,13 +281,30 @@ impl Ctx<'_> {
                     })
                 }
                 ConstValue::Expr(expr) => {
+                    // A `::` initialiser is the one position that may **name a type**: `T :: Point;`
+                    // binds a type value (ADR-0071 §1, §2). Recorded before typing it, the same
+                    // mechanism a field-access receiver uses, so the `Name` arm's E0261 refusal skips
+                    // this expression while still typing it.
+                    self.type_position.insert((ExprScope::TopLevel, expr));
                     // No annotation exists on a `::` declaration, so the
                     // initialiser types itself and an untyped integer literal
                     // lands on the default (ADR-0016 §1).
                     let ty = self.check_expr(ExprScope::TopLevel, expr, None);
+                    // **A type-valued constant is an alias**, and its entry carries the type it
+                    // denotes rather than only `PoolId::TYPE` — which is what makes `T` usable in a
+                    // type annotation, since `resolve_type_name` reads exactly this field. Taken from
+                    // the *aliased* name's own entry, so the alias is one lookup rather than a second
+                    // resolution of what `Point` means (ADR-0071 §2).
+                    //
+                    // One level only: `B :: A` where `A :: Point` leaves `type_value` `None`, because a
+                    // chain needs a fixpoint and a cycle check (§5) — the same line ADR-0070 §4 drew
+                    // for an array length.
+                    let type_value = (ty == PoolId::TYPE)
+                        .then(|| self.aliased_type(ExprScope::TopLevel, expr))
+                        .flatten();
                     Some(SigEntry {
                         ty,
-                        type_value: None,
+                        type_value,
                         kind: SigKind::Const,
                         item,
                     })

@@ -1,0 +1,20 @@
+// EXPECT: E0258 — a `switch` over a variant that does not handle every case (ADR-0068 §5)
+//
+// The same code and the same message shape an enum switch gets (`059-switch-not-exhaustive.jr`), over a
+// variant's *cases* instead of an enum's members — which is the evidence that reusing ADR-0067's
+// machinery was the right shape rather than a coincidence: this wave adds **no** diagnostic code.
+//
+// `f` is unhandled here. The message names it rather than counting, because the missing name is the fix.
+V :: variant {
+    i: s64;
+    f: s64;
+}
+
+which :: (v: V) -> s64 {
+    r := 0;
+    switch v {
+        case .i;
+            r = 1;
+    }
+    return r;
+}
