@@ -6062,3 +6062,13 @@ proc main -> void {
     discard call extern proc1(1_s64)
     return
 }
+
+========================================
+066-polymorphic-declaration.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    discard call extern proc1(5_s64)
+    return
+}

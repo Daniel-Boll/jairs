@@ -528,6 +528,9 @@ fn fmt_type_ref_impl(
 ) -> String {
     match tr {
         TypeRef::Name(sym) => interner.resolve(*sym).to_owned(),
+        // `$T` (ADR-0081 §1), printed with its `$` so a dump distinguishes a polymorphic variable from an
+        // ordinary name.
+        TypeRef::Poly(sym) => format!("${}", interner.resolve(*sym)),
         // Printed by *arity* rather than by element, because the elements are `TypeRefId`s into an
         // arena this function may not have (the `is_top` split below shows why), and a snapshot
         // must never carry an index that load order can renumber.

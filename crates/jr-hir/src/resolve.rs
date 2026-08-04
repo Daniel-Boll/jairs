@@ -572,6 +572,10 @@ impl<'a> ResolveCtx<'a> {
                 // A `using fn: (s64) -> s64` is refused: a procedure-pointer type has no fields to
                 // promote, so it names no struct — the same answer as a view or an array.
                 | crate::hir::TypeRef::Proc { .. }
+                // A `using x: $T` promotes nothing: `$T` binds a type variable, and until a call
+                // instantiates it there is no concrete type with fields — so it names no struct, the
+                // same answer as a view or a procedure pointer (ADR-0081 §1).
+                | crate::hir::TypeRef::Poly(_)
                 | crate::hir::TypeRef::Struct(_)
                 | crate::hir::TypeRef::Union(_)
                 | crate::hir::TypeRef::Variant(_)

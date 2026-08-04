@@ -221,6 +221,13 @@ impl<'a> LowerCtx<'a> {
                     .unwrap_or_else(|| self.intern("<error>"));
                 self.alloc_top_type_ref(TypeRef::Name(sym))
             }
+            TypeExpr::Poly(poly) => {
+                let sym = poly
+                    .name_token()
+                    .map(|t| self.intern(t.text()))
+                    .unwrap_or_else(|| self.intern("<error>"));
+                self.alloc_top_type_ref(TypeRef::Poly(sym))
+            }
             TypeExpr::Pointer(p) => {
                 let inner = if let Some(pointee) = p.pointee() {
                     self.lower_type_expr_top(&pointee)
@@ -1098,6 +1105,13 @@ impl<'a> BodyLowerCtx<'a> {
                     .map(|t| self.intern(t.text()))
                     .unwrap_or_else(|| self.intern("<error>"));
                 self.alloc_type_ref(TypeRef::Name(sym))
+            }
+            TypeExpr::Poly(poly) => {
+                let sym = poly
+                    .name_token()
+                    .map(|t| self.intern(t.text()))
+                    .unwrap_or_else(|| self.intern("<error>"));
+                self.alloc_type_ref(TypeRef::Poly(sym))
             }
             TypeExpr::Pointer(p) => {
                 let inner = if let Some(pointee) = p.pointee() {

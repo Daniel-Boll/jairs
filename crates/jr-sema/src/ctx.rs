@@ -158,6 +158,17 @@ pub(crate) struct Ctx<'a> {
     /// Deliberately **not** merged with `type_info_calls`: that map replaces a call with a constant, and
     /// these lower to real code.
     pub(crate) any_calls: FxHashMap<(ExprScope, jr_hir::ExprId), (crate::check::AnyOp, PoolId)>,
+    /// The polymorphic type variables currently in scope, and the type each is bound to (ADR-0081 §1).
+    ///
+    /// Empty except while checking a polymorphic procedure's signature or an instantiation of one. A `$T`
+    /// **binds** its name here (to the inferred type during an instantiation, or to a fresh placeholder
+    /// while the uninstantiated signature is walked), and a bare `T` elsewhere in the same signature
+    /// **reads** it — which is what distinguishes a use of a type variable from an unknown type name.
+    ///
+    /// A map rather than a stack because a signature's variables are flat: `$T` binds once, and every
+    /// later `T` in that signature is the same variable. It is cleared when the signature or
+    /// instantiation is left.
+    pub(crate) type_bindings: FxHashMap<Symbol, PoolId>,
 }
 
 impl<'a> Ctx<'a> {
@@ -175,6 +186,7 @@ impl<'a> Ctx<'a> {
             call_position: FxHashSet::default(),
             type_position: FxHashSet::default(),
             type_info_calls: FxHashMap::default(),
+            type_bindings: FxHashMap::default(),
             any_calls: FxHashMap::default(),
             hir,
             file,
@@ -300,6 +312,16 @@ impl<'a> Ctx<'a> {
         match self.type_ref(scope, id) {
             TypeRef::Error => PoolId::ERROR,
             TypeRef::Name(sym) => self.resolve_type_name(sym, span),
+            // `$T` (ADR-0081 §1). When `T` is already bound — this is an instantiation, or a later `$T`
+            // for the same variable — resolve to the bound type. Otherwise the variable is being
+            // introduced: without an instantiation there is no type yet, so it resolves to `ERROR`, which
+            // is the "not concrete" state the signature phase records rather than a wrong answer. The bare
+            // `T` case is handled in `resolve_type_name`, which consults the same map.
+            TypeRef::Poly(sym) => self
+                .type_bindings
+                .get(&sym)
+                .copied()
+                .unwrap_or(PoolId::ERROR),
             TypeRef::Pointer(inner) => {
                 let pointee = self.resolve_type(scope, inner, span);
                 // `*<unknown>` is not a more useful type than `<unknown>`, and
@@ -430,6 +452,14 @@ impl<'a> Ctx<'a> {
     /// The order is the same one name resolution uses for expressions
     /// (ADR-0014 §3): a file-level declaration silently shadows an imported name.
     pub(crate) fn resolve_type_name(&mut self, sym: Symbol, span: Span) -> PoolId {
+        // A **bound polymorphic variable** wins over everything (ADR-0081 §1): inside a `$T` signature or
+        // its instantiation, a bare `T` is a use of the variable, not a lookup of a type named `T`. Checked
+        // first so a program cannot shadow a bound variable with a same-named type — within the signature,
+        // `T` *is* the variable. Empty outside a polymorphic context, so this costs an ordinary program
+        // one hash probe and changes nothing.
+        if let Some(&bound) = self.type_bindings.get(&sym) {
+            return bound;
+        }
         let interner = self.interner;
         // Builtin type names are ordinary identifiers, not keywords
         // (`docs/spec/01-lexical.md`), so they are matched here by text rather

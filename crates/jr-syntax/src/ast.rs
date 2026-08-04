@@ -114,6 +114,7 @@ ast_node!(Param, PARAM);
 ast_node!(RetType, RET_TYPE);
 ast_node!(ForeignAttr, FOREIGN_ATTR);
 ast_node!(NameType, NAME_TYPE);
+ast_node!(PolyType, POLY_TYPE);
 ast_node!(PointerType, POINTER_TYPE);
 ast_node!(ArrayType, ARRAY_TYPE);
 ast_node!(ViewType, VIEW_TYPE);
@@ -234,6 +235,8 @@ pub enum TypeExpr {
     Proc(ProcType),
     /// `Ident`
     Name(NameType),
+    /// `$T` (ADR-0081 §1)
+    Poly(PolyType),
     /// `struct { ... }`
     Struct(StructType),
     /// `union { ... }` (ADR-0045)
@@ -253,6 +256,7 @@ impl AstNode for TypeExpr {
                 | VIEW_TYPE
                 | PROC_TYPE
                 | NAME_TYPE
+                | POLY_TYPE
                 | STRUCT_TYPE
                 | UNION_TYPE
                 | VARIANT_TYPE
@@ -267,6 +271,7 @@ impl AstNode for TypeExpr {
             VIEW_TYPE => Some(Self::View(ViewType(node))),
             PROC_TYPE => Some(Self::Proc(ProcType(node))),
             NAME_TYPE => Some(Self::Name(NameType(node))),
+            POLY_TYPE => Some(Self::Poly(PolyType(node))),
             STRUCT_TYPE => Some(Self::Struct(StructType(node))),
             UNION_TYPE => Some(Self::Union(UnionType(node))),
             VARIANT_TYPE => Some(Self::Variant(VariantType(node))),
@@ -282,6 +287,7 @@ impl AstNode for TypeExpr {
             Self::View(n) => n.syntax(),
             Self::Proc(n) => n.syntax(),
             Self::Name(n) => n.syntax(),
+            Self::Poly(n) => n.syntax(),
             Self::Struct(n) => n.syntax(),
             Self::Union(n) => n.syntax(),
             Self::Variant(n) => n.syntax(),
@@ -714,6 +720,13 @@ impl ForeignAttr {
     /// The optional symbol name string literal.
     pub fn symbol_name(&self) -> Option<SyntaxToken> {
         child_token(&self.0, STRING_LITERAL)
+    }
+}
+
+impl PolyType {
+    /// The identifier token naming the polymorphic type variable — the `T` in `$T` (ADR-0081 §1).
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        child_token(&self.0, IDENT)
     }
 }
 

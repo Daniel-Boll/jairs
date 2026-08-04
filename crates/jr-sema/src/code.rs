@@ -321,3 +321,13 @@ pub(crate) const E0266: &str = "E0266";
 /// Distinct from E0214 because no particular pointer type was wanted — any pointer will do — so there is
 /// no "expected" type to name.
 pub(crate) const E0267: &str = "E0267";
+
+/// A call to a polymorphic procedure, which is not yet instantiable (ADR-0081 §2).
+///
+/// `$T` parameters parse, lower, format and check *as a template* in this sub-wave — the signature is
+/// recognised as polymorphic and its body is not checked against non-concrete parameter types. What is
+/// deferred is **instantiation**: inferring `$T` from a call's arguments, interning the concrete
+/// procedure type, and lowering a distinct procedure per instantiation. Until that sub-wave a call is
+/// refused with this code, which is a *by-design* refusal — the construct is named as arriving later —
+/// rather than an unimplemented gap left to miscompile.
+pub(crate) const E0268: &str = "E0268";

@@ -120,6 +120,7 @@ const OPERATORS: &[(&str, SyntaxKind)] = &[
     ("^", CARET),
     ("~", TILDE),
     ("@", AT),
+    ("$", DOLLAR),
 ];
 
 struct Lexer<'a> {
@@ -1066,11 +1067,14 @@ mod tests {
 
     #[test]
     fn unexpected_characters_are_reported_individually() {
-        // Corpus invalid/007: stray tokens must not stop the lexer.
-        let errs = errors("$ `");
+        // Corpus invalid/007: stray tokens must not stop the lexer. Uses the backtick rather than `$`,
+        // which became the real `DOLLAR` token in ADR-0081 (`$T` polymorphic parameters): two stray
+        // backticks separated by whitespace, so the lexer must report each and continue.
+        let two_strays = "\u{60} \u{60}";
+        let errs = errors(two_strays);
         assert_eq!(errs.len(), 2);
-        assert_eq!(errs[0], "unexpected character `$`");
-        assert_eq!(kinds("$ `"), [UNKNOWN, UNKNOWN]);
+        // `kinds` drops whitespace, so the two strays sit adjacent here.
+        assert_eq!(kinds(two_strays), [UNKNOWN, UNKNOWN]);
     }
 
     #[test]
