@@ -1098,6 +1098,13 @@ impl Translator<'_, '_> {
                 let sig = self.indirect_signature(*operand)?;
                 let sig_ref = self.builder.import_signature(sig);
                 let pointer = self.read_scalar(*operand)?;
+                // **A null pointer traps rather than jumping to address zero** (ADR-0110 §1). Without this,
+                // native code takes a signal the compiler has nothing to say about while the VM decoded zero
+                // into an arbitrary real procedure and called it — two different wrong answers for the ordinary
+                // mistake of using `context.allocator` before installing one. Checked here so both engines raise
+                // the *same* language trap and the differential harness compares them.
+                let is_null = self.builder.ins().icmp_imm_s(IntCC::Equal, pointer, 0);
+                self.trap_if(is_null, TrapKind::NullCall)?;
                 self.builder.ins().call_indirect(sig_ref, pointer, &values)
             }
         };

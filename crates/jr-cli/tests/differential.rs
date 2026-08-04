@@ -2030,3 +2030,48 @@ fn a_procedure_pointer_calls_the_right_target_in_both_engines() {
         "native called the chosen procedure (sub)"
     );
 }
+
+/// Calling a **null procedure pointer** must trap, identically in both engines (ADR-0110 §1).
+///
+/// **This used to be a leaked internal compiler error**, and the ordinary way to reach it is a
+/// configuration mistake rather than anything exotic: `context.allocator` is null until something installs
+/// one (ADR-0057 §5), so `context.allocator(8)` before an installation is the mistake a reader will
+/// actually make.
+///
+/// The two engines were wrong in *different* ways, which is why this is a differential test and not a
+/// corpus file. A proc pointer in the VM is a packed handle, so a null one decoded to file 0 procedure 0 —
+/// an arbitrary **real** procedure — and calling it produced "called a procedure taking 1 arguments with 2",
+/// an internal error naming an arity nobody wrote. Native code used a real code address and would have
+/// jumped to zero, taking a signal the compiler has nothing to say about.
+///
+/// Fixing it needed the VM's handle **biased by one**, because file 0 procedure 0 — the *first* procedure in
+/// a file — otherwise packs to the same handle as `null`, so no check could tell them apart. Native has no
+/// such collision, since a code address is never zero. `valid/048` is what proved the bias necessary: it
+/// calls `add`, which is file 0 procedure 0, and the unbiased check trapped on it.
+#[test]
+fn calling_a_null_procedure_pointer_traps_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = concat!(
+        "#import \"Basic\";\n\n",
+        "main :: () {\n",
+        // Nothing has been installed, so `context.allocator` is null (ADR-0057 §5).
+        "    p := context.allocator(8);\n",
+        "    exit(0);\n",
+        "}\n",
+    );
+    let (vm, native) = both_engines(source, dir.path(), "nullcall");
+    assert_eq!(vm.status, 4, "the VM must trap on a null procedure pointer");
+    assert_eq!(
+        native.status, 4,
+        "native code must trap rather than jumping to address zero"
+    );
+    assert!(
+        vm.stderr.contains("null procedure pointer"),
+        "the trap must name what happened, not an arity: {}",
+        vm.stderr
+    );
+    assert_eq!(
+        vm, native,
+        "the two engines disagree about the null-call trap"
+    );
+}
