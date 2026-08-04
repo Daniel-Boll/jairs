@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 jr-base.workspace = true
 jr-diag.workspace = true
+jr-pool.workspace = true
 jr-syntax.workspace = true
 rustc-hash.workspace = true
 

@@ -506,7 +506,12 @@ fn scan(
         .callee_of
         .iter()
         .filter(|(_, call)| {
-            consts.run(scope, *call).is_some() || consts.any_op(scope, *call).is_some()
+            consts.run(scope, *call).is_some()
+                || consts.any_op(scope, *call).is_some()
+                // A polymorphic call is redirected to its instantiation (ADR-0082), so its callee — the
+                // template name — is never emitted and must not be refused for resolving to a template
+                // with no MIR.
+                || consts.instantiation(scope, *call).is_some()
         })
         .map(|(callee, _)| *callee)
         .collect();
@@ -3273,8 +3278,17 @@ impl Lower<'_> {
         // procedure-pointer type — a local, a parameter — is a `Callee::Indirect` (ADR-0059 §1).
         // `direct_callee` returning `None` is the signal, not an error: it says "this is not a name
         // that resolves to a procedure declaration", which for a proc-pointer value is exactly right.
-        let Some(target) = self.direct_callee(callee) else {
-            return self.indirect_call(call, callee, args);
+        // **A polymorphic call is redirected to its instantiation** (ADR-0082): the const query recorded
+        // which instantiated `ProcRef` this call folds to, appended to the expanded HIR. Consulted before
+        // `direct_callee`, which would otherwise resolve the callee name to the *template* — the procedure
+        // with `$T` parameters and no MIR. Everything else about the call (arguments, context) is
+        // unchanged: an instantiation is an ordinary procedure, so only its identity is redirected.
+        let target = match self.consts.instantiation(self.scope(), call) {
+            Some(instantiated) => instantiated,
+            None => match self.direct_callee(callee) {
+                Some(target) => target,
+                None => return self.indirect_call(call, callee, args),
+            },
         };
         // **Sema's positional list wins when it exists** (ADR-0053 §1). A named argument was written
         // out of order and a default was never written at all, so lowering the *source* order here

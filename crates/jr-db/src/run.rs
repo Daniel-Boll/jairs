@@ -102,11 +102,14 @@ pub fn run_main(
         if mir.gated {
             continue;
         }
+        // The **expanded** HIR and signatures the MIR was lowered from (ADR-0082 §2): an instantiation
+        // appended procedures to them, so pairing the MIR with the base `file_hir`/`file_signatures`
+        // would leave `add_file` unable to find a declaration for an instantiated `ProcId`.
         inputs.push((
             crate::queries::resolve_file_id(db, file),
-            file_hir(db, file),
-            mir.mir,
-            crate::sema::file_signatures(db, file, search_paths).signatures,
+            mir.hir.clone(),
+            mir.mir.clone(),
+            mir.signatures.clone(),
         ));
     }
 

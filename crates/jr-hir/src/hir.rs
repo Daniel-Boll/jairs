@@ -12,6 +12,7 @@
 //! `slotmap` or `id-arena` would add complexity without benefit.
 
 use jr_base::{Interner, Span, Symbol};
+use jr_pool::PoolId;
 
 jr_base::newtype_index! {
     /// A file-level declaration.
@@ -1247,7 +1248,10 @@ impl InsertOperands {
 ///
 /// Owns all arenas. After lowering, call [`resolve`](fn@crate::resolve) to fill in name
 /// resolution results.
-#[derive(Debug)]
+///
+/// `Clone` because the instantiation pass builds an *expanded* copy with appended procedures
+/// (ADR-0082 §2); an ordinary compile never clones one.
+#[derive(Debug, Clone)]
 pub struct FileHir {
     /// All file-level items, in source order.
     pub items: Vec<Item>,
@@ -1268,6 +1272,15 @@ pub struct FileHir {
     pub expr_spans: Vec<Span>,
     /// Top-level type references (for `ItemKind::Var` type annotations).
     pub type_refs: Vec<TypeRef>,
+    /// Per-procedure polymorphic bindings, for instantiated procedures appended to an expanded HIR
+    /// (ADR-0082 §2).
+    ///
+    /// Empty for an ordinary file. An **instantiation** — a clone of a `$T` procedure appended to `procs`
+    /// — maps its `ProcId` to `(variable, concrete type)`, so the signature and check phases resolve its
+    /// `$T`/`T` to the concrete type via the `type_bindings` map. Carried on the HIR rather than threaded
+    /// through `check_file`'s parameters because only the expanded tree ever has entries, and every other
+    /// caller would pass an empty map.
+    pub proc_bindings: Vec<(ProcId, Symbol, PoolId)>,
 }
 
 impl FileHir {

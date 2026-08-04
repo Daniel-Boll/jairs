@@ -177,6 +177,11 @@ pub struct CheckOutput {
     /// constant". These calls lower to real code — an aggregate build for `any_of`, a compare-and-read for
     /// `any_as` — so sharing one map folded a `Type_Info` into an `Any` and stored 40 bytes into 16.
     pub any_calls: FxHashMap<(ExprScope, ExprId), (AnyOp, PoolId)>,
+    /// Each polymorphic call and the instantiation it requires: `(proc, bound type)` (ADR-0082 §1).
+    ///
+    /// The expansion pass in `jr-db` reads this to append a substituted procedure per distinct key and
+    /// rewrite the call to target it. Empty for a file with no polymorphic calls.
+    pub instantiations: FxHashMap<(ExprScope, ExprId), (jr_hir::ProcId, PoolId)>,
 }
 
 /// Which `Any` intrinsic a call is (ADR-0076).
@@ -290,6 +295,7 @@ pub fn check_file(
         filled_calls: ctx.filled_calls,
         type_info_calls: ctx.type_info_calls,
         any_calls: ctx.any_calls,
+        instantiations: ctx.instantiations,
     }
 }
 
@@ -2477,29 +2483,12 @@ impl Ctx<'_> {
             None => {}
         }
 
-        // **A call to a polymorphic procedure is refused pending instantiation** (ADR-0081 §2, deferred to
-        // the instantiation sub-wave). The signature is a *template* — its `$T` parameters are
-        // `PoolId::ERROR` — so checking the arguments against it would compare `42` to `ERROR` and either
-        // spuriously pass or report a confusing mismatch. The honest interim answer is a refusal that
-        // names the reason: `$T` parses, lowers and formats (this sub-wave), and *calling* one arrives
-        // with the sub-wave that instantiates. This is a by-design refusal, not an unimplemented gap left
-        // silent — the distinction the refused-body lesson turns on.
-        if let Some(sig) = self.callee_sig(scope, callee)
-            && !sig.poly_vars.is_empty()
-        {
-            for arg in args {
-                self.check_expr(scope, *arg, None);
-            }
-            self.diags.push(
-                Diagnostic::error(
-                    span,
-                    "calling a polymorphic procedure is not supported yet",
-                )
-                .with_code(E0268)
-                .with_note("`$T` parameters parse and check, but instantiating a call arrives in a later wave")
-                .with_help("until then, write a concrete (non-`$T`) procedure for each type you call it with"),
-            );
-            return PoolId::ERROR;
+        // **A call to a polymorphic procedure is instantiated** (ADR-0082 §1): infer each `$T` from the
+        // corresponding argument, record `(proc, bound types)` for the expansion pass, and return the
+        // concrete return type. Handled before the ordinary call path, whose signature is a template with
+        // `ERROR` parameters that a direct type-check would compare `42` against.
+        if let Some((proc, sig)) = self.callee_poly(scope, callee) {
+            return self.check_polymorphic_call(scope, id, callee, proc, &sig, args, span);
         }
 
         // The callee is in **call position**, where a `#foreign` procedure is a legal thing to
@@ -3140,6 +3129,149 @@ impl Ctx<'_> {
             return None;
         };
         self.sigs.proc_sig(proc).cloned()
+    }
+
+    /// The callee's `(ProcId, ProcSig)` when it names a **local polymorphic** procedure (ADR-0082 §1).
+    ///
+    /// `None` for an ordinary procedure (no `$T`), and — deliberately, this sub-wave — for an *imported*
+    /// polymorphic one: cross-file instantiation is deferred (ADR-0082 §5), so an imported `$T` callee
+    /// falls through to the ordinary path, where its template signature reports an honest mismatch rather
+    /// than being silently instantiated by a mechanism that does not yet reach across files.
+    fn callee_poly(&mut self, scope: ExprScope, callee: ExprId) -> Option<(ProcId, ProcSig)> {
+        let Expr::Name { res, .. } = self.expr_of(scope, callee) else {
+            return None;
+        };
+        let Res::Item(item) = self.resolve.get(scope, callee).unwrap_or(res) else {
+            return None;
+        };
+        let jr_hir::ItemKind::Const {
+            value: jr_hir::ConstValue::Proc(proc),
+        } = self.hir.item(item).kind.clone()
+        else {
+            return None;
+        };
+        let sig = self.sigs.proc_sig(proc).cloned()?;
+        (!sig.poly_vars.is_empty()).then_some((proc, sig))
+    }
+
+    /// Types a call to a local polymorphic procedure, recording the instantiation (ADR-0082 §1).
+    ///
+    /// Infers each `$T` from the corresponding argument's type, binds it, re-resolves the signature to
+    /// concrete parameter and return types, checks the arguments against those, and records
+    /// `(proc, bound types)` for the expansion pass. The return type is the concrete one, so the call's
+    /// value is usable exactly as an ordinary call's.
+    ///
+    /// Refuses — with E0268 — the cases this sub-wave does not instantiate (ADR-0082 §5): more than one
+    /// distinct `$T`, or a `$T` that no argument position pins. A refusal here is by design and named, not
+    /// a silent gap.
+    fn check_polymorphic_call(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        proc: ProcId,
+        sig: &ProcSig,
+        args: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        // The callee names the template, whose type is a `ProcType` with `ERROR` parameters — recording
+        // that would fail `scan`'s error-type check. It is typed `void` and never lowered (the call is
+        // redirected to the instantiation, ADR-0082), the same trick `check_type_info` uses for its
+        // non-procedure callee: a recorded, harmless type so MIR does not see an untyped hole.
+        self.types.set_expr(scope, callee, PoolId::VOID);
+
+        // This sub-wave instantiates **one** type variable (ADR-0081 §4). More is refused, not
+        // half-supported.
+        if sig.poly_vars.len() != 1 {
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    "a procedure with more than one `$T` is not instantiable yet",
+                )
+                .with_code(E0268)
+                .with_note("this sub-wave instantiates a single type variable (ADR-0081 §4)"),
+            );
+            return PoolId::ERROR;
+        }
+        let var = sig.poly_vars[0];
+
+        // Arity: the template's parameter count is fixed even though the types are not.
+        if args.len() != sig.params.len() {
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!(
+                        "this procedure takes {} argument{}, but {} {} supplied",
+                        sig.params.len(),
+                        if sig.params.len() == 1 { "" } else { "s" },
+                        args.len(),
+                        if args.len() == 1 { "was" } else { "were" }
+                    ),
+                )
+                .with_code(E0216),
+            );
+            return PoolId::ERROR;
+        }
+
+        // Infer `T` from the first parameter whose declared type *is* `$T` (a bare poly variable). This
+        // sub-wave binds from a directly-`$T`-typed parameter; a nested `*$T`/`[]$T` position is not an
+        // inference site here (ADR-0081 §4 keeps the slice to one variable, one direct binding).
+        let hir_params = self.hir.proc(proc).params.clone();
+        let mut bound: Option<PoolId> = None;
+        for (index, param) in hir_params.iter().enumerate() {
+            let Some(arg) = args.get(index) else { continue };
+            let arg_ty = self.check_expr(scope, *arg, None);
+            let is_direct_poly = param.ty.is_some_and(|t| {
+                matches!(self.type_ref(ExprScope::TopLevel, t), jr_hir::TypeRef::Poly(v) if v == var)
+            });
+            if is_direct_poly && bound.is_none() && arg_ty != PoolId::ERROR {
+                bound = Some(arg_ty);
+            }
+        }
+
+        let Some(bound_ty) = bound else {
+            // Either no argument typed, or none pins `T` directly. The former already reported an error;
+            // the latter is a case this sub-wave does not infer, refused by design.
+            self.diags.push(
+                Diagnostic::error(span, "cannot infer `$T` from the arguments of this call")
+                    .with_code(E0268)
+                    .with_note(
+                        "this sub-wave infers a type variable from a directly `$T`-typed argument",
+                    ),
+            );
+            return PoolId::ERROR;
+        };
+
+        // Bind the variable and re-resolve the signature against it, so a second `T`-typed parameter is
+        // checked against the inferred type and the return type is concrete.
+        self.type_bindings.insert(var, bound_ty);
+        for (index, param) in hir_params.iter().enumerate() {
+            if let (Some(arg), Some(t)) = (args.get(index), param.ty) {
+                let want = self.resolve_type(ExprScope::TopLevel, t, span);
+                if want != PoolId::ERROR {
+                    // Re-check the argument against the now-concrete parameter type, so `first(1, x)` with
+                    // a mistyped `x` is a mismatch against the inferred `T` rather than silently accepted.
+                    self.check_expr(scope, *arg, Some(want));
+                }
+            }
+        }
+        // The return type re-resolved under the binding. Read from the HIR proc's `ret` `TypeRefId`
+        // rather than a `ProcSig` field, because the signature's `ret` is the *template*'s (`ERROR` for a
+        // bare `$T` return) and what the call needs is the concrete one.
+        let ret = self.hir.proc(proc).ret.map_or(PoolId::VOID, |t| {
+            self.resolve_type(ExprScope::TopLevel, t, span)
+        });
+        self.type_bindings.remove(&var);
+
+        // Record the instantiation for the expansion pass (ADR-0082 §2), keyed by the call.
+        self.instantiations.insert((scope, id), (proc, bound_ty));
+        ret
     }
 
     /// Resolves an argument list into one slot per parameter (ADR-0053 §1, §3).

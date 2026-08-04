@@ -1,0 +1,97 @@
+// **Polymorphic instantiation** (ADR-0082): a call to a `$T` procedure now *runs*. W5's second sub-wave,
+// which lifts the E0268 refusal sub-wave 1 put on a call.
+//
+// A call infers `$T` from its argument, and the compiler appends a **concrete procedure** — a clone of the
+// template with its variable bound — that both engines lower and run like any other. There is nothing
+// polymorphic left by the time either back end sees it (ADR-0081 §3), which is what lets the differential
+// harness check a polymorphic program at all: `id(42)` and `id_point(p)` are ordinary procedures to it.
+//
+// De-duplication is **structural** (ADR-0005): two calls with the same bound type share one instantiation.
+// `add(40, 2)` and `add(1, 1)` below both instantiate `add` at `s64`, and the compiler appends *one*
+// procedure for both — the tuple of bound interned type ids is the key, so identity is by *what the type
+// is*, not by where the call was written.
+//
+// What is checked here:
+//
+//   * a `$T` inferred from one argument and returned (`id`);
+//   * two calls at the **same** type, which must dedupe to one instantiation (`add` twice at `s64`);
+//   * a `$T` bound to a **struct**, carried through and read back — the case where a body correct for a
+//     scalar could be wrong for an aggregate, so per-instantiation checking is load-bearing (`first`);
+//   * `$T` used across **two parameters** of one variable (`add`, `first`), which is one variable and
+//     several uses, not two independent variables (ADR-0081 §4).
+//
+// Six assertions summing to 63, so any one failing changes the exit value, and both engines must agree —
+// the native one materialises a distinct function per instantiation, which the VM does not, so agreement
+// is a real check rather than a shared shortcut.
+#import "Basic";
+
+/// The canonical polymorph: returns its argument unchanged, at whatever type it is called with.
+id :: (x: $T) -> T {
+    return x;
+}
+
+/// Two parameters of one `$T`, summed — instantiated at `s64` here.
+add :: (a: $T, b: T) -> T {
+    return a + b;
+}
+
+/// Two parameters of one `$T`, returning the first. Instantiated at a **struct**, where a body that
+/// assumed a scalar would be wrong — so this exercises per-instantiation checking as well as running.
+first :: (a: $T, b: T) -> T {
+    return a;
+}
+
+/// A struct to instantiate `first` and `id` at.
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+main :: () {
+    n := 0;
+
+    // `$T` = s64, inferred from the argument, returned.
+    if id(7) == 7 {
+        n = n + 1;
+    }
+
+    // Two calls at the **same** type — one appended instantiation serves both (ADR-0005).
+    if add(40, 2) == 42 {
+        n = n + 2;
+    }
+    if add(1, 1) == 2 {
+        n = n + 4;
+    }
+
+    // `$T` = Point, carried through `id` and read back: the aggregate survives instantiation.
+    p: Point;
+    p.x = 8;
+    p.y = 8;
+    q := id(p);
+    if q.x + q.y == 16 {
+        n = n + 8;
+    }
+
+    // `$T` = Point through `first`, returning the first of two.
+    a: Point;
+    a.x = 16;
+    a.y = 0;
+    b: Point;
+    b.x = 99;
+    b.y = 99;
+    r := first(a, b);
+    if r.x == 16 {
+        n = n + 16;
+    }
+
+    // `id` at s64 again — the same instantiation `id(7)` used, reached from a different call site.
+    if id(32) == 32 {
+        n = n + 32;
+    }
+
+    // Every assertion: 63.
+    if n == 63 {
+        exit(0);
+    }
+    exit(1);
+}

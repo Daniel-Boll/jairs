@@ -144,6 +144,12 @@ pub struct ConstValues {
     items: FxHashMap<ItemId, PoolId>,
     runs: FxHashMap<(ExprScope, ExprId), PoolId>,
     any_ops: FxHashMap<(ExprScope, ExprId), AnyLowering>,
+    /// The procedure a polymorphic call was instantiated to (ADR-0082, DECISIONS fork 4).
+    ///
+    /// A call to a `$T` procedure is redirected here to the *instantiated* `ProcRef` appended to the
+    /// expanded HIR, rather than the template. `call_rvalue` consults this before `direct_callee`, so the
+    /// call node itself is never rewritten — the same channel `#run` and `any_op` ride.
+    instantiations: FxHashMap<(ExprScope, ExprId), ProcRef>,
 }
 
 /// How the MIR builder should lower one `any_of`/`any_as` call (ADR-0076).
@@ -219,6 +225,17 @@ impl ConstValues {
         self.any_ops.get(&(scope, expr)).copied()
     }
 
+    /// Records that a polymorphic call was instantiated to `target` (ADR-0082).
+    pub fn set_instantiation(&mut self, scope: ExprScope, expr: ExprId, target: ProcRef) {
+        self.instantiations.insert((scope, expr), target);
+    }
+
+    /// The instantiated procedure a polymorphic call was redirected to, if it was one.
+    #[must_use]
+    pub fn instantiation(&self, scope: ExprScope, expr: ExprId) -> Option<ProcRef> {
+        self.instantiations.get(&(scope, expr)).copied()
+    }
+
     /// The number of recorded values.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -228,7 +245,10 @@ impl ConstValues {
     /// Whether nothing has a value.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.items.is_empty() && self.runs.is_empty() && self.any_ops.is_empty()
+        self.items.is_empty()
+            && self.runs.is_empty()
+            && self.any_ops.is_empty()
+            && self.instantiations.is_empty()
     }
 }
 

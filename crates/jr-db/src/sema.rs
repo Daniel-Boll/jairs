@@ -110,6 +110,16 @@ pub struct CheckResult {
             (jr_sema::AnyOp, jr_pool::PoolId),
         >,
     >,
+    /// Each polymorphic call and the instantiation it needs: `(proc, bound type)` (ADR-0082 §1).
+    ///
+    /// Read by `file_mir`'s expansion pass to append a substituted procedure per distinct key and rewrite
+    /// the call to target it. Empty for a file with no polymorphic calls.
+    pub instantiations: Arc<
+        rustc_hash::FxHashMap<
+            (jr_hir::ExprScope, jr_hir::ExprId),
+            (jr_hir::ProcId, jr_pool::PoolId),
+        >,
+    >,
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +340,180 @@ pub(crate) fn checked_expanded(
     (Arc::new(resolve_map), result, diags)
 }
 
+/// The expanded HIR for a file whose polymorphic calls need instantiating, plus its recomputed
+/// resolve/check and the call→instantiation redirects (ADR-0082 §2, §3).
+///
+/// Unlike [`checked_expanded`] (which reuses the unexpanded signatures because `#insert` adds no items),
+/// this **recomputes signatures over the expanded tree**: an instantiation *is* a new procedure, so its
+/// signature does not exist in the base file's. That is the one structural difference between the two
+/// expansions (ADR-0082 §3).
+pub(crate) struct Instantiated {
+    /// The base HIR with one appended procedure per distinct instantiation.
+    pub hir: Arc<jr_hir::FileHir>,
+    /// Name resolution over the expanded tree.
+    pub resolve: Arc<ResolveMap>,
+    /// Signatures over the expanded tree (the appended procedures included).
+    pub signatures: Arc<FileSignatures>,
+    /// The check of the expanded tree.
+    pub check: CheckResult,
+    /// The resolve's and check's diagnostics.
+    pub diagnostics: Diagnostics,
+    /// Each polymorphic call and the `ProcRef` of the procedure it was instantiated to.
+    pub redirects: Vec<((jr_hir::ExprScope, jr_hir::ExprId), jr_mir::ProcRef)>,
+}
+
+/// Builds the expanded HIR for a file's instantiations and re-checks it (ADR-0082 §2, §3).
+///
+/// `None` when the file has no polymorphic calls, so the caller takes the ordinary path at no cost. When
+/// it does: the calls are de-duplicated by structural key (ADR-0005 — `(template, bound type)`), one
+/// procedure is appended per distinct key, signatures/resolve/check are recomputed over the expanded
+/// tree, and each call's redirect to its instantiation's `ProcRef` is returned for the const map.
+pub(crate) fn instantiated(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+) -> Option<Instantiated> {
+    let base_check = checked(db, file, search_paths);
+    if base_check.instantiations.is_empty() {
+        return None;
+    }
+    let file_id = crate::queries::resolve_file_id(db, file);
+    let interner = db.interner();
+
+    // Every call in a **deterministic** order, because `FxHashMap` iteration is not stable and the
+    // appended `ProcId`s must be reproducible across runs (a snapshot depends on it). Sorted by call
+    // site.
+    let mut calls: Vec<(
+        (jr_hir::ExprScope, jr_hir::ExprId),
+        (jr_hir::ProcId, jr_pool::PoolId),
+    )> = base_check
+        .instantiations
+        .iter()
+        .map(|(&call, &target)| (call, target))
+        .collect();
+    calls.sort_by_key(|(call, _)| (scope_ord(call.0), call.1.index()));
+
+    // De-duplicate by the structural key (ADR-0005): the `(template, bound type)` tuple. The first
+    // distinct key seen in sorted order is appended first, so `keys[i]` ↔ the i-th appended procedure.
+    let mut keys: Vec<(jr_hir::ProcId, jr_pool::PoolId)> = Vec::new();
+    for (_, key) in &calls {
+        if !keys.contains(key) {
+            keys.push(*key);
+        }
+    }
+
+    // Append one procedure per distinct key.
+    let mut hir = (*file_hir(db, file)).clone();
+    let instantiations: Vec<jr_hir::Instantiation> = keys
+        .iter()
+        .map(|&(template, bound)| jr_hir::Instantiation { template, bound })
+        .collect();
+    let new_ids = jr_hir::expand_instantiations(&mut hir, interner, &instantiations);
+    let hir = Arc::new(hir);
+
+    // Recompute resolve and signatures over the expanded tree.
+    let modules = imported_module_files(db, file, search_paths);
+    let export_scopes: Vec<(Arc<str>, Arc<jr_hir::ItemScope>)> = modules
+        .iter()
+        .map(|(name, module)| {
+            (
+                name.clone(),
+                crate::module_loader::file_exports(db, *module),
+            )
+        })
+        .collect();
+    let scope_refs: Vec<(&str, &jr_hir::ItemScope)> = export_scopes
+        .iter()
+        .map(|(name, scope)| (name.as_ref(), scope.as_ref()))
+        .collect();
+    let (resolve_map, resolve_diags) = jr_hir::resolve(hir.as_ref(), &scope_refs, interner);
+    let resolve_map = Arc::new(resolve_map);
+
+    let sig_inputs: Vec<ImportedInputs> = imported_module_files(db, file, search_paths)
+        .into_iter()
+        .map(|(name, module)| ImportedInputs {
+            name,
+            file: crate::queries::resolve_file_id(db, module),
+            hir: file_hir(db, module),
+            resolve: resolved(db, module, search_paths).map,
+        })
+        .collect();
+    let sig_imports: Vec<ImportedFile<'_>> = sig_inputs
+        .iter()
+        .map(|input| ImportedFile {
+            name: input.name.as_ref(),
+            file: input.file,
+            hir: input.hir.as_ref(),
+            resolve: input.resolve.as_ref(),
+        })
+        .collect();
+
+    let mut pool = lock_pool(db);
+    let sig_output = jr_sema::file_signatures(
+        hir.as_ref(),
+        file_id,
+        resolve_map.as_ref(),
+        &sig_imports,
+        &mut pool,
+        interner,
+    );
+    let signatures = Arc::new(sig_output.signatures);
+
+    // Check the expanded tree against the recomputed signatures.
+    let check_imported: Vec<(Arc<str>, SignatureResult)> = modules
+        .into_iter()
+        .map(|(name, module)| (name, file_signatures(db, module, search_paths)))
+        .collect();
+    let check_imports: Vec<(&str, &FileSignatures)> = check_imported
+        .iter()
+        .map(|(name, sigs)| (name.as_ref(), sigs.signatures.as_ref()))
+        .collect();
+    let output = jr_sema::check_file(
+        hir.as_ref(),
+        file_id,
+        resolve_map.as_ref(),
+        signatures.as_ref(),
+        &check_imports,
+        &mut pool,
+        interner,
+    );
+    drop(pool);
+
+    let mut diagnostics = resolve_diags;
+    diagnostics.extend(sig_output.diagnostics.iter().cloned());
+    let check = translate_check_output(output, &sig_output.types);
+    diagnostics.extend(check.diagnostics.iter().cloned());
+
+    // Map each call to the `ProcRef` of the procedure appended for its key.
+    let redirects: Vec<((jr_hir::ExprScope, jr_hir::ExprId), jr_mir::ProcRef)> = calls
+        .iter()
+        .map(|(call, key)| {
+            let index = keys
+                .iter()
+                .position(|k| k == key)
+                .expect("key was collected above");
+            (*call, jr_mir::ProcRef::new(file_id, new_ids[index]))
+        })
+        .collect();
+
+    Some(Instantiated {
+        hir,
+        resolve: resolve_map,
+        signatures,
+        check,
+        diagnostics,
+        redirects,
+    })
+}
+
+/// A total order over `ExprScope` for deterministic sorting.
+fn scope_ord(scope: jr_hir::ExprScope) -> (u8, u32) {
+    match scope {
+        jr_hir::ExprScope::TopLevel => (0, 0),
+        jr_hir::ExprScope::Body(body) => (1, body.index() as u32),
+    }
+}
+
 /// Turns `jr-sema`'s [`jr_sema::CheckOutput`] into this crate's [`CheckResult`].
 ///
 /// Shared by [`checked`] and by `file_mir`'s **expanded** branch, which re-checks a file whose computed
@@ -375,6 +559,7 @@ fn translate_check_output(
         filled_args: Arc::new(filled_args),
         type_info_calls: Arc::new(output.type_info_calls),
         any_calls: Arc::new(output.any_calls),
+        instantiations: Arc::new(output.instantiations),
     }
 }
 
