@@ -18,8 +18,8 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated during **wave W6 — Metaprogram**, four sub-waves in, with 981 tests green — and its headline claim is met, since a metaprogram
-can now find declarations by note and generate code for each. A declaration can
+Last updated during **wave W6 — Metaprogram**, five sub-waves in, with 984 tests green. Its headline claim is met — a metaprogram can find
+declarations by note and generate code for each — and a build script can name its own artefact. A declaration can
 carry **`@note` metadata** for a metaprogram to read (ADR-0098). `@deprecated` and `@requires "x"` sit in the
 same attribute loop as `#c_call`/`#expand`/`#modify`, so notes and directives interleave freely — but a note
 is its own node kind, because a note is *data for a metaprogram* while a directive is an *instruction to the
@@ -62,6 +62,16 @@ second's value landed on a different expression — a `string` on an arithmetic 
 verifier panicking rather than as any diagnostic, which makes it the sharpest well-typed-placeholder this
 project has had: the value is genuine and merely in the wrong place, so nothing in the type system can see
 that it is wrong.
+
+**And a build script can name its own artefact** (ADR-0102): `BUILD_OUTPUT :: #run choose_name();` in the
+program decides what `jr build` writes, which is the makefile's most basic job and the first time anything in a
+Jairs file has influenced the *build* rather than the program. A **declared constant** rather than a
+`set_build_output("app")` call, because a call has to happen — its effect would depend on evaluation order and
+on the script being reached — while a constant is a fact about the file, and order-dependent configuration is
+the failure mode makefiles are notorious for. An explicit `-o` still wins: a person at a terminal is overriding
+on purpose. This is emphatically **not** a build system — no dependency graph, no incremental rule, no multiple
+artefacts — so the honest claim is that "a build script replaces the makefile" is now true of *something*
+rather than true in general.
 
 **Iteration at run time is still missing, and the reason is worth stating plainly** rather than filed as a
 limitation: all four of these are answered while *checking*, so every argument must be readable then — and a

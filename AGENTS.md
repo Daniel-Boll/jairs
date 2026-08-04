@@ -71,9 +71,10 @@ Track the workspace test count in the §7 handoff, so a silent loss of coverage 
 visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
 → 969 (W5 sub-waves 1–4) → 974 (W5 sub-wave 5, polymorphic structs) → 976 (W5 sub-wave 6a, `$N` surface)
 → 977 (W5 sub-wave 6b, `$N` instantiation) → 978 (W5 sub-wave 6c, `[N]T` over `$N`; 7a `#expand` surface) → 979 (W5 sub-wave 7b, the `#expand` splice) → 980 (W5 sub-wave 7c, reflecting a bound type)
-→ 981 (W5 sub-wave 7h, `#bake_arguments` specialisation — **W5 complete**). W6 sub-wave 1 (`@note`) holds at
-981: its corpus file is iterated by the existing differential and snapshot tests rather than adding a case, which
-is why the *corpus* count is tracked too (188 files).
+→ 981 (W5 sub-wave 7h, `#bake_arguments` specialisation — **W5 complete**). W6 sub-waves 1–4 hold at
+981 — each adds corpus files that the existing differential and snapshot tests iterate rather than adding a test
+case, which is why the *corpus* count is tracked too — and sub-wave 5 reaches **984** with three `jr-cli`
+integration tests, because the driver's behaviour is not something a corpus file can observe (189 corpus files).
 
 ## House style
 

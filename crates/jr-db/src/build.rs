@@ -192,3 +192,46 @@ impl jr_codegen::TrapLocations for BodyLocations<'_> {
         Some(jr_base::render_location(self.map, span))
     }
 }
+
+/// The output name a build script declared, if the file declares one (ADR-0102 §1).
+///
+/// `BUILD_OUTPUT :: #run choose_name();` — or a plain string constant — names the artefact `jr build` writes,
+/// which is the makefile's most basic job and the smallest thing that makes PLAN §2.1's "a build script
+/// replaces the makefile" true of something.
+///
+/// **A declared constant rather than an intrinsic call** (`set_build_output("app")`). A call has to *happen*,
+/// so its effect depends on evaluation order and on the script being reached at all, while a declared constant
+/// is a fact about the file. Order-dependent configuration is the failure mode makefiles are notorious for,
+/// and it would be strange to import it into their replacement.
+///
+/// `None` when the file declares no such constant, when it is not a `string`, or when it did not evaluate. All
+/// three mean "the driver decides", and none is an error here: a non-`string` is already a type error at its
+/// own declaration, and reporting it again from the driver would say the same thing twice in a worse place.
+///
+/// Read from `file_consts`, so a `#run` computing the name works exactly as a literal does — there is no
+/// second path for the computed case, which is what ADR-0073 bought.
+pub fn declared_build_output(
+    db: &dyn Db,
+    root: SourceFile,
+    search_paths: ModuleSearchPaths,
+) -> Option<String> {
+    let hir = crate::file_hir(db, root);
+    let name = db.interner().intern(BUILD_OUTPUT);
+    let item = hir.items.iter().enumerate().find_map(|(index, item)| {
+        (item.name == Some(name) && matches!(item.kind, jr_hir::ItemKind::Const { .. }))
+            .then_some(jr_hir::ItemId::from_usize(index))
+    })?;
+    let consts = crate::consts::file_consts(db, root, search_paths);
+    let value = consts.values.item(item)?;
+    let pool = crate::sema::lock_pool(db);
+    match pool.item(value) {
+        jr_pool::Item::StrValue(id) => Some(pool.resolve_str(*id).to_owned()),
+        _ => None,
+    }
+}
+
+/// The name of the constant [`declared_build_output`] reads.
+///
+/// A screaming-case name because it *is* a constant, and one the compiler knows: a lowercase `build_output`
+/// would read like an ordinary local and give no hint that the driver is watching it.
+const BUILD_OUTPUT: &str = "BUILD_OUTPUT";

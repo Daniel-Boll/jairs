@@ -16,6 +16,12 @@
 //!
 //! # Why the exit codes are what they are
 //!
+//! # A build script naming its own artefact
+//!
+//! `BUILD_OUTPUT :: #run choose_name();` in the program names the executable, which is the makefile's most
+//! basic job (ADR-0102). An explicit `-o` still wins: a person at a terminal is overriding on purpose, and a
+//! script that could silently defeat the flag would make it untrustworthy.
+//!
 //! `1` already means "the file did not check", and it keeps that meaning here. A
 //! program whose *code generation* or *link* failed is a different outcome — the
 //! source was accepted and the compiler could not finish — so it is `2`. That leaves
@@ -93,10 +99,15 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
         }
     };
 
+    // **`-o` wins over a declared `BUILD_OUTPUT`** (ADR-0102 §2). A person at a terminal is overriding on
+    // purpose, and a build script that could silently defeat `-o` would make the flag untrustworthy. The
+    // reverse precedence would also make a script's own output name unpredictable from reading the file.
     let output = args.output.clone().unwrap_or_else(|| {
-        // `hello.jr` becomes `hello`, which is what every other compiler does and what
-        // a shell completion expects.
-        args.path.with_extension("")
+        jr_db::declared_build_output(&db, root, search)
+            .map(std::path::PathBuf::from)
+            // `hello.jr` becomes `hello`, which is what every other compiler does and what
+            // a shell completion expects.
+            .unwrap_or_else(|| args.path.with_extension(""))
     });
 
     if args.emit_object {

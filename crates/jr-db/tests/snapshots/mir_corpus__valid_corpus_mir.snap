@@ -7117,3 +7117,19 @@ proc beta -> s64 {
   bb0(v0: *Context):
     return 2_s64
 }
+
+========================================
+083-build-script.jr
+========================================
+proc choose_name -> string {
+  params: v0: *Context
+  bb0(v0: *Context):
+    return "note_driven_app"
+}
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = 8_s64 + 1_s64
+    discard call extern proc1(v1)
+    return
+}
