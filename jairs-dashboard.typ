@@ -94,20 +94,20 @@
 #v(0.4em)
 #pill[6/6 gates green]
 #h(4pt)
-#pill[969 tests]
+#pill[974 tests]
 #h(4pt)
-#pill[ADR-0085 latest]
+#pill[ADR-0086 latest]
 #h(4pt)
-#pill(fill: rgb("#fdf2e6"), stroke: warn)[W5 open · 4 sub-waves done]
+#pill(fill: rgb("#fdf2e6"), stroke: warn)[W5 open · 5 sub-waves done]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "969", "workspace, all passing"),
-  metric("Corpus", "171", "jr files, both engines"),
-  metric("ADRs", "85", "0001 to 0085, immutable"),
-  metric("Diagnostics", "100", "codes, E0269 next free"),
+  metric("Tests", "974", "workspace, all passing"),
+  metric("Corpus", "178", "jr files, both engines"),
+  metric("ADRs", "86", "0001 to 0086, immutable"),
+  metric("Diagnostics", "102", "codes, E0271 next free"),
   metric("Editor checks", "166", "Neovim, verified not gated"),
 )
 
@@ -191,8 +191,9 @@
   ("if, else, while, for, break, continue, defer, using", ""),
   ("switch with exhaustiveness checking over an enum; else", "patterns, ranges, guards; a jump table"),
   ("Multiple returns, named args, literal defaults", "#must; a multi-result call in a return"),
-  ("import, foreign, system_library, #scope_module", "polymorphs, macros (W5)"),
-  ("Compile-time run at file scope or in a body, across files", "type_info(), Any, insert, Code"),
+  ("import, foreign, system_library, #scope_module", "macros (W5)"),
+  ("$T procedures and Box($T) structs, inferred and instantiated in both engines", "$$T comptime-value params; #expand macros; inference through Box($T)"),
+  ("Compile-time run at file scope or in a body, across files; type_info(), Any, #insert, #code", "a cross-file #run value; a Code value (declined)"),
   ("A type as a compile-time value: T :: Point aliases one, usable anywhere Point is", "a chain B :: A; comparing types; Type as an annotation"),
   ("A type in a runtime position is refused — it has no representation to store", ""),
   ("Traps name their source line and the live call chain", "a per-frame line; inlined frames (none exist)"),
@@ -295,7 +296,7 @@
     "context (ADR-0057), the bounds-check build setting (ADR-0058, finishing ADR-0003), indirect calls (ADR-0059), null plus a memory source (ADR-0060/0061), the allocator protocol (ADR-0062), push_context (ADR-0063), pointer arithmetic (ADR-0064), temporary storage (ADR-0065), and traps with backtraces (ADR-0066) — a trap names the frames that were live, byte-identically in both engines. Closed by ADR-0066; a source-level backtrace with inlined frames is deferred, because inlined frames have no runtime existence.",
   ),
   (
-    "W4 Comptime", "in progress",
+    "W4 Comptime", "done",
     "Delivered in sub-waves, because a 10-14 week wave cannot be verified the way a one-ADR wave can. All ten have shipped, and W4 is complete as scoped. A #run may call an imported procedure and appear in a body (ADR-0069), turning two internal compiler errors into working programs. An array length may name a constant (ADR-0070), which replaced the scheduled aggressive const folding after probing showed const-prop already did it. A type is a compile-time value (ADR-0071), which closed a silent miscompile — a type bound to a local compiled to an undefined value in a slot with no layout. Insert of a string literal lowers where it is written (ADR-0072), in the enclosing scope, every synthesized span pointing at the directive because jr-diag clamps an out-of-range offset rather than rejecting it. And a computed insert (ADR-0073) evaluates its operand at compile time and splices the text — the point sema and the VM become mutually recursive, PLAN section 5's named top risk, broken by an acyclic pre-pass that reuses the constant evaluator and re-lowers only the affected bodies rather than by salsa fixed-point recovery. An aggregate compile-time value (ADR-0074): a #run returning a struct or array interns as its element values rather than a byte image, because the pool is target-independent and an image is not. And type_info(T) (ADR-0075), reflection's first half: a type's kind, name, size and alignment, the numbers coming from the same layout_of every real layout decision uses, so reflection cannot disagree with the layout it describes. Type_Info is declared in modules/Basic in Jairs rather than inside the compiler, because it has to be spellable — no compiler-declared type can be named at all — and the resulting dependency on a declaration the compiler does not own is validated on lookup, so editing that struct is a diagnostic rather than a read of whatever now sits at the old offset. Getting there first needed a constant that may hold a string, which ADR-0074's own closing claim said was already done and was not: the fourth false scheduled dependency this project has found, and the first where the false claim was its own ADR about the very next wave. And Any (ADR-0076, ADR-0077), reflection's second half: any_of erases a value to a {*Type_Info, *u8} pair and any_as reads it back, trapping unless the type matches — the erasing pointer conversion allowed only at that boundary, because a general one would make a wrong pointee type a silent wrong read. Nothing is reinterpreted, so neither back end needed a line. The checked read needed a runtime type identity the four-field Type_Info did not have — two type_info calls have different addresses, size and alignment collide, and name is unsound because a local and an imported type share a spelling — so Type_Info gained a stable id, the pool id the compiler already uses. And Type_Info's fixed-size per-kind facts (ADR-0078): a struct's field count and an array's or pointer's element type, added as flat s64 fields because a count is a number and an element type is a pool id — so they need none of the memory-ownership decision the variable-length field list does, which stays deferred. And #code (ADR-0080), unquoted source spliced into the enclosing scope — deliberately sugar over #insert, since #insert of a named constant already worked, so what it adds is no quoting and a body parsed where it is written. A Code value is declined rather than deferred: a quoted syntax tree is worth representing only once something can inspect or transform one. The same sub-wave refused a shipped silent miscompile found while probing (ADR-0079): a pointer or view inside a compile-time aggregate interned the evaluator's own address as an integer, giving 48 in one engine and a segfault in the other with no diagnostic. Out of W4's scope, each with a recorded reason: Type_Info's variable-length field list, which needs a declared static-data mechanism and is owed its own wave; a bare value coercing to Any, which needs a materialised temporary; and a #run reading another file's constant, which now reports itself rather than an internal error.",
   ),
   (
@@ -303,8 +304,8 @@
     "switch with exhaustiveness checking, a bare dot-member as a case (settling ADR-0041 §2 step 5), and a tagged variant type (ADR-0067, ADR-0068). Reordered ahead of W4 after checking showed its stated dependency on comptime was a want rather than a need. The variant follows ADR-0045 §1's own instruction — a different declaration form, not a change to union — and union is untouched, still untagged and still one word smaller.",
   ),
   (
-    "W5 Polymorphism", "not started",
-    "Polymorphic parameters, modify, bake_arguments, expand macros with hygiene, instantiation caching.",
+    "W5 Polymorphism", "in progress",
+    "Five sub-waves done. $T procedures work end to end (ADR-0081-0084): a $T parameter is inferred from the call — directly or through a pointer or view — instantiated once per distinct tuple of bound types, checked per instantiation, and run as an ordinary procedure in both engines, so nothing polymorphic survives to the back end. And polymorphic structs (ADR-0085, built per ADR-0086): Box :: struct($T) { value: T; } used as Box(s64) is a type constructor, and Box(s64) and Box(bool) are distinct types from one declaration with substituted fields and layouts, told apart in the pool by the type argument in the key the way [2]s64 and [3]s64 are. It changed the pool's most load-bearing invariant — a struct's identity was its declaration site — and was landed in two commits, a zero-behaviour-change representation refactor proven by an unchanged snapshot and test count, then the parameterised behaviour, so a half-built type-identity change could not hide a miscompile. Left in W5: $$T comptime-value parameters (recommended next, reusing the instantiation harness and const-eval), the macro family (modify, bake_arguments, expand), and the deferred struct pieces (inference through Box($T), using on one, cross-file, recursive List($T)), each a refusal today rather than a gap.",
   ),
   (
     "W6 Metaprogram", "not started",
@@ -354,28 +355,30 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[Twenty-six waves shipped]
+    #sub[Thirty-eight waves shipped]
     #text(size: 7.4pt)[
-      ADR-0049 through 0074: for and defer, using, aggregate returns, multiple returns, named and
+      ADR-0049 through 0086: for and defer, using, aggregate returns, multiple returns, named and
       default arguments, scope visibility, imported constants, float constants, context, the
       bounds-check build setting, indirect calls, null plus a memory source, the allocator
       protocol, push_context, pointer arithmetic, temporary storage, trap backtraces, switch,
       tagged variants, compile-time run across files and in a body, an array length from a
-      constant, a type as a compile-time value, insert of a literal and a computed string, and an aggregate compile-time value.
+      constant, a type as a compile-time value, insert of a literal and a computed string, an
+      aggregate compile-time value, type_info and Any, code splicing, \$T procedures, and polymorphic structs.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 969. Corpus 116 to 171 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
-      closed*, and *W4 is open* with six sub-waves shipped: a `#run` reaches across files and into a body,
-      an array length may name a constant, a type is a value, `#insert` of a literal lowers where it is
-      written, and now a *computed* `#insert` evaluates its operand at compile time and splices it — the
-      point sema and the VM become mutually recursive, the cycle broken by an acyclic pre-pass. *Three
-      times* a plan's stated reason turned out not to hold — W4.5's dependency on comptime, sub-wave 2's
-      folding work, and a nesting hang escaping makes impossible. An *aggregate* compile-time value now
-      interns too — as its element values, never a byte image, because the pool is target-independent —
-      which is what RTTI was really blocked on. Remaining: `#code`/`Code`, then `type_info()` and `Any`,
-      now a *schema* decision rather than a representation one.
+      Test count 900 to 974. Corpus 116 to 178 files. Neovim checks 103 to 166. *W2, W3, W4.5 and W4 are all
+      closed*, and *W5 is open* with five sub-waves shipped: `$T` procedures work end to end — inferred,
+      instantiated once per distinct tuple of bound types, checked per instantiation, run as ordinary
+      procedures in both engines — and now *polymorphic structs*, `Box :: struct($T) { value: T; }` used as
+      `Box(s64)`. That changed the pool's most load-bearing invariant, a struct's identity being its
+      declaration site, so it was landed in *two commits*: a zero-behaviour-change representation refactor,
+      proven by an unchanged snapshot and test count, then the parameterised behaviour on top — a discipline
+      that keeps a half-built type-identity change from hiding a miscompile. `Box(s64)` and `Box(bool)` are
+      distinct types with substituted fields and layouts, both engines computing the layout independently.
+      Deferred with by-design refusals: inference through `Box($T)`, `using` on one, and a cross-file one.
+      Remaining in W5: `$$T` comptime-value parameters, then the macro family.
     ]
 
     #v(0.3em)

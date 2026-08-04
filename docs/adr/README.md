@@ -106,3 +106,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0083](0083-multiple-type-variables.md) | A polymorphic procedure may introduce several type variables; the structural key is the tuple of all bindings (generalises ADR-0082) | Accepted |
 | [0084](0084-nested-inference.md) | A type variable is inferred through a pointer or view parameter (`*$T`, `[]$T`) by a one-layer structural match | Accepted |
 | [0085](0085-polymorphic-structs.md) | A polymorphic struct is a parameterised type keyed on `(decl, args)`; design of record for the sub-wave that builds it | Accepted |
+| [0086](0086-polymorphic-structs-implementation.md) | Polymorphic structs as built: staged (zero-diff representation, then behaviour), a second instance-keyed field map, and every ADR-0085 §5 deferral held as a compile-time refusal | Accepted |

@@ -18,7 +18,18 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated during **wave W5 — Polymorphism**, four sub-waves in: `$T` procedures work end to end.
+Last updated during **wave W5 — Polymorphism**, five sub-waves in: `$T` procedures *and* polymorphic
+structs work. `Box :: struct($T) { value: T; }` is a **type constructor**, not a type — `Box(s64)` applies
+it to the type argument `s64`, and `Box(s64)` and `Box(bool)` are **distinct types** from one declaration,
+with distinct field types and distinct layouts. They are told apart in the pool by the argument in the key,
+exactly the way `[2]s64` and `[3]s64` are (ADR-0085); each instance's fields are the declaration's,
+substituted per argument, keyed on the instance rather than the declaration, so both engines compute the
+right layout independently. The change touched the pool's most load-bearing invariant — a struct's identity
+was its declaration site — and it was landed in two commits: a *zero-behaviour-change* representation
+refactor (proven by an unchanged snapshot and test count), then the parameterised behaviour on top, so a
+half-built type-identity change could never hide a miscompile. Deferred with by-design refusals, not gaps:
+inferring a struct's argument through a `$T` parameter (`(b: Box($T))`), `using` on a parameterised struct,
+and a cross-file one (E0269). Before it, `$T` procedures went end to end.
 `id :: (x: $T) -> T` is declared as a template (no concrete signature, no MIR), a call `id(42)` infers `$T`
 from its argument, and the compiler appends a **concrete procedure** — one per distinct structural tuple of
 bound types (ADR-0005), deduped across call sites — that both engines run like any other. Nothing
@@ -26,8 +37,8 @@ polymorphic survives to the back end, which is what lets the differential harnes
 program at all. The body is checked *per instantiation*, so `add(a, b)` on a struct with no `+` is a
 diagnostic rather than a miscompile. It handles several type variables (`pair :: (a: $A, b: $B)`) and
 inference through a pointer or view (`deref :: (p: *$T)`, `sort :: (items: []$T)`), by a one-layer
-structural match rather than a full unifier. Still ahead in W5: polymorphic *structs* (`Box($T)`, design of
-record in ADR-0085), comptime-value parameters (`$$T`), and the macro family. On top of **`#code`** (ADR-0080), which **completed wave W4 — Comptime** as scoped: `#code { n := 7; }`
+structural match rather than a full unifier. Still ahead in W5: comptime-value parameters (`$$T`), and the
+macro family. On top of **`#code`** (ADR-0080), which **completed wave W4 — Comptime** as scoped: `#code { n := 7; }`
 is `#insert "n := 7;"` written without quotes, spliced into the enclosing scope. It is deliberately *sugar* —
 `#insert` of a named constant already worked, so what `#code` adds is no quoting and a body parsed where it
 is written, not a new capability. There is no `Code` *value*, and that is **declined rather than deferred**: a
@@ -130,7 +141,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 969 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
+`print_int` (ADR-0037). 974 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do
@@ -199,10 +210,11 @@ The authoritative version of this list is
 | `#insert "…"` of a **string literal**, lowered where it is written — same scope, so a local it declares is visible after it; nesting works, and every diagnostic points at the directive and names its offset into the inserted text (ADR-0072) | `#insert` at file scope, which would change the item tree; `#code` and the `Code` type |
 | `#insert <expr>;` of a **computed** operand — a constant or a `#run` whose text is evaluated at compile time and spliced (ADR-0073). The operand resolves and type-checks like any expression (`#insert undefined;` → E0201; a non-string → E0214), and a pending insert the evaluator has not reached is refused, never miscompiled. This is where sema and the VM become mutually recursive; the cycle is broken by an acyclic pre-pass | a **cross-file** `#run` value (its own decision, ADR-0073 §4); expansion past 16 levels (E0264) |
 | **`#code { … }`** — unquoted source spliced into the enclosing scope; the body is parsed where it is written, so no quoting and no escaping (ADR-0080). Deliberately *sugar* over `#insert`, reusing its depth bound and its refusal of a pending splice | a `Code` **value** — **declined**, not deferred: a quoted syntax tree is worth representing only once something can inspect or transform one (ADR-0080 §3); spans into the body's real source, so a fault inside it points at the `#code` |
-| **`$T` polymorphic procedures** — inferred from the argument (directly or through `*$T`/`[]$T`), instantiated once per distinct tuple of bound types, checked per instantiation, run as ordinary procedures in both engines (ADR-0081–0084) | polymorphic **structs** (`Box($T)`, design in ADR-0085); comptime-value params (`$$T`); macros (`#modify`/`#bake_arguments`/`#expand`); two-way unification and explicit type arguments |
+| **`$T` polymorphic procedures** — inferred from the argument (directly or through `*$T`/`[]$T`), instantiated once per distinct tuple of bound types, checked per instantiation, run as ordinary procedures in both engines (ADR-0081–0084) | comptime-value params (`$$T`); macros (`#modify`/`#bake_arguments`/`#expand`); two-way unification and explicit type arguments |
+| **polymorphic structs** — `Box :: struct($T) { value: T; }` used as `Box(s64)`; the instance is keyed on `(decl, args)` so `Box(s64)` and `Box(bool)` are distinct types with substituted fields and layouts, told apart in the pool the way `[2]s64` and `[3]s64` are (ADR-0085). Both engines compute each instance's layout from its substituted fields | inferring a struct's argument through a `$T` parameter (`(b: Box($T))`); `using` on a parameterised struct; a **cross-file** parameterised struct (E0269); recursive `List($T)` |
 | a **type as a compile-time value**: `T :: Point;` binds one, and `T` is usable wherever `Point` is — as an annotation, a parameter, a field, an array element, a pointee; an enum alias carries its members (ADR-0071) | a chain (`B :: A`); comparing types (`T == U`); a `Type` parameter; `Type` as an annotation, which does not parse |
 | using a type where a **runtime** value is expected is refused (E0261) — it has no runtime representation, so there is nothing to store | — |
-| `#import`, `#foreign`, `#system_library` | polymorphs `$T`, `#expand` macros (**W5**) |
+| `#import`, `#foreign`, `#system_library` | `#expand` macros (**W5**) |
 | overflow traps with a source location (ADR-0002, ADR-0020), and a **call chain** of the frames that were live (ADR-0066) | a per-frame line number; inlined frames, which have no runtime existence |
 | `context` — a hidden parameter passed by pointer, so a callee reads what its caller wrote; `#c_call` opts out and gets none | — |
 | `push_context { … }` — a block with its own copy of the context, so a write inside it is restored on exit (ADR-0063) | — |
@@ -222,7 +234,7 @@ ignoring the flag a compile error, is owed its own ADR. There is no GC and no RA
 | Formatter | **Works** | Pure function over the CST |
 | HIR, name resolution, module loader | **Works** | Flat import merge (ADR-0014) |
 | InternPool (types, comptime values, layout, arithmetic) | **Works** | One layout computation and one integer evaluator, shared (ADR-0018 §2, ADR-0022 §2) |
-| Sema (signatures, checking, inference) | **Works** | E0212–E0257; a union's diagnostics are a struct's unchanged, deliberately, and a bare `.RED`'s "no such member" is the qualified form's; no const-eval here — ADR-0018 §3 puts it in the VM, which is why an array length must be a literal. Float literals are context-typed with **no** fit check, because IEEE-754 saturates (ADR-0040 §5) |
+| Sema (signatures, checking, inference) | **Works** | E0212–E0270; a union's diagnostics are a struct's unchanged, deliberately, and a bare `.RED`'s "no such member" is the qualified form's; no const-eval here — ADR-0018 §3 puts it in the VM, which is why an array length must be a literal. Float literals are context-typed with **no** fit check, because IEEE-754 saturates (ADR-0040 §5) |
 | MIR (typed SSA, Braun construction) | **Works** | Block parameters, not phis (ADR-0017); CFG diagnostics E0227–E0229, the last of which now also reports a `break`/`continue` naming an unknown label (ADR-0049 §2); an explicit `bounds_check` statement and an explicit `zero`, both ADR-0039. `for` reuses the `while` shape with a synthesised induction variable and needs no new node; `defer`'s statements appear once per exit path |
 | Mid-end | **Four passes** | Inliner, store-to-load forwarding, const-prop, DCE, to a bounded fixed point (ADR-0021 – ADR-0023). Forwarding is block-local, so a value read across a loop stays in memory, and it refuses two unequal array indices as possibly-aliasing; no SROA; the SSA value arena is never compacted |
 | Bytecode VM + libffi | **Works** | Per-instruction spans, so a trap names its line. Floats need no new value variant, but are dispatched *before* the bit-compare fallback that would answer `NaN == NaN` and `-0.0 == 0.0` backwards. No JIT |
