@@ -940,6 +940,15 @@ pub struct Proc {
     /// Replaces the source text ADR-0093 §1 carried: text was the right shape when the block had to be
     /// re-lowered per instantiation, and lowering it once at the template makes it unnecessary.
     pub modify: Option<ProcId>,
+    /// The `@note`s this procedure carries, in source order (ADR-0098 §1).
+    ///
+    /// Metadata a **metaprogram** reads — `@deprecated`, `@requires "x"` — not an instruction to the
+    /// compiler, which is why it is a list of `(name, payload)` beside the directive flags rather than one
+    /// of them. Empty for a declaration with none, which is every existing program.
+    ///
+    /// Carried on the declaration because that is what a note is attached to (ADR-0098 §2): allowing one on
+    /// an arbitrary expression would raise "what does a note on `a + b` mean", which nothing needs.
+    pub notes: Vec<(Symbol, Option<String>)>,
     /// The return type, if present.
     pub ret: Option<TypeRefId>,
     /// The body, if this is not a foreign procedure.

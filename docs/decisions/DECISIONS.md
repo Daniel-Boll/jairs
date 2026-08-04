@@ -1875,3 +1875,38 @@ ADR-0053 §1's trap, which that ADR recorded after it silently dropped every nam
 
 **W5 — Polymorphism is complete** in fifteen sub-waves, ADR-0081 through ADR-0097. Next: W6 — Metaprogram,
 then W7 — Stdlib, whose `Array`/hash table need exactly the polymorphic structs W5 delivered.
+
+---
+
+## Wave: W6 — Metaprogram opens, 2026-08-04
+
+W5 is complete. W6's scope (PLAN §2.1): workspaces, the compiler message loop, `#run build()` build scripts
+replacing makefiles, plugin hooks, `@note` attributes.
+
+### Fork 1 — which W6 piece first
+
+- Options: **`@note` attributes (taken, recommended)**; the compiler message loop; `#run build()` build
+  scripts; plugin hooks.
+- Why `@note` first: it is the **only** W6 piece that is self-contained. A note is metadata a declaration
+  carries — `@deprecated`, `@Cleanup` — that a metaprogram can *read*, so it is the thing the other three
+  consume. Concretely: the message loop's whole purpose is to hand declarations to a build script, and a
+  declaration with nothing extra to say is not worth handing over; a build script's first real job is
+  "collect every declaration tagged `@X`". So notes are the data the rest of W6 operates on, and they need
+  parse + HIR + reflection surface and nothing else.
+- Why **not** the message loop first: it needs a *reason to exist* — a script that can act on what it is
+  told — and that reason is either notes (this fork) or the build-script driver. Building the loop first
+  would mean designing its message shape against no consumer, the failure ADR-0080 §3 named for a `Code`
+  value ("worth representing only once something can inspect it").
+- Why **not** `#run build()` first: it needs the workspace notion *and* a way to say "compile these files
+  with these settings" — `BuildConfig` exists (ADR-0058 §2) but nothing composes it from a script. It is the
+  largest of the four and the natural last.
+
+### Fork 2 — what a note is attached to, and what it carries
+
+- Options: **a declaration, carrying an interned name and an optional string (taken, recommended)**; any
+  expression; a name only; arbitrary key-value pairs.
+- Why a declaration with name + optional string: Jai's notes are `@name` on a declaration, and the useful
+  cases are a bare tag (`@deprecated`) and a tag with a payload (`@requires "x"`). Allowing them on *any*
+  expression would raise "what does a note on `a + b` mean", which nothing needs. Arbitrary key-value pairs
+  are a superset nothing in W6 consumes yet, and ADR-0080 §3's rule applies: represent it when something
+  reads it.

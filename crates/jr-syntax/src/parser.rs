@@ -358,7 +358,10 @@ impl<'src> Parser<'src> {
         match self.tokens.get(i) {
             None => false,
             Some(token) => match token.kind {
-                ARROW | L_BRACE => true,
+                // `@note` joins them (ADR-0098 §1) — the token-set trap for the **seventh** time: a
+                // procedure whose signature is followed by a note, with no `->`, reaches neither `ARROW`
+                // nor `L_BRACE` and was read as a parenthesised-expression constant.
+                ARROW | L_BRACE | AT => true,
                 // `#c_call` joins `#foreign` here (ADR-0057 §3), and omitting it was not a
                 // near-miss: `raw :: () #c_call { }` was read as a *parenthesised expression*
                 // constant, so the whole declaration collapsed into four cascading errors starting
@@ -990,6 +993,13 @@ impl<'src> Parser<'src> {
         // there, so the diagnostic can explain itself rather than the parser reporting a syntax
         // error about a directive that is spelled correctly.
         loop {
+            // `@note` — metadata a metaprogram reads (ADR-0098 §1). Taken in the same loop as the
+            // directives so a declaration may carry both, in any order, which is the rule ADR-0058 settled
+            // for the directives themselves.
+            if self.at(AT) {
+                self.parse_note();
+                continue;
+            }
             if !self.at(DIRECTIVE) {
                 break;
             }
@@ -1100,6 +1110,25 @@ impl<'src> Parser<'src> {
             self.error(span, "expected a parameter name", E0108);
             // Recover: skip to `,` or `)`
             self.recover_until(TokenSet::new(&[COMMA, R_PAREN]), true);
+        }
+        self.finish_node();
+    }
+
+    /// `@name` or `@name "payload"` — a note on a declaration (ADR-0098 §1).
+    ///
+    /// The name is required; a missing one is an error rather than an empty note, because a note with no name
+    /// is nothing a metaprogram could look up. The payload is optional, which is what makes `@deprecated` and
+    /// `@requires "x"` one form rather than two.
+    fn parse_note(&mut self) {
+        self.start_node(NOTE);
+        self.bump(); // `@`
+        if self.at(IDENT) {
+            self.bump();
+            // An optional string payload.
+            self.eat(STRING_LITERAL);
+        } else {
+            let span = self.current_span();
+            self.error(span, "expected a note name after `@`", E0131);
         }
         self.finish_node();
     }

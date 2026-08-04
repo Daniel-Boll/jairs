@@ -71,7 +71,9 @@ Track the workspace test count in the §7 handoff, so a silent loss of coverage 
 visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
 → 969 (W5 sub-waves 1–4) → 974 (W5 sub-wave 5, polymorphic structs) → 976 (W5 sub-wave 6a, `$N` surface)
 → 977 (W5 sub-wave 6b, `$N` instantiation) → 978 (W5 sub-wave 6c, `[N]T` over `$N`; 7a `#expand` surface) → 979 (W5 sub-wave 7b, the `#expand` splice) → 980 (W5 sub-wave 7c, reflecting a bound type)
-→ 981 (W5 sub-wave 7h, `#bake_arguments` specialisation — **W5 complete**).
+→ 981 (W5 sub-wave 7h, `#bake_arguments` specialisation — **W5 complete**). W6 sub-wave 1 (`@note`) holds at
+981: its corpus file is iterated by the existing differential and snapshot tests rather than adding a case, which
+is why the *corpus* count is tracked too (181 files).
 
 ## House style
 
@@ -189,7 +191,7 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0277 is the first free code**; E0131 is the first free *parser* code. E0231 is `jr-db`'s
+**E0277 is the first free code**; E0132 is the first free *parser* code. E0231 is `jr-db`'s
 unused-import warning — the first code in this project that is a *warning* rather than an
 error, so a consumer filtering by severity has something to filter.
 

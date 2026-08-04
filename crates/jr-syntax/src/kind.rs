@@ -430,6 +430,13 @@ pub enum SyntaxKind {
     /// code. Its own kind for the reason those three are separate — a consumer that forgets it is a missing
     /// arm rather than a silent fall-through.
     MODIFY_ATTR,
+    /// A `@note` on a declaration — metadata a metaprogram can read (ADR-0098 §1).
+    ///
+    /// Holds the `@`, the name, and an optional string payload: `@deprecated` or `@requires "x"`. Its own
+    /// kind rather than a generic attribute, because a note is *data for a metaprogram* while `#c_call` and
+    /// friends are instructions to the compiler — a consumer collecting notes must not have to filter
+    /// directives out of the same list.
+    NOTE,
     /// The `context` keyword used as an expression (ADR-0057 §1).
     ///
     /// Its own kind rather than a `NAME_EXPR`, because `context` is a keyword and not a name — a

@@ -529,6 +529,7 @@ impl<'a> LowerCtx<'a> {
                 no_abc: false,
                 expand: false,
                 modify: None,
+                notes: Vec::new(),
                 ret: Some(ret_id),
                 body: Some(body_id),
                 foreign: None,
@@ -584,6 +585,18 @@ impl<'a> LowerCtx<'a> {
             no_abc: ast_proc.is_no_abc(),
             expand: ast_proc.is_expand(),
             modify: modify_pred,
+            notes: ast_proc
+                .notes()
+                .filter_map(|note| {
+                    let name = self.intern(note.name_token()?.text());
+                    // The payload's quotes are stripped here, where the interner is, so every consumer sees
+                    // the text rather than the literal.
+                    let payload = note
+                        .payload_token()
+                        .map(|t| t.text().trim_matches('"').to_owned());
+                    Some((name, payload))
+                })
+                .collect(),
             ret,
             body,
             foreign,
@@ -1081,6 +1094,8 @@ impl<'a> LowerCtx<'a> {
             no_abc: template.no_abc,
             expand: false,
             modify: None,
+            // A baked clone keeps its original's notes: it *is* that procedure, specialised.
+            notes: template.notes.clone(),
             ret: template.ret,
             body,
             foreign: template.foreign.clone(),
