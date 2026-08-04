@@ -2525,6 +2525,26 @@ impl Lower<'_> {
                     Some((place, _)) => {
                         self.define(ty, Rvalue::Load(place.project(Projection::ViewCount)), span)
                     }
+                    // **A view with no place is spilled** (ADR-0109 §2). `elements(*l).count` reads the count of a
+                    // view a *call returned by value*, which has no address to project from — and refusing it
+                    // leaked "this compiler has a gap; please report it" for a program the language allows. The
+                    // move is the same one ADR-0077 made for `type_info(s64).id`: give the value a slot and
+                    // project from that. Reaching for a place *first* keeps the ordinary case free of a slot.
+                    None if self.view_elem(self.ty(receiver)).is_some() => {
+                        let receiver_ty = self.ty(receiver);
+                        let value = self.expr(receiver);
+                        let slot = self.mir.push_slot(receiver_ty, None, span);
+                        self.emit(Statement::Store {
+                            place: Place::slot(slot),
+                            value,
+                            span,
+                        });
+                        self.define(
+                            ty,
+                            Rvalue::Load(Place::slot(slot).project(Projection::ViewCount)),
+                            span,
+                        )
+                    }
                     None => {
                         self.give_up("a view's `.count` with no place");
                         self.define(ty, Rvalue::Undef, span)
@@ -3155,7 +3175,55 @@ impl Lower<'_> {
     /// The pointer operand is the **last** argument for both intrinsics: `untyped(p)` has one argument, and
     /// `typed(T, p)`'s first is a *type*, which is never lowered — sema typed it `PoolId::TYPE` and there is no
     /// runtime value to produce.
+    /// Lowers `view(p, count)` to a `{data, count}` view aggregate (ADR-0109 §1).
+    ///
+    /// **The same three statements a slice emits** — `Statement::Zero`, then a store to `Projection::ViewData`
+    /// and one to `ViewCount` — which is why neither engine needed a line: a view has one representation, and
+    /// this is a second way to *produce* it rather than a second thing to consume.
+    ///
+    /// The only difference from a slice is where the parts come from. A slice takes the address of element 0 of
+    /// an array whose length the compiler knows; this takes both from arguments, which is exactly the unchecked
+    /// count ADR-0109 §1 declines to hide.
+    fn lower_view_from_pointer(
+        &mut self,
+        args: &[ExprId],
+        view_ty: PoolId,
+        span: MirSpan,
+    ) -> Operand {
+        let [pointer_arg, count_arg] = args else {
+            self.give_up("`view` takes a pointer and a count");
+            return Operand::Constant(PoolId::VOID_VALUE);
+        };
+        let data = self.expr(*pointer_arg);
+        let count = self.expr(*count_arg);
+
+        let slot = self.mir.push_slot(view_ty, None, span);
+        let view = Place::slot(slot);
+        self.emit(Statement::Zero {
+            place: view.clone(),
+            span,
+        });
+        self.emit(Statement::Store {
+            place: view.clone().project(Projection::ViewData),
+            value: data,
+            span,
+        });
+        self.emit(Statement::Store {
+            place: view.clone().project(Projection::ViewCount),
+            value: count,
+            span,
+        });
+        self.define(view_ty, Rvalue::Load(view), span)
+    }
+
     fn lower_pointer_view(&mut self, args: &[ExprId], target: PoolId, span: MirSpan) -> Operand {
+        // **`view(p, n)` builds a `{data, count}` aggregate** (ADR-0109 §1) rather than retyping a pointer, so it
+        // takes the other branch. Recognised by the *target* being a view type, which is the one thing that
+        // distinguishes the two intrinsics sharing this channel — and sharing it is right, because both are
+        // "sema resolved a type that lowering has to build with".
+        if matches!(self.pool.item(target), jr_pool::Item::ViewType { .. }) {
+            return self.lower_view_from_pointer(args, target, span);
+        }
         let Some(pointer_arg) = args.last().copied() else {
             self.give_up("a pointer view with no operand");
             return Operand::Constant(PoolId::VOID_VALUE);

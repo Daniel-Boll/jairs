@@ -122,6 +122,19 @@ module's **own** file and span, because attributing it to the `#import` line wou
 module they cannot edit while discarding the only thing that locates the bug. This does make the compiler reject
 programs it used to accept — every one of which was going to fail anyway, later and less comprehensibly.
 
+**And the library now composes** (ADR-0109): `view(p, n)` builds a `[]T` from a pointer and a count, so
+`sort_ints(elements(*l))` sorts a growable list **in place** — `List`, `Sort` and the language's own view type
+cooperating on one buffer with no copy. That was the previous sub-wave's closing gap: a slice takes an *array*, so
+nothing could turn a pointer and a count into a view, and a growable array and a sorting routine sat side by side
+unable to be combined.
+
+Getting there meant revisiting a refusal whose **stated reason had expired**. A view's `.data` was refused because
+it "would hand out an unbounded `*T` … and there is no pointer arithmetic to use it with" — and both halves are now
+false. The answer was not to expose `.data` but to add the constructor a caller actually wanted, so the refusal
+stands for a better reason. The element type comes from the pointer, so nothing is asserted; the count is
+**unchecked**, and that is said plainly, because a pointer's allocation size is tracked nowhere and a checked
+version would need a registry the native back end could not share with the VM.
+
 Before it, wave **W6 — Metaprogram**, five sub-waves in, with 984 tests green. Its headline claim is met — a metaprogram can find
 declarations by note and generate code for each — and a build script can name its own artefact. A declaration can
 carry **`@note` metadata** for a metaprogram to read (ADR-0098). `@deprecated` and `@requires "x"` sit in the
