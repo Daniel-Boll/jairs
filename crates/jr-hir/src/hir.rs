@@ -80,6 +80,13 @@ jr_base::newtype_index! {
 pub enum TypeRef {
     /// A named type, e.g. `s64`, `Point`, `bool`.
     Name(Symbol),
+    /// A polymorphic type variable, `$T` (ADR-0081 §1).
+    ///
+    /// Distinct from [`TypeRef::Name`] because it **binds** a variable a call infers, rather than naming
+    /// an existing type: sema treats `$T` as introducing `T` into the signature's scope, and a bare `T`
+    /// elsewhere in the same signature as a use of it. Keeping them apart is what lets sema say which is
+    /// meant instead of trying to resolve `$T` as a type that does not exist.
+    Poly(Symbol),
     /// A pointer type `*T`.
     Pointer(TypeRefId),
     /// A fixed-size array type `[N]T` (ADR-0039 §3).

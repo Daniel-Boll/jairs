@@ -1120,3 +1120,54 @@ Taken as recommended.
 - Consequence recorded honestly: this makes `#code` sugar, and the ADR must say so rather than implying a
   syntax-tree value. If a later wave needs tree *manipulation*, it supersedes this with the real
   representation.
+
+---
+
+## Wave: W5 Polymorphism, sub-wave 1 — a single `$T` parameter (ADR-0081), 2026-08-04
+
+Recommended option taken automatically per the standing request; logged for later review.
+
+### Fork 1 — the first sub-wave's scope
+
+- Options: **one `$T` parameter inferred from the call, instantiated, monomorphic body (taken,
+  recommended)**; parse-and-refuse (`$T` lexes and lowers, calling is refused until a later sub-wave);
+  the whole of `$T` + `$$T` + multiple type params at once.
+- Why the single-`$T` slice: it delivers a *real capability* end to end — `id :: (x: $T) -> T` runs in
+  both engines — which is the bar the refused-body lesson sets (a refusal must name something refused by
+  design, not merely unimplemented; "polymorphism arrives later" is exactly the "arrives in wave W1"
+  pattern the early waves spent effort removing). Parse-and-refuse fails that bar. The whole-of-`$T`
+  option is a 8–12 week wave in one step, unverifiable the way W4 taught sub-waves to be. One `$T`
+  exercises every layer — lex, parse, HIR, the signature/instantiation split, MIR, both engines — which
+  is what makes it the honest smallest slice: it forces every architectural decision while keeping each
+  small.
+
+### Fork 2 — where instantiation lives in the pipeline
+
+- Options: **at the call, in the check phase, producing a concrete `ProcType` keyed structurally (taken,
+  recommended)** — ADR-0005's model; a separate monomorphisation pass after checking; instantiate lazily
+  in MIR.
+- Why at-the-call-in-check: ADR-0005 fixed the *identity* (structural, on interned comptime-argument
+  tuples) but not the *phase*. Checking is where a call's argument types are known and where a mismatch is
+  already reported, so inferring `$T` from the argument and interning the concrete `ProcType` there needs
+  no new phase and reuses the argument-type machinery `check_call` has. A separate pass would re-walk
+  every call; MIR-time instantiation would put type inference in a crate ADR-0017 §4 keeps a pure fold.
+- The polymorphic procedure itself gets **no concrete signature** — its `$T` parameter has no type until a
+  call supplies one — so its body is checked *per instantiation*, not once. That is the structural change
+  this sub-wave introduces and the reason it touches the signature phase.
+
+### Fork 3 — how `$T` binds
+
+- Options: **`$T` in a parameter's type position introduces `T` as a type name in that signature's scope
+  (taken, recommended)**, Jai's spelling; a separate `poly` keyword; angle brackets `id<T>`.
+- Why `$T`: it is the spelling PLAN §2.1 and every ADR that mentions polymorphism use, and it is
+  inference-first — `$T` at a *use* site of a type says "bind `T` from the argument here", so `id(42)`
+  needs no explicit type argument. Angle brackets invite explicit type arguments first, which is the
+  opposite ergonomic default. The `$` introduces the binding at the first `$T`; a later bare `T` in the
+  same signature refers to it.
+
+### Resolution (ADR-0081 records it)
+
+Taken as recommended. Sub-wave 1: a single `$T`, inferred, instantiated structurally at the call in the
+check phase, monomorphic body, both engines. Deferred to later W5 sub-waves: `$$T` (comptime-only
+parameters), `#modify`, `#bake_arguments`, `#expand` macros, multiple *distinct* type parameters,
+polymorphic structs, and instantiation backtraces beyond a single frame.

@@ -1,0 +1,29 @@
+// EXPECT: E0268 — calling a polymorphic procedure, which is not yet instantiable (ADR-0081 §2)
+//
+// W5 sub-wave 1 delivers the `$T` *surface*: a polymorphic procedure parses, formats, lowers as a
+// template and checks clean when declared (see `valid/066`). What it does **not** yet do is instantiate a
+// *call* — inferring `$T` from the argument, interning the concrete procedure type, and lowering a
+// distinct procedure per instantiation. That is the second sub-wave, and it is real work: instantiation
+// multiplies procedures, while the whole compiler currently keys one `ProcId` per source declaration.
+//
+// So a call is refused, and the refusal is **by design** rather than an unimplemented gap left to
+// miscompile — the distinction the refused-body lesson turns on (a test's refused construct must be one
+// refused deliberately, not merely absent). E0268 names the boundary: the `$T` machinery is here, the call
+// side arrives next.
+//
+// **This file lowers cleanly**, which is why it belongs in `type-errors/` rather than `imports/invalid/`:
+// the E0268 poisons the call expression to `ERROR`, but `main`'s body is otherwise well-formed and lowers
+// without a further diagnostic. The polymorphic `id` itself produces no MIR — it is a template, skipped as
+// a `#foreign` body is — so nothing here is *unlowerable*, only rejected by sema.
+#import "Basic";
+
+/// A perfectly good polymorphic declaration — `valid/066` proves declaring it checks clean. The error is
+/// entirely at the call below.
+id :: (x: $T) -> T {
+    return x;
+}
+
+main :: () {
+    // The refusal: instantiating this call is the next sub-wave's work.
+    y := id(42);
+}

@@ -280,6 +280,8 @@ pub enum SyntaxKind {
     SHR,
     /// `@` — reserved, wave W6 (declaration notes).
     AT,
+    /// `$` — introduces a polymorphic type variable, `$T` (ADR-0081 §1).
+    DOLLAR,
 
     // ---- markers ---------------------------------------------------------
     /// A character the lexer does not recognise.
@@ -328,6 +330,9 @@ pub enum SyntaxKind {
     // ---- types -----------------------------------------------------------
     /// A type named by an identifier, e.g. `s64` or `Point`.
     NAME_TYPE,
+    /// `$T` — a polymorphic type variable (ADR-0081 §1). Holds the `$` and the name; the name binds a
+    /// type variable that a call infers, rather than resolving to an existing type as `NAME_TYPE` does.
+    POLY_TYPE,
     /// `*T`
     POINTER_TYPE,
     /// `[N]T` — a fixed-size array (ADR-0039 §3).

@@ -1,0 +1,58 @@
+// **`$T` polymorphic parameters** (ADR-0081): a procedure whose parameter type is a variable a call
+// infers. W5's first sub-wave, and it is deliberately the *surface* only — a `$T` procedure parses,
+// formats, lowers as a template and **checks clean when declared**. *Calling* one is refused (E0268) until
+// the instantiation sub-wave, which is exercised in `type-errors/066`.
+//
+// The reason the wave splits here is architectural, and worth stating: instantiation multiplies
+// procedures — `id(42)` and `id(true)` become two concrete functions — and the whole compiler currently
+// keys a procedure by one `ProcId` per source declaration. Threading a distinct instantiation through
+// MIR, the VM and the native back end is the second sub-wave's work. This one delivers everything up to
+// that point, so the syntax and the template representation are real and verified before instantiation is
+// built on them.
+//
+// What is checked here:
+//
+//   * a single `$T` inferred from one parameter (`id`);
+//   * a `$T` used across **several** positions — one variable, three uses (`first`, `pair_sum`), which is
+//     ADR-0081 §4's "one `$T` across positions" as opposed to two independent variables;
+//   * `$T` **nested** in a pointer and a view (`deref`, `count_view`), so the collector's recursion is
+//     covered;
+//   * `$T` in the **return** type, read as a bare `T` (`id`, `first`), which is what the binding-map
+//     lookup in `resolve_type_name` makes work.
+//
+// A `$T` procedure lowers to **no MIR** — it is a template, skipped exactly as a `#foreign` body is —
+// so none of these appears in a MIR snapshot, and that is correct: there is nothing concrete to lower
+// until a call binds `T`.
+#import "Basic";
+
+/// The canonical example: one `$T`, inferred from `x`, returned as a bare `T`.
+id :: (x: $T) -> T {
+    return x;
+}
+
+/// One `$T` across two parameters and the return — a single variable, three uses, not three variables.
+first :: (a: $T, b: T) -> T {
+    return a;
+}
+
+/// `$T` behind a pointer, so the collector recurses through `*`.
+deref :: (p: *$T) -> T {
+    return p.*;
+}
+
+/// `$T` as a view's element, so the collector recurses through `[]`.
+count_view :: (items: []$T) -> s64 {
+    return items.count;
+}
+
+/// Two parameters of the same `$T`, summed — the shape a later sub-wave will instantiate per type.
+pair_sum :: (a: $T, b: T) -> T {
+    return a + b;
+}
+
+// None of the above is *called*, so `main` does ordinary work: the file's point is that declaring these
+// checks clean, which before this sub-wave it did not — `$T` did not even lex.
+main :: () {
+    n := 5;
+    exit(n);
+}

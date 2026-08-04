@@ -40,7 +40,7 @@ use rustc_hash::FxHashMap;
 use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
-    E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267,
+    E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -2476,6 +2476,32 @@ impl Ctx<'_> {
             Some(Intrinsic::AnyAs) => return self.check_any_as(scope, id, callee, args, span),
             None => {}
         }
+
+        // **A call to a polymorphic procedure is refused pending instantiation** (ADR-0081 §2, deferred to
+        // the instantiation sub-wave). The signature is a *template* — its `$T` parameters are
+        // `PoolId::ERROR` — so checking the arguments against it would compare `42` to `ERROR` and either
+        // spuriously pass or report a confusing mismatch. The honest interim answer is a refusal that
+        // names the reason: `$T` parses, lowers and formats (this sub-wave), and *calling* one arrives
+        // with the sub-wave that instantiates. This is a by-design refusal, not an unimplemented gap left
+        // silent — the distinction the refused-body lesson turns on.
+        if let Some(sig) = self.callee_sig(scope, callee)
+            && !sig.poly_vars.is_empty()
+        {
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    "calling a polymorphic procedure is not supported yet",
+                )
+                .with_code(E0268)
+                .with_note("`$T` parameters parse and check, but instantiating a call arrives in a later wave")
+                .with_help("until then, write a concrete (non-`$T`) procedure for each type you call it with"),
+            );
+            return PoolId::ERROR;
+        }
+
         // The callee is in **call position**, where a `#foreign` procedure is a legal thing to
         // name — it is only illegal to take one as a *value* (E0256, ADR-0059 §5). This id is
         // recorded so `check_expr`'s `Name` arm skips the E0256 refusal for it, while still typing

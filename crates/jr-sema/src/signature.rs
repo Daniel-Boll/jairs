@@ -2,7 +2,9 @@
 
 use jr_base::{FileId, Interner, Span};
 use jr_diag::{Diagnostic, Diagnostics};
-use jr_hir::{ConstValue, Expr, ExprScope, FileHir, ItemId, ItemKind, Literal, ProcId, ResolveMap};
+use jr_hir::{
+    ConstValue, Expr, ExprScope, FileHir, ItemId, ItemKind, Literal, ProcId, ResolveMap, TypeRef,
+};
 use jr_pool::{ContextKind, Item, Pool, PoolId};
 
 use crate::check::bin_op_text;
@@ -475,6 +477,52 @@ impl Ctx<'_> {
     ///
     /// The refusal names what would be needed rather than saying "unsupported", because a reader who
     /// writes `= SIZE` will try `= 2 + 3` next unless they learn the rule.
+    /// The polymorphic type variables a parameter list introduces, in first-seen order (ADR-0081 §1).
+    ///
+    /// Walks each parameter's `TypeRef` tree for [`TypeRef::Poly`] — `$T` may be nested (`*$T`, `[]$T`),
+    /// so it recurses. First-seen order and de-duplication mean `swap :: (a: $T, b: $T)` yields one
+    /// variable `T`, not two, which is ADR-0081 §4's "one `$T` used across several positions" case.
+    fn collect_poly_vars(&self, params: &[jr_hir::Param]) -> Vec<jr_base::Symbol> {
+        let mut vars = Vec::new();
+        for param in params {
+            if let Some(id) = param.ty {
+                self.collect_poly_in_type(ExprScope::TopLevel, id, &mut vars);
+            }
+        }
+        vars
+    }
+
+    /// Adds the `$T` variables reachable from one `TypeRef` to `vars`, de-duplicated, in first-seen order.
+    fn collect_poly_in_type(
+        &self,
+        scope: ExprScope,
+        id: jr_hir::TypeRefId,
+        vars: &mut Vec<jr_base::Symbol>,
+    ) {
+        match self.type_ref(scope, id) {
+            TypeRef::Poly(sym) => {
+                if !vars.contains(&sym) {
+                    vars.push(sym);
+                }
+            }
+            TypeRef::Pointer(inner) => self.collect_poly_in_type(scope, inner, vars),
+            TypeRef::Array { elem, .. } | TypeRef::View { elem } => {
+                self.collect_poly_in_type(scope, elem, vars);
+            }
+            // A `$T` inside a proc-pointer or results type is not part of this sub-wave's one-`$T` slice;
+            // it is left for the sub-wave that generalises, and reaching one resolves to `ERROR` rather
+            // than binding — which refuses the signature rather than half-supporting it (ADR-0081 §4).
+            TypeRef::Proc { .. }
+            | TypeRef::Results(_)
+            | TypeRef::Name(_)
+            | TypeRef::Struct(_)
+            | TypeRef::Union(_)
+            | TypeRef::Variant(_)
+            | TypeRef::Enum(_)
+            | TypeRef::Error => {}
+        }
+    }
+
     fn param_default(
         &mut self,
         param: &jr_hir::Param,
@@ -596,6 +644,18 @@ impl Ctx<'_> {
         let mut names = Vec::with_capacity(declaration.params.len());
         let mut defaults = Vec::with_capacity(declaration.params.len());
         let foreign = declaration.foreign.is_some();
+
+        // **Bind the signature's `$T` variables first** (ADR-0081 §1), so a bare `T` in a later parameter
+        // or the return type resolves to the variable rather than reporting E0212. Each is bound to
+        // `PoolId::ERROR` — the "not concrete" placeholder — because the *template* has no concrete type
+        // for it; a call supplies one at instantiation. The names are collected into `poly_vars`, in
+        // first-seen order, so a consumer knows the signature is a template. The bindings are cleared at
+        // the end of this function, so they never leak into another signature.
+        let poly_vars = self.collect_poly_vars(&declaration.params);
+        for &var in &poly_vars {
+            self.type_bindings.insert(var, PoolId::ERROR);
+        }
+
         for param in &declaration.params {
             let ty = match param.ty {
                 // Parameter types live in `FileHir::type_refs`, not in
@@ -650,12 +710,19 @@ impl Ctx<'_> {
             );
         }
 
+        // Clear this signature's bindings before returning, so they never leak into the next signature
+        // computed on the same context (ADR-0081 §1: the map is empty outside a polymorphic signature).
+        for &var in &poly_vars {
+            self.type_bindings.remove(&var);
+        }
+
         let ty = self.pool.proc_type(params.clone(), ret, context);
         let sig = ProcSig {
             params,
             names,
             defaults,
             ret,
+            poly_vars,
             ty,
         };
         self.sigs.insert_proc(proc, sig.clone());

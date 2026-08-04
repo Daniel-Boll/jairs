@@ -811,6 +811,19 @@ impl Formatter {
                     self.emit(tok.text());
                 }
             }
+            // `$T` (ADR-0081 §1): a `$` then the variable name. Handled explicitly, because a
+            // formatter that dropped it would silently turn a polymorphic parameter into a bare one —
+            // the lossy-CST failure this file keeps having to guard against.
+            POLY_TYPE => {
+                self.emit("$");
+                if let Some(tok) = node
+                    .children_with_tokens()
+                    .filter_map(|e| e.into_token())
+                    .find(|t| t.kind() == IDENT)
+                {
+                    self.emit(tok.text());
+                }
+            }
             POINTER_TYPE => {
                 self.emit("*");
                 if let Some(inner) = node.children().find(|n| is_type_kind(n.kind())) {
@@ -1701,6 +1714,7 @@ fn is_type_kind(kind: SyntaxKind) -> bool {
     matches!(
         kind,
         NAME_TYPE
+            | POLY_TYPE
             | POINTER_TYPE
             | STRUCT_TYPE
             | UNION_TYPE

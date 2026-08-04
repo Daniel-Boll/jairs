@@ -138,6 +138,14 @@ pub struct ProcSig {
     /// The return type. [`PoolId::VOID`] when the source omitted the arrow —
     /// never `None`, per ADR-0015 §3.
     pub ret: PoolId,
+    /// The polymorphic type-variable names this signature introduces, in first-seen order (ADR-0081 §1).
+    ///
+    /// Empty for an ordinary procedure. Non-empty means the signature is a **template**: its `params`
+    /// and `ret` are not concrete (a `$T` position is [`PoolId::ERROR`] until a call instantiates it), so
+    /// the body is not checked against them and a call is instantiated rather than checked directly. This
+    /// sub-wave (ADR-0081) *recognises* the template and refuses a call pending the instantiation
+    /// sub-wave; the field is what a consumer keys that decision on.
+    pub poly_vars: Vec<Symbol>,
     /// The interned procedure type.
     pub ty: PoolId,
 }

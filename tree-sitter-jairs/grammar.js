@@ -267,6 +267,7 @@ module.exports = grammar({
         $.array_type,
         $.view_type,
         $.name_type,
+        $.poly_type,
         $.struct_type,
         $.union_type,
         $.variant_type,
@@ -316,6 +317,10 @@ module.exports = grammar({
 
     // s64, bool, Point, ... — no field() wrapper, just the identifier
     name_type: ($) => $.identifier,
+
+    // $T — a polymorphic type variable (ADR-0081 §1). Its own rule, not a `name_type` with a leading
+    // `$`, because it binds a variable rather than naming an existing type.
+    poly_type: ($) => seq("$", $.identifier),
 
     // enum { RED; GREEN :: 5; } (ADR-0041).
     //

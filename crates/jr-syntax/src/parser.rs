@@ -1208,6 +1208,24 @@ impl<'src> Parser<'src> {
                 self.bump();
                 self.finish_node();
             }
+            // `$T` — a polymorphic type variable (ADR-0081 §1). Its own node, not a `NAME_TYPE` with a
+            // leading `$`, because it *binds* a variable rather than naming an existing type — sema
+            // treats the two differently, and the parser making them distinct is what lets it.
+            DOLLAR => {
+                self.start_node(POLY_TYPE);
+                self.bump(); // `$`
+                if self.at(IDENT) {
+                    self.bump(); // the variable's name
+                } else {
+                    let span = self.current_span();
+                    self.error(
+                        span,
+                        "`$` must be followed by a type-variable name, e.g. `$T`",
+                        E0107,
+                    );
+                }
+                self.finish_node();
+            }
             L_BRACK if self.nth(1) == R_BRACK => {
                 // `[]T` — a view (ADR-0044 §1). Its own node rather than an `ARRAY_TYPE`
                 // with an absent length: `TypeRef::Array` already uses `len: None` to mean
@@ -2376,7 +2394,10 @@ impl<'src> Parser<'src> {
 /// a type" at the `(` and the whole declaration collapsed, exactly as `#c_call` and the array
 /// keywords did before their entries were added.
 const TYPE_START: TokenSet = TokenSet::new(&[
-    STAR, IDENT, STRUCT_KW, ENUM_KW, FLAGS_KW, UNION_KW, VARIANT_KW, L_BRACK, L_PAREN,
+    // `DOLLAR` for `$T` (ADR-0081 §1) — the token-set trap the earlier waves hit repeatedly: without it
+    // a `$` in parameter-type position would not be recognised as a type and would report "expected a
+    // type" at the `$` rather than parsing the polymorphic variable.
+    STAR, IDENT, STRUCT_KW, ENUM_KW, FLAGS_KW, UNION_KW, VARIANT_KW, L_BRACK, L_PAREN, DOLLAR,
 ]);
 
 /// The operators ADR-0048 §2 permits an overload for.
