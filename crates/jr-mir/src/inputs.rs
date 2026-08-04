@@ -159,6 +159,10 @@ pub enum AnyLowering {
     Of {
         /// The `Type_Info` constant describing the pointee, to spill into a slot for the `type` field.
         type_info: PoolId,
+        /// The `Any` struct type to build, needed because the *implicit coercion* form records this
+        /// against a pointer-typed argument expression whose own type is not `Any` — so the builder
+        /// cannot recover it from the expression the way the explicit call can from its result.
+        any_ty: PoolId,
     },
     /// `any_as(a, T)` — trap unless `a.type.id` equals `type_id`, then read `a.data` as `*result`
     /// (ADR-0076 §2, ADR-0077).

@@ -374,6 +374,41 @@ fn any_round_trips_a_value_in_both_engines() {
     );
 }
 
+/// A `*T` **coerces to `Any`** at a call argument, identically in both engines (ADR-0076 §1).
+///
+/// The ergonomic half of `any_of`: `takes(*x)` where `takes` wants an `Any` erases the pointer at the
+/// call, exactly as `takes(any_of(*x))` would. This checks the coerced form produces the same value the
+/// explicit form does — the two must be one call, not two behaviours.
+#[test]
+fn a_pointer_coerces_to_any_at_a_call_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = concat!(
+        "#import \"Basic\";\n\n",
+        "Point :: struct { x: s64; y: s64; }\n\n",
+        "sum :: (a: Any) -> s64 {\n",
+        "    p := any_as(a, Point);\n",
+        "    return p.x + p.y + a.type.size;\n",
+        "}\n\n",
+        "main :: () {\n",
+        "    p: Point;\n",
+        "    p.x = 3;\n",
+        "    p.y = 4;\n",
+        // No `any_of` at the call: the `*Point` is erased implicitly because `sum` wants an `Any`.
+        "    exit(sum(*p));\n",
+        "}\n",
+    );
+    let (vm, native) = both_engines(source, dir.path(), "anycoerce");
+    assert_eq!(
+        vm.status, 23,
+        "the VM coerced `*Point` to `Any` wrongly (3 + 4 + size 16)"
+    );
+    assert_eq!(
+        native.status, 23,
+        "native disagreed about the `*T` → `Any` coercion"
+    );
+    assert_eq!(vm, native, "the two engines disagree about the coercion");
+}
+
 /// `any_as` with the wrong type must **trap**, identically in both engines (ADR-0076 §2, ADR-0077).
 ///
 /// This is the half `valid/064` cannot show, because a trap aborts the process and a corpus file must

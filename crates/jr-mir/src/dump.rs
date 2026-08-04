@@ -505,6 +505,34 @@ impl Dumper<'_> {
     /// Total, and deliberately non-panicking: an id from a foreign pool would make
     /// [`Pool::item`] panic, and a dump that crashes is useless exactly when it is
     /// most needed.
+    /// The name of a compiler-known library struct — `Type_Info` or `Any` — recognised by field shape.
+    ///
+    /// The dump holds only *this file's* signatures, so an imported struct's name is unavailable; but
+    /// these two are compiler-known and worth naming in a snapshot rather than collapsing to bare
+    /// `struct`. Recognised by field types (`Any` is `{*_, *u8}`, `Type_Info` is the five-field shape
+    /// `type_info_id_field` checks), which needs no interner — the same trick that arm uses.
+    fn library_struct_name(&self, ty: PoolId) -> Option<&'static str> {
+        if self.type_info_id_field(ty).is_some() {
+            return Some("Type_Info");
+        }
+        let Item::StructType { decl } = self.pool.item(ty) else {
+            return None;
+        };
+        let fields = self.pool.struct_fields(*decl)?;
+        // `Any` is `{type: *Type_Info, data: *u8}` — two pointers, the second a `*u8`.
+        if let [type_field, data_field] = fields {
+            let type_is_ptr = matches!(self.pool.item(type_field.ty), Item::PointerType(_));
+            let data_is_u8_ptr = matches!(
+                self.pool.item(data_field.ty),
+                Item::PointerType(p) if *p == PoolId::U8
+            );
+            if type_is_ptr && data_is_u8_ptr {
+                return Some("Any");
+            }
+        }
+        None
+    }
+
     /// The index of the `id` field if `ty` is a `Type_Info`, else `None` (ADR-0077).
     ///
     /// Detected by **field-type shape** — `[s64, enum, string, s64, s64]` — rather than by name, because
@@ -678,9 +706,16 @@ impl Dumper<'_> {
                 Some(name) => name.to_owned(),
                 None => format!("variant{decl:?}"),
             },
-            Item::StructType { decl } => match self.signatures.type_name(id) {
+            // An **imported** struct's name is not in this file's `type_names` (recorded per file), so a
+            // slot typed with one — `Any` or `Type_Info` from `Basic` — fell through to a fallback that
+            // printed its `DeclId`, which carries a `FileId` that load order renumbers: the snapshot
+            // churn `AGENTS.md` forbids, the same as the enum and `id` cases. The two compiler-known
+            // library structs are recognised by field shape (the dump holds no cross-file signatures) so
+            // they still read as themselves; any other unnamed struct is bare `struct`, which says the
+            // shape without a churny index.
+            Item::StructType { .. } => match self.signatures.type_name(id) {
                 Some(name) => name.to_owned(),
-                None => format!("struct{decl:?}"),
+                None => self.library_struct_name(id).unwrap_or("struct").to_owned(),
             },
             Item::ProcType {
                 params,

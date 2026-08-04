@@ -956,3 +956,18 @@ Forks taken as recommended. ADR-0076 records `Any` and the erasing conversion; A
 `Any` implicitly (a literal has no address, so it would need a materialised temporary — the storage
 decision deferred again); an `Any` in a compile-time constant (interning a pointer, which has no
 comptime value, ADR-0074 §2); a general pointer cast; `transmute`.
+
+### Fork 5 — an ADR-0076 §1 gap found after merge: implicit `*T` → `Any` coercion
+
+- Found by probing `takes(*n)` where `takes :: (a: Any)`: it reports E0214 (`expected Any, found *s64`),
+  but **ADR-0076 §1 explicitly promised it**: "`any_of(p)` — *and passing a `*T` where an `Any` is
+  expected* — erases". Sub-wave 8 shipped only the explicit `any_of` form.
+- Options: **complete the promised coercion (taken, recommended)**; amend ADR-0076 to make `any_of` the
+  only form.
+- Why complete rather than amend: the ADR is accepted and the coercion is the ergonomic half — a
+  reflection API where every argument must be wrapped in `any_of(*x)` is clunky, and `print_any(x)` reading
+  naturally is the whole point. Leaving it unimplemented is the "plans that contradict themselves" failure
+  AGENTS.md names. It reuses the `any_of` lowering exactly, so it is small. Distinct from ADR-0076 §4's
+  *deferred* coercion, which is a bare **value** (`a: Any = 3;`) needing a materialised temporary — this is
+  a **pointer**, whose lifetime is already visible, which §1 put in scope.
+- This is a follow-up commit on `main` completing sub-wave 8's accepted scope, not a new wave.
