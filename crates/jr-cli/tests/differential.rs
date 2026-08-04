@@ -399,6 +399,35 @@ fn code_splices_identically_in_both_engines() {
     );
 }
 
+/// **`#bake_arguments`** must produce a real specialised procedure and exit **131** in both engines
+/// (ADR-0097).
+///
+/// Three bakes — named on the first parameter, positional, and named on the **second** (which forces the kept
+/// parameter to be *remapped* from index 1 to 0) — plus two extra calls to one baked procedure. Each failure
+/// mode is silent and gives both engines the same wrong number: a missed drop leaves an arity mismatch, a
+/// wrong substitution reads the wrong literal, and a skipped remap makes a kept parameter resolve to the
+/// baked one's old index. The two `sub` bakes deliberately reach the same answer by different routes, so a
+/// bad remap changes one of them and not the other.
+#[test]
+fn bake_arguments_agrees_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/078-bake-arguments.jr");
+
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    assert_eq!(
+        vm.status, 131,
+        "the VM exited {} — a baked argument was dropped, substituted or remapped wrongly",
+        vm.status
+    );
+    assert_eq!(
+        native.status, 131,
+        "the native back end exited {} — see the VM assertion above",
+        native.status
+    );
+}
+
 /// **`type_info(T)` on a bound type variable** must reflect each instantiation's own type and exit **42**
 /// in both engines (ADR-0092 §1).
 ///

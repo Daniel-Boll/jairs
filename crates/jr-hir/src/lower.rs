@@ -929,6 +929,166 @@ impl<'a> LowerCtx<'a> {
         });
     }
 
+    /// A poisoned top-level expression, for a constant whose value was refused (ADR-0097 §1).
+    fn alloc_top_expr_error(&mut self, span: Span) -> ExprId {
+        self.alloc_top_expr(Expr::Error(span), span)
+    }
+
+    /// Specialises a procedure by baking some of its arguments (ADR-0097 §1).
+    ///
+    /// `#bake_arguments add(a = 5)` produces a **clone of `add`** with the parameter `a` dropped from its
+    /// list and `5` substituted for every use of `a` in its body — the same drop/substitute/remap
+    /// `$N` instantiation does (ADR-0088 §3), so the result is an *ordinary* procedure that nothing
+    /// downstream has to be taught about.
+    ///
+    /// `None` when the operand is not a call to a procedure declared in this file, or when a baked argument
+    /// is not a literal — each reported here, because a specialisation that silently ignored an argument
+    /// would produce a procedure that is not the one written.
+    fn lower_bake_arguments(
+        &mut self,
+        call: &jr_syntax::ast::CallExpr,
+        span: Span,
+    ) -> Option<ProcId> {
+        let Some(AstExpr::Name(callee)) = call.callee() else {
+            self.diags.push(bake_needs_a_procedure(span));
+            return None;
+        };
+        let name = self.intern(&callee.text()?);
+        // The procedure to specialise must be declared in this file: the clone copies its *body*, and
+        // another file's body is not in this HIR. A cross-file bake is deferred with the cross-file splice
+        // (ADR-0091 §3's boundary), and named rather than silently mis-specialised.
+        let target =
+            self.scope
+                .get(name)
+                .and_then(|item| match &self.items.get(item.index())?.kind {
+                    ItemKind::Const {
+                        value: ConstValue::Proc(proc),
+                    } => Some(*proc),
+                    _ => None,
+                });
+        let Some(target) = target else {
+            self.diags.push(bake_needs_a_procedure(span));
+            return None;
+        };
+
+        // Which parameters are baked, and to what. A **named** argument names its parameter (ADR-0053 §1's
+        // spelling, reused); a positional one bakes the parameter at its own index.
+        let params = self.procs[target.index()].params.clone();
+        let mut baked: Vec<Option<Literal>> = vec![None; params.len()];
+        // The arg list's **children**, not `ArgList::args()`: a named argument is a `NAMED_ARG` node and
+        // not an `Expr`, so that accessor would skip every one — the trap ADR-0053 §1 records.
+        let args: Vec<SyntaxNode> = call
+            .arg_list()
+            .into_iter()
+            .flat_map(|list| list.syntax().children().collect::<Vec<_>>())
+            .filter(|n| {
+                n.kind() == jr_syntax::SyntaxKind::NAMED_ARG
+                    || jr_syntax::ast::Expr::cast(n.clone()).is_some()
+            })
+            .collect();
+        for (index, arg) in args.iter().enumerate() {
+            // A baked value must be a **literal** this pass can read: lowering has no evaluator (ADR-0018
+            // §3), and ADR-0096 §2's const-eval route needs the value at *this* point, before any query
+            // exists. So the narrower rule is taken and named, exactly as ADR-0039 §3a took it for an array
+            // length before ADR-0070 widened it.
+            let Some(lit) = literal_of(arg) else {
+                self.diags.push(bake_needs_a_literal(span));
+                return None;
+            };
+            let slot = match named_arg_name(arg) {
+                Some(argname) => {
+                    let sym = self.intern(&argname);
+                    match params.iter().position(|p| p.name == sym) {
+                        Some(i) => i,
+                        None => {
+                            self.diags.push(bake_needs_a_procedure(span));
+                            return None;
+                        }
+                    }
+                }
+                None => index,
+            };
+            if slot >= baked.len() {
+                self.diags.push(bake_needs_a_procedure(span));
+                return None;
+            }
+            baked[slot] = Some(lit);
+        }
+
+        Some(self.clone_with_baked(target, &baked))
+    }
+
+    /// Clones `target` with the marked parameters dropped and their values substituted (ADR-0097 §1).
+    ///
+    /// The three steps are ADR-0088 §3's, applied here rather than in `instantiate.rs` because this runs
+    /// during *lowering* (a baked procedure is a declaration, not an instantiation): drop the baked
+    /// parameters, rewrite each `Res::Param` use of one into its literal, and remap the remaining indices so
+    /// a kept parameter still resolves. Only the *body* is copied; the shared type refs are reused, since
+    /// nothing rewrites them.
+    fn clone_with_baked(&mut self, target: ProcId, baked: &[Option<Literal>]) -> ProcId {
+        let template = self.procs[target.index()].clone();
+        let mut keep: Vec<Option<u32>> = Vec::with_capacity(template.params.len());
+        let mut next: u32 = 0;
+        for (i, _) in template.params.iter().enumerate() {
+            if baked.get(i).and_then(Option::as_ref).is_some() {
+                keep.push(None);
+            } else {
+                keep.push(Some(next));
+                next += 1;
+            }
+        }
+        let params: Vec<Param> = template
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| keep[*i].is_some())
+            .map(|(_, p)| p.clone())
+            .collect();
+
+        let body = template.body.map(|b| {
+            let mut cloned = self.bodies[b.index()].clone();
+            for index in 0..cloned.exprs.len() {
+                if let Expr::Name { name, span, res } = cloned.exprs[index].clone()
+                    && let Res::Param(pid) = res
+                {
+                    let i = pid.index();
+                    match keep.get(i).copied().flatten() {
+                        // Dropped: substitute the baked literal.
+                        None => {
+                            if let Some(Some(lit)) = baked.get(i) {
+                                cloned.exprs[index] = Expr::Literal(lit.clone(), span);
+                            }
+                        }
+                        // Kept: remap its index, since earlier parameters may have been dropped.
+                        Some(new_i) => {
+                            cloned.exprs[index] = Expr::Name {
+                                name,
+                                span,
+                                res: Res::Param(ParamId::from_usize(new_i as usize)),
+                            };
+                        }
+                    }
+                }
+            }
+            let id = BodyId::from_usize(self.bodies.len());
+            self.bodies.push(cloned);
+            id
+        });
+
+        self.alloc_proc(Proc {
+            params,
+            c_call: template.c_call,
+            no_abc: template.no_abc,
+            expand: false,
+            modify: None,
+            ret: template.ret,
+            body,
+            foreign: template.foreign.clone(),
+            span: template.span,
+            type_refs: Vec::new(),
+        })
+    }
+
     fn lower_const_decl(&mut self, cd: &ConstDecl) {
         let span = self.span_of_node(cd.syntax());
         let name_node = cd.name();
@@ -965,6 +1125,25 @@ impl<'a> LowerCtx<'a> {
             let enum_id = self.lower_enum_type(&en);
             ItemKind::Const {
                 value: ConstValue::Enum(enum_id),
+            }
+        } else if let Some(baked) = bake_arguments_operand(cd) {
+            // **`add_five :: #bake_arguments add(a = 5)` becomes a real procedure** (ADR-0097 §1): a clone of
+            // the named one with the baked parameters dropped from its list and their values substituted into
+            // its body. That is ADR-0088 §3's mechanism — the same drop/substitute/remap `$N` instantiation
+            // does — so the specialised procedure is an *ordinary* one from here on, callable and lowerable
+            // with nothing else taught about it.
+            match self.lower_bake_arguments(&baked, span) {
+                Some(proc_id) => ItemKind::Const {
+                    value: ConstValue::Proc(proc_id),
+                },
+                // The refusal is already reported; a poisoned expression keeps the item shaped like a
+                // constant rather than inventing a procedure that does not exist.
+                None => {
+                    let err = self.alloc_top_expr_error(span);
+                    ItemKind::Const {
+                        value: ConstValue::Expr(err),
+                    }
+                }
             }
         } else if let Some(expr) = cd.value_expr() {
             let expr_id = self.lower_top_expr(&expr);
@@ -3085,6 +3264,25 @@ fn block_inner_text(block: &jr_syntax::SyntaxNode) -> String {
     inner.to_owned()
 }
 
+/// The call a `#bake_arguments` constant's value applies, if the value is one (ADR-0097 §1).
+///
+/// `add_five :: #bake_arguments add(a = 5);` — the directive's operand is a **call expression**, whose callee
+/// names the procedure to specialise and whose arguments are the ones to bake. Recognised by the directive's
+/// name, the way `insert_directive` recognises `#insert`, so no grammar rule distinguishes them.
+fn bake_arguments_operand(cd: &ConstDecl) -> Option<jr_syntax::ast::CallExpr> {
+    let AstExpr::Directive(directive) = cd.value_expr()? else {
+        return None;
+    };
+    let token = directive.directive_token()?;
+    if token.text().trim_start_matches('#') != "bake_arguments" {
+        return None;
+    }
+    directive
+        .syntax()
+        .children()
+        .find_map(jr_syntax::ast::CallExpr::cast)
+}
+
 fn insert_directive(stmt: &jr_syntax::ast::ExprStmt) -> Option<jr_syntax::ast::DirectiveExpr> {
     let AstExpr::Directive(directive) = stmt.expr()? else {
         return None;
@@ -3172,4 +3370,66 @@ fn poly_var_names_of(params: &[Param], arena: &[TypeRef]) -> Vec<Symbol> {
         }
     }
     out
+}
+
+/// `#bake_arguments` whose operand does not name a procedure declared in this file (ADR-0097 §1).
+fn bake_needs_a_procedure(span: Span) -> Diagnostic {
+    Diagnostic::error(
+        span,
+        "`#bake_arguments` needs a call to a procedure declared in this file",
+    )
+    .with_code(E0276)
+    .with_note(
+        "the specialised procedure is a *clone* of the named one, and another file's body is not in this \
+         tree — a cross-file bake is deferred with the cross-file splice (ADR-0091 §3)",
+    )
+    .with_help("move the procedure into this file, or write a wrapper")
+}
+
+/// A baked argument that is not a literal this pass can read (ADR-0097 §1).
+fn bake_needs_a_literal(span: Span) -> Diagnostic {
+    Diagnostic::error(
+        span,
+        "a `#bake_arguments` value must be a literal",
+    )
+    .with_code(E0276)
+    .with_note(
+        "lowering has no constant evaluator (ADR-0018 §3 puts it downstream), and the value is needed \
+         *here*, where the specialised procedure is built — the same narrower rule an array length had \
+         before ADR-0070 widened it",
+    )
+    .with_help("write the value as a literal, e.g. `#bake_arguments add(a = 5)`")
+}
+
+/// The literal an argument node carries, if it carries one (ADR-0097 §1).
+///
+/// Takes a **`SyntaxNode`** rather than an `ast::Expr`, because a named argument is its own node kind
+/// (`NAMED_ARG`) and not an `Expr` variant — the same reason `lower_args` walks the arg list's children
+/// rather than `ArgList::args()` (ADR-0053 §1, where filtering on `is_expr_kind` silently dropped every
+/// named argument).
+fn literal_of(node: &SyntaxNode) -> Option<Literal> {
+    // A named argument wraps its value; unwrap one level, then read the literal.
+    let value_node = if node.kind() == jr_syntax::SyntaxKind::NAMED_ARG {
+        node.children()
+            .find(|n| jr_syntax::ast::LiteralExpr::cast(n.clone()).is_some())?
+    } else {
+        node.clone()
+    };
+    let lit = jr_syntax::ast::LiteralExpr::cast(value_node)?;
+    let token = lit.token()?;
+    // Only an integer literal this wave, which is what a baked argument is in practice; a wider set follows
+    // the same route once there is a reason to widen.
+    token.text().parse::<i128>().ok().map(|value| Literal::Int {
+        value,
+        radix: 10,
+        overflowed: false,
+    })
+}
+
+/// The parameter name a named argument names, if the node is one (ADR-0053 §1's spelling).
+fn named_arg_name(node: &SyntaxNode) -> Option<String> {
+    if node.kind() != jr_syntax::SyntaxKind::NAMED_ARG {
+        return None;
+    }
+    jr_syntax::ast::NamedArg::cast(node.clone())?.name()?.text()
 }

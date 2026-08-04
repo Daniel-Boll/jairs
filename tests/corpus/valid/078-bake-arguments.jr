@@ -1,0 +1,59 @@
+// **`#bake_arguments`** (ADR-0097): a partial application producing a **specialised procedure**. W5's last
+// sub-wave, which lifts E0276 for a bake whose values are literals — and with it, W5's macro family is
+// complete.
+//
+// `add_five :: #bake_arguments add(a = 5);` clones `add` with the parameter `a` **dropped from its list** and
+// `5` substituted for every use of it in the body. So `add_five` is an ordinary one-argument procedure:
+// callable, lowerable, inlinable, with nothing downstream taught about it.
+//
+// The mechanism is the one `$N` instantiation already uses (ADR-0088 §3) — drop the marked parameters,
+// rewrite their uses into literals, remap the remaining indices — applied during *lowering* rather than at an
+// instantiation, because a baked procedure is a **declaration**. That reuse is why this was the right piece to
+// finish W5 with.
+//
+// What is checked here:
+//
+//   * a **named** bake (`a = 5`), using the ordinary named-argument spelling (ADR-0053 §1) rather than a
+//     second syntax;
+//   * a **positional** bake, which bakes the parameter at that index;
+//   * baking the **second** parameter, so the kept one must be *remapped* — the step that would silently
+//     read the wrong parameter if it were skipped, which is why the totals below differ;
+//   * a baked procedure **called twice**, so the clone is a real reusable procedure and not a one-shot.
+//
+// Sums to 131, and both engines must agree — a wrong substitution, a missed drop, or a bad remap would each
+// give both the same wrong number, so only the value catches it.
+#import "Basic";
+
+/// Ordinary procedures, to specialise.
+add :: (a: s64, b: s64) -> s64 {
+    return a + b;
+}
+
+sub :: (a: s64, b: s64) -> s64 {
+    return a - b;
+}
+
+/// A named bake of the **first** parameter.
+add_five :: #bake_arguments add(a = 5);
+
+/// A positional bake, which bakes the parameter at that index.
+from_fifty :: #bake_arguments sub(50);
+
+/// A named bake of the **second** parameter, so the kept parameter remaps from index 1 to 0.
+minus_eight :: #bake_arguments sub(b = 8);
+
+main :: () {
+    // 5 + 37 == 42
+    a := add_five(37);
+    // 50 - 8 == 42
+    b := from_fifty(8);
+    // 50 - 8 == 42 — the same answer by the other bake, which is what proves the remap
+    c := minus_eight(50);
+
+    // Called again, so the clone is a reusable procedure rather than a one-shot: 5 + 0 == 5.
+    d := add_five(0);
+    // And a third call with a negative argument: 5 + (-5) == 0, so it contributes nothing — which is the
+    // point, since a wrong substitution would make it contribute something.
+    // 42 + 42 + 42 + 5 - 0 == 131
+    exit(a + b + c + d - add_five(-5));
+}

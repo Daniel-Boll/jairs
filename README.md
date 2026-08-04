@@ -63,7 +63,9 @@ instantiation, with the rejection pointing at the guarded procedure. A predicate
 deliberately not a rejection. And **`#bake_arguments` has its surface** (ADR-0096): `add_five :: #bake_arguments add(a = 5)` parses, with
 its operand a *call* so the named-argument spelling is the ordinary one. Its specialisation — a clone with
 the baked parameters dropped, which is literally the machinery `$N` instantiation already uses — is refused
-(E0276) pending the last W5 sub-wave. Still ahead in W5: that specialisation. On top of **`#code`** (ADR-0080), which **completed wave W4 — Comptime** as scoped: `#code { n := 7; }`
+(E0276) pending the last W5 sub-wave. And **the specialisation works** (ADR-0097): the declaration lowers to a *real procedure* — a clone with the
+baked parameters dropped and their literals substituted, which is the same machinery `$N` instantiation uses.
+**W5 — Polymorphism is complete**, in fifteen sub-waves. Next is W6 — Metaprogram, then W7 — Stdlib. On top of **`#code`** (ADR-0080), which **completed wave W4 — Comptime** as scoped: `#code { n := 7; }`
 is `#insert "n := 7;"` written without quotes, spliced into the enclosing scope. It is deliberately *sugar* —
 `#insert` of a named constant already worked, so what `#code` adds is no quoting and a body parsed where it
 is written, not a new capability. There is no `Code` *value*, and that is **declined rather than deferred**: a
@@ -166,7 +168,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 980 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
+`print_int` (ADR-0037). 981 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do
