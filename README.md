@@ -153,6 +153,15 @@ Forgetting to install one is not silent — a null allocator traps, which is why
 was the first W7 sub-wave in several to touch no compiler crate at all: built entirely on what the language
 already had, which is what a maturing language should let a library do.
 
+**And `Math`** (ADR-0112) is the exact, closed-form functions — `abs`, `min`, `max`, `sign`, `clamp`, `pow`,
+`gcd`, `floor`/`ceil`/`round` — with **no `sqrt`, `sin` or `log`**, which is the surprising part and the whole
+design. The obvious `Math` wraps libm, but a float cannot cross the FFI boundary yet, so libm is unreachable and
+the module is pure Jairs; and a transcendental approximated in Jairs would be wrong in a way this project cannot
+tolerate, because its last bits depend on evaluation order and the two engines could disagree on the last ulp,
+the one thing the differential harness treats as a failure. So it ships only what it can make exact — the line
+between `floor` (in) and `sqrt` (out) is exactness, not difficulty — and says so at the top of the module rather
+than surprising a reader who reaches for `sqrt`.
+
 Before it, wave **W6 — Metaprogram**, five sub-waves in, with 984 tests green. Its headline claim is met — a metaprogram can find
 declarations by note and generate code for each — and a build script can name its own artefact. A declaration can
 carry **`@note` metadata** for a metaprogram to read (ADR-0098). `@deprecated` and `@requires "x"` sit in the

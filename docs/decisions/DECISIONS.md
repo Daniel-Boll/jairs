@@ -2377,3 +2377,34 @@ ADR-0111 records the convention chosen (sub-wave 8's fork, now built): `concat`,
 `to_lower` allocate through `context.allocator` and the caller frees with `free_string`. `talloc`-always and an
 explicit-parameter form were both rejected in that fork; this sub-wave is the implementation. `split` stays
 deferred (wants a list of strings, which needs `List($T)`, which cross-file parameterised structs still block).
+
+## W7 sub-wave 10 — `Math`, and the FFI-float refusal that shapes it
+
+**Probed first, and it changed the whole plan.** The obvious `Math` wraps libm: `sqrt`, `sin`, `pow` are
+`#foreign` declarations. But **a float cannot cross the FFI boundary yet** — `sqrt :: (x: float64) -> float64
+#foreign libc "sqrt"` is refused, "passing FloatType to a foreign procedure arrives with a later wave". So a
+libm-wrapping `Math` is not writable, and the module must be **pure Jairs**.
+
+**The fork: what is a pure-Jairs `Math`?**
+
+- **(a) The exact, closed-form functions — `abs`, `min`, `max`, `sign`, `clamp`, `floor`/`ceil`/`round` on a
+  `float64`, integer `pow`, `gcd`.** Every one is expressible with arithmetic and comparison the language
+  already has, exactly and deterministically, so both engines agree bit-for-bit. Cost: no `sqrt`, `sin`, `log` —
+  the transcendentals a `Math` is often reached for. Benefit: what it *does* have is correct, and correctness is
+  the only thing a differential-tested library can offer. **Chosen.**
+- **(b) Approximate the transcendentals in Jairs (a Taylor/CORDIC `sqrt`).** Writable, and *wrong* in a specific
+  way: an approximation's last bits depend on the evaluation order, and the comptime VM and native Cranelift may
+  round a fused multiply-add differently — so the two engines could disagree on the last ulp, which is the one
+  thing this project's harness treats as a failure. A transcendental belongs behind the FFI boundary (libm is
+  correctly rounded) or behind a decision about ulp tolerance, and neither is a W7 library call.
+- **(c) Wait for FFI floats.** That is a real language sub-wave and it unblocks the libm wrap — but it blocks
+  *all* of `Math` on it, when half of `Math` needs nothing. Ship the exact half now.
+
+**Why `floor`/`ceil`/`round` are in and `sqrt` is out**, since both are "float functions": `floor` is exact and
+closed-form (truncate toward zero via an integer cast, adjust by sign), so both engines compute the same bits.
+`sqrt` is not expressible exactly without a loop whose rounding the two engines need not share. The line is
+**exactness**, not difficulty.
+
+**Deferred with reasons:** the transcendentals (`sqrt`, `sin`, `cos`, `log`, `exp` — want FFI floats or a ulp
+decision); `is_nan`/`is_inf` (want bit inspection of a float, which is `transmute`, deferred); a `float32` set
+(the same functions, and additive once the `float64` set proves the shape).

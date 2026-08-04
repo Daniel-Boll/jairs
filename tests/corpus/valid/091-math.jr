@@ -1,0 +1,75 @@
+// **The `Math` module** (ADR-0112): the **exact, closed-form** functions. W7's tenth sub-wave, and the one with
+// a surprising shape — it has no `sqrt`, `sin` or `log`.
+//
+// **Why no transcendentals.** The obvious `Math` wraps libm, but **a float cannot cross the FFI boundary yet**:
+// `sqrt :: (x: float64) -> float64 #foreign libc "sqrt"` is refused ("passing FloatType to a foreign procedure
+// arrives with a later wave"). So libm is unreachable and the module is pure Jairs — and a transcendental
+// *approximated* in Jairs would be **wrong in a way this project cannot tolerate**: an approximation's last bits
+// depend on evaluation order, and the comptime VM and native Cranelift may round a fused multiply-add
+// differently, so the two engines could disagree on the last ulp. Disagreement is the one thing the
+// differential harness treats as a failure. A transcendental belongs behind the FFI boundary (libm is correctly
+// rounded) or behind a ulp-tolerance decision, neither of which is a library call.
+//
+// **Why `floor` is in and `sqrt` is out**, though both are "float functions": the line is **exactness**, not
+// difficulty. `floor` is closed-form — truncate toward zero with a cast, adjust by sign — so both engines
+// compute identical bits. `sqrt` needs a loop whose rounding the two engines need not share. Everything here is
+// on the exact side of that line.
+//
+// What is checked here:
+//
+//   * `abs`, `min`, `max`, `sign`, `clamp` on `s64` — the closed-form integer functions;
+//   * `pow` by repeated multiplication and `gcd` by Euclid, both exact;
+//   * `floor`, `ceil`, `round` on `float64`, at a **negative** input too, since that is where truncation and
+//     flooring differ — `floor(-1.5)` is `-2` while `cast(s64, -1.5)` is `-1`;
+//   * `clamp` with the bounds crossed (`low > high`), where `low` wins by being applied last — a defined answer
+//     for a nonsensical range.
+//
+// The float results are turned into integers by comparison, because a corpus file's exit code is an `s64`: each
+// `floor`/`ceil`/`round` result is checked against its exact expected value, so a wrong last bit is a wrong bit.
+//
+// The exit code is **255**, eight groups of one bit.
+#import "Basic";
+#import "Math";
+
+main :: () {
+    n := 0;
+
+    // The integer functions, exact.
+    if abs(-5) == 5 && abs(5) == 5 && abs(0) == 0 {
+        n = n + 1;
+    }
+    if min(3, 7) == 3 && max(3, 7) == 7 && min(-2, -9) == -9 {
+        n = n + 2;
+    }
+    if sign(-3) == -1 && sign(0) == 0 && sign(8) == 1 {
+        n = n + 4;
+    }
+
+    // `clamp`, including the crossed-bounds case where `low` wins.
+    if clamp(10, 0, 5) == 5 && clamp(-1, 0, 5) == 0 && clamp(3, 0, 5) == 3 {
+        if clamp(3, 8, 2) == 8 {
+            n = n + 8;
+        }
+    }
+
+    // `pow` and `gcd`, exact.
+    if pow(2, 10) == 1024 && pow(5, 0) == 1 && pow(3, 3) == 27 {
+        n = n + 16;
+    }
+    if gcd(12, 18) == 6 && gcd(7, 0) == 7 && gcd(0, 0) == 0 {
+        n = n + 32;
+    }
+
+    // `floor`/`ceil`/`round` on positives — exact whole-number results.
+    if floor(3.7) == 3.0 && ceil(3.2) == 4.0 && round(3.5) == 4.0 {
+        n = n + 64;
+    }
+
+    // The negative case, where truncation and flooring diverge. `floor(-1.5)` is -2, `ceil(-1.5)` is -1,
+    // `round(-2.5)` is -3 (halves away from zero).
+    if floor(-1.5) == -2.0 && ceil(-1.5) == -1.0 && round(-2.5) == -3.0 {
+        n = n + 128;
+    }
+
+    exit(n);
+}
