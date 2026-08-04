@@ -509,7 +509,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **986 workspace tests** and **201 corpus files**, all six gates green, **166
+waiting. Both are tracked below. **986 workspace tests** and **202 corpus files**, all six gates green, **166
 Neovim checks**. See §1.5.
 
 ### W7 — Stdlib, open
@@ -739,6 +739,14 @@ through them** (ADR-0085 §5). So a growable array has real storage but stays pe
       treats as a failure. So the module ships only what it can make **exact**, and the line between `floor` (in)
       and `sqrt` (out) is exactness, not difficulty. Second consecutive pure-library sub-wave; **FFI floats are
       the unblocker**, a language sub-wave like typed allocation was for `List`.
+
+- [x] **`Random`** (ADR-0113, sub-wave 11): a deterministic **xorshift64** generator whose state the caller
+      owns — `seed`, `next`, `below`, `coin`. `u64` arithmetic that agrees **bit-for-bit** between the engines,
+      which a PRNG depends on absolutely. **Caller-owned state**, not a global (untestable, clock-seeded) or the
+      context (a callee facility, one stream per scope). xorshift64 because its correctness is *obvious*, which
+      beats better statistics for a baseline; a zero seed is replaced by `GOLDEN` rather than left at xorshift's
+      zero fixed point. **Surfaced a language gap** (§3): a `u64`-range named constant has no `name : T : value`
+      form, so `GOLDEN` is declared via `#run` of a `-> u64` procedure. Third consecutive pure-library sub-wave.
 
 **W7 left after that:** the **allocating** half of `String`, once the allocator convention is decided; a merge
 sort and a binary search (the first wants allocation, the second a sortedness precondition nothing can check);

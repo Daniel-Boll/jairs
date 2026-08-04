@@ -1,0 +1,118 @@
+//! The Random module: a deterministic pseudo-random generator whose state the caller owns.
+//!
+//! Written in Jairs, and built on `u64` arithmetic that agrees **bit-for-bit** between the two engines — which
+//! is not incidental. A generator whose sequence differed between the comptime VM and native code would fail the
+//! differential harness on its first call, so `Random` is the module where "both engines compute the same bits"
+//! is the whole point rather than a background guarantee.
+//!
+//! # Why the caller owns the state
+//!
+//! `next(*rng)` takes the generator by pointer, so a sequence is reproducible from its seed and two generators
+//! are independent. The alternatives were rejected for the same reason: a **hidden global** cannot give a test a
+//! clean sequence and is usually clock-seeded, which makes every run differ — the opposite of what a
+//! differential harness needs; and the **context** is for what a *callee* needs without being handed it (an
+//! allocator), while a random sequence is usually something a caller owns deliberately, and a context-carried
+//! one cannot have two independent streams in one scope. A caller who wants either can build it on top: put a
+//! `*Random` in their own context struct.
+//!
+//! # Why xorshift64, and not something better
+//!
+//! It is **exact, tiny, and deterministic** — three lines of shift-and-xor, every bit reproducible and identical
+//! in both engines, which is exactly what a differential-tested library's first generator should be. A
+//! higher-quality generator (PCG, xoshiro) is a later decision with a statistical-quality argument behind it;
+//! xorshift64 is the one whose correctness is *obvious*, and obvious correctness beats better statistics for a
+//! standard library's baseline.
+//!
+//! It is **not** cryptographically secure and says so here: a caller who needs unpredictability needs a
+//! different tool, and a library that let one mistake this for it would be doing harm.
+
+/// A generator's state: one `u64` word.
+///
+/// A struct rather than a bare `u64` so the API reads as "a random generator" and so it can grow a second word
+/// for a better algorithm later without changing a caller's declaration. `state` is never zero after `seed`,
+/// which is what keeps xorshift out of its fixed point.
+Random :: struct {
+    /// The generator's state. Non-zero after `seed`; xorshift is stuck at zero, so zero is never allowed to
+    /// persist.
+    state: u64;
+}
+
+/// The default seed, and the replacement for a zero one.
+///
+/// The fractional bits of the golden ratio, a conventional non-degenerate constant. Exported so a caller who
+/// wants a fixed, named starting point has one without inventing a magic number.
+///
+/// **Declared through `#run`**, and that is not decoration: the literal exceeds `s64`'s range, and a bare
+/// `GOLDEN :: <literal>` has no type context, so it defaults to `s64` and does not fit (E0204). There is no
+/// `name : u64 : value` form yet, so `#run golden()` — a procedure whose `-> u64` gives the literal its type —
+/// is how a `u64`-range constant is spelled today. ADR-0113 records this as a real gap with a clean workaround.
+GOLDEN :: #run golden_seed();
+
+#scope_module
+
+/// The `u64` context `GOLDEN` needs, since a bare constant defaults to `s64` (ADR-0113).
+golden_seed :: () -> u64 {
+    return 11400714819323198485;
+}
+
+#scope_export
+
+/// Seeds `rng`, replacing a zero seed with [`GOLDEN`].
+///
+/// **A zero seed is replaced, not rejected.** xorshift is stuck at zero — `0` xor-shifts to `0` forever — so
+/// `seed(rng, 0)` would give a stream of zeros a caller might take a while to notice. Silently substituting a
+/// defined non-degenerate sequence is the kinder answer than a trap for what is usually an uninitialised
+/// variable rather than a deliberate choice.
+seed :: (rng: *Random, value: u64) {
+    if value == 0 {
+        rng.state = GOLDEN;
+    } else {
+        rng.state = value;
+    }
+}
+
+/// The next 64 random bits, advancing the generator.
+///
+/// xorshift64 (Marsaglia): three shift-and-xor steps, with the shift amounts 13, 7, 17 that give the sequence
+/// its full period. Every operation is on `u64`, so it wraps rather than trapping (the shifts and xors have no
+/// overflow, and that is why an *unsigned* word is right here — a signed one's `>>` would carry the sign bit in,
+/// changing the sequence).
+///
+/// **Must be seeded first.** A zero state returns zero forever; `seed` is what prevents that, and calling `next`
+/// on an unseeded `Random` (state 0) is a caller error the module cannot catch, so the docs say it instead.
+next :: (rng: *Random) -> u64 {
+    x := rng.state;
+    x = x ^ (x << 13);
+    x = x ^ (x >> 7);
+    x = x ^ (x << 17);
+    rng.state = x;
+    return x;
+}
+
+/// A random `s64` in `[low, high)`, or `low` when the range is empty.
+///
+/// **Half-open**, matching every other range in the library (`0..n`, a view's bounds): `low` is included and
+/// `high` is not, so `below(rng, 0, n)` gives `0 .. n-1` and the two compose. An empty or inverted range
+/// (`high <= low`) returns `low` rather than trapping — a defined answer for a degenerate request, the reasoning
+/// `clamp` and `substring` follow.
+///
+/// The reduction is `% span`, which is very slightly biased toward the low end of the range when `span` does not
+/// divide `2^64` — the classic modulo bias. Named here rather than hidden because it is real, and rejected as a
+/// reason to complicate the first version: the bias is negligible for the small ranges a caller actually uses,
+/// and a rejection-sampling version is additive later behind a decision about its worst-case cost.
+below :: (rng: *Random, low: s64, high: s64) -> s64 {
+    if high <= low {
+        return low;
+    }
+    span := cast(u64, high - low);
+    r := next(rng) % span;
+    return low + cast(s64, r);
+}
+
+/// A random `bool`, each with probability one half.
+///
+/// The low bit of `next`, which is as good as any other for a fair coin from xorshift — the generator's bits are
+/// individually uniform, so picking the cheapest one to test is not a compromise.
+coin :: (rng: *Random) -> bool {
+    return next(rng) % 2 == 1;
+}

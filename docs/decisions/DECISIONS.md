@@ -2408,3 +2408,39 @@ closed-form (truncate toward zero via an integer cast, adjust by sign), so both 
 **Deferred with reasons:** the transcendentals (`sqrt`, `sin`, `cos`, `log`, `exp` — want FFI floats or a ulp
 decision); `is_nan`/`is_inf` (want bit inspection of a float, which is `transmute`, deferred); a `float32` set
 (the same functions, and additive once the `float64` set proves the shape).
+
+## W7 sub-wave 11 — `Random`, and where the state lives
+
+**Probed first:** `u64` xorshift arithmetic (`^`, `<<`, `>>`, `%`) agrees bit-for-bit between the two engines,
+which a random generator's whole value depends on — a PRNG that differed between engines would fail the harness
+on its first call.
+
+**The fork: where does the generator's state live?**
+
+- **(a) An explicit `Random` struct the caller threads: `next(*rng)`.** The state is a value the caller owns and
+  passes by pointer, so a sequence is reproducible from its seed and two generators are independent. Cost: the
+  caller declares and threads it. Benefit: it is the only form that is **deterministic and testable** — a
+  differential harness needs the same seed to give the same sequence in both engines, which a hidden global
+  makes awkward and a time-seeded one makes impossible. **Chosen.**
+- **(b) A hidden global generator, `random()` with no argument.** Convenient, and untestable: a global's state
+  is shared across a whole program, so a test cannot get a clean sequence, and seeding it from the clock (the
+  usual reason for a global) makes every run different — the opposite of what a differential harness needs.
+- **(c) The generator in `context`, like the allocator.** Defensible — it travels with the call — but the
+  context is for things a *callee* needs without being handed them (an allocator, a logger), and a random
+  sequence is usually something a caller owns deliberately. It also makes two independent sequences in one scope
+  impossible. A caller who wants context-carried randomness can put a `*Random` in their own context struct.
+
+**xorshift64, not a better generator.** It is **exact, tiny, and deterministic** — three lines of shift-and-xor,
+which is what a differential-tested library needs, since every bit is reproducible and both engines compute the
+same one. A higher-quality generator (PCG, xoshiro) is a later decision with a statistical-quality argument
+behind it; xorshift64 is the one whose correctness is *obvious*, and obvious correctness is what a standard
+library's first generator should have.
+
+**A zero seed is replaced by a constant**, because xorshift is stuck at zero — `0` xor-shifts to `0` forever. So
+`seed(0)` silently becomes `seed(GOLDEN)`, which is a defined non-degenerate sequence rather than a stream of
+zeros a caller would take a while to notice.
+
+**Deferred with reasons:** a float in `[0, 1)` (wants a float from a `u64`'s bits, which is a `transmute` or a
+divide, and the divide is exact so it is additive later); a better generator (statistical-quality decision);
+seeding from the clock (wants a time source, and is the *non*-deterministic thing the explicit struct exists to
+avoid making the default).

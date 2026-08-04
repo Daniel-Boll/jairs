@@ -1,0 +1,108 @@
+// **The `Random` module** (ADR-0113): a deterministic xorshift64 generator whose state the caller owns. W7's
+// eleventh sub-wave.
+//
+// **Why the caller owns the state.** `next(*rng)` takes the generator by pointer, so a sequence is reproducible
+// from its seed and two generators are independent. A hidden global cannot give a test a clean sequence and is
+// usually clock-seeded (every run differs — the opposite of what a differential harness needs); the context is
+// for what a callee needs without being handed it, while a random sequence is usually a caller's deliberate
+// possession. A caller who wants either builds it on top.
+//
+// **Why xorshift64.** It is exact, tiny, and deterministic — three shift-and-xor steps on `u64` that agree
+// bit-for-bit between the two engines, which is exactly what a differential-tested library's first generator
+// should be. Every bit is reproducible, and both engines compute the same one; a generator whose sequence
+// differed between them would fail the harness on its first call. A higher-quality generator is a later decision
+// with a statistical argument; xorshift64 is the one whose correctness is obvious.
+//
+// **`GOLDEN` is declared through `#run`**, and that turned up a real gap: the seed literal
+// (11400714819323198485) exceeds `s64`, and a bare `GOLDEN :: <literal>` has no type context so it defaults to
+// `s64` and does not fit (E0204). There is no `name : u64 : value` form, so a `u64`-range named constant is
+// spelled by `#run` of a `-> u64` procedure — the literal gets its type from the return. ADR-0113 records the
+// gap and the workaround.
+//
+// What is checked here:
+//
+//   * two `next` calls differ (the generator advances);
+//   * **reproducibility** — the same seed gives the same sequence, which is the property the whole design is
+//     for and the one a differential harness depends on;
+//   * `below` produces a value in `[low, high)`, half-open like every other range in the library;
+//   * an **empty** range (`high <= low`) returns `low` rather than trapping;
+//   * a **zero seed** still produces a non-zero, advancing sequence — it is replaced by `GOLDEN` rather than
+//     leaving xorshift stuck at its zero fixed point;
+//   * two generators with **different** seeds diverge, so the state is genuinely per-generator.
+//
+// The exit code is **255**, eight groups of one bit — and every bit depends on the generator computing the same
+// value in both engines, which is the sharp end of this module.
+#import "Basic";
+#import "Random";
+
+main :: () {
+    n := 0;
+
+    r: Random;
+    seed(*r, 12345);
+    a := next(*r);
+    b := next(*r);
+    if a != b {
+        n = n + 1;
+    }
+
+    // Reproducibility: the same seed, the same first value.
+    r2: Random;
+    seed(*r2, 12345);
+    if next(*r2) == a {
+        n = n + 2;
+    }
+
+    // `below` stays in `[10, 20)`.
+    r3: Random;
+    seed(*r3, 999);
+    v := below(*r3, 10, 20);
+    if v >= 10 && v < 20 {
+        n = n + 4;
+    }
+
+    // A second draw is also in range — the generator keeps working, not just its first call.
+    w := below(*r3, 10, 20);
+    if w >= 10 && w < 20 {
+        n = n + 8;
+    }
+
+    // An empty range returns `low`.
+    if below(*r3, 5, 5) == 5 {
+        n = n + 16;
+    }
+
+    // A zero seed still advances, because it is replaced by `GOLDEN`.
+    r4: Random;
+    seed(*r4, 0);
+    if next(*r4) != 0 {
+        n = n + 32;
+    }
+
+    // Different seeds diverge: the state is per-generator, not shared.
+    ra: Random;
+    rb: Random;
+    seed(*ra, 1);
+    seed(*rb, 2);
+    if next(*ra) != next(*rb) {
+        n = n + 64;
+    }
+
+    // `coin` returns something both true and false across draws — checked by counting a short run rather than
+    // asserting a single flip, since a fair coin can repeat.
+    rc: Random;
+    seed(*rc, 424242);
+    trues := 0;
+    i := 0;
+    while i < 8 {
+        if coin(*rc) {
+            trues = trues + 1;
+        }
+        i = i + 1;
+    }
+    if trues > 0 && trues < 8 {
+        n = n + 128;
+    }
+
+    exit(n);
+}
