@@ -415,12 +415,28 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
         let mut all_sigs: Vec<&jr_sema::FileSignatures> = vec![signatures.signatures.as_ref()];
         all_sigs.extend(modules.iter().map(|m| m.signatures.as_ref()));
         match op {
-            jr_sema::AnyOp::Of => match type_info_value(&mut pool, interner, &all_sigs, *ty) {
-                Ok(type_info) => {
-                    values.set_any_op(*scope, *expr, jr_mir::AnyLowering::Of { type_info });
+            jr_sema::AnyOp::Of => {
+                // The `Any` struct type to build, looked up like `Type_Info` — both live in `Basic`.
+                let any_ty = interner.intern("Any");
+                let any_ty = all_sigs
+                    .iter()
+                    .find_map(|sigs| sigs.lookup(any_ty))
+                    .and_then(|e| e.type_value);
+                match (type_info_value(&mut pool, interner, &all_sigs, *ty), any_ty) {
+                    (Ok(type_info), Some(any_ty)) => {
+                        values.set_any_op(
+                            *scope,
+                            *expr,
+                            jr_mir::AnyLowering::Of { type_info, any_ty },
+                        );
+                    }
+                    (Err(why), _) => type_info_failures.push(why),
+                    (_, None) => {
+                        type_info_failures
+                            .push("the standard library's `Any` is not usable".to_owned());
+                    }
                 }
-                Err(why) => type_info_failures.push(why),
-            },
+            }
             jr_sema::AnyOp::As => {
                 values.set_any_op(
                     *scope,

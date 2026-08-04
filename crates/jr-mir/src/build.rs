@@ -2327,6 +2327,26 @@ impl Lower<'_> {
         }
         let ty = self.ty(id);
         let span = self.span(id);
+        // **An `Any` coercion is checked for any expression, not only a call** (ADR-0076 §1). The explicit
+        // `any_of(p)` records its lowering against the *call*; passing a `*T` where an `Any` is expected
+        // records it against the *argument expression*, which may be any shape (`takes(*x)` is a unary
+        // address). Both are `AnyOp::Of`, and both erase the same way — so the check sits here, above the
+        // per-shape lowering, and the argument's own value is the pointer to erase. The `Call` arm handles
+        // its own `any_op` (both `Of` and `As`), so this fires only for a *non-call* coercion.
+        if let Some(op) = self.consts.any_op(self.scope(), id)
+            && !matches!(self.body.expr(id), Expr::Call { .. })
+        {
+            return self.lower_any_coercion(op, id, ty, span);
+        }
+        self.expr_inner(id)
+    }
+
+    /// Lowers one expression to an operand, by its shape — the body of [`Lower::expr`] without the
+    /// `Any`-coercion pre-check, so the coercion path can lower its pointer operand without re-entering
+    /// the check that produced it.
+    fn expr_inner(&mut self, id: ExprId) -> Operand {
+        let ty = self.ty(id);
+        let span = self.span(id);
         match self.body.expr(id).clone() {
             // The hidden parameter's value: a `*Context` (ADR-0057 §2). Sema refused `context` in a
             // `#c_call` procedure (E0254), so `None` here would mean sema and lowering disagree —
@@ -3025,7 +3045,10 @@ impl Lower<'_> {
         span: MirSpan,
     ) -> Operand {
         match op {
-            crate::inputs::AnyLowering::Of { type_info } => self.any_of(type_info, args, ty, span),
+            crate::inputs::AnyLowering::Of {
+                type_info,
+                any_ty: _,
+            } => self.any_of(type_info, args, ty, span),
             crate::inputs::AnyLowering::As { type_id, result } => {
                 self.any_as(type_id, result, args, ty, span)
             }
@@ -3051,7 +3074,51 @@ impl Lower<'_> {
             return self.define(any_ty, Rvalue::Undef, span);
         };
         let pointer = self.expr(*arg);
+        self.build_any(type_info, pointer, any_ty, span)
+    }
 
+    /// Lowers an implicit `*T` → `Any` coercion at a call argument (ADR-0076 §1).
+    ///
+    /// The ergonomic half of `any_of`: `takes(*x)` where `takes` wants an `Any`. The pointer to erase is
+    /// **this expression itself**, not a call argument, so it is lowered here and handed to the same
+    /// `build_any` the explicit form uses — one aggregate build, so the two forms cannot drift.
+    fn lower_any_coercion(
+        &mut self,
+        op: crate::inputs::AnyLowering,
+        id: ExprId,
+        any_ty: PoolId,
+        span: MirSpan,
+    ) -> Operand {
+        let crate::inputs::AnyLowering::Of {
+            type_info,
+            any_ty: built_ty,
+        } = op
+        else {
+            // Only `AnyOf` is ever recorded against a non-call expression; `AnyAs` is always a call.
+            self.give_up("an `any_as` recorded against a non-call expression");
+            return self.define(any_ty, Rvalue::Undef, span);
+        };
+        // Lower the pointer through the value path, but *without* re-entering the coercion check — read
+        // the expression by its shape. It is an ordinary pointer-typed expression (`*x`, a local, a
+        // field), so `expr_inner` handles it; the coercion only rewrites what the *result* becomes. The
+        // aggregate is built at the recorded `Any` type, not `self.ty(id)` — this expression's own type
+        // is the *pointer*, which is what `expr_inner` correctly lowers it as.
+        let pointer = self.expr_inner(id);
+        self.build_any(type_info, pointer, built_ty, span)
+    }
+
+    /// Builds an `Any` aggregate from an already-lowered pointer and a `Type_Info` constant (ADR-0076).
+    ///
+    /// Shared by the explicit `any_of(p)` and the implicit `*T`→`Any` coercion, so the two produce byte-
+    /// identical aggregates. `data` erases the pointer to `*u8` with no conversion — a pointer's bits do
+    /// not depend on its pointee — and `type` is the address of the spilled `Type_Info` constant.
+    fn build_any(
+        &mut self,
+        type_info: PoolId,
+        pointer: Operand,
+        any_ty: PoolId,
+        span: MirSpan,
+    ) -> Operand {
         // The `Type_Info` constant spilled to a slot, so the `type` field can hold its address.
         let ti_ty = self.pool.type_of(type_info);
         let ti_slot = self.mir.push_slot(ti_ty, None, span);

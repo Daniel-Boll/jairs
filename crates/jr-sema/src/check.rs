@@ -2516,7 +2516,7 @@ impl Ctx<'_> {
                 for (index, slot) in filled.iter().enumerate() {
                     let want = params.get(index).copied();
                     if let ArgSlot::Given(arg) = slot {
-                        self.check_expr(scope, *arg, want);
+                        self.check_arg(scope, *arg, want);
                     }
                 }
                 self.filled_calls.insert((scope, id), filled);
@@ -2548,10 +2548,76 @@ impl Ctx<'_> {
 
         for (index, arg) in args.iter().enumerate() {
             let want = params.get(index).copied();
-            self.check_expr(scope, *arg, want);
+            self.check_arg(scope, *arg, want);
         }
 
         ret
+    }
+
+    /// Checks one call argument, erasing a pointer to `Any` where the parameter wants one (ADR-0076 §1).
+    ///
+    /// The ergonomic half of `any_of`: ADR-0076 §1 promised that "passing a `*T` where an `Any` is
+    /// expected" erases, so a reflection procedure reads `takes(*x)` rather than `takes(any_of(*x))`. When
+    /// the parameter type is the standard library's `Any` and the argument is a pointer, this records the
+    /// same `AnyOp::Of` lowering the explicit call does — keyed by the argument expression — so `jr-mir`
+    /// builds the `Any` there. Any other argument is checked normally.
+    ///
+    /// Deliberately narrow: only a **pointer** coerces, because §4 leaves a bare value (`a: Any = 3;`) for
+    /// later — a value has no address, so it would need a materialised temporary this does not create.
+    fn check_arg(&mut self, scope: ExprScope, arg: ExprId, want: Option<PoolId>) {
+        if let Some(want_ty) = want
+            && self.is_any_struct(want_ty)
+        {
+            let arg_ty = self.check_expr(scope, arg, None);
+            if let Item::PointerType(pointee) = *self.pool.item(arg_ty) {
+                // The pointee must have a layout, as `any_of` requires — the same E0266 the explicit
+                // form raises, reused so the two paths agree.
+                if jr_pool::layout_of(self.pool, jr_pool::TargetLayout::LP64, pointee).is_ok() {
+                    self.any_calls.insert((scope, arg), (AnyOp::Of, pointee));
+                    // The argument keeps its **pointer** type in the `TypeMap`, so `jr-mir`'s coercion
+                    // wrapper can lower the pointer through the ordinary value path (`expr_inner`) and
+                    // then wrap the result into an `Any`. The wrapper's *return* is the `Any` the call
+                    // consumes; the map type is only ever used to lower the pointer, so it must stay the
+                    // pointer type.
+                    return;
+                }
+            }
+            // Not a coercible pointer: fall through to an ordinary mismatch against `Any`, which is the
+            // honest error (`expected Any, found …`).
+            let span = self.expr_of(scope, arg).span();
+            self.expect(want, arg_ty, span);
+            return;
+        }
+        self.check_expr(scope, arg, want);
+    }
+
+    /// Whether a type is the standard library's `Any` (ADR-0076 §3).
+    ///
+    /// By identity against the looked-up struct, not by name, so a program's own unrelated `Any` is not
+    /// mistaken for it. Silent when `Any` is not loaded — the coercion simply does not apply, and an
+    /// ordinary mismatch results.
+    fn is_any_struct(&mut self, ty: PoolId) -> bool {
+        self.any_struct_quiet() == Some(ty)
+    }
+
+    /// The `Any` struct type, looked up **without** validating its shape or reporting (ADR-0076 §3).
+    ///
+    /// A quiet counterpart to `any_struct`: the argument-coercion check only needs to know whether a
+    /// parameter's type *is* `Any`, and it runs for every call, so it must not report E0265 nor validate
+    /// — a program that never touches reflection should pay nothing and see nothing. The explicit
+    /// `any_of`/`any_as` intrinsics still validate through `any_struct`.
+    fn any_struct_quiet(&mut self) -> Option<PoolId> {
+        if self.imports.is_empty() {
+            return None;
+        }
+        let name = self.interner.intern("Any");
+        let entry = self
+            .imports
+            .iter()
+            .find_map(|(_, sigs)| sigs.lookup(name))
+            .or_else(|| self.sigs.lookup(name));
+        let ty = entry.and_then(|e| e.type_value)?;
+        matches!(self.pool.item(ty), Item::StructType { .. }).then_some(ty)
     }
 
     /// Which compiler intrinsic a callee names, if any.

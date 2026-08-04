@@ -26,7 +26,7 @@
 // than reinterpreting. That path is exercised in `differential.rs` (a trap aborts the process, which a
 // corpus file that must exit 0 cannot show); here every `any_as` matches.
 //
-// Eight assertions, summing to 255 so any one failing changes the exit value. Both engines must agree —
+// Nine assertions, summing to 767 so any one failing changes the exit value. Both engines must agree —
 // and the native one has to materialise a `Type_Info` in static-ish form, erase a pointer and read it
 // back, all of which could fail independently of the VM.
 #import "Basic";
@@ -66,9 +66,17 @@ main :: () {
         n = n + 2;
     }
 
-    // Through a procedure that took the `Any` without knowing its type.
+    // Through a procedure that took the `Any` without knowing its type — passing an already-built `Any`.
     if sum_point(a) == 7 {
         n = n + 4;
+    }
+
+    // The **implicit coercion** (ADR-0076 §1): `*p` is a `*Point`, and `sum_point` wants an `Any`, so the
+    // pointer is erased at the call the same way `any_of(*p)` erases it explicitly. `takes(any_of(*x))`
+    // and `takes(*x)` are the same call; this is the ergonomic half the ADR promised, and it would report
+    // a type mismatch without it.
+    if sum_point(*p) == 7 {
+        n = n + 512;
     }
 
     // The `type` field is a real `*Type_Info`, readable through the `Any`.
@@ -99,8 +107,8 @@ main :: () {
         n = n + 128;
     }
 
-    // Every assertion: 255.
-    if n == 255 {
+    // Every assertion: 767 (255 + the 512 coercion bit).
+    if n == 767 {
         exit(0);
     }
     exit(1);
