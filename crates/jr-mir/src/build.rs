@@ -148,9 +148,13 @@ pub fn lower_file(
         // compile-time guard, evaluated on its own, and nothing calls it. Skipped exactly as a template's
         // body is — and it must be, or the native back end reports "procedure N was defined without being
         // declared", since `declarations()` skips it for the same reason.
-        let is_predicate = hir.predicate_vars.iter().any(|(pred, _)| *pred == proc)
-            || hir.modify_predicates.iter().any(|(_, pred)| *pred == proc);
-        if is_predicate {
+        // **A predicate *clone* IS lowered** (ADR-0095 §2) — the compile-time VM has to *run* it, and a
+        // body with no MIR has no routine ("no routine for file 0 proc 4", found by running). Keeping it out
+        // of the **native** back end is `declarations()`'s job instead.
+        //
+        // A *template's* own predicate is the exception: `T` is unbound in it, so its body cannot lower —
+        // and nothing needs it to, since only a clone is ever evaluated.
+        if hir.predicate_vars.iter().any(|(pred, _)| *pred == proc) {
             continue;
         }
         let lowered = lower_body(

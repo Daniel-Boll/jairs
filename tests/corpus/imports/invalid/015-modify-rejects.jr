@@ -1,0 +1,34 @@
+// EXPECT: E0275 — an instantiation rejected by its procedure's `#modify` predicate (ADR-0095 §1)
+//
+// This is the feature working, not a gap. `#modify { … }` is a compile-time predicate over an
+// *instantiation*: it runs when a call binds the template's type variables, and returning `false` **refuses
+// that call**. So a template can say "only for an `s64`" in code rather than in a comment, and the compiler
+// enforces it.
+//
+// Here the predicate compares the bound type's identity against `s64`'s — the sound comparison ADR-0077's
+// stable `id` established and ADR-0092 made reachable inside a `$T` body. `caller` instantiates at `u8`, the
+// predicate answers `false`, and the instantiation is refused.
+//
+// **A predicate that fails to *run* is deliberately not a rejection** (ADR-0095 §1): "the guard could not be
+// evaluated" and "the guard said no" are different findings, and only the second is what the author asked
+// for. So a trap inside a predicate leaves the instantiation standing and is reported by the ordinary
+// refusal path.
+//
+// **Not a corpus `type-errors/` file**, for the stage reason ADR-0074 §4 gave: E0275 is `jr-db`'s code —
+// the predicate is evaluated in `file_mir`, which is the only place with the *expanded* tree, its MIR and the
+// VM (ADR-0094 §3 explains why neither `instantiated()` nor `file_consts` could host it). That directory's
+// harness runs sema alone and would never see it.
+#import "Basic";
+
+/// A template guarded by a predicate: this one is meant for `s64` only.
+only_s64 :: (x: $T) -> s64 #modify {
+    return type_info(T).id == type_info(s64).id;
+} {
+    return 1;
+}
+
+main :: () {
+    small: u8;
+    // The rejection: `u8` is not `s64`, so the predicate refuses this instantiation.
+    exit(only_s64(small));
+}

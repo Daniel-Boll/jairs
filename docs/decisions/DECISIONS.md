@@ -1772,3 +1772,39 @@ discovered the same way: the linker's "must be defined but is not", then "define
 both caught by the corpus differential. What remains is *running* the clone, which needs the expanded tree's
 MIR and so a new query — the one thing ADR-0093 §2 sized correctly. E0274 keeps refusing a call meanwhile, so
 nothing is silently unguarded.
+
+---
+
+## Wave: `#modify` evaluation (ADR-0095), 2026-08-04 — sub-wave 7f
+
+### Fork 1 — where the predicate runs
+
+- Options: **in `file_mir`, right after the expanded tree is lowered (taken, recommended)**; a new salsa
+  query; inside `instantiated()`; inside `file_consts`.
+- Why `file_mir`: it is the only place with all three things a predicate needs — the expanded HIR, that
+  tree's MIR (just produced), and the VM. `instantiated()` runs before any MIR exists and `file_consts`
+  evaluates the *unexpanded* tree, which is exactly what ADR-0094 §3 identified. Rejections ride out on
+  `MirResult::expanded_diagnostics`, the channel an instantiation's own diagnostics already take, so this
+  needs **no new query and no new plumbing** — better than ADR-0094 §3's estimate.
+
+### Fork 2 — what a predicate that *fails to run* means
+
+- Options: **not a rejection — the instantiation stands and the failure is reported by the ordinary refusal
+  path (taken, recommended)**; treat a failure as a rejection; refuse the whole compile.
+- Why not a rejection: "the guard could not be evaluated" and "the guard said no" are different findings, and
+  only the second is the author's intent. Conflating them would turn a compiler limitation (a trap, an
+  unsupported comptime operation) into a false rejection of correct code — the same asymmetry ADR-0071 §3
+  argues for its allowlist.
+
+### Resolution (ADR-0095 records it)
+
+Shipped; **`#modify` is complete** and E0274 is retired (the fourth by-design refusal raised then lifted,
+after E0268, E0271's first meaning and E0272's first meaning). Two things the build found by running:
+
+1. **A predicate clone's body must be lowered to MIR.** ADR-0094 skipped it in *both* MIR and
+   `declarations()` — right for the native back end, wrong for the VM: no MIR means no routine
+   (`no routine for file 0 proc 4`). The two exclusions are for different reasons and had to be separated;
+   only a *template's own* predicate stays MIR-skipped, since `T` is unbound there.
+2. **A predicate takes the hidden context parameter** like every Jairs procedure (`called a procedure taking
+   1 arguments with 0`). Its layout is read before the VM borrows the pool — the non-reentrant-mutex order
+   `run_main` already uses.

@@ -347,19 +347,10 @@ pub(crate) const E0269: &str = "E0269";
 /// count wanted and the count written — the type-side counterpart of an arity error on a call.
 pub(crate) const E0270: &str = "E0270";
 
-/// A `#modify` procedure, whose compile-time predicate is not yet evaluated (ADR-0093 §3).
-///
-/// `#modify { … }` is a predicate over an *instantiation*: it runs at compile time when a call binds the
-/// template's type variables, and `false` refuses that call. The surface — parsing the block, carrying its
-/// text on `Proc::modify`, and formatting it — is this sub-wave; evaluating it is the next, and it needs the
-/// predicate appended as its own procedure per instantiation so `type_info(T)` inside it sees the binding
-/// (ADR-0092 made that reflection possible, which is what unblocked the design).
-///
-/// Refused rather than allowed to fall through to an ordinary instantiation, which is what it did before
-/// this code existed: the predicate was **parsed and silently ignored**, so a `#modify` that should have
-/// rejected a call accepted it. "A directive that is silently ignored is worse than one that is rejected"
-/// is ADR-0058 §3's rule; this is its third application, after `#no_abc` and `#expand`.
-pub(crate) const E0274: &str = "E0274";
+// E0274 — a call to a `#modify` procedure — was ADR-0093 §3's by-design refusal while the predicate was
+// unevaluated. **ADR-0095 lifted it**: the predicate now runs, and a `false` refuses the instantiation with
+// E0275 (owned by `jr-db`, where the predicate is evaluated). The number is retired rather than reused, the
+// way E0120 and E0122 were, so a reader searching for it finds this note.
 
 /// A call to a `#expand` macro, whose splice is not yet built (ADR-0090 §3).
 ///

@@ -458,12 +458,25 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
     );
     drop(pool);
 
+    // **Each instantiation's `#modify` predicate runs here** (ADR-0095 §1), the one place with everything
+    // it needs: the *expanded* tree, its MIR (just lowered above), and the VM. `instantiated()` runs before
+    // this and `file_consts` evaluates the *unexpanded* tree, which is why ADR-0094 §3 could not put it in
+    // either. A predicate answering `false` refuses its guarded instantiation with E0275 — a rejection the
+    // author asked for, so its message names the predicate rather than reading like a compiler fault.
+    let modify_rejections =
+        evaluate_modify_predicates(db, file, hir.as_ref(), &lowered, &own_signatures);
+
     // The expanded tree's own resolve/check diagnostics — from a computed `#insert` (ADR-0073) or an
     // instantiation (ADR-0082), whichever expanded. Only this pass can produce them.
-    let expanded_diagnostics = expanded
+    let mut expanded_diagnostics = expanded
         .map(|(_, _, _, diags)| diags)
         .or_else(|| instantiated.map(|inst| inst.diagnostics))
         .unwrap_or_default();
+    // A rejected instantiation is reported through the same channel the expansion's own diagnostics take,
+    // so `file_diagnostics` picks it up with no new plumbing (ADR-0095 §1).
+    for diag in modify_rejections {
+        expanded_diagnostics.push(diag);
+    }
 
     MirResult {
         mir: Arc::new(lowered),
@@ -742,6 +755,86 @@ fn imported_modules(
         };
         if !out.contains(&module) {
             out.push(module);
+        }
+    }
+    out
+}
+
+/// A `#modify` predicate that answered `false` refuses its instantiation (ADR-0095 §1).
+///
+/// This code exists because a rejection is a *feature*, not a compiler fault: the author wrote a predicate
+/// precisely so some instantiations would be refused, so the message names the guard rather than reading
+/// like an internal error.
+const E0275: &str = "E0275";
+
+/// Runs each instantiation's `#modify` predicate, returning a diagnostic per rejection (ADR-0095 §1).
+///
+/// Called from [`file_mir`] because that is the only place with all three things a predicate needs: the
+/// **expanded** tree (where the predicate clone lives), that tree's MIR, and the VM. `instantiated()` runs
+/// before the MIR exists and `file_consts` evaluates the *unexpanded* tree, which is why ADR-0094 §3 could
+/// not put this in either.
+///
+/// A predicate that fails to *run* — a trap, an unsupported operation — is **not** a rejection: it is left
+/// to the ordinary refusal path rather than silently rejecting the instantiation, because "the guard could
+/// not be evaluated" and "the guard said no" are different findings and only the second is the author's
+/// intent.
+fn evaluate_modify_predicates(
+    db: &dyn Db,
+    file: SourceFile,
+    hir: &jr_hir::FileHir,
+    mir: &jr_mir::FileMir,
+    signatures: &jr_sema::FileSignatures,
+) -> Vec<jr_diag::Diagnostic> {
+    if hir.modify_predicates.is_empty() {
+        return Vec::new();
+    }
+    let file_id = crate::queries::resolve_file_id(db, file);
+    let mut out: Vec<jr_diag::Diagnostic> = Vec::new();
+    let pool = crate::sema::lock_pool(db);
+    let mut program = jr_vm::comptime_program();
+    if jr_vm::add_file(&mut program, file_id, hir, mir, signatures, &pool).is_err() {
+        // The tree could not be loaded into the comptime program at all. Not a rejection — see this
+        // function's docs — so the instantiation stands and any real problem is reported elsewhere.
+        return Vec::new();
+    }
+    let pairs: Vec<(jr_hir::ProcId, jr_hir::ProcId)> = hir.modify_predicates.clone();
+    // **The context's layout, read before the VM borrows the pool** (the same order `run_main` uses, and for
+    // the same reason: the mutex is not reentrant, so locking twice deadlocks). A predicate is an ordinary
+    // Jairs procedure, so it takes the hidden context parameter every one does (ADR-0057 §4) — calling it
+    // with no arguments gave "called a procedure taking 1 arguments with 0", found by running.
+    let context_layout = jr_pool::Pool::find_context(&pool)
+        .and_then(|ctx| jr_pool::layout_of(&pool, jr_pool::TargetLayout::LP64, ctx).ok());
+    {
+        let Ok(mut vm) = jr_vm::Vm::new(&program, &pool, jr_vm::Mode::Comptime) else {
+            return Vec::new();
+        };
+        for (guarded, predicate) in &pairs {
+            let target = jr_mir::ProcRef::new(file_id, *predicate);
+            let args = match context_layout {
+                Some(layout) => match vm.new_context(layout.size, layout.align) {
+                    Ok(ctx) => vec![ctx],
+                    // No context could be allocated: not a rejection (see this function's docs).
+                    Err(_) => continue,
+                },
+                None => Vec::new(),
+            };
+            // `false` — the author's guard rejects this instantiation. Any other outcome (`true`, or a
+            // predicate that failed to run) leaves it standing: see this function's docs for why a failure
+            // to evaluate is deliberately not a rejection.
+            if let Ok(jr_vm::Value::Scalar(0)) = vm.call(target, args) {
+                let span = hir.proc(*guarded).span;
+                out.push(
+                    jr_diag::Diagnostic::error(
+                        span,
+                        "this instantiation is rejected by the procedure's `#modify` predicate",
+                    )
+                    .with_code(E0275)
+                    .with_note(
+                        "the predicate ran at compile time and returned `false`, which refuses the \
+                             call that produced this instantiation (ADR-0095)",
+                    ),
+                );
+            }
         }
     }
     out
