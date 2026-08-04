@@ -162,6 +162,15 @@ the one thing the differential harness treats as a failure. So it ships only wha
 between `floor` (in) and `sqrt` (out) is exactness, not difficulty — and says so at the top of the module rather
 than surprising a reader who reaches for `sqrt`.
 
+**And `Random`** (ADR-0113) is a deterministic xorshift64 generator whose state the caller owns: `seed`,
+`next`, `below`, `coin`. Its `u64` arithmetic agrees bit-for-bit between the engines, which a generator depends
+on absolutely — a sequence that differed would fail the harness on its first call. The state is caller-owned
+rather than a hidden global (untestable and usually clock-seeded, which the differential harness cannot use) or
+context-carried (a callee facility). xorshift64 because its correctness is obvious, which beats better
+statistics for a baseline. Writing it surfaced a real language gap: a `u64`-range named constant has no
+`name : T : value` form, so the golden-ratio seed is declared through `#run` of a `-> u64` procedure whose
+return type gives the too-large literal its context — recorded rather than worked around silently.
+
 Before it, wave **W6 — Metaprogram**, five sub-waves in, with 984 tests green. Its headline claim is met — a metaprogram can find
 declarations by note and generate code for each — and a build script can name its own artefact. A declaration can
 carry **`@note` metadata** for a metaprogram to read (ADR-0098). `@deprecated` and `@requires "x"` sit in the
