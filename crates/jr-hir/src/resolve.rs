@@ -105,7 +105,7 @@ const E0253: &str = "E0253";
 
 /// Whether a name is a compiler intrinsic, which has no declaration to resolve to.
 ///
-/// `type_info` (ADR-0075 §2), `any_of` and `any_as` (ADR-0076), `has_note` and `note_value` (ADR-0099 §1).
+/// `type_info` (ADR-0075 §2), `any_of` and `any_as` (ADR-0076), `has_note` and `note_value` (ADR-0099 §1), `noted_count` and `noted_name` (ADR-0100 §1).
 /// Listed here rather than in `jr-sema`'s
 /// `Intrinsic` because this crate cannot depend on that one; the two lists must agree, and the corpus is
 /// what says they do — a name withheld here but unrecognised there is an unresolved-name error that
@@ -113,7 +113,13 @@ const E0253: &str = "E0253";
 fn is_intrinsic_name(name: &str) -> bool {
     matches!(
         name,
-        "type_info" | "any_of" | "any_as" | "has_note" | "note_value"
+        "type_info"
+            | "any_of"
+            | "any_as"
+            | "has_note"
+            | "note_value"
+            | "noted_count"
+            | "noted_name"
     )
 }
 

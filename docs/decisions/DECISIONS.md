@@ -1939,3 +1939,37 @@ replacing makefiles, plugin hooks, `@note` attributes.
 **Deferred with reasons:** notes on a struct or a constant (only `Proc` carries them today — the parser takes
 notes in the *procedure* attribute loop, so widening is a parser change, not a reader change); querying every
 declaration with a note (needs (b)); a note on a parameter or field.
+
+## W6 sub-wave 3 — iteration over noted declarations
+
+**The blocker, stated first, because it decides the fork.** A folding intrinsic is answered at *check* time,
+so every argument must be readable then. A `for` loop's variable is not: it exists only at run time. So
+
+```jai
+for i: 0..noted_count("serialise") {  name := noted_name("serialise", i);  … }
+```
+
+**cannot** be made to work by folding, no matter how the intrinsic is spelled. Genuine loop-driven iteration
+needs the query to lower to *real code* reading a **compiler-emitted table** — static data the back end emits
+and the VM can also see. That mechanism does not exist: it is the same one `Type_Info`'s variable-length field
+list has been deferred for since ADR-0078, and it is owed its own wave.
+
+Four options, given that:
+
+- **(a) `noted_count(note)` and `noted_name(note, i)` with a *literal* index.** Folds like `has_note`, needs
+  nothing new, and is exactly the data a loop would deliver — a script unrolls by hand. Cost: it does not
+  scale past a handful, and a script cannot be written once for an unknown number of declarations. Benefit:
+  it makes the *query* complete and reduces the message loop to purely the iteration mechanics, which is
+  then a wave about static data rather than a wave about notes. **Chosen.**
+- **(b) The static-data table now.** The honest full answer, and the right eventual one. Cost: it is a wave —
+  a declared static-data mechanism, both back ends emitting it, the VM reading it, and a decision about who
+  owns the memory. Doing it *inside* a notes sub-wave would bury an architectural decision in a feature.
+- **(c) Return the names as one space-separated `string`, spliced with `#insert`.** Genuinely useful for code
+  generation, and it needs no table. But splitting and rebuilding text needs `String`, which is W7 — so it
+  would ship a query whose only consumer does not exist yet, ADR-0080 §3's rule again.
+- **(d) A `#for_each_note` directive that expands at lowering.** The most powerful and the least honest: it
+  would be a second, hidden iteration construct with its own scoping rules, and the language already has
+  `for`. A metaprogram facility should not need a parallel `for`.
+
+**What this deliberately does not claim.** After (a), notes can be *counted* and *named*; they cannot be
+*looped over*. `PLAN.md` §7 says so in those words, so the message loop's remaining scope is not overstated.
