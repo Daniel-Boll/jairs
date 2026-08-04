@@ -179,7 +179,10 @@ pending-splice refusal, which the splice lifted); E0273 is an early `return` in 
 in expression position — **owned by `jr-hir`**, continuing its block (E0262–E0264 are `#insert`'s), because
 it is raised in lowering where the splice is built.
 
-**E0274 is the first free code**; E0131 is the first free *parser* code. E0231 is `jr-db`'s
+E0274 is a call to a `#modify` procedure, refused pending predicate
+evaluation (ADR-0093 §3).
+
+**E0275 is the first free code**; E0131 is the first free *parser* code. E0231 is `jr-db`'s
 unused-import warning — the first code in this project that is a *warning* rather than an
 error, so a consumer filtering by severity has something to filter.
 

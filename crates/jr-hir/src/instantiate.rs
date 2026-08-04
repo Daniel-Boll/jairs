@@ -184,6 +184,7 @@ fn append_one(
         c_call: template.c_call,
         no_abc: template.no_abc,
         expand: template.expand,
+        modify: template.modify.clone(),
         ret,
         body,
         foreign: template.foreign.clone(),

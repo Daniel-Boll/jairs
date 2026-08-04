@@ -205,7 +205,8 @@ module.exports = grammar({
         ),
       ),
 
-    _proc_attr: ($) => choice($.c_call_attr, $.no_abc_attr, $.expand_attr),
+    _proc_attr: ($) =>
+      choice($.c_call_attr, $.no_abc_attr, $.expand_attr, $.modify_attr),
 
     // #c_call (ADR-0057 §3)
     c_call_attr: (_$) => field("directive", "#c_call"),
@@ -216,6 +217,10 @@ module.exports = grammar({
     // #expand — the procedure is a macro, spliced into the caller's scope rather than called
     // (ADR-0090 §1). Its own rule beside the other two attributes, so a query can tell them apart.
     expand_attr: (_$) => field("directive", "#expand"),
+
+    // #modify { … } — a compile-time predicate over an instantiation (ADR-0093 §1). Unlike the other
+    // three attributes it carries a **block**, so the rule takes one.
+    modify_attr: ($) => seq("#modify", field("predicate", $.block)),
 
     param_list: ($) =>
       seq(

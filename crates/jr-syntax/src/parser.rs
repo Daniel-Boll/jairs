@@ -371,7 +371,7 @@ impl<'src> Parser<'src> {
                 // construct is.
                 DIRECTIVE => matches!(
                     &self.text[self.tokens[i].range],
-                    "#foreign" | "#c_call" | "#no_abc" | "#expand"
+                    "#foreign" | "#c_call" | "#no_abc" | "#expand" | "#modify"
                 ),
                 _ => false,
             },
@@ -1000,6 +1000,20 @@ impl<'src> Parser<'src> {
                 // scope rather than calling it (ADR-0090 §1). Accepted in the same loop, so it may be
                 // written in any order with the other two — the ordering rule ADR-0058 refused to add.
                 "#expand" => EXPAND_ATTR,
+                // `#modify { … }` carries a **block** — the compile-time predicate (ADR-0093 §1) — so it
+                // is parsed here rather than being a bare token like the other three.
+                "#modify" => {
+                    self.start_node(MODIFY_ATTR);
+                    self.bump(); // `#modify`
+                    if self.at(L_BRACE) {
+                        self.parse_block();
+                    } else {
+                        let span = self.current_span();
+                        self.error(span, "expected a block `{ … }` after `#modify`", E0131);
+                    }
+                    self.finish_node();
+                    continue;
+                }
                 _ => break,
             };
             self.start_node(kind);

@@ -507,6 +507,16 @@ impl Formatter {
                 // cannot see them. Caught by gate 5 on this wave's own corpus file, which is what that
                 // gate is for.
                 EXPAND_ATTR => self.emit(" #expand"),
+                // `#modify { … }` carries a **block**, so it is emitted with its body rather than as a bare
+                // word (ADR-0093 §1). Dropping it would delete a compile-time predicate — the program would
+                // then accept instantiations the author rejected, which is the *unsound* direction, like
+                // `#c_call` and `#expand` before it.
+                MODIFY_ATTR => {
+                    self.emit(" #modify ");
+                    if let Some(block) = attr.children().find(|n| n.kind() == BLOCK) {
+                        self.format_block(&block);
+                    }
+                }
                 _ => {}
             }
         }

@@ -40,7 +40,7 @@ use rustc_hash::FxHashMap;
 use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
-    E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272,
+    E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272, E0274,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -2544,6 +2544,33 @@ impl Ctx<'_> {
         // concrete return type. Handled before the ordinary call path, whose signature is a template with
         // `ERROR` parameters that a direct type-check would compare `42` against.
         if let Some((proc, sig)) = self.callee_poly(scope, callee) {
+            // **A `#modify` predicate is not evaluated yet, so the call is refused** (ADR-0093 §3).
+            // Refused *before* the instantiation is recorded, because instantiating would mean the
+            // predicate was parsed and then silently ignored — a `#modify` that should reject a call would
+            // accept it, ADR-0058 §3's rule for the third time (after `#no_abc` and `#expand`).
+            if self
+                .hir
+                .procs
+                .get(proc.index())
+                .is_some_and(|p| p.modify.is_some())
+            {
+                for arg in args {
+                    self.check_expr(scope, *arg, None);
+                }
+                self.diags.push(
+                    Diagnostic::error(
+                        span,
+                        "a `#modify` predicate is not yet evaluated, so this call is refused",
+                    )
+                    .with_code(E0274)
+                    .with_note(
+                        "`#modify` runs at compile time when a call binds the template's type variables, \
+                         and `false` refuses the call; evaluating it arrives in the next sub-wave \
+                         (ADR-0093)",
+                    ),
+                );
+                return PoolId::ERROR;
+            }
             return self.check_polymorphic_call(scope, id, callee, proc, &sig, args, span);
         }
 

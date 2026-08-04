@@ -923,6 +923,13 @@ pub struct Proc {
     /// useful for a custom loop. A macro therefore emits no MIR of its own, exactly as a `$T` template
     /// does not (ADR-0090 §3).
     pub expand: bool,
+    /// The `#modify { … }` predicate's **source text**, if this procedure has one (ADR-0093 §1).
+    ///
+    /// A compile-time predicate over an instantiation: `false` refuses the call. Held as *text* for the
+    /// reason a macro's body is (ADR-0091 §1) — it is evaluated per instantiation, against that
+    /// instantiation's bindings, by generating a body from it; lowering it once against the *template*
+    /// would resolve `T` where nothing binds it.
+    pub modify: Option<String>,
     /// The return type, if present.
     pub ret: Option<TypeRefId>,
     /// The body, if this is not a foreign procedure.

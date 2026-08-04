@@ -699,6 +699,16 @@ impl Proc {
     pub fn is_expand(&self) -> bool {
         self.0.children().any(|n| n.kind() == EXPAND_ATTR)
     }
+
+    /// The `#modify { … }` predicate block, if this procedure has one (ADR-0093 §1).
+    ///
+    /// A compile-time predicate over an instantiation: it returns a `bool`, and `false` refuses the call.
+    pub fn modify_block(&self) -> Option<Block> {
+        self.0
+            .children()
+            .find(|n| n.kind() == MODIFY_ATTR)
+            .and_then(|attr| attr.children().find_map(Block::cast))
+    }
 }
 
 impl ScopeDecl {
