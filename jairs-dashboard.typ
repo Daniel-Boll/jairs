@@ -94,20 +94,20 @@
 #v(0.4em)
 #pill[6/6 gates green]
 #h(4pt)
-#pill[974 tests]
+#pill[976 tests]
 #h(4pt)
-#pill[ADR-0086 latest]
+#pill[ADR-0087 latest]
 #h(4pt)
-#pill(fill: rgb("#fdf2e6"), stroke: warn)[W5 open · 5 sub-waves done]
+#pill(fill: rgb("#fdf2e6"), stroke: warn)[W5 open · 5 sub-waves + a 6th's surface]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "974", "workspace, all passing"),
-  metric("Corpus", "178", "jr files, both engines"),
-  metric("ADRs", "86", "0001 to 0086, immutable"),
-  metric("Diagnostics", "102", "codes, E0271 next free"),
+  metric("Tests", "976", "workspace, all passing"),
+  metric("Corpus", "180", "jr files, both engines"),
+  metric("ADRs", "87", "0001 to 0087, immutable"),
+  metric("Diagnostics", "103", "codes, E0272 next free"),
   metric("Editor checks", "166", "Neovim, verified not gated"),
 )
 
@@ -192,7 +192,7 @@
   ("switch with exhaustiveness checking over an enum; else", "patterns, ranges, guards; a jump table"),
   ("Multiple returns, named args, literal defaults", "#must; a multi-result call in a return"),
   ("import, foreign, system_library, #scope_module", "macros (W5)"),
-  ("$T procedures and Box($T) structs, inferred and instantiated in both engines", "$$T comptime-value params; #expand macros; inference through Box($T)"),
+  ("$T procedures and Box($T) structs, inferred and instantiated in both engines; $N comptime-value parameters parse and their bodies check", "calling a $N procedure (E0271, pending instantiation); #expand macros; inference through Box($T)"),
   ("Compile-time run at file scope or in a body, across files; type_info(), Any, #insert, #code", "a cross-file #run value; a Code value (declined)"),
   ("A type as a compile-time value: T :: Point aliases one, usable anywhere Point is", "a chain B :: A; comparing types; Type as an annotation"),
   ("A type in a runtime position is refused — it has no representation to store", ""),
@@ -305,7 +305,7 @@
   ),
   (
     "W5 Polymorphism", "in progress",
-    "Five sub-waves done. $T procedures work end to end (ADR-0081-0084): a $T parameter is inferred from the call — directly or through a pointer or view — instantiated once per distinct tuple of bound types, checked per instantiation, and run as an ordinary procedure in both engines, so nothing polymorphic survives to the back end. And polymorphic structs (ADR-0085, built per ADR-0086): Box :: struct($T) { value: T; } used as Box(s64) is a type constructor, and Box(s64) and Box(bool) are distinct types from one declaration with substituted fields and layouts, told apart in the pool by the type argument in the key the way [2]s64 and [3]s64 are. It changed the pool's most load-bearing invariant — a struct's identity was its declaration site — and was landed in two commits, a zero-behaviour-change representation refactor proven by an unchanged snapshot and test count, then the parameterised behaviour, so a half-built type-identity change could not hide a miscompile. Left in W5: $$T comptime-value parameters (recommended next, reusing the instantiation harness and const-eval), the macro family (modify, bake_arguments, expand), and the deferred struct pieces (inference through Box($T), using on one, cross-file, recursive List($T)), each a refusal today rather than a gap.",
+    "Five sub-waves plus a sixth's surface. $N comptime-value parameters have their surface (ADR-0087): make :: ($N: s64) marks a parameter polymorphic over a compile-time-known value, the value-side mirror of $T. It parses, formats, and — unlike a $T template whose parameter type is unknown — its body type-checks, because a $N parameter's type is fully known (s64) and only its value varies. A call is refused by design (E0271) pending the second half, which evaluates the argument to a constant and instantiates per value, the same staging $T had. $T procedures work end to end (ADR-0081-0084): a $T parameter is inferred from the call — directly or through a pointer or view — instantiated once per distinct tuple of bound types, checked per instantiation, and run as an ordinary procedure in both engines, so nothing polymorphic survives to the back end. And polymorphic structs (ADR-0085, built per ADR-0086): Box :: struct($T) { value: T; } used as Box(s64) is a type constructor, and Box(s64) and Box(bool) are distinct types from one declaration with substituted fields and layouts, told apart in the pool by the type argument in the key the way [2]s64 and [3]s64 are. It changed the pool's most load-bearing invariant — a struct's identity was its declaration site — and was landed in two commits, a zero-behaviour-change representation refactor proven by an unchanged snapshot and test count, then the parameterised behaviour, so a half-built type-identity change could not hide a miscompile. Left in W5: the $N instantiation half (recommended next — evaluate the argument to a constant, key an instantiation on the value tuple, lift E0271, unlock [N]T), the macro family (modify, bake_arguments, expand), and the deferred struct pieces (inference through Box($T), using on one, cross-file, recursive List($T)), each a refusal today rather than a gap.",
   ),
   (
     "W6 Metaprogram", "not started",
@@ -355,30 +355,31 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[Thirty-eight waves shipped]
+    #sub[Thirty-nine waves shipped]
     #text(size: 7.4pt)[
-      ADR-0049 through 0086: for and defer, using, aggregate returns, multiple returns, named and
+      ADR-0049 through 0087: for and defer, using, aggregate returns, multiple returns, named and
       default arguments, scope visibility, imported constants, float constants, context, the
       bounds-check build setting, indirect calls, null plus a memory source, the allocator
       protocol, push_context, pointer arithmetic, temporary storage, trap backtraces, switch,
       tagged variants, compile-time run across files and in a body, an array length from a
       constant, a type as a compile-time value, insert of a literal and a computed string, an
-      aggregate compile-time value, type_info and Any, code splicing, \$T procedures, and polymorphic structs.
+      aggregate compile-time value, type_info and Any, code splicing, \$T procedures, polymorphic structs, and \$N comptime-value parameters.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 974. Corpus 116 to 178 files. Neovim checks 103 to 166. *W2, W3, W4.5 and W4 are all
-      closed*, and *W5 is open* with five sub-waves shipped: `$T` procedures work end to end — inferred,
-      instantiated once per distinct tuple of bound types, checked per instantiation, run as ordinary
-      procedures in both engines — and now *polymorphic structs*, `Box :: struct($T) { value: T; }` used as
-      `Box(s64)`. That changed the pool's most load-bearing invariant, a struct's identity being its
-      declaration site, so it was landed in *two commits*: a zero-behaviour-change representation refactor,
-      proven by an unchanged snapshot and test count, then the parameterised behaviour on top — a discipline
-      that keeps a half-built type-identity change from hiding a miscompile. `Box(s64)` and `Box(bool)` are
-      distinct types with substituted fields and layouts, both engines computing the layout independently.
-      Deferred with by-design refusals: inference through `Box($T)`, `using` on one, and a cross-file one.
-      Remaining in W5: `$$T` comptime-value parameters, then the macro family.
+      Test count 900 to 976. Corpus 116 to 180 files. Neovim checks 103 to 166. *W2, W3, W4.5 and W4 are all
+      closed*, and *W5 is open* with five sub-waves shipped plus a sixth's surface: `$T` procedures work end
+      to end — inferred, instantiated once per distinct tuple of bound types, checked per instantiation, run
+      as ordinary procedures in both engines — *polymorphic structs*, `Box :: struct($T) { value: T; }` used
+      as `Box(s64)`, and the *surface* of `$N` comptime-value parameters. The struct wave changed the pool's
+      most load-bearing invariant, a struct's identity being its declaration site, so it was landed in *two
+      commits*: a zero-behaviour-change representation refactor, proven by an unchanged snapshot and test
+      count, then the parameterised behaviour on top — a discipline that keeps a half-built type-identity
+      change from hiding a miscompile. `$N: s64` follows `$T`'s own staging: the surface parses and its body
+      type-checks (a `$N` parameter's type is known, unlike a `$T` template's), with a call refused by
+      design (E0271) until the second half evaluates the argument to a constant.
+      Remaining in W5: the `$N` instantiation half, then the macro family.
     ]
 
     #v(0.3em)
