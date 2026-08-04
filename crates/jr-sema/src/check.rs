@@ -181,7 +181,7 @@ pub struct CheckOutput {
     ///
     /// The expansion pass in `jr-db` reads this to append a substituted procedure per distinct key and
     /// rewrite the call to target it. Empty for a file with no polymorphic calls.
-    pub instantiations: FxHashMap<(ExprScope, ExprId), (jr_hir::ProcId, PoolId)>,
+    pub instantiations: FxHashMap<(ExprScope, ExprId), (jr_hir::ProcId, Vec<PoolId>)>,
 }
 
 /// Which `Any` intrinsic a call is (ADR-0076).
@@ -3180,24 +3180,6 @@ impl Ctx<'_> {
         // non-procedure callee: a recorded, harmless type so MIR does not see an untyped hole.
         self.types.set_expr(scope, callee, PoolId::VOID);
 
-        // This sub-wave instantiates **one** type variable (ADR-0081 §4). More is refused, not
-        // half-supported.
-        if sig.poly_vars.len() != 1 {
-            for arg in args {
-                self.check_expr(scope, *arg, None);
-            }
-            self.diags.push(
-                Diagnostic::error(
-                    span,
-                    "a procedure with more than one `$T` is not instantiable yet",
-                )
-                .with_code(E0268)
-                .with_note("this sub-wave instantiates a single type variable (ADR-0081 §4)"),
-            );
-            return PoolId::ERROR;
-        }
-        let var = sig.poly_vars[0];
-
         // Arity: the template's parameter count is fixed even though the types are not.
         if args.len() != sig.params.len() {
             for arg in args {
@@ -3219,58 +3201,80 @@ impl Ctx<'_> {
             return PoolId::ERROR;
         }
 
-        // Infer `T` from the first parameter whose declared type *is* `$T` (a bare poly variable). This
-        // sub-wave binds from a directly-`$T`-typed parameter; a nested `*$T`/`[]$T` position is not an
-        // inference site here (ADR-0081 §4 keeps the slice to one variable, one direct binding).
+        // Infer **each** variable from the first parameter whose declared type *is* `$Var` directly (a bare
+        // poly variable), typing every argument on the way (ADR-0083 §3). A nested `*$T`/`[]$T` position is
+        // not an inference site — that needs a unifier this wave still does not build (ADR-0083 §4).
         let hir_params = self.hir.proc(proc).params.clone();
-        let mut bound: Option<PoolId> = None;
+        let mut bindings: Vec<(Symbol, PoolId)> = Vec::new();
         for (index, param) in hir_params.iter().enumerate() {
             let Some(arg) = args.get(index) else { continue };
             let arg_ty = self.check_expr(scope, *arg, None);
-            let is_direct_poly = param.ty.is_some_and(|t| {
-                matches!(self.type_ref(ExprScope::TopLevel, t), jr_hir::TypeRef::Poly(v) if v == var)
-            });
-            if is_direct_poly && bound.is_none() && arg_ty != PoolId::ERROR {
-                bound = Some(arg_ty);
+            if let Some(var) = param
+                .ty
+                .and_then(|t| match self.type_ref(ExprScope::TopLevel, t) {
+                    jr_hir::TypeRef::Poly(v) => Some(v),
+                    _ => None,
+                })
+            {
+                // First direct binding for this variable wins; a later `$A` is a *use*, checked below.
+                if !bindings.iter().any(|(v, _)| *v == var) && arg_ty != PoolId::ERROR {
+                    bindings.push((var, arg_ty));
+                }
             }
         }
 
-        let Some(bound_ty) = bound else {
-            // Either no argument typed, or none pins `T` directly. The former already reported an error;
-            // the latter is a case this sub-wave does not infer, refused by design.
+        // Every variable the signature introduces must have been pinned by a direct argument. One that was
+        // not — because it appears only nested, or an argument did not type — is refused by design
+        // (ADR-0083 §3); the missing-type case already reported the argument's own error.
+        if sig
+            .poly_vars
+            .iter()
+            .any(|v| !bindings.iter().any(|(b, _)| b == v))
+        {
             self.diags.push(
-                Diagnostic::error(span, "cannot infer `$T` from the arguments of this call")
+                Diagnostic::error(span, "cannot infer every `$T` from the arguments of this call")
                     .with_code(E0268)
                     .with_note(
-                        "this sub-wave infers a type variable from a directly `$T`-typed argument",
+                        "each type variable is inferred from a directly `$T`-typed argument (ADR-0083 §3)",
                     ),
             );
             return PoolId::ERROR;
-        };
+        }
 
-        // Bind the variable and re-resolve the signature against it, so a second `T`-typed parameter is
-        // checked against the inferred type and the return type is concrete.
-        self.type_bindings.insert(var, bound_ty);
+        // Bind every variable and re-resolve the signature against them, so a bare `A`/`B` parameter is
+        // checked against its inferred type and the return type is concrete.
+        for (var, ty) in &bindings {
+            self.type_bindings.insert(*var, *ty);
+        }
         for (index, param) in hir_params.iter().enumerate() {
             if let (Some(arg), Some(t)) = (args.get(index), param.ty) {
                 let want = self.resolve_type(ExprScope::TopLevel, t, span);
                 if want != PoolId::ERROR {
-                    // Re-check the argument against the now-concrete parameter type, so `first(1, x)` with
-                    // a mistyped `x` is a mismatch against the inferred `T` rather than silently accepted.
                     self.check_expr(scope, *arg, Some(want));
                 }
             }
         }
-        // The return type re-resolved under the binding. Read from the HIR proc's `ret` `TypeRefId`
-        // rather than a `ProcSig` field, because the signature's `ret` is the *template*'s (`ERROR` for a
-        // bare `$T` return) and what the call needs is the concrete one.
         let ret = self.hir.proc(proc).ret.map_or(PoolId::VOID, |t| {
             self.resolve_type(ExprScope::TopLevel, t, span)
         });
-        self.type_bindings.remove(&var);
+        for (var, _) in &bindings {
+            self.type_bindings.remove(var);
+        }
 
-        // Record the instantiation for the expansion pass (ADR-0082 §2), keyed by the call.
-        self.instantiations.insert((scope, id), (proc, bound_ty));
+        // Record the instantiation for the expansion pass, keyed by the call. The bound types are ordered
+        // by the variables' first appearance in the signature (`poly_vars`), so the structural key is
+        // deterministic (ADR-0083 §1).
+        let key: Vec<PoolId> = sig
+            .poly_vars
+            .iter()
+            .map(|v| {
+                bindings
+                    .iter()
+                    .find(|(b, _)| b == v)
+                    .map_or(PoolId::ERROR, |(_, t)| *t)
+            })
+            .collect();
+        self.instantiations.insert((scope, id), (proc, key));
         ret
     }
 

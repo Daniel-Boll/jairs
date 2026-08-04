@@ -1,0 +1,97 @@
+// **Several type variables** in one polymorphic procedure (ADR-0083): `pair :: (a: $A, b: $B)`. W5's
+// third sub-wave, which lifts sub-wave 2's one-variable restriction (the E0268 that said "more than one
+// `$T` is not instantiable yet").
+//
+// This is the generalisation of the machinery sub-wave 2 built, not a new one: inference, the structural
+// key, the binding map and the clone were all plural by nature and had been collapsed to the
+// single-variable case. Each variable is inferred from the first argument whose parameter is *directly*
+// `$Var`; the structural key is the **tuple** of all bound types (ADR-0005, ADR-0083 §1), so
+// `pick(s64, bool)` and `pick(s64, s64)` are distinct instantiations.
+//
+// What is checked here:
+//
+//   * two variables of **different** types (`pick_first` with `Point` and `s64`), where a one-variable
+//     model could not express the pair;
+//   * two variables both used, returning one (`pick_second`), so both bindings are load-bearing;
+//   * one variable used across several parameters *and* a second variable — one `$A` shared, one `$B`
+//     distinct (`combine`), which is ADR-0083's "several variables, one used repeatedly";
+//   * the single-variable form still works (`id`), since the generalisation is a superset.
+//
+// Six assertions summing to 63; both engines must agree, and the native one materialises a distinct
+// function per distinct *tuple* of bound types.
+#import "Basic";
+
+/// Two variables, returns the first.
+pick_first :: (a: $A, b: $B) -> A {
+    return a;
+}
+
+/// Two variables, returns the second — so `B`'s binding is what the result reads.
+pick_second :: (a: $A, b: $B) -> B {
+    return b;
+}
+
+/// `$A` used twice and a distinct `$B`: one variable repeated, one independent (ADR-0083 §3).
+combine :: (a: $A, b: A, tag: $B) -> A {
+    return a + b;
+}
+
+/// The single-variable form, unchanged — the generalisation is a superset.
+id :: (x: $T) -> T {
+    return x;
+}
+
+/// A struct so a variable can bind to something other than an integer.
+Point :: struct {
+    x: s64;
+}
+
+main :: () {
+    n := 0;
+
+    // A = Point, B = s64 — genuinely different types, which one variable could not express.
+    p: Point;
+    p.x = 1;
+    r := pick_first(p, 99);
+    if r.x == 1 {
+        n = n + 1;
+    }
+
+    // A = s64, B = Point — returns the second, so B's binding drives the result type.
+    q: Point;
+    q.x = 2;
+    s := pick_second(40, q);
+    if s.x == 2 {
+        n = n + 2;
+    }
+
+    // `$A` = s64 twice, `$B` = bool once: `combine` sums the two `A`s and ignores the tag.
+    if combine(40, 2, true) == 42 {
+        n = n + 4;
+    }
+
+    // A distinct tuple — `$A` = s64, `$B` = s64 — is a *different* instantiation from the one above, even
+    // though `combine` was already instantiated with a `bool` tag.
+    if combine(10, 6, 0) == 16 {
+        n = n + 8;
+    }
+
+    // The single-variable form, still working.
+    if id(16) == 16 {
+        n = n + 16;
+    }
+
+    // `pick_first` again at the same types as the first call — one instantiation serves both (ADR-0005).
+    t: Point;
+    t.x = 32;
+    u := pick_first(t, 7);
+    if u.x == 32 {
+        n = n + 32;
+    }
+
+    // Every assertion: 63.
+    if n == 63 {
+        exit(0);
+    }
+    exit(1);
+}

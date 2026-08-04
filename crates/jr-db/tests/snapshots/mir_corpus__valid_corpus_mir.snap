@@ -6197,3 +6197,130 @@ proc $inst3 -> Point {
     store s1 <- v2
     return v1
 }
+
+========================================
+068-multiple-type-variables.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: Point  // local 1
+    s1: Point  // local 2
+    s2: Point  // local 3
+    s3: Point  // local 4
+    s4: Point  // local 5
+    s5: Point  // local 6
+  bb0(v0: *Context):
+    zero s0
+    store s0.0 <- 1_s64
+    v1: Point = load s0
+    v2: Point = call proc5(v0, v1, 99_s64)
+    store s1 <- v2
+    v3: s64 = load s1.0
+    v4: bool = v3 == 1_s64
+    branch v4 ? bb1() : bb2()
+  bb1():
+    v5: s64 = 0_s64 + 1_s64
+    goto bb3(v5)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v10: s64):
+    zero s2
+    store s2.0 <- 2_s64
+    v6: Point = load s2
+    v7: Point = call proc6(v0, 40_s64, v6)
+    store s3 <- v7
+    v8: s64 = load s3.0
+    v9: bool = v8 == 2_s64
+    branch v9 ? bb4() : bb5()
+  bb4():
+    v11: s64 = v10 + 2_s64
+    goto bb6(v11)
+  bb5():
+    goto bb6(v10)
+  bb6(v14: s64):
+    v12: s64 = call proc7(v0, 40_s64, 2_s64, true)
+    v13: bool = v12 == 42_s64
+    branch v13 ? bb7() : bb8()
+  bb7():
+    v15: s64 = v14 + 4_s64
+    goto bb9(v15)
+  bb8():
+    goto bb9(v14)
+  bb9(v18: s64):
+    v16: s64 = call proc8(v0, 10_s64, 6_s64, 0_s64)
+    v17: bool = v16 == 16_s64
+    branch v17 ? bb10() : bb11()
+  bb10():
+    v19: s64 = v18 + 8_s64
+    goto bb12(v19)
+  bb11():
+    goto bb12(v18)
+  bb12(v22: s64):
+    v20: s64 = call proc9(v0, 16_s64)
+    v21: bool = v20 == 16_s64
+    branch v21 ? bb13() : bb14()
+  bb13():
+    v23: s64 = v22 + 16_s64
+    goto bb15(v23)
+  bb14():
+    goto bb15(v22)
+  bb15(v28: s64):
+    zero s4
+    store s4.0 <- 32_s64
+    v24: Point = load s4
+    v25: Point = call proc5(v0, v24, 7_s64)
+    store s5 <- v25
+    v26: s64 = load s5.0
+    v27: bool = v26 == 32_s64
+    branch v27 ? bb16() : bb17()
+  bb16():
+    v29: s64 = v28 + 32_s64
+    goto bb18(v29)
+  bb17():
+    goto bb18(v28)
+  bb18(v30: s64):
+    v31: bool = v30 == 63_s64
+    branch v31 ? bb19() : bb20()
+  bb19():
+    discard call extern proc1(0_s64)
+    goto bb21()
+  bb20():
+    goto bb21()
+  bb21():
+    discard call extern proc1(1_s64)
+    return
+}
+proc $inst0 -> Point {
+  params: v0: *Context, v1: Point, v2: s64
+  slots:
+    s0: Point  // temporary
+  bb0(v0: *Context, v1: Point, v2: s64):
+    store s0 <- v1
+    return v1
+}
+proc $inst1 -> Point {
+  params: v0: *Context, v1: s64, v2: Point
+  slots:
+    s0: Point  // temporary
+  bb0(v0: *Context, v1: s64, v2: Point):
+    store s0 <- v2
+    return v2
+}
+proc $inst2 -> s64 {
+  params: v0: *Context, v1: s64, v2: s64, v3: bool
+  bb0(v0: *Context, v1: s64, v2: s64, v3: bool):
+    v4: s64 = v1 + v2
+    return v4
+}
+proc $inst3 -> s64 {
+  params: v0: *Context, v1: s64, v2: s64, v3: s64
+  bb0(v0: *Context, v1: s64, v2: s64, v3: s64):
+    v4: s64 = v1 + v2
+    return v4
+}
+proc $inst4 -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    return v1
+}

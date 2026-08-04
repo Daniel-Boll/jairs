@@ -1234,3 +1234,46 @@ instantiates. Still deferred: `$$T`, multiple distinct type variables, macros, p
 - Consequence: the expanded HIR is the original tree **plus** the instantiated procedures appended; no call
   node changes. The instantiations carry their bindings via a `FileHir` side map the signature/check
   phases consult, so a clone need not be substituted in the HIR.
+
+---
+
+## Wave: W5 Polymorphism, sub-wave 3 — multiple type variables (ADR-0083), 2026-08-04
+
+Recommended option taken automatically per the standing autonomy directive; logged for later review.
+
+### Fork 1 — the next W5 increment
+
+- Options: **multiple distinct type variables, `pair :: (a: $A, b: $B)` (taken, recommended)**; `$$T`
+  comptime-only params; polymorphic structs; macros.
+- Why multiple type variables first: it is the direct **generalisation of the machinery sub-wave 2 built**
+  — inference, the structural key, the binding map, the clone — from one variable to N, so it reuses every
+  piece and mostly deletes the "exactly one `$T`" guards. It closes ADR-0081 §4's first named gap. `$$T`
+  interacts with const-eval (its own can of worms), polymorphic structs need the type-value machinery to
+  carry a parameterised type, and macros are a whole family — each strictly larger than lifting the
+  one-variable restriction.
+
+### Fork 2 — the structural key with N variables
+
+- Options: **the tuple of all bound types, in the variables' first-seen order (taken, recommended, and
+  what ADR-0005 already says)**.
+- Why: ADR-0005 fixed the key as "the tuple of resolved comptime-argument IDs" — already plural. Sub-wave 2
+  used a one-element tuple as a `PoolId`; this uses the full `Vec<PoolId>`, ordered by the variables'
+  first appearance in the signature so the key is deterministic. `pick_first(s64, bool)` and
+  `pick_first(s64, s64)` are distinct keys → distinct instantiations, which is correct: the bodies differ.
+
+### Fork 3 — inference sites for N variables
+
+- Options: **each variable inferred from the first parameter that is *directly* `$Var` (taken,
+  recommended)**; unify across all positions.
+- Why the direct-position rule, extended from sub-wave 2: it is what one variable already did, generalised
+  — variable `A` binds from the argument at the first parameter typed exactly `$A`, `B` from the first
+  `$B`, and a later bare `A`/`B` is checked against the binding. Full unification (inferring `$T` from
+  inside `*$T` or `[]$T`) is a distinct capability ADR-0081 §4 left out and this keeps out, so the slice
+  stays "N independent direct variables" rather than "an inference engine".
+
+### Resolution (ADR-0083 records it)
+
+Taken as recommended. Sub-wave 3 lifts the one-variable restriction: `check_polymorphic_call` infers every
+variable, forms the `Vec<PoolId>` key, and the instantiation carries N bindings; `expand_instantiations`
+and `proc_bindings` generalise to N. Still deferred: `$$T`, polymorphic structs, macros, nested-position
+inference.

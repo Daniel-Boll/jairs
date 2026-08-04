@@ -25,13 +25,14 @@ use jr_pool::PoolId;
 
 use crate::hir::{ConstValue, FileHir, Item, ItemKind, Param, Proc, ProcId, TypeRef, TypeRefId};
 
-/// One instantiation to append: the template procedure and the type its single `$T` binds to.
-#[derive(Debug, Clone, Copy)]
+/// One instantiation to append: the template procedure and a concrete type for each of its variables
+/// (ADR-0083 §2 — one binding for a single-`$T` template, several for `pair :: (a: $A, b: $B)`).
+#[derive(Debug, Clone)]
 pub struct Instantiation {
     /// The polymorphic template being instantiated.
     pub template: ProcId,
-    /// The type its `$T` variable is bound to.
-    pub bound: PoolId,
+    /// Each type variable and the concrete type it is bound to, in the template's first-seen order.
+    pub bindings: Vec<(Symbol, PoolId)>,
 }
 
 /// Appends one procedure per instantiation to `hir`, returning each instantiation's new `ProcId`
@@ -59,7 +60,7 @@ pub fn expand_instantiations(
 ) -> Vec<ProcId> {
     let mut new_ids = Vec::with_capacity(instantiations.len());
     for (n, inst) in instantiations.iter().enumerate() {
-        new_ids.push(append_one(hir, interner, n, *inst));
+        new_ids.push(append_one(hir, interner, n, inst));
     }
     new_ids
 }
@@ -69,7 +70,7 @@ fn append_one(
     hir: &mut FileHir,
     interner: &jr_base::Interner,
     n: usize,
-    inst: Instantiation,
+    inst: &Instantiation,
 ) -> ProcId {
     let template = hir.proc(inst.template).clone();
 
@@ -124,10 +125,10 @@ fn append_one(
         },
     });
 
-    // Record the binding for the signature phase to resolve `$T`/`T` against.
-    let var = sole_poly_var(hir, inst.template);
-    if let Some(var) = var {
-        hir.proc_bindings.push((proc_id, var, inst.bound));
+    // Record a binding per variable for the signature phase to resolve each `$T`/`T` against
+    // (ADR-0083 §2).
+    for (var, ty) in &inst.bindings {
+        hir.proc_bindings.push((proc_id, *var, *ty));
     }
 
     proc_id
@@ -161,17 +162,4 @@ fn copy_type_ref(hir: &mut FileHir, id: TypeRefId) -> TypeRefId {
     let new_id = TypeRefId::from_usize(hir.type_refs.len());
     hir.type_refs.push(cloned);
     new_id
-}
-
-/// The single `$T` variable a template introduces, if it has exactly one (this sub-wave's slice).
-fn sole_poly_var(hir: &FileHir, proc: ProcId) -> Option<Symbol> {
-    let mut found: Option<Symbol> = None;
-    for param in &hir.proc(proc).params {
-        if let Some(ty) = param.ty
-            && let TypeRef::Poly(v) = hir.type_refs[ty.index()]
-        {
-            found = Some(v);
-        }
-    }
-    found
 }

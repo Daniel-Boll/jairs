@@ -103,3 +103,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0080](0080-code.md) | `#code { … }` is unquoted source that splices, and it is sugar over `#insert` — no `Code` value, declined until something can inspect a tree | Accepted |
 | [0081](0081-polymorphic-parameter.md) | A single `$T` parameter, inferred from the call and instantiated structurally — sub-wave 1 delivers the surface, refusing a call (E0268) pending instantiation | Accepted |
 | [0082](0082-instantiation.md) | A polymorphic call instantiates by expanding the HIR with a substituted procedure per structural key, checked and lowered per instantiation (lifts E0268) | Accepted |
+| [0083](0083-multiple-type-variables.md) | A polymorphic procedure may introduce several type variables; the structural key is the tuple of all bindings (generalises ADR-0082) | Accepted |

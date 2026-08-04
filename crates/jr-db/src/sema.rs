@@ -70,6 +70,11 @@ pub struct SignatureResult {
     pub diagnostics: Arc<Diagnostics>,
 }
 
+/// Each polymorphic call and the instantiation it needs: the template procedure and the tuple of types
+/// its variables bind to, in `poly_vars` order (ADR-0082 §1, ADR-0083 §1).
+pub type Instantiations =
+    rustc_hash::FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), (jr_hir::ProcId, Vec<jr_pool::PoolId>)>;
+
 /// The result of type-checking a file.
 #[derive(Debug, Clone)]
 pub struct CheckResult {
@@ -114,12 +119,7 @@ pub struct CheckResult {
     ///
     /// Read by `file_mir`'s expansion pass to append a substituted procedure per distinct key and rewrite
     /// the call to target it. Empty for a file with no polymorphic calls.
-    pub instantiations: Arc<
-        rustc_hash::FxHashMap<
-            (jr_hir::ExprScope, jr_hir::ExprId),
-            (jr_hir::ProcId, jr_pool::PoolId),
-        >,
-    >,
+    pub instantiations: Arc<Instantiations>,
 }
 
 // ---------------------------------------------------------------------------
@@ -383,30 +383,46 @@ pub(crate) fn instantiated(
     // Every call in a **deterministic** order, because `FxHashMap` iteration is not stable and the
     // appended `ProcId`s must be reproducible across runs (a snapshot depends on it). Sorted by call
     // site.
-    let mut calls: Vec<(
+    type Call = (
         (jr_hir::ExprScope, jr_hir::ExprId),
-        (jr_hir::ProcId, jr_pool::PoolId),
-    )> = base_check
+        (jr_hir::ProcId, Vec<jr_pool::PoolId>),
+    );
+    let mut calls: Vec<Call> = base_check
         .instantiations
         .iter()
-        .map(|(&call, &target)| (call, target))
+        .map(|(&call, target)| (call, target.clone()))
         .collect();
     calls.sort_by_key(|(call, _)| (scope_ord(call.0), call.1.index()));
 
     // De-duplicate by the structural key (ADR-0005): the `(template, bound type)` tuple. The first
     // distinct key seen in sorted order is appended first, so `keys[i]` ↔ the i-th appended procedure.
-    let mut keys: Vec<(jr_hir::ProcId, jr_pool::PoolId)> = Vec::new();
+    let mut keys: Vec<(jr_hir::ProcId, Vec<jr_pool::PoolId>)> = Vec::new();
     for (_, key) in &calls {
         if !keys.contains(key) {
-            keys.push(*key);
+            keys.push(key.clone());
         }
     }
 
-    // Append one procedure per distinct key.
+    // Append one procedure per distinct key. Each key's bound types are paired with the template's type
+    // variables — both in `poly_vars` order (ADR-0083 §1, §2), so the i-th bound type is the i-th
+    // variable's. The variable names come from the base file's signatures, which is where the template's
+    // `poly_vars` lives.
+    let base_sigs_for_vars = file_signatures(db, file, search_paths);
     let mut hir = (*file_hir(db, file)).clone();
     let instantiations: Vec<jr_hir::Instantiation> = keys
         .iter()
-        .map(|&(template, bound)| jr_hir::Instantiation { template, bound })
+        .map(|(template, bound_types)| {
+            let vars = base_sigs_for_vars
+                .signatures
+                .proc_sig(*template)
+                .map(|sig| sig.poly_vars.clone())
+                .unwrap_or_default();
+            let bindings = vars.into_iter().zip(bound_types.iter().copied()).collect();
+            jr_hir::Instantiation {
+                template: *template,
+                bindings,
+            }
+        })
         .collect();
     let new_ids = jr_hir::expand_instantiations(&mut hir, interner, &instantiations);
     let hir = Arc::new(hir);
