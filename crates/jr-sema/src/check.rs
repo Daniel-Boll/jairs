@@ -101,6 +101,8 @@ const TYPE_INFO_FIELDS: &[(&str, TypeInfoField)] = &[
     ("name", TypeInfoField::Exact(PoolId::STRING)),
     ("size", TypeInfoField::Exact(PoolId::S64)),
     ("alignment", TypeInfoField::Exact(PoolId::S64)),
+    ("count", TypeInfoField::Exact(PoolId::S64)),
+    ("element", TypeInfoField::Exact(PoolId::S64)),
 ];
 
 // ---------------------------------------------------------------------------

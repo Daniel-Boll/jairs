@@ -37,9 +37,9 @@
 // which is what makes `type_info(s64).size` and `x: s64` agree by construction rather than by a second
 // table.
 //
-// Eight assertions, summing to 255 so that any one failing changes the exit value. What is deliberately
-// *not* here: per-kind detail (a struct's field list, an array's element type), which ADR-0075 §3 leaves
-// out because each is a variable-length member and wants a memory-ownership decision of its own.
+// Ten assertions, summing to 1023 so that any one failing changes the exit value — including the
+// fixed-size per-kind facts `count` and `element` (ADR-0078). What is deliberately *still* not here: the
+// variable-length field *list*, which wants a memory-ownership decision of its own (ADR-0078 §4).
 #import "Basic";
 
 /// Two `s64` fields: size 16, alignment 8. A one-field struct would not distinguish size from alignment.
@@ -113,8 +113,17 @@ main :: () {
         n = n + 128;
     }
 
-    // Every assertion: 255.
-    if n == 255 {
+    // **Per-kind detail** (ADR-0078): a struct's field count, and a scalar's absence of one. `Point` has
+    // two fields, `s64` has none — 0 is a real answer, not a sentinel.
+    if p.count == 2 {
+        n = n + 256;
+    }
+    if i.count == 0 {
+        n = n + 512;
+    }
+
+    // Every assertion: 1023.
+    if n == 1023 {
         exit(0);
     }
     exit(1);

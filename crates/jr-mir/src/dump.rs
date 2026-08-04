@@ -546,13 +546,19 @@ impl Dumper<'_> {
             return None;
         };
         let fields = self.pool.struct_fields(*decl)?;
-        let [id, kind, name, size, align] = fields else {
+        let [id, kind, name, size, align, count, element] = fields else {
             return None;
         };
         let scalar = |f: &jr_pool::Field| f.ty == PoolId::S64;
         let is_enum = matches!(self.pool.item(kind.ty), Item::EnumType { .. });
-        (scalar(id) && is_enum && name.ty == PoolId::STRING && scalar(size) && scalar(align))
-            .then_some(0)
+        (scalar(id)
+            && is_enum
+            && name.ty == PoolId::STRING
+            && scalar(size)
+            && scalar(align)
+            && scalar(count)
+            && scalar(element))
+        .then_some(0)
     }
 
     fn constant(&self, id: PoolId) -> String {

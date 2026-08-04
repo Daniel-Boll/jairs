@@ -18,7 +18,11 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after **`Any`** (ADR-0076, ADR-0077): reflection's second half. `any_of(*x)` erases a value —
+Last updated after **`Type_Info`'s per-kind facts** (ADR-0078): `type_info(T)` now also reports a struct's
+field `count` and an array's/pointer's `element` type. The trick that made it a small wave is that these
+are *fixed-size* — a count is a number, an element type is a pool id (an `s64` since ADR-0077) — so they
+need none of the memory-ownership decision the variable-length field *list* does, and that list stays
+deferred. On top of **`Any`** (ADR-0076, ADR-0077): reflection's second half. `any_of(*x)` erases a value —
 building an `Any` that carries a `*Type_Info` and a pointer to the value — and `any_as(a, T)` reads it back,
 **trapping** unless the type matches. The erasing conversion is allowed only at that boundary: a bare
 `cast(*u8, p)` stays refused, because a general pointer cast would make a wrong pointee type a silent wrong
@@ -173,7 +177,7 @@ The authoritative version of this list is
 | nesting block comments; `///` and `//!` doc comments, shown on hover | doc generation (`jr doc`) — nothing consumes docs but the language server |
 | `#run` at file scope or in a body, calling local or **imported** procedures, with loops and nested calls | `type_info()`, `Any`, `#code` (**W4**, in sub-waves) |
 | a `#run` returning a **struct or array**, interned as its element values and materialised by both engines (ADR-0074), including one holding a **string** (ADR-0075) | a `#run` returning a **union** — untagged storage makes "which field is valid" unanswerable; a struct or array *literal* (`P.{1, 2}`), which is a separate syntax question |
-| **`type_info(T)`** — a type's kind, name, size, alignment and a stable `id`, from the same `layout_of` the back ends use; `Type_Info` is declared in `Basic` so a program can name it, and validated on lookup so a mismatch is a diagnostic (ADR-0075, ADR-0077) | **per-kind detail** — a struct's field list, an array's element type — each a variable-length member wanting a memory-ownership decision; `type_info` of a comptime-only type, which has no size to report |
+| **`type_info(T)`** — a type's kind, name, size, alignment, a stable `id`, and the fixed-size per-kind facts `count` (a struct's field count / array length) and `element` (an array's element / pointer's pointee, as a type id); `Type_Info` is declared in `Basic` and validated on lookup (ADR-0075, ADR-0077, ADR-0078) | the variable-length **field list** — the elements need the program's lifetime, so it is a static-data-vs-comptime-table decision; following an `element` id back to a `Type_Info`; `type_info([4]s64)`, blocked on structural type aliases |
 | **`Any`** — `any_of(*x)` erases a value to a `{*Type_Info, *u8}` pair, `any_as(a, T)` reads it back and traps unless the type's `id` matches; the erasing pointer conversion is allowed only at that boundary (ADR-0076) | every value coercing to `Any` **implicitly** (a literal has no address to point at, so it needs a materialised temporary — a storage decision deferred); an `Any` in a compile-time constant |
 | `#insert "…"` of a **string literal**, lowered where it is written — same scope, so a local it declares is visible after it; nesting works, and every diagnostic points at the directive and names its offset into the inserted text (ADR-0072) | `#insert` at file scope, which would change the item tree; `#code` and the `Code` type |
 | `#insert <expr>;` of a **computed** operand — a constant or a `#run` whose text is evaluated at compile time and spliced (ADR-0073). The operand resolves and type-checks like any expression (`#insert undefined;` → E0201; a non-string → E0214), and a pending insert the evaluator has not reached is refused, never miscompiled. This is where sema and the VM become mutually recursive; the cycle is broken by an acyclic pre-pass | a **cross-file** `#run` value (its own decision, ADR-0073 §4); expansion past 16 levels (E0264) |

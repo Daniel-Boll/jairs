@@ -871,12 +871,32 @@ fn type_info_value(
     // `type_info(T)` calls agree while two distinct types never do, and both engines see the same value
     // because they share one pool.
     let id = u64::from(described.as_u32());
+
+    // The fixed-size per-kind facts (ADR-0078 §1, §3), read from the pool the builder already consults.
+    // `count` is a struct/union/variant field count or an array length; `element` is an array's element
+    // or a pointer's pointee, as a type id. Both 0 for a kind that has neither.
+    let (count, element) = match *pool.item(described) {
+        jr_pool::Item::ArrayType { elem, len } => (len, u64::from(elem.as_u32())),
+        jr_pool::Item::PointerType(pointee) => (0, u64::from(pointee.as_u32())),
+        jr_pool::Item::StructType { decl }
+        | jr_pool::Item::UnionType { decl }
+        | jr_pool::Item::VariantType { decl } => {
+            let n = pool.struct_fields(decl).map_or(0, <[_]>::len);
+            (n as u64, 0)
+        }
+        // Every other kind has neither a count nor an element (a procedure's parameter list is the
+        // variable-length member ADR-0078 §3 deliberately does not summarise here).
+        _ => (0, 0),
+    };
+
     let elements = vec![
         pool.int_value(PoolId::S64, id),
         pool.int_value(kind_ty, kind_value),
         pool.str_value(&name),
         pool.int_value(PoolId::S64, layout.size),
         pool.int_value(PoolId::S64, u64::from(layout.align)),
+        pool.int_value(PoolId::S64, count),
+        pool.int_value(PoolId::S64, element),
     ];
     Ok(pool.aggregate_value(info_ty, elements))
 }
