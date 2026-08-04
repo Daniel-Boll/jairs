@@ -89,6 +89,13 @@ use crate::{
 /// evaluated at compile time — and the message carries the specifics.
 const E0230: &str = "E0230";
 
+/// A `$N` comptime-value argument that is not a compile-time constant (ADR-0088 §2).
+///
+/// Owned by this crate rather than by `jr-sema` for the same reason E0230 is: constancy of a value is a
+/// const-eval judgement, and this is where the evaluator's failure becomes a diagnostic. Defined here
+/// beside E0230, listed in `AGENTS.md`'s registry as `jr-db`'s.
+const E0271: &str = "E0271";
+
 /// How many rounds of lower-then-evaluate to attempt.
 ///
 /// A bound rather than "until stable" so that a bug in the progress check is a
@@ -150,6 +157,29 @@ enum Wanted {
     /// directive's *span* (invariant across the re-lowering that consumes them; the operand's `ExprId` is
     /// not). The last field is that directive span.
     InsertOperand(ItemId, jr_hir::BodyId, ExprId, jr_base::Span),
+    /// The **argument to a `$N` comptime-value parameter** at a call site (ADR-0088 §2).
+    ///
+    /// `make(5)` — the call needs `5` evaluated to a constant at compile time so the instantiation can
+    /// bake it into a clone. Evaluated by the same thunk `BodyRun` and `InsertOperand` use, keyed
+    /// additionally by the call's span, `(scope, call ExprId)` and the parameter *index* — because one
+    /// call may pass several `$N` arguments and the instantiation reads them in parameter order. The
+    /// scope is either a body or top-level, exactly as `BodyRun` distinguishes.
+    ComptimeArg(
+        ItemId,
+        ExprScope,
+        /// The call's expression id (for the span, read out of the same arena `scope` names).
+        ExprId,
+        /// The argument's expression id (this is `Wanted::expr`, the thing to evaluate).
+        ExprId,
+        /// Which comptime parameter this argument feeds, in the template's parameter order.
+        ///
+        /// **Carried for the debug-print of a `Wanted` and for future diagnostic help that names the
+        /// parameter position**; not read by the evaluator, which reads only `Wanted::expr`. Kept as a
+        /// distinct field rather than merged with the argument id, because a call may pass several `$N`
+        /// arguments and the reader wants to know which parameter each one feeds.
+        #[allow(dead_code)]
+        u32,
+    ),
 }
 
 impl Wanted {
@@ -160,6 +190,8 @@ impl Wanted {
             | Self::BodyRun(_, _, expr)
             | Self::TypeAlias(_, expr)
             | Self::InsertOperand(_, _, expr, _) => expr,
+            // The *argument* is what to evaluate; the call id is auxiliary and lives in the last fields.
+            Self::ComptimeArg(_, _, _, arg, _) => arg,
         }
     }
 
@@ -169,7 +201,8 @@ impl Wanted {
             | Self::Run(item, _)
             | Self::BodyRun(item, _, _)
             | Self::TypeAlias(item, _)
-            | Self::InsertOperand(item, _, _, _) => item,
+            | Self::InsertOperand(item, _, _, _)
+            | Self::ComptimeArg(item, _, _, _, _) => item,
         }
     }
 
@@ -178,6 +211,7 @@ impl Wanted {
         match self {
             Self::Item(_, _) | Self::Run(_, _) | Self::TypeAlias(_, _) => ExprScope::TopLevel,
             Self::BodyRun(_, body, _) | Self::InsertOperand(_, body, _, _) => ExprScope::Body(body),
+            Self::ComptimeArg(_, scope, _, _, _) => scope,
         }
     }
 }
@@ -194,7 +228,11 @@ impl Wanted {
 /// excluded here rather than allowed to fail, because a failure would become E0230 on
 /// a declaration that is perfectly correct, which is exactly the kind of false
 /// positive that teaches people to ignore a diagnostic.
-fn wanted(hir: &FileHir, signatures: &jr_sema::FileSignatures) -> Vec<Wanted> {
+fn wanted(
+    hir: &FileHir,
+    signatures: &jr_sema::FileSignatures,
+    comptime_calls: &crate::sema::ComptimeCalls,
+) -> Vec<Wanted> {
     let mut out = Vec::new();
     for (index, item) in hir.items.iter().enumerate() {
         let id = ItemId::from_usize(index);
@@ -254,7 +292,72 @@ fn wanted(hir: &FileHir, signatures: &jr_sema::FileSignatures) -> Vec<Wanted> {
             }
         }
     }
+    // And every **comptime-value argument** the checker recorded (ADR-0088 §2). Each call contributes one
+    // target per `$N` parameter, in parameter order, so `comptime_call_values` can zip results back into
+    // that order per call. The item id is looked up per call — the checker's key is `(scope, call)`, but
+    // an item id is needed only to place a diagnostic, so a call in a body uses its enclosing proc's item,
+    // and a call at top level uses its enclosing `#run`/const item.
+    //
+    // Deterministic iteration order: `FxHashMap` is not stable, so the list is sorted by scope then id.
+    // That agreement matters because a snapshot of `ConstValues` depends on the order the round-robin
+    // saw its targets in.
+    type SortedCall = ((ExprScope, ExprId), (jr_hir::ProcId, Vec<ExprId>));
+    let mut sorted: Vec<SortedCall> = comptime_calls
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+    sorted.sort_by_key(|((scope, call), _)| (scope_ord(*scope), call.index()));
+    let placeholder_item = ItemId::from_usize(0);
+    for ((scope, call), (_proc, args)) in &sorted {
+        for (i, arg) in args.iter().enumerate() {
+            out.push(Wanted::ComptimeArg(
+                item_for_scope(hir, *scope).unwrap_or(placeholder_item),
+                *scope,
+                *call,
+                *arg,
+                u32::try_from(i).unwrap_or(u32::MAX),
+            ));
+        }
+    }
     out
+}
+
+/// The item id enclosing a scope, for placing a diagnostic on a `Wanted::ComptimeArg`.
+///
+/// A top-level scope has no single enclosing item (a `Wanted::ComptimeArg` at top level would be a
+/// comptime call in a top-level `#run`, whose item *is* the `#run`); the resolver already keys those on
+/// the same `(TopLevel, ExprId)`, so returning `None` here is safe — the eventual diagnostic falls back
+/// to the file's first item, which is fine for a compiler bug that should have been refused earlier.
+fn item_for_scope(hir: &FileHir, scope: ExprScope) -> Option<ItemId> {
+    match scope {
+        ExprScope::TopLevel => None,
+        ExprScope::Body(body_id) => {
+            hir.items
+                .iter()
+                .enumerate()
+                .find_map(|(index, item)| match &item.kind {
+                    ItemKind::Const {
+                        value: ConstValue::Proc(proc),
+                    } if hir
+                        .procs
+                        .get(proc.index())
+                        .and_then(|p| p.body)
+                        .is_some_and(|b| b == body_id) =>
+                    {
+                        Some(ItemId::from_usize(index))
+                    }
+                    _ => None,
+                })
+        }
+    }
+}
+
+/// Total order over an `ExprScope` for deterministic iteration.
+fn scope_ord(scope: ExprScope) -> (u32, u32) {
+    match scope {
+        ExprScope::TopLevel => (0, 0),
+        ExprScope::Body(b) => (1, b.as_u32()),
+    }
 }
 
 /// Whether a file-level expression is a bare directive.
@@ -323,11 +426,15 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     let hir = file_hir(db, file);
     let resolve = resolved(db, file, search_paths).map;
     let signatures = crate::sema::file_signatures(db, file, search_paths);
-    // **Signatures first**, because `wanted` asks them whether a `::` initialiser names a type
-    // (ADR-0071 §2). They were already computed one line below; only the order changed.
-    let targets = wanted(hir.as_ref(), signatures.signatures.as_ref());
-
     let checked_file = checked(db, file, search_paths);
+    // **Signatures first**, because `wanted` asks them whether a `::` initialiser names a type
+    // (ADR-0071 §2). It also asks the checker's `comptime_calls` (ADR-0088 §2), which is why the
+    // `checked` fetch above was moved ahead of this line.
+    let targets = wanted(
+        hir.as_ref(),
+        signatures.signatures.as_ref(),
+        &checked_file.comptime_calls,
+    );
     // **A `type_info(T)` call needs a value too** (ADR-0075 §2), so the early return has to account for
     // one: a file whose only compile-time work is a `type_info` has no `wanted` target at all, and
     // returning here left its call unfolded — which `scan` then refused as "a name failed to resolve",
@@ -533,6 +640,37 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
 
     let mut diagnostics = Diagnostics::new();
     for (target, reason) in failures {
+        // A comptime-value argument that failed to evaluate is a **specific** refusal, not the generic
+        // E0230: the reader wanted to pass a value at a call site, and one that is not a compile-time
+        // constant is a well-known category (like a non-literal array length, ADR-0070 §1). Reported at
+        // the call's span, read from the arena the target names — a `Body` scope reads from that body,
+        // top-level from the file arena. Handled *before* the generic E0230 loop so this specific code
+        // wins (ADR-0088 §2, E0271).
+        if let Wanted::ComptimeArg(_, scope, call, _, _) = target {
+            let span = match scope {
+                ExprScope::TopLevel => hir.expr_spans.get(call.index()).copied(),
+                ExprScope::Body(body_id) => hir
+                    .bodies
+                    .get(body_id.index())
+                    .and_then(|b| b.expr_spans.get(call.index()).copied()),
+            }
+            .or_else(|| hir.items.first().map(|item| item.span));
+            let Some(span) = span else { continue };
+            diagnostics.push(
+                Diagnostic::error(
+                    span,
+                    format!(
+                        "a `$N` comptime-value argument must be a compile-time constant: {reason}"
+                    ),
+                )
+                .with_code(E0271)
+                .with_note(
+                    "`$N`'s value is baked into the instantiation, so the argument is evaluated at \
+                     compile time — the same rule as an array length (ADR-0088)",
+                ),
+            );
+            continue;
+        }
         // A bare top-level `#run f();` is run for its effects and produces no value,
         // so "no value" is not a failure for one — but a failure to *run* it is.
         let Some(span) = hir.items.get(target.item().index()).map(|item| item.span) else {
@@ -600,13 +738,18 @@ pub fn insert_operands(
     let consts = file_consts(db, file, search_paths);
     let hir = file_hir(db, file);
     let signatures = crate::sema::file_signatures(db, file, search_paths);
+    let checked_file = checked(db, file, search_paths);
     let mut operands = jr_hir::InsertOperands::new();
 
     // Re-walk the same targets `file_consts` evaluated, keeping only the insert operands — each carries
     // the directive span this map is keyed by. The value is in `consts.values` under the operand's
     // `(Body, ExprId)` key, exactly where `record` put it.
     let pool = crate::sema::lock_pool(db);
-    for target in wanted(hir.as_ref(), signatures.signatures.as_ref()) {
+    for target in wanted(
+        hir.as_ref(),
+        signatures.signatures.as_ref(),
+        &checked_file.comptime_calls,
+    ) {
         let Wanted::InsertOperand(_, body, expr, span) = target else {
             continue;
         };
@@ -636,6 +779,9 @@ fn known(values: &ConstValues, target: Wanted) -> bool {
         Wanted::BodyRun(_, body, expr) | Wanted::InsertOperand(_, body, expr, _) => {
             values.run(ExprScope::Body(body), expr).is_some()
         }
+        // A comptime argument is stored under the same `(scope, expr)` key `Run`/`BodyRun` use, because
+        // it *is* a run-shape evaluation of one expression — see `record` (ADR-0088 §2).
+        Wanted::ComptimeArg(_, scope, _, arg, _) => values.run(scope, arg).is_some(),
     }
 }
 
@@ -651,6 +797,11 @@ fn record(values: &mut ConstValues, target: Wanted, value: PoolId) {
         Wanted::BodyRun(_, body, expr) | Wanted::InsertOperand(_, body, expr, _) => {
             values.set_run(ExprScope::Body(body), expr, value)
         }
+        // A comptime argument evaluates as an ordinary `run` in its scope (ADR-0088 §2). Storing it here
+        // is exactly the `Run`/`BodyRun` path, keyed on the argument's own expression — because the
+        // instantiation pass reads it back by `(scope, argument ExprId)` while walking `comptime_calls`,
+        // so there is only one lookup pattern.
+        Wanted::ComptimeArg(_, scope, _, arg, _) => values.set_run(scope, arg, value),
     }
 }
 

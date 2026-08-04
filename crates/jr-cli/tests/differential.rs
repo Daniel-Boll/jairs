@@ -399,6 +399,36 @@ fn code_splices_identically_in_both_engines() {
     );
 }
 
+/// A **comptime-value instantiation** — `make :: ($N: s64)` called as `make(5)` — must bake the value
+/// into a distinct procedure and exit **32** in both engines (ADR-0088).
+///
+/// Five assertions summing to 31, then `exit(32)` — so any one failing changes the exit value. The value
+/// matters more than the agreement here: each instantiation is a clone whose body has `N` rewritten to a
+/// literal and whose parameter list has the `$N` dropped, and each engine materialises that clone
+/// independently — the VM through its bytecode lowerer, the native back end when it declares each proc.
+/// A wrong baking (a stale `N`), a missed argument drop (arity mismatch), or a shared instantiation
+/// across distinct values would each give both engines a consistent wrong answer, and only asserting 32
+/// catches it.
+#[test]
+fn comptime_value_instantiation_agrees_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/072-comptime-value-instantiation.jr");
+
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    assert_eq!(
+        vm.status, 32,
+        "the VM exited {} — a `$N` comptime-value call was baked wrongly",
+        vm.status
+    );
+    assert_eq!(
+        native.status, 32,
+        "the native back end exited {} — see the VM assertion above",
+        native.status
+    );
+}
+
 /// A **polymorphic struct** `Box(s64)` must build, store and read back identically in both engines
 /// (ADR-0085).
 ///

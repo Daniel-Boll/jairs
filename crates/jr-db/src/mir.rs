@@ -402,6 +402,12 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
                 for (call, target) in &inst.redirects {
                     values.set_instantiation(call.0, call.1, *target);
                 }
+                // Each comptime call's argument-drop mask, so `call_rvalue` passes only the non-comptime
+                // arguments to the instantiation whose parameter list has already had the `$N`s dropped
+                // (ADR-0088 §3).
+                for (call, mask) in &inst.comptime_masks {
+                    values.set_comptime_arg_mask(call.0, call.1, mask.clone());
+                }
                 Arc::new(values)
             }
             None => base,

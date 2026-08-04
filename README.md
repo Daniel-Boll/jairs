@@ -37,12 +37,14 @@ polymorphic survives to the back end, which is what lets the differential harnes
 program at all. The body is checked *per instantiation*, so `add(a, b)` on a struct with no `+` is a
 diagnostic rather than a miscompile. It handles several type variables (`pair :: (a: $A, b: $B)`) and
 inference through a pointer or view (`deref :: (p: *$T)`, `sort :: (items: []$T)`), by a one-layer
-structural match rather than a full unifier. On top of that, **comptime-value parameters have their surface** (ADR-0087): `make :: ($N: s64)` marks a
-parameter polymorphic over a compile-time-known value, the value-side mirror of `$T`. It parses, formats,
-and — unlike a `$T` template, whose parameter *type* is unknown — its **body type-checks**, because a `$N`
-parameter's type is fully known (`s64`) and only its value varies. A *call* is refused by design (E0271)
-pending the second half, which evaluates the argument to a constant and instantiates per value — the same
-staging `$T` had. Still ahead in W5: that second half (and `[N]T` over it), then the macro family. On top of **`#code`** (ADR-0080), which **completed wave W4 — Comptime** as scoped: `#code { n := 7; }`
+structural match rather than a full unifier. On top of that, **comptime-value parameters work** (ADR-0087 surface, ADR-0088 instantiation): `make :: ($N: s64)`
+marks a parameter polymorphic over a compile-time-known value, the value-side mirror of `$T`. A call
+`make(5)` evaluates the argument to a constant via the same acyclic pre-pass `#insert` uses, and appends a
+concrete procedure with `N` **baked** into the body — the instantiation's parameter list drops the `$N`
+params, and each reference to `N` becomes a literal. `make(5)` twice dedupes to one instantiation, `make(7)`
+is a distinct one, and mixed comptime+runtime params (`scaled :: ($N: s64, factor: s64)`) pass only the
+runtime ones at the call. A non-constant argument is refused with E0271. Still ahead in W5: `[N]T` over a
+`$N` parameter (small — `constant_array_length` needs to consult the baked value), then the macro family. On top of **`#code`** (ADR-0080), which **completed wave W4 — Comptime** as scoped: `#code { n := 7; }`
 is `#insert "n := 7;"` written without quotes, spliced into the enclosing scope. It is deliberately *sugar* —
 `#insert` of a named constant already worked, so what `#code` adds is no quoting and a body parsed where it
 is written, not a new capability. There is no `Code` *value*, and that is **declined rather than deferred**: a
@@ -145,7 +147,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 976 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
+`print_int` (ADR-0037). 977 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do
@@ -216,7 +218,7 @@ The authoritative version of this list is
 | **`#code { … }`** — unquoted source spliced into the enclosing scope; the body is parsed where it is written, so no quoting and no escaping (ADR-0080). Deliberately *sugar* over `#insert`, reusing its depth bound and its refusal of a pending splice | a `Code` **value** — **declined**, not deferred: a quoted syntax tree is worth representing only once something can inspect or transform one (ADR-0080 §3); spans into the body's real source, so a fault inside it points at the `#code` |
 | **`$T` polymorphic procedures** — inferred from the argument (directly or through `*$T`/`[]$T`), instantiated once per distinct tuple of bound types, checked per instantiation, run as ordinary procedures in both engines (ADR-0081–0084) | comptime-value params (`$$T`); macros (`#modify`/`#bake_arguments`/`#expand`); two-way unification and explicit type arguments |
 | **polymorphic structs** — `Box :: struct($T) { value: T; }` used as `Box(s64)`; the instance is keyed on `(decl, args)` so `Box(s64)` and `Box(bool)` are distinct types with substituted fields and layouts, told apart in the pool the way `[2]s64` and `[3]s64` are (ADR-0085). Both engines compute each instance's layout from its substituted fields | inferring a struct's argument through a `$T` parameter (`(b: Box($T))`); `using` on a parameterised struct; a **cross-file** parameterised struct (E0269); recursive `List($T)` |
-| **`$N` comptime-value parameter — surface** (ADR-0087): `make :: ($N: s64)` parses, formats, lowers as a template, and its **body type-checks** (`N` is a real `s64`, unlike a `$T` template's unknowable parameter) | **calling** one — refused by design (E0271) pending the instantiation half, which evaluates the argument to a constant and unlocks `[N]T` |
+| **`$N` comptime-value parameter and instantiation** (ADR-0087, ADR-0088): `make :: ($N: s64)` called as `make(5)` evaluates the argument to a compile-time constant and appends a concrete procedure with `N` baked into the body; two calls at the same value dedupe, distinct values instantiate separately (ADR-0005 extended to values). Mixed comptime and runtime parameters — `scaled :: ($N: s64, factor: s64)` — pass only the runtime one at the call site | `[N]T` where `N` is a `$N` parameter (small, next); a non-constant argument is refused E0271; a mixed `$T`+`$N` template falls through with an honest mismatch |
 | a **type as a compile-time value**: `T :: Point;` binds one, and `T` is usable wherever `Point` is — as an annotation, a parameter, a field, an array element, a pointee; an enum alias carries its members (ADR-0071) | a chain (`B :: A`); comparing types (`T == U`); a `Type` parameter; `Type` as an annotation, which does not parse |
 | using a type where a **runtime** value is expected is refused (E0261) — it has no runtime representation, so there is nothing to store | — |
 | `#import`, `#foreign`, `#system_library` | `#expand` macros (**W5**) |
