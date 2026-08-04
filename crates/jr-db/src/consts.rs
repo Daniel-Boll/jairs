@@ -443,6 +443,7 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
         && checked_file.type_info_calls.is_empty()
         && checked_file.folded_calls.is_empty()
         && checked_file.any_calls.is_empty()
+        && checked_file.pointer_views.is_empty()
     {
         return ConstResult {
             values: Arc::new(ConstValues::new()),
@@ -527,6 +528,14 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     // constant — so they record *how* to lower rather than a value. `any_of` needs a `Type_Info`
     // constant to spill for its `type` field, built here where the pool is mutable; `any_as` needs only
     // the expected type's id (ADR-0077), which is the pool id itself.
+    // **A `typed`/`untyped` call carries its result pointer type through** (ADR-0106 §1). Copied rather than
+    // computed, because sema already resolved the type argument — and it rides `ConstValues` for the reason
+    // `any_calls` does: that struct is what `jr-mir` receives, so a fourth channel would be a fourth thing to
+    // thread.
+    for ((scope, expr), ty) in checked_file.pointer_views.iter() {
+        values.set_pointer_view(*scope, *expr, *ty);
+    }
+
     for ((scope, expr), (op, ty)) in checked_file.any_calls.iter() {
         let mut all_sigs: Vec<&jr_sema::FileSignatures> = vec![signatures.signatures.as_ref()];
         all_sigs.extend(modules.iter().map(|m| m.signatures.as_ref()));

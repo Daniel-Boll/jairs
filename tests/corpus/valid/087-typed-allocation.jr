@@ -1,0 +1,104 @@
+// **Typed allocation** (ADR-0106): `size_of(T)`, `typed(T, p)`, `untyped(p)`. W7's fourth sub-wave, and the
+// first of three things ADR-0105 named as blocking a real dynamic array.
+//
+// **The problem.** `malloc` returns `*u8`, and `cast(*s64, p)` is E0232 — a general pointer cast makes a wrong
+// pointee type a *silent wrong read* (ADR-0045 §1). So heap storage was unreachable, and the refusal is right:
+// it should stay. What was missing was a way to get a **typed** pointer to fresh memory that is not a general
+// cast.
+//
+// **The library allocates, and only the retyping is an intrinsic**, which is an amendment made while building.
+// The plan was one `alloc(T, n)` — but MIR has **no way to reach `malloc`**: a `#foreign` procedure is resolved
+// by name in *its own file's* signatures, and the builder has no channel for "call this library procedure I
+// invented". The split turned out better anyway: `Basic.malloc` keeps doing what it already does, and the
+// language contributes exactly the one thing a library cannot express.
+//
+// **`typed` is not safer than a cast — it is *visible*.** `typed(s64, p)` on a four-byte allocation is still
+// wrong. What it adds is that the target type is a type *argument* at a named boundary a reader can grep for,
+// exactly as ADR-0076 §1 permitted an erasing conversion only at an `Any` boundary. Relaxing `cast` for
+// `*u8` → `*T` would permit the same wrong read with none of that, and the narrowness of a hole does not change
+// what goes through it. So `typed` requires a **`*u8` specifically** (E0279): allowing `*T` → `*U` would be the
+// general cast reached by another spelling.
+//
+// **`untyped` exists because a facility that can allocate and not free leaks by construction.** `Basic.free`
+// takes a `*u8`, so releasing needs the reverse conversion — and it is an intrinsic too, rather than a `cast`
+// relaxation, so both directions are searchable and neither widens `cast`.
+//
+// **`size_of` arrives with a caller.** It folds from the same `layout_of` that `type_info(T).size` reports, so
+// the two cannot disagree about how large a type is — and nothing could name `n * size_of(T)` before this
+// sub-wave. A facility with no caller is what ADR-0080 §3 declined to build.
+//
+// **Building it found a pre-existing miscompile** (ADR-0106 §2). Retyping is a *store then load through a slot*
+// — the mechanism ADR-0076 §1 built, since a pointer's bits do not depend on its pointee and no conversion node
+// exists — and **store-to-load forwarding deleted exactly that step**, replacing the load with a use of the
+// stored `*u8` in a `*s64` destination. The verifier caught it as `use changes type`, which is the good outcome,
+// but the *pass* was wrong: here the store and load **are** the conversion rather than a redundant pair.
+// Nothing before this stored one type into a slot of another and read it back in one block, so the pass had
+// never had the chance to be wrong.
+//
+// What is checked here:
+//
+//   * `size_of` for a scalar and for a **struct**, so it is a layout question rather than a table of scalars;
+//   * a heap block allocated, **written through pointer arithmetic**, and read back — which is the dynamic
+//     array's storage, working;
+//   * `typed` then `untyped` round-tripping, and `free` accepting the result;
+//   * a struct written through a typed pointer, so the retyping is not scalar-only;
+//   * `size_of` inside an expression (`n * size_of(s64)`), since folding it in the middle of arithmetic is the
+//     use every allocation has.
+//
+// The exit code is **63**, six groups of one bit, so a routine that returned a constant could not pass.
+#import "Basic";
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+main :: () {
+    n := 0;
+
+    // `size_of` on a scalar and on a struct: eight bytes and sixteen, from the same `layout_of` reflection uses.
+    if size_of(s64) == 8 && size_of(u8) == 1 {
+        n = n + 1;
+    }
+    if size_of(Point) == 16 {
+        n = n + 2;
+    }
+
+    // A heap block of three `s64`s — `size_of` folded *inside* the arithmetic, which is every allocation's use.
+    raw := malloc(3 * size_of(s64));
+    if raw == null {
+        exit(200);
+    }
+    d := typed(s64, raw);
+
+    // Written through pointer arithmetic, which is the dynamic array's storage working.
+    (d + 0).* = 10;
+    (d + 1).* = 20;
+    (d + 2).* = 30;
+    if (d + 0).* == 10 && (d + 2).* == 30 {
+        n = n + 4;
+    }
+    total := (d + 0).* + (d + 1).* + (d + 2).*;
+    if total == 60 {
+        n = n + 8;
+    }
+
+    // `untyped` gives the block back to `free`, which takes a `*u8`.
+    free(untyped(d));
+    n = n + 16;
+
+    // A **struct** through a typed pointer, so retyping is not scalar-only.
+    raw2 := malloc(size_of(Point));
+    if raw2 == null {
+        exit(201);
+    }
+    p := typed(Point, raw2);
+    p.x = 3;
+    p.y = 4;
+    if p.x + p.y == 7 {
+        n = n + 32;
+    }
+    free(untyped(p));
+
+    exit(n);
+}

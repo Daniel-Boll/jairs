@@ -144,6 +144,13 @@ pub struct ConstValues {
     items: FxHashMap<ItemId, PoolId>,
     runs: FxHashMap<(ExprScope, ExprId), PoolId>,
     any_ops: FxHashMap<(ExprScope, ExprId), AnyLowering>,
+    /// The pointer type each `typed`/`untyped` call produces (ADR-0106 §1).
+    ///
+    /// Beside `any_ops` rather than in `runs`, because this is **real code**: a pointer's bits do not depend on
+    /// its pointee, so retyping is a store-then-load through a slot (the mechanism ADR-0076 §1 built), and the
+    /// builder needs the target type to make the slot. A folded value would be wrong — the *address* is only
+    /// known at run time.
+    pointer_views: FxHashMap<(ExprScope, ExprId), PoolId>,
     /// The procedure a polymorphic call was instantiated to (ADR-0082, DECISIONS fork 4).
     ///
     /// A call to a `$T` procedure is redirected here to the *instantiated* `ProcRef` appended to the
@@ -242,6 +249,17 @@ impl ConstValues {
     #[must_use]
     pub fn any_op(&self, scope: ExprScope, expr: ExprId) -> Option<AnyLowering> {
         self.any_ops.get(&(scope, expr)).copied()
+    }
+
+    /// Records that a `typed`/`untyped` call produces a pointer of type `ty` (ADR-0106 §1).
+    pub fn set_pointer_view(&mut self, scope: ExprScope, expr: ExprId, ty: PoolId) {
+        self.pointer_views.insert((scope, expr), ty);
+    }
+
+    /// The pointer type a `typed`/`untyped` call produces, if it is one.
+    #[must_use]
+    pub fn pointer_view(&self, scope: ExprScope, expr: ExprId) -> Option<PoolId> {
+        self.pointer_views.get(&(scope, expr)).copied()
     }
 
     /// Records that a polymorphic call was instantiated to `target` (ADR-0082).

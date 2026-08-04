@@ -7871,3 +7871,141 @@ proc main -> void {
     discard call extern proc1(v116)
     return
 }
+
+========================================
+087-typed-allocation.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: *s64  // temporary
+    s1: *s64  // temporary
+    s2: *s64  // temporary
+    s3: *s64  // temporary
+    s4: *s64  // temporary
+    s5: *s64  // temporary
+    s6: *s64  // temporary
+    s7: *s64  // temporary
+    s8: *s64  // temporary
+    s9: *u8  // temporary
+    s10: *Point  // temporary
+    s11: *u8  // temporary
+  bb0(v0: *Context):
+    v1: bool = 8_s64 == 8_s64
+    branch v1 ? bb1() : bb2()
+  bb1():
+    v3: bool = 1_s64 == 1_s64
+    goto bb3(v3)
+  bb2():
+    goto bb3(false)
+  bb3(v2: bool):
+    branch v2 ? bb4() : bb5()
+  bb4():
+    v5: s64 = 0_s64 + 1_s64
+    goto bb6(v5)
+  bb5():
+    goto bb6(0_s64)
+  bb6(v7: s64):
+    v6: bool = 16_s64 == 16_s64
+    branch v6 ? bb7() : bb8()
+  bb7():
+    v8: s64 = v7 + 2_s64
+    goto bb9(v8)
+  bb8():
+    goto bb9(v7)
+  bb9(v26: s64):
+    v9: s64 = 3_s64 * 8_s64
+    v10: *u8 = call extern proc2(v9)
+    v11: bool = v10 == 0_*u8
+    branch v11 ? bb10() : bb11()
+  bb10():
+    discard call extern proc1(200_s64)
+    goto bb12()
+  bb11():
+    goto bb12()
+  bb12():
+    store s0 <- v10
+    v13: *s64 = load s0
+    store s1 <- v13
+    v14: *s64 = addr s1[0_s64]
+    store (v14).* <- 10_s64
+    store s2 <- v13
+    v15: *s64 = addr s2[1_s64]
+    store (v15).* <- 20_s64
+    store s3 <- v13
+    v16: *s64 = addr s3[2_s64]
+    store (v16).* <- 30_s64
+    store s4 <- v13
+    v17: *s64 = addr s4[0_s64]
+    v18: s64 = load (v17).*
+    v19: bool = v18 == 10_s64
+    branch v19 ? bb13() : bb14()
+  bb13():
+    store s5 <- v13
+    v21: *s64 = addr s5[2_s64]
+    v22: s64 = load (v21).*
+    v23: bool = v22 == 30_s64
+    goto bb15(v23)
+  bb14():
+    goto bb15(false)
+  bb15(v20: bool):
+    branch v20 ? bb16() : bb17()
+  bb16():
+    v27: s64 = v26 + 4_s64
+    goto bb18(v27)
+  bb17():
+    goto bb18(v26)
+  bb18(v39: s64):
+    store s6 <- v13
+    v30: *s64 = addr s6[0_s64]
+    v31: s64 = load (v30).*
+    store s7 <- v13
+    v32: *s64 = addr s7[1_s64]
+    v33: s64 = load (v32).*
+    v34: s64 = v31 + v33
+    store s8 <- v13
+    v35: *s64 = addr s8[2_s64]
+    v36: s64 = load (v35).*
+    v37: s64 = v34 + v36
+    v38: bool = v37 == 60_s64
+    branch v38 ? bb19() : bb20()
+  bb19():
+    v40: s64 = v39 + 8_s64
+    goto bb21(v40)
+  bb20():
+    goto bb21(v39)
+  bb21(v43: s64):
+    store s9 <- v13
+    v42: *u8 = load s9
+    discard call extern proc3(v42)
+    v44: s64 = v43 + 16_s64
+    v45: *u8 = call extern proc2(16_s64)
+    v46: bool = v45 == 0_*u8
+    branch v46 ? bb22() : bb23()
+  bb22():
+    discard call extern proc1(201_s64)
+    goto bb24()
+  bb23():
+    goto bb24()
+  bb24():
+    store s10 <- v45
+    v48: *Point = load s10
+    store (v48).*.0 <- 3_s64
+    store (v48).*.1 <- 4_s64
+    v49: s64 = load (v48).*.0
+    v50: s64 = load (v48).*.1
+    v51: s64 = v49 + v50
+    v52: bool = v51 == 7_s64
+    branch v52 ? bb25() : bb26()
+  bb25():
+    v54: s64 = v44 + 32_s64
+    goto bb27(v54)
+  bb26():
+    goto bb27(v44)
+  bb27(v57: s64):
+    store s11 <- v48
+    v56: *u8 = load s11
+    discard call extern proc3(v56)
+    discard call extern proc1(v57)
+    return
+}

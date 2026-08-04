@@ -77,6 +77,24 @@ program does and then handles, while indexing past a compiler-known bound is a p
 return two values rather than a sentinel, the opposite call from `find`'s `-1`, and the difference is that an
 index has values outside its domain while an element does not.
 
+**And typed allocation** (ADR-0106) is the fourth piece, which is a *language* change rather than a module:
+`size_of(T)`, `typed(T, p)` and `untyped(p)` make heap storage reachable — `d := typed(s64, malloc(n *
+size_of(s64)))`, then ordinary pointer arithmetic, then `free(untyped(d))`. That is the first of the three things
+`Array` named as blocking a real dynamic array.
+
+**`cast` is unchanged**, and that is the design: it still refuses `cast(*s64, p)`, because a general pointer cast
+makes a wrong pointee type a silent wrong read. `typed` is not *safer* — `typed(s64, p)` on four bytes is still
+wrong — it is **visible**: the target type is a type argument at a named boundary a reader can grep for, the same
+shape that lets an erasing conversion happen only at an `Any` boundary. It takes a `*u8` specifically, since
+`*T` → `*U` would be the refused cast reached by another spelling.
+
+Building it found a **pre-existing miscompile**. Retyping is a store-then-load through a slot, and store-to-load
+forwarding deleted exactly that step, producing a use whose source and destination types differed. The verifier
+caught it, which is the good outcome, but the *pass* was wrong: there the store and load **are** the conversion
+rather than a redundant pair. The first fix was too broad and lost a real optimisation on struct fields — caught
+by the optimized-MIR snapshot, which is precisely the job a snapshot has, since an optimisation quietly not
+happening is invisible to every other check.
+
 Before it, wave **W6 — Metaprogram**, five sub-waves in, with 984 tests green. Its headline claim is met — a metaprogram can find
 declarations by note and generate code for each — and a build script can name its own artefact. A declaration can
 carry **`@note` metadata** for a metaprogram to read (ADR-0098). `@deprecated` and `@requires "x"` sit in the

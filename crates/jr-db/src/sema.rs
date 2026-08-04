@@ -116,6 +116,12 @@ pub struct CheckResult {
     /// The positional argument list of every call using a named argument or a default
     /// (ADR-0053 §1).
     pub filled_args: Arc<jr_mir::FilledArgs>,
+    /// Each `typed`/`untyped` call and the pointer type it produces (ADR-0106 §1).
+    ///
+    /// Real code rather than a fold, so it rides beside `any_calls` rather than in `folded_calls`: retyping a
+    /// pointer is a store-then-load through a slot, and lowering needs the target type to build the slot.
+    pub pointer_views:
+        Arc<rustc_hash::FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), jr_pool::PoolId>>,
     /// Calls `jr-sema` already folded to a value — `has_note`, `note_value` (ADR-0099 §2).
     ///
     /// Carried through rather than recomputed because the answer lives in the HIR's `Proc::notes`, which
@@ -723,6 +729,7 @@ fn translate_check_output(
         type_name_imports: Arc::from(output.type_name_imports),
         operator_calls: Arc::new(operator_calls),
         filled_args: Arc::new(filled_args),
+        pointer_views: Arc::new(output.pointer_views),
         folded_calls: Arc::new(output.folded_calls),
         folded_call_spans: Arc::new(output.folded_call_spans),
         type_info_calls: Arc::new(output.type_info_calls),

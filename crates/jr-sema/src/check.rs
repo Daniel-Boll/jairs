@@ -41,7 +41,7 @@ use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
     E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272, E0277,
-    E0278,
+    E0278, E0279,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -69,6 +69,12 @@ enum Intrinsic {
     NotedName,
     /// `noted_insert("name", "template")` — the template once per noted declaration (ADR-0101 §1).
     NotedInsert,
+    /// `size_of(T)` — `T`'s size in bytes, folded (ADR-0106 §1).
+    SizeOf,
+    /// `typed(T, p)` — a `*u8` viewed as a `*T`, the allocation boundary (ADR-0106 §1).
+    Typed,
+    /// `untyped(p)` — a `*T` viewed as a `*u8`, for releasing it (ADR-0106 §1).
+    Untyped,
 }
 
 /// How a `Type_Info` field's type is checked.
@@ -183,6 +189,11 @@ pub struct CheckOutput {
     /// [`CheckOutput::folded_calls`] entry cannot be found. A span survives expansion — every synthesized
     /// span points at the directive (ADR-0072 §2) — which is why the insert-operand map is span-keyed too.
     pub folded_call_spans: FxHashMap<jr_base::Span, PoolId>,
+    /// Each `typed`/`untyped` call and the pointer type it produces (ADR-0106 §1).
+    ///
+    /// Real code rather than a fold, so it goes to `jr-mir` rather than into `folded_calls`: a pointer's bits
+    /// do not depend on its pointee, and retyping is a store-then-load through a slot.
+    pub pointer_views: FxHashMap<(ExprScope, ExprId), PoolId>,
     /// Calls that folded to a value **in this crate** — `has_note` and `note_value` (ADR-0099 §2).
     ///
     /// Separate from [`CheckOutput::type_info_calls`], whose meaning is "build a `Type_Info` for this type"
@@ -383,6 +394,7 @@ pub fn check_file(
         operator_calls: ctx.operator_calls,
         filled_calls: ctx.filled_calls,
         folded_calls: ctx.folded_calls,
+        pointer_views: ctx.pointer_views,
         folded_call_spans: ctx.folded_call_spans,
         type_info_calls: ctx.type_info_calls,
         any_calls: ctx.any_calls,
@@ -2672,6 +2684,16 @@ impl Ctx<'_> {
             Some(Intrinsic::NotedInsert) => {
                 return self.check_noted_insert(scope, id, callee, args, span);
             }
+            // **`size_of(T)` folds like `type_info`'s size field**, and for the same reason its argument is
+            // intercepted here: it is a *type*, and every path below would type it as a runtime value
+            // (ADR-0106 §1).
+            Some(Intrinsic::SizeOf) => return self.check_size_of(scope, id, callee, args, span),
+            // **`typed`/`untyped` are the allocation boundary** (ADR-0106 §1). Intercepted because
+            // `typed`'s first argument is a type, and because the conversion they perform is the one E0232
+            // refuses everywhere else — permitted *here* the way ADR-0076 §1 permitted an erasing
+            // conversion only at an `Any` boundary.
+            Some(Intrinsic::Typed) => return self.check_typed(scope, id, callee, args, span),
+            Some(Intrinsic::Untyped) => return self.check_untyped(scope, id, callee, args, span),
             None => {}
         }
 
@@ -2922,6 +2944,9 @@ impl Ctx<'_> {
             "noted_count" => Intrinsic::NotedCount,
             "noted_name" => Intrinsic::NotedName,
             "noted_insert" => Intrinsic::NotedInsert,
+            "size_of" => Intrinsic::SizeOf,
+            "typed" => Intrinsic::Typed,
+            "untyped" => Intrinsic::Untyped,
             _ => return None,
         };
         match self.resolve.get(scope, callee).unwrap_or(res) {
@@ -3119,6 +3144,197 @@ impl Ctx<'_> {
         let value = self.pool.str_value(&text);
         self.record_fold(scope, id, span, value);
         self.expect(None, PoolId::STRING, span)
+    }
+
+    /// Types and folds `size_of(T)` (ADR-0106 §1).
+    ///
+    /// Folded here rather than lowered, because the answer is `layout_of`'s and this crate already calls it —
+    /// the same numbers `type_info(T).size` reports, from the same function, so the two cannot disagree about
+    /// how large a type is (ADR-0075 §2's argument for sharing `layout_of`).
+    ///
+    /// It arrives now because **typed allocation asked for it**: a caller allocating `n` elements needs
+    /// `n * size_of(T)` bytes, and until this sub-wave nothing could name that number. A facility with no
+    /// caller is what ADR-0080 §3 declined to build; this one has one.
+    fn check_size_of(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        self.types.set_expr(scope, callee, PoolId::VOID);
+        if args.len() != 1 {
+            self.wrong_intrinsic_arity("size_of", 1, args.len(), span);
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+        // The argument is a type, so the allowlist gains an entry rather than E0261 gaining an exception —
+        // ADR-0071 §3's asymmetry, the same move `type_info` makes.
+        self.type_position.insert((scope, args[0]));
+        let described = self.described_type(scope, args[0]);
+        self.types.set_expr(scope, args[0], PoolId::TYPE);
+        let Some(described) = described else {
+            // Withheld for an unbound `$T` of the enclosing template, exactly as `type_info`'s is
+            // (ADR-0092 §1): `size_of(T)` inside a `$T` body is correct code, and each instantiation
+            // resolves `T` for real.
+            if let Expr::Name { name, .. } = self.expr_of(scope, args[0])
+                && self.poly_var_names.contains(&name)
+            {
+                return PoolId::ERROR;
+            }
+            self.diags.push(
+                Diagnostic::error(span, "`size_of` needs a type")
+                    .with_code(E0261)
+                    .with_note("its argument is the type to measure, e.g. `size_of(s64)`"),
+            );
+            return PoolId::ERROR;
+        };
+        let Ok(layout) = jr_pool::layout_of(self.pool, jr_pool::TargetLayout::LP64, described)
+        else {
+            let text = self.describe(described);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`size_of` cannot measure `{text}`, which has no runtime layout"),
+                )
+                .with_code(E0266)
+                .with_note("a compile-time-only type has no size a program could allocate"),
+            );
+            return PoolId::ERROR;
+        };
+        let value = self.pool.int_value(PoolId::S64, layout.size);
+        self.record_fold(scope, id, span, value);
+        self.expect(None, PoolId::S64, span)
+    }
+
+    /// Types `typed(T, p)` — a `*u8` viewed as a `*T` (ADR-0106 §1).
+    ///
+    /// **This is the one place a pointer's pointee type may change**, and it is deliberately not a `cast`:
+    /// E0232 refuses `cast(*s64, p)` because a general pointer cast makes a wrong pointee a *silent wrong
+    /// read* (ADR-0045 §1), and that refusal stays. What is permitted here is narrower in the way that
+    /// matters — the target type is written as a **type argument**, at a named boundary a reader can search
+    /// for, exactly as ADR-0076 §1 permitted an erasing conversion only at an `Any` boundary.
+    ///
+    /// It does not make the conversion *safe*: `typed(s64, p)` on a `p` that points at four bytes is still
+    /// wrong. It makes it **visible and searchable**, which a `cast` buried in an expression is not.
+    fn check_typed(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        self.types.set_expr(scope, callee, PoolId::VOID);
+        if args.len() != 2 {
+            self.wrong_intrinsic_arity("typed", 2, args.len(), span);
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+        self.type_position.insert((scope, args[0]));
+        let described = self.described_type(scope, args[0]);
+        self.types.set_expr(scope, args[0], PoolId::TYPE);
+        let Some(described) = described else {
+            self.check_expr(scope, args[1], None);
+            self.diags.push(
+                Diagnostic::error(span, "`typed` needs a type to view the pointer as")
+                    .with_code(E0261)
+                    .with_note("its first argument is the pointee type, e.g. `typed(s64, p)`"),
+            );
+            return PoolId::ERROR;
+        };
+
+        let operand = self.check_expr(scope, args[1], None);
+        if operand == PoolId::ERROR {
+            return PoolId::ERROR;
+        }
+        // **The operand must be a `*u8`**, not any pointer. `typed` exists to give a *fresh allocation* a
+        // type, and an allocator hands back bytes; allowing `*T` → `*U` would be the general cast E0232
+        // refuses, reached by another spelling.
+        let is_byte_pointer =
+            matches!(self.pool.item(operand), Item::PointerType(p) if *p == PoolId::U8);
+        if !is_byte_pointer {
+            let text = self.describe(operand);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`typed` needs a `*u8`, but this is `{text}`"),
+                )
+                .with_code(E0279)
+                .with_note(
+                    "it gives an untyped allocation a type; converting one typed pointer to another is \
+                     the cast E0232 refuses, because a wrong pointee type is a silent wrong read",
+                )
+                .with_help("allocate with `malloc`, which returns a `*u8`"),
+            );
+            return PoolId::ERROR;
+        }
+        if let Err(error) = jr_pool::layout_of(self.pool, jr_pool::TargetLayout::LP64, described) {
+            let text = self.describe(described);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`typed` cannot view memory as `{text}`, which has no runtime layout"),
+                )
+                .with_code(E0266)
+                .with_note(format!("the layout is unavailable because {error}")),
+            );
+            return PoolId::ERROR;
+        }
+        let result = self.pool.pointer_to(described);
+        self.pointer_views.insert((scope, id), result);
+        self.expect(None, result, span)
+    }
+
+    /// Types `untyped(p)` — a `*T` viewed as a `*u8` (ADR-0106 §1).
+    ///
+    /// The reverse of [`Self::check_typed`], and it exists so a caller can **release** what they allocated:
+    /// `Basic.free` takes a `*u8`. Symmetric rather than asymmetric on purpose — a facility that can allocate
+    /// and not free is one that leaks by construction.
+    ///
+    /// This direction is the *safe* one — every pointer is a valid `*u8` to read bytes through — but it is
+    /// still an intrinsic rather than a relaxation of `cast`, so that both directions are searchable and
+    /// neither widens `cast` itself.
+    fn check_untyped(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        self.types.set_expr(scope, callee, PoolId::VOID);
+        if args.len() != 1 {
+            self.wrong_intrinsic_arity("untyped", 1, args.len(), span);
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+        let operand = self.check_expr(scope, args[0], None);
+        if operand == PoolId::ERROR {
+            return PoolId::ERROR;
+        }
+        if !matches!(self.pool.item(operand), Item::PointerType(_)) {
+            let text = self.describe(operand);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`untyped` needs a pointer, but this is `{text}`"),
+                )
+                .with_code(E0279)
+                .with_note("it views a pointer's bytes, so there has to be a pointer to view"),
+            );
+            return PoolId::ERROR;
+        }
+        let result = self.pool.pointer_to(PoolId::U8);
+        self.pointer_views.insert((scope, id), result);
+        self.expect(None, result, span)
     }
 
     /// Types and folds `noted_insert("name", "template")` (ADR-0101 §1).
