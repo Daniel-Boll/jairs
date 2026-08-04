@@ -142,6 +142,7 @@ ast_node!(ContextExpr, CONTEXT_EXPR);
 ast_node!(CCallAttr, C_CALL_ATTR);
 ast_node!(NoAbcAttr, NO_ABC_ATTR);
 ast_node!(NamedArg, NAMED_ARG);
+ast_node!(Note, NOTE);
 ast_node!(ForStmt, FOR_STMT);
 ast_node!(RangeExpr, RANGE_EXPR);
 ast_node!(DeferStmt, DEFER_STMT);
@@ -698,6 +699,11 @@ impl Proc {
     /// called (ADR-0090 §1).
     pub fn is_expand(&self) -> bool {
         self.0.children().any(|n| n.kind() == EXPAND_ATTR)
+    }
+
+    /// The `@note`s on this procedure, in source order (ADR-0098 §1).
+    pub fn notes(&self) -> impl Iterator<Item = Note> + '_ {
+        self.0.children().filter_map(Note::cast)
     }
 
     /// The `#modify { … }` predicate block, if this procedure has one (ADR-0093 §1).
@@ -1495,6 +1501,21 @@ impl DirectiveExpr {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+impl Note {
+    /// The note's name — the `deprecated` of `@deprecated` (ADR-0098 §1).
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        child_token(&self.0, IDENT)
+    }
+
+    /// The note's optional string payload — the `"x"` of `@requires "x"`.
+    ///
+    /// Returned with its quotes still on, as every other string accessor in this file does, so one decoder
+    /// handles them all.
+    pub fn payload_token(&self) -> Option<SyntaxToken> {
+        child_token(&self.0, STRING_LITERAL)
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,67 @@
+// **`@note` attributes** (ADR-0098): metadata a declaration carries for a *metaprogram* to read. W6's first
+// sub-wave — the wave PLAN §2.1 calls "the Jai superpower", where build scripts become the build system.
+//
+// A note is `@name` or `@name "payload"` on a declaration: `@deprecated`, `@requires "a positive x"`. It is
+// **not** an instruction to the compiler — that is what `#c_call` and `#no_abc` are — which is why it is its
+// own node kind and its own list on the declaration. A consumer collecting notes must not have to filter
+// directives out of the same list, and vice versa.
+//
+// **Why notes come first in W6.** They are the only self-contained piece of the wave, and they are the *data*
+// the other three operate on: the compiler message loop exists to hand declarations to a build script, and a
+// declaration with nothing extra to say is not worth handing over; a build script's first real job is
+// "collect every declaration tagged `@X`". Building the loop first would mean designing its message shape
+// against no consumer — the failure ADR-0080 §3 named for a `Code` value, "worth representing only once
+// something can inspect it".
+//
+// What is checked here:
+//
+//   * a bare note (`@deprecated`);
+//   * a note with a **string payload** (`@requires`), which is what makes the two spellings one form;
+//   * **several** notes on one declaration, so the list is a list;
+//   * a note **beside a directive**, in both orders — the attribute loop takes them in any order, the rule
+//     ADR-0058 settled for the directives themselves;
+//   * a note on a `#expand` **macro** and on a polymorphic `$T` procedure, so notes compose with W5.
+//
+// A note affects **no code**: this program's MIR is exactly what it would be without them, which is the point
+// — a note is read by a metaprogram, not by the compiler. So `main` does ordinary work and exits 7.
+#import "Basic";
+
+/// A bare note.
+old_way :: (x: s64) -> s64 @deprecated {
+    return x;
+}
+
+/// A note with a payload — the same form, with the optional string present.
+checked :: (x: s64) -> s64 @requires "a positive x" {
+    return x;
+}
+
+/// Several notes on one declaration.
+tracked :: (x: s64) -> s64 @deprecated @internal @since "0.2" {
+    return x;
+}
+
+/// A note before a directive.
+fast :: (x: s64) -> s64 @hot #no_abc {
+    return x;
+}
+
+/// And after one, since the loop takes either order.
+faster :: (x: s64) -> s64 #no_abc @hot {
+    return x;
+}
+
+/// A note on a `#expand` macro — notes compose with W5's macros.
+doubled :: (x: s64) -> s64 @inline #expand {
+    return x * 2;
+}
+
+/// A note on a polymorphic procedure — and on one with a `$T`, so it composes with instantiation too.
+identity :: (x: $T) -> T @generic {
+    return x;
+}
+
+main :: () {
+    n := identity(7);
+    exit(n);
+}

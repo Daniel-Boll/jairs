@@ -206,7 +206,7 @@ module.exports = grammar({
       ),
 
     _proc_attr: ($) =>
-      choice($.c_call_attr, $.no_abc_attr, $.expand_attr, $.modify_attr),
+      choice($.c_call_attr, $.no_abc_attr, $.expand_attr, $.modify_attr, $.note),
 
     // #c_call (ADR-0057 §3)
     c_call_attr: (_$) => field("directive", "#c_call"),
@@ -221,6 +221,12 @@ module.exports = grammar({
     // #modify { … } — a compile-time predicate over an instantiation (ADR-0093 §1). Unlike the other
     // three attributes it carries a **block**, so the rule takes one.
     modify_attr: ($) => seq("#modify", field("predicate", $.block)),
+
+    // @name or @name "payload" — a note a metaprogram reads (ADR-0098 §1). Its own rule rather than an
+    // attribute, because a note is *data* while the directives are instructions: a query colouring one
+    // must not have to exclude the other.
+    note: ($) =>
+      seq("@", field("name", $.identifier), optional(field("payload", $.string_literal))),
 
     param_list: ($) =>
       seq(

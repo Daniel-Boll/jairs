@@ -506,6 +506,29 @@ impl Formatter {
                 // spliced into the caller's scope — reading the caller's locals — becomes a call that
                 // cannot see them. Caught by gate 5 on this wave's own corpus file, which is what that
                 // gate is for.
+                // `@note` — metadata a metaprogram reads (ADR-0098 §1). Emitted in **source order** with the
+                // directives, since the loop takes them in any order and reordering would make `jr fmt`
+                // non-idempotent on input it did not write. Dropping a note deletes a metaprogram's *input*,
+                // so a build script that collects `@X` would silently find nothing — caught by gate 5 on
+                // this wave's own corpus file, the trap this file has now hit in most of the last dozen waves.
+                NOTE => {
+                    self.emit(" @");
+                    if let Some(name) = attr
+                        .children_with_tokens()
+                        .filter_map(|e| e.into_token())
+                        .find(|t| t.kind() == IDENT)
+                    {
+                        self.emit(name.text());
+                    }
+                    if let Some(payload) = attr
+                        .children_with_tokens()
+                        .filter_map(|e| e.into_token())
+                        .find(|t| t.kind() == STRING_LITERAL)
+                    {
+                        self.emit(" ");
+                        self.emit(payload.text());
+                    }
+                }
                 EXPAND_ATTR => self.emit(" #expand"),
                 // `#modify { … }` carries a **block**, so it is emitted with its body rather than as a bare
                 // word (ADR-0093 §1). Dropping it would delete a compile-time predicate — the program would
