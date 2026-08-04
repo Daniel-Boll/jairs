@@ -1,0 +1,34 @@
+// EXPECT: E0276 — `#bake_arguments`, whose specialisation is not yet built (ADR-0096 §3)
+//
+// `#bake_arguments add(a = 5)` is a **partial application**: it produces a *specialised procedure* with some
+// arguments built in, so `add_five(37)` calls `add(5, 37)`. The surface is this sub-wave — the directive
+// parses, and its operand is a *call* whose named-argument spelling is the ordinary one (ADR-0053 §1) rather
+// than a second syntax invented for it.
+//
+// The specialisation itself is the next sub-wave, and it reuses machinery already built and teeth-checked:
+// ADR-0088 §3's clone drops the baked parameters from the specialised procedure's list, substitutes their
+// values into the body, and remaps the remaining `Res::Param` indices — the same three steps `$N`
+// instantiation takes. That is why `#bake_arguments` is the right piece to finish W5's macro family with:
+// it is a *reuse* of the polymorphism machinery rather than a new mechanism.
+//
+// **Why this refusal exists at all**, and it is the point: before it, the declaration lowered to a poisoned
+// expression and the *caller* reported "the compiler could not lower `main` … this compiler has a gap —
+// please report it". That message is right for an unknown gap and wrong for a feature whose absence is known
+// and named — so the refusal turns a bug report into a sentence a reader can act on.
+//
+// **Not a corpus `type-errors/` file**: E0276 comes out of **lowering** (that is where a directive's validity
+// in expression position is judged), and that directory's harness requires its files to lower cleanly before
+// checking the code they declare — the same stage rule that put E0262 and the `using` refusals here.
+#import "Basic";
+
+/// An ordinary procedure, to specialise.
+add :: (a: s64, b: s64) -> s64 {
+    return a + b;
+}
+
+/// The refusal: this should produce a one-argument procedure with `a` built in.
+add_five :: #bake_arguments add(a = 5);
+
+main :: () {
+    exit(add_five(37));
+}

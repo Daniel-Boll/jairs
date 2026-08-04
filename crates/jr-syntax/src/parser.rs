@@ -2267,6 +2267,21 @@ impl<'src> Parser<'src> {
                     }
                     // Nothing after `#insert` at all is left to lowering, which reports E0262.
                     self.finish_node();
+                } else if text == "#bake_arguments" {
+                    // `#bake_arguments add(a = 5)` — a **partial application** producing a specialised
+                    // procedure (ADR-0096 §1). It takes a *call* expression, whose arguments are the ones to
+                    // bake; the call's named-argument syntax (ADR-0053 §1) is reused rather than inventing a
+                    // second spelling, so `a = 5` here means the same thing it means at an ordinary call.
+                    //
+                    // Shaped like the `#insert` arm above: a directive that parses a full expression. The
+                    // generic arm below cannot express it, since that one takes at most a string.
+                    self.start_node(DIRECTIVE_EXPR);
+                    self.bump(); // `#bake_arguments`
+                    if self.at_set(EXPR_START) {
+                        self.parse_expr();
+                    }
+                    // Nothing after it is left to lowering, which reports the refusal.
+                    self.finish_node();
                 } else {
                     // Any other directive used as an expression.
                     self.start_node(DIRECTIVE_EXPR);
