@@ -96,17 +96,17 @@
 #h(4pt)
 #pill[986 tests]
 #h(4pt)
-#pill[ADR-0111 latest]
+#pill[ADR-0113 latest]
 #h(4pt)
-#pill(fill: rgb("#fdf2e6"), stroke: warn)[W7 OPEN · 9 sub-waves]
+#pill(fill: rgb("#fdf2e6"), stroke: warn)[W7 OPEN · 11 sub-waves]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
   metric("Tests", "986", "workspace, all passing"),
-  metric("Corpus", "200", "jr files, both engines"),
-  metric("ADRs", "111", "0001 to 0111, immutable"),
+  metric("Corpus", "202", "jr files, both engines"),
+  metric("ADRs", "114", "0001 to 0114, immutable"),
   metric("Diagnostics", "114", "codes, E0280 next free"),
   metric("Editor checks", "166", "Neovim, verified not gated"),
 )
