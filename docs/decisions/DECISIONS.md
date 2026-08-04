@@ -2444,3 +2444,38 @@ zeros a caller would take a while to notice.
 divide, and the divide is exact so it is additive later); a better generator (statistical-quality decision);
 seeding from the clock (wants a time source, and is the *non*-deterministic thing the explicit struct exists to
 avoid making the default).
+
+## W7 sub-wave 12 — floats across the FFI boundary
+
+**Why now.** Two sub-waves named this as their unblocker: `Math` (ADR-0112) cannot wrap libm's `sqrt`/`sin`
+without it, and any future numeric FFI needs it. The refusal is explicit — "passing FloatType to a foreign
+procedure arrives with a later wave" — so this is that wave.
+
+**What it takes, both engines.** A float is passed in a **floating-point register**, not an integer one, on
+both the SysV (x86-64) and AAPCS (arm64) ABIs — so it is not enough to pass the bits as a `u64`. The VM's
+libffi path must describe a `float`/`double` argument and return with `Type::f32`/`Type::f64` (libffi then
+places it correctly), and the native path must give a `#foreign` procedure's Cranelift signature an
+`F32`/`F64` `AbiParam` rather than an integer one.
+
+**The fork was small, because the representation already exists.** A float's bits already live in
+`Value::Scalar(u64)` (the VM stores everything as bits), and `FloatKind::decode`/`encode` already convert. So:
+
+- **(a) Teach `marshal`/`return` the float case, keyed on `FloatKind::of`.** The bits are in hand; libffi's
+  `arg` takes an `f32`/`f64`, so decode the stored bits to the host float, hand it over, and re-encode the
+  return. Native adds the `AbiParam` width. **Chosen** — it is the whole change, and it reuses `FloatKind`.
+- **(b) Pass the bits as an integer and let the callee reinterpret.** Wrong on every real ABI: `sqrt` reads its
+  argument from `xmm0`, not `rdi`, so passing the bits in an integer register calls `sqrt` on uninitialised
+  float state. The bug would be silent — a plausible-looking wrong number — which is the worst kind.
+
+**A `float32` narrows at the boundary.** libffi's `float` is 32-bit, and a Jairs `float32` holds its value in
+the low 32 bits of the `u64` (ADR-0040 §3), so `marshal` decodes with the *parameter's* `FloatKind`, not a
+blanket `f64`. Getting this wrong would pass a 64-bit pattern where 32 bits were expected — caught by keying on
+the declared parameter type.
+
+**Scope, kept honest:** this passes and returns a float; it does not add libm to `Basic` (that is a set of
+`#foreign` declarations, a separate additive change) nor lift `Math`'s transcendentals (they can now be a libm
+wrap, which is `Math`'s next sub-wave). What ships is the *capability* and a corpus file that calls `sqrt` and
+checks it in both engines.
+
+**Deferred:** an aggregate-of-floats by value (the struct-ABI decision, still deferred for integers too); a
+`float` *variadic* argument (`printf("%f")` promotes `float` to `double`, its own rule).

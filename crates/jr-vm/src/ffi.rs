@@ -137,6 +137,12 @@ fn marshal(vm: &Vm<'_>, value: &Value, ty: PoolId) -> Result<u64, VmError> {
             // sign-extended, and `Value::Scalar` holds it width-normalised.
             Ok(value.as_int(kind)? as u64)
         }
+        // **A float is marshalled to its bits, and `dispatch` passes it in a float register** (ADR-0114 §1).
+        // The bits are stored width-normalised in `Value::Scalar` already; keying the libffi arg type on the
+        // parameter is what makes libffi place it in `xmm0`/`d0` rather than an integer register, which every
+        // real ABI requires and which passing the bits as a `u64` would get wrong — silently, since the callee
+        // would read a float register that was never written.
+        Item::FloatType { .. } => Ok(value.scalar()?),
         Item::BoolType => Ok(u64::from(value.boolean()?)),
         Item::PointerType(_) => {
             let address = value.scalar()?;
@@ -186,11 +192,54 @@ fn dispatch(vm: &mut Vm<'_>, foreign: &ForeignProc, args: &[u64]) -> Result<Valu
     }
 
     let code = symbol(foreign)?;
-    let signature = Cif::new(
-        args.iter().map(|_| Type::u64()).collect::<Vec<_>>(),
-        return_type(vm, foreign)?,
-    );
-    let cell: Vec<Arg> = args.iter().map(arg).collect();
+    // **Per-argument libffi types** (ADR-0114 §1). An integer or a pointer is a word (`Type::u64`); a float is
+    // `Type::f32`/`Type::f64`, which is what places it in a float register. The float *values* are decoded into
+    // `floats`, kept alive for the duration of the call, because `libffi::arg` borrows its operand — a
+    // temporary would dangle before `signature.call`.
+    let pool = vm.pool();
+    let arg_types: Vec<Type> = foreign
+        .params
+        .iter()
+        .map(|ty| match jr_pool::FloatKind::of(pool, *ty) {
+            Some(k) if k.bits == 32 => Type::f32(),
+            Some(_) => Type::f64(),
+            None => Type::u64(),
+        })
+        .collect();
+    let mut floats32: Vec<f32> = Vec::new();
+    let mut floats64: Vec<f64> = Vec::new();
+    // Decode each float word to a host float, into the width-appropriate store, so its address survives to the
+    // call. Recorded as `(is_float, is_32, index)` so `cell` can point at the right store.
+    let mut plan: Vec<(bool, bool, usize)> = Vec::with_capacity(args.len());
+    for (value, ty) in args.iter().zip(foreign.params.iter()) {
+        match jr_pool::FloatKind::of(pool, *ty) {
+            Some(k) if k.bits == 32 => {
+                floats32.push(k.decode(*value) as f32);
+                plan.push((true, true, floats32.len() - 1));
+            }
+            Some(k) => {
+                floats64.push(k.decode(*value));
+                plan.push((true, false, floats64.len() - 1));
+            }
+            None => plan.push((false, false, 0)),
+        }
+    }
+    let signature = Cif::new(arg_types, return_type(vm, foreign)?);
+    let cell: Vec<Arg> = args
+        .iter()
+        .zip(plan.iter())
+        .map(|(word, (is_float, is_32, idx))| {
+            if *is_float {
+                if *is_32 {
+                    arg(&floats32[*idx])
+                } else {
+                    arg(&floats64[*idx])
+                }
+            } else {
+                arg(word)
+            }
+        })
+        .collect();
 
     if foreign.ret == PoolId::VOID {
         // SAFETY: `code` came from `dlsym` for the symbol this declaration names, and
@@ -200,6 +249,20 @@ fn dispatch(vm: &mut Vm<'_>, foreign: &ForeignProc, args: &[u64]) -> Result<Valu
         // declaration is undefined behaviour, which is the same bargain C makes.
         unsafe { signature.call::<()>(code, &cell) };
         return Ok(Value::Void);
+    }
+
+    // **A float return comes back through a float register** (ADR-0114 §1), so it must be read as `f32`/`f64`
+    // rather than as a word — `signature.call::<u64>` would read an integer register the callee never wrote.
+    // Re-encoded to the declared width's bits, the inverse of the argument path.
+    if let Some(kind) = jr_pool::FloatKind::of(vm.pool(), foreign.ret) {
+        // SAFETY: as the integer path below. The CIF's return type is `f32`/`f64` (from `return_type`), so
+        // reading the matching Rust type is exactly what libffi placed there.
+        if kind.bits == 32 {
+            let r = unsafe { signature.call::<f32>(code, &cell) };
+            return Ok(Value::Scalar(kind.encode(f64::from(r))));
+        }
+        let r = unsafe { signature.call::<f64>(code, &cell) };
+        return Ok(Value::Scalar(kind.encode(r)));
     }
 
     // SAFETY: as above. The result is read as a full word and then narrowed by the
@@ -233,6 +296,9 @@ fn return_type(vm: &Vm<'_>, foreign: &ForeignProc) -> Result<Type, VmError> {
     }
     match pool.item(foreign.ret) {
         Item::IntType { .. } | Item::BoolType | Item::PointerType(_) => Ok(Type::u64()),
+        // A float return is described to libffi as `f32`/`f64` so it reads the float register (ADR-0114 §1).
+        Item::FloatType { bits: 32 } => Ok(Type::f32()),
+        Item::FloatType { .. } => Ok(Type::f64()),
         other => Err(VmError::unsupported(format!(
             "a foreign procedure returning {other:?} arrives with a later wave"
         ))),

@@ -1,0 +1,68 @@
+// **Floats across the FFI boundary** (ADR-0114): a `#foreign` procedure may take and return a float. W7's
+// twelfth sub-wave, and the language unblocker two library sub-waves named.
+//
+// **Why it was refused until now.** A float is passed in a **floating-point register** — `xmm0` on x86-64, `d0`
+// on arm64 — not an integer one, on every real ABI. So passing the bits as a `u64` (which is how integers and
+// pointers crossed) calls the callee on a float register that was never written: a plausible-looking wrong
+// number, silently. The VM's libffi path now describes a float argument and return as `Type::f32`/`Type::f64`,
+// which is what makes libffi place it correctly, and native code gives a `#foreign` procedure's Cranelift
+// signature an `F32`/`F64` parameter, which SysV places in the float register.
+//
+// **A `float32` narrows at the boundary**: libffi's `float` is 32-bit and a Jairs `float32` lives in the low 32
+// bits of its word (ADR-0040 §3), so the argument is decoded with the *parameter's* width, not a blanket
+// `f64` — checked here by calling `sqrtf` as well as `sqrt`.
+//
+// **This ships the capability, not libm in `Basic`.** The `#foreign` declarations here are local to the file,
+// which is the honest scope: adding `sqrt` and friends to `Basic`, and lifting `Math`'s transcendentals to a
+// libm wrap, are separate additive changes now unblocked.
+//
+// What is checked here:
+//
+//   * `sqrt` returning a float — `sqrt(16.0)` is `4.0`;
+//   * `pow` taking **two** float arguments — `pow(2.0, 10.0)` is `1024.0`, so both float registers are used;
+//   * `sqrtf`, a `float32` in and out, so the narrowing path is exercised;
+//   * a float **result fed back into a float argument** (`sqrt(sqrt(16.0))` is `2.0`), so a returned float is a
+//     usable value and not just a comparable one.
+//
+// Each float result is checked against its exact integer value by comparison, since a corpus exit code is an
+// `s64`. libm is correctly rounded, so `sqrt(16.0)` is exactly `4.0` and the comparison is exact rather than
+// tolerant — and both engines call the *same* libm, so they agree.
+//
+// The exit code is **15**, four groups of one bit.
+#import "Basic";
+
+// The library is declared **here**, not taken from `Basic`, for the reason `valid/019` does: the sema corpus
+// harness type-checks a file without loading `Basic`, so a `libc` from there would be an unknown library
+// (E0225) under that harness. `#system_library "c"` is the one line every `#foreign`-using corpus file repeats.
+libc :: #system_library "c";
+
+sqrt :: (x: float64) -> float64 #foreign libc "sqrt";
+sqrtf :: (x: float32) -> float32 #foreign libc "sqrtf";
+pow :: (base: float64, exponent: float64) -> float64 #foreign libc "pow";
+
+main :: () {
+    n := 0;
+
+    r := sqrt(16.0);
+    if r == 4.0 {
+        n = n + 1;
+    }
+
+    p := pow(2.0, 10.0);
+    if p == 1024.0 {
+        n = n + 2;
+    }
+
+    f := sqrtf(9.0);
+    if f == 3.0 {
+        n = n + 4;
+    }
+
+    // A returned float is a usable value: feed it back in. sqrt(sqrt(16.0)) = sqrt(4.0) = 2.0.
+    nested := sqrt(sqrt(16.0));
+    if nested == 2.0 {
+        n = n + 8;
+    }
+
+    exit(n);
+}
