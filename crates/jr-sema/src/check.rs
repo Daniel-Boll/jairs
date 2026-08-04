@@ -2530,17 +2530,26 @@ impl Ctx<'_> {
         // `#expand` was accepted and silently behaved as an ordinary procedure, the "a directive that is
         // ignored is worse than one that is rejected" failure ADR-0058 §3 names. Arguments are still
         // typed, so an error inside one is reported too.
-        if self.callee_is_macro(scope, callee) {
+        // **A call to an *imported* macro is refused** (ADR-0091 §3). A same-file macro call never reaches
+        // here: `jr-hir`'s lowering splices it away before sema sees a call at all. What does reach here is
+        // a **cross-file** one, because the macro-body map is built per file — and before this refusal it
+        // reached the VM as "internal compiler error: no routine for file 1 proc 0", the fifth time
+        // compiler internals leaked for a reasonable program. Refused with a sentence a reader can act on.
+        if self.callee_is_imported_macro(scope, callee) {
             for arg in args {
                 self.check_expr(scope, *arg, None);
             }
             self.diags.push(
-                Diagnostic::error(span, "a call to a `#expand` macro is not yet supported")
-                    .with_code(E0272)
-                    .with_note(
-                        "a macro's body is spliced into the caller's scope rather than called; the \
-                         splice arrives in the next sub-wave (ADR-0090)",
-                    ),
+                Diagnostic::error(
+                    span,
+                    "a `#expand` macro cannot yet be called from another file",
+                )
+                .with_code(E0272)
+                .with_note(
+                    "a macro is spliced from its own file's source text, and that text is not carried \
+                     across a module boundary yet (ADR-0091 §3)",
+                )
+                .with_help("move the macro into this file, or make it an ordinary procedure"),
             );
             return PoolId::ERROR;
         }
@@ -3256,17 +3265,31 @@ impl Ctx<'_> {
     /// Shaped like [`Self::callee_comptime_template`]. An imported macro falls through — a cross-file
     /// splice is deferred with the splice itself — and its ordinary signature makes the call an ordinary
     /// call, which is wrong but *reported* by the same refusal once the splice exists cross-file.
-    fn callee_is_macro(&mut self, scope: ExprScope, callee: ExprId) -> bool {
-        let Some(Res::Item(item)) = self.resolve.get(scope, callee) else {
+    fn callee_is_imported_macro(&mut self, scope: ExprScope, callee: ExprId) -> bool {
+        // A **same-file** macro is spliced by lowering, so its name never resolves to a callable item by
+        // the time a call reaches here. An *imported* one resolves through `Res::Imported`, and this crate
+        // cannot see the other file's `Proc::expand` — so the signature is the evidence: an imported
+        // procedure whose name the importing file cannot splice.
+        let Some(res) = self.resolve.get(scope, callee) else {
             return false;
         };
-        let jr_hir::ItemKind::Const {
-            value: jr_hir::ConstValue::Proc(proc),
-        } = self.hir.item(item).kind.clone()
-        else {
-            return false;
+        let jr_hir::Res::Imported(_, name) = res else {
+            // A same-file `#expand` that somehow still resolved to an item — belt and braces, since
+            // lowering should have spliced it.
+            let jr_hir::Res::Item(item) = res else {
+                return false;
+            };
+            let jr_hir::ItemKind::Const {
+                value: jr_hir::ConstValue::Proc(proc),
+            } = self.hir.item(item).kind.clone()
+            else {
+                return false;
+            };
+            return self.hir.procs.get(proc.index()).is_some_and(|p| p.expand);
         };
-        self.hir.procs.get(proc.index()).is_some_and(|p| p.expand)
+        // An imported name whose module declares it `#expand`. Asked of the imported *signatures*, which
+        // is what this crate has of another file.
+        self.imports.iter().any(|(_, sigs)| sigs.is_macro(name))
     }
 
     /// Types a call to a comptime-value-parameterised procedure and records it for instantiation

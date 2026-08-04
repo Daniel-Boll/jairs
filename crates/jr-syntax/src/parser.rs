@@ -364,9 +364,14 @@ impl<'src> Parser<'src> {
                 // constant, so the whole declaration collapsed into four cascading errors starting
                 // at `()`. The same shape as `TYPE_START` missing three keywords in ADR-0045 —
                 // a token-set list that decides what a construct *is*.
+                // `#expand` joins them (ADR-0090 §1), and omitting it reproduced the exact failure this
+                // comment describes: a **void** macro `f :: (x: s64) #expand { … }` — with no `->` to
+                // reach `L_BRACE`/`ARROW` above — was read as a parenthesised-expression constant and
+                // collapsed into fourteen cascading errors. The fifth time this list has decided what a
+                // construct is.
                 DIRECTIVE => matches!(
                     &self.text[self.tokens[i].range],
-                    "#foreign" | "#c_call" | "#no_abc"
+                    "#foreign" | "#c_call" | "#no_abc" | "#expand"
                 ),
                 _ => false,
             },

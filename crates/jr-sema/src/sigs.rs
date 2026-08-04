@@ -252,9 +252,26 @@ pub struct FileSignatures {
     /// name resolved to a builtin or to this file is deliberately absent rather
     /// than recorded as "not an import".
     type_name_imports: FxHashMap<jr_base::Symbol, String>,
+    /// The names this file declares as `#expand` **macros** (ADR-0091 §3).
+    ///
+    /// Carried on the signatures because an *importer* needs it: a macro is spliced from its own file's
+    /// source text, which does not cross a module boundary, so a cross-file call must be refused rather
+    /// than reaching the VM as "no routine for file N proc M". An importer has this file's signatures and
+    /// not its HIR, which is why the fact lives here.
+    macro_names: rustc_hash::FxHashSet<Symbol>,
 }
 
 impl FileSignatures {
+    /// Records that `name` is a `#expand` macro this file declares (ADR-0091 §3).
+    pub fn insert_macro(&mut self, name: Symbol) {
+        self.macro_names.insert(name);
+    }
+
+    /// Whether `name` is a `#expand` macro this file declares.
+    #[must_use]
+    pub fn is_macro(&self, name: Symbol) -> bool {
+        self.macro_names.contains(&name)
+    }
     /// Creates an empty set of signatures.
     #[must_use]
     pub fn new() -> Self {

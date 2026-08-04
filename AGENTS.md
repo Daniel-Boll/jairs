@@ -70,8 +70,7 @@ cd tree-sitter-jairs && npx --yes tree-sitter-cli@0.26.11 generate \
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
 visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
 → 969 (W5 sub-waves 1–4) → 974 (W5 sub-wave 5, polymorphic structs) → 976 (W5 sub-wave 6a, `$N` surface)
-→ 977 (W5 sub-wave 6b, `$N` instantiation) → 978 (W5 sub-wave 6c, `[N]T` over `$N`; sub-wave 7a `#expand` surface adds no test, its two corpus files
-ride the existing corpus harnesses).
+→ 977 (W5 sub-wave 6b, `$N` instantiation) → 978 (W5 sub-wave 6c, `[N]T` over `$N`; 7a `#expand` surface) → 979 (W5 sub-wave 7b, the `#expand` splice).
 
 ## House style
 
@@ -175,9 +174,12 @@ parameterised struct, and a wrong type-argument count (ADR-0085); E0271 is a `$N
 argument that is not a compile-time constant (ADR-0088) — **owned by `jr-db`** beside E0230,
 because constancy is a const-eval judgement, defined in `crates/jr-db/src/consts.rs`.
 
-E0272 is a call to a `#expand` macro, refused pending the splice (ADR-0090).
+E0272 is a **cross-file** `#expand` macro call (ADR-0091 §3 — repurposed from ADR-0090's
+pending-splice refusal, which the splice lifted); E0273 is an early `return` in a macro body or a void macro
+in expression position — **owned by `jr-hir`**, continuing its block (E0262–E0264 are `#insert`'s), because
+it is raised in lowering where the splice is built.
 
-**E0273 is the first free code**; E0131 is the first free *parser* code. E0231 is `jr-db`'s
+**E0274 is the first free code**; E0131 is the first free *parser* code. E0231 is `jr-db`'s
 unused-import warning — the first code in this project that is a *warning* rather than an
 error, so a consumer filtering by severity has something to filter.
 

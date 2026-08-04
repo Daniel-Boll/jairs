@@ -55,6 +55,12 @@ const E0262: &str = "E0262";
 const E0263: &str = "E0263";
 /// `#insert` expansion nested deeper than [`MAX_INSERT_DEPTH`] (ADR-0073 §3).
 const E0264: &str = "E0264";
+/// A `return` that is not the last statement of a `#expand` macro body (ADR-0090 §2).
+///
+/// Raised in **lowering** rather than in sema, because it is a property of the macro's *text* — the splice
+/// is built here, and it is here that "the rewrite would fall through" is knowable. Its number continues
+/// `jr-hir`'s block (E0262-E0264 are `#insert`'s) rather than joining `jr-sema`'s.
+const E0273: &str = "E0273";
 
 /// How deep `#insert` expansion may nest before it is refused (ADR-0073 §3).
 ///
@@ -109,6 +115,10 @@ struct LowerCtx<'a> {
     /// Empty in ordinary lowering, so a body behaves exactly as before; filled by the second lowering
     /// the operand pre-pass drives, where each pending insert's text is now known and expanded in place.
     operands: &'a InsertOperands,
+    /// Every `#expand` macro's spliceable shape, collected before any body is lowered (ADR-0090 §2).
+    ///
+    /// Held here so each `BodyLowerCtx` this context creates can be handed it, the same way `operands` is.
+    macros: MacroBodies,
 
     // File-level arenas
     items: Vec<Item>,
@@ -131,11 +141,17 @@ struct LowerCtx<'a> {
 }
 
 impl<'a> LowerCtx<'a> {
-    fn new(file: FileId, interner: &'a Interner, operands: &'a InsertOperands) -> Self {
+    fn new(
+        file: FileId,
+        interner: &'a Interner,
+        operands: &'a InsertOperands,
+        macros: MacroBodies,
+    ) -> Self {
         Self {
             file,
             interner,
             operands,
+            macros,
             diags: Diagnostics::new(),
             items: Vec::new(),
             scope: ItemScope::new(),
@@ -476,14 +492,20 @@ impl<'a> LowerCtx<'a> {
             }
         });
 
-        // Body
-        let body = ast_proc.body().map(|b| {
+        // Body. **A `#expand` macro's body is not lowered here** (ADR-0090 §2): its statements exist only
+        // to be *spliced* into a caller, where they are lowered in that caller's scope. Lowering it
+        // standalone would resolve its names against the macro's own (empty) scope, so a macro that reads
+        // the caller's locals — the whole point of `#expand` — would report them as unresolved. It also
+        // emits no MIR, exactly as a `$T` template does not.
+        let is_macro = ast_proc.is_expand();
+        let body = ast_proc.body().filter(|_| !is_macro).map(|b| {
             let body = self.lower_body(&b, &params);
             self.alloc_body(body)
         });
 
-        // Validate: must have body XOR foreign (or neither, which is an error)
-        if body.is_none() && foreign.is_none() {
+        // Validate: must have body XOR foreign (or neither, which is an error). A macro is exempt: it has
+        // a body in source, deliberately not lowered above.
+        if body.is_none() && foreign.is_none() && !is_macro {
             let diag = Diagnostic::error(
                 span,
                 "procedure has neither a body nor a `#foreign` attribute",
@@ -508,7 +530,7 @@ impl<'a> LowerCtx<'a> {
     // ---- bodies ------------------------------------------------------------
 
     fn lower_body(&mut self, block: &Block, params: &[Param]) -> Body {
-        let mut bctx = BodyLowerCtx::new(self.file, self.interner, self.operands);
+        let mut bctx = BodyLowerCtx::new(self.file, self.interner, self.operands, &self.macros);
 
         // Register parameters in the outermost scope
         for (i, param) in params.iter().enumerate() {
@@ -996,6 +1018,13 @@ struct BodyLowerCtx<'a> {
     /// text is here, and `lower_insert` expands it in place exactly as the literal path does — otherwise
     /// the insert stays pending and `jr-mir` refuses the body.
     operands: &'a InsertOperands,
+    /// Every `#expand` macro's spliceable shape, for a call to splice (ADR-0090 §2, sub-wave 7b).
+    ///
+    /// Threaded exactly as `operands` is, and empty for a file declaring no macro — so an ordinary
+    /// program's lowering is unchanged.
+    macros: &'a MacroBodies,
+    /// Names the next macro result local, so two macro calls in one body do not collide (ADR-0090 §2).
+    macro_result_counter: u32,
 
     exprs: Vec<Expr>,
     expr_spans: Vec<Span>,
@@ -1041,11 +1070,18 @@ struct BodyLowerCtx<'a> {
 }
 
 impl<'a> BodyLowerCtx<'a> {
-    fn new(file: FileId, interner: &'a Interner, operands: &'a InsertOperands) -> Self {
+    fn new(
+        file: FileId,
+        interner: &'a Interner,
+        operands: &'a InsertOperands,
+        macros: &'a MacroBodies,
+    ) -> Self {
         Self {
             file,
             interner,
             operands,
+            macros,
+            macro_result_counter: 0,
             diags: Diagnostics::new(),
             exprs: Vec::new(),
             expr_spans: Vec::new(),
@@ -1342,6 +1378,164 @@ impl<'a> BodyLowerCtx<'a> {
     /// `span` is the directive's, and every node produced takes it via `span_override` (ADR-0072 §2): the
     /// inner parse's spans are offsets into `text`, which `jr-diag` would clamp onto unrelated bytes of
     /// the real file.
+    /// Splices a macro call that appears in **expression** position, if this statement has one
+    /// (ADR-0090 §2, sub-wave 7b).
+    ///
+    /// Returns `None` when the statement has no macro call in expression position — including the
+    /// *statement*-position case (`f(x);` alone), which needs no result local and has its own arm.
+    ///
+    /// The generated text declares a result local, splices the macro (prelude + body with `return <e>;`
+    /// rewritten to assign that local), then repeats the original statement with the call's text replaced
+    /// by the local's name. Text rather than tree surgery because the splice *is* a text mechanism
+    /// (ADR-0072 §1), and reusing it wholesale is what keeps one expansion path rather than two.
+    ///
+    /// **One macro call per statement** this wave: the first is spliced and a second would need its own
+    /// result local threaded through the same rewrite. A second call is left to the ordinary path, which
+    /// refuses it (E0272) rather than expanding only half — named rather than silent.
+    fn try_splice_expression_macro(&mut self, stmt: &AstStmt, span: Span) -> Option<StmtId> {
+        // A statement-position call has its own arm; skip it here so it is not double-handled.
+        if let AstStmt::Expr(e) = stmt
+            && let Some(AstExpr::Call(ref c)) = e.expr()
+            && self.macro_called_by(c).is_some()
+        {
+            return None;
+        }
+        // Find the first macro call anywhere inside this statement's expressions.
+        let (call, mac) = self.find_expression_macro_call(stmt.syntax())?;
+        if macro_returns_early(&mac.text) {
+            self.diags.push(early_return_in_macro(span));
+            return Some(self.alloc_stmt(Stmt::Error(span)));
+        }
+        // A macro with no return type produces no value, so it cannot stand in an expression.
+        if !mac.returns {
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    "a `#expand` macro with no return type produces no value, so it cannot be used in \
+                     an expression",
+                )
+                .with_code(E0273)
+                .with_help("give the macro a `-> T` and a `return`, or call it as a statement"),
+            );
+            return Some(self.alloc_stmt(Stmt::Error(span)));
+        }
+
+        let result = format!("__macro_{}", self.macro_result_counter);
+        self.macro_result_counter += 1;
+
+        let call_text = call.syntax().text().to_string();
+        let stmt_text = stmt.syntax().text().to_string();
+        // The original statement with the call replaced by the result local. `replacen` so only the call
+        // that was found is replaced — a second identical call keeps its own text and reaches the
+        // ordinary path's refusal.
+        let rewritten = stmt_text.replacen(&call_text, &result, 1);
+
+        let mut text = String::new();
+        // Seeded from the macro's own body so the local's type is the returned expression's, without this
+        // pass having to resolve a type: `x := 0;` would fix it to `s64`.
+        text.push_str(&format!("{result} := 0;\n"));
+        let prelude_and_body = {
+            let stmts_before = self.stmts.len();
+            let _ = stmts_before;
+            self.macro_splice_text(&mac, &call, Some(&result))
+        };
+        text.push_str(&prelude_and_body);
+        text.push_str(&rewritten);
+        text.push('\n');
+        let stmts = self.expand_insert_text(&text, span);
+        Some(self.alloc_stmt(Stmt::Insert {
+            stmts,
+            operand: None,
+            span,
+        }))
+    }
+
+    /// The first `#expand` macro call inside a statement's expression tree, if any (ADR-0090 §2).
+    ///
+    /// Walks the CST rather than the HIR, because this runs *before* the statement is lowered — the point
+    /// is to rewrite it before it becomes a call node at all.
+    fn find_expression_macro_call(
+        &self,
+        node: &SyntaxNode,
+    ) -> Option<(jr_syntax::ast::CallExpr, MacroBody)> {
+        for descendant in node.descendants() {
+            if let Some(call) = jr_syntax::ast::CallExpr::cast(descendant.clone())
+                && let Some(mac) = self.macro_called_by(&call)
+            {
+                return Some((call, mac));
+            }
+        }
+        None
+    }
+
+    /// The text a macro call splices: a `name := arg;` prelude, then the body with its `return` rewritten
+    /// (ADR-0090 §2).
+    ///
+    /// Split out from [`Self::splice_macro`] so the expression-position path can put the text *between* a
+    /// result declaration and the rewritten statement, which needs the text rather than the lowered
+    /// statements.
+    fn macro_splice_text(
+        &self,
+        mac: &MacroBody,
+        call: &jr_syntax::ast::CallExpr,
+        result: Option<&str>,
+    ) -> String {
+        let args: Vec<String> = call
+            .arg_list()
+            .into_iter()
+            .flat_map(|list| list.args().collect::<Vec<_>>())
+            .map(|arg| arg.syntax().text().to_string())
+            .collect();
+        let mut text = String::new();
+        for (param, arg) in mac.params.iter().zip(&args) {
+            text.push_str(self.interner.resolve(*param));
+            text.push_str(" := ");
+            text.push_str(arg.trim());
+            text.push_str(";\n");
+        }
+        text.push_str(&rewrite_macro_returns(&mac.text, result));
+        text
+    }
+
+    /// The macro a call expression names, if it names one (ADR-0090 §2, sub-wave 7b).
+    ///
+    /// Recognised by the **callee's name text** against the pre-scanned macro map, because lowering runs
+    /// before resolution: there is no `Res` yet to ask. A local shadowing a macro's name would therefore
+    /// be mistaken for it — which is why a macro's name is looked up only when the callee is a bare name
+    /// *and* nothing in scope binds it, the same "a real binding wins" order ADR-0050 §3 uses.
+    fn macro_called_by(&self, call: &jr_syntax::ast::CallExpr) -> Option<MacroBody> {
+        let Some(AstExpr::Name(name)) = call.callee() else {
+            return None;
+        };
+        let token = name.name_token()?;
+        let sym = self.interner.intern(token.text());
+        // A local or parameter of that name wins, so a macro cannot capture an ordinary binding.
+        if self.lookup_local(sym).is_some() {
+            return None;
+        }
+        self.macros.get(&sym).cloned()
+    }
+
+    /// Builds the text a macro call splices, and lowers it in the enclosing scope (ADR-0090 §2).
+    ///
+    /// The generated text is a **prelude** binding each parameter to its argument's source text, then the
+    /// macro's body. The prelude is what makes each argument evaluate **once**: substituting the argument
+    /// text at every use of the parameter would re-evaluate a side-effecting argument per use, a wrong
+    /// answer rather than a slow one.
+    ///
+    /// `result` names a local the body's `return <e>;` is rewritten to assign, so a macro works in
+    /// expression position too; `None` for a void macro in statement position.
+    fn splice_macro(
+        &mut self,
+        mac: &MacroBody,
+        call: &jr_syntax::ast::CallExpr,
+        result: Option<&str>,
+        span: Span,
+    ) -> Vec<StmtId> {
+        let text = self.macro_splice_text(mac, call, result);
+        self.expand_insert_text(&text, span)
+    }
+
     fn expand_insert_text(&mut self, text: &str, span: Span) -> Vec<StmtId> {
         let parsed = jr_syntax::parse_stmts(text, self.file);
         for diag in parsed.diagnostics().iter() {
@@ -1405,6 +1599,21 @@ impl<'a> BodyLowerCtx<'a> {
 
     fn lower_stmt(&mut self, stmt: &AstStmt) -> StmtId {
         let span = self.span_of_node(stmt.syntax());
+        // **A macro call in *expression* position is spliced ahead of the statement** (ADR-0090 §2,
+        // sub-wave 7b). `exit(double(21))` becomes, as generated text:
+        //
+        //     __macro_0 := 0;                 // the result local, seeded so it has a type
+        //     x := 21;  __macro_0 = x * 2;    // the prelude and the rewritten body
+        //     exit(__macro_0);                // the original statement, call replaced
+        //
+        // handed to the same splice a `#insert` uses, so the whole thing lands in *this* scope and the
+        // macro's body still sees the caller's locals. Checked before every other arm, because the
+        // ordinary path would lower the call as a call — which is what E0272 refused when this did not
+        // exist. A macro call in *statement* position needs no result local and is handled in its own arm
+        // below; this one skips that case.
+        if let Some(spliced) = self.try_splice_expression_macro(stmt, span) {
+            return spliced;
+        }
         match stmt {
             AstStmt::Block(b) => self.lower_block(b),
             // A `TARGET_LIST` child means this is a destructuring form (ADR-0052 §2) rather than an
@@ -1433,6 +1642,29 @@ impl<'a> BodyLowerCtx<'a> {
             // the enclosing body". The cost is that the spans become the directive's (ADR-0080 §2), which
             // that section records as a debt shared with `#insert` rather than a surprise.
             AstStmt::Code(c) => self.lower_code(c, span),
+            // **A macro call in statement position splices** (ADR-0090 §2, sub-wave 7b): the macro's
+            // statements land here, in the *enclosing* scope, so the body sees this body's locals. No
+            // result local is needed — a call whose value nobody reads needs none — but a `return <e>;`
+            // in the body still evaluates `<e>` for its effects rather than dropping it.
+            AstStmt::Expr(e) if matches!(e.expr(), Some(AstExpr::Call(ref c)) if self.macro_called_by(c).is_some()) =>
+            {
+                let Some(AstExpr::Call(call)) = e.expr() else {
+                    unreachable!("the guard just matched a call")
+                };
+                let mac = self
+                    .macro_called_by(&call)
+                    .expect("the guard just matched a macro");
+                if macro_returns_early(&mac.text) {
+                    self.diags.push(early_return_in_macro(span));
+                    return self.alloc_stmt(Stmt::Error(span));
+                }
+                let stmts = self.splice_macro(&mac, &call, None, span);
+                self.alloc_stmt(Stmt::Insert {
+                    stmts,
+                    operand: None,
+                    span,
+                })
+            }
             AstStmt::Expr(e) => {
                 let expr_id = e
                     .expr()
@@ -2584,7 +2816,10 @@ pub fn lower_file_with_inserts(
         );
     };
 
-    let mut ctx = LowerCtx::new(file, interner, operands);
+    // Every `#expand` macro's spliceable shape, collected **before** any body is lowered (ADR-0090 §2):
+    // a call needs the macro's text, and a call may precede the declaration in source order.
+    let macros = collect_macro_bodies(&source_file, interner);
+    let mut ctx = LowerCtx::new(file, interner, operands, macros);
 
     // Walked as **children** rather than through `source_file.items()`, because a `SCOPE_DECL` is
     // not an `Item` kind and that accessor would skip it — so every visibility marker would be
@@ -2635,6 +2870,139 @@ pub fn lower_file_with_inserts(
 ///
 /// Works because the CST is lossless: every token and trivium is present, so a node's text is the original
 /// source. That is the property ADR-0080 relies on to need no new representation at all.
+/// The source text of every `#expand` macro in a file, by name (ADR-0090 §2, sub-wave 7b).
+///
+/// Collected in a pre-scan of the `SOURCE_FILE` before any body is lowered, and threaded to each
+/// `BodyLowerCtx` exactly as [`InsertOperands`] is — `lower_file_with_inserts` already holds the whole AST
+/// and already threads one such map, so this is the same proven shape rather than a new one.
+///
+/// Each entry is `(parameter names, body inner text, return type present)`. A call to the macro is lowered
+/// by *generating text* — a `name := arg;` prelude then the body — and handing it to the splice, so the
+/// text is what has to be reachable from a call site.
+type MacroBodies = rustc_hash::FxHashMap<jr_base::Symbol, MacroBody>;
+
+/// One `#expand` macro's spliceable shape (ADR-0090 §2).
+#[derive(Debug, Clone)]
+struct MacroBody {
+    /// The parameter names, in order — bound to the call's arguments by a synthesized prelude.
+    params: Vec<jr_base::Symbol>,
+    /// The body's inner source text, braces excluded (as `#code` takes it, ADR-0080 §2).
+    text: String,
+    /// Whether the macro declares a return type, so a call in expression position needs a result local.
+    returns: bool,
+}
+
+/// Collects every `#expand` macro's spliceable shape from a parsed file (ADR-0090 §2).
+///
+/// Walks the file's items rather than the whole tree: a macro is a file-level `name :: (…) #expand { … }`,
+/// so nothing nested can be one. A macro with no body is skipped — the parser already reported it.
+fn collect_macro_bodies(source_file: &SourceFile, interner: &Interner) -> MacroBodies {
+    let mut out = MacroBodies::default();
+    for item in source_file.items() {
+        let jr_syntax::ast::Item::Const(decl) = item else {
+            continue;
+        };
+        let Some(proc) = decl.proc() else { continue };
+        if !proc.is_expand() {
+            continue;
+        }
+        let Some(name_tok) = decl.name().and_then(|n| n.ident_token()) else {
+            continue;
+        };
+        let Some(block) = proc.body() else { continue };
+        let params: Vec<jr_base::Symbol> = proc
+            .param_list()
+            .into_iter()
+            .flat_map(|pl| pl.params().collect::<Vec<_>>())
+            .filter_map(|p| p.name_token().map(|t| interner.intern(t.text())))
+            .collect();
+        out.insert(
+            interner.intern(name_tok.text()),
+            MacroBody {
+                params,
+                text: block_inner_text(block.syntax()),
+                returns: proc.ret_type().is_some(),
+            },
+        );
+    }
+    out
+}
+
+/// Rewrites a macro body's `return <e>;` into an assignment to the splice's result local (ADR-0090 §2).
+///
+/// A macro has no frame of its own — its statements land in the caller's — so a `return` in it cannot mean
+/// "return from the macro". This wave gives it the **weaker, well-defined** meaning: assign the value to
+/// the local the call's value is read from. `return;` with no value becomes nothing at all.
+///
+/// **Only a `return` in tail position is handled**, which is the limit this wave accepts and names: a
+/// `return` inside an `if` in a macro body would have to return from the *caller* (Jai's semantics), and
+/// silently turning it into an assignment would fall through to the statements after it. `lower_call`
+/// refuses that shape rather than miscompiling it.
+/// A `return` that is not the last statement of a macro body (ADR-0090 §2).
+///
+/// Such a `return` must return from the **caller** — Jai's semantics — which this wave defers because it
+/// changes what `return` means by provenance and interacts with `defer` (ADR-0049 §3). Refused rather than
+/// rewritten into an assignment, which would fall through to the statements after it: a wrong answer.
+fn early_return_in_macro(span: Span) -> Diagnostic {
+    Diagnostic::error(
+        span,
+        "a `return` that is not the last statement of a `#expand` macro is not yet supported",
+    )
+    .with_code(E0273)
+    .with_note(
+        "a macro's statements are spliced into the caller, so an early `return` would have to return \
+         from the *caller* — that arrives in a later sub-wave (ADR-0090 §2)",
+    )
+    .with_help("put the `return` last, or use an `if` that assigns and falls through")
+}
+
+fn rewrite_macro_returns(body: &str, result: Option<&str>) -> String {
+    let mut out = String::with_capacity(body.len());
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("return") {
+            let value = rest.trim().trim_end_matches(';').trim();
+            match (result, value.is_empty()) {
+                // `return <e>;` in a value macro: assign to the result local.
+                (Some(name), false) => {
+                    out.push_str(name);
+                    out.push_str(" = ");
+                    out.push_str(value);
+                    out.push_str(";\n");
+                }
+                // `return;` — nothing to carry, and no frame to leave.
+                (_, true) => {}
+                // A value returned by a macro whose call wants none: evaluate it for its effects, so a
+                // call in statement position does not silently drop a side effect.
+                (None, false) => {
+                    out.push_str(value);
+                    out.push_str(";\n");
+                }
+            }
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Whether a macro body has a `return` anywhere but its **last** statement (ADR-0090 §2).
+///
+/// Such a `return` needs the caller-return semantics this wave defers, so `lower_call` refuses it rather
+/// than rewriting it into an assignment that would fall through to the statements after it.
+fn macro_returns_early(body: &str) -> bool {
+    let lines: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    lines
+        .iter()
+        .enumerate()
+        .any(|(i, l)| l.starts_with("return") && i + 1 != lines.len())
+}
+
 fn block_inner_text(block: &jr_syntax::SyntaxNode) -> String {
     let text = block.text().to_string();
     // The braces are the first and last non-trivia characters of a `BLOCK`, so trimming them off the

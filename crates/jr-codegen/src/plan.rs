@@ -118,6 +118,15 @@ pub fn declarations(input: &FileInput<'_>, pool: &Pool, entry: Option<ProcId>) -
         if sig.is_template() {
             continue;
         }
+        // **A `#expand` macro is not declared either** (ADR-0090 §2): its body is never lowered — the
+        // statements are spliced into each caller — so there is no code to define, and declaring it left
+        // the linker with an undefined local symbol (`function "jr$0$0" with linkage Local must be defined
+        // but is not`). Caught by the corpus differential on this wave's own file, which is what that
+        // harness is for. Skipped for the same reason a template is, and read from the HIR because a
+        // macro's *signature* is an ordinary one — the flag is on the declaration.
+        if input.hir.procs[index].expand {
+            continue;
+        }
         let data = &input.hir.procs[index];
 
         let kind = match &data.foreign {
