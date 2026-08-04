@@ -537,9 +537,19 @@ added **none**. The project defines **98** codes.
 ### Open, and honest about it
 
 - [ ] **The variable-length field list** — a struct's fields, a procedure's signature — as a `Type_Info`
-      member. This is the memory-ownership decision ADR-0075 §3 flagged and ADR-0078 §4 kept: the elements
-      (a `Type_Info_Field[]`) need the program's lifetime, so it is static data the back end emits versus a
-      comptime-built table. It is what a struct *printer* needs, and the honest largest remaining RTTI gap.
+      member. **Out of W4 and owed its own wave**, with the constraint now sharpened by probing so the next
+      attempt does not rediscover it:
+      * A **view cannot be a compile-time constant at all** (ADR-0079): its `data` word addresses the
+        evaluator's memory, and interning it was a *silent miscompile* until that ADR refused it.
+      * A **fixed array of contents-identified structs does intern** — `[2]F` where
+        `F :: struct { name: string; off: s64; }` round-trips in both engines, because a `string`'s identity
+        is its contents. So the elements are representable; it is the *varying length* that is not.
+      * A **fixed max-N array plus a count is rejected**: every `Type_Info` would carry N empty field slots
+        regardless of the type it describes, and N would be an arbitrary cap a struct can exceed — trading a
+        silent truncation for a size cost on every type.
+      * What remains is therefore the **relocation mechanism** ADR-0079 §1 refused to do implicitly (because
+        quietly copying a pointee changes what a program points at): a declared way to emit per-type static
+        data. That is a back-end contract, and it is a wave.
 - [ ] **Following an `element`/`id` back to a `Type_Info`.** `element` is an id; there is no
       `type_info_by_id(n)`, because that needs every reachable type's `Type_Info` materialised — the same
       static-data decision. A program compares ids; it cannot yet walk them.
@@ -548,9 +558,16 @@ added **none**. The project defines **98** codes.
       `type_info(Arr)` will work the day that alias does.
 - [ ] **A bare *value* coercing to `Any`** (`a: Any = 3;`), deferred (ADR-0076 §4): a literal has no
       address, so it needs a materialised temporary. The **pointer** coercion `takes(*x)` is done.
-- [ ] **`#code` and the `Code` type** — a quoted syntax tree as a value; the last of the `#insert` family.
-      Probed: it does not parse at all, so it needs new grammar across parser, CST, tree-sitter and
-      formatter — the widest surface of what remains, and comptime-only like `Type`.
+- [ ] **`#code`** — the last of the `#insert` family, and **probing narrowed what it is worth**:
+      `#insert CODE;` where `CODE :: "n := 7;"` *already works* (ADR-0073), and a malformed operand already
+      reports well (E0263 names the parse fault and its offset into the inserted text). So `#code`'s
+      marginal value is **syntactic** — unquoted source, checked at the quote site — not a new capability.
+      The decision taken (DECISIONS fork 6) is to implement it as unquoted syntax that lowers to the same
+      string-operand path: the CST is lossless, so a `#code { … }` body's source text is recoverable from
+      its node. That reuses three sub-waves of `#insert` machinery and needs no pool variant and no engine
+      path. It is **sugar, and its ADR must say so** — a *quoted syntax tree* value (one a macro could
+      inspect) is a different feature, comptime-only like `Item::TypeType`, and nothing in W4 asks for it.
+      Surface: `SyntaxKind`, parser, typed AST, tree-sitter grammar, formatter, and lowering.
 - [ ] **A `#run` reading another file's constant** stays refused (ADR-0073 §4); **`#insert` at file scope**
       stays refused (ADR-0072 §5).
 

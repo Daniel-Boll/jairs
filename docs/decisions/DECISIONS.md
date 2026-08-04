@@ -1077,3 +1077,46 @@ Taken as recommended.
   wrong answer with no diagnostic is what ADR-0017 §4 says must refuse.
 - This lands **before** the field list, because the field list would otherwise be built on a path that
   silently miscompiles pointers.
+
+### Fork 5 — the field list's representation, after ADR-0079 closed the view route
+
+- What probing established: a **fixed array** of structs each holding a `string`
+  (`[2]F where F :: struct { name: string; off: s64; }`) interns and round-trips in both engines, because
+  every element's identity is its *contents*. A **view** cannot be a constant at all (ADR-0079). And a
+  `Type_Info` needs a *per-type* field count, which a single fixed `[N]` cannot express.
+- Options: **defer the field list and record the sharpened constraint (taken, recommended)**; a fixed
+  max-N array plus a count in every `Type_Info`; implement the static-data relocation ADR-0079 §1
+  rejected doing implicitly.
+- Why defer: the max-N option makes **every** `Type_Info` pay N field slots regardless of the type it
+  describes — a `s64`'s info would carry (say) 32 empty `Type_Info_Field`s, and N would be an arbitrary
+  cap that a struct can exceed, so it trades a silent truncation for a size cost. That is a worse answer
+  than not shipping it. The relocation option is a genuine, separable decision — it needs a declared
+  mechanism (ADR-0079 §1 refused doing it quietly because it changes what a program points at), which
+  means new syntax or a new back-end contract for emitting per-type static data. That is its own wave, and
+  it is honest to say so rather than pick the cheap encoding.
+- What ships instead: nothing for the list; the constraint is recorded in PLAN §7 and ADR-0079's
+  consequences so the next attempt starts from "a view cannot be a constant, and a fixed array cannot vary
+  per type" rather than rediscovering it.
+- **W4's remaining scope is therefore `#code` and the cross-file `#run` value**, with the field list
+  explicitly out of W4 and owed its own wave.
+
+### Fork 6 — `#code`, assessed before committing to it
+
+- What probing established: `#insert CODE;` where `CODE :: "n := 7;"` **already works** (ADR-0073), and a
+  malformed operand already reports well — E0263 names the parse fault *and* its offset into the inserted
+  text. So `#code`'s marginal value over a string operand is **syntactic**: unquoted source, checked at the
+  quote site rather than at splice time.
+- Options: **implement `#code` as unquoted syntax that lowers to the same string operand path (taken,
+  recommended)**; a full quoted-syntax-tree value (`Item::CodeValue` holding a CST/HIR fragment); leave
+  `#code` unimplemented and close W4 without it.
+- Why the string-backed form: it delivers the *ergonomic* win (no quoting, no escaping — and escaping is
+  what ADR-0072 §5 said bounds a written nest) with no new pool variant, no new comptime-only type, and no
+  new engine path, because it reuses the `#insert` machinery three sub-waves already built and tested. A
+  full quoted **syntax tree** value answers ADR-0072 §4's "does it exist at run time?" with "no", which
+  makes it comptime-only like `Item::TypeType` — and then a `Code` value can only ever be spliced, which is
+  exactly what the string form already does. Paying for a CST-in-the-pool representation to reach the same
+  observable behaviour is cost without benefit until something *manipulates* a tree (a macro that inspects
+  its argument), which nothing in W4 asks for.
+- Consequence recorded honestly: this makes `#code` sugar, and the ADR must say so rather than implying a
+  syntax-tree value. If a later wave needs tree *manipulation*, it supersedes this with the real
+  representation.
