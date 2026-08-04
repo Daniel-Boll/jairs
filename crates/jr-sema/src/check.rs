@@ -75,6 +75,8 @@ enum Intrinsic {
     Typed,
     /// `untyped(p)` — a `*T` viewed as a `*u8`, for releasing it (ADR-0106 §1).
     Untyped,
+    /// `view(p, count)` — a `[]T` over `count` elements at `p` (ADR-0109 §1).
+    View,
 }
 
 /// How a `Type_Info` field's type is checked.
@@ -2694,6 +2696,10 @@ impl Ctx<'_> {
             // conversion only at an `Any` boundary.
             Some(Intrinsic::Typed) => return self.check_typed(scope, id, callee, args, span),
             Some(Intrinsic::Untyped) => return self.check_untyped(scope, id, callee, args, span),
+            // **`view(p, n)` builds a `[]T` from a pointer and a count** (ADR-0109 §1). Intercepted like the
+            // other boundary intrinsics because its *result* type comes from an argument's pointee rather than
+            // from anything the ordinary call path could compute.
+            Some(Intrinsic::View) => return self.check_view(scope, id, callee, args, span),
             None => {}
         }
 
@@ -2947,6 +2953,7 @@ impl Ctx<'_> {
             "size_of" => Intrinsic::SizeOf,
             "typed" => Intrinsic::Typed,
             "untyped" => Intrinsic::Untyped,
+            "view" => Intrinsic::View,
             _ => return None,
         };
         match self.resolve.get(scope, callee).unwrap_or(res) {
@@ -3287,6 +3294,92 @@ impl Ctx<'_> {
             return PoolId::ERROR;
         }
         let result = self.pool.pointer_to(described);
+        self.pointer_views.insert((scope, id), result);
+        self.expect(None, result, span)
+    }
+
+    /// Types `view(p, count)` — a `[]T` over `count` elements at `p` (ADR-0109 §1).
+    ///
+    /// **The element type comes from the pointer**, not from an argument, so nothing is asserted: `view` on a
+    /// `*s64` is a `[]s64` and cannot be anything else. That is the property that made `typed` acceptable while
+    /// `cast` stayed refused (ADR-0106 §1), and it is why this needs no type argument.
+    ///
+    /// **The count is unchecked, and that is stated rather than hidden.** A pointer's allocation size is not
+    /// tracked anywhere — `malloc` returns a bare address and no shadow table records what was asked for — so a
+    /// checked `view` would need an allocation registry, which the native back end could not share with the VM.
+    /// So this is in the same honest category as `typed`: it does not make the operation safe, it makes it
+    /// **visible and searchable**.
+    ///
+    /// It exists because a growable array could not hand its contents to `Sort` or `String` (ADR-0107's closing
+    /// gap): a slice takes an *array*, so nothing could turn a pointer and a count into a view.
+    fn check_view(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        self.types.set_expr(scope, callee, PoolId::VOID);
+        if args.len() != 2 {
+            self.wrong_intrinsic_arity("view", 2, args.len(), span);
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+
+        let pointer = self.check_expr(scope, args[0], None);
+        // The count is an `s64`, pushed into the argument so a literal takes that type rather than defaulting
+        // (ADR-0016 §1).
+        let count = self.check_expr(scope, args[1], Some(PoolId::S64));
+        if pointer == PoolId::ERROR || count == PoolId::ERROR {
+            return PoolId::ERROR;
+        }
+
+        let Item::PointerType(elem) = *self.pool.item(pointer) else {
+            let text = self.describe(pointer);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`view` needs a pointer, but this is `{text}`"),
+                )
+                .with_code(E0279)
+                .with_note(
+                    "the view's element type is the pointer's pointee, so there has to be one",
+                )
+                .with_help("`view(d, n)` where `d` is a `*T` gives a `[]T`"),
+            );
+            return PoolId::ERROR;
+        };
+        // **A `void` pointee has no stride**, so a view over it could not be indexed — refused here rather than
+        // producing a `[]void` that every later operation would have to special-case.
+        if let Err(error) = jr_pool::layout_of(self.pool, jr_pool::TargetLayout::LP64, elem) {
+            let text = self.describe(elem);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`view` cannot describe elements of type `{text}`"),
+                )
+                .with_code(E0266)
+                .with_note(format!("the layout is unavailable because {error}")),
+            );
+            return PoolId::ERROR;
+        }
+        if count != PoolId::S64 {
+            let text = self.describe(count);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`view`'s count must be an `s64`, but this is `{text}`"),
+                )
+                .with_code(E0279)
+                .with_note("a view's count is an `s64`, matching `.count` on an array or a view"),
+            );
+            return PoolId::ERROR;
+        }
+
+        let result = self.pool.view_of(elem);
         self.pointer_views.insert((scope, id), result);
         self.expect(None, result, span)
     }

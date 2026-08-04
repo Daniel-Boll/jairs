@@ -2289,3 +2289,43 @@ same code meant different things depending on which file you compiled.
 which is deterministic but not source-ordered across files. Sorting by file and line would be nicer and needs a
 decision about whether the root's own errors should still come first (they should, and that is the argument for
 leaving it).
+
+## W7 sub-wave 7 — a view of a list's used prefix
+
+**The gap, as ADR-0107 named it.** `Int_List` cannot hand its contents to `Sort` or `String`, because building a
+`[]s64` from a pointer and a count is not something any expression can spell — a slice takes an *array*. So a
+growable array and a sorting routine exist side by side and cannot be combined, which is a poor advertisement for
+a standard library.
+
+**A stale reason found while probing.** ADR-0044 §4 refused `view.data` because it "would hand out an unbounded
+`*T` one wave after the bounds check was added, and there is no pointer arithmetic to use it with." **Both halves
+have expired**: pointer arithmetic arrived in ADR-0064, and typed allocation in ADR-0106 means a `*T` is now an
+ordinary thing to hold. A refusal whose stated reason has expired is worth revisiting rather than inheriting.
+
+**The fork: how does a `[]T` come into existence from a pointer and a count?**
+
+- **(a) An intrinsic `view(p, count)` returning `[]T` where `T` is `p`'s pointee.** The element type comes from
+  the *pointer*, so nothing is asserted — the same property that made `typed` acceptable while `cast` stayed
+  refused (ADR-0106 §1). A view is `{data, count}` (ADR-0044), so lowering is building a two-field aggregate,
+  which MIR already does for `Any` and for a string literal. Cost: the count is unchecked, so `view(p, 99)` on a
+  three-element allocation is a lie the compiler cannot catch. Benefit: it is the only form that needs no new
+  type rule, and *every* alternative has the same unchecked count. **Chosen.**
+- **(b) Expose `view.data` and let a caller build views by struct literal.** Needs a view to be constructible as
+  an aggregate literal, which would make `[]T` a nominal-ish struct rather than a built-in — a much larger change
+  — and it hands out the `*T` ADR-0044 §4 worried about *without* giving the caller the thing they actually
+  wanted.
+- **(c) A slice syntax over a pointer: `p[0 .. n]`.** Prettier, and it is what a later wave should have. But
+  slicing is currently defined over arrays with a *known* bound (ADR-0044), so this would either weaken that
+  definition or introduce a second slicing rule keyed on the base's type. Syntax is the expensive part to get
+  wrong and the cheap part to add later; an intrinsic can be replaced by syntax without changing semantics.
+- **(d) Give `List` its own `sort_list`/`find_in_list` wrappers instead.** No language change, and it multiplies:
+  every algorithm would need a per-container copy, which is exactly what a view exists to prevent.
+
+**Why the count stays unchecked, stated rather than hidden.** The pointer's *allocation size* is not tracked
+anywhere — `malloc` returns a bare address, and no shadow table records what was asked for. So a checked
+`view` would need an allocation registry, which is a much bigger decision (and one the native back end could not
+share with the VM). The intrinsic is therefore in the same honest category as `typed`: it does not make the
+operation safe, it makes it **visible and searchable**.
+
+**Deferred with reasons:** `p[0 .. n]` syntax (above); a view of a *sub*range of a list; a checked view (wants an
+allocation registry); `view` on a `*u8` producing `[]u8` is allowed and is how a caller would build a byte view.

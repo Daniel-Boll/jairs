@@ -509,7 +509,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **985 workspace tests** and **198 corpus files**, all six gates green, **166
+waiting. Both are tracked below. **985 workspace tests** and **199 corpus files**, all six gates green, **166
 Neovim checks**. See §1.5.
 
 ### W7 — Stdlib, open
@@ -685,7 +685,29 @@ through them** (ADR-0085 §5). So a growable array has real storage but stays pe
       directory's `fixture_modules_check_cleanly` invariant is worth keeping — a *fixture* module is scenery, and a
       broken one makes every test importing it ambiguous. That invariant caught the first attempt at this test.
 
-**What W7 has left:** the **allocating** half of `String`, once the allocator convention is decided; a merge
+- [x] **A view from a pointer** (ADR-0109, sub-wave 7): `view(p, n)` builds a `[]T`, and `List.elements` hands out
+      the used prefix — so **`sort_ints(elements(*l))` sorts a growable list in place**, three modules cooperating
+      on one buffer with no copy. That was ADR-0107's closing gap: a slice takes an *array*, so nothing could turn
+      a pointer and a count into a view, and a growable array and a sorting routine sat side by side unable to be
+      combined.
+
+      **A stale refusal, found by probing.** ADR-0044 §4 refused `view.data` because it "would hand out an
+      unbounded `*T` … and there is no pointer arithmetic to use it with" — and **both halves have expired**
+      (ADR-0064 gave pointer arithmetic, ADR-0106 makes a `*T` ordinary). The answer is not to expose `.data` but
+      to add the missing *constructor*, so the refusal stands for a **better** reason and `type-errors/037` now
+      says so. That is the third time this project has found a stated reason outliving its truth.
+
+      The element type comes from the **pointer**, so nothing is asserted. The count is **unchecked** and said so:
+      a pointer's allocation size is tracked nowhere, so a checked view would need a registry the native back end
+      could not share with the VM. Syntax (`p[0 .. n]`) is deferred deliberately — syntax is the expensive thing to
+      get wrong and the cheap thing to add, and an intrinsic can be replaced by it without changing semantics.
+      **Neither engine needed a line**: lowering emits the same three statements a slice does.
+- [x] **A sixth leaked gap report fixed** (ADR-0109 §2): `elements(*l).count` reads a view a *call returned by
+      value*, which has no place to project from, and it leaked "this compiler has a gap — please report it". Given
+      a slot, exactly as ADR-0077 did for `type_info(s64).id`. The pattern across all six is now unmistakable —
+      every one appeared the first time a **value-returning** form met a construct only ever used through a place.
+
+**W7 left after that:** the **allocating** half of `String`, once the allocator convention is decided; a merge
 sort and a binary search (the first wants allocation, the second a sortedness precondition nothing can check);
 a dynamic array and a hash table, both of which want W5's polymorphic
 structs; `Math`, `Random`, `File`, `File_Utilities`, `Process`, `Thread`, `Time`, `Socket`, `JSON`, `Compiler`.

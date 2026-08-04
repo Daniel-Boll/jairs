@@ -1,8 +1,17 @@
 // EXPECT: E0218 — a view has no `.data` (ADR-0044 §4)
-// Deliberately absent, for the reason `[N]T`'s is (ADR-0039 §5): it would hand out an
-// unbounded `*T` one wave after the bounds check was added, and there is no pointer arithmetic
-// to use it with. `string.data` exists only because ADR-0004 fixed that layout for the FFI
-// boundary, which a view does not cross.
+// Deliberately absent, for the reason `[N]T`'s is (ADR-0039 §5). `string.data` exists only because ADR-0004
+// fixed that layout for the FFI boundary, which a view does not cross.
+//
+// **The original reason has expired, and the refusal still stands — for a better one.** ADR-0044 §4 argued that
+// `.data` "would hand out an unbounded `*T` one wave after the bounds check was added, and there is no pointer
+// arithmetic to use it with". Both halves are now false: pointer arithmetic arrived in ADR-0064, and typed
+// allocation (ADR-0106) makes a `*T` an ordinary thing to hold. ADR-0109 revisited the refusal rather than
+// inheriting it — the third time this project has found a stated reason outliving its truth.
+//
+// What it found is that a caller reaching for `.data` wants to build a **view**, and the answer is the missing
+// *constructor* rather than the exposed field: `view(p, n)` builds a `[]T` from a pointer and a count, which is
+// what `List.elements` hands to `Sort`. So `.data` stays absent because nothing needs it, which is a better
+// reason than the one it replaced.
 first :: (xs: []u8) -> *u8 {
     return xs.data;
 }

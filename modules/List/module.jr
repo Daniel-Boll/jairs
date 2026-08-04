@@ -37,12 +37,12 @@
 //! recover. `push` returns `false`, which is what it already returned when `Int_Array` was full: a caller can do
 //! nothing different about the two reasons, so one answer serves both.
 //!
-//! # What it cannot do yet
+//! # Composing with the rest of the library
 //!
-//! There is **no view of the used prefix**. `[]s64` would be the natural way to hand a list's contents to
-//! `Sort` or `String`, and building a view from a pointer and a count is not something any expression can spell
-//! — a slice takes an *array*, not a pointer. That is a real gap rather than an oversight, and it is the next
-//! thing this module wants.
+//! `elements(a)` hands out a `[]s64` **over the used prefix**, so a list's contents go straight to `Sort` or to
+//! anything else taking a view. That was this module's closing gap when it shipped: a slice takes an *array*, so
+//! nothing could turn a pointer and a count into a view, and a growable array and a sorting routine sat side by
+//! side unable to be combined. ADR-0109's `view` intrinsic closed it.
 //!
 //! # Why this module imports `Basic`
 //!
@@ -166,6 +166,25 @@ free_data :: (a: *Int_List) {
 /// Whether the list holds nothing.
 is_empty :: (a: *Int_List) -> bool {
     return a.count == 0;
+}
+
+/// A view over the list's **used prefix** — `[]s64` of exactly `count` elements.
+///
+/// This is what makes a list compose: `sort_ints(elements(*l))` sorts it in place, because a view is a *window*
+/// onto the same storage rather than a copy (ADR-0044). Anything taking a `[]s64` takes a list's contents.
+///
+/// **`count`, not `capacity`.** The slots between them hold whatever the allocator returned, so a view over the
+/// capacity would hand out genuinely undefined elements — the same reason `get` bounds on `count`.
+///
+/// **The view is invalidated by anything that reallocates.** A `push` that grows moves the storage, so a view
+/// taken before it points at freed memory; `free_data` invalidates it outright. That is the ordinary consequence
+/// of a view being a window and of memory being explicit, and it is stated here because nothing enforces it —
+/// there is no borrow checker, which is a design position rather than an omission.
+///
+/// A view over an **empty** list is `view(null, 0)`, which is well-formed: a zero-count view is never indexed,
+/// and every routine that takes one loops `while i < count`.
+elements :: (a: *Int_List) -> []s64 {
+    return view(a.data, a.count);
 }
 
 #scope_module

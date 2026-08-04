@@ -1,0 +1,112 @@
+// **A view from a pointer and a count** (ADR-0109): `view(p, n)`. W7's seventh sub-wave, and the piece that makes
+// the standard library **compose** — `sort_ints(elements(*l))` sorts a growable list in place, which is three
+// modules cooperating on one buffer.
+//
+// **The gap, as ADR-0107 named it.** `Int_List` could not hand its contents to `Sort` or `String`, because a
+// slice takes an *array* and nothing could turn a pointer and a count into a `[]s64`. So a growable array and a
+// sorting routine sat side by side, unable to be combined — a poor advertisement for a standard library.
+//
+// **A stale refusal, found by probing.** ADR-0044 §4 refused `view.data` because it "would hand out an unbounded
+// `*T` one wave after the bounds check was added, and there is no pointer arithmetic to use it with". **Both
+// halves have expired**: pointer arithmetic arrived in ADR-0064, and typed allocation (ADR-0106) makes a `*T` an
+// ordinary thing to hold. A refusal whose stated reason has expired is worth revisiting rather than inheriting —
+// and the answer here is not to expose `.data` but to add the *constructor* a caller actually wanted.
+//
+// **The element type comes from the pointer**, so nothing is asserted: `view` on a `*s64` is a `[]s64` and cannot
+// be anything else. That is the property that made `typed` acceptable while `cast` stayed refused, and it is why
+// this takes no type argument.
+//
+// **The count is unchecked, and that is stated rather than hidden.** A pointer's allocation size is not tracked
+// anywhere — `malloc` returns a bare address and no shadow table records what was asked for — so a checked `view`
+// would need an allocation registry the native back end could not share with the VM. So `view` is in the same
+// honest category as `typed`: it does not make the operation safe, it makes it **visible and searchable**. A
+// syntax (`p[0 .. n]`) is what a later wave should have; syntax is the expensive thing to get wrong and the cheap
+// thing to add, and an intrinsic can be replaced by it without changing semantics.
+//
+// **Neither engine needed a line.** A view is `{data, count}` and lowering emits the same three statements a
+// slice does — zero the slot, store the data word, store the count — so this is a second way to *produce* a view
+// rather than a second thing to consume. The only difference is where the parts come from.
+//
+// What is checked here:
+//
+//   * a view over a heap allocation, **indexed** and read through `.count`;
+//   * a view whose count is **shorter** than the allocation, so the count is genuinely the view's own;
+//   * a view over a **struct** element type, so it is not scalar-only;
+//   * writing *through* the view and seeing it in the underlying memory — a view is a window, not a copy;
+//   * `elements` on a growable list, and `sort_ints(elements(*l))` **sorting the list in place** — the whole
+//     point of the sub-wave, and three modules composing;
+//   * a **zero-count** view over an empty list, which is well-formed because nothing indexes it.
+//
+// The exit code is **63**, six groups of one bit.
+#import "Basic";
+#import "List";
+#import "Sort";
+
+Pair :: struct {
+    a: s64;
+    b: s64;
+}
+
+main :: () {
+    n := 0;
+
+    // A view over a heap allocation, indexed and counted.
+    d := typed(s64, malloc(4 * size_of(s64)));
+    (d + 0).* = 10;
+    (d + 1).* = 20;
+    (d + 2).* = 30;
+    (d + 3).* = 40;
+    v := view(d, 4);
+    if v.count == 4 && v[0] == 10 && v[3] == 40 {
+        n = n + 1;
+    }
+
+    // A **shorter** view of the same memory: the count is the view's, not the allocation's.
+    short := view(d, 2);
+    if short.count == 2 && short[1] == 20 {
+        n = n + 2;
+    }
+
+    // A view is a **window**: writing through it changes the memory behind it.
+    v[0] = 99;
+    if (d + 0).* == 99 {
+        n = n + 4;
+    }
+    free(untyped(d));
+
+    // Not scalar-only: a view over a struct element type.
+    ps := typed(Pair, malloc(2 * size_of(Pair)));
+    pv := view(ps, 2);
+    pv[0].a = 3;
+    pv[0].b = 4;
+    if pv[0].a + pv[0].b == 7 && pv.count == 2 {
+        n = n + 8;
+    }
+    free(untyped(ps));
+
+    // **The point of the sub-wave**: a growable list's contents, sorted in place by another module.
+    l: Int_List;
+    l.data = null;
+    l.count = 0;
+    l.capacity = 0;
+
+    // A zero-count view over an empty list is well-formed — nothing indexes it.
+    if elements(*l).count == 0 {
+        n = n + 16;
+    }
+
+    push(*l, 5);
+    push(*l, 1);
+    push(*l, 4);
+    push(*l, 2);
+    push(*l, 3);
+    sort_ints(elements(*l));
+    first, _ := get(*l, 0);
+    last, _ := get(*l, 4);
+    if first == 1 && last == 5 && ints_sorted(elements(*l)) {
+        n = n + 32;
+    }
+    free_data(*l);
+
+    exit(n);
+}
