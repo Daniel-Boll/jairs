@@ -1910,3 +1910,32 @@ replacing makefiles, plugin hooks, `@note` attributes.
   expression would raise "what does a note on `a + b` mean", which nothing needs. Arbitrary key-value pairs
   are a superset nothing in W6 consumes yet, and ADR-0080 §3's rule applies: represent it when something
   reads it.
+
+## W6 sub-wave 2 — a reader for `@note`
+
+**The fork: what is the reader?** Four options, and the recommendation is (a).
+
+- **(a) `has_note(f, "x")` and `note_value(f, "x")` — two folding intrinsics over a *named declaration*.**
+  A `bool` and a `string`, folded at compile time from `Proc::notes` with **no VM involved**, exactly the way
+  `type_info` folds (ADR-0075 §2). Cost: it reads one declaration at a time, so a build script cannot ask
+  "every declaration tagged `@X`" without naming each. Benefit: it is the smallest thing that gives notes a
+  reader at all, and it needs no new query, no new value shape and no loop — the pool is already mutable in
+  sema, and `FileHir::proc.notes` is already there. **Chosen.**
+- **(b) A genuine message loop — `compiler_wait_for_message()` returning a `Message` value.** What Jai has,
+  and W6's headline. Cost: it needs a `Code`/`Declaration` value that ADR-0080 §3 *declined* to represent
+  until something could inspect one, plus a compile-time iteration protocol, plus a re-entrancy story (a
+  metaprogram running while the compiler is mid-check). Every one of those is its own sub-wave. Rejected as
+  the *next* step, not as a destination: (a) is the inspection primitive (b)'s message would hand over.
+- **(c) A callback the compiler invokes per declaration.** Cheaper than (b), but it inverts control before
+  anything knows what a declaration *value* is, so the callback's parameter type is the same undecided
+  question with less room to change its mind.
+- **(d) Emit notes into a generated table a script reads as data.** No new language surface at all, but it
+  moves the question to "what file, in what format", which is a build-system decision W6 has not made yet.
+
+**Why a declaration argument rather than a string name.** `has_note(add, "inline")` takes the procedure
+*itself*, so a typo in the name is an ordinary unresolved-name error rather than a silent `false`. A silent
+`false` is exactly the failure mode the formatter's dropped notes had, and it is worth not rebuilding.
+
+**Deferred with reasons:** notes on a struct or a constant (only `Proc` carries them today — the parser takes
+notes in the *procedure* attribute loop, so widening is a parser change, not a reader change); querying every
+declaration with a note (needs (b)); a note on a parameter or field.

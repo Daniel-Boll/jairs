@@ -1,0 +1,26 @@
+// EXPECT: E0277 — a `has_note` note name that is not a string literal (ADR-0099 §1)
+//
+// **A `has_note` note name must be a string literal** (E0277, ADR-0099 §1).
+//
+// `has_note(f, "x")` is folded while *checking* — the answer is in the HIR's `Proc::notes`, which the checker
+// is already holding, which is what makes the reader need no VM and no query at all. So the name has to be
+// readable then, and a computed one is not: const-eval runs downstream of sema (ADR-0018 §3).
+//
+// This is the same narrowing an array length took (ADR-0039 §3a) and an `#insert` operand took before it
+// (ADR-0072), and it has the same widening route available later (ADR-0070 §1) if a caller ever wants a
+// computed note name. Refused rather than silently answering `false`, because a `false` from a name the
+// compiler could not read is indistinguishable from a note that is genuinely absent — and telling those two
+// apart is the entire job of a reader.
+// No `#import "Basic"`, because nothing here needs it and an unused import is E0231 — a *second*
+// diagnostic, which this directory's one-per-file contract does not allow. `has_note` is recognised by the
+// compiler rather than imported, so the refusal does not depend on a module being loaded.
+
+tuned :: (x: s64) -> s64 @fast {
+    return x;
+}
+
+asks_with_a_local :: () {
+    which := "fast";
+    // A local, so the name resolves — the refusal is about *when* it is readable, not whether it exists.
+    answer := has_note(tuned, which);
+}

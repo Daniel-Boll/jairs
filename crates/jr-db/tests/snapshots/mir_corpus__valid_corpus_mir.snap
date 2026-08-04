@@ -6938,3 +6938,99 @@ proc $inst0 -> s64 {
   bb0(v0: *Context, v1: s64):
     return v1
 }
+
+========================================
+080-note-reader.jr
+========================================
+proc tuned -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    return v1
+}
+proc plain -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    return v1
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: string  // local 1
+    s1: string  // local 2
+    s2: string  // local 3
+  bb0(v0: *Context):
+    branch true ? bb1() : bb2()
+  bb1():
+    v1: s64 = 0_s64 + 1_s64
+    goto bb3(v1)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v2: s64):
+    branch true ? bb4() : bb5()
+  bb4():
+    v3: s64 = v2 + 2_s64
+    goto bb6(v3)
+  bb5():
+    goto bb6(v2)
+  bb6(v4: s64):
+    branch false ? bb7() : bb8()
+  bb7():
+    v5: s64 = v4 + 100_s64
+    goto bb9(v5)
+  bb8():
+    goto bb9(v4)
+  bb9(v6: s64):
+    branch false ? bb10() : bb11()
+  bb10():
+    v7: s64 = v6 + 100_s64
+    goto bb12(v7)
+  bb11():
+    goto bb12(v6)
+  bb12(v8: s64):
+    branch true ? bb13() : bb14()
+  bb13():
+    v9: s64 = v8 + 4_s64
+    goto bb15(v9)
+  bb14():
+    goto bb15(v8)
+  bb15(v10: s64):
+    branch true ? bb16() : bb17()
+  bb16():
+    v11: s64 = v10 + 8_s64
+    goto bb18(v11)
+  bb17():
+    goto bb18(v10)
+  bb18(v14: s64):
+    store s0 <- "0.3"
+    v12: s64 = load s0.count
+    v13: bool = v12 == 3_s64
+    branch v13 ? bb19() : bb20()
+  bb19():
+    v15: s64 = v14 + 16_s64
+    goto bb21(v15)
+  bb20():
+    goto bb21(v14)
+  bb21(v18: s64):
+    store s1 <- ""
+    v16: s64 = load s1.count
+    v17: bool = v16 == 0_s64
+    branch v17 ? bb22() : bb23()
+  bb22():
+    v19: s64 = v18 + 32_s64
+    goto bb24(v19)
+  bb23():
+    goto bb24(v18)
+  bb24(v22: s64):
+    store s2 <- ""
+    v20: s64 = load s2.count
+    v21: bool = v20 == 0_s64
+    branch v21 ? bb25() : bb26()
+  bb25():
+    v23: s64 = v22 + 64_s64
+    goto bb27(v23)
+  bb26():
+    goto bb27(v22)
+  bb27(v24: s64):
+    discard call extern proc1(v24)
+    return
+}
