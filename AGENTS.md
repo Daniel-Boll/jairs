@@ -73,7 +73,7 @@ visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919
 → 977 (W5 sub-wave 6b, `$N` instantiation) → 978 (W5 sub-wave 6c, `[N]T` over `$N`; 7a `#expand` surface) → 979 (W5 sub-wave 7b, the `#expand` splice) → 980 (W5 sub-wave 7c, reflecting a bound type)
 → 981 (W5 sub-wave 7h, `#bake_arguments` specialisation — **W5 complete**). W6 sub-wave 1 (`@note`) holds at
 981: its corpus file is iterated by the existing differential and snapshot tests rather than adding a case, which
-is why the *corpus* count is tracked too (185 files).
+is why the *corpus* count is tracked too (187 files).
 
 ## House style
 
@@ -176,6 +176,8 @@ and expansion nested too deep (ADR-0073). E0265–E0268 are comptime/reflection 
 parameterised struct, and a wrong type-argument count (ADR-0085); E0277 is `has_note`/`note_value`'s single refusal — an unreadable note name *or* a first argument that is not
 a procedure (ADR-0099), one code because they are one intrinsic's two ways of being unaskable — and E0278 is
 `==` on an aggregate, a `string` included (ADR-0099 §4), which was a leaked ICE until this wave probed it.
+E0277 also covers `noted_count`/`noted_name`'s two refusals (ADR-0100) — an unreadable note name or index —
+because all four note intrinsics are one mechanism and share its one way of being unaskable.
 E0271 is a `$N` comptime-value
 argument that is not a compile-time constant (ADR-0088) — **owned by `jr-db`** beside E0230,
 because constancy is a const-eval judgement, defined in `crates/jr-db/src/consts.rs`.

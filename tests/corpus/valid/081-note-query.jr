@@ -1,0 +1,87 @@
+// **Querying a file's noted declarations** (ADR-0100): `noted_count("x")` and `noted_name("x", i)`. W6's third
+// sub-wave, and the half a build script actually needs.
+//
+// ADR-0099 gave notes a **reader**: a script could ask a *named* declaration about its notes. Its closing
+// consequence was exact about what was missing — a script had to name each declaration, so it could not ask
+// "every declaration tagged `@X`". This is that question, for a script written against a note it will meet in
+// code it has not seen.
+//
+// **The honest limit, stated here because it is the interesting part.** A folding intrinsic is answered at
+// *check* time, so every argument must be readable then — and a `for` variable is not, because it exists only
+// at run time. So this does **not** work, and no spelling makes it work:
+//
+//     for i: 0..noted_count("serialise") { name := noted_name("serialise", i); … }
+//
+// Genuine loop-driven iteration needs the query to lower to *real code* reading a **compiler-emitted table** —
+// static data the back end emits and the VM can also read. Jairs has no such mechanism: it is the same one
+// `Type_Info`'s variable-length field list has been deferred for since ADR-0078, and it is owed its own wave.
+// So after this sub-wave notes can be **counted** and **named**, and cannot be **looped over**. That is the
+// boundary of folding rather than a gap in the syntax, and saying so is better than implying the message loop
+// is nearly finished.
+//
+// What is checked here:
+//
+//   * `noted_count` over a file with **two** `@serialise` procedures and one without — so the count is a real
+//     count rather than "any" or "all";
+//   * `noted_name` at index 0 and 1, in **declaration order**: the one order a reader can predict from the
+//     source. Sorting by name would make *inserting* a declaration renumber every index a script had
+//     unrolled, and a hash order would make one program answer differently between runs;
+//   * an **out-of-range** index answering `""` rather than being refused, because unrolling to a fixed bound
+//     is the intended use and its tail must be quiet — a script written for "up to four serialisable types"
+//     has to compile in a file with two;
+//   * a **different** note (`@internal`) counted separately, so the query is per-note and not per-file;
+//   * a note on a `#expand` macro counted alongside an ordinary procedure, since notes belong to the
+//     declaration rather than to how it is called.
+//
+// This file's exit code depends on **every** answer: it is 211 (2 declarations × 100, then a 1-byte first
+// name × 10, then a 1-byte second name, then 0 for the out-of-range read). Making the query return nothing
+// moves it to 255, which is what makes the answers load-bearing rather than decorative — the corpus
+// differential compares the two engines to each other, so a wrong answer both give is invisible.
+//
+// The query sees **this file only**: a note in an imported module is not counted. That is the same boundary a
+// cross-file `#expand` splice has (E0272) and a cross-file instantiation has, and for the same reason —
+// reaching across files during checking is what makes sema and the module loader mutually recursive, PLAN §5's
+// named top risk. A build script is a file, so the boundary is where a build script would want it.
+#import "Basic";
+
+/// The first `@serialise`, so index 0 names this one. A single-letter name, because the exit code compares
+/// name *lengths* — comparing text needs a byte loop, which is `String`'s job in W7 (E0278, ADR-0099 §4).
+a :: (x: s64) -> s64 @serialise {
+    return x;
+}
+
+/// Not noted at all, so it is skipped rather than counted — sitting *between* the two that are counted, so
+/// declaration order is genuinely tested rather than accidentally satisfied.
+b :: (x: s64) -> s64 {
+    return x;
+}
+
+/// The second `@serialise`. A macro, since a note belongs to the declaration rather than to how it is called.
+c :: (x: s64) -> s64 #expand @serialise {
+    return x + x;
+}
+
+/// A different note, counted on its own — the query is per-note.
+d :: (x: s64) -> s64 @internal {
+    return x;
+}
+
+main :: () {
+    // Two `@serialise`s: `a` and `c`, with `b` skipped between them.
+    n := noted_count("serialise");
+
+    // Declaration order, so these are `a` then `c` — one byte each.
+    first := noted_name("serialise", 0);
+    second := noted_name("serialise", 1);
+
+    // Past the end. `""` rather than a refusal, so an unrolled tail is quiet.
+    past := noted_name("serialise", 2);
+
+    // A different note, counted separately: one `@internal`.
+    internal := noted_count("internal");
+
+    // A note nothing carries. Zero is a real answer, not a sentinel.
+    missing := noted_count("nosuchnote");
+
+    exit(n * 100 + first.count * 10 + second.count + past.count + internal - 1 + missing);
+}

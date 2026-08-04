@@ -63,6 +63,10 @@ enum Intrinsic {
     HasNote,
     /// `note_value(decl, "name")` — the payload of `@name "payload"`, or `""` (ADR-0099 §1).
     NoteValue,
+    /// `noted_count("name")` — how many declarations in this file carry `@name` (ADR-0100 §1).
+    NotedCount,
+    /// `noted_name("name", i)` — the name of the `i`th of them, or `""` (ADR-0100 §1).
+    NotedName,
 }
 
 /// How a `Type_Info` field's type is checked.
@@ -2643,6 +2647,14 @@ impl Ctx<'_> {
             Some(Intrinsic::NoteValue) => {
                 return self.check_note_reader(scope, id, callee, args, span, true);
             }
+            // **The query side** (ADR-0100 §1): these ask about the *file* rather than a named
+            // declaration, so unlike the reader they take no declaration at all.
+            Some(Intrinsic::NotedCount) => {
+                return self.check_noted_count(scope, id, callee, args, span);
+            }
+            Some(Intrinsic::NotedName) => {
+                return self.check_noted_name(scope, id, callee, args, span);
+            }
             None => {}
         }
 
@@ -2858,6 +2870,8 @@ impl Ctx<'_> {
             "any_as" => Intrinsic::AnyAs,
             "has_note" => Intrinsic::HasNote,
             "note_value" => Intrinsic::NoteValue,
+            "noted_count" => Intrinsic::NotedCount,
+            "noted_name" => Intrinsic::NotedName,
             _ => return None,
         };
         match self.resolve.get(scope, callee).unwrap_or(res) {
@@ -2969,6 +2983,161 @@ impl Ctx<'_> {
         self.folded_calls.insert((scope, id), value);
 
         self.expect(None, answer_ty, span)
+    }
+
+    /// Types and folds `noted_count("name")` (ADR-0100 §1).
+    ///
+    /// Asks about **the file**, not a named declaration, which is what makes it a *query* rather than a
+    /// reader: it is the half a build script needs to act on declarations it was not written knowing about.
+    fn check_noted_count(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        self.types.set_expr(scope, callee, PoolId::VOID);
+        if args.len() != 1 {
+            self.wrong_intrinsic_arity("noted_count", 1, args.len(), span);
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+        let Some(name) = self.note_name_argument(scope, args[0], "noted_count", span) else {
+            return PoolId::ERROR;
+        };
+        let count = self.noted_declarations(name).len() as u64;
+        // `s64` rather than an untyped literal, because the count is a real quantity a caller will compare
+        // and index with, and ADR-0016 §1's context typing has no context to read at a folded call.
+        let value = self.pool.int_value(PoolId::S64, count);
+        self.folded_calls.insert((scope, id), value);
+        self.expect(None, PoolId::S64, span)
+    }
+
+    /// Types and folds `noted_name("name", i)` (ADR-0100 §1).
+    ///
+    /// **The index must be a literal**, for the reason the note name must be: this is answered while
+    /// checking, and a `for` variable does not exist then. That is not a spelling limitation but the
+    /// boundary of folding itself — genuine loop-driven iteration needs a compiler-emitted table, which is
+    /// the mechanism `Type_Info`'s variable-length field list has been deferred for since ADR-0078
+    /// (ADR-0100 §2). An out-of-range index answers `""` rather than being refused, because a script
+    /// unrolling to a fixed bound is the intended use and its tail must be quiet.
+    fn check_noted_name(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        self.types.set_expr(scope, callee, PoolId::VOID);
+        if args.len() != 2 {
+            self.wrong_intrinsic_arity("noted_name", 2, args.len(), span);
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+        let Some(name) = self.note_name_argument(scope, args[0], "noted_name", span) else {
+            self.check_expr(scope, args[1], None);
+            return PoolId::ERROR;
+        };
+
+        let index = self.int_literal_of(scope, args[1]);
+        self.types.set_expr(scope, args[1], PoolId::S64);
+        let Some(index) = index else {
+            self.diags.push(
+                Diagnostic::error(span, "`noted_name`'s index must be an integer literal")
+                    .with_code(E0277)
+                    .with_note(
+                        "the answer is folded while checking, so the index has to be readable then — a \
+                         `for` variable is not",
+                    )
+                    .with_help("unroll to a fixed bound, e.g. `noted_name(\"serialise\", 0)`"),
+            );
+            return PoolId::ERROR;
+        };
+
+        let found = self.noted_declarations(name);
+        let text = usize::try_from(index)
+            .ok()
+            .and_then(|i| found.get(i).copied())
+            .map(|sym| self.interner.resolve(sym).to_owned())
+            .unwrap_or_default();
+        let value = self.pool.str_value(&text);
+        self.folded_calls.insert((scope, id), value);
+        self.expect(None, PoolId::STRING, span)
+    }
+
+    /// The names of this file's procedures carrying `@name`, in **declaration order** (ADR-0100 §1).
+    ///
+    /// Declaration order rather than any other, because it is the one order a reader can predict from the
+    /// source: sorting by name would make inserting a declaration renumber every index a script had
+    /// unrolled, and a hash order would make the same program answer differently between runs.
+    fn noted_declarations(&self, note: Symbol) -> Vec<Symbol> {
+        let mut found = Vec::new();
+        for item in &self.hir.items {
+            let jr_hir::ItemKind::Const {
+                value: jr_hir::ConstValue::Proc(proc),
+            } = &item.kind
+            else {
+                continue;
+            };
+            let Some(name) = item.name else {
+                continue;
+            };
+            if self.hir.proc(*proc).notes.iter().any(|(n, _)| *n == note) {
+                found.push(name);
+            }
+        }
+        found
+    }
+
+    /// The interned note name `expr` carries, reporting E0277 when it is not a string literal.
+    fn note_name_argument(
+        &mut self,
+        scope: ExprScope,
+        expr: ExprId,
+        intrinsic: &str,
+        span: Span,
+    ) -> Option<Symbol> {
+        let text = self.string_literal_of(scope, expr);
+        self.types.set_expr(scope, expr, PoolId::STRING);
+        match text {
+            Some(text) => Some(self.interner.intern(&text)),
+            None => {
+                self.diags.push(
+                    Diagnostic::error(
+                        span,
+                        format!("`{intrinsic}`'s note name must be a string literal"),
+                    )
+                    .with_code(E0277)
+                    .with_note(
+                        "the answer is folded while checking, so the name has to be readable then",
+                    )
+                    .with_help(format!(
+                        "write it directly, e.g. `{intrinsic}(\"serialise\")`"
+                    )),
+                );
+                None
+            }
+        }
+    }
+
+    /// The value of `expr` when it is an integer literal, or `None` (ADR-0100 §1).
+    fn int_literal_of(&mut self, scope: ExprScope, expr: ExprId) -> Option<i128> {
+        match self.expr_of(scope, expr) {
+            Expr::Literal(value, _) => match value {
+                jr_hir::Literal::Int { value, .. } => Some(value),
+                jr_hir::Literal::Str(_)
+                | jr_hir::Literal::Float { .. }
+                | jr_hir::Literal::Bool(_)
+                | jr_hir::Literal::Null => None,
+            },
+            _ => None,
+        }
     }
 
     /// The notes of the procedure `expr` names, or `None` if it names something else (ADR-0099 §1).

@@ -1,0 +1,35 @@
+// EXPECT: E0277 — a `noted_name` index that is not an integer literal (ADR-0100 §1)
+//
+// **`noted_name`'s index must be a literal, and this is the boundary of folding rather than a spelling
+// limitation.** The answer is computed while *checking* — which is what lets the whole note query need no VM,
+// no table and no new query (ADR-0099 §2) — so every argument must be readable then. A local is not, and a
+// `for` variable is emphatically not: it exists only at run time.
+//
+// So the loop a build script really wants,
+//
+//     for i: 0..noted_count("serialise") { name := noted_name("serialise", i); … }
+//
+// cannot be made to work by folding at all. It needs the query to lower to *real code* reading a
+// **compiler-emitted table**: static data the back end emits and the VM can also read. Jairs has no such
+// mechanism — it is the same one `Type_Info`'s variable-length field list has been deferred for since
+// ADR-0078 — and it is owed its own wave. ADR-0100 §2 says so in those words rather than implying the message
+// loop is nearly done.
+//
+// Until then a script unrolls to a fixed bound, which is why an **out-of-range** index answers `""` rather
+// than being refused: the tail of an unrolled loop has to be quiet. Only an *unreadable* index is refused,
+// and that distinction is the whole design — "I cannot see the index" and "there is nothing at that index"
+// are different findings, and only the first is the author's mistake.
+//
+// No `#import "Basic"`: an unused import is E0231, a second diagnostic this directory's one-per-file contract
+// does not allow. The intrinsics are recognised by the compiler rather than imported.
+
+a :: (x: s64) -> s64 @serialise {
+    return x;
+}
+
+asks_with_a_local :: () {
+    i := 0;
+    // A local, so the name resolves — the refusal is about *when* its value is readable, not whether it is
+    // spelled correctly.
+    which := noted_name("serialise", i);
+}

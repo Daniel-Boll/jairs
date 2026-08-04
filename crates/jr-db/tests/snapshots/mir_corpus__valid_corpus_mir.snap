@@ -7034,3 +7034,46 @@ proc main -> void {
     discard call extern proc1(v24)
     return
 }
+
+========================================
+081-note-query.jr
+========================================
+proc a -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    return v1
+}
+proc b -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    return v1
+}
+proc d -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    return v1
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: string  // local 1
+    s1: string  // local 2
+    s2: string  // local 3
+  bb0(v0: *Context):
+    store s0 <- "a"
+    store s1 <- "c"
+    store s2 <- ""
+    v1: s64 = 2_s64 * 100_s64
+    v2: s64 = load s0.count
+    v3: s64 = v2 * 10_s64
+    v4: s64 = v1 + v3
+    v5: s64 = load s1.count
+    v6: s64 = v4 + v5
+    v7: s64 = load s2.count
+    v8: s64 = v6 + v7
+    v9: s64 = v8 + 1_s64
+    v10: s64 = v9 - 1_s64
+    v11: s64 = v10 + 0_s64
+    discard call extern proc1(v11)
+    return
+}

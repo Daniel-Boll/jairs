@@ -18,7 +18,7 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated during **wave W6 — Metaprogram**, two sub-waves in, with 981 tests green: a declaration can
+Last updated during **wave W6 — Metaprogram**, three sub-waves in, with 981 tests green: a declaration can
 carry **`@note` metadata** for a metaprogram to read (ADR-0098). `@deprecated` and `@requires "x"` sit in the
 same attribute loop as `#c_call`/`#expand`/`#modify`, so notes and directives interleave freely — but a note
 is its own node kind, because a note is *data for a metaprogram* while a directive is an *instruction to the
@@ -36,9 +36,21 @@ holding. The first argument is the **declaration itself** rather than its name a
 unresolved name instead of a silent `false` — the same silence the dropped notes had. An absent note answers
 `false` and `""` and is *not* an error: asking whether a note is present is the point, which is the opposite
 call from `any_as`, and the difference is that `any_as` would otherwise return garbage while this returns the
-truth. What is still missing is **iteration** — a script must name each declaration, so it cannot yet ask for
-"every declaration tagged `@X`". That is what the message loop adds, and it now has reading verbs to hand its
-declarations to rather than needing to invent some.
+truth. **And it can query them** (ADR-0100): `noted_count("serialise")` answers how many declarations in the file
+carry that note and `noted_name("serialise", 0)` names them, in **declaration order** — the one order a reader
+can predict from the source, since sorting by name would renumber every index when a declaration is inserted
+and a hash order would make one program answer differently between runs. An out-of-range index answers `""`
+rather than being refused, because unrolling to a fixed bound is the intended use and its tail has to be quiet.
+
+**What is still missing is the loop, and the reason is worth stating plainly** rather than filed as a
+limitation: all four of these are answered while *checking*, so every argument must be readable then — and a
+`for` variable is not, because it exists only at run time. `for i: 0..noted_count(…)` cannot be made to work by
+folding whatever it is called. It needs the query to lower to real code reading a **compiler-emitted table**:
+static data a back end emits and the VM can also read, which Jairs has never had, and which is the same
+mechanism `Type_Info`'s variable-length field list has been deferred for since ADR-0078. So notes can be
+counted and named, and cannot yet be looped over. That makes the message loop a wave about static data rather
+than a wave about notes, which is a better-shaped wave — and getting there is what the
+data-then-reader-then-query ordering bought.
 
 Writing that sub-wave's corpus file **found a shipped leaked internal error**: `a == "x"` on two strings
 reached the VM as `expected a scalar, found an aggregate`, for a program any reader would expect to compile. A
@@ -274,7 +286,7 @@ The authoritative version of this list is
 | a **type as a compile-time value**: `T :: Point;` binds one, and `T` is usable wherever `Point` is — as an annotation, a parameter, a field, an array element, a pointee; an enum alias carries its members (ADR-0071) | a chain (`B :: A`); comparing types (`T == U`); a `Type` parameter; `Type` as an annotation, which does not parse |
 | using a type where a **runtime** value is expected is refused (E0261) — it has no runtime representation, so there is nothing to store | — |
 | `#import`, `#foreign`, `#system_library`; `#expand` macros that splice; `#modify` predicates; `#bake_arguments` specialisations | — |
-| `@note` metadata on a declaration — `@deprecated`, `@requires "x"` (ADR-0098) — read at compile time by `has_note` / `note_value` (ADR-0099) | **iteration**: the message loop that hands *every* noted declaration to a build script (**W6**) |
+| `@note` metadata on a declaration — `@deprecated`, `@requires "x"` (ADR-0098) — read at compile time by `has_note` / `note_value` (ADR-0099), and queried without naming by `noted_count` / `noted_name` (ADR-0100) | a **loop**: iteration needs a compiler-emitted table, which also lifts `Type_Info`'s field list (**W6**) |
 | overflow traps with a source location (ADR-0002, ADR-0020), and a **call chain** of the frames that were live (ADR-0066) | a per-frame line number; inlined frames, which have no runtime existence |
 | `context` — a hidden parameter passed by pointer, so a callee reads what its caller wrote; `#c_call` opts out and gets none | — |
 | `push_context { … }` — a block with its own copy of the context, so a write inside it is restored on exit (ADR-0063) | — |
