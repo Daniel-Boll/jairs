@@ -1013,3 +1013,110 @@ Taken as recommended: `Type_Info` gains `count` and `element` (both `s64`, 0 whe
 filled for struct (field count), array (length + element id) and pointer (pointee id) kinds. The
 variable-length field *list* stays deferred with its memory-ownership question. Amends ADR-0075 §3 the
 way ADR-0077 did, via a new ADR.
+
+---
+
+## Wave: `Type_Info`'s field list (ADR-0079), 2026-08-03
+
+Recommended option taken automatically per the standing request; logged for later review.
+
+### Fork 1 — which wave next (to finish W4)
+
+- Options: **the variable-length field list (taken, recommended)**; `#code`/`Code`; a cross-file `#run`
+  value.
+- Why: it is the last *RTTI* gap and what a struct printer needs, so it completes a story three ADRs have
+  been building. It is also the piece whose blocking question — memory ownership — turns out to be
+  **already answered twice** (see Fork 2), so the "large decision" the earlier ADRs deferred is smaller
+  than it looked. `#code` remains the widest surface (new grammar) and a cross-file `#run` value needs its
+  own cycle analysis; both are better done after RTTI is closed.
+
+### Fork 2 — where the field elements live (the deferred memory-ownership question)
+
+- Options: **the mechanism both engines already use for string literals (taken, recommended)** — VM interns
+  into its own memory at startup, native emits `define_data`; a comptime-built table threaded through the
+  program; give the field list the program's static lifetime via a new allocation scheme.
+- Why: ADR-0075 §3 and ADR-0078 §4 framed this as an open decision, and probing shows it is not: a
+  **string literal already has exactly this problem and both engines already solve it** — `jr-vm`'s
+  `intern_strings` allocates every `Item::StrValue` into VM memory before execution, and
+  `jr-codegen-clif` emits a `DataDescription`/`define_data`. A `Type_Info`'s `name` field is already a
+  `string`, so a field list of `{name: string, type_id: s64, offset: s64}` needs *no new lifetime story* —
+  it is the same static data one level up. A bespoke comptime table would be a second mechanism for a
+  problem the first already covers, which is the duplication ADR-0018 §2 and ADR-0055 §1 both argue
+  against.
+
+### Fork 3 — the field list's shape
+
+- Options: **a `[]Type_Info_Field` view on `Type_Info`, elements `{name, type_id, offset}` (taken,
+  recommended)**; a linked list through the fields; a flat parallel-arrays encoding.
+- Why: a view is `{data, count}` (ADR-0044), which the language already has and both engines already lay
+  out; a program iterates it with the `for` it already has. `offset` is included because it is what makes
+  the list *usable* with `Any` — a printer needs the byte offset to reach a field's value through
+  `Any.data`. `type_id` rather than a nested `*Type_Info`, consistent with ADR-0078's `element`: an id
+  needs nothing further built.
+
+### Resolution (ADR-0079 records it)
+
+Taken as recommended.
+
+### Fork 4 — a silent miscompile found while probing Fork 2
+
+- Found by probing whether a constant aggregate can hold a view (the field list's premise):
+  `H :: struct { p: *s64; n: s64; }` returned from `#run` interns the **pointer** field as a plain 8-byte
+  integer — `reduce_element` treats `PointerType`/`ViewType` in its scalar arm. `V.p.*` then returns
+  **48** in the VM and **segfaults** natively: a wrong answer, two different wrong answers, and no
+  diagnostic. The project's named failure mode (a legitimate-looking value standing in for something
+  unrepresentable), and the corpus differential is blind to it because no corpus file holds a pointer in
+  a constant aggregate.
+- Options: **refuse a pointer/view element in a compile-time aggregate (taken, recommended)**; try to
+  relocate the pointee into interned data; leave it and document.
+- Why refuse: a compile-time pointer has no meaning at run time — the address is the VM's, and ADR-0074 §2
+  already refuses `string` as an *aggregate* element for exactly this reason ("its runtime form is a
+  pointer, which has no compile-time value"). The same argument covers a raw pointer and a view, and the
+  existing code simply did not extend it to them. Relocating a pointee is the static-data decision, and
+  doing it implicitly would silently change what the program pointed *at*. Leaving it is not an option: a
+  wrong answer with no diagnostic is what ADR-0017 §4 says must refuse.
+- This lands **before** the field list, because the field list would otherwise be built on a path that
+  silently miscompiles pointers.
+
+### Fork 5 — the field list's representation, after ADR-0079 closed the view route
+
+- What probing established: a **fixed array** of structs each holding a `string`
+  (`[2]F where F :: struct { name: string; off: s64; }`) interns and round-trips in both engines, because
+  every element's identity is its *contents*. A **view** cannot be a constant at all (ADR-0079). And a
+  `Type_Info` needs a *per-type* field count, which a single fixed `[N]` cannot express.
+- Options: **defer the field list and record the sharpened constraint (taken, recommended)**; a fixed
+  max-N array plus a count in every `Type_Info`; implement the static-data relocation ADR-0079 §1
+  rejected doing implicitly.
+- Why defer: the max-N option makes **every** `Type_Info` pay N field slots regardless of the type it
+  describes — a `s64`'s info would carry (say) 32 empty `Type_Info_Field`s, and N would be an arbitrary
+  cap that a struct can exceed, so it trades a silent truncation for a size cost. That is a worse answer
+  than not shipping it. The relocation option is a genuine, separable decision — it needs a declared
+  mechanism (ADR-0079 §1 refused doing it quietly because it changes what a program points at), which
+  means new syntax or a new back-end contract for emitting per-type static data. That is its own wave, and
+  it is honest to say so rather than pick the cheap encoding.
+- What ships instead: nothing for the list; the constraint is recorded in PLAN §7 and ADR-0079's
+  consequences so the next attempt starts from "a view cannot be a constant, and a fixed array cannot vary
+  per type" rather than rediscovering it.
+- **W4's remaining scope is therefore `#code` and the cross-file `#run` value**, with the field list
+  explicitly out of W4 and owed its own wave.
+
+### Fork 6 — `#code`, assessed before committing to it
+
+- What probing established: `#insert CODE;` where `CODE :: "n := 7;"` **already works** (ADR-0073), and a
+  malformed operand already reports well — E0263 names the parse fault *and* its offset into the inserted
+  text. So `#code`'s marginal value over a string operand is **syntactic**: unquoted source, checked at the
+  quote site rather than at splice time.
+- Options: **implement `#code` as unquoted syntax that lowers to the same string operand path (taken,
+  recommended)**; a full quoted-syntax-tree value (`Item::CodeValue` holding a CST/HIR fragment); leave
+  `#code` unimplemented and close W4 without it.
+- Why the string-backed form: it delivers the *ergonomic* win (no quoting, no escaping — and escaping is
+  what ADR-0072 §5 said bounds a written nest) with no new pool variant, no new comptime-only type, and no
+  new engine path, because it reuses the `#insert` machinery three sub-waves already built and tested. A
+  full quoted **syntax tree** value answers ADR-0072 §4's "does it exist at run time?" with "no", which
+  makes it comptime-only like `Item::TypeType` — and then a `Code` value can only ever be spliced, which is
+  exactly what the string form already does. Paying for a CST-in-the-pool representation to reach the same
+  observable behaviour is cost without benefit until something *manipulates* a tree (a macro that inspects
+  its argument), which nothing in W4 asks for.
+- Consequence recorded honestly: this makes `#code` sugar, and the ADR must say so rather than implying a
+  syntax-tree value. If a later wave needs tree *manipulation*, it supersedes this with the real
+  representation.

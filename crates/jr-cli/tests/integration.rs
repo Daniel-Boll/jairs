@@ -427,6 +427,60 @@ fn a_run_returning_a_union_is_refused() {
     );
 }
 
+/// A **pointer** in a compile-time aggregate must be refused, not interned as a number.
+///
+/// This pins a silent miscompile that shipped and was found by probing. `reduce_element` treated a
+/// pointer as a scalar, so the VM's own address was interned as a plain integer; reading `V.p.*`
+/// afterwards gave **48** in the VM and a **segfault** natively — two different wrong answers, neither
+/// reported. ADR-0074 §2 already refused `string` as an aggregate element on exactly this ground ("its
+/// runtime form is a pointer, which has no compile-time value"); the rule simply had not been extended.
+///
+/// A CLI exit-code test rather than a corpus file, because E0230 is `jr-db`'s code and no corpus
+/// directory holds one — `type-errors/` is `jr-sema`'s and `cfg-errors/` is `jr-mir`'s.
+#[test]
+fn a_pointer_in_a_compile_time_aggregate_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("ptr_const.jr");
+    fs::write(
+        &path,
+        "H :: struct { p: *s64; n: s64; }\n\
+         mk :: () -> H { v: s64; v = 42; h: H; h.p = *v; h.n = 7; return h; }\n\
+         V :: #run mk();\n\
+         main :: () { }\n",
+    )
+    .unwrap();
+    assert_eq!(
+        check_with_modules(vec![path], None),
+        1,
+        "a compile-time pointer addresses the evaluator's memory, so it must be refused"
+    );
+}
+
+/// A **view** in a compile-time aggregate must be refused, for the same reason a pointer is.
+///
+/// A view is `{data, count}`, and its `data` word is a pointer into the evaluator's memory. Before the
+/// refusal the two words were interned as one 8-byte integer, so the count survived and the pointer did
+/// not — a read through it trapped with "index out of bounds", which looked like a program bug rather
+/// than the compiler's.
+#[test]
+fn a_view_in_a_compile_time_aggregate_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("view_const.jr");
+    fs::write(
+        &path,
+        "H :: struct { items: []s64; n: s64; }\n\
+         mk :: () -> H { buf: [2]s64; buf[0] = 7; h: H; h.items = buf[]; h.n = 2; return h; }\n\
+         V :: #run mk();\n\
+         main :: () { }\n",
+    )
+    .unwrap();
+    assert_eq!(
+        check_with_modules(vec![path], None),
+        1,
+        "a compile-time view's data pointer addresses the evaluator's memory, so it must be refused"
+    );
+}
+
 /// Rejected *by sema*, not by the parser — `jr-sema`'s corpus test asserts these
 /// files parse cleanly, so a parser-caused failure would show up there first.
 #[test]
