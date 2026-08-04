@@ -1153,6 +1153,30 @@ fn reduce_element(
         | jr_pool::Item::UnionType { .. }
         | jr_pool::Item::VariantType { .. } => reduce(vm, pool, value, ty, is_float),
         jr_pool::Item::VoidType => Ok(Raw::Void),
+        // **A pointer or a view element is refused** rather than interned as a scalar.
+        //
+        // This arm exists because the scalar fallback below silently accepted both, and the result was a
+        // *wrong answer with no diagnostic*: a `#run` returning `struct { p: *s64; n: s64; }` interned the
+        // VM's own address as a plain integer, and reading `V.p.*` afterwards gave **48** in the VM and a
+        // **segfault** natively — two different wrong answers, neither reported. The corpus differential
+        // was blind to it because no corpus file held a pointer in a constant aggregate, which is exactly
+        // the gap `AGENTS.md` names ("if a construct is legal in the corpus, something must execute it").
+        //
+        // The reason is ADR-0074 §2's, which already refused `string` as an *aggregate* element on the
+        // same ground — "its runtime form is a pointer, which has no compile-time value at all" — and
+        // simply had not been extended to a raw pointer or a view. A compile-time pointer addresses the
+        // VM's memory, which does not exist at run time; relocating the pointee into interned data would
+        // silently change what the program points *at*, so the honest answer is to refuse.
+        //
+        // A `string` is unaffected: it is handled above by contents, not as a pointer.
+        jr_pool::Item::PointerType(..) => Err(VmError::unsupported_public(
+            "a compile-time aggregate holding a pointer has no runtime meaning: the address is the \
+             compile-time evaluator's, not the program's",
+        )),
+        jr_pool::Item::ViewType { .. } => Err(VmError::unsupported_public(
+            "a compile-time aggregate holding a view has no runtime meaning: the view's data pointer is \
+             the compile-time evaluator's, not the program's",
+        )),
         // Every remaining shape is a scalar held in the element's own bytes.
         jr_pool::Item::BoolType
         | jr_pool::Item::IntType { .. }
@@ -1161,8 +1185,6 @@ fn reduce_element(
         | jr_pool::Item::TypeType
         | jr_pool::Item::ErrorType
         | jr_pool::Item::ForeignLibraryType
-        | jr_pool::Item::PointerType(..)
-        | jr_pool::Item::ViewType { .. }
         | jr_pool::Item::ContextType
         | jr_pool::Item::ResultsType { .. }
         | jr_pool::Item::EnumType { .. }
