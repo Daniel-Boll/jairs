@@ -1493,3 +1493,52 @@ particular rather than remove ADR-0087's E0271 refusal before the whole thing wo
 comptime call fall through to the MIR-less template — the design is fixed in ADR-0088 and the build is left
 as the next sub-wave's own work, starting from the resolved fork above. The 6a surface (E0271 refuses the
 call) is unchanged and green.
+
+---
+
+## Wave: `[N]T` where the length is a `$N` comptime parameter (ADR-0089), 2026-08-04 — sub-wave 6c
+
+### Fork 1 — where the baked value is read from when resolving `[N]s64`
+
+- Options: **a `FileHir::param_values: Vec<(ProcId, Symbol, PoolId)>` side table the instantiation fills,
+  read by `constant_array_length` exactly as `proc_bindings` is read by the signature phase for `$T`
+  (taken, recommended)**; rewrite the `TypeRef::Array`'s `len` during the clone; thread the value through
+  `Ctx` as a scoped binding map.
+- Why the side table: it is the **exact shape `proc_bindings` already has** for the `$T` case — the clone
+  records `(proc, name, value)`, and the signature phase reads it while resolving that proc's types. So the
+  mechanism is proven, symmetric with the type side, and needs no new plumbing through `Ctx`. Rewriting the
+  `TypeRef` during the clone was rejected because parameter/return `TypeRef`s live in the *shared*
+  `FileHir::type_refs` arena and `copy_type_ref` already copies them per instantiation — but a *local's*
+  annotation lives in the **body's** arena, and `[N]s64` on a local is the common case, so the rewrite
+  would have to happen in two places with two different arena rules. A scoped `Ctx` map is what
+  `type_bindings` is for the type side; a *value* map would be a second such map, and the side table keeps
+  the value where the instantiation already writes its other per-instantiation facts.
+
+### Fork 2 — does this reopen ADR-0039 §3a's "no const-eval in sema" constraint
+
+- Options: **no — the value is already a `PoolId` the instantiation baked, so sema *reads* it rather than
+  computing it (taken, recommended)**; accept a dependency on `jr-db`.
+- Why it does not reopen it: ADR-0070 §1 made exactly this move for a file-level constant — sema reads a
+  literal already in the HIR rather than evaluating anything. Here it reads a `PoolId` the const-eval
+  pre-pass already produced and the instantiation already recorded, so `jr-sema`'s `Cargo.toml` still names
+  neither `jr-db` nor `jr-vm`. The value arrives *through the HIR*, which is the same channel
+  `proc_bindings` uses for a bound `$T`.
+
+### Fork 3 — what a *template*'s own `[N]T` resolves to
+
+- Options: **a placeholder `[0]T` with length-dependent checks withheld (taken, recommended)**; skip the
+  template's body check entirely (as `$T` does); refuse E0233 in the template.
+- Why the placeholder: ADR-0087 §2's point is that a `$N` template's body **is** checked (its parameter
+  types are known, only values vary), which catches body errors a sub-wave early — skipping the body gives
+  that up. Refusing E0233 in the template would be a false error about correct code. So the length resolves
+  to a placeholder recorded in `Ctx::placeholder_arrays`, and the checks that read a length (E0236's literal
+  index range) withhold on it. Safe because the template is never lowered (`is_template` skips its MIR and
+  native declaration), so no code is generated against `[0]T`; each instantiation resolves a real length and
+  is checked normally, which is where a genuinely bad index is still caught. **Not** PLAN §5's dangerous
+  placeholder: that one reaches code generation, this one reaches only a type that never does.
+
+### Resolution (ADR-0089 records it)
+
+Taken as recommended, shipped, teeth-checked (clearing the bindings makes the instantiation report E0233,
+a refusal rather than a wrong length). `$N` is now complete: surface (0087), instantiation (0088), `[N]T`
+(0089). No new diagnostic code — E0233 and E0236 are *withheld* in one new case rather than joined.

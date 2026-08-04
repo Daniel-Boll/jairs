@@ -399,6 +399,35 @@ fn code_splices_identically_in_both_engines() {
     );
 }
 
+/// **`[N]T` sized by a `$N` comptime parameter** must give each instantiation its own array length and
+/// exit **16** in both engines (ADR-0089).
+///
+/// Two instantiations with *different* lengths (4 and 3) summing 1..N, so the totals differ (10 and 6).
+/// This is the strongest shape available for the feature: a shared length, a placeholder length that
+/// leaked, or a layout computed from the wrong value would each change the total. Each engine lays out
+/// the array from the instantiation's own type independently — the VM through `layout_of`, the native
+/// back end when it allocates the stack slot — so agreeing on 16 means both got both lengths right.
+#[test]
+fn array_length_from_a_comptime_param_agrees_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program =
+        workspace_root().join("tests/corpus/valid/073-array-length-from-comptime-param.jr");
+
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    assert_eq!(
+        vm.status, 16,
+        "the VM exited {} — a `[N]s64` was sized wrongly for one of the two instantiations",
+        vm.status
+    );
+    assert_eq!(
+        native.status, 16,
+        "the native back end exited {} — see the VM assertion above",
+        native.status
+    );
+}
+
 /// A **comptime-value instantiation** — `make :: ($N: s64)` called as `make(5)` — must bake the value
 /// into a distinct procedure and exit **32** in both engines (ADR-0088).
 ///

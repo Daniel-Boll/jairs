@@ -1307,6 +1307,16 @@ pub struct FileHir {
     /// through `check_file`'s parameters because only the expanded tree ever has entries, and every other
     /// caller would pass an empty map.
     pub proc_bindings: Vec<(ProcId, Symbol, PoolId)>,
+    /// Per-procedure **comptime-value** bindings, for instantiated procedures (ADR-0089 §1).
+    ///
+    /// The value-side counterpart of [`FileHir::proc_bindings`]: an instantiation of a `$N` template maps
+    /// its `ProcId` to `(parameter name, baked value)`, so `jr-sema` can resolve an array length that
+    /// *names* that parameter — `buf: [N]s64` inside the instantiation — by reading the value the
+    /// const-eval pre-pass already produced (ADR-0088 §2).
+    ///
+    /// **No evaluation happens in sema because of this**, which is why ADR-0039 §3a's constraint still
+    /// holds: the value arrives through the HIR, already interned, exactly as a bound `$T` does.
+    pub param_values: Vec<(ProcId, Symbol, PoolId)>,
 }
 
 impl FileHir {

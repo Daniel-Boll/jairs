@@ -213,6 +213,16 @@ fn append_one(
         hir.proc_bindings.push((proc_id, *var, *ty));
     }
 
+    // Record each **baked comptime value** under this instantiation's `ProcId` and the parameter's *name*
+    // (ADR-0089 §1). The body's uses were already rewritten to literals above; this is for a use in a
+    // *type* — `buf: [N]s64` — which sema resolves by name and cannot see a literal for. The value-side
+    // counterpart of `proc_bindings`, read the same way.
+    for (i, value) in inst.comptime_values.iter().enumerate() {
+        if let (Some(value), Some(param)) = (value, template.params.get(i)) {
+            hir.param_values.push((proc_id, param.name, *value));
+        }
+    }
+
     proc_id
 }
 

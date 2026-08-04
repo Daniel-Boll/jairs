@@ -279,9 +279,31 @@ pub fn check_file(
             params,
             ret,
         });
+        // **Re-seed this body's comptime-value bindings** (ADR-0089 §1). An instantiation's `$N`
+        // parameters keep their baked values while its body is checked, so a local `buf: [N]s64` resolves
+        // its length. Re-seeded *per body* rather than left over from the signature phase, because two
+        // instantiations of one template share the parameter name `N` with different values — leaving the
+        // last one set would give the second instantiation's length to the first's body, a silent wrong
+        // array size. Cleared afterwards for the same reason.
+        ctx.value_bindings.clear();
+        ctx.comptime_param_names.clear();
+        if let Some(proc) = owner.get(&body) {
+            for (p, name, value) in &hir.param_values {
+                if p == proc {
+                    ctx.value_bindings.insert(*name, *value);
+                }
+            }
+            // The comptime parameter *names* of this body's procedure, so a template's own body withholds
+            // E0233 for a length naming one rather than refusing a correct program (ADR-0089 §2).
+            for param in hir.proc(*proc).params.iter().filter(|p| p.comptime) {
+                ctx.comptime_param_names.insert(param.name);
+            }
+        }
         let root = hir.body(body).root;
         ctx.check_stmt(body, root);
         ctx.body = None;
+        ctx.value_bindings.clear();
+        ctx.comptime_param_names.clear();
     }
 
     // Collected before `ctx.sigs` is dropped. It started as a clone of the file's
@@ -3774,7 +3796,12 @@ impl Ctx<'_> {
         // A literal index is decidable now, and a program that can only ever trap is
         // better refused. This does **not** replace the runtime check: it is one shape of
         // index out of many, and ADR-0039 §2's `BoundsCheck` still guards the rest.
+        // **Withheld for a template's placeholder length** (ADR-0089 §2): a `[N]s64` inside a `$N`
+        // template resolves to `[0]s64` so the body can be typed at all, and every index would then be
+        // "out of range" — a false error about a correct program. The instantiations carry real lengths
+        // and are checked here normally, which is where a genuinely bad index is caught.
         if let Some(len) = len
+            && !self.placeholder_arrays.contains(&base_ty)
             && let Expr::Literal(Literal::Int { value, .. }, _) = self.expr_of(scope, index)
             && (value < 0 || u128::try_from(value).is_ok_and(|v| v >= u128::from(len)))
         {
