@@ -509,7 +509,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **986 workspace tests** and **204 corpus files**, all six gates green, **166
+waiting. Both are tracked below. **986 workspace tests** and **205 corpus files**, all six gates green, **166
 Neovim checks**. See §1.5.
 
 ### W7 — Stdlib, open
@@ -765,6 +765,17 @@ through them** (ADR-0085 §5). So a growable array has real storage but stays pe
       the language delivered it (0114), the library collected (0115). `ln` not `log` (says the base); `powf` not
       an overload of the integer `pow` (no cross-type resolution). The exact half stays in Jairs. **`Math` is
       complete.**
+
+- [x] **A hash table** (ADR-0116, sub-wave 14): `Int_Map`, `s64 -> s64`, **open-addressed** with linear probing,
+      tombstone deletion, and 3/4-load doubling growth — a heap array of structs, the module that most exercises
+      typed allocation (ADR-0106) and `List`-style growth (ADR-0107). Concrete for the E0269 reason `Array`/`List`
+      are. The hash is `Basic`-free `u64` arithmetic so both engines compute the same bucket.
+- [x] **A comptime miscompile in `*%`/`+%`/`-%`, fixed** (ADR-0116 §2, its own commit): the wrapping operators
+      decoded to `i128` and computed `wrap(a * b)`, and two large `u64`s overflowed `i128` *itself*, panicking the
+      VM's evaluator before `wrap` ran — while native (no `i128` intermediary) was correct. The **second engine
+      divergence the differential caught**, both in arithmetic/memory the native path did in hardware while the
+      VM modelled it in Rust. Now done on truncated `u64` with `wrapping_*`. Would have hit any comptime wrapping
+      arithmetic near the range — a `#run` hash, a checksum. `valid/096` is the regression.
 
 **W7 left after that:** the **allocating** half of `String`, once the allocator convention is decided; a merge
 sort and a binary search (the first wants allocation, the second a sortedness precondition nothing can check);
