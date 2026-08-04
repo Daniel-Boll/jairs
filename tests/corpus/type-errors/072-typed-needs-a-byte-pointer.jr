@@ -1,0 +1,25 @@
+// EXPECT: E0279 — a `typed` operand that is not a `*u8` (ADR-0106 §1)
+//
+// **`typed(T, p)` requires a `*u8` specifically**, not any pointer, and the reason is the whole design. It
+// exists to give a *fresh allocation* a type — an allocator hands back bytes — and allowing `*T` → `*U` would be
+// the general pointer cast E0232 refuses, reached by another spelling. E0232's reason is unchanged: a wrong
+// pointee type is a **silent wrong read** (ADR-0045 §1).
+//
+// What `typed` adds over a cast is not safety. `typed(s64, p)` on a four-byte allocation is still wrong. It adds
+// **visibility**: the target type is a type *argument* at a named boundary a reader can grep for, exactly as
+// ADR-0076 §1 permitted an erasing conversion only at an `Any` boundary. A relaxed `cast` would permit the same
+// wrong read with none of that, and the narrowness of a hole does not change what goes through it.
+//
+// So this refusal is what keeps `typed` from *becoming* the cast it was built to avoid. `untyped` is the safe
+// direction — every pointer is a valid `*u8` to read bytes through — and it shares this code, because the two
+// are one boundary's two directions and a reader who hits either needs the same page.
+//
+// No `#import "Basic"`: an unused import is E0231, a second diagnostic this directory's one-per-file contract
+// does not allow. The intrinsics are recognised by the compiler rather than imported.
+
+retypes_a_typed_pointer :: () {
+    x := 5;
+    p := *x;
+    // `p` is a `*s64`, not a `*u8`: this is the general pointer cast, asked for politely.
+    q := typed(u8, p);
+}

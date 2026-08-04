@@ -145,8 +145,26 @@ fn forward_in_block(
         let Some(slot) = participating_slot(load) else {
             continue;
         };
+        // **The load's own type**, so a forward that would *retype* the value can be refused below.
+        let Statement::Assign { dest, .. } = stmt else {
+            continue;
+        };
+        let loaded_ty = body.value(*dest).ty;
         if let Some(value) = available_store(stmts, position, load, slot, escaping, pool, body) {
-            rewrites.push((position, value));
+            // **A forward must not change the value's type** (ADR-0106 §2). Storing a `*u8` into a `*T` slot
+            // and loading it back is how a pointer is *retyped* — the mechanism ADR-0076 §1 built, since a
+            // pointer's bits do not depend on its pointee and no conversion node exists. Forwarding the store
+            // straight to the load deletes exactly the step that changed the type, producing an
+            // `Rvalue::Use` whose source and destination types differ — which the verifier then rejects as
+            // "use changes type".
+            //
+            // This is a **pre-existing** bug that `typed`/`untyped` made reachable: nothing before this
+            // sub-wave stored one type into a slot of another *and* read it back in the same block, so the
+            // pass had never had the opportunity to be wrong. Refusing the forward is right rather than
+            // conservative — the store and load are not redundant here, they *are* the conversion.
+            if operand_ty(body, value).is_none_or(|stored| stored == loaded_ty) {
+                rewrites.push((position, value));
+            }
         }
     }
 
@@ -217,6 +235,18 @@ fn available_store(
         }
     }
     None
+}
+
+/// The type of an operand, or `None` for a constant whose type the pool would have to answer.
+///
+/// Only a `ValueId` is asked, because that is the case that matters: a *constant* stored into a slot of another
+/// type cannot arise — sema types a constant by its context — while a **value** can, since that is how a
+/// pointer is retyped (ADR-0106 §2).
+fn operand_ty(body: &MirBody, operand: Operand) -> Option<PoolId> {
+    match operand {
+        Operand::Value(value) => Some(body.value(value).ty),
+        Operand::Constant(_) => None,
+    }
 }
 
 /// Whether an rvalue between a store and a load invalidates the forwarding.

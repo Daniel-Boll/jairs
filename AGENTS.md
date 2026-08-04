@@ -74,7 +74,7 @@ visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919
 → 981 (W5 sub-wave 7h, `#bake_arguments` specialisation — **W5 complete**). W6 sub-waves 1–4 hold at
 981 — each adds corpus files that the existing differential and snapshot tests iterate rather than adding a test
 case, which is why the *corpus* count is tracked too — and sub-wave 5 reaches **984** with three `jr-cli`
-integration tests, because the driver's behaviour is not something a corpus file can observe (195 corpus files).
+integration tests, because the driver's behaviour is not something a corpus file can observe (197 corpus files).
 
 ## House style
 
@@ -177,7 +177,7 @@ and expansion nested too deep (ADR-0073). E0265–E0268 are comptime/reflection 
 parameterised struct, and a wrong type-argument count (ADR-0085); E0277 is `has_note`/`note_value`'s single refusal — an unreadable note name *or* a first argument that is not
 a procedure (ADR-0099), one code because they are one intrinsic's two ways of being unaskable — and E0278 is
 `==` on an aggregate, a `string` included (ADR-0099 §4), which was a leaked ICE until this wave probed it.
-E0277 also covers `noted_count`/`noted_name`'s two refusals (ADR-0100) — an unreadable note name or index —
+E0279 is `typed`/`untyped`'s single refusal — a `typed` operand that is not a `*u8`, or an `untyped` operand that is not a pointer (ADR-0106) — one code for one boundary's two directions. E0277 also covers `noted_count`/`noted_name`'s two refusals (ADR-0100) — an unreadable note name or index —
 because all four note intrinsics are one mechanism and share its one way of being unaskable.
 E0271 is a `$N` comptime-value
 argument that is not a compile-time constant (ADR-0088) — **owned by `jr-db`** beside E0230,
@@ -197,7 +197,7 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0279 is the first free code**; E0132 is the first free *parser* code. E0231 is `jr-db`'s
+**E0280 is the first free code**; E0132 is the first free *parser* code. E0231 is `jr-db`'s
 unused-import warning — the first code in this project that is a *warning* rather than an
 error, so a consumer filtering by severity has something to filter.
 

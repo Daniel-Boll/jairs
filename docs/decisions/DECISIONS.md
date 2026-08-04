@@ -2162,3 +2162,52 @@ one declares their own struct. That is a real limitation and the corpus file say
 **Deferred with reasons:** growth (wants typed allocation); `remove_at` preserving order (trivial once `pop`
 exists, and no caller yet); a `[]T` view *of* the used prefix (wants slicing a struct field, worth checking
 separately); iteration via `for` (wants the view).
+
+## W7 sub-wave 4 — typed allocation, the first unblocker `Array` named
+
+**What ADR-0105 established.** Heap storage is unreachable because `malloc` returns `*u8` and `cast(*s64, p)`
+is E0232: a general pointer cast makes a wrong pointee type a *silent wrong read* (ADR-0045 §1). That refusal
+is correct and should stay. What is missing is a way to get a **typed** pointer to fresh memory *without* a
+general cast.
+
+**The fork: what shape does typed allocation take?**
+
+- **(a) An intrinsic `alloc(T, n)` returning `*T`.** The compiler knows the element type and its size, so it
+  can compute `n * size_of(T)` itself and hand back a `*T` with **no cast anywhere** — the unsound conversion
+  never appears in a program or in a library. Cost: it is compiler-known rather than library-defined, so it
+  bypasses `context.allocator` unless it is taught to consult it. Benefit: it is the only form where the
+  *type* comes from the language rather than from a caller's assertion, which is exactly what E0232 refuses to
+  let a caller assert. **Chosen**, allocating through `context.allocator` so ADR-0057's installed allocator
+  still governs.
+- **(b) Relax `cast` for `*u8` → `*T` only.** Smallest change, and it is the wrong one: a `*u8` may point at
+  anything, so the relaxation permits exactly the wrong-pointee read ADR-0045 §1 refused. The narrowness of the
+  hole does not change what goes through it.
+- **(c) A `#foreign`-style `typed_malloc :: ($T: Type, n: s64) -> *T`** written in `Basic`. Attractive because
+  it keeps the standard library in charge — but a `Type`-taking parameter returning a *pointer to that type* is
+  a dependent return type, which the signature phase does not have. It would be a bigger language feature than
+  (a).
+- **(d) `Any`-based allocation** — allocate, wrap in an `Any`, read back with `any_as`. Every piece exists
+  (ADR-0076), and it costs a runtime type check per access plus a pointer indirection, for a facility whose
+  entire purpose is being the fast path. Wrong tool.
+
+**Amended while building: (a) split in two.** MIR has **no way to reach `malloc`** — a `#foreign` procedure is
+resolved by name in *its own file's* signatures, and the builder has no channel for "call this library
+procedure I invented". So an intrinsic that allocates *and* types would have to synthesise a cross-file call
+from nothing.
+
+The split that follows is better than the original anyway: **the library allocates, and only the *retyping* is
+an intrinsic.** `size_of(T)` gives a caller the byte count, `Basic.malloc` returns `*u8` as it already does,
+and `typed(T, p)` converts that `*u8` to a `*T`. The unsound *general* cast stays refused; what is permitted is
+one intrinsic whose target type comes from the language, at a boundary — which is exactly the shape ADR-0076 §1
+used for `Any` and for the same reason. It also means `size_of` — asked for by nothing until now — arrives with
+a caller.
+
+**Why `free` needs no new form.** `free` takes a `*u8` and a pointer to any type can already be *passed* where
+`*u8` is expected only at an `Any` boundary (ADR-0076 §1) — so releasing needs the *reverse* conversion.
+`untyped(p)` is that: `*T` → `*u8`, which `Basic.free` already accepts. Symmetric with `typed`, and the same
+three lines, rather than leaving a caller unable to release what they allocated.
+
+**Deferred with reasons:** reallocation (`realloc` wants a size the caller must remember, and a growable array
+is the caller that will ask for it — so it belongs with the dynamic array, one sub-wave later); alignment beyond
+the type's own (`malloc` guarantees suitable alignment for any scalar, and an over-aligned request has no
+caller); allocating an *aggregate* whose fields need initialisation (a zeroing decision of its own).

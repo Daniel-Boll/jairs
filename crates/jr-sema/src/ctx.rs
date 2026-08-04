@@ -154,6 +154,12 @@ pub(crate) struct Ctx<'a> {
     /// way `operator_calls` and `filled_calls` are, for the same reason — an `ExprId` alone does not say
     /// which arena it indexes.
     pub(crate) type_info_calls: FxHashMap<(ExprScope, jr_hir::ExprId), PoolId>,
+    /// Each `typed`/`untyped` call and the pointer type it produces (ADR-0106 §1).
+    ///
+    /// Carried to `jr-mir` because the conversion is **real code** rather than a fold: a pointer's bits do not
+    /// depend on its pointee, so retyping is a store-then-load through a slot (the mechanism ADR-0076 §1
+    /// already uses), and lowering needs to know the target type to make the slot.
+    pub(crate) pointer_views: FxHashMap<(ExprScope, jr_hir::ExprId), PoolId>,
     /// Calls folded to a value here rather than downstream — `has_note`, `note_value` (ADR-0099 §2).
     pub(crate) folded_calls: FxHashMap<(ExprScope, jr_hir::ExprId), PoolId>,
     /// The same values keyed by span, so an *expanded* tree can still find them (ADR-0101 §3).
@@ -245,6 +251,7 @@ impl<'a> Ctx<'a> {
             type_position: FxHashSet::default(),
             type_info_calls: FxHashMap::default(),
             folded_calls: FxHashMap::default(),
+            pointer_views: FxHashMap::default(),
             folded_call_spans: FxHashMap::default(),
             type_bindings: FxHashMap::default(),
             instantiations: FxHashMap::default(),

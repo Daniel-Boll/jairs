@@ -509,7 +509,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **984 workspace tests** and **195 corpus files**, all six gates green, **166
+waiting. Both are tracked below. **984 workspace tests** and **197 corpus files**, all six gates green, **166
 Neovim checks**. See §1.5.
 
 ### W7 — Stdlib, open
@@ -608,9 +608,36 @@ Neovim checks**. See §1.5.
       **No compiler change at all**, worth noting after two sub-waves that each fixed a leak: this one found
       only refusals that were already correct and already documented.
 
-**What unblocks a real dynamic array**, in order: **typed allocation**, then **cross-file parameterised
-structs** and **inference through them**. Each is a language decision with its own argument, and none belongs
-to a library.
+- [x] **Typed allocation** (ADR-0106, sub-wave 4): `size_of(T)`, `typed(T, p)`, `untyped(p)` — the first of the
+      three things `Array` named, and a **language** decision as ADR-0105 said it would be. A heap block is now
+      allocatable, typed, indexable by pointer arithmetic, and freeable:
+      `d := typed(s64, malloc(n * size_of(s64)))`.
+
+      **`cast` is unchanged**, which is the point: E0232 still refuses `cast(*s64, p)` because a general pointer
+      cast makes a wrong pointee a *silent wrong read*. `typed` is **not safer** — `typed(s64, p)` on four bytes
+      is still wrong — it is **visible**: the target type is a type *argument* at a named boundary a reader can
+      grep for, exactly as ADR-0076 §1 permitted an erasing conversion only at an `Any` boundary. It requires a
+      **`*u8` specifically** (E0279), since `*T` → `*U` would be the general cast reached by another spelling.
+
+      **The plan was amended while building**: a single `alloc(T, n)` was intended, and **MIR has no way to reach
+      `malloc`** — a `#foreign` procedure is resolved in *its own file's* signatures and the builder has no
+      channel for "call this library procedure I invented". So the library allocates and only the *retyping* is
+      an intrinsic, which is better: the language contributes exactly the one thing a library cannot express.
+      `size_of` folds from the same `layout_of` `type_info(T).size` uses, and arrives **with a caller**.
+- [x] **A pre-existing miscompile in store-to-load forwarding** (ADR-0106 §2), reachable only by this feature.
+      Retyping is a *store then load through a slot* (ADR-0076 §1's mechanism), and forwarding **deleted exactly
+      that step** — replacing the load with a use of the stored `*u8` in a `*s64` destination. The verifier
+      caught it as `use changes type`, which is the good outcome, but the *pass* was wrong: here the store and
+      load **are** the conversion rather than a redundant pair. Nothing before this stored one type into a slot
+      of another and read it back in one block, so it had never had the chance to be wrong.
+
+      **The first fix was too broad and the snapshot caught it**: requiring stored == loaded killed forwarding of
+      struct *field* loads, and `hello`'s optimized MIR went from 5 blocks to 14 with the whole `Point`
+      construction back. That is the snapshot doing its stated job — an optimisation quietly not happening is
+      invisible to every other gate.
+
+**What still blocks a fully generic dynamic array**: **cross-file parameterised structs** and **inference
+through them** (ADR-0085 §5). So a growable array can now have real storage but stays per element type.
 
 **What W7 has left:** the **allocating** half of `String`, once the allocator convention is decided; a merge
 sort and a binary search (the first wants allocation, the second a sortedness precondition nothing can check);

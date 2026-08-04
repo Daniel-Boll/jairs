@@ -525,6 +525,10 @@ fn scan(
                 // template name — is never emitted and must not be refused for resolving to a template
                 // with no MIR.
                 || consts.instantiation(scope, *call).is_some()
+                // A `typed`/`untyped` call names no procedure either (ADR-0106 §1): it is an intrinsic whose
+                // callee stays `Res::Error`, so refusing the body for it would refuse every program that
+                // allocates.
+                || consts.pointer_view(scope, *call).is_some()
         })
         .map(|(callee, _)| *callee)
         .collect();
@@ -2378,6 +2382,15 @@ impl Lower<'_> {
         {
             return self.lower_any_coercion(op, id, ty, span);
         }
+        // **`typed(T, p)` / `untyped(p)` retype a pointer** (ADR-0106 §1). Handled here rather than in the
+        // `Call` arm because the *callee* names no procedure — it is an intrinsic — so the ordinary call path
+        // would look for one and fail. The conversion itself needs no new node in either engine: a pointer's
+        // bits do not depend on its pointee (ADR-0076 §1), so it is a store-then-load through a slot.
+        if let Some(target) = self.consts.pointer_view(self.scope(), id)
+            && let Expr::Call { args, .. } = self.body.expr(id).clone()
+        {
+            return self.lower_pointer_view(&args, target, span);
+        }
         self.expr_inner(id)
     }
 
@@ -3132,6 +3145,31 @@ impl Lower<'_> {
     /// The ergonomic half of `any_of`: `takes(*x)` where `takes` wants an `Any`. The pointer to erase is
     /// **this expression itself**, not a call argument, so it is lowered here and handed to the same
     /// `build_any` the explicit form uses — one aggregate build, so the two forms cannot drift.
+    /// Lowers `typed(T, p)` or `untyped(p)` to a pointer of `target` type (ADR-0106 §1).
+    ///
+    /// **No conversion instruction, and no engine change.** A pointer's bits do not depend on what it points
+    /// at, so retyping is a *store then load* through a slot of the target type — the mechanism ADR-0076 §1
+    /// built for `Any`'s erasure and its inverse, reused verbatim. A plain `Use` may not change an operand's
+    /// type (the verifier says so) and no pointer-to-pointer node exists, which is why the slot is the route.
+    ///
+    /// The pointer operand is the **last** argument for both intrinsics: `untyped(p)` has one argument, and
+    /// `typed(T, p)`'s first is a *type*, which is never lowered — sema typed it `PoolId::TYPE` and there is no
+    /// runtime value to produce.
+    fn lower_pointer_view(&mut self, args: &[ExprId], target: PoolId, span: MirSpan) -> Operand {
+        let Some(pointer_arg) = args.last().copied() else {
+            self.give_up("a pointer view with no operand");
+            return Operand::Constant(PoolId::VOID_VALUE);
+        };
+        let value = self.expr(pointer_arg);
+        let slot = self.mir.push_slot(target, None, span);
+        self.emit(Statement::Store {
+            place: Place::slot(slot),
+            value,
+            span,
+        });
+        self.define(target, Rvalue::Load(Place::slot(slot)), span)
+    }
+
     fn lower_any_coercion(
         &mut self,
         op: crate::inputs::AnyLowering,

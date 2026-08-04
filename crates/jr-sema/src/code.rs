@@ -388,3 +388,14 @@ pub(crate) const E0277: &str = "E0277";
 /// `expected a scalar, found an aggregate`, a leaked internal error for a program a reader would reasonably
 /// expect to compile. Comparing contents needs a byte loop, which is `String`'s job in W7.
 pub(crate) const E0278: &str = "E0278";
+
+/// A `typed` or `untyped` operand that is not the pointer it needs (ADR-0106 §1).
+///
+/// `typed(T, p)` needs a **`*u8`** specifically, not any pointer: it exists to give a *fresh allocation* a
+/// type, and an allocator hands back bytes. Allowing `*T` → `*U` would be the general pointer cast E0232
+/// refuses, reached by another spelling — and E0232's reason is unchanged, that a wrong pointee type is a
+/// silent wrong read (ADR-0045 §1). `untyped(p)` needs a pointer at all, since it views one's bytes.
+///
+/// One code for both, because they are one boundary's two directions and a reader who hits either needs the
+/// same page — the argument ADR-0099 made for E0277 covering two refusals.
+pub(crate) const E0279: &str = "E0279";
