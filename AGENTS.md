@@ -73,7 +73,7 @@ visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919
 → 977 (W5 sub-wave 6b, `$N` instantiation) → 978 (W5 sub-wave 6c, `[N]T` over `$N`; 7a `#expand` surface) → 979 (W5 sub-wave 7b, the `#expand` splice) → 980 (W5 sub-wave 7c, reflecting a bound type)
 → 981 (W5 sub-wave 7h, `#bake_arguments` specialisation — **W5 complete**). W6 sub-wave 1 (`@note`) holds at
 981: its corpus file is iterated by the existing differential and snapshot tests rather than adding a case, which
-is why the *corpus* count is tracked too (187 files).
+is why the *corpus* count is tracked too (188 files).
 
 ## House style
 

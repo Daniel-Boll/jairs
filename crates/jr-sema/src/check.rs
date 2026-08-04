@@ -67,6 +67,8 @@ enum Intrinsic {
     NotedCount,
     /// `noted_name("name", i)` — the name of the `i`th of them, or `""` (ADR-0100 §1).
     NotedName,
+    /// `noted_insert("name", "template")` — the template once per noted declaration (ADR-0101 §1).
+    NotedInsert,
 }
 
 /// How a `Type_Info` field's type is checked.
@@ -174,6 +176,13 @@ pub struct CheckOutput {
     /// **Absent for an all-positional call with no defaults**, so the common path pays nothing and
     /// `jr-mir` falls back to the source order — which for such a call is already correct.
     pub filled_calls: FxHashMap<(ExprScope, ExprId), Vec<ArgSlot>>,
+    /// The same folded values, keyed by the call's **span** (ADR-0101 §3).
+    ///
+    /// Load-bearing when a body *expands*: a computed `#insert` renumbers every `ExprId` after the splice, so
+    /// a second folded call in one body is at a different id in the expanded tree and its
+    /// [`CheckOutput::folded_calls`] entry cannot be found. A span survives expansion — every synthesized
+    /// span points at the directive (ADR-0072 §2) — which is why the insert-operand map is span-keyed too.
+    pub folded_call_spans: FxHashMap<jr_base::Span, PoolId>,
     /// Calls that folded to a value **in this crate** — `has_note` and `note_value` (ADR-0099 §2).
     ///
     /// Separate from [`CheckOutput::type_info_calls`], whose meaning is "build a `Type_Info` for this type"
@@ -374,6 +383,7 @@ pub fn check_file(
         operator_calls: ctx.operator_calls,
         filled_calls: ctx.filled_calls,
         folded_calls: ctx.folded_calls,
+        folded_call_spans: ctx.folded_call_spans,
         type_info_calls: ctx.type_info_calls,
         any_calls: ctx.any_calls,
         instantiations: ctx.instantiations,
@@ -2655,6 +2665,13 @@ impl Ctx<'_> {
             Some(Intrinsic::NotedName) => {
                 return self.check_noted_name(scope, id, callee, args, span);
             }
+            // **The loop lives inside the fold** (ADR-0101 §1). ADR-0100 §2 established that folding can
+            // never take a `for` variable as an argument; it said nothing about looping *within* the fold,
+            // which is what this does — and for code *generation* that is not a workaround but the right
+            // shape, since a run-time loop could not declare anything anyway.
+            Some(Intrinsic::NotedInsert) => {
+                return self.check_noted_insert(scope, id, callee, args, span);
+            }
             None => {}
         }
 
@@ -2872,6 +2889,7 @@ impl Ctx<'_> {
             "note_value" => Intrinsic::NoteValue,
             "noted_count" => Intrinsic::NotedCount,
             "noted_name" => Intrinsic::NotedName,
+            "noted_insert" => Intrinsic::NotedInsert,
             _ => return None,
         };
         match self.resolve.get(scope, callee).unwrap_or(res) {
@@ -2980,7 +2998,7 @@ impl Ctx<'_> {
         } else {
             self.pool.bool_value(found.is_some())
         };
-        self.folded_calls.insert((scope, id), value);
+        self.record_fold(scope, id, span, value);
 
         self.expect(None, answer_ty, span)
     }
@@ -3012,7 +3030,7 @@ impl Ctx<'_> {
         // `s64` rather than an untyped literal, because the count is a real quantity a caller will compare
         // and index with, and ADR-0016 §1's context typing has no context to read at a folded call.
         let value = self.pool.int_value(PoolId::S64, count);
-        self.folded_calls.insert((scope, id), value);
+        self.record_fold(scope, id, span, value);
         self.expect(None, PoolId::S64, span)
     }
 
@@ -3067,8 +3085,83 @@ impl Ctx<'_> {
             .map(|sym| self.interner.resolve(sym).to_owned())
             .unwrap_or_default();
         let value = self.pool.str_value(&text);
-        self.folded_calls.insert((scope, id), value);
+        self.record_fold(scope, id, span, value);
         self.expect(None, PoolId::STRING, span)
+    }
+
+    /// Types and folds `noted_insert("name", "template")` (ADR-0101 §1).
+    ///
+    /// The template is emitted **once per noted declaration**, with each `#` replaced by that declaration's
+    /// name, and the results concatenated. `#insert` then splices the result through ADR-0073's existing
+    /// mechanism, so this adds a *fold* and reuses every other part.
+    ///
+    /// This is the metaprogram loop for the code-generation case, and it needs no compiler-emitted table:
+    /// ADR-0100 §2's limit is that a `for` **variable** cannot be a folded argument, which forbids a loop in
+    /// the *program* and says nothing about a loop inside the *fold*. For generation that distinction is not
+    /// a workaround — a run-time loop could never declare a procedure or a field, because those are decided
+    /// at check time, so generation is inherently a fold.
+    fn check_noted_insert(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        self.types.set_expr(scope, callee, PoolId::VOID);
+        if args.len() != 2 {
+            self.wrong_intrinsic_arity("noted_insert", 2, args.len(), span);
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+        let Some(note) = self.note_name_argument(scope, args[0], "noted_insert", span) else {
+            self.check_expr(scope, args[1], None);
+            return PoolId::ERROR;
+        };
+
+        let template = self.string_literal_of(scope, args[1]);
+        self.types.set_expr(scope, args[1], PoolId::STRING);
+        let Some(template) = template else {
+            self.diags.push(
+                Diagnostic::error(span, "`noted_insert`'s template must be a string literal")
+                    .with_code(E0277)
+                    .with_note(
+                        "the text is built while checking, so the template has to be readable then",
+                    )
+                    .with_help(
+                        "write it directly, e.g. `noted_insert(\"serialise\", \"write(#);\")`",
+                    ),
+            );
+            return PoolId::ERROR;
+        };
+
+        // `#` stands for the declaration's name: a single character that is **not** valid in a Jairs
+        // identifier and is not already an operator, so a template containing one is unambiguous. `$` is
+        // taken by polymorphism, `{}` reads as a block, and a word-shaped placeholder could collide with a
+        // real name in the generated text.
+        let mut text = String::new();
+        for name in self.noted_declarations(note) {
+            let name = self.interner.resolve(name).to_owned();
+            text.push_str(&template.replace('#', &name));
+        }
+        // **No note matching answers `""`**, which `#insert` accepts as "splice nothing" (ADR-0072 §4) — so a
+        // build script's generated section is simply empty in a file with nothing to generate for, rather
+        // than a diagnostic about a program that is correct.
+        let value = self.pool.str_value(&text);
+        self.record_fold(scope, id, span, value);
+        self.expect(None, PoolId::STRING, span)
+    }
+
+    /// Records a folded call's value under **both** its `(scope, expr)` key and its span (ADR-0101 §3).
+    ///
+    /// Two keys for one value, because the two consumers see different trees: `file_consts` reads the id in
+    /// the tree it checked, and `file_mir` may be looking at an *expanded* tree where a computed `#insert`
+    /// has renumbered every id after the splice. The span is the only key that survives that.
+    fn record_fold(&mut self, scope: ExprScope, id: ExprId, span: Span, value: PoolId) {
+        self.folded_calls.insert((scope, id), value);
+        self.folded_call_spans.insert(span, value);
     }
 
     /// The names of this file's procedures carrying `@name`, in **declaration order** (ADR-0100 §1).

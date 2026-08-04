@@ -396,6 +396,30 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
     // target the appended procedure rather than the template.
     let consts = {
         let base = crate::consts::file_consts(db, file, search_paths).values;
+        // **A folded value keyed by `ExprId` is stale once a body expands** (ADR-0101 §3). `file_consts`
+        // records `folded_calls` against the *unexpanded* tree, and an expansion renumbers every id after
+        // the splice — so in the expanded tree those ids name *different* expressions, and a second folded
+        // `#insert` in one body left a `string` value sitting on an arithmetic operand. The failure was a
+        // verifier panic (`mixed operand types`), not a diagnostic, because the value is well-typed *for the
+        // expression it was computed for*: the "well-typed placeholder" family AGENTS.md names, in its
+        // sharpest form yet — the placeholder is a genuine value from the same program.
+        //
+        // Fixed by **clearing and re-recording from the expanded check**, which is the only pass that saw
+        // the ids MIR will use. Clearing matters as much as re-recording: a stale entry the expanded check
+        // does not replace is exactly the wrong value at a live id.
+        let base = match &expanded {
+            Some((_, _, check, _)) => {
+                let mut values = (*base).clone();
+                for (scope, expr) in checked(db, file, search_paths).folded_calls.keys() {
+                    values.clear_run(*scope, *expr);
+                }
+                for ((scope, expr), value) in check.folded_calls.iter() {
+                    values.set_run(*scope, *expr, *value);
+                }
+                Arc::new(values)
+            }
+            None => base,
+        };
         match &instantiated {
             Some(inst) => {
                 let mut values = (*base).clone();
@@ -414,6 +438,11 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
                 // surfacing as "no routine for file 0 proc 2". Folded against the instantiation's check,
                 // which is where `T` is bound, with the same `type_info_value` `file_consts` uses so the
                 // two cannot disagree about what a `Type_Info` is.
+                // The same re-recording for an instantiation's tree (ADR-0101 §3), for the same reason: an
+                // appended procedure's `folded_calls` are keyed in *its* arena.
+                for ((scope, expr), value) in inst.check.folded_calls.iter() {
+                    values.set_run(*scope, *expr, *value);
+                }
                 if !inst.check.type_info_calls.is_empty() {
                     let base_sigs_for_ti = crate::sema::file_signatures(db, file, search_paths);
                     let module_sigs: Vec<Arc<jr_sema::FileSignatures>> =
