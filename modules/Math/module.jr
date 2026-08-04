@@ -1,0 +1,164 @@
+//! The Math module: the **exact, closed-form** functions — the ones that are the same bits in both engines.
+//!
+//! Written in Jairs, and it has no `sqrt`, `sin` or `log`, which is the surprising part and the whole design.
+//!
+//! # Why no transcendentals
+//!
+//! The obvious `Math` wraps libm — `sqrt` is a `#foreign` declaration. But **a float cannot cross the FFI
+//! boundary yet**: `sqrt :: (x: float64) -> float64 #foreign libc "sqrt"` is refused, "passing FloatType to a
+//! foreign procedure arrives with a later wave". So libm is unreachable, and the module is pure Jairs.
+//!
+//! A transcendental *approximated* in Jairs would compile — and it would be **wrong in a way this project
+//! cannot tolerate**. An approximation's last bits depend on the order the arithmetic is evaluated, and the
+//! comptime VM and native Cranelift may round a fused multiply-add differently, so the two engines could
+//! disagree on the last ulp. Disagreement between the engines is the one thing the differential harness treats
+//! as a failure. So a transcendental belongs behind the FFI boundary (libm is correctly rounded) or behind a
+//! decision about ulp tolerance — neither of which is a library call — and this module ships only what it can
+//! make **exact**.
+//!
+//! # Why `floor` is in and `sqrt` is out, though both are "float functions"
+//!
+//! The line is **exactness**, not difficulty. `floor` is closed-form — truncate toward zero with a cast, adjust
+//! by sign — so both engines compute identical bits. `sqrt` is not expressible without a loop whose rounding
+//! the two engines need not share. Everything here is on the exact side of that line, and the differential
+//! harness holds it there.
+
+/// The absolute value of an `s64`.
+///
+/// `min_of_s64` (the most negative `s64`) has no positive counterpart, so `abs(min)` overflows — and this uses
+/// the trapping subtraction (ADR-0002), so it **traps** rather than returning a negative "absolute value". That
+/// is the honest answer: there is no correct result, and a silent wrong one is worse than a trap.
+abs :: (x: s64) -> s64 {
+    if x < 0 {
+        return 0 - x;
+    }
+    return x;
+}
+
+/// The absolute value of a `float64`.
+///
+/// A separate procedure rather than a `$T` one, because `0 - x` means different things for the two types and
+/// there is no overload resolution across a template's instantiated type yet (the reason `Sort` takes a
+/// comparison, ADR-0104 §3). `abs(-0.0)` is `0.0`, which is what negating a negative zero gives.
+fabs :: (x: float64) -> float64 {
+    if x < 0.0 {
+        return 0.0 - x;
+    }
+    return x;
+}
+
+/// The smaller of two `s64`s.
+min :: (a: s64, b: s64) -> s64 {
+    if a < b {
+        return a;
+    }
+    return b;
+}
+
+/// The larger of two `s64`s.
+max :: (a: s64, b: s64) -> s64 {
+    if a > b {
+        return a;
+    }
+    return b;
+}
+
+/// `value` confined to `[low, high]`.
+///
+/// `low` is applied after `high`, so a caller who passes `low > high` gets `low` — a defined answer for a
+/// nonsensical range rather than an unspecified one. Naming which bound wins is better than leaving it to the
+/// comparison order.
+clamp :: (value: s64, low: s64, high: s64) -> s64 {
+    result := value;
+    if result > high {
+        result = high;
+    }
+    if result < low {
+        result = low;
+    }
+    return result;
+}
+
+/// -1, 0 or 1 as `x` is negative, zero or positive.
+sign :: (x: s64) -> s64 {
+    if x < 0 {
+        return -1;
+    }
+    if x > 0 {
+        return 1;
+    }
+    return 0;
+}
+
+/// `base` raised to a non-negative integer `exponent`, by repeated multiplication.
+///
+/// **Integer, and exact.** A negative exponent would give a fraction, which an `s64` cannot hold, so it is
+/// refused by returning 0 — distinguishable from every real power except `0` itself, which a caller asking for
+/// `pow(0, n)` already expects. Overflow traps through the multiplication (ADR-0002), which is the right answer
+/// for a result that does not fit.
+pow :: (base: s64, exponent: s64) -> s64 {
+    if exponent < 0 {
+        return 0;
+    }
+    result := 1;
+    i := 0;
+    while i < exponent {
+        result = result * base;
+        i = i + 1;
+    }
+    return result;
+}
+
+/// The greatest common divisor of two non-negative integers, by Euclid's algorithm.
+///
+/// `gcd(0, 0)` is 0, and `gcd(x, 0)` is `x` — the standard boundary. Negative inputs are taken by their absolute
+/// value, so the result is always non-negative, which is the only sign a divisor sensibly has.
+gcd :: (a: s64, b: s64) -> s64 {
+    x := abs(a);
+    y := abs(b);
+    while y != 0 {
+        t := y;
+        y = x % y;
+        x = t;
+    }
+    return x;
+}
+
+/// The largest whole `float64` not greater than `x`.
+///
+/// Closed-form and exact in both engines: cast toward zero, then step down by one when a negative `x` was cut
+/// upward. `cast(s64, x)` truncates toward zero (ADR-0037), so for `-1.5` it gives `-1`, one *too high* — the
+/// adjustment is what makes it a floor rather than a truncation.
+///
+/// Only meaningful for an `x` whose whole part fits an `s64`; a larger magnitude is already an exact integer as
+/// a `float64`, so returning it unchanged is correct, which the range check below preserves.
+floor :: (x: float64) -> float64 {
+    truncated := cast(float64, cast(s64, x));
+    if truncated > x {
+        return truncated - 1.0;
+    }
+    return truncated;
+}
+
+/// The smallest whole `float64` not less than `x`.
+///
+/// The mirror of `floor`: truncation is one *too low* for a positive fraction, so step up when it undershoots.
+ceil :: (x: float64) -> float64 {
+    truncated := cast(float64, cast(s64, x));
+    if truncated < x {
+        return truncated + 1.0;
+    }
+    return truncated;
+}
+
+/// `x` rounded to the nearest whole `float64`, halves away from zero.
+///
+/// Away from zero rather than to-even, because it is the rule a reader expects from "round" and it is exact to
+/// state: add half of the sign's magnitude and truncate. Banker's rounding is a defensible alternative and a
+/// different decision; this one is the unsurprising one.
+round :: (x: float64) -> float64 {
+    if x < 0.0 {
+        return cast(float64, cast(s64, x - 0.5));
+    }
+    return cast(float64, cast(s64, x + 0.5));
+}

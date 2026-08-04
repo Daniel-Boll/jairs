@@ -8679,3 +8679,227 @@ proc main -> void {
     discard call extern proc1(v68)
     return
 }
+
+========================================
+091-math.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call extern proc0(v0, -5_s64)
+    v2: bool = v1 == 5_s64
+    branch v2 ? bb1() : bb2()
+  bb1():
+    v4: s64 = call extern proc0(v0, 5_s64)
+    v5: bool = v4 == 5_s64
+    goto bb3(v5)
+  bb2():
+    goto bb3(false)
+  bb3(v3: bool):
+    branch v3 ? bb4() : bb5()
+  bb4():
+    v7: s64 = call extern proc0(v0, 0_s64)
+    v8: bool = v7 == 0_s64
+    goto bb6(v8)
+  bb5():
+    goto bb6(false)
+  bb6(v6: bool):
+    branch v6 ? bb7() : bb8()
+  bb7():
+    v11: s64 = 0_s64 + 1_s64
+    goto bb9(v11)
+  bb8():
+    goto bb9(0_s64)
+  bb9(v22: s64):
+    v12: s64 = call extern proc2(v0, 3_s64, 7_s64)
+    v13: bool = v12 == 3_s64
+    branch v13 ? bb10() : bb11()
+  bb10():
+    v15: s64 = call extern proc3(v0, 3_s64, 7_s64)
+    v16: bool = v15 == 7_s64
+    goto bb12(v16)
+  bb11():
+    goto bb12(false)
+  bb12(v14: bool):
+    branch v14 ? bb13() : bb14()
+  bb13():
+    v18: s64 = call extern proc2(v0, -2_s64, -9_s64)
+    v19: bool = v18 == -9_s64
+    goto bb15(v19)
+  bb14():
+    goto bb15(false)
+  bb15(v17: bool):
+    branch v17 ? bb16() : bb17()
+  bb16():
+    v23: s64 = v22 + 2_s64
+    goto bb18(v23)
+  bb17():
+    goto bb18(v22)
+  bb18(v34: s64):
+    v24: s64 = call extern proc5(v0, -3_s64)
+    v25: bool = v24 == -1_s64
+    branch v25 ? bb19() : bb20()
+  bb19():
+    v27: s64 = call extern proc5(v0, 0_s64)
+    v28: bool = v27 == 0_s64
+    goto bb21(v28)
+  bb20():
+    goto bb21(false)
+  bb21(v26: bool):
+    branch v26 ? bb22() : bb23()
+  bb22():
+    v30: s64 = call extern proc5(v0, 8_s64)
+    v31: bool = v30 == 1_s64
+    goto bb24(v31)
+  bb23():
+    goto bb24(false)
+  bb24(v29: bool):
+    branch v29 ? bb25() : bb26()
+  bb25():
+    v35: s64 = v34 + 4_s64
+    goto bb27(v35)
+  bb26():
+    goto bb27(v34)
+  bb27(v48: s64):
+    v36: s64 = call extern proc4(v0, 10_s64, 0_s64, 5_s64)
+    v37: bool = v36 == 5_s64
+    branch v37 ? bb28() : bb29()
+  bb28():
+    v39: s64 = call extern proc4(v0, -1_s64, 0_s64, 5_s64)
+    v40: bool = v39 == 0_s64
+    goto bb30(v40)
+  bb29():
+    goto bb30(false)
+  bb30(v38: bool):
+    branch v38 ? bb31() : bb32()
+  bb31():
+    v42: s64 = call extern proc4(v0, 3_s64, 0_s64, 5_s64)
+    v43: bool = v42 == 3_s64
+    goto bb33(v43)
+  bb32():
+    goto bb33(false)
+  bb33(v41: bool):
+    branch v41 ? bb34() : bb35()
+  bb34():
+    v44: s64 = call extern proc4(v0, 3_s64, 8_s64, 2_s64)
+    v45: bool = v44 == 8_s64
+    branch v45 ? bb37() : bb38()
+  bb37():
+    v49: s64 = v48 + 8_s64
+    goto bb39(v49)
+  bb38():
+    goto bb39(v48)
+  bb39(v61: s64):
+    goto bb36(v61)
+  bb35():
+    goto bb36(v48)
+  bb36(v60: s64):
+    v50: s64 = call extern proc6(v0, 2_s64, 10_s64)
+    v51: bool = v50 == 1024_s64
+    branch v51 ? bb40() : bb41()
+  bb40():
+    v53: s64 = call extern proc6(v0, 5_s64, 0_s64)
+    v54: bool = v53 == 1_s64
+    goto bb42(v54)
+  bb41():
+    goto bb42(false)
+  bb42(v52: bool):
+    branch v52 ? bb43() : bb44()
+  bb43():
+    v56: s64 = call extern proc6(v0, 3_s64, 3_s64)
+    v57: bool = v56 == 27_s64
+    goto bb45(v57)
+  bb44():
+    goto bb45(false)
+  bb45(v55: bool):
+    branch v55 ? bb46() : bb47()
+  bb46():
+    v62: s64 = v60 + 16_s64
+    goto bb48(v62)
+  bb47():
+    goto bb48(v60)
+  bb48(v73: s64):
+    v63: s64 = call extern proc7(v0, 12_s64, 18_s64)
+    v64: bool = v63 == 6_s64
+    branch v64 ? bb49() : bb50()
+  bb49():
+    v66: s64 = call extern proc7(v0, 7_s64, 0_s64)
+    v67: bool = v66 == 7_s64
+    goto bb51(v67)
+  bb50():
+    goto bb51(false)
+  bb51(v65: bool):
+    branch v65 ? bb52() : bb53()
+  bb52():
+    v69: s64 = call extern proc7(v0, 0_s64, 0_s64)
+    v70: bool = v69 == 0_s64
+    goto bb54(v70)
+  bb53():
+    goto bb54(false)
+  bb54(v68: bool):
+    branch v68 ? bb55() : bb56()
+  bb55():
+    v74: s64 = v73 + 32_s64
+    goto bb57(v74)
+  bb56():
+    goto bb57(v73)
+  bb57(v85: s64):
+    v75: float64 = call extern proc8(v0, 3.7_float64)
+    v76: bool = v75 == 3.0_float64
+    branch v76 ? bb58() : bb59()
+  bb58():
+    v78: float64 = call extern proc9(v0, 3.2_float64)
+    v79: bool = v78 == 4.0_float64
+    goto bb60(v79)
+  bb59():
+    goto bb60(false)
+  bb60(v77: bool):
+    branch v77 ? bb61() : bb62()
+  bb61():
+    v81: float64 = call extern proc10(v0, 3.5_float64)
+    v82: bool = v81 == 4.0_float64
+    goto bb63(v82)
+  bb62():
+    goto bb63(false)
+  bb63(v80: bool):
+    branch v80 ? bb64() : bb65()
+  bb64():
+    v86: s64 = v85 + 64_s64
+    goto bb66(v86)
+  bb65():
+    goto bb66(v85)
+  bb66(v103: s64):
+    v87: float64 = -1.5_float64
+    v88: float64 = call extern proc8(v0, v87)
+    v89: float64 = -2.0_float64
+    v90: bool = v88 == v89
+    branch v90 ? bb67() : bb68()
+  bb67():
+    v92: float64 = -1.5_float64
+    v93: float64 = call extern proc9(v0, v92)
+    v94: float64 = -1.0_float64
+    v95: bool = v93 == v94
+    goto bb69(v95)
+  bb68():
+    goto bb69(false)
+  bb69(v91: bool):
+    branch v91 ? bb70() : bb71()
+  bb70():
+    v97: float64 = -2.5_float64
+    v98: float64 = call extern proc10(v0, v97)
+    v99: float64 = -3.0_float64
+    v100: bool = v98 == v99
+    goto bb72(v100)
+  bb71():
+    goto bb72(false)
+  bb72(v96: bool):
+    branch v96 ? bb73() : bb74()
+  bb73():
+    v104: s64 = v103 + 128_s64
+    goto bb75(v104)
+  bb74():
+    goto bb75(v103)
+  bb75(v105: s64):
+    discard call extern proc1(v105)
+    return
+}
