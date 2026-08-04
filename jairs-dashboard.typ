@@ -94,7 +94,7 @@
 #v(0.4em)
 #pill[6/6 gates green]
 #h(4pt)
-#pill[962 tests]
+#pill[963 tests]
 #h(4pt)
 #pill[ADR-0077 latest]
 #h(4pt)
@@ -104,7 +104,7 @@
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "962", "workspace, all passing"),
+  metric("Tests", "963", "workspace, all passing"),
   metric("Corpus", "169", "jr files, both engines"),
   metric("ADRs", "77", "0001 to 0077, immutable"),
   metric("Diagnostics", "98", "codes, E0268 next free"),
@@ -366,7 +366,7 @@
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 962. Corpus 116 to 169 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
+      Test count 900 to 963. Corpus 116 to 169 files. Neovim checks 103 to 166. *W2, W3 and W4.5 are all
       closed*, and *W4 is open* with six sub-waves shipped: a `#run` reaches across files and into a body,
       an array length may name a constant, a type is a value, `#insert` of a literal lowers where it is
       written, and now a *computed* `#insert` evaluates its operand at compile time and splices it — the

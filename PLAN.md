@@ -509,7 +509,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W4 sub-wave 8 is COMPLETE (ADR-0076, ADR-0077): `Any`, a value that carries its type.** `any_of(*x)`
 erases a value and `any_as(a, T)` reads it back, trapping unless the type matches — the second half of
-RTTI. **962 workspace tests**, all six gates green, **166 Neovim checks**. See §1.5.
+RTTI. **963 workspace tests**, all six gates green, **166 Neovim checks**. See §1.5.
 
 **The erasing conversion is allowed only at an `Any` boundary** (ADR-0076 §1): `any_of` turns a `*T` into
 the `*u8` that `Any.data` holds, and a bare `cast(*u8, p)` stays E0232. A general pointer cast would make a
@@ -558,9 +558,11 @@ Diagnostic codes: **E0268 is the first free code**, **E0131 the first free *pars
       needs a memory-ownership decision (static data the back end emits vs a comptime-built table).
       **Already checked, do not re-probe:** a `Type_Info` cannot hold a `Type` field, because
       `Item::TypeType` is `ComptimeOnly`; an element type must be an opaque handle or a nested `Type_Info`.
-- [ ] **Every value coercing to `Any` implicitly**, e.g. `a: Any = 3;`. Deferred (ADR-0076 §4): a literal
-      has no address to point at, so it would need a compiler-materialised temporary whose lifetime is the
-      storage decision deferred twice now. `any_of(*x)` erases a *pointer*, so the lifetime stays visible.
+- [ ] **A bare *value* coercing to `Any` implicitly**, e.g. `a: Any = 3;`. Deferred (ADR-0076 §4): a
+      literal has no address to point at, so it would need a compiler-materialised temporary whose
+      lifetime is the storage decision deferred twice now. The **pointer** coercion `takes(*x)` is *done*
+      (ADR-0076 §1, completed after the sub-wave merge): a pointer's lifetime is visible, so it needs no
+      temporary. Only the value form remains.
 - [ ] **`#code` and the `Code` type** — a quoted syntax tree as a value; the last of the `#insert` family.
       Probed: it does not parse at all, so it needs new grammar across parser, CST, tree-sitter and
       formatter — the widest surface of what remains, and comptime-only like `Type`.

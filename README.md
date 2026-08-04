@@ -109,7 +109,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 962 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
+`print_int` (ADR-0037). 963 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do
