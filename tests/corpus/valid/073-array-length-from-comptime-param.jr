@@ -1,0 +1,52 @@
+// **`[N]T` where the length is a `$N` comptime parameter** (ADR-0089): the case comptime-value parameters
+// exist for. W5's sub-wave 6c, completing `$N`.
+//
+// `buf: [N]s64` inside a `make :: ($N: s64)` needs `N`'s *value* at the point the array type resolves —
+// which is why it waited for instantiation (ADR-0088). Each instantiation bakes its own value, so
+// `fill_and_sum(4)` gets a genuine `[4]s64` and `fill_and_sum(3)` a genuine `[3]s64`: **two different
+// types, two different layouts**, from one declaration.
+//
+// The value reaches sema through the HIR (`FileHir::param_values`), interned by the const-eval pre-pass —
+// so ADR-0039 §3a's "no const-eval in sema" constraint still holds, exactly as ADR-0070 §1's file-level
+// constant does. `jr-sema` depends on neither `jr-db` nor `jr-vm`.
+//
+// **The template's own body is typed against a placeholder** `[0]s64` and its length-dependent checks are
+// withheld (ADR-0089 §2) — a template has no value for `N`, so `buf[0]` there would be a false "index out
+// of range". The template is never lowered (`is_template` skips it), and each instantiation is checked
+// against its real length, which is where a genuinely bad index *is* caught.
+//
+// What is checked here:
+//
+//   * a `[N]s64` local sized by the baked value, written through and read back (`fill_and_sum`);
+//   * `buf.count` reading the *real* length from the type, not the placeholder;
+//   * **two instantiations with different lengths**, summing to different values — a shared or wrong
+//     length would give a different total, which is what makes this assert the value rather than mere
+//     agreement;
+//   * `N` used as an ordinary `s64` in the same body it sizes an array with (the `while i < N` bound).
+//
+// Sums to 16 (10 from N=4, 6 from N=3), and both engines must agree — the native back end lays out each
+// instantiation's array independently of the VM, so agreement is a real check.
+#import "Basic";
+
+/// Fills a `[N]s64` with 1..N and sums it, so the array's real size is load-bearing twice: once for the
+/// store loop's bound and once for the read loop's.
+fill_and_sum :: ($N: s64) -> s64 {
+    buf: [N]s64;
+    i := 0;
+    while i < N {
+        buf[i] = i + 1;
+        i = i + 1;
+    }
+    total := 0;
+    j := 0;
+    while j < buf.count {
+        total = total + buf[j];
+        j = j + 1;
+    }
+    return total;
+}
+
+main :: () {
+    // N=4 → 1+2+3+4 = 10; N=3 → 1+2+3 = 6. Two distinct instantiations, two distinct array types.
+    exit(fill_and_sum(4) + fill_and_sum(3));
+}

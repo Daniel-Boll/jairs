@@ -43,8 +43,8 @@ marks a parameter polymorphic over a compile-time-known value, the value-side mi
 concrete procedure with `N` **baked** into the body — the instantiation's parameter list drops the `$N`
 params, and each reference to `N` becomes a literal. `make(5)` twice dedupes to one instantiation, `make(7)`
 is a distinct one, and mixed comptime+runtime params (`scaled :: ($N: s64, factor: s64)`) pass only the
-runtime ones at the call. A non-constant argument is refused with E0271. Still ahead in W5: `[N]T` over a
-`$N` parameter (small — `constant_array_length` needs to consult the baked value), then the macro family. On top of **`#code`** (ADR-0080), which **completed wave W4 — Comptime** as scoped: `#code { n := 7; }`
+runtime ones at the call. A non-constant argument is refused with E0271. And `[N]T` sized by a `$N` parameter works (ADR-0089), which is what the feature is *for*: two
+instantiations get genuinely different array types from one declaration. Still ahead in W5: the macro family. On top of **`#code`** (ADR-0080), which **completed wave W4 — Comptime** as scoped: `#code { n := 7; }`
 is `#insert "n := 7;"` written without quotes, spliced into the enclosing scope. It is deliberately *sugar* —
 `#insert` of a named constant already worked, so what `#code` adds is no quoting and a body parsed where it
 is written, not a new capability. There is no `Code` *value*, and that is **declined rather than deferred**: a
@@ -147,7 +147,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 977 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
+`print_int` (ADR-0037). 978 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do
@@ -218,6 +218,7 @@ The authoritative version of this list is
 | **`#code { … }`** — unquoted source spliced into the enclosing scope; the body is parsed where it is written, so no quoting and no escaping (ADR-0080). Deliberately *sugar* over `#insert`, reusing its depth bound and its refusal of a pending splice | a `Code` **value** — **declined**, not deferred: a quoted syntax tree is worth representing only once something can inspect or transform one (ADR-0080 §3); spans into the body's real source, so a fault inside it points at the `#code` |
 | **`$T` polymorphic procedures** — inferred from the argument (directly or through `*$T`/`[]$T`), instantiated once per distinct tuple of bound types, checked per instantiation, run as ordinary procedures in both engines (ADR-0081–0084) | comptime-value params (`$$T`); macros (`#modify`/`#bake_arguments`/`#expand`); two-way unification and explicit type arguments |
 | **polymorphic structs** — `Box :: struct($T) { value: T; }` used as `Box(s64)`; the instance is keyed on `(decl, args)` so `Box(s64)` and `Box(bool)` are distinct types with substituted fields and layouts, told apart in the pool the way `[2]s64` and `[3]s64` are (ADR-0085). Both engines compute each instance's layout from its substituted fields | inferring a struct's argument through a `$T` parameter (`(b: Box($T))`); `using` on a parameterised struct; a **cross-file** parameterised struct (E0269); recursive `List($T)` |
+| **`[N]T` sized by a `$N` comptime parameter** (ADR-0089) — `buf: [N]s64` inside a `$N` procedure; each instantiation gets its own array type and layout from the baked value, so two calls at 4 and 3 give a `[4]s64` and a `[3]s64` from one declaration. The value reaches sema through the HIR already interned, so sema still runs no evaluator | a length needing *arithmetic* (`[2 + 2]u8`), or one naming a constant from another file — both ADR-0070's own deferrals |
 | **`$N` comptime-value parameter and instantiation** (ADR-0087, ADR-0088): `make :: ($N: s64)` called as `make(5)` evaluates the argument to a compile-time constant and appends a concrete procedure with `N` baked into the body; two calls at the same value dedupe, distinct values instantiate separately (ADR-0005 extended to values). Mixed comptime and runtime parameters — `scaled :: ($N: s64, factor: s64)` — pass only the runtime one at the call site | `[N]T` where `N` is a `$N` parameter (small, next); a non-constant argument is refused E0271; a mixed `$T`+`$N` template falls through with an honest mismatch |
 | a **type as a compile-time value**: `T :: Point;` binds one, and `T` is usable wherever `Point` is — as an annotation, a parameter, a field, an array element, a pointee; an enum alias carries its members (ADR-0071) | a chain (`B :: A`); comparing types (`T == U`); a `Type` parameter; `Type` as an annotation, which does not parse |
 | using a type where a **runtime** value is expected is refused (E0261) — it has no runtime representation, so there is nothing to store | — |

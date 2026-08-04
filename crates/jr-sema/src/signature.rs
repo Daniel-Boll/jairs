@@ -696,6 +696,33 @@ impl Ctx<'_> {
             self.type_bindings.insert(var, bound);
         }
 
+        // The **baked comptime values** of this procedure's `$N` parameters, if it is an instantiation
+        // (ADR-0089 §1). Set for the same window `type_bindings` is, so an array length naming a `$N`
+        // parameter — `buf: [N]s64` — resolves while this signature and its body are resolved. Empty for
+        // an ordinary procedure and for a template, so nothing else changes.
+        let values_to_bind: Vec<(jr_base::Symbol, PoolId)> = self
+            .hir
+            .param_values
+            .iter()
+            .filter(|(p, _, _)| *p == proc)
+            .map(|(_, name, value)| (*name, *value))
+            .collect();
+        for (name, value) in &values_to_bind {
+            self.value_bindings.insert(*name, *value);
+        }
+        // The **names** of this procedure's comptime parameters, whether or not values are known
+        // (ADR-0089 §2). A *template* has names and no values, and that is exactly the case where an
+        // array length naming one must be withheld rather than refused.
+        let comptime_names: Vec<jr_base::Symbol> = declaration
+            .params
+            .iter()
+            .filter(|p| p.comptime)
+            .map(|p| p.name)
+            .collect();
+        for name in &comptime_names {
+            self.comptime_param_names.insert(*name);
+        }
+
         let mut comptime_params = Vec::with_capacity(declaration.params.len());
         for param in &declaration.params {
             let ty = match param.ty {
@@ -758,6 +785,16 @@ impl Ctx<'_> {
         // computed on the same context (ADR-0081 §1: the map is empty outside a polymorphic signature).
         for &var in &vars_to_bind {
             self.type_bindings.remove(&var);
+        }
+        // Clear this signature's comptime-value bindings, exactly as the type bindings above are cleared:
+        // two instantiations of one template share the parameter name `N` with different values, so
+        // leaving one set would give the next signature the wrong length. The *body* gets its own seeding
+        // in `check_file`'s body loop (ADR-0089 §1).
+        for (name, _) in &values_to_bind {
+            self.value_bindings.remove(name);
+        }
+        for name in &comptime_names {
+            self.comptime_param_names.remove(name);
         }
 
         let ty = self.pool.proc_type(params.clone(), ret, context);

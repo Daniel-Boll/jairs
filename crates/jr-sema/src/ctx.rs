@@ -188,6 +188,33 @@ pub(crate) struct Ctx<'a> {
     /// with no comptime-value calls.
     pub(crate) comptime_calls:
         FxHashMap<(ExprScope, jr_hir::ExprId), (jr_hir::ProcId, Vec<jr_hir::ExprId>)>,
+    /// The **baked value** of each `$N` parameter of the procedure currently being resolved
+    /// (ADR-0089 §1).
+    ///
+    /// The value-side counterpart of `type_bindings`: set from `FileHir::param_values` around an
+    /// instantiation's signature and body, so an array length that *names* a comptime parameter —
+    /// `buf: [N]s64` — resolves to the value the const-eval pre-pass produced. Empty outside an
+    /// instantiation of a `$N` template, so an ordinary program costs one hash probe and changes nothing.
+    pub(crate) value_bindings: FxHashMap<Symbol, PoolId>,
+    /// The names of the `$N` comptime parameters of the procedure currently being resolved, whether or
+    /// not their values are known (ADR-0089 §2).
+    ///
+    /// A **template**'s `$N` has no value — only its instantiations do — so an array length naming one
+    /// cannot resolve while the template's own body is checked. Rather than report E0233 there (the
+    /// program is correct; it is the template that has no value yet), the length resolves to a
+    /// placeholder and the refusal is withheld. This set is what distinguishes "names a comptime
+    /// parameter, so wait for the instantiation" from "names nothing usable, so refuse" — the same
+    /// shape as `jr-hir`'s withheld E0201 inside a pending `#insert` (ADR-0073 §1).
+    pub(crate) comptime_param_names: FxHashSet<Symbol>,
+    /// Array types whose length is a **placeholder** because it named a `$N` comptime parameter of a
+    /// template (ADR-0089 §2).
+    ///
+    /// A template's `[N]s64` resolves to `[0]s64` so the body can still be typed, and that placeholder
+    /// must not produce *length-dependent* diagnostics: `buf[0]` would be "index 0 out of range for
+    /// `[0]s64`", a false error about a correct program. Every check that reads a length consults this set
+    /// and withholds. The instantiations resolve real lengths and are checked normally, which is where a
+    /// genuinely out-of-range index *is* caught.
+    pub(crate) placeholder_arrays: FxHashSet<PoolId>,
 }
 
 impl<'a> Ctx<'a> {
@@ -208,6 +235,9 @@ impl<'a> Ctx<'a> {
             type_bindings: FxHashMap::default(),
             instantiations: FxHashMap::default(),
             comptime_calls: FxHashMap::default(),
+            value_bindings: FxHashMap::default(),
+            comptime_param_names: FxHashSet::default(),
+            placeholder_arrays: FxHashSet::default(),
             any_calls: FxHashMap::default(),
             hir,
             file,
@@ -368,6 +398,22 @@ impl<'a> Ctx<'a> {
                     None => len_name.and_then(|name| self.constant_array_length(name)),
                 };
                 let Some(n) = resolved_len else {
+                    // **A length naming a `$N` comptime parameter of a template is withheld, not
+                    // refused** (ADR-0089 §2): the program is correct and the *template* simply has no
+                    // value for `N` yet — each instantiation resolves its own. Length 0 is a placeholder
+                    // for the template's own type only; the template is never lowered (`is_template`
+                    // skips its body and its native declaration), so nothing runs against it. The same
+                    // withholding shape as `jr-hir`'s E0201 inside a pending `#insert`.
+                    if len_name.is_some_and(|name| self.comptime_param_names.contains(&name)) {
+                        if element == PoolId::ERROR {
+                            return PoolId::ERROR;
+                        }
+                        let placeholder = self.pool.array_of(element, 0);
+                        // Remembered so every *length-dependent* check withholds on it — a literal index
+                        // against `[0]s64` would otherwise be a false E0236 about correct code.
+                        self.placeholder_arrays.insert(placeholder);
+                        return placeholder;
+                    }
                     // Lowering reached the length *token* and found it was neither a usable
                     // literal nor a name resolving to one, but says nothing (ADR-0039 §3a).
                     // This is where it is reported, because rejecting a type is a semantic
@@ -885,6 +931,31 @@ impl<'a> Ctx<'a> {
     /// chain, because a chain needs a fixpoint and a cycle check, which is the evaluation machinery this
     /// deliberately avoids (ADR-0070 §4).
     fn constant_array_length(&self, name: Symbol) -> Option<u64> {
+        // **A `$N` comptime parameter's baked value wins** (ADR-0089 §1), checked first for the reason
+        // `resolve_type_name` checks `type_bindings` first: inside an instantiation, `N` *is* that
+        // parameter, and a same-named file constant must not shadow it. Still no evaluation here — the
+        // value was interned by the const-eval pre-pass and carried in on `FileHir::param_values`.
+        if let Some(&value) = self.value_bindings.get(&name) {
+            return match *self.pool.item(value) {
+                Item::IntValue { ty, bits } => {
+                    let decoded = match *self.pool.item(ty) {
+                        Item::IntType {
+                            signed,
+                            bits: width,
+                        } => IntKind {
+                            signed,
+                            bits: width,
+                        }
+                        .decode(bits),
+                        _ => i128::from(bits as i64),
+                    };
+                    // A negative length, or one past `u64`, fails exactly as a negative literal does.
+                    u64::try_from(decoded).ok()
+                }
+                // A non-integer comptime parameter is not a length; refused by the caller as E0233.
+                _ => None,
+            };
+        }
         let item = self.hir.scope.get(name)?;
         let jr_hir::ItemKind::Const {
             value: jr_hir::ConstValue::Expr(expr),
