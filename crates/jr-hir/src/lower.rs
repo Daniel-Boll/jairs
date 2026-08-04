@@ -439,6 +439,7 @@ impl<'a> LowerCtx<'a> {
                     name_span,
                     ty,
                     using: p.is_using(),
+                    comptime: p.is_comptime(),
                     default,
                 });
             }

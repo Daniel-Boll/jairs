@@ -1027,11 +1027,11 @@ impl<'src> Parser<'src> {
                 if self.at(R_PAREN) {
                     break; // trailing comma
                 }
-                // `using p: Point` after a comma (ADR-0050 §1). Gating on `IDENT` alone made the
-                // *second* `using` parameter end the list — so `(using a: Point, using b: Point)`
-                // reported four cascading errors. The third hand-written token gate this wave had
-                // to widen, after the struct and union field lists.
-                if !self.at(IDENT) && !self.at(USING_KW) {
+                // `using p: Point` after a comma (ADR-0050 §1), or `$N: s64` (ADR-0087 §1). Gating on
+                // `IDENT` alone made the *second* `using` parameter end the list — so
+                // `(using a: Point, using b: Point)` reported four cascading errors. The hand-written
+                // token gate widens once more for a comptime parameter's leading `$`, the same trap.
+                if !self.at(IDENT) && !self.at(USING_KW) && !self.at(DOLLAR) {
                     break;
                 }
                 self.parse_param();
@@ -1045,6 +1045,12 @@ impl<'src> Parser<'src> {
         self.start_node(PARAM);
         // `using p: Point` promotes Point's fields into the body's scope (ADR-0050 §1).
         self.eat(USING_KW);
+        // `$N: s64` — a comptime-value parameter, polymorphic over a compile-time-known value
+        // (ADR-0087 §1). The `$` precedes the *name* here, which is what distinguishes it from a `$T`
+        // in *type* position (a `poly_type`): this marks the parameter, its type annotation is
+        // ordinary. Bumped as a child token of `PARAM` so the typed AST can read it; `DOLLAR` is
+        // already the lexed kind (ADR-0081).
+        self.eat(DOLLAR);
         if self.at(IDENT) {
             self.bump(); // param name
             self.expect(COLON);
@@ -2669,6 +2675,19 @@ mod tests {
     #[test]
     fn struct_decl() {
         check_no_errors("Point :: struct { x: s64; y: s64; }");
+    }
+
+    #[test]
+    fn comptime_value_parameter() {
+        // `$N: s64` — a comptime-value parameter, the `$` before the name (ADR-0087 §1).
+        check_no_errors("make :: ($N: s64) -> s64 { return N; }");
+        check_round_trip("make :: ($N: s64) -> s64 { return N; }");
+    }
+
+    #[test]
+    fn comptime_value_parameter_mixed_with_ordinary() {
+        check_no_errors("f :: ($N: s64, factor: s64) -> s64 { return N; }");
+        check_round_trip("f :: ($N: s64, factor: s64) -> s64 { return N; }");
     }
 
     #[test]

@@ -231,6 +231,10 @@ module.exports = grammar({
       seq(
         // `using p: Point` promotes the type's fields (ADR-0050 §1). Only the typed form takes it.
         optional("using"),
+        // `$N: s64` — a comptime-value parameter, polymorphic over a compile-time-known value
+        // (ADR-0087 §1). The `$` precedes the *name*, distinguishing it from a `$T` in type position
+        // (a `poly_type`): this marks the parameter, its type annotation is ordinary.
+        optional("$"),
         $.identifier,
         ":",
         field("type", $._type),

@@ -132,15 +132,15 @@ pub fn lower_file(
             // A `#foreign` procedure has no body to lower, and is not a failure.
             continue;
         }
-        // **A polymorphic procedure's body is a template, not code** (ADR-0081 §2): its `$T` parameters
-        // have no concrete type, so lowering it would refuse it (`ERROR`-typed params) and E0245 would
-        // warn about a body that is *meant* to be uncheckable until instantiated. It is skipped exactly
-        // as a `#foreign` body is — nothing to lower here — and the instantiation sub-wave lowers a
-        // concrete copy per call. Recognised by its signature's `poly_vars`, the same field the call-site
-        // refusal keys on, so the two cannot disagree about which procedures are templates.
+        // **A template procedure's body is not code** (ADR-0081 §2, ADR-0087 §2): a `$T` parameter has
+        // no concrete type and a `$N` parameter no concrete value until a call instantiates it, so
+        // lowering the template would treat `N` as an ordinary parameter — a placeholder miscompile.
+        // Skipped exactly as a `#foreign` body is; the instantiation sub-wave lowers a concrete copy per
+        // call. `is_template` covers both marks, the same predicate the call-site refusal keys on, so the
+        // two cannot disagree about which procedures are templates.
         if signatures
             .proc_sig(proc)
-            .is_some_and(|sig| !sig.poly_vars.is_empty())
+            .is_some_and(jr_sema::ProcSig::is_template)
         {
             continue;
         }

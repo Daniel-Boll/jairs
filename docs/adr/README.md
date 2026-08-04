@@ -107,3 +107,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0084](0084-nested-inference.md) | A type variable is inferred through a pointer or view parameter (`*$T`, `[]$T`) by a one-layer structural match | Accepted |
 | [0085](0085-polymorphic-structs.md) | A polymorphic struct is a parameterised type keyed on `(decl, args)`; design of record for the sub-wave that builds it | Accepted |
 | [0086](0086-polymorphic-structs-implementation.md) | Polymorphic structs as built: staged (zero-diff representation, then behaviour), a second instance-keyed field map, and every ADR-0085 §5 deferral held as a compile-time refusal | Accepted |
+| [0087](0087-comptime-value-parameter.md) | A comptime-value parameter `$N: s64` — the surface (parses, lowers, body type-checks); a call is refused by design (E0271) pending the instantiation half | Accepted |

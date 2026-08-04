@@ -69,7 +69,7 @@ cd tree-sitter-jairs && npx --yes tree-sitter-cli@0.26.11 generate \
 
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
 visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
-→ 969 (W5 sub-waves 1–4) → 974 (W5 sub-wave 5, polymorphic structs).
+→ 969 (W5 sub-waves 1–4) → 974 (W5 sub-wave 5, polymorphic structs) → 976 (W5 sub-wave 6a, `$N` surface).
 
 ## House style
 
@@ -169,9 +169,10 @@ their original blocks (E0250/E0253 and E0262–E0264 in `jr-hir`, the rest in `j
 E0262–E0264 are `#insert`'s: a non-literal operand and a parse error in the text (ADR-0072),
 and expansion nested too deep (ADR-0073). E0265–E0268 are comptime/reflection refusals
 (ADR-0075/0076); E0269–E0270 are parameterised-struct refusals — a `Name(args)` that is not a
-parameterised struct, and a wrong type-argument count (ADR-0085).
+parameterised struct, and a wrong type-argument count (ADR-0085); E0271 is a call to a `$N`
+comptime-value-parameterised procedure, refused pending its instantiation half (ADR-0087).
 
-**E0271 is the first free code**; E0131 is the first free *parser* code. E0231 is `jr-db`'s
+**E0272 is the first free code**; E0131 is the first free *parser* code. E0231 is `jr-db`'s
 unused-import warning — the first code in this project that is a *warning* rather than an
 error, so a consumer filtering by severity has something to filter.
 

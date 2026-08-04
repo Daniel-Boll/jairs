@@ -146,8 +146,25 @@ pub struct ProcSig {
     /// sub-wave (ADR-0081) *recognises* the template and refuses a call pending the instantiation
     /// sub-wave; the field is what a consumer keys that decision on.
     pub poly_vars: Vec<Symbol>,
+    /// Which parameters are `$N` — comptime-value polymorphic — parallel to `params` (ADR-0087 §1).
+    ///
+    /// All `false` for an ordinary procedure. Any `true` makes the signature a **template** the same
+    /// way a non-empty `poly_vars` does, but for a different reason: a `$N` parameter's *type* is known
+    /// (so the body checks), while its *value* is not until a call fixes it — so a call is instantiated
+    /// per value rather than checked directly. This sub-wave (ADR-0087) recognises the template and
+    /// refuses a call (E0271) pending the instantiation half; the field is what a consumer keys that on.
+    pub comptime_params: Vec<bool>,
     /// The interned procedure type.
     pub ty: PoolId,
+}
+
+impl ProcSig {
+    /// Whether this signature is a **template** — polymorphic over a type or a comptime value
+    /// (ADR-0081, ADR-0087) — so it has no concrete instance until a call instantiates it.
+    #[must_use]
+    pub fn is_template(&self) -> bool {
+        !self.poly_vars.is_empty() || self.comptime_params.iter().any(|&c| c)
+    }
 }
 
 // ---------------------------------------------------------------------------

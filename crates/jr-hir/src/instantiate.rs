@@ -84,6 +84,7 @@ fn append_one(
             name_span: param.name_span,
             ty: param.ty.map(|t| copy_type_ref(hir, t)),
             using: param.using,
+            comptime: param.comptime,
             default: param.default,
         })
         .collect();

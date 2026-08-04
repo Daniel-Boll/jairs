@@ -696,6 +696,7 @@ impl Ctx<'_> {
             self.type_bindings.insert(var, bound);
         }
 
+        let mut comptime_params = Vec::with_capacity(declaration.params.len());
         for param in &declaration.params {
             let ty = match param.ty {
                 // Parameter types live in `FileHir::type_refs`, not in
@@ -705,6 +706,9 @@ impl Ctx<'_> {
             };
             names.push(param.name);
             defaults.push(self.param_default(param, ty, foreign));
+            // A `$N` parameter's *type* is ordinary and resolved above; the mark only affects when its
+            // value is known (ADR-0087 §1), so its `ty` is real — which is what lets the body check.
+            comptime_params.push(param.comptime);
             params.push(ty);
         }
 
@@ -763,6 +767,7 @@ impl Ctx<'_> {
             defaults,
             ret,
             poly_vars,
+            comptime_params,
             ty,
         };
         self.sigs.insert_proc(proc, sig.clone());

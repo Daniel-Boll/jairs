@@ -346,3 +346,13 @@ pub(crate) const E0269: &str = "E0269";
 /// `Box($T)` takes exactly one; `Box(s64, bool)` and `Box()` are both refused with this code, naming the
 /// count wanted and the count written — the type-side counterpart of an arity error on a call.
 pub(crate) const E0270: &str = "E0270";
+
+/// A call to a procedure with a `$N` comptime-value parameter, not yet instantiable (ADR-0087 §3).
+///
+/// `$N: s64` parses, lowers, formats and — unlike a `$T` template — its body type-checks, because a `$N`
+/// parameter's *type* is fully known and only its *value* varies. What is deferred is **instantiation**:
+/// evaluating each `$N` argument to a compile-time constant at the call site (the sema↔VM recursion an
+/// acyclic pre-pass broke for `#insert`, ADR-0073), keying an instantiation on the tuple of argument
+/// values, and unlocking `[N]T`. Until that second half a call is refused with this code — a *by-design*
+/// refusal that names what arrives later, the value-side counterpart of E0268 for `$T`.
+pub(crate) const E0271: &str = "E0271";
