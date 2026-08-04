@@ -1674,3 +1674,50 @@ Shipped. Three things the build discovered, each recorded because none was in th
 
 Fork 3's revised recommendation held: the result local makes a macro work in both positions through one
 mechanism, and an early `return` is refused (E0273) rather than rewritten into a fall-through.
+
+---
+
+## Wave: `#modify` (ADR-0092), 2026-08-04 — sub-wave 7c
+
+Premise verified by running first: `#modify { … }` after a signature is **E0106** today, so it is a real
+feature. It is the hardest of the three macro pieces, because it runs *arbitrary compile-time code* while an
+instantiation is being decided.
+
+### Fork 1 — what `#modify` is allowed to do this sub-wave
+
+- Options: **accept or reject an instantiation — the block returns a `bool`, and `false` refuses the call
+  with a diagnostic (taken, recommended)**; also let it *alter* the bound types (Jai's full form, where the
+  block may assign to `T`); a `#modify` that only reports.
+- Why accept/reject first: it is the half that needs **no new machinery** in the instantiation pipeline. The
+  block is a compile-time predicate over the bound types, so it evaluates through the *same* acyclic
+  const-eval pre-pass `#insert` and `$N` already use (ADR-0073, ADR-0088) — and a `false` becomes a refusal
+  at the call, which is a diagnostic rather than a rewrite. Letting it **alter** `T` would mean the
+  instantiation key is no longer what the checker inferred, so `instantiated()` would have to re-run
+  inference against the modified binding — a second fixpoint, and its own sub-wave.
+- The block's result must be a **compile-time constant `bool`**, judged exactly as a `$N` argument is
+  (ADR-0088 §2): a non-constant is refused rather than assumed true.
+
+### Fork 2 — where the block's code lives, and what it can see
+
+- Options: **a body attached to the procedure, evaluated per instantiation with the bound types available as
+  compile-time values (taken, recommended)**; a separate top-level predicate procedure the attribute names;
+  a textual condition.
+- Why an attached body: it is what Jai writes and it keeps the predicate beside the thing it guards. What it
+  can *see* this sub-wave is deliberately narrow — it is evaluated per instantiation, so the natural input is
+  the bound type, and ADR-0071 already makes a type a compile-time value. A predicate that inspects a type's
+  fields needs `type_info` of a *variable* type, which is ADR-0078's deferred variable-length list; so the
+  first version supports predicates over the type *identity* (`T == s64`), and richer introspection follows
+  that ADR rather than this one.
+
+### Resolution — `#modify` is blocked, and the blocker was worth more (ADR-0092)
+
+Designing `#modify` (forks 1 and 2 above) surfaced that its enabling piece did not exist: **`type_info(T)` on
+a bound type variable was E0261**, so a compile-time predicate would have had nothing to predicate on — and,
+more importantly, a `$T` procedure could not reflect on its own parameter at all. That is a bigger gap than
+`#modify` and on the same critical path, so it was fixed first (ADR-0092): bindings consulted first in
+`described_type`, seeded per body in `check_file`, withheld in a template, and an instantiation's `Type_Info`
+folded in `file_mir` against its own check — which also turned a sixth leaked ICE ("no routine for file 0
+proc 2") into working code.
+
+`#modify` itself remains unbuilt, now genuinely unblocked: a predicate can ask
+`type_info(T).id == type_info(s64).id`. Its forks 1 and 2 above stand as the design.

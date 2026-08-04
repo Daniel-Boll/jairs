@@ -1,0 +1,76 @@
+// **`type_info(T)` on a bound type variable** (ADR-0092 §1): reflection over the very thing polymorphism
+// binds. W5's sub-wave 7c, and the enabling piece `#modify` needs — a compile-time predicate over an
+// instantiation has to be able to *ask something* about the bound type.
+//
+// Before this, `type_info(T)` inside a `$T` procedure was **E0261 "needs a type"**: the name `T` resolves to
+// no declaration and there is no builtin called `T`, so the described type came out `None`. Two things were
+// missing, and both are the same shape as pieces built for `$N`:
+//
+//   * `described_type` now consults `type_bindings` **first**, the way `resolve_type_name` does — inside an
+//     instantiation, `T` *is* the bound type;
+//   * those bindings are **seeded per body** in `check_file` from `FileHir::proc_bindings`, exactly as `$N`'s
+//     baked values are (ADR-0089 §1). Per body rather than left set, because two instantiations of one
+//     template share the variable name `T` with different bindings — leaving one set would describe the
+//     wrong type in the other's body, a silently wrong `size`.
+//
+// A **template**'s own `type_info(T)` is *withheld* rather than refused (§1): the template has no binding,
+// and the program is correct — each instantiation resolves `T` for real. And the instantiation's folded
+// `Type_Info` constants are built in `file_mir` against the instantiation's check, because `file_consts`
+// folds the *base* check where the template's call was withheld — without that the instantiation had no
+// value and `scan` refused the body, surfacing as "no routine for file 0 proc 2".
+//
+// What is checked here:
+//
+//   * `type_info(T).size` inside a `$T` body, at **two different bound types** (`s64` → 8, `u8` → 1), so a
+//     shared or wrong binding changes the answer;
+//   * `type_info(T).id` compared against a concrete type's, which is how a `#modify` predicate will ask
+//     "is `T` an `s64`" — the identity comparison ADR-0077 made sound;
+//   * a bound **struct** type reflected for its field `count` (ADR-0078), so the reflection is not
+//     scalar-only.
+//
+// Sums to 42, and both engines must agree — each folds the `Type_Info` from the same `type_info_value`, so
+// a wrong binding would give both the same wrong number and only the value catches it.
+#import "Basic";
+
+/// Reflects the bound type's size. Two instantiations give two different answers.
+size_of :: (x: $T) -> s64 {
+    return type_info(T).size;
+}
+
+/// Asks whether the bound type *is* `s64`, by comparing type identities (ADR-0077's stable `id`).
+is_s64 :: (x: $T) -> s64 {
+    if type_info(T).id == type_info(s64).id {
+        return 1;
+    }
+    return 0;
+}
+
+/// A struct to bind, so the reflection is not limited to scalars.
+Pair :: struct {
+    a: s64;
+    b: s64;
+}
+
+/// Reflects a bound struct's field count (ADR-0078).
+fields_of :: (x: $T) -> s64 {
+    return type_info(T).count;
+}
+
+main :: () {
+    n := 0;
+    small: u8;
+    big := 0;
+
+    // s64 is 8 bytes, u8 is 1 → 9.
+    n = n + size_of(big) + size_of(small);
+
+    // `T == s64` for one and not the other → 1.
+    n = n + is_s64(big) + is_s64(small);
+
+    // A bound struct's field count → 2.
+    p: Pair;
+    n = n + fields_of(p);
+
+    // 9 + 1 + 2 == 12, plus 30 to make the total distinctive.
+    exit(n + 30);
+}

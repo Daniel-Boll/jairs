@@ -206,6 +206,14 @@ pub(crate) struct Ctx<'a> {
     /// parameter, so wait for the instantiation" from "names nothing usable, so refuse" — the same
     /// shape as `jr-hir`'s withheld E0201 inside a pending `#insert` (ADR-0073 §1).
     pub(crate) comptime_param_names: FxHashSet<Symbol>,
+    /// The `$T` type-variable names of the procedure currently being checked, bound or not (ADR-0092 §1).
+    ///
+    /// A **template**'s `$T` has no binding — only its instantiations do — so `type_info(T)` in the
+    /// template's own body cannot resolve to a type. Rather than report E0261 there (the program is correct;
+    /// it is the template that has no binding yet), the call is withheld and yields a poisoned type, the
+    /// same discipline `comptime_param_names` gives an array length whose value is not yet known. Each
+    /// instantiation resolves `T` for real and is checked normally.
+    pub(crate) poly_var_names: FxHashSet<Symbol>,
     /// Array types whose length is a **placeholder** because it named a `$N` comptime parameter of a
     /// template (ADR-0089 §2).
     ///
@@ -237,6 +245,7 @@ impl<'a> Ctx<'a> {
             comptime_calls: FxHashMap::default(),
             value_bindings: FxHashMap::default(),
             comptime_param_names: FxHashSet::default(),
+            poly_var_names: FxHashSet::default(),
             placeholder_arrays: FxHashSet::default(),
             any_calls: FxHashMap::default(),
             hir,

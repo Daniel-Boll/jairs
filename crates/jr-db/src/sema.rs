@@ -645,6 +645,22 @@ pub(crate) fn instantiated(
     })
 }
 
+/// Every imported module's signatures, for a consumer that needs to look a library type up (ADR-0092 §1).
+///
+/// Exists so `file_mir` can fold an instantiation's `type_info(T)` with the same signature set
+/// `file_consts` uses — `Type_Info` is declared in `Basic`, so the own file's signatures alone would not
+/// find it, the failure ADR-0075 §2 records finding by running.
+pub(crate) fn imported_signatures(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+) -> Vec<Arc<FileSignatures>> {
+    imported_module_files(db, file, search_paths)
+        .into_iter()
+        .map(|(_, module)| file_signatures(db, module, search_paths).signatures)
+        .collect()
+}
+
 /// A total order over `ExprScope` for deterministic sorting.
 fn scope_ord(scope: jr_hir::ExprScope) -> (u8, u32) {
     match scope {

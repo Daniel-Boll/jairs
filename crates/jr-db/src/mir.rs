@@ -408,6 +408,31 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
                 for (call, mask) in &inst.comptime_masks {
                     values.set_comptime_arg_mask(call.0, call.1, mask.clone());
                 }
+                // **The instantiation's own `type_info(T)` calls fold here** (ADR-0092 §1). `file_consts`
+                // folded the *base* check's, where a template's `T` had no binding and the call was
+                // withheld — so an instantiation's `type_info(T)` had no value and `scan` refused the body,
+                // surfacing as "no routine for file 0 proc 2". Folded against the instantiation's check,
+                // which is where `T` is bound, with the same `type_info_value` `file_consts` uses so the
+                // two cannot disagree about what a `Type_Info` is.
+                if !inst.check.type_info_calls.is_empty() {
+                    let base_sigs_for_ti = crate::sema::file_signatures(db, file, search_paths);
+                    let module_sigs: Vec<Arc<jr_sema::FileSignatures>> =
+                        crate::sema::imported_signatures(db, file, search_paths);
+                    let mut pool = crate::sema::lock_pool(db);
+                    let interner = db.interner();
+                    let mut all_sigs: Vec<&jr_sema::FileSignatures> = vec![
+                        inst.signatures.as_ref(),
+                        base_sigs_for_ti.signatures.as_ref(),
+                    ];
+                    all_sigs.extend(module_sigs.iter().map(AsRef::as_ref));
+                    for ((scope, expr), described) in inst.check.type_info_calls.iter() {
+                        if let Ok(value) = crate::consts::type_info_value(
+                            &mut pool, interner, &all_sigs, *described,
+                        ) {
+                            values.set_run(*scope, *expr, value);
+                        }
+                    }
+                }
                 Arc::new(values)
             }
             None => base,

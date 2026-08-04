@@ -1018,7 +1018,7 @@ fn intern_aggregate(pool: &mut Pool, ty: PoolId, raws: &[Raw]) -> Result<PoolId,
 /// fact inside a compile-time value**, and it is the one place this wave knowingly bakes one in: a
 /// `Type_Info` reports a *size*, so it cannot be target-independent the way ADR-0074 §1 kept the rest of
 /// the pool. Recorded here rather than hidden, because a second target would need this reconsidered.
-fn type_info_value(
+pub(crate) fn type_info_value(
     pool: &mut Pool,
     interner: &jr_base::Interner,
     signatures: &[&jr_sema::FileSignatures],

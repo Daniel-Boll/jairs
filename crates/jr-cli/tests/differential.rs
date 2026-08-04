@@ -399,6 +399,34 @@ fn code_splices_identically_in_both_engines() {
     );
 }
 
+/// **`type_info(T)` on a bound type variable** must reflect each instantiation's own type and exit **42**
+/// in both engines (ADR-0092 §1).
+///
+/// Two instantiations reflect *different* bound types (`s64` → size 8, `u8` → size 1), one compares `T`'s
+/// identity against `s64`'s, and one reads a bound struct's field count. Each engine folds the `Type_Info`
+/// from the same `type_info_value`, so a binding that leaked between instantiations, or a template's
+/// withheld placeholder reaching an instantiation, would give both the same wrong number — only asserting 42
+/// catches it. This is the reflection a `#modify` predicate needs.
+#[test]
+fn reflecting_a_bound_type_agrees_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/076-reflect-a-bound-type.jr");
+
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    assert_eq!(
+        vm.status, 42,
+        "the VM exited {} — a bound type variable reflected wrongly",
+        vm.status
+    );
+    assert_eq!(
+        native.status, 42,
+        "the native back end exited {} — see the VM assertion above",
+        native.status
+    );
+}
+
 /// The **`#expand` splice** must run a macro's body in the caller's scope and exit **96** in both engines
 /// (ADR-0090 §2).
 ///
