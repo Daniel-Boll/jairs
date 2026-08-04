@@ -175,7 +175,8 @@ pub(crate) struct Ctx<'a> {
     /// `type_info_calls` is — one type inference, reused, rather than a second walk. Keyed by the call
     /// expression's `(scope, id)`, so the pass can rewrite that exact call to target the instantiated
     /// procedure. Empty for a file with no polymorphic calls, which is every ordinary program.
-    pub(crate) instantiations: FxHashMap<(ExprScope, jr_hir::ExprId), (jr_hir::ProcId, PoolId)>,
+    pub(crate) instantiations:
+        FxHashMap<(ExprScope, jr_hir::ExprId), (jr_hir::ProcId, Vec<PoolId>)>,
 }
 
 impl<'a> Ctx<'a> {
