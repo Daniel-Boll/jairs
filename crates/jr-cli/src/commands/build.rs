@@ -81,7 +81,17 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
     db.load_modules_transitively(root);
 
     let map: SourceMap = db.source_map();
-    let diags = file_diagnostics(&db, root, search);
+    // **Every reachable file, not only the root** (ADR-0108 §1). `file_diagnostics` answers for one file, so a
+    // root whose imported module was broken passed this gate and failed *inside the engine* — `List` calling
+    // `malloc` without importing `Basic` gave `no routine for file 2 proc 0` for a program the gate had just
+    // approved (ADR-0107 §5). Refusing here is what turns that into the module's own diagnostic at its own line.
+    //
+    // The reachable set is the same one the MIR assembly below walks, so this adds no query and cannot disagree
+    // with what is about to be compiled.
+    let mut diags = jr_diag::Diagnostics::new();
+    for file in jr_db::reachable_files(&db, root, search) {
+        diags.extend(file_diagnostics(&db, file, search).iter().cloned());
+    }
     let errors = diags
         .iter()
         .filter(|d| d.severity == Severity::Error)

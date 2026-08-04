@@ -112,6 +112,16 @@ engine right and the other wrong — the failure two independent implementations
 the corpus asserts exit codes rather than agreement. Nothing had found it because a growable array is the first
 construct whose whole point is memory outliving the call that made it.
 
+**And an imported module's own errors are now reported** (ADR-0108), which the previous sub-wave found and left
+alone because fixing it changes what every command reports. A root whose imported module was broken used to pass
+every gate — `jr check` printed "0 errors" — and then fail inside an engine with a message naming a `FileId`.
+Resolution was never wrong: checking the module alone always reported the unresolved name. Nothing *asked* it.
+
+All three commands now walk the reachable set they already use to assemble MIR, and each diagnostic keeps the
+module's **own** file and span, because attributing it to the `#import` line would read better for someone using a
+module they cannot edit while discarding the only thing that locates the bug. This does make the compiler reject
+programs it used to accept — every one of which was going to fail anyway, later and less comprehensibly.
+
 Before it, wave **W6 — Metaprogram**, five sub-waves in, with 984 tests green. Its headline claim is met — a metaprogram can find
 declarations by note and generate code for each — and a build script can name its own artefact. A declaration can
 carry **`@note` metadata** for a metaprogram to read (ADR-0098). `@deprecated` and `@requires "x"` sit in the

@@ -88,22 +88,43 @@ pub fn run(args: CheckArgs, global: &GlobalArgs) -> Result<i32> {
     // the whole map, so taking it per-file would be quadratic in source bytes.
     let map: SourceMap = db.source_map();
 
+    // **Every reachable file is reported, not only the ones named** (ADR-0108 §1). `file_diagnostics` answers
+    // for *one* file, so a root whose imported module was broken checked clean and then failed at run time —
+    // `List` calling `malloc` without importing `Basic` gave `no routine for file 2 proc 0` for a program this
+    // command had just approved (ADR-0107 §5). Resolution was correct; the reporting was not.
+    //
+    // Each diagnostic keeps **its own file and span**, so a reader is told the module's line, which is where the
+    // fix goes. Attributing it to the `#import` instead would read better for someone using a module they cannot
+    // edit and would discard the only thing that locates the bug — ADR-0043's lesson about a diagnostic that is
+    // true and useless.
+    let mut reported: Vec<jr_db::SourceFile> = Vec::new();
     for source_file in &roots {
-        // `file_diagnostics` covers parse, lower, resolve and type-check in
-        // source order.
-        //
-        // Note there is no longer any suppression here: before module loading
-        // existed, resolution diagnostics were discarded for any file containing
-        // an `#import`, because every imported name would have been reported
-        // unresolved. That workaround is gone, which is the point of this wave.
-        let diags = file_diagnostics(&db, *source_file, search_paths_input);
+        for file in jr_db::reachable_files(&db, *source_file, search_paths_input) {
+            // Deduped **across roots**: `jr check a.jr b.jr` may reach one module from both, and reporting its
+            // errors twice would make a shared module look worse the more files import it. Each reachable set is
+            // distinct on its own (the seen-set that makes an import cycle terminate), so this is the only place
+            // duplication can arise.
+            if reported.contains(&file) {
+                continue;
+            }
+            reported.push(file);
 
-        emit_diagnostics(&renderer, &map, &diags);
+            // `file_diagnostics` covers parse, lower, resolve and type-check in
+            // source order.
+            //
+            // Note there is no longer any suppression here: before module loading
+            // existed, resolution diagnostics were discarded for any file containing
+            // an `#import`, because every imported name would have been reported
+            // unresolved. That workaround is gone, which is the point of that wave.
+            let diags = file_diagnostics(&db, file, search_paths_input);
 
-        total_errors += diags
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .count();
+            emit_diagnostics(&renderer, &map, &diags);
+
+            total_errors += diags
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .count();
+        }
     }
 
     print_check_summary(files.len(), total_errors, global.quiet);

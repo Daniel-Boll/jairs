@@ -1,0 +1,19 @@
+// A module with a real error, used by `jr-cli`'s `an_imported_modules_errors_are_reported` test.
+//
+// It calls `malloc` without `#import "Basic";`. That is genuinely wrong, and it used to be **unreported**:
+// `file_diagnostics` answers for one file, so a root importing this checked clean and then failed inside an
+// engine with `no routine for file 2 proc 0` — a signature had crossed the boundary and a body had not
+// (ADR-0107 §5, fixed by ADR-0108).
+//
+// The missing import is the right mistake to use here because it is what actually happened while writing the
+// `List` module, rather than something synthetic invented for a test.
+//
+// **Why this lives in `tests/fixtures/` rather than `tests/corpus/modules/`.** That directory has an invariant
+// worth keeping: `fixture_modules_check_cleanly` asserts every module in it type-checks silently, because a
+// *fixture* module is scenery for other tests and a broken one would make every test that imports it ambiguous.
+// A deliberately broken module needs its own home, and giving it one is cheaper than weakening the invariant.
+uses_an_unimported_name :: (n: s64) -> s64 {
+    p := malloc(n);
+    free(p);
+    return n;
+}

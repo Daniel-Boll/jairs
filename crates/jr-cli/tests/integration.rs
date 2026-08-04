@@ -805,3 +805,50 @@ fn a_file_with_no_build_output_still_defaults_to_its_own_name() {
     assert_eq!(run_build(source, None), 0);
     assert!(dir.path().join("plain").exists(), "`plain.jr` → `plain`");
 }
+
+// ---------------------------------------------------------------------------
+// An imported module's own diagnostics (ADR-0108)
+// ---------------------------------------------------------------------------
+
+/// A root file is clean; the module it imports is not; the error must be reported.
+///
+/// **What this pins is that the compiler says so at all.** `file_diagnostics` answers for *one* file, so before
+/// ADR-0108 a root whose imported module was broken passed every gate — `jr check` printed "0 errors" — and then
+/// failed inside an engine with `no routine for file 2 proc 0`, a signature having crossed the module boundary
+/// while a body had not. That is the fifth leaked internal error this project has turned into a real diagnostic,
+/// and it was found by writing the `List` module (ADR-0107 §5).
+///
+/// Resolution was never the bug: checking the module alone always reported `unresolved name malloc`. Nothing
+/// asked it.
+///
+/// The assertion is on the **exit code and the module's own path**, because the diagnostic keeps its own file and
+/// span — a reader is told the line to fix. Attributing it to the `#import` would read better for someone using a
+/// module they cannot edit, and would discard the only thing that locates the bug (ADR-0043's lesson).
+#[test]
+fn an_imported_modules_errors_are_reported() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("root.jr");
+    fs::write(
+        &root,
+        "#import \"Broken\";\n\nmain :: () {\n    n := uses_an_unimported_name(4);\n}\n",
+    )
+    .unwrap();
+
+    let modules =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/broken-modules");
+    assert!(modules.is_dir(), "the broken-module fixture must exist");
+
+    let code = jr_cli::commands::check::run(
+        jr_cli::cli::CheckArgs {
+            paths: vec![root],
+            module_paths: vec![modules],
+        },
+        &quiet_global(),
+    )
+    .expect("check should not fail at the io layer");
+
+    assert_eq!(
+        code, 1,
+        "a root whose imported module is broken must not check clean"
+    );
+}
