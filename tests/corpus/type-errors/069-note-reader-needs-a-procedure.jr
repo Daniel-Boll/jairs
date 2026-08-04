@@ -1,0 +1,24 @@
+// EXPECT: E0277 — `has_note` asked about something that is not a procedure (ADR-0099 §1)
+//
+// **`has_note` needs a procedure whose notes to read** (E0277, ADR-0099 §1).
+//
+// The first argument is the **declaration itself**, not its name as text. `has_note(add, "inline")` misspelt
+// as `has_note(addd, …)` is then an ordinary unresolved-name error; named by text it would have been a silent
+// `false`, which is exactly the failure mode the formatter's dropped notes had (ADR-0098) and is not worth
+// rebuilding in the reader.
+//
+// Only a **procedure** carries notes today, because the parser takes them in the *procedure* attribute loop.
+// Asking about a struct or a constant is therefore refused rather than answered `false`: `false` would claim
+// the declaration has no such note, when the truth is that it could not have one at all. Widening later —
+// notes on a struct, a constant, a field — is additive, and this refusal is what makes it so.
+// No `#import "Basic"`: an unused import is E0231, a second diagnostic this directory does not allow.
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+asks_about_a_struct :: () {
+    // A struct type, which resolves fine and carries no notes at all.
+    answer := has_note(Point, "packed");
+}

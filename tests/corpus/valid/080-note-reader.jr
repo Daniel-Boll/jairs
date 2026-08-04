@@ -1,0 +1,115 @@
+// **A reader for `@note`** (ADR-0099): `has_note(f, "x")` and `note_value(f, "x")`, answered at compile time.
+// W6's second sub-wave, and the piece that makes ADR-0098's metadata *do* something.
+//
+// ADR-0098 shipped notes deliberately **without** a reader, on the argument that the compiler message loop's
+// message shape should be designed against data that already exists. That data exists now, so this is the
+// question it left: what is the reader?
+//
+// **The full Jai answer is a message loop** — `compiler_wait_for_message()` handing a metaprogram each
+// declaration as the compiler sees it. That needs three undecided things: a `Declaration` value (which is
+// ADR-0080 §3's declined `Code` value in a new costume), a compile-time iteration protocol, and a re-entrancy
+// story for a metaprogram running while the compiler is mid-check. Each is its own sub-wave. But a loop's
+// message is only useful if something can *inspect* it, and inspecting a declaration's notes is what that
+// inspection consists of — so the primitive comes first, and the loop later hands its declarations to it
+// rather than inventing its own reading verbs.
+//
+// **Both fold in sema, with no VM at all.** `type_info` folds in `jr-db` because it needs `layout_of` and a
+// mutable pool where the described type is known; a note needs neither — the answer is in the HIR's
+// `Proc::notes`, which the checker is already holding. So the value is interned during checking and copied
+// into `ConstValues` through the same `set_run` channel a `#run` uses, because `jr-mir` already replaces a
+// `run`-keyed call with its constant and never emits the callee.
+//
+// **The first argument is the declaration, not its name as text.** `has_note(add, "inline")` misspelt as
+// `has_note(addd, …)` is an ordinary unresolved-name error; named by text it would have been a silent
+// `false` — which is exactly the failure the formatter's dropped notes had (ADR-0098), and not worth
+// rebuilding in the reader.
+//
+// What is checked here:
+//
+//   * `has_note` answering **true** for a note that is present, and **false** for one that is not — a
+//     missing note is not an error, because asking whether a note is present is the point (ADR-0099 §3);
+//   * `has_note` on a note that *has* a payload, so presence does not depend on the payload;
+//   * `note_value` reading a payload back, and answering `""` for both an absent note and a **bare** one —
+//     deliberately conflated, since a caller wanting a payload wants the payload or nothing;
+//   * a note read from a `#expand` **macro** and from a `$T` procedure, so the reader composes with W5;
+//   * the answer used in a **branch**, so the notes are load-bearing: it exits **127** (1+2+4+8+16+32+64,
+//     every question answered as intended), and deleting `@fast` makes it exit 126 instead. A shared wrong
+//     answer would be invisible to a two-engine differential, so the exit code has to depend on the notes.
+//
+// Unlike `079`, this program's exit code **depends on its notes**, which is what the differential harness can
+// actually check.
+#import "Basic";
+
+/// Two notes, one bare and one with a payload.
+tuned :: (x: s64) -> s64 @fast @since "0.3" {
+    return x;
+}
+
+/// No notes at all, so every question about it answers "no".
+plain :: (x: s64) -> s64 {
+    return x;
+}
+
+/// A note on a macro — the reader does not care that the callee is spliced rather than called.
+doubled :: (x: s64) -> s64 #expand @inlined {
+    return x + x;
+}
+
+/// A note on a polymorphic procedure, read at the *declaration* rather than per instantiation: notes belong
+/// to the template, and every instantiation is a clone that keeps them (ADR-0098).
+identity :: (x: $T) -> T @generic {
+    return x;
+}
+
+main :: () {
+    total := 0;
+
+    // Present, and its payload is irrelevant to presence.
+    if has_note(tuned, "fast") {
+        total = total + 1;
+    }
+    if has_note(tuned, "since") {
+        total = total + 2;
+    }
+
+    // Absent — `false`, not a diagnostic.
+    if has_note(tuned, "slow") {
+        total = total + 100;
+    }
+    if has_note(plain, "fast") {
+        total = total + 100;
+    }
+
+    // Notes on a macro and on a template are read the same way.
+    if has_note(doubled, "inlined") {
+        total = total + 4;
+    }
+    if has_note(identity, "generic") {
+        total = total + 8;
+    }
+
+    // A payload read back. Its **length** is compared rather than its text, because `==` on two strings
+    // is refused (E0278, found by probing this very file): comparing contents needs a byte loop, which is
+    // W7's `String` module rather than an operator this wave invents. `"0.3"` is three bytes.
+    version := note_value(tuned, "since");
+    if version.count == 3 {
+        total = total + 16;
+    }
+
+    // `""` for a **bare** note and for an **absent** one — deliberately conflated, since a caller wanting
+    // a payload wants the payload or nothing. Both are zero bytes.
+    //
+    // Each is **bound to a local first**, because `.count` on the call directly has no *place* to read the
+    // field from: a folded call is a constant, not storage. That is an ordinary consequence of folding (the
+    // same one `type_info(T).size` has, which is why `076` binds too), not a gap in the reader.
+    bare := note_value(tuned, "fast");
+    if bare.count == 0 {
+        total = total + 32;
+    }
+    absent := note_value(plain, "since");
+    if absent.count == 0 {
+        total = total + 64;
+    }
+
+    exit(total);
+}

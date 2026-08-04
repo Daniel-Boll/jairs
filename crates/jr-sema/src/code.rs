@@ -370,3 +370,21 @@ pub(crate) const E0272: &str = "E0272";
 // lives downstream of this crate (ADR-0018 §3). It is defined in `jr-db` beside E0230, the way E0245 is,
 // and is listed in `AGENTS.md`'s registry as `jr-db`'s. The `$N` *surface* (ADR-0087) raised no code of
 // its own beyond recording the call for that pre-pass.
+
+/// A `has_note` or `note_value` note name that is not a string literal (ADR-0099 §1).
+///
+/// `has_note(f, "inline")` is folded at *check* time — the answer is in the HIR's `Proc::notes`, which is why
+/// it needs no VM at all — so the name must be readable then. A computed name would need const-eval, which
+/// ADR-0018 §3 puts downstream of this crate: the same narrowing an array length took (ADR-0039 §3a) and an
+/// `#insert` operand took before it (ADR-0072), with ADR-0070 §1's widening route available later if a caller
+/// ever wants one.
+pub(crate) const E0277: &str = "E0277";
+
+/// `==` or `!=` on two `string`s, or on any other aggregate (ADR-0099 §4).
+///
+/// A `string` is `{data: *u8, count: s64}` (ADR-0004), so the two available meanings are the ones a view's
+/// equality has: same storage, or same contents. ADR-0044 §5 refused a *view*'s `==` for exactly that reason
+/// and this is the same refusal one type wider — it was **not** refused before, and instead reached MIR as
+/// `expected a scalar, found an aggregate`, a leaked internal error for a program a reader would reasonably
+/// expect to compile. Comparing contents needs a byte loop, which is `String`'s job in W7.
+pub(crate) const E0278: &str = "E0278";

@@ -40,7 +40,8 @@ use rustc_hash::FxHashMap;
 use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
-    E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272,
+    E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272, E0277,
+    E0278,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -58,6 +59,10 @@ enum Intrinsic {
     AnyOf,
     /// `any_as(a, T)` — the value in `a`, trapping unless its type is `T` (ADR-0076 §2).
     AnyAs,
+    /// `has_note(decl, "name")` — whether that declaration carries `@name` (ADR-0099 §1).
+    HasNote,
+    /// `note_value(decl, "name")` — the payload of `@name "payload"`, or `""` (ADR-0099 §1).
+    NoteValue,
 }
 
 /// How a `Type_Info` field's type is checked.
@@ -165,6 +170,12 @@ pub struct CheckOutput {
     /// **Absent for an all-positional call with no defaults**, so the common path pays nothing and
     /// `jr-mir` falls back to the source order — which for such a call is already correct.
     pub filled_calls: FxHashMap<(ExprScope, ExprId), Vec<ArgSlot>>,
+    /// Calls that folded to a value **in this crate** — `has_note` and `note_value` (ADR-0099 §2).
+    ///
+    /// Separate from [`CheckOutput::type_info_calls`], whose meaning is "build a `Type_Info` for this type"
+    /// rather than "here is the value". ADR-0076 §2 records what conflating those two cost: a 40-byte
+    /// `Type_Info` stored into a 16-byte `Any`, caught only because the sizes happened to differ.
+    pub folded_calls: FxHashMap<(ExprScope, ExprId), PoolId>,
     /// The type each `type_info(T)` call describes (ADR-0075 §2).
     ///
     /// Recorded because a *type* is not an operand: nothing in the expression tree carries a `PoolId`,
@@ -358,6 +369,7 @@ pub fn check_file(
         type_name_imports,
         operator_calls: ctx.operator_calls,
         filled_calls: ctx.filled_calls,
+        folded_calls: ctx.folded_calls,
         type_info_calls: ctx.type_info_calls,
         any_calls: ctx.any_calls,
         instantiations: ctx.instantiations,
@@ -1346,6 +1358,49 @@ impl Ctx<'_> {
     }
 
     /// Whether `ty` is an integer or a float type.
+    /// Whether `ty` is a **multi-word aggregate**, which `==` has no meaning for (ADR-0099 §4).
+    ///
+    /// Structural rather than layout-based, because `Layout` records only size and alignment — an `s64` and
+    /// a two-field struct of `s32`s have the same eight bytes and only one of them is comparable. Exhaustive
+    /// over `Item` for the reason AGENTS.md states: a new aggregate kind must be a compile error here rather
+    /// than silently falling through to a comparison the VM cannot make.
+    fn is_aggregate(&self, ty: PoolId) -> bool {
+        match self.pool.item(ty) {
+            Item::StringType
+            | Item::StructType { .. }
+            | Item::UnionType { .. }
+            | Item::VariantType { .. }
+            | Item::ArrayType { .. }
+            | Item::ViewType { .. }
+            | Item::ResultsType { .. }
+            // A context is a struct in every way that matters here (ADR-0057), so comparing two is the
+            // same unanswerable question.
+            | Item::ContextType => true,
+            Item::VoidType
+            | Item::BoolType
+            | Item::IntType { .. }
+            | Item::FloatType { .. }
+            | Item::PointerType(_)
+            | Item::ProcType { .. }
+            | Item::EnumType { .. }
+            | Item::TypeType
+            | Item::ErrorType
+            | Item::IntValue { .. }
+            | Item::FloatValue { .. }
+            | Item::BoolValue(_)
+            | Item::StrValue(_)
+            | Item::TypeValue(_)
+            | Item::ProcValue { .. }
+            | Item::AggregateValue { .. }
+            // Not scalars, but not comparable aggregates either: a foreign library is a handle sema already
+            // refuses as a value (E0242), and a void has nothing to compare. `false` sends them down the
+            // ordinary path, which already reports what is wrong with them.
+            | Item::ForeignLibraryType
+            | Item::ForeignLibraryValue(_)
+            | Item::VoidValue => false,
+        }
+    }
+
     fn is_numeric(&self, ty: PoolId) -> bool {
         self.int_info(ty).is_some() || jr_pool::FloatKind::of(self.pool, ty).is_some()
     }
@@ -1909,6 +1964,34 @@ impl Ctx<'_> {
                              contents, and Jairs does not pick one for you",
                         )
                         .with_help("compare `.count`, or compare elements in a loop"),
+                    );
+                    return PoolId::BOOL;
+                }
+                // **An aggregate has no equality either** (E0278, ADR-0099 §4), and a `string` is the case
+                // that matters: it is `{data, count}` (ADR-0004), so "same storage" and "same contents" are
+                // both available and neither is chosen — ADR-0044 §5's argument for a view, one type wider.
+                //
+                // Found by *probing* this sub-wave's own corpus file rather than by reading: before this,
+                // `a == "x"` reached MIR and leaked `expected a scalar, found an aggregate`, an internal
+                // error for a program a reader would reasonably expect to compile. `ERROR` falls through so
+                // an already-refused operand is not refused twice.
+                if operand != PoolId::ERROR && self.is_aggregate(operand) {
+                    let text = self.describe(operand);
+                    let contents = if operand == PoolId::STRING {
+                        "two strings could compare as the same bytes or as the same pointer, and \
+                         Jairs does not pick one for you"
+                    } else {
+                        "an aggregate's equality would have to be field by field, and Jairs does \
+                         not generate one for you"
+                    };
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            format!("`{}` is not supported for `{text}`", bin_op_text(op)),
+                        )
+                        .with_code(E0278)
+                        .with_note(contents)
+                        .with_help("compare `.count`, or compare fields one at a time"),
                     );
                     return PoolId::BOOL;
                 }
@@ -2549,6 +2632,17 @@ impl Ctx<'_> {
             // allows here and nowhere else.
             Some(Intrinsic::AnyOf) => return self.check_any_of(scope, id, callee, args, span),
             Some(Intrinsic::AnyAs) => return self.check_any_as(scope, id, callee, args, span),
+            // **A note reader folds here** (ADR-0099 §2), and it is intercepted for a *third* reason: its
+            // first argument is a declaration named as a value, and its answer is in the HIR rather than in
+            // any type. Nothing below could type `has_note(f, "x")` — `f` is a procedure used as a value,
+            // which is legal, but the call would then be an ordinary call to a `bool`-returning procedure
+            // that does not exist.
+            Some(Intrinsic::HasNote) => {
+                return self.check_note_reader(scope, id, callee, args, span, false);
+            }
+            Some(Intrinsic::NoteValue) => {
+                return self.check_note_reader(scope, id, callee, args, span, true);
+            }
             None => {}
         }
 
@@ -2762,6 +2856,8 @@ impl Ctx<'_> {
             "type_info" => Intrinsic::TypeInfo,
             "any_of" => Intrinsic::AnyOf,
             "any_as" => Intrinsic::AnyAs,
+            "has_note" => Intrinsic::HasNote,
+            "note_value" => Intrinsic::NoteValue,
             _ => return None,
         };
         match self.resolve.get(scope, callee).unwrap_or(res) {
@@ -2771,6 +2867,142 @@ impl Ctx<'_> {
             | Res::Local(_)
             | Res::Param(_)
             | Res::Promoted { .. } => None,
+        }
+    }
+
+    /// Types and **folds** `has_note(decl, "name")` or `note_value(decl, "name")` (ADR-0099 §1).
+    ///
+    /// Folded here rather than in `jr-db`, unlike `type_info`: the answer is in the HIR's `Proc::notes`,
+    /// which this checker is already holding, so no layout, no VM and no query are involved. `payload`
+    /// selects which of the two intrinsics this is — one function because they differ only in what they
+    /// read out of the same looked-up note, and two would be two places to keep the lookup consistent.
+    fn check_note_reader(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+        payload: bool,
+    ) -> PoolId {
+        let intrinsic = if payload { "note_value" } else { "has_note" };
+        // The callee names no procedure, so it is typed `void` rather than left unrecorded — MIR reports
+        // "an expression was never typed" for a hole, and the fold means it is never lowered.
+        self.types.set_expr(scope, callee, PoolId::VOID);
+
+        if args.len() != 2 {
+            self.wrong_intrinsic_arity(intrinsic, 2, args.len(), span);
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+
+        let answer_ty = if payload {
+            PoolId::STRING
+        } else {
+            PoolId::BOOL
+        };
+
+        // **The note name must be a literal string** (E0277, ADR-0099 §1), read before anything else so a
+        // computed name is one diagnostic rather than a cascade.
+        let Some(name) = self.string_literal_of(scope, args[1]) else {
+            self.types.set_expr(scope, args[1], PoolId::STRING);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`{intrinsic}`'s note name must be a string literal"),
+                )
+                .with_code(E0277)
+                .with_note(
+                    "the answer is folded while checking, so the name has to be readable then",
+                )
+                .with_help(format!(
+                    "write it directly, e.g. `{intrinsic}(f, \"inline\")`"
+                )),
+            );
+            return PoolId::ERROR;
+        };
+        self.types.set_expr(scope, args[1], PoolId::STRING);
+
+        // **The declaration itself, not its name as text** (ADR-0099 §1): a misspelling is then an
+        // ordinary unresolved-name error rather than a silent `false`, which is the failure mode
+        // ADR-0098's dropped notes had and is worth not rebuilding in the reader.
+        let Some(notes) = self.notes_of(scope, args[0]) else {
+            // **The argument is marked a type position before being checked**, so a type name reports only
+            // this refusal rather than E0261's "a type is a compile-time value" on top of it: two
+            // diagnostics for one mistake, and the second one is about a rule this position does not have.
+            // The allowlist gains an entry rather than E0261 gaining an exception — ADR-0071 §3's asymmetry.
+            self.type_position.insert((scope, args[0]));
+            self.check_expr(scope, args[0], None);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`{intrinsic}` needs a procedure whose notes to read"),
+                )
+                .with_code(E0277)
+                .with_note("only a procedure carries `@note`s today, since the parser takes them in the procedure attribute loop")
+                .with_help(format!("name the declaration itself, e.g. `{intrinsic}(add, \"inline\")`")),
+            );
+            return PoolId::ERROR;
+        };
+        // Typed anyway, so the `TypeMap` has no hole where MIR would look. `VOID` rather than the
+        // procedure's own type because the argument is never lowered and asking for a proc type here
+        // would run the ordinary "a procedure used as a value" path for an expression that is not one.
+        self.types.set_expr(scope, args[0], PoolId::VOID);
+
+        // **An absent note answers `false` and `""`, and is not an error** (ADR-0099 §3): asking whether a
+        // note is present is the point, so refusing the question when the answer is "no" would make the
+        // predicate useless for what it exists for. The opposite call from `any_as`, which traps — and the
+        // difference is that `any_as` would otherwise return garbage, while this returns the truth.
+        let wanted = self.interner.intern(&name);
+        let found = notes.iter().find(|(n, _)| *n == wanted);
+        let value = if payload {
+            // `""` for both "no such note" and "a bare `@name`", deliberately conflated: a caller
+            // wanting a payload wants the payload or nothing, and telling the two apart needs an
+            // optional return nothing in this wave has a use for.
+            let text = found.and_then(|(_, p)| p.clone()).unwrap_or_default();
+            self.pool.str_value(&text)
+        } else {
+            self.pool.bool_value(found.is_some())
+        };
+        self.folded_calls.insert((scope, id), value);
+
+        self.expect(None, answer_ty, span)
+    }
+
+    /// The notes of the procedure `expr` names, or `None` if it names something else (ADR-0099 §1).
+    fn notes_of(
+        &mut self,
+        scope: ExprScope,
+        expr: ExprId,
+    ) -> Option<Vec<(Symbol, Option<String>)>> {
+        let Expr::Name { res, .. } = self.expr_of(scope, expr) else {
+            return None;
+        };
+        let Res::Item(item) = self.resolve.get(scope, expr).unwrap_or(res) else {
+            return None;
+        };
+        let jr_hir::ItemKind::Const {
+            value: jr_hir::ConstValue::Proc(proc),
+        } = self.hir.item(item).kind.clone()
+        else {
+            return None;
+        };
+        Some(self.hir.proc(proc).notes.clone())
+    }
+
+    /// The text of `expr` when it is a string literal, or `None` (ADR-0099 §1).
+    fn string_literal_of(&mut self, scope: ExprScope, expr: ExprId) -> Option<String> {
+        match self.expr_of(scope, expr) {
+            Expr::Literal(value, _) => match value {
+                jr_hir::Literal::Str(text) => Some(text),
+                jr_hir::Literal::Int { .. }
+                | jr_hir::Literal::Float { .. }
+                | jr_hir::Literal::Bool(_)
+                | jr_hir::Literal::Null => None,
+            },
+            _ => None,
         }
     }
 

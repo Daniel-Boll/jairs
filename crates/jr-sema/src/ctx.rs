@@ -154,6 +154,8 @@ pub(crate) struct Ctx<'a> {
     /// way `operator_calls` and `filled_calls` are, for the same reason — an `ExprId` alone does not say
     /// which arena it indexes.
     pub(crate) type_info_calls: FxHashMap<(ExprScope, jr_hir::ExprId), PoolId>,
+    /// Calls folded to a value here rather than downstream — `has_note`, `note_value` (ADR-0099 §2).
+    pub(crate) folded_calls: FxHashMap<(ExprScope, jr_hir::ExprId), PoolId>,
     /// Which `Any` operation each `any_of`/`any_as` call is, and the type it concerns (ADR-0076).
     ///
     /// Deliberately **not** merged with `type_info_calls`: that map replaces a call with a constant, and
@@ -240,6 +242,7 @@ impl<'a> Ctx<'a> {
             call_position: FxHashSet::default(),
             type_position: FxHashSet::default(),
             type_info_calls: FxHashMap::default(),
+            folded_calls: FxHashMap::default(),
             type_bindings: FxHashMap::default(),
             instantiations: FxHashMap::default(),
             comptime_calls: FxHashMap::default(),

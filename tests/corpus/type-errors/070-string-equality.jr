@@ -1,0 +1,22 @@
+// EXPECT: E0278 — `==` on two strings, which has two plausible meanings and so gets neither (ADR-0099 §4)
+//
+// **`==` on two strings is refused** (E0278, ADR-0099 §4).
+//
+// A `string` is `{data: *u8, count: s64}` (ADR-0004), so the two available meanings are exactly a view's:
+// **same storage**, or **same contents**. ADR-0044 §5 refused a view's `==` because picking one silently
+// would make the other reading a bug that looks like working code, and this is that same refusal one type
+// wider.
+//
+// **It was found by probing**, not by reading. W6 sub-wave 2's own corpus file wanted to compare a note's
+// payload against `"0.3"`, and `a == "x"` reached MIR and leaked `expected a scalar, found an aggregate` — an
+// internal compiler error for a program any reader would expect to compile, and the *fourth* such leak this
+// project has turned into a sentence someone can act on. The corpus file compares `.count` instead.
+//
+// Comparing contents needs a byte loop, which is `String`'s job in W7 rather than an operator this wave
+// invents: an `==` that compared bytes would be the only implicitly-looping operator in the language.
+// No `#import "Basic"`: an unused import is E0231, a second diagnostic this directory does not allow.
+
+compares_two_strings :: () -> bool {
+    a := "x";
+    return a == "x";
+}

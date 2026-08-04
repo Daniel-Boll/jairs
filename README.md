@@ -18,7 +18,7 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated during **wave W6 — Metaprogram**, one sub-wave in, with 981 tests green: a declaration can
+Last updated during **wave W6 — Metaprogram**, two sub-waves in, with 981 tests green: a declaration can
 carry **`@note` metadata** for a metaprogram to read (ADR-0098). `@deprecated` and `@requires "x"` sit in the
 same attribute loop as `#c_call`/`#expand`/`#modify`, so notes and directives interleave freely — but a note
 is its own node kind, because a note is *data for a metaprogram* while a directive is an *instruction to the
@@ -28,6 +28,25 @@ notes still lack is a **reader**, and that is deliberate — the next sub-wave i
 mechanism that lets a metaprogram *ask* for the declarations carrying a note, and it is worth designing against
 data that already exists. The formatter dropped every note on its first run, so a build script collecting `@X`
 would have silently found nothing; gate 5 caught it.
+
+**And a metaprogram can now read them** (ADR-0099): `has_note(f, "x")` answers `bool` and
+`note_value(f, "x")` answers `string`, both **folded while checking, with no VM and no new query** — unlike
+`type_info`, which folds later because it needs a layout; a note's answer is in the HIR the checker is already
+holding. The first argument is the **declaration itself** rather than its name as text, so a misspelling is an
+unresolved name instead of a silent `false` — the same silence the dropped notes had. An absent note answers
+`false` and `""` and is *not* an error: asking whether a note is present is the point, which is the opposite
+call from `any_as`, and the difference is that `any_as` would otherwise return garbage while this returns the
+truth. What is still missing is **iteration** — a script must name each declaration, so it cannot yet ask for
+"every declaration tagged `@X`". That is what the message loop adds, and it now has reading verbs to hand its
+declarations to rather than needing to invent some.
+
+Writing that sub-wave's corpus file **found a shipped leaked internal error**: `a == "x"` on two strings
+reached the VM as `expected a scalar, found an aggregate`, for a program any reader would expect to compile. A
+`string` is `{data, count}`, so its `==` has exactly a view's two plausible meanings — same storage or same
+contents — and a view's `==` was already refused for that reason; it is now refused for every aggregate
+(E0278), by a *structural* test, since size and alignment cannot tell an `s64` from a two-field struct of
+`s32`s. Comparing contents needs a byte loop, which is `String`'s job in W7 rather than an operator this wave
+invents.
 
 Before it, **W5 — Polymorphism completed** in fifteen sub-waves: `$T` procedures *and* polymorphic
 structs work. `Box :: struct($T) { value: T; }` is a **type constructor**, not a type — `Box(s64)` applies
@@ -255,7 +274,7 @@ The authoritative version of this list is
 | a **type as a compile-time value**: `T :: Point;` binds one, and `T` is usable wherever `Point` is — as an annotation, a parameter, a field, an array element, a pointee; an enum alias carries its members (ADR-0071) | a chain (`B :: A`); comparing types (`T == U`); a `Type` parameter; `Type` as an annotation, which does not parse |
 | using a type where a **runtime** value is expected is refused (E0261) — it has no runtime representation, so there is nothing to store | — |
 | `#import`, `#foreign`, `#system_library`; `#expand` macros that splice; `#modify` predicates; `#bake_arguments` specialisations | — |
-| `@note` metadata on a declaration — `@deprecated`, `@requires "x"` (ADR-0098) | a **reader**: the message loop that hands noted declarations to a build script (**W6**) |
+| `@note` metadata on a declaration — `@deprecated`, `@requires "x"` (ADR-0098) — read at compile time by `has_note` / `note_value` (ADR-0099) | **iteration**: the message loop that hands *every* noted declaration to a build script (**W6**) |
 | overflow traps with a source location (ADR-0002, ADR-0020), and a **call chain** of the frames that were live (ADR-0066) | a per-frame line number; inlined frames, which have no runtime existence |
 | `context` — a hidden parameter passed by pointer, so a callee reads what its caller wrote; `#c_call` opts out and gets none | — |
 | `push_context { … }` — a block with its own copy of the context, so a write inside it is restored on exit (ADR-0063) | — |
@@ -275,7 +294,7 @@ ignoring the flag a compile error, is owed its own ADR. There is no GC and no RA
 | Formatter | **Works** | Pure function over the CST |
 | HIR, name resolution, module loader | **Works** | Flat import merge (ADR-0014) |
 | InternPool (types, comptime values, layout, arithmetic) | **Works** | One layout computation and one integer evaluator, shared (ADR-0018 §2, ADR-0022 §2) |
-| Sema (signatures, checking, inference) | **Works** | E0212–E0276; a union's diagnostics are a struct's unchanged, deliberately, and a bare `.RED`'s "no such member" is the qualified form's; no const-eval here — ADR-0018 §3 puts it in the VM, which is why an array length must be a literal. Float literals are context-typed with **no** fit check, because IEEE-754 saturates (ADR-0040 §5) |
+| Sema (signatures, checking, inference) | **Works** | E0212–E0278; a union's diagnostics are a struct's unchanged, deliberately, and a bare `.RED`'s "no such member" is the qualified form's; no const-eval here — ADR-0018 §3 puts it in the VM, which is why an array length must be a literal. Float literals are context-typed with **no** fit check, because IEEE-754 saturates (ADR-0040 §5) |
 | MIR (typed SSA, Braun construction) | **Works** | Block parameters, not phis (ADR-0017); CFG diagnostics E0227–E0229, the last of which now also reports a `break`/`continue` naming an unknown label (ADR-0049 §2); an explicit `bounds_check` statement and an explicit `zero`, both ADR-0039. `for` reuses the `while` shape with a synthesised induction variable and needs no new node; `defer`'s statements appear once per exit path |
 | Mid-end | **Four passes** | Inliner, store-to-load forwarding, const-prop, DCE, to a bounded fixed point (ADR-0021 – ADR-0023). Forwarding is block-local, so a value read across a loop stays in memory, and it refuses two unequal array indices as possibly-aliasing; no SROA; the SSA value arena is never compacted |
 | Bytecode VM + libffi | **Works** | Per-instruction spans, so a trap names its line. Floats need no new value variant, but are dispatched *before* the bit-compare fallback that would answer `NaN == NaN` and `-0.0 == 0.0` backwards. No JIT |

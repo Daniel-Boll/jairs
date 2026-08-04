@@ -116,6 +116,14 @@ pub struct CheckResult {
     /// The positional argument list of every call using a named argument or a default
     /// (ADR-0053 §1).
     pub filled_args: Arc<jr_mir::FilledArgs>,
+    /// Calls `jr-sema` already folded to a value — `has_note`, `note_value` (ADR-0099 §2).
+    ///
+    /// Carried through rather than recomputed because the answer lives in the HIR's `Proc::notes`, which
+    /// sema is holding when it checks the call; `file_consts` copies each entry straight into
+    /// `ConstValues` through the same `set_run` channel a `#run` uses, so `jr-mir` reads it with the one
+    /// mechanism it has for "this call is a constant" rather than a second one.
+    pub folded_calls:
+        Arc<rustc_hash::FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), jr_pool::PoolId>>,
     /// The type each `type_info(T)` call describes (ADR-0075 §2).
     ///
     /// Carried through from `jr-sema` because a *type* is not an operand — nothing in the expression
@@ -712,6 +720,7 @@ fn translate_check_output(
         type_name_imports: Arc::from(output.type_name_imports),
         operator_calls: Arc::new(operator_calls),
         filled_args: Arc::new(filled_args),
+        folded_calls: Arc::new(output.folded_calls),
         type_info_calls: Arc::new(output.type_info_calls),
         any_calls: Arc::new(output.any_calls),
         instantiations: Arc::new(output.instantiations),

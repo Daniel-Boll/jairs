@@ -441,6 +441,7 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     // the callee naming no procedure. Found by running the feature's own probe.
     if targets.is_empty()
         && checked_file.type_info_calls.is_empty()
+        && checked_file.folded_calls.is_empty()
         && checked_file.any_calls.is_empty()
     {
         return ConstResult {
@@ -498,6 +499,14 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     //
     // Keyed as a `run` value, the channel a `#run` already uses, so `jr-mir` reads it with the mechanism
     // it has rather than a second one.
+    // **A call `jr-sema` already folded** (ADR-0099 §2) needs only copying: the value is interned, and
+    // sema had everything it needed to compute it. Keyed as a `run` value like `type_info`'s, and for the
+    // same reason — `jr-mir` already replaces a `run`-keyed call with its constant and never emits the
+    // callee, so a second channel would be a second thing to keep in step.
+    for ((scope, expr), value) in checked_file.folded_calls.iter() {
+        values.set_run(*scope, *expr, *value);
+    }
+
     for ((scope, expr), described) in checked_file.type_info_calls.iter() {
         // The imported signatures are searched **as well as** this file's, because `Type_Info` is
         // declared in `Basic` and so is almost never local: looking only at the own file reported
