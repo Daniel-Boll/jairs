@@ -1,0 +1,33 @@
+// EXPECT: E0274 — a call to a `#modify` procedure, whose predicate is not yet evaluated (ADR-0093 §3)
+//
+// `#modify { … }` is a compile-time predicate over an *instantiation*: it runs when a call binds the
+// template's type variables, and returning `false` rejects that call. The surface — parsing the block,
+// carrying its text, formatting it — is this sub-wave (`valid/077`); **evaluating** it is the next, and it
+// needs the predicate appended as its own procedure per instantiation so `type_info(T)` inside it sees the
+// binding.
+//
+// So a call is refused, by design, exactly as a `$T` call was (E0268) before ADR-0082, a `$N` call (E0271)
+// before ADR-0088, and a `#expand` call (E0272) before ADR-0091. Each of those refusals was lifted by the
+// sub-wave that made the thing work.
+//
+// **The refusal ships with the surface for a specific reason**, and it is the third time this project has
+// applied it: before it, the predicate was *parsed and silently ignored*, so a `#modify` that should have
+// rejected a call accepted it. "A directive that is silently ignored is worse than one that is rejected" is
+// ADR-0058 §3's rule, stated there for `#no_abc` and applied again for `#expand` (ADR-0090 §3).
+//
+// **One** refusal, and the file lowers cleanly: the declaration checks like any polymorphic template, and
+// the call yields a poisoned type rather than an instantiation the predicate never guarded. No
+// `#import "Basic"` — the sema corpus harness resolves without modules, and nothing here needs an imported
+// name to raise the diagnostic.
+
+/// A template guarded by a predicate. Its declaration is fine; only calling it is refused for now.
+is_s64 :: (x: $T) -> T #modify {
+    return true;
+} {
+    return x;
+}
+
+caller :: () -> s64 {
+    // The refusal: instantiating this would mean the predicate above never ran.
+    return is_s64(7);
+}

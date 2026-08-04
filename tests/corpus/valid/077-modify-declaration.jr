@@ -1,0 +1,56 @@
+// **`#modify` — the surface** (ADR-0093): a compile-time predicate over an *instantiation*. W5's sub-wave
+// 7d, and — like `$T`'s first (ADR-0081), `$N`'s (ADR-0087) and `#expand`'s (ADR-0090) — deliberately the
+// surface only: the block parses, formats, and its text is carried on `Proc::modify`. A **call** to a
+// `#modify` procedure is refused (E0274) until the evaluation sub-wave.
+//
+// `#modify { … }` runs when a call binds the template's type variables, and returning `false` rejects that
+// call — so a template can say "only for an `s64`" or "only for a struct with at least two fields" in code
+// rather than in a comment. The predicate is written *beside* the thing it guards, which is why it is an
+// attribute on the procedure rather than a separate declaration.
+//
+// **Its enabling piece had to be built first.** A predicate must be able to ask something about the bound
+// type, and `type_info(T)` inside a `$T` body was E0261 until ADR-0092 — a `$T` procedure could not reflect
+// on its own parameter at all. That gap was found by designing this feature, which is why ADR-0092 landed
+// before ADR-0093 despite being nobody's plan.
+//
+// The refusal ships *with* the surface for the reason ADR-0058 §3 states and this project keeps rediscovering:
+// before it, the predicate was **parsed and silently ignored**, so a `#modify` that should reject a call
+// accepted it. That is worse than a rejection, because nothing tells the author their guard did not run.
+//
+// What is checked here:
+//
+//   * a `#modify` block whose predicate compares the bound type's identity (`is_s64`) — the shape ADR-0077's
+//     stable `id` made sound and ADR-0092 made reachable;
+//   * a `#modify` block that reads a *reflected field count* (`needs_fields`), so a predicate is not limited
+//     to identity;
+//   * `#modify` **beside another attribute** (`#no_abc`), since the attribute loop takes them in any order.
+//
+// None of them is *called*, so `main` does ordinary work: the point is that declaring one checks clean and
+// its block survives formatting, which before this sub-wave it did not — `#modify` was E0106.
+#import "Basic";
+
+/// A predicate over the bound type's identity: this template is meant for `s64` only.
+is_s64 :: (x: $T) -> T #modify {
+    return type_info(T).id == type_info(s64).id;
+} {
+    return x;
+}
+
+/// A predicate reading a reflected field count, so a guard can be structural rather than nominal.
+needs_fields :: (x: $T) -> s64 #modify {
+    return type_info(T).count > 1;
+} {
+    return type_info(T).count;
+}
+
+/// `#modify` beside another attribute — the loop takes them in any order.
+guarded :: (x: $T) -> T #no_abc #modify {
+    return true;
+} {
+    return x;
+}
+
+main :: () {
+    n := 5;
+    exit(n);
+}

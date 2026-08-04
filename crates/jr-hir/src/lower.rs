@@ -519,6 +519,9 @@ impl<'a> LowerCtx<'a> {
             c_call: ast_proc.is_c_call(),
             no_abc: ast_proc.is_no_abc(),
             expand: ast_proc.is_expand(),
+            modify: ast_proc
+                .modify_block()
+                .map(|b| block_inner_text(b.syntax())),
             ret,
             body,
             foreign,

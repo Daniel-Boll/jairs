@@ -1721,3 +1721,19 @@ proc 2") into working code.
 
 `#modify` itself remains unbuilt, now genuinely unblocked: a predicate can ask
 `type_info(T).id == type_info(s64).id`. Its forks 1 and 2 above stand as the design.
+
+### Resolution (ADR-0093 records the surface; evaluation deferred with its design)
+
+Surface shipped: `#modify { … }` parses (its own kind carrying a **block**), formats with its body, and its
+text rides on `Proc::modify`. A call is refused **E0274** — *before* the instantiation is recorded, because
+instantiating would mean the predicate was parsed and silently ignored, so a guard that should reject a call
+would accept it. ADR-0058 §3's rule for the **third** time (after `#no_abc` and `#expand`).
+
+`looks_like_proc_signature` needed `#modify` — the token-set trap for the **sixth** time.
+
+**Evaluation is designed and deferred** (ADR-0093 §2): the predicate becomes its own appended procedure per
+instantiation (body = the block text, returns `bool`, same `proc_bindings` as the instantiation so
+`type_info(T)` sees the binding), evaluated as a `#run`-shaped target — **no new query**, since `file_consts`
+has that machinery. Attempting it showed why it is its own sub-wave: it needs `FileHir::modify_predicates`
+and a way to lower a body *from text* outside `LowerCtx`, which owns the arenas — an API change, and a
+half-built version leaves exactly the parsed-and-unevaluated predicate the refusal exists to prevent.
