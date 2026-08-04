@@ -51,7 +51,10 @@ generated prelude binds each argument **once** (substituting it per use would re
 argument), and expression position gets a generated result local so one mechanism serves both. The MIR shows
 no calls at all — every body inlined. Refused by design: an early `return` (E0273), a void macro in
 expression position, and a cross-file call (E0272 — which had been reaching the VM as an internal error).
-Still ahead in W5: `#modify` and `#bake_arguments`. On top of **`#code`** (ADR-0080), which **completed wave W4 — Comptime** as scoped: `#code { n := 7; }`
+And **`type_info(T)` reflects a bound type variable** (ADR-0092): a `$T` procedure can ask its own bound
+type's size, field count, or identity — each instantiation reflecting its own type. That was found missing
+while designing `#modify`, whose predicate needs exactly it, and fixing it also turned a leaked internal
+error into working code. Still ahead in W5: `#modify` and `#bake_arguments`. On top of **`#code`** (ADR-0080), which **completed wave W4 — Comptime** as scoped: `#code { n := 7; }`
 is `#insert "n := 7;"` written without quotes, spliced into the enclosing scope. It is deliberately *sugar* —
 `#insert` of a named constant already worked, so what `#code` adds is no quoting and a body parsed where it
 is written, not a new capability. There is no `Code` *value*, and that is **declined rather than deferred**: a
@@ -154,7 +157,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 979 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
+`print_int` (ADR-0037). 980 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do

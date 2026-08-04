@@ -287,10 +287,31 @@ pub fn check_file(
         // array size. Cleared afterwards for the same reason.
         ctx.value_bindings.clear();
         ctx.comptime_param_names.clear();
+        ctx.type_bindings.clear();
+        ctx.poly_var_names.clear();
         if let Some(proc) = owner.get(&body) {
             for (p, name, value) in &hir.param_values {
                 if p == proc {
                     ctx.value_bindings.insert(*name, *value);
+                }
+            }
+            // **This instantiation's bound type variables** (ADR-0092 §1), so `type_info(T)` inside its
+            // body describes the bound type rather than hunting a declaration named `T`. Seeded per body
+            // exactly as `value_bindings` is, and for the same reason: two instantiations of one template
+            // share the variable name `T` with different bindings, so leaving one set would describe the
+            // wrong type in the other's body — a silently wrong `size`, which is worse than an error.
+            for (p, var, ty) in &hir.proc_bindings {
+                if p == proc {
+                    ctx.type_bindings.insert(*var, *ty);
+                }
+            }
+            // The `$T` variable *names* this procedure introduces, bound or not (ADR-0092 §1). A template
+            // has names and no bindings, which is exactly where `type_info(T)` must be withheld rather
+            // than refused.
+            if let Some(sig) = ctx.sigs.proc_sig(*proc) {
+                let vars = sig.poly_vars.clone();
+                for var in vars {
+                    ctx.poly_var_names.insert(var);
                 }
             }
             // The comptime parameter *names* of this body's procedure, so a template's own body withholds
@@ -304,6 +325,8 @@ pub fn check_file(
         ctx.body = None;
         ctx.value_bindings.clear();
         ctx.comptime_param_names.clear();
+        ctx.type_bindings.clear();
+        ctx.poly_var_names.clear();
     }
 
     // Collected before `ctx.sigs` is dropped. It started as a clone of the file's
@@ -2790,6 +2813,16 @@ impl Ctx<'_> {
         // `SigEntry::type_value`, which is what `resolve_type_name` reads and what ADR-0071 §1 made a
         // type value out of.
         let Some(described) = described else {
+            // **Withheld for an unbound `$T` of the enclosing template** (ADR-0092 §1): `type_info(T)`
+            // inside a `$T` procedure is correct code, and it is the *template* that has no binding — each
+            // instantiation resolves `T` for real and is checked normally. Reporting E0261 here would be a
+            // false error about the very reflection polymorphism exists to enable. The same withholding
+            // shape an array length naming a `$N` parameter gets (ADR-0089 §2).
+            if let Expr::Name { name, .. } = self.expr_of(scope, arg)
+                && self.poly_var_names.contains(&name)
+            {
+                return PoolId::ERROR;
+            }
             self.diags.push(
                 Diagnostic::error(span, "`type_info` needs a type")
                     .with_code(E0261)
@@ -3014,6 +3047,18 @@ impl Ctx<'_> {
         let Expr::Name { name, res, .. } = self.expr_of(scope, arg) else {
             return None;
         };
+        // **A bound polymorphic variable wins** (ADR-0092 §1), checked first for the reason
+        // `resolve_type_name` checks `type_bindings` first: inside an instantiation, `T` *is* the bound
+        // type, and `type_info(T)` must describe it rather than hunting a declaration named `T`. Without
+        // this the name resolved to nothing, `builtin_type_named` found no builtin called `T`, and a
+        // perfectly reasonable `type_info(T)` inside a `$T` body was E0261 "needs a type" — reflection over
+        // the very thing polymorphism binds. Empty outside a polymorphic context, so an ordinary program
+        // costs one hash probe.
+        if let Some(&bound) = self.type_bindings.get(&name)
+            && bound != PoolId::ERROR
+        {
+            return Some(bound);
+        }
         let res = self.resolve.get(scope, arg).unwrap_or(res);
         match res {
             Res::Item(item) => self.entry_for_item(item).and_then(|e| e.type_value),
