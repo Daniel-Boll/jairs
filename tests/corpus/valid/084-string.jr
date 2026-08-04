@@ -1,0 +1,101 @@
+// **The `String` module** (ADR-0103): byte-wise operations on a `string`, none of which allocate. W7's first
+// sub-wave, and the first module this project has other than `Basic` — so also the first program to import
+// **two** modules, which exercises ADR-0014's flat merge with more than one in play.
+//
+// **Why `String` is W7's first module.** ADR-0099 §4 refused `==` on two strings, because a `string` is
+// `{data: *u8, count: s64}` (ADR-0004) and so "the same storage" and "the same contents" are both plausible
+// readings — picking one silently would make the other a bug that looks like working code. That refusal's own
+// reasoning named the fix: comparing contents needs a byte loop, and a byte loop is a **library**'s job. So the
+// previous wave named this module as the answer to a refusal it raised, which is a better reason to write
+// something than "a string library usually has one".
+//
+// An `==` that looped would also be the only implicitly-looping operator in the language, which is a far larger
+// thing to introduce than a procedure called `equal`.
+//
+// **Nothing here allocates**, deliberately. `concat`, `substring`, `to_upper` and `split` each need somewhere
+// to put a result, which means an allocator argument and a decision about who frees it. The *mechanism* is not
+// missing — `context.allocator` (ADR-0057) and temporary storage (ADR-0065) both exist — but choosing between
+// "always the context allocator", "an explicit parameter" and "always temporary" has real consequences for
+// every caller, and it deserves its own decision rather than being settled in passing by whichever one this
+// file happened to use. A non-allocating module is a complete thing on its own, and shipping it first means
+// that decision gets made with a working baseline to compare against.
+//
+// **`byte_at` exists because `s.data[i]` does not compile**: `data` is a `*u8` and a pointer is not indexable
+// (E0234), so reading a byte takes `(s.data + i).*` and a cast to `s64`. `byte_at` is that expression with a
+// name, and it is honest about being a workaround — when pointer indexing arrives it becomes a one-line
+// wrapper rather than the only way.
+//
+// What is checked here:
+//
+//   * `equal` on identical strings, on differing ones of the same length, and on differing lengths — the
+//     length check first is what makes the loop safe against one bound rather than two;
+//   * `compare`'s three outcomes, including a **prefix** (`"ab"` before `"abc"`), which is the case a
+//     length-only comparison gets wrong;
+//   * `starts_with` and `ends_with`, each with an **empty** pattern (both true: every string starts and ends
+//     with nothing) and with a pattern longer than the subject;
+//   * `find` at the start, in the middle, at the end, absent (`-1`), and with an empty needle (0);
+//   * `contains` as the predicate form, so it agrees with `find`;
+//   * `byte_at` in range and out of it, where out of range is **`-1` rather than a trap** — unlike an
+//     out-of-range array index (ADR-0003), because an array's bound is known to the compiler and indexing past
+//     it is a mistake, while scanning until the bytes run out is an ordinary way to write a loop;
+//   * `is_empty`, which is `count == 0` with a name that says what it means rather than how it is measured.
+//
+// The exit code is **255**, every bit of eight independent groups set, so a routine that returned a constant
+// could not pass: the corpus differential compares the two engines to each other, so a wrong answer both give
+// is invisible unless the *value* is asserted.
+#import "Basic";
+#import "String";
+
+main :: () {
+    n := 0;
+
+    // Each group contributes **one bit**, and the negative cases are folded in with `&&` rather than added
+    // separately — so a wrong answer anywhere clears a bit rather than pushing the total past 255, where an
+    // exit code wraps and could coincide with a passing value.
+
+    // `equal` — the reason this module exists. Identical, differing at a byte, and differing in length.
+    if equal("abc", "abc") && !equal("abc", "abd") && !equal("abc", "ab") {
+        n = n + 1;
+    }
+
+    // `compare`'s outcomes, the last being the **prefix** case a length-only comparison gets wrong.
+    if compare("a", "b") < 0 && compare("b", "a") > 0 && compare("abc", "abc") == 0 {
+        if compare("ab", "abc") < 0 && compare("abc", "ab") > 0 {
+            n = n + 2;
+        }
+    }
+
+    // `starts_with`, including the empty pattern (true) and an over-long one (false).
+    if starts_with("hello", "he") && starts_with("hello", "") && !starts_with("he", "hello") {
+        n = n + 4;
+    }
+
+    // `ends_with`, reading from a different starting offset than `starts_with`.
+    if ends_with("hello", "lo") && ends_with("hello", "") && !ends_with("lo", "hello") {
+        n = n + 8;
+    }
+
+    // `find` at the start, in the middle, and at the end.
+    if find("hello", "he") == 0 && find("hello", "ll") == 2 && find("hello", "lo") == 3 {
+        n = n + 16;
+    }
+
+    // `find` when absent (`-1`) and with an empty needle (0, since every string starts with nothing).
+    if find("hello", "xyz") == -1 && find("hello", "") == 0 {
+        n = n + 32;
+    }
+
+    // `contains` must agree with `find`.
+    if contains("hello", "ell") && !contains("hello", "xyz") {
+        n = n + 64;
+    }
+
+    // `byte_at` in range and out of it — `-1` rather than a trap. `"abc"` is 97, 98, 99. And `is_empty`.
+    if byte_at("abc", 1) == 98 && byte_at("abc", 3) == -1 && byte_at("abc", -1) == -1 {
+        if is_empty("") && !is_empty("x") {
+            n = n + 128;
+        }
+    }
+
+    exit(n);
+}
