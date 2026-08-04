@@ -188,9 +188,9 @@ impl Decl<'_> {
             .and_then(|sym| self.sigs.lookup(sym))
             .and_then(|entry| entry.type_value)
             .and_then(|ty| match self.pool.item(ty) {
-                Item::StructType { decl }
-                | Item::UnionType { decl }
-                | Item::VariantType { decl } => self.pool.struct_fields(*decl),
+                Item::StructType { .. } | Item::UnionType { .. } | Item::VariantType { .. } => {
+                    self.pool.fields_of(ty)
+                }
                 _ => None,
             });
 
@@ -450,13 +450,13 @@ pub fn type_name(pool: &Pool, signatures: &FileSignatures, ty: PoolId) -> String
                 .collect();
             format!("({})", parts.join(", "))
         }
-        Item::StructType { decl } => signatures
+        Item::StructType { decl, .. } => signatures
             .type_name(ty)
             .map_or_else(|| format!("struct{decl:?}"), ToOwned::to_owned),
-        Item::UnionType { decl } => signatures
+        Item::UnionType { decl, .. } => signatures
             .type_name(ty)
             .map_or_else(|| format!("union{decl:?}"), ToOwned::to_owned),
-        Item::VariantType { decl } => signatures
+        Item::VariantType { decl, .. } => signatures
             .type_name(ty)
             .map_or_else(|| format!("variant{decl:?}"), ToOwned::to_owned),
         Item::ProcType {

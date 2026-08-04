@@ -207,8 +207,8 @@ fn fields_at(
         // `.count` is a load rather than a constant — completion cares what you may write,
         // not how it lowers (ADR-0044 §4).
         Item::ArrayType { .. } | Item::ViewType { .. } => vec![field("count", PoolId::S64)],
-        Item::StructType { decl } => pool
-            .struct_fields(*decl)
+        Item::StructType { .. } => pool
+            .fields_of(ty)
             .unwrap_or(&[])
             .iter()
             .map(|f| field(db.interner().resolve(f.name), f.ty))

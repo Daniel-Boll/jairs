@@ -1226,7 +1226,7 @@ impl Ctx<'_> {
         // variant's case list as the namespace instead of an enum's members. Handled before the enum
         // gate below so that a `switch v { case .i; … }` resolves rather than being told it needs an
         // enum, and the *type* is the variant, because that is what the arm is compared against.
-        if let Item::VariantType { decl } = *self.pool.item(target) {
+        if let Item::VariantType { decl, .. } = *self.pool.item(target) {
             let known = self
                 .pool
                 .struct_fields(decl)
@@ -1620,7 +1620,10 @@ impl Ctx<'_> {
                     while let Some(inner) = self.pointee(base_ty) {
                         base_ty = inner;
                     }
-                    let Item::StructType { decl: inner_decl } = self.pool.item(base_ty) else {
+                    let Item::StructType {
+                        decl: inner_decl, ..
+                    } = self.pool.item(base_ty)
+                    else {
                         continue;
                     };
                     let inner_decl = *inner_decl;
@@ -1661,12 +1664,12 @@ impl Ctx<'_> {
         // on a union — and a variant is refused for the same reason plus a stronger one: promoting a
         // case into scope would make a name read a field the tag may say is not live. Resolution has
         // already reported it; accepting one here would give a value to a promotion that was refused.
-        let decl = match self.pool.item(ty) {
-            Item::StructType { decl } => *decl,
+        match self.pool.item(ty) {
+            Item::StructType { .. } => {}
             _ => return PoolId::ERROR,
-        };
+        }
         self.pool
-            .struct_fields(decl)
+            .fields_of(ty)
             .and_then(|fields| fields.iter().find(|f| f.name == field).map(|f| f.ty))
             .unwrap_or(PoolId::ERROR)
     }
@@ -1896,7 +1899,7 @@ impl Ctx<'_> {
         // both — which is why this wave adds no diagnostic: E0258 and E0260 already say the right
         // things about "handles every member of".
         let variant_cases: Option<Vec<Symbol>> = match self.pool.item(scrutinee) {
-            Item::VariantType { decl } => Some(
+            Item::VariantType { decl, .. } => Some(
                 self.pool
                     .struct_fields(*decl)
                     .unwrap_or(&[])
@@ -3026,7 +3029,7 @@ impl Ctx<'_> {
             self.report_library_shape(span, type_name, "it is not declared, or is not a type");
             return None;
         };
-        let Item::StructType { decl } = *self.pool.item(ty) else {
+        let Item::StructType { decl, .. } = *self.pool.item(ty) else {
             self.report_library_shape(span, type_name, "it is not a struct");
             return None;
         };
@@ -3312,10 +3315,14 @@ impl Ctx<'_> {
             // here — a struct, a proc type) contains no directly-bindable variable in this sub-wave's
             // model, so it contributes no binding. A later sub-wave that wants `[$N]$T` inference adds
             // arms here.
+            // Inferring `$T` through a parameterised struct — `(b: Box($T))` binding `T` from a
+            // `Box(s64)` argument — is nested inference through a nominal type, deferred with the rest
+            // of that step (ADR-0085 §5). So `Apply` binds nothing here this sub-wave.
             TypeRef::Name(_)
             | TypeRef::Array { .. }
             | TypeRef::Results(_)
             | TypeRef::Proc { .. }
+            | TypeRef::Apply { .. }
             | TypeRef::Struct(_)
             | TypeRef::Union(_)
             | TypeRef::Variant(_)
@@ -3466,8 +3473,8 @@ impl Ctx<'_> {
             // diagnostics. Only the offsets differ, and those are `jr-pool`'s (ADR-0045 §5). A
             // variant's cases are a field list too (ADR-0068 §1), so it joins them — what differs is
             // the tag check MIR emits on the *read*, which is not a typing question.
-            Item::StructType { decl } | Item::UnionType { decl } | Item::VariantType { decl } => {
-                ReceiverKind::Struct(*decl)
+            Item::StructType { .. } | Item::UnionType { .. } | Item::VariantType { .. } => {
+                ReceiverKind::Struct(ty)
             }
             // The context's fields are the compiler's, not a side table's — there is no `DeclId` to
             // key one on (ADR-0057 §1), so this is its own receiver kind rather than a `Struct`.
@@ -3533,16 +3540,27 @@ impl Ctx<'_> {
                     PoolId::ERROR
                 }
             }
-            ReceiverKind::Struct(decl) => {
+            ReceiverKind::Struct(instance) => {
                 // A direct field first, then — failing that — a field of any `using`-embedded
                 // base (ADR-0050 §4). Direct wins, so a struct that declares `x` *and* embeds
                 // something declaring `x` means its own, which matches the rule everywhere else
                 // in the language: the nearer declaration shadows.
+                //
+                // Direct fields come from `fields_of` on the *instance*, so `Box(s64).value` is
+                // `s64` (ADR-0085 §2); `using`-promotion stays keyed on the `DeclId`, since a
+                // parameterised struct with a `using` field is out of this sub-wave's scope
+                // (ADR-0085 §5) and an ordinary struct's instance carries its own `DeclId`.
+                let embed_decl = match self.pool.item(instance) {
+                    Item::StructType { decl, .. }
+                    | Item::UnionType { decl, .. }
+                    | Item::VariantType { decl, .. } => *decl,
+                    _ => unreachable!("ReceiverKind::Struct holds a struct/union/variant instance"),
+                };
                 let found = self
                     .pool
-                    .struct_fields(decl)
+                    .fields_of(instance)
                     .and_then(|fields| fields.iter().find(|f| f.name == name).map(|f| f.ty))
-                    .or_else(|| self.embedded_field_type(decl, name));
+                    .or_else(|| self.embedded_field_type(embed_decl, name));
                 match found {
                     Some(field_ty) => field_ty,
                     None => {
@@ -3825,14 +3843,15 @@ impl Ctx<'_> {
             // Only `count`. Listing `data` would suggest a pseudo-field arrays do not have
             // (ADR-0039 §5), which is worse than no suggestion.
             Item::ArrayType { .. } | Item::ViewType { .. } => vec![String::from("count")],
-            Item::StructType { decl } | Item::UnionType { decl } | Item::VariantType { decl } => {
-                self.pool
-                    .struct_fields(*decl)
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(|f| self.interner.resolve(f.name).to_owned())
-                    .collect()
-            }
+            Item::StructType { decl, .. }
+            | Item::UnionType { decl, .. }
+            | Item::VariantType { decl, .. } => self
+                .pool
+                .struct_fields(*decl)
+                .unwrap_or(&[])
+                .iter()
+                .map(|f| self.interner.resolve(f.name).to_owned())
+                .collect(),
             _ => Vec::new(),
         };
 
@@ -4068,8 +4087,13 @@ impl Ctx<'_> {
 enum ReceiverKind {
     /// The builtin `string`, whose `.data`/`.count` are pseudo-fields.
     Str,
-    /// A nominal struct, whose fields live in the pool under this declaration.
-    Struct(jr_pool::DeclId),
+    /// A nominal struct, whose fields the pool holds for this **instance** type.
+    ///
+    /// Carries the instance `PoolId` rather than a bare `DeclId` (ADR-0085 §2): a parameterised
+    /// `Box(s64)` and `Box(bool)` share a declaration but have substituted field types, so the
+    /// lookup must be through `Pool::fields_of` on the instance. An ordinary struct's instance is
+    /// its `DeclId`-keyed type, so its fields are found unchanged.
+    Struct(PoolId),
     /// A fixed-size array, whose `.count` is a pseudo-field read from the type.
     Array,
     /// The implicit context, whose fields are the compiler's (ADR-0057 §1).

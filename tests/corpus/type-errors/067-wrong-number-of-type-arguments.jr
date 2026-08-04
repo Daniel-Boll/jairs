@@ -1,0 +1,23 @@
+// EXPECT: E0270 — a parameterised struct given the wrong number of type arguments (ADR-0085 §3)
+//
+// `Box :: struct($T)` takes exactly one type argument. `Box(s64, bool)` supplies two, so the reference is
+// refused with a count mismatch — the type-side counterpart of an arity error on a call. Distinct from
+// E0269, which objects that the name is not a parameterised struct at all; here `Box` is one, and the
+// objection is only about how many arguments it was handed.
+//
+// **One** refusal, and the file lowers cleanly: the annotation yields a poisoned type and the variable's
+// use is refused downstream rather than lowered to a placeholder — this directory's one-diagnostic-per-file
+// contract.
+//
+// No `#import "Basic"`: a parameterised struct is a language feature, so the refusal needs no module, and
+// an unused import would be a second diagnostic (E0231) this directory forbids.
+
+// A parameterised struct taking one type argument.
+Box :: struct($T) {
+    value: T;
+}
+
+supplies_too_many :: () {
+    // The refusal: `Box` wants one argument, two were given.
+    b: Box(s64, bool);
+}

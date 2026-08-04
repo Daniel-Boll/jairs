@@ -89,8 +89,17 @@ pub struct Pool {
     /// Reverse map for string de-duplication.
     string_dedupe: FxHashMap<String, StrId>,
     /// Resolved struct bodies, keyed by declaration rather than by [`PoolId`]
-    /// because the body is not part of the type's identity (ADR-0015 §1).
+    /// because the body is not part of an ordinary struct's identity (ADR-0015 §1).
     struct_fields: FxHashMap<DeclId, Vec<Field>>,
+    /// Resolved fields of a **parameterised** struct instance, keyed by the instance [`PoolId`]
+    /// (ADR-0085 §2).
+    ///
+    /// Separate from `struct_fields` because the two instances `Box(s64)` and `Box(bool)` share one
+    /// `DeclId` and must carry *different* field types — `value: s64` vs `value: bool` — which a
+    /// `DeclId`-keyed map cannot hold. An ordinary struct has empty type arguments and stays in
+    /// `struct_fields`, so its lookup is untouched; only an instance with arguments lands here. The
+    /// dispatcher [`Pool::fields_of`] chooses between the two by whether the `Item` carries arguments.
+    instance_fields: FxHashMap<PoolId, Vec<Field>>,
     /// Enum members, keyed by declaration site (ADR-0041 §4).
     enum_members: FxHashMap<DeclId, Vec<EnumMember>>,
 }
@@ -114,6 +123,7 @@ impl Pool {
             strings: Vec::new(),
             string_dedupe: FxHashMap::default(),
             struct_fields: FxHashMap::default(),
+            instance_fields: FxHashMap::default(),
             enum_members: FxHashMap::default(),
         };
 
@@ -431,7 +441,20 @@ impl Pool {
     /// through a pointer — `Node :: struct { next: *Node; }` needs `Node` to
     /// already have an ID while its own fields are still being lowered.
     pub fn struct_type(&mut self, decl: DeclId) -> PoolId {
-        self.intern(Item::StructType { decl })
+        self.intern(Item::StructType {
+            decl,
+            args: Vec::new(),
+        })
+    }
+
+    /// Interns a parameterised struct instance — `Box(s64)` (ADR-0085 §1).
+    ///
+    /// Distinct from [`Pool::struct_type`] only in carrying `args`: `Box(s64)` and `Box(bool)` share
+    /// one `decl` and are two `Item`s, so the interner gives them two `PoolId`s the way it does
+    /// `[2]s64` and `[3]s64`. An empty `args` is exactly [`Pool::struct_type`], so this never mints a
+    /// second ID for an ordinary struct.
+    pub fn struct_instance(&mut self, decl: DeclId, args: Vec<PoolId>) -> PoolId {
+        self.intern(Item::StructType { decl, args })
     }
 
     /// Interns the nominal union type declared at `decl` (ADR-0045 §4).
@@ -439,7 +462,10 @@ impl Pool {
     /// Its fields go in the *same* side table a struct's do — [`Pool::set_struct_fields`] —
     /// because the field list is the same data. Only the layout differs.
     pub fn union_type(&mut self, decl: DeclId) -> PoolId {
-        self.intern(Item::UnionType { decl })
+        self.intern(Item::UnionType {
+            decl,
+            args: Vec::new(),
+        })
     }
 
     /// Interns the nominal variant type declared at `decl` (ADR-0068 §1).
@@ -447,7 +473,10 @@ impl Pool {
     /// Its cases go in the *same* side table a struct's fields do, because a case list is a field
     /// list — what differs is the layout (a leading tag, §3) and the check on a read (§4).
     pub fn variant_type(&mut self, decl: DeclId) -> PoolId {
-        self.intern(Item::VariantType { decl })
+        self.intern(Item::VariantType {
+            decl,
+            args: Vec::new(),
+        })
     }
 
     /// Records the resolved fields of the struct declared at `decl`.
@@ -462,6 +491,42 @@ impl Pool {
     #[must_use]
     pub fn struct_fields(&self, decl: DeclId) -> Option<&[Field]> {
         self.struct_fields.get(&decl).map(Vec::as_slice)
+    }
+
+    /// Records the substituted fields of a parameterised struct **instance** (ADR-0085 §2).
+    ///
+    /// `instance` is the `PoolId` of a [`Item::StructType`] with non-empty arguments — `Box(s64)`.
+    /// The fields are the declaration's, resolved under the type-argument bindings, so `Box(s64)`
+    /// records `value: s64` and `Box(bool)` records `value: bool` from the one declaration.
+    pub fn set_instance_fields(&mut self, instance: PoolId, fields: Vec<Field>) {
+        self.instance_fields.insert(instance, fields);
+    }
+
+    /// The fields of any struct/union/variant type, by its `PoolId` — the one lookup a consumer
+    /// holding a type should use (ADR-0085 §2).
+    ///
+    /// Dispatches on whether the type carries type arguments: a parameterised instance reads the
+    /// instance-keyed map (its fields are substituted), and an ordinary struct reads the
+    /// `DeclId`-keyed map exactly as before. A consumer that extracts `decl` and calls
+    /// [`Pool::struct_fields`] directly gets the *unsubstituted* template — correct for an ordinary
+    /// struct, wrong for an instance — so every field-reading site is being moved to this.
+    ///
+    /// Returns `None` for a type that is not a struct/union/variant, or whose fields are not
+    /// recorded yet.
+    #[must_use]
+    pub fn fields_of(&self, ty: PoolId) -> Option<&[Field]> {
+        match self.item(ty) {
+            Item::StructType { decl, args }
+            | Item::UnionType { decl, args }
+            | Item::VariantType { decl, args } => {
+                if args.is_empty() {
+                    self.struct_fields.get(decl).map(Vec::as_slice)
+                } else {
+                    self.instance_fields.get(&ty).map(Vec::as_slice)
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Interns a procedure type.

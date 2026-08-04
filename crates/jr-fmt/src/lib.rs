@@ -584,10 +584,17 @@ impl Formatter {
         // `else` branch meaning "struct" turned every `variant` into a `struct` — which is exactly the
         // mistake this function's own docs warn about for `enum_flags`, made again one form later.
         self.emit(match node.kind() {
-            UNION_TYPE => "union {",
-            VARIANT_TYPE => "variant {",
-            _ => "struct {",
+            UNION_TYPE => "union",
+            VARIANT_TYPE => "variant",
+            _ => "struct",
         });
+        // `struct($T) { … }` — the type parameters, when present, sit between the keyword and the brace
+        // (ADR-0085 §3). Dropping them was a silent data-loss bug that turned a parameterised struct
+        // into an ordinary one, so a `struct($T)` corpus file failed to round-trip.
+        if let Some(params) = node.children().find(|n| n.kind() == STRUCT_TYPE_PARAMS) {
+            self.format_struct_type_params(&params);
+        }
+        self.emit(" {");
         if let Some(field_list) = node.children().find(|n| n.kind() == FIELD_LIST) {
             let has_fields = field_list.children().any(|n| n.kind() == FIELD);
             if has_fields {
@@ -810,6 +817,12 @@ impl Formatter {
                 {
                     self.emit(tok.text());
                 }
+                // `Box(s64)` — the type arguments, when present, follow the name with no space
+                // (ADR-0085 §3). Dropping them would turn `Box(s64)` into a bare `Box`, the lossy-CST
+                // failure this file guards against.
+                if let Some(args) = node.children().find(|n| n.kind() == TYPE_ARGUMENTS) {
+                    self.format_type_arguments(&args);
+                }
             }
             // `$T` (ADR-0081 §1): a `$` then the variable name. Handled explicitly, because a
             // formatter that dropped it would silently turn a polymorphic parameter into a bare one —
@@ -896,6 +909,38 @@ impl Formatter {
                 self.emit(&node.text().to_string());
             }
         }
+    }
+
+    /// `(s64, bool)` — the type arguments of `Box(s64)` (ADR-0085 §3).
+    ///
+    /// Comma-and-space separated, no space before the `(`, mirroring `PROC_TYPE`'s parameter list —
+    /// an explicit walk of the type children rather than raw text, so `Box( s64 )` canonicalises.
+    fn format_type_arguments(&mut self, node: &SyntaxNode) {
+        self.emit("(");
+        let types: Vec<SyntaxNode> = node.children().filter(|n| is_type_kind(n.kind())).collect();
+        for (i, ty) in types.iter().enumerate() {
+            if i > 0 {
+                self.emit(", ");
+            }
+            self.format_type(ty);
+        }
+        self.emit(")");
+    }
+
+    /// `($T)` or `($K, $V)` — the type parameters of `struct($T) { … }` (ADR-0085 §3).
+    ///
+    /// Each parameter is a `$T` (`POLY_TYPE`), formatted the same way [`Formatter::format_type`] does,
+    /// so the `$` survives — the lossy-CST failure this file guards against.
+    fn format_struct_type_params(&mut self, node: &SyntaxNode) {
+        self.emit("(");
+        let vars: Vec<SyntaxNode> = node.children().filter(|n| n.kind() == POLY_TYPE).collect();
+        for (i, var) in vars.iter().enumerate() {
+            if i > 0 {
+                self.emit(", ");
+            }
+            self.format_type(var);
+        }
+        self.emit(")");
     }
 
     // ---- block -------------------------------------------------------------

@@ -219,7 +219,17 @@ impl<'a> LowerCtx<'a> {
                     .name_token()
                     .map(|t| self.intern(t.text()))
                     .unwrap_or_else(|| self.intern("<error>"));
-                self.alloc_top_type_ref(TypeRef::Name(sym))
+                // `Box(s64)` — a name with type arguments is a parameterised reference (ADR-0085 §3).
+                match n.arguments() {
+                    Some(arguments) => {
+                        let args: Vec<TypeRefId> = arguments
+                            .args()
+                            .map(|t| self.lower_type_expr_top(&t))
+                            .collect();
+                        self.alloc_top_type_ref(TypeRef::Apply { name: sym, args })
+                    }
+                    None => self.alloc_top_type_ref(TypeRef::Name(sym)),
+                }
             }
             TypeExpr::Poly(poly) => {
                 let sym = poly
@@ -291,7 +301,16 @@ impl<'a> LowerCtx<'a> {
 
     fn lower_struct_type(&mut self, s: &StructType) -> StructId {
         let span = self.span_of_node(s.syntax());
-        self.lower_fields_into_struct(span, s.field_list(), AggregateKind::Struct)
+        // `struct($T) { … }` — the type parameters, empty for an ordinary struct (ADR-0085 §3).
+        let mut poly_vars: Vec<Symbol> = Vec::new();
+        if let Some(params) = s.params() {
+            for var in params.vars() {
+                if let Some(tok) = var.name_token() {
+                    poly_vars.push(self.intern(tok.text()));
+                }
+            }
+        }
+        self.lower_fields_into_struct(span, s.field_list(), AggregateKind::Struct, poly_vars)
     }
 
     /// Lowers `union { i: s64; f: float64; }` (ADR-0045).
@@ -303,7 +322,7 @@ impl<'a> LowerCtx<'a> {
     /// joined the same arena for the same reason (ADR-0068 §2).
     fn lower_union_type(&mut self, u: &jr_syntax::ast::UnionType) -> StructId {
         let span = self.span_of_node(u.syntax());
-        self.lower_fields_into_struct(span, u.field_list(), AggregateKind::Union)
+        self.lower_fields_into_struct(span, u.field_list(), AggregateKind::Union, Vec::new())
     }
 
     /// Lowers `variant { i: s64; f: float64; }` (ADR-0068 §1).
@@ -312,7 +331,7 @@ impl<'a> LowerCtx<'a> {
     /// what makes the tag a *layout* question (ADR-0068 §3) rather than a different HIR shape.
     fn lower_variant_type(&mut self, v: &jr_syntax::ast::VariantType) -> StructId {
         let span = self.span_of_node(v.syntax());
-        self.lower_fields_into_struct(span, v.field_list(), AggregateKind::Variant)
+        self.lower_fields_into_struct(span, v.field_list(), AggregateKind::Variant, Vec::new())
     }
 
     /// The field loop all three aggregate forms share.
@@ -321,6 +340,7 @@ impl<'a> LowerCtx<'a> {
         span: jr_base::Span,
         field_list: Option<jr_syntax::ast::FieldList>,
         kind: AggregateKind,
+        poly_vars: Vec<Symbol>,
     ) -> StructId {
         let mut fields = Vec::new();
 
@@ -348,6 +368,7 @@ impl<'a> LowerCtx<'a> {
         self.alloc_struct(Struct {
             kind,
             fields,
+            poly_vars,
             span,
             type_refs: Vec::new(),
         })
@@ -1107,7 +1128,15 @@ impl<'a> BodyLowerCtx<'a> {
                     .name_token()
                     .map(|t| self.intern(t.text()))
                     .unwrap_or_else(|| self.intern("<error>"));
-                self.alloc_type_ref(TypeRef::Name(sym))
+                // `Box(s64)` — a name with type arguments is a parameterised reference (ADR-0085 §3).
+                match n.arguments() {
+                    Some(arguments) => {
+                        let args: Vec<TypeRefId> =
+                            arguments.args().map(|t| self.lower_type_expr(&t)).collect();
+                        self.alloc_type_ref(TypeRef::Apply { name: sym, args })
+                    }
+                    None => self.alloc_type_ref(TypeRef::Name(sym)),
+                }
             }
             TypeExpr::Poly(poly) => {
                 let sym = poly

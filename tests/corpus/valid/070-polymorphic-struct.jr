@@ -1,0 +1,74 @@
+// **Polymorphic structs** (ADR-0085): `Box :: struct($T) { value: T; }` used as `Box(s64)`. W5's fifth
+// sub-wave, the *type* side of polymorphism after ADR-0081–0084 did the *value* side.
+//
+// A parameterised struct is a **type constructor**: `Box` alone is not a type, and `Box(s64)` applies it
+// to the type argument `s64` (ADR-0071 makes a type a compile-time value, so `s64` here is that value).
+// `Box(s64)` and `Box(bool)` share one declaration but are **distinct types** with distinct field types
+// and distinct layouts — told apart by the type argument in the pool key, the same way `[2]s64` and
+// `[3]s64` are (ADR-0085 §1). Their fields come from substituting the argument into the declaration's
+// field types, so `Box(s64).value` is `s64` and `Box(bool).value` is `bool` (§2).
+//
+// What is checked here:
+//
+//   * a `Box(s64)` stored into and read back — the field type substituted to `s64`;
+//   * a `Box(bool)` from the **same** declaration, a distinct type with a `bool` field — so a compiler
+//     that keyed fields on the declaration alone would give one of them the other's field type;
+//   * a two-field `Pair(s64)` whose **both** fields substitute, exercising layout of a substituted
+//     aggregate through both engines;
+//   * a `Box(Box(s64))` — an instance as another instance's argument — so the argument resolution is
+//     itself an instantiation (nested one level).
+//
+// Assertions sum to 15, so any one failing changes the exit value, and both engines must agree — the
+// native back end computes each instance's layout from its substituted fields, which the VM does
+// independently, so agreement is a real check.
+#import "Basic";
+
+/// The canonical parameterised struct: one field of the type variable.
+Box :: struct($T) {
+    value: T;
+}
+
+/// Two fields of one type variable, to exercise layout of a substituted aggregate.
+Pair :: struct($T) {
+    first: T;
+    second: T;
+}
+
+main :: () {
+    n := 0;
+
+    // `Box(s64)` — the field is `s64`.
+    bi: Box(s64);
+    bi.value = 7;
+    if bi.value == 7 {
+        n = n + 1;
+    }
+
+    // `Box(bool)` — the *same* declaration, a distinct type with a `bool` field.
+    bb: Box(bool);
+    bb.value = true;
+    if bb.value {
+        n = n + 2;
+    }
+
+    // `Pair(s64)` — both fields substitute, and both are readable at their offsets.
+    p: Pair(s64);
+    p.first = 4;
+    p.second = 8;
+    if p.first + p.second == 12 {
+        n = n + 4;
+    }
+
+    // `Box(Box(s64))` — an instance as another instance's type argument.
+    bb2: Box(Box(s64));
+    bb2.value.value = 8;
+    if bb2.value.value == 8 {
+        n = n + 8;
+    }
+
+    // Every assertion: 15.
+    if n == 15 {
+        exit(0);
+    }
+    exit(1);
+}

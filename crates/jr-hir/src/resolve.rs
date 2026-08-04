@@ -576,6 +576,10 @@ impl<'a> ResolveCtx<'a> {
                 // instantiates it there is no concrete type with fields — so it names no struct, the
                 // same answer as a view or a procedure pointer (ADR-0081 §1).
                 | crate::hir::TypeRef::Poly(_)
+                // A `using b: Box(s64)` promoting a parameterised struct's fields is out of this
+                // sub-wave's scope (ADR-0085 §5), so an `Apply` names no promotable struct here — the
+                // same answer as a `$T`.
+                | crate::hir::TypeRef::Apply { .. }
                 | crate::hir::TypeRef::Struct(_)
                 | crate::hir::TypeRef::Union(_)
                 | crate::hir::TypeRef::Variant(_)

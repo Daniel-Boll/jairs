@@ -1769,16 +1769,17 @@ impl Translator<'_, '_> {
         }
         // Accepts a union as well as a struct: the field *list* is shared and only the
         // offsets differ (ADR-0045 §5).
-        let (Item::StructType { decl } | Item::UnionType { decl } | Item::VariantType { decl }) =
+        let (Item::StructType { .. } | Item::UnionType { .. } | Item::VariantType { .. }) =
             self.ctx.pool.item(ty)
         else {
             return Err(CodegenError::Internal(
                 "a field of a non-aggregate".to_owned(),
             ));
         };
+        // By the *instance* type, so a parameterised `Box(s64)` field is `s64` (ADR-0085 §2).
         self.ctx
             .pool
-            .struct_fields(*decl)
+            .fields_of(ty)
             .and_then(|fields| fields.get(index as usize))
             .map(|field| field.ty)
             .ok_or_else(|| CodegenError::Internal(format!("no field {index}")))

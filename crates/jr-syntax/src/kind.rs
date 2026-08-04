@@ -360,6 +360,20 @@ pub enum SyntaxKind {
     /// Its own node so the return type — the last type child of a `PROC_TYPE` — is not mistaken for
     /// a parameter, which a flat list of type children would allow.
     PROC_TYPE_PARAMS,
+    /// The type-argument list of a parameterised type reference — the `(s64)` of `Box(s64)`
+    /// (ADR-0085 §3).
+    ///
+    /// A child of a `NAME_TYPE`, holding one or more type nodes. Its own kind rather than reusing
+    /// `PROC_TYPE_PARAMS`, because the two mean different things — applying a type constructor versus
+    /// listing a procedure's parameters — and a consumer that confused them would resolve the wrong
+    /// one.
+    TYPE_ARGUMENTS,
+    /// The type-parameter list of a parameterised struct — the `($T)` of `struct($T) { … }`
+    /// (ADR-0085 §3).
+    ///
+    /// A child of a `STRUCT_TYPE` (or union/variant), holding one or more `POLY_TYPE` nodes. Distinct
+    /// from `TYPE_ARGUMENTS`: this *binds* the variables a `TYPE_ARGUMENTS` later supplies.
+    STRUCT_TYPE_PARAMS,
     /// `struct { ... }`
     STRUCT_TYPE,
     /// `union { ... }` (ADR-0045).

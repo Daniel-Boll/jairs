@@ -315,8 +315,17 @@ module.exports = grammar({
     // as a view.
     view_type: ($) => seq("[", "]", field("element", $._type)),
 
-    // s64, bool, Point, ... — no field() wrapper, just the identifier
-    name_type: ($) => $.identifier,
+    // s64, bool, Point, ... — a bare name, or a name applied to type arguments: `Box(s64)`
+    // (ADR-0085 §3). The argument list is optional so an ordinary name stays a `name_type` with no
+    // `arguments` child, and a parameterised reference carries the applied types — the type-position
+    // mirror of a call expression, and it reuses `_type` for each argument because a type argument
+    // *is* a type (ADR-0071).
+    name_type: ($) =>
+      seq($.identifier, optional(field("arguments", $.type_arguments))),
+
+    // (s64) or (s64, bool) after a type name — the arguments of a parameterised type.
+    type_arguments: ($) =>
+      seq("(", optional(seq($._type, repeat(seq(",", $._type)))), ")"),
 
     // $T — a polymorphic type variable (ADR-0081 §1). Its own rule, not a `name_type` with a leading
     // `$`, because it binds a variable rather than naming an existing type.
@@ -348,12 +357,22 @@ module.exports = grammar({
         ";",
       ),
 
-    // struct { ... }
+    // struct { ... }, or struct($T) { ... } — a parameterised struct (ADR-0085 §3).
+    //
+    // The parameter list is optional so an ordinary struct is unchanged; when present it holds one or
+    // more `poly_type`s (`$T`), the same node a polymorphic procedure parameter uses, because a
+    // struct type parameter and a procedure type parameter are the same idea.
     struct_type: ($) =>
       seq(
         "struct",
+        optional(field("params", $.struct_type_params)),
         field("fields", $.field_list),
       ),
+
+    // ($T) or ($K, $V) after `struct` — the type parameters of a parameterised struct. Each is a
+    // `poly_type`, so `$` is required: a struct parameter binds a variable, it does not name a type.
+    struct_type_params: ($) =>
+      seq("(", $.poly_type, repeat(seq(",", $.poly_type)), ")"),
 
     // union { ... } (ADR-0045).
     //

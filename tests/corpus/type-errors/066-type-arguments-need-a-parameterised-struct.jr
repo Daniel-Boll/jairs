@@ -1,0 +1,33 @@
+// EXPECT: E0269 — `Name(args)` applied to something that is not a parameterised struct (ADR-0085 §3)
+//
+// `Box(s64)` requires `Box` to be a `struct($T) { … }`. Applying type arguments to an **ordinary** struct
+// is the mistake here: `Pair` below has no type parameters, so its `(s64)` names arguments there is nothing
+// to bind — the reference is refused rather than the arguments silently dropped, because a dropped argument
+// would let `Pair(s64)` and `Pair` mean the same thing and hide a real confusion about which `Pair` was
+// meant.
+//
+// The sibling refusals, so the three are distinct:
+//
+//   * `Box(s64)` where `Box :: struct($T)` — fine, in `valid/070`;
+//   * `Pair(s64)` where `Pair :: struct { … }` has no parameters — **this file**, E0269;
+//   * `Box(s64, bool)` — wrong *count*, E0270, not this code.
+//
+// **One** refusal, and the file lowers cleanly: the annotation yields a poisoned type, and the variable's
+// use is refused downstream rather than lowered to a placeholder — this directory's one-diagnostic-per-file
+// contract, and the reason `Pair` is an ordinary struct (a parameterised one used correctly would produce
+// no error at all).
+//
+// No `#import "Basic"`: nothing here needs it, and an unused import is E0231 — a second diagnostic this
+// directory forbids. A parameterised struct is a language feature, not a library one, so the refusal does
+// not depend on a module being loaded.
+
+// An ordinary struct — no type parameters.
+Pair :: struct {
+    first: s64;
+    second: s64;
+}
+
+uses_arguments_on_an_ordinary_struct :: () {
+    // The refusal: `Pair` takes no type arguments, so `Pair(s64)` is not a type.
+    p: Pair(s64);
+}
