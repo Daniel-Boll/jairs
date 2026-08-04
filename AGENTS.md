@@ -74,7 +74,7 @@ visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919
 → 981 (W5 sub-wave 7h, `#bake_arguments` specialisation — **W5 complete**). W6 sub-waves 1–4 hold at
 981 — each adds corpus files that the existing differential and snapshot tests iterate rather than adding a test
 case, which is why the *corpus* count is tracked too — and sub-wave 5 reaches **984** with three `jr-cli`
-integration tests, because the driver's behaviour is not something a corpus file can observe (194 corpus files).
+integration tests, because the driver's behaviour is not something a corpus file can observe (195 corpus files).
 
 ## House style
 
