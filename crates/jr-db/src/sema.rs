@@ -77,6 +77,23 @@ pub type Instantiations = rustc_hash::FxHashMap<
     (jr_hir::ProcId, Vec<jr_pool::PoolId>),
 >;
 
+/// Each comptime-value call and the argument *expressions* its `$N` parameters need (ADR-0088 §1).
+///
+/// Recorded by the checker, evaluated by `jr-db`'s `comptime_call_values` pre-pass. The value tuple is
+/// the same shape as [`Instantiations`]' with `ExprId` in place of `PoolId`, because a value is not
+/// known at check time.
+pub type ComptimeCalls = rustc_hash::FxHashMap<
+    (jr_hir::ExprScope, jr_hir::ExprId),
+    (jr_hir::ProcId, Vec<jr_hir::ExprId>),
+>;
+
+/// Each comptime-value call and the tuple of interned argument *values* — the structural key an
+/// instantiation is built for (ADR-0088 §3). Same shape as [`Instantiations`] once const-eval has run.
+pub type ComptimeCallValues = rustc_hash::FxHashMap<
+    (jr_hir::ExprScope, jr_hir::ExprId),
+    (jr_hir::ProcId, Vec<jr_pool::PoolId>),
+>;
+
 /// The result of type-checking a file.
 #[derive(Debug, Clone)]
 pub struct CheckResult {
@@ -122,6 +139,13 @@ pub struct CheckResult {
     /// Read by `file_mir`'s expansion pass to append a substituted procedure per distinct key and rewrite
     /// the call to target it. Empty for a file with no polymorphic calls.
     pub instantiations: Arc<Instantiations>,
+    /// Each comptime-value call and the argument expressions its `$N` parameters need (ADR-0088 §1):
+    /// `(proc, [arg ExprId per comptime parameter])`.
+    ///
+    /// Read by `file_consts` (which evaluates each argument via a `Wanted::ComptimeArg`) and by
+    /// `instantiated()` (which keys an instantiation on the tuple of resulting values and appends a clone
+    /// with those values baked in). Empty for a program with no comptime-value calls.
+    pub comptime_calls: Arc<ComptimeCalls>,
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +386,11 @@ pub(crate) struct Instantiated {
     pub diagnostics: Diagnostics,
     /// Each polymorphic call and the `ProcRef` of the procedure it was instantiated to.
     pub redirects: Vec<((jr_hir::ExprScope, jr_hir::ExprId), jr_mir::ProcRef)>,
+    /// Per redirected **comptime-value** call, which source-order argument positions to drop at the call
+    /// site (ADR-0088 §3). Empty for a `$T`-only file. The instantiation's parameter list is *shorter*
+    /// than the source call's argument list — the `$N` params were baked in — so the call must pass only
+    /// the non-comptime arguments.
+    pub comptime_masks: Vec<((jr_hir::ExprScope, jr_hir::ExprId), Vec<bool>)>,
 }
 
 /// Builds the expanded HIR for a file's instantiations and re-checks it (ADR-0082 §2, §3).
@@ -376,13 +405,13 @@ pub(crate) fn instantiated(
     search_paths: ModuleSearchPaths,
 ) -> Option<Instantiated> {
     let base_check = checked(db, file, search_paths);
-    if base_check.instantiations.is_empty() {
+    if base_check.instantiations.is_empty() && base_check.comptime_calls.is_empty() {
         return None;
     }
     let file_id = crate::queries::resolve_file_id(db, file);
     let interner = db.interner();
 
-    // Every call in a **deterministic** order, because `FxHashMap` iteration is not stable and the
+    // Every `$T` call in a **deterministic** order, because `FxHashMap` iteration is not stable and the
     // appended `ProcId`s must be reproducible across runs (a snapshot depends on it). Sorted by call
     // site.
     type Call = (
@@ -396,8 +425,9 @@ pub(crate) fn instantiated(
         .collect();
     calls.sort_by_key(|(call, _)| (scope_ord(call.0), call.1.index()));
 
-    // De-duplicate by the structural key (ADR-0005): the `(template, bound type)` tuple. The first
-    // distinct key seen in sorted order is appended first, so `keys[i]` ↔ the i-th appended procedure.
+    // De-duplicate `$T` calls by the structural key (ADR-0005): the `(template, bound type)` tuple. The
+    // first distinct key seen in sorted order is appended first, so `keys[i]` ↔ the i-th appended
+    // procedure.
     let mut keys: Vec<(jr_hir::ProcId, Vec<jr_pool::PoolId>)> = Vec::new();
     for (_, key) in &calls {
         if !keys.contains(key) {
@@ -405,13 +435,50 @@ pub(crate) fn instantiated(
         }
     }
 
+    // **Comptime-value calls** (ADR-0088 §3). For each, look up each argument's evaluated value in
+    // `file_consts` — which the pre-pass populated via `Wanted::ComptimeArg` — and build a structural
+    // key on those values. Any argument whose value is missing means the pre-pass refused it (E0271),
+    // which is a diagnostic already; the call is skipped here so the instantiation is not built with a
+    // hole. Deterministic order, same discipline as the `$T` calls above.
+    type ComptimeCall = (
+        (jr_hir::ExprScope, jr_hir::ExprId),
+        (jr_hir::ProcId, Vec<jr_pool::PoolId>),
+    );
+    let const_values = crate::consts::file_consts(db, file, search_paths).values;
+    let mut comptime_calls_vec: Vec<ComptimeCall> = Vec::new();
+    let base_sigs_for_vars = file_signatures(db, file, search_paths);
+    for (call_key, (template, args)) in base_check.comptime_calls.iter() {
+        let mut values = Vec::with_capacity(args.len());
+        let mut all_present = true;
+        for arg in args {
+            match const_values.run(call_key.0, *arg) {
+                Some(v) => values.push(v),
+                None => {
+                    all_present = false;
+                    break;
+                }
+            }
+        }
+        if all_present {
+            comptime_calls_vec.push((*call_key, (*template, values)));
+        }
+    }
+    comptime_calls_vec.sort_by_key(|(call, _)| (scope_ord(call.0), call.1.index()));
+
+    // De-duplicate `$N` calls the same way: `(template, [value PoolIds])`.
+    let mut comptime_keys: Vec<(jr_hir::ProcId, Vec<jr_pool::PoolId>)> = Vec::new();
+    for (_, key) in &comptime_calls_vec {
+        if !comptime_keys.contains(key) {
+            comptime_keys.push(key.clone());
+        }
+    }
+
     // Append one procedure per distinct key. Each key's bound types are paired with the template's type
     // variables — both in `poly_vars` order (ADR-0083 §1, §2), so the i-th bound type is the i-th
     // variable's. The variable names come from the base file's signatures, which is where the template's
     // `poly_vars` lives.
-    let base_sigs_for_vars = file_signatures(db, file, search_paths);
     let mut hir = (*file_hir(db, file)).clone();
-    let instantiations: Vec<jr_hir::Instantiation> = keys
+    let mut instantiations: Vec<jr_hir::Instantiation> = keys
         .iter()
         .map(|(template, bound_types)| {
             let vars = base_sigs_for_vars
@@ -423,10 +490,35 @@ pub(crate) fn instantiated(
             jr_hir::Instantiation {
                 template: *template,
                 bindings,
+                // A `$T` instantiation has no comptime-value bakings — that path is comptime-value's
+                // (ADR-0088 §3); this vector is empty, which the appender reads as "keep every parameter".
+                comptime_values: Vec::new(),
             }
         })
         .collect();
-    let new_ids = jr_hir::expand_instantiations(&mut hir, interner, &instantiations);
+    // Then one procedure per distinct comptime-value key (ADR-0088 §3). Each key's values are paired
+    // with the template's `comptime_params` flags — a value slots into a `Some` at the parameter's
+    // position, `None` at a runtime parameter's, and the appender drops the `Some` params and bakes
+    // their literals.
+    let comptime_start = instantiations.len();
+    for (template, values) in &comptime_keys {
+        let sig = base_sigs_for_vars.signatures.proc_sig(*template);
+        let comptime_flags = sig.map(|s| s.comptime_params.clone()).unwrap_or_default();
+        let mut value_iter = values.iter().copied();
+        let comptime_values: Vec<Option<jr_pool::PoolId>> = comptime_flags
+            .iter()
+            .map(|&is_comptime| if is_comptime { value_iter.next() } else { None })
+            .collect();
+        instantiations.push(jr_hir::Instantiation {
+            template: *template,
+            bindings: Vec::new(),
+            comptime_values,
+        });
+    }
+    let pool_for_expand = crate::sema::lock_pool(db);
+    let new_ids =
+        jr_hir::expand_instantiations(&mut hir, interner, &pool_for_expand, &instantiations);
+    drop(pool_for_expand);
     let hir = Arc::new(hir);
 
     // Recompute resolve and signatures over the expanded tree.
@@ -502,8 +594,10 @@ pub(crate) fn instantiated(
     let check = translate_check_output(output, &sig_output.types);
     diagnostics.extend(check.diagnostics.iter().cloned());
 
-    // Map each call to the `ProcRef` of the procedure appended for its key.
-    let redirects: Vec<((jr_hir::ExprScope, jr_hir::ExprId), jr_mir::ProcRef)> = calls
+    // Map each call to the `ProcRef` of the procedure appended for its key. The `$T` calls are indexed
+    // into the first `keys.len()` entries of `new_ids`; the `$N` calls into the tail, offset by
+    // `comptime_start`. Both share the redirects vector because MIR's `call_rvalue` reads one map.
+    let mut redirects: Vec<((jr_hir::ExprScope, jr_hir::ExprId), jr_mir::ProcRef)> = calls
         .iter()
         .map(|(call, key)| {
             let index = keys
@@ -511,6 +605,32 @@ pub(crate) fn instantiated(
                 .position(|k| k == key)
                 .expect("key was collected above");
             (*call, jr_mir::ProcRef::new(file_id, new_ids[index]))
+        })
+        .collect();
+    for (call, key) in &comptime_calls_vec {
+        let index = comptime_keys
+            .iter()
+            .position(|k| k == key)
+            .expect("comptime key was collected above");
+        redirects.push((
+            *call,
+            jr_mir::ProcRef::new(file_id, new_ids[comptime_start + index]),
+        ));
+    }
+
+    // For each comptime call, record its argument-drop mask — one boolean per source-order argument,
+    // `true` for a `$N` argument to drop. The mask is the template's `comptime_params` flags exactly,
+    // because the checker preserved source order (an ordinary call's arguments correspond 1:1 to the
+    // template's parameters).
+    let comptime_masks: Vec<((jr_hir::ExprScope, jr_hir::ExprId), Vec<bool>)> = comptime_calls_vec
+        .iter()
+        .map(|(call, (template, _))| {
+            let mask = base_sigs_for_vars
+                .signatures
+                .proc_sig(*template)
+                .map(|sig| sig.comptime_params.clone())
+                .unwrap_or_default();
+            (*call, mask)
         })
         .collect();
 
@@ -521,6 +641,7 @@ pub(crate) fn instantiated(
         check,
         diagnostics,
         redirects,
+        comptime_masks,
     })
 }
 
@@ -578,6 +699,7 @@ fn translate_check_output(
         type_info_calls: Arc::new(output.type_info_calls),
         any_calls: Arc::new(output.any_calls),
         instantiations: Arc::new(output.instantiations),
+        comptime_calls: Arc::new(output.comptime_calls),
     }
 }
 

@@ -323,6 +323,10 @@ fn imports_invalid_corpus_fails() {
         // What this pins is the *diagnostic*: it used to be "internal compiler error: no routine for
         // file 0 proc 0", the third instance of internals leaking for a reasonable program.
         "imports/invalid/012-run-reads-an-imported-constant.jr",
+        // A `$N` comptime-value argument that is not a compile-time constant (ADR-0088 §2). Here for
+        // the same stage reason as `012`: E0271 comes out of `jr-db`'s const-eval pre-pass, so the
+        // sema `type-errors/` harness cannot see it.
+        "imports/invalid/013-comptime-arg-not-constant.jr",
     ] {
         let code = check_with_modules(vec![corpus_path(file)], Some("modules"));
         assert_eq!(code, 1, "{file} must report an error");

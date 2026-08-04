@@ -150,6 +150,14 @@ pub struct ConstValues {
     /// expanded HIR, rather than the template. `call_rvalue` consults this before `direct_callee`, so the
     /// call node itself is never rewritten — the same channel `#run` and `any_op` ride.
     instantiations: FxHashMap<(ExprScope, ExprId), ProcRef>,
+    /// Which argument positions to **drop** at a comptime-value call site (ADR-0088 §3).
+    ///
+    /// A `make(v, x)` where `make :: ($N: s64, x: s64)` redirects to an instantiation whose parameter list
+    /// is `(x: s64)` — the `$N` parameter is baked into the body, not received. So the call must pass only
+    /// the non-comptime arguments. This map holds, per redirected call, a boolean per source-order
+    /// argument: `true` means "drop, this is a comptime argument baked into the callee". Absent for a `$T`
+    /// call (which keeps every argument).
+    comptime_arg_mask: FxHashMap<(ExprScope, ExprId), Vec<bool>>,
 }
 
 /// How the MIR builder should lower one `any_of`/`any_as` call (ADR-0076).
@@ -234,6 +242,22 @@ impl ConstValues {
     #[must_use]
     pub fn instantiation(&self, scope: ExprScope, expr: ExprId) -> Option<ProcRef> {
         self.instantiations.get(&(scope, expr)).copied()
+    }
+
+    /// Records that a comptime-value call drops these argument positions (ADR-0088 §3).
+    pub fn set_comptime_arg_mask(&mut self, scope: ExprScope, expr: ExprId, mask: Vec<bool>) {
+        self.comptime_arg_mask.insert((scope, expr), mask);
+    }
+
+    /// Which argument positions a comptime-value call drops, if it is one.
+    ///
+    /// Returns `None` for a `$T` call (no drops) or any other call. `true` at index `i` means the i-th
+    /// source-order argument is baked into the callee and must not be passed as a runtime operand.
+    #[must_use]
+    pub fn comptime_arg_mask(&self, scope: ExprScope, expr: ExprId) -> Option<&[bool]> {
+        self.comptime_arg_mask
+            .get(&(scope, expr))
+            .map(Vec::as_slice)
     }
 
     /// The number of recorded values.

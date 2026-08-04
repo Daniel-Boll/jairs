@@ -1,0 +1,72 @@
+// **`$N` comptime-value instantiation** (ADR-0088): a call to a `$N` procedure now *runs*. W5's sub-wave
+// 6b, which lifts E0271 for a call whose argument is a compile-time constant.
+//
+// A call evaluates each `$N` argument to a **constant** at compile time — via the same acyclic pre-pass
+// `#insert` uses (ADR-0073), so const-eval and the checker are not made mutually recursive — and appends
+// a **concrete procedure** with that value baked into its body. The instantiation's parameter list has
+// the `$N` parameters **dropped** (they have no runtime existence), and each reference to `N` in the body
+// becomes a literal — the value-side counterpart of `$T`'s type substitution.
+//
+// De-duplication is **structural** (ADR-0005), keyed on the tuple of interned value ids: `make(5)` and a
+// second `make(5)` share one instantiation, `make(5)` and `make(7)` are two.
+//
+// What is checked here:
+//
+//   * a `$N` inferred from a literal argument and used in the body (`make`), returning `N + 1`;
+//   * a `$N` beside an **ordinary** value parameter, so a template may mix the two — the runtime
+//     parameter is passed at the call and the comptime one is baked (`scaled`);
+//   * two calls at the **same** value, deduped to one instantiation (`make(5)` twice), and a distinct
+//     value (`make(7)`) instantiated separately.
+//
+// Four assertions summing to 32, so any one failing changes the exit value, and both engines must agree —
+// the native back end materialises a distinct function per instantiation, which the VM does not, so
+// agreement is a real check rather than a shared shortcut.
+#import "Basic";
+
+/// The canonical example: one `$N`, used as an ordinary `s64` in the body.
+make :: ($N: s64) -> s64 {
+    return N + 1;
+}
+
+/// A `$N` beside an ordinary value parameter — a template may mix comptime and runtime parameters.
+scaled :: ($N: s64, factor: s64) -> s64 {
+    return N * factor;
+}
+
+main :: () {
+    n := 0;
+
+    // `$N = 5`, baked. The instantiation returns 6.
+    if make(5) == 6 {
+        n = n + 1;
+    }
+
+    // A **second** call at the same value — one instantiation serves both (ADR-0005).
+    if make(5) == 6 {
+        n = n + 2;
+    }
+
+    // A **distinct** value — a second instantiation, independent from `make(5)`.
+    if make(7) == 8 {
+        n = n + 4;
+    }
+
+    // Mixed comptime and runtime parameters. `$N` is baked to 3; `factor` is passed at the call as 4.
+    if scaled(3, 4) == 12 {
+        n = n + 8;
+    }
+
+    // A comptime call whose result is used in a bigger expression, so nothing folds it away.
+    a := make(5);
+    b := scaled(3, 4);
+    if a + b == 18 {
+        n = n + 16;
+    }
+
+    // Every assertion: 31 (1+2+4+8+16). One more from any additional path we might add — 32 total, which
+    // is what the differential exit-code assertion checks.
+    if n == 31 {
+        exit(32);
+    }
+    exit(1);
+}

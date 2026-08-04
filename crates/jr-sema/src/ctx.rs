@@ -178,6 +178,16 @@ pub(crate) struct Ctx<'a> {
     /// procedure. Empty for a file with no polymorphic calls, which is every ordinary program.
     pub(crate) instantiations:
         FxHashMap<(ExprScope, jr_hir::ExprId), (jr_hir::ProcId, Vec<PoolId>)>,
+    /// Each **comptime-value** call and the argument expressions its `$N` parameters need
+    /// (ADR-0088 §1): `(proc, [arg ExprId per comptime parameter])`.
+    ///
+    /// Recorded by `check_comptime_call` for a `$N`-templated callee, and read by `jr-db`'s
+    /// `comptime_call_values` pre-pass — which evaluates each argument to a constant, because a value is
+    /// not known at check time (const-eval is downstream, ADR-0018 §3). The *expressions* are recorded
+    /// here, not values; keyed by the call's `(scope, id)` like `instantiations`. Empty for a program
+    /// with no comptime-value calls.
+    pub(crate) comptime_calls:
+        FxHashMap<(ExprScope, jr_hir::ExprId), (jr_hir::ProcId, Vec<jr_hir::ExprId>)>,
 }
 
 impl<'a> Ctx<'a> {
@@ -197,6 +207,7 @@ impl<'a> Ctx<'a> {
             type_info_calls: FxHashMap::default(),
             type_bindings: FxHashMap::default(),
             instantiations: FxHashMap::default(),
+            comptime_calls: FxHashMap::default(),
             any_calls: FxHashMap::default(),
             hir,
             file,

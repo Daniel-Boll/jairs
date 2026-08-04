@@ -21,18 +21,30 @@
 //! copied into that arena and the ids remapped. Nothing else crosses a body boundary.
 
 use jr_base::Symbol;
-use jr_pool::PoolId;
+use jr_pool::{IntKind, Item as PoolItem, Pool, PoolId};
 
-use crate::hir::{ConstValue, FileHir, Item, ItemKind, Param, Proc, ProcId, TypeRef, TypeRefId};
+use crate::hir::{
+    ConstValue, Expr, FileHir, Item, ItemKind, Literal, Param, ParamId, Proc, ProcId, Res, TypeRef,
+    TypeRefId,
+};
 
-/// One instantiation to append: the template procedure and a concrete type for each of its variables
-/// (ADR-0083 §2 — one binding for a single-`$T` template, several for `pair :: (a: $A, b: $B)`).
+/// One instantiation to append: the template procedure, its type bindings, and — for a comptime-value
+/// template — the baked value of each `$N` parameter (ADR-0083 §2, ADR-0088 §3).
+///
+/// Two shapes carried in one struct, because the append is otherwise the same and a second variant would
+/// duplicate the clone. `bindings` is the `$T` side (ADR-0083); `comptime_values` is the `$N` side, one
+/// entry per procedure parameter in source order — `Some(value)` for a `$N` parameter that gets the
+/// baked constant, `None` for an ordinary parameter that keeps its runtime slot. Empty
+/// `comptime_values` means "no comptime parameters", the ordinary `$T`-only instantiation.
 #[derive(Debug, Clone)]
 pub struct Instantiation {
     /// The polymorphic template being instantiated.
     pub template: ProcId,
     /// Each type variable and the concrete type it is bound to, in the template's first-seen order.
     pub bindings: Vec<(Symbol, PoolId)>,
+    /// For each of the template's parameters, `Some(value)` for a `$N` parameter baked to that value or
+    /// `None` for a runtime one (ADR-0088 §3). Empty for a `$T`-only template (ordinary `$T` path).
+    pub comptime_values: Vec<Option<PoolId>>,
 }
 
 /// Appends one procedure per instantiation to `hir`, returning each instantiation's new `ProcId`
@@ -56,11 +68,12 @@ pub struct Instantiation {
 pub fn expand_instantiations(
     hir: &mut FileHir,
     interner: &jr_base::Interner,
+    pool: &Pool,
     instantiations: &[Instantiation],
 ) -> Vec<ProcId> {
     let mut new_ids = Vec::with_capacity(instantiations.len());
     for (n, inst) in instantiations.iter().enumerate() {
-        new_ids.push(append_one(hir, interner, n, inst));
+        new_ids.push(append_one(hir, interner, pool, n, inst));
     }
     new_ids
 }
@@ -69,30 +82,98 @@ pub fn expand_instantiations(
 fn append_one(
     hir: &mut FileHir,
     interner: &jr_base::Interner,
+    pool: &Pool,
     n: usize,
     inst: &Instantiation,
 ) -> ProcId {
     let template = hir.proc(inst.template).clone();
 
+    // For a comptime-value instantiation (ADR-0088 §3), the clone **drops** each `$N` parameter — the
+    // caller passes no value for it — and its body's references to that parameter are rewritten to a
+    // literal. `keep_map[i]` is `Some(new_index)` for a runtime parameter kept at that position in the
+    // clone's parameter list, or `None` for a dropped comptime one. An empty `comptime_values` (the
+    // ordinary `$T`-only path) keeps every parameter and leaves the map identity.
+    let comptime_baked = !inst.comptime_values.is_empty();
+    let mut keep_map: Vec<Option<u32>> = Vec::with_capacity(template.params.len());
+    let mut next_kept: u32 = 0;
+    for i in 0..template.params.len() {
+        let dropped = inst.comptime_values.get(i).and_then(|v| *v).is_some();
+        if dropped {
+            keep_map.push(None);
+        } else {
+            keep_map.push(Some(next_kept));
+            next_kept += 1;
+        }
+    }
+
     // Copy the parameter and return `TypeRef`s into the shared arena, remapping their ids. A `$T`
     // parameter keeps its `TypeRef::Poly` — the binding, not a rewrite, is what makes it concrete.
+    // A `$N` (dropped) parameter is skipped, and the clone's `comptime` flag is cleared on every kept
+    // parameter (an instantiation is ordinary code — its `$N`s no longer exist).
     let params: Vec<Param> = template
         .params
         .iter()
-        .map(|param| Param {
+        .enumerate()
+        .filter(|(i, _)| keep_map[*i].is_some())
+        .map(|(_, param)| Param {
             name: param.name,
             name_span: param.name_span,
             ty: param.ty.map(|t| copy_type_ref(hir, t)),
             using: param.using,
-            comptime: param.comptime,
+            comptime: false,
             default: param.default,
         })
         .collect();
     let ret = template.ret.map(|t| copy_type_ref(hir, t));
 
-    // Copy the body wholesale into a new arena slot, if the template has one.
+    // Copy the body wholesale into a new arena slot, if the template has one. Then rewrite it: a
+    // reference to a *dropped* comptime parameter becomes a `Literal` of its baked value; a reference
+    // to a *kept* runtime parameter has its `Res::Param` index remapped through `keep_map`.
     let body = template.body.map(|b| {
-        let cloned = hir.body(b).clone();
+        let mut cloned = hir.body(b).clone();
+        if comptime_baked {
+            let expr_count = cloned.exprs.len();
+            for expr_index in 0..expr_count {
+                if let Expr::Name { res, span, .. } = &cloned.exprs[expr_index] {
+                    let (new_expr, replaced_span) = match res {
+                        Res::Param(pid) => {
+                            let i = pid.index();
+                            match keep_map.get(i).copied().flatten() {
+                                None => {
+                                    // Dropped: bake the value as a literal.
+                                    let value = inst.comptime_values[i]
+                                        .expect("keep_map[i] is None ⇒ comptime_values[i] is Some");
+                                    let lit = literal_from_value(pool, value);
+                                    (Expr::Literal(lit, *span), *span)
+                                }
+                                Some(new_i) => {
+                                    // Kept: remap the parameter index. Name and span unchanged.
+                                    let (name, span_copy) = match &cloned.exprs[expr_index] {
+                                        Expr::Name { name, span, .. } => (*name, *span),
+                                        _ => unreachable!(),
+                                    };
+                                    (
+                                        Expr::Name {
+                                            name,
+                                            span: span_copy,
+                                            res: Res::Param(ParamId::from_usize(new_i as usize)),
+                                        },
+                                        span_copy,
+                                    )
+                                }
+                            }
+                        }
+                        _ => continue,
+                    };
+                    cloned.exprs[expr_index] = new_expr;
+                    // `expr_spans` is parallel; keep it aligned even though the span did not change,
+                    // to make the invariant local to this rewrite rather than an unstated assumption.
+                    if cloned.expr_spans.len() > expr_index {
+                        cloned.expr_spans[expr_index] = replaced_span;
+                    }
+                }
+            }
+        }
         let id = crate::hir::BodyId::from_usize(hir.bodies.len());
         hir.bodies.push(cloned);
         id
@@ -127,12 +208,52 @@ fn append_one(
     });
 
     // Record a binding per variable for the signature phase to resolve each `$T`/`T` against
-    // (ADR-0083 §2).
+    // (ADR-0083 §2). Empty for a `$N`-only instantiation, so this loop is a no-op there.
     for (var, ty) in &inst.bindings {
         hir.proc_bindings.push((proc_id, *var, *ty));
     }
 
     proc_id
+}
+
+/// Decodes a `PoolId` holding a compile-time value into a HIR literal, for baking a `$N` parameter's
+/// value into an instantiation's body (ADR-0088 §3).
+///
+/// Handles `IntValue` and `BoolValue`, which are the only comptime-value shapes this sub-wave admits —
+/// a `$N: s64` or `$N: bool` parameter. Any other `Item` is a compiler bug the caller should have
+/// refused earlier; it lowers here to a poisoned integer literal rather than panicking, so the
+/// instantiation still checks (as an error) rather than crashing the compile.
+fn literal_from_value(pool: &Pool, value: PoolId) -> Literal {
+    match *pool.item(value) {
+        PoolItem::IntValue { ty, bits } => {
+            // Decode against the value's integer type — the value-side counterpart of the type-side
+            // `IntKind::from` a signature already resolves. Every integer *type* the pool holds is an
+            // `IntType`, so this arm covers `s8`..`s64` and `u8`..`u64` uniformly; anything else is a
+            // compiler bug the caller should have refused.
+            let value = match *pool.item(ty) {
+                PoolItem::IntType {
+                    signed,
+                    bits: width,
+                } => IntKind {
+                    signed,
+                    bits: width,
+                }
+                .decode(bits),
+                _ => i128::from(bits as i64),
+            };
+            Literal::Int {
+                value,
+                radix: 10,
+                overflowed: false,
+            }
+        }
+        PoolItem::BoolValue(v) => Literal::Bool(v),
+        _ => Literal::Int {
+            value: 0,
+            radix: 10,
+            overflowed: true,
+        },
+    }
 }
 
 /// Copies a `TypeRef` (and, recursively, the ones it points at) into `hir.type_refs`, returning the new

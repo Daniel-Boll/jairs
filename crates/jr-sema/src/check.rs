@@ -40,7 +40,7 @@ use rustc_hash::FxHashMap;
 use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
-    E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0271,
+    E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -182,6 +182,13 @@ pub struct CheckOutput {
     /// The expansion pass in `jr-db` reads this to append a substituted procedure per distinct key and
     /// rewrite the call to target it. Empty for a file with no polymorphic calls.
     pub instantiations: FxHashMap<(ExprScope, ExprId), (jr_hir::ProcId, Vec<PoolId>)>,
+    /// Each comptime-value call and the argument expressions its `$N` parameters need (ADR-0088 §1):
+    /// `(proc, [arg ExprId per comptime parameter])`.
+    ///
+    /// `jr-db`'s `comptime_call_values` pre-pass reads this, evaluates each argument to a constant, and
+    /// the instantiation pass appends a clone with those values baked in. Empty for a program with no
+    /// comptime-value calls.
+    pub comptime_calls: FxHashMap<(ExprScope, ExprId), (jr_hir::ProcId, Vec<jr_hir::ExprId>)>,
 }
 
 /// Which `Any` intrinsic a call is (ADR-0076).
@@ -296,6 +303,7 @@ pub fn check_file(
         type_info_calls: ctx.type_info_calls,
         any_calls: ctx.any_calls,
         instantiations: ctx.instantiations,
+        comptime_calls: ctx.comptime_calls,
     }
 }
 
@@ -2494,29 +2502,13 @@ impl Ctx<'_> {
             return self.check_polymorphic_call(scope, id, callee, proc, &sig, args, span);
         }
 
-        // **A call to a comptime-value-parameterised procedure is refused, by design** (ADR-0087 §3):
-        // `$N`'s value must be a compile-time constant evaluated at the call site, which is the
-        // second half of this sub-wave. Refused before the ordinary call path — the template's `params`
-        // are concrete (a `$N`'s type is ordinary), so a direct type-check would *succeed* and silently
-        // lower a call that has no value for `N`, a placeholder miscompile. Every argument is still
-        // typed, so an error inside one is reported too.
-        if self.callee_comptime_template(scope, callee) {
-            for arg in args {
-                self.check_expr(scope, *arg, None);
-            }
-            self.diags.push(
-                Diagnostic::error(
-                    span,
-                    "a call to a procedure with a `$N` comptime-value parameter is not yet supported",
-                )
-                .with_code(E0271)
-                .with_note(
-                    "the `$N` surface parses and its body type-checks; evaluating the argument to a \
-                     constant and instantiating per value arrives in the second half of this sub-wave \
-                     (ADR-0087)",
-                ),
-            );
-            return PoolId::ERROR;
+        // **A call to a comptime-value-parameterised procedure is instantiated** (ADR-0088 §1): its `$N`
+        // arguments are recorded as *expressions* for the `jr-db` pre-pass to evaluate to constants — a
+        // value is not known here, because const-eval is downstream (ADR-0018 §3). Handled before the
+        // ordinary call path, whose template signature has concrete `$N` parameter types a direct check
+        // would accept while leaving `N` with no value — a placeholder miscompile.
+        if let Some((proc, sig)) = self.callee_comptime_template(scope, callee) {
+            return self.check_comptime_call(scope, id, callee, proc, &sig, args, span);
         }
 
         // The callee is in **call position**, where a `#foreign` procedure is a legal thing to
@@ -3179,32 +3171,103 @@ impl Ctx<'_> {
             return None;
         };
         let sig = self.sigs.proc_sig(proc).cloned()?;
-        (!sig.poly_vars.is_empty()).then_some((proc, sig))
+        // A **pure** `$T` template — no `$N` parameters. A template mixing `$T` and `$N` is out of this
+        // sub-wave's scope (ADR-0088 handles a `$N`-only template); it falls through both this and
+        // `callee_comptime_template` to the ordinary path, whose `ERROR`-typed `$T` params report an
+        // honest mismatch rather than being half-instantiated by a mechanism that handles one kind.
+        let comptime = sig.comptime_params.iter().any(|&c| c);
+        (!sig.poly_vars.is_empty() && !comptime).then_some((proc, sig))
     }
 
-    /// Whether `callee` names a **local** procedure with a `$N` comptime-value parameter (ADR-0087 §3).
+    /// The `(proc, sig)` of a **local** procedure with a `$N` comptime-value parameter that `callee`
+    /// names, or `None` (ADR-0088 §1).
     ///
-    /// Shaped like [`Self::callee_poly`], and separate from it because the two templates are refused or
-    /// instantiated for different reasons: a `$T` template is instantiated *now* (its argument's type is
-    /// the key), a `$N` template is refused *now* (its argument's value needs const-eval, the second
-    /// half). An imported callee falls through — cross-file instantiation is deferred (ADR-0082 §5), and
-    /// its template signature reports an honest mismatch on the ordinary path.
-    fn callee_comptime_template(&mut self, scope: ExprScope, callee: ExprId) -> bool {
-        let Some(res) = self.resolve.get(scope, callee) else {
-            return false;
-        };
-        let Res::Item(item) = res else {
-            return false;
+    /// Shaped like [`Self::callee_poly`], and separate from it because the two templates key on different
+    /// things: a `$T` instantiation keys on the argument's *type* (known here), a `$N` one on the
+    /// argument's *value* (known only after const-eval, downstream). An imported callee falls through —
+    /// cross-file instantiation is deferred (ADR-0082 §5), and its template signature reports an honest
+    /// mismatch on the ordinary path.
+    fn callee_comptime_template(
+        &mut self,
+        scope: ExprScope,
+        callee: ExprId,
+    ) -> Option<(ProcId, ProcSig)> {
+        let Res::Item(item) = self.resolve.get(scope, callee)? else {
+            return None;
         };
         let jr_hir::ItemKind::Const {
             value: jr_hir::ConstValue::Proc(proc),
         } = self.hir.item(item).kind.clone()
         else {
-            return false;
+            return None;
         };
-        self.sigs
-            .proc_sig(proc)
-            .is_some_and(|sig| sig.comptime_params.iter().any(|&c| c))
+        let sig = self.sigs.proc_sig(proc).cloned()?;
+        // A `$N` template with **no** `$T` variables. A mixed `$T`+`$N` template is out of scope
+        // (see `callee_poly`) and falls through to the ordinary path.
+        let has_comptime = sig.comptime_params.iter().any(|&c| c);
+        (has_comptime && sig.poly_vars.is_empty()).then_some((proc, sig))
+    }
+
+    /// Types a call to a comptime-value-parameterised procedure and records it for instantiation
+    /// (ADR-0088 §1).
+    ///
+    /// Checks arity, types every argument (each against its parameter's known type — a `$N`'s type is
+    /// ordinary, so a comptime argument is checked exactly as a runtime one; only *when* its value is
+    /// known differs), and records the comptime **argument expressions** in parameter order for the
+    /// `jr-db` pre-pass to evaluate. The return type is the template's, concrete already.
+    fn check_comptime_call(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        proc: ProcId,
+        sig: &ProcSig,
+        args: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        // The callee names the template; type it `void` and never lower it, exactly as a `$T` call does —
+        // the call is redirected to the instantiation, so MIR never sees the template callee.
+        self.types.set_expr(scope, callee, PoolId::VOID);
+
+        if args.len() != sig.params.len() {
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!(
+                        "this procedure takes {} argument{}, but {} {} supplied",
+                        sig.params.len(),
+                        if sig.params.len() == 1 { "" } else { "s" },
+                        args.len(),
+                        if args.len() == 1 { "was" } else { "were" }
+                    ),
+                )
+                .with_code(E0216),
+            );
+            return PoolId::ERROR;
+        }
+
+        let mut comptime_args: Vec<ExprId> = Vec::new();
+        for (index, &comptime) in sig.comptime_params.iter().enumerate() {
+            let Some(&arg) = args.get(index) else {
+                continue;
+            };
+            let want = sig
+                .params
+                .get(index)
+                .copied()
+                .filter(|&t| t != PoolId::ERROR);
+            self.check_expr(scope, arg, want);
+            if comptime {
+                comptime_args.push(arg);
+            }
+        }
+
+        self.comptime_calls
+            .insert((scope, id), (proc, comptime_args));
+        sig.ret
     }
 
     /// Types a call to a local polymorphic procedure, recording the instantiation (ADR-0082 §1).

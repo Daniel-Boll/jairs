@@ -1,0 +1,29 @@
+// EXPECT: E0271 — a `$N` comptime-value argument that is not a compile-time constant (ADR-0088 §2)
+//
+// `$N`'s value is baked into the instantiation at compile time, so the argument must **be a compile-time
+// constant** — the same rule an array length has (ADR-0070 §1, E0233). A local names a *runtime* value,
+// evaluated per call, so it fails the pre-pass and the failure surfaces here as E0271 rather than an
+// E0230 generic const-eval failure, because the reader wanted to pass a comptime value and the fix names
+// the constraint (ADR-0088 §2).
+//
+// The sibling outcomes, so they stay distinct:
+//
+//   * `make(5)` — a literal argument, evaluated at compile time, instantiates: `valid/072`;
+//   * `make(x)` where `x` is a local — **this file**, E0271;
+//   * `make(f())` where `f()` is not a compile-time constant — same code, same reason.
+//
+// **Not a corpus `type-errors/` file**, for the same stage reason ADR-0074 §4 gave: E0271 is `jr-db`'s
+// code and that directory is `jr-sema`'s. It lives here because reaching the case needs const-eval to
+// run — the same argument that put the imported-constant refusal (E0230) in this directory.
+#import "Basic";
+
+// A comptime-value parameter. Its body type-checks — `N` is an ordinary `s64`.
+make :: ($N: s64) -> s64 {
+    return N + 1;
+}
+
+main :: () {
+    x := 5;
+    // The refusal: `x` is a runtime value, not a compile-time constant, so `N` cannot be baked.
+    exit(make(x));
+}

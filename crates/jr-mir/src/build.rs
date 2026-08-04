@@ -3319,6 +3319,19 @@ impl Lower<'_> {
                 .collect(),
             None => args.iter().map(|arg| self.expr(*arg)).collect(),
         };
+        // **A comptime-value call drops its `$N` arguments at the call site** (ADR-0088 §3): the
+        // instantiation's parameter list is shorter — the `$N` params were baked into the body — so
+        // passing every source argument would arity-mismatch. The mask says which positions to drop; a
+        // `$T` call has no mask and every argument is kept. Applied after `filled` so a comptime call
+        // that also uses named or default arguments (a later mix) is still handled positionally here.
+        let operands: Vec<Operand> = match self.consts.comptime_arg_mask(self.scope(), call) {
+            Some(mask) => operands
+                .into_iter()
+                .enumerate()
+                .filter_map(|(i, op)| (!mask.get(i).copied().unwrap_or(false)).then_some(op))
+                .collect(),
+            None => operands,
+        };
         let mut args = leading;
         args.extend(operands);
         Some(Rvalue::Call {
