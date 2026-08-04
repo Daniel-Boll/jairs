@@ -971,3 +971,45 @@ comptime value, ADR-0074 §2); a general pointer cast; `transmute`.
   *deferred* coercion, which is a bare **value** (`a: Any = 3;`) needing a materialised temporary — this is
   a **pointer**, whose lifetime is already visible, which §1 put in scope.
 - This is a follow-up commit on `main` completing sub-wave 8's accepted scope, not a new wave.
+
+---
+
+## Wave: per-kind `Type_Info` detail — fixed-size slice (ADR-0078), 2026-08-03
+
+Recommended option taken automatically per the standing request; logged here for later review.
+
+### Fork 1 — which wave next (after `Any` and its coercion)
+
+- Options: **per-kind `Type_Info` detail, fixed-size slice only (taken, recommended)**; `#code`/`Code`;
+  making `type_info` accept a structural type argument (`type_info([4]s64)`).
+- Why: per-kind detail is what ADR-0075 §3 explicitly deferred and is the honest completion of RTTI. The
+  key insight that makes it a *small* wave: a struct's field **count**, an array's **length**, and an
+  array/pointer's **element type id** are all **fixed-size `s64`s** — they need none of the
+  memory-ownership decision ADR-0075 §3 flagged, which is only about the variable-length field *list*.
+  So the fixed-size facts ship now with no new representation, and the list stays deferred with its
+  ownership question intact. `#code` was rejected as next because it is a whole new grammar family (it
+  does not parse at all). The `type_info([4]s64)` gap was rejected because making one intrinsic parse a
+  *type* in argument position turns it into a syntactic special form — invasive and unprincipled; a
+  structural type *alias* (`Arr :: [4]s64;`) would be the clean fix, but that is ADR-0071 §5's deferred
+  fixpoint territory and its own wave.
+
+### Fork 2 — how the extra facts are shaped in `Type_Info`
+
+- Options: **flat optional fields, zero when irrelevant (taken, recommended)**; a per-kind `union`; a
+  separate `type_info_struct(T)` returning a different struct per kind.
+- Why: flat fields (`element: s64` — the element type's id, 0 for a non-element kind; `count: s64` — a
+  struct's field count or an array's length, 0 otherwise) extend the schema by *adding fields*, which
+  ADR-0075 §3 already said "does not break a reader that names only the [existing] fields", and needs no
+  new machinery — the builder fills them from the pool it already reads. A `union` reintroduces the
+  "which field is valid" problem `Any` exists to solve and which ADR-0045 refuses for unions. A
+  per-kind struct multiplies the compiler's `Basic` dependency by the number of kinds. `element` is an
+  `id` (a pool id, like `Type_Info.id`) rather than a `*Type_Info`, because a `*Type_Info` would need
+  the element's `Type_Info` to be built and live somewhere — the static-data decision deferred; an id is
+  a fixed `s64` and a program recovers the element's `Type_Info` by other means later.
+
+### Resolution (pending — ADR-0078 records it)
+
+Taken as recommended: `Type_Info` gains `count` and `element` (both `s64`, 0 when not applicable),
+filled for struct (field count), array (length + element id) and pointer (pointee id) kinds. The
+variable-length field *list* stays deferred with its memory-ownership question. Amends ADR-0075 §3 the
+way ADR-0077 did, via a new ADR.

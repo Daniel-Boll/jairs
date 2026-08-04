@@ -151,6 +151,17 @@ Type_Info :: struct {
     size: s64;
     /// The type's runtime alignment in bytes.
     alignment: s64;
+    /// A struct's field count, or an array's length; 0 for a kind that has neither (ADR-0078 §1).
+    ///
+    /// One field for both because both answer "how many"; which it means is read from `kind`, exactly as
+    /// `element` is. 0 is a real answer — a scalar has no count — not a sentinel for "unknown".
+    count: s64;
+    /// An array's element or a pointer's pointee, as a type id; 0 for a kind with no element (ADR-0078 §1).
+    ///
+    /// The same kind of id as [`Type_Info.id`], so a program compares it against another type's `id` to
+    /// ask "is this a `[]s64`?". It is an id rather than a `*Type_Info` because a pointer to the element's
+    /// info would need that info built and stored somewhere — deferred; an id needs nothing built.
+    element: s64;
 }
 
 /// A value whose type is carried alongside it (ADR-0076 §3).

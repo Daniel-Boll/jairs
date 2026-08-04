@@ -98,3 +98,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0075](0075-type-info.md) | `type_info` returns a `Type_Info` declared in `Basic`; a constant may hold a string (corrects ADR-0074's closing claim) | Accepted |
 | [0076](0076-any.md) | `Any` is a `{type, pointer}` pair; a pointer converts to `*u8` only where a type is erased, and the read back is checked | Accepted |
 | [0077](0077-type-info-id.md) | `Type_Info` gains a stable `id` (the pool id) so a type has a runtime identity for `any_as` to check (amends ADR-0075 §3) | Accepted |
+| [0078](0078-type-info-per-kind.md) | `Type_Info` gains fixed-size per-kind facts (`count`, `element`); the variable-length field list stays deferred (amends ADR-0075 §3) | Accepted |

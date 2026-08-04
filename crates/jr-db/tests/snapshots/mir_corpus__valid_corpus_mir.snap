@@ -5680,7 +5680,7 @@ proc main -> void {
     s2: Type_Info  // local 3
     s3: Type_Info  // local 4
   bb0(v0: *Context):
-    store s0 <- {#id, 8_enum, "Point", 16_s64, 8_s64}
+    store s0 <- {#id, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64}
     v1: string = load s0.2
     v2: bool = call proc0(v0, v1, "Point")
     branch v2 ? bb1() : bb2()
@@ -5717,7 +5717,7 @@ proc main -> void {
   bb11():
     goto bb12(v14)
   bb12(v18: s64):
-    store s1 <- {#id, 2_enum, "s64", 8_s64, 8_s64}
+    store s1 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
     v16: string = load s1.2
     v17: bool = call proc0(v0, v16, "s64")
     branch v17 ? bb13() : bb14()
@@ -5736,7 +5736,7 @@ proc main -> void {
   bb17():
     goto bb18(v22)
   bb18(v26: s64):
-    store s2 <- {#id, 11_enum, "Colour", 8_s64, 8_s64}
+    store s2 <- {#id, 11_enum, "Colour", 8_s64, 8_s64, 0_s64, 0_s64}
     v24: enum = load s2.1
     v25: bool = v24 == 11_enum
     branch v25 ? bb19() : bb20()
@@ -5756,15 +5756,33 @@ proc main -> void {
     goto bb24(v32)
   bb23():
     goto bb24(v31)
-  bb24(v33: s64):
-    v34: bool = v33 == 255_s64
+  bb24(v35: s64):
+    v33: s64 = load s0.5
+    v34: bool = v33 == 2_s64
     branch v34 ? bb25() : bb26()
   bb25():
-    discard call extern proc1(0_s64)
-    goto bb27()
+    v36: s64 = v35 + 256_s64
+    goto bb27(v36)
   bb26():
-    goto bb27()
-  bb27():
+    goto bb27(v35)
+  bb27(v39: s64):
+    v37: s64 = load s1.5
+    v38: bool = v37 == 0_s64
+    branch v38 ? bb28() : bb29()
+  bb28():
+    v40: s64 = v39 + 512_s64
+    goto bb30(v40)
+  bb29():
+    goto bb30(v39)
+  bb30(v41: s64):
+    v42: bool = v41 == 1023_s64
+    branch v42 ? bb31() : bb32()
+  bb31():
+    discard call extern proc1(0_s64)
+    goto bb33()
+  bb32():
+    goto bb33()
+  bb33():
     discard call extern proc1(1_s64)
     return
 }
@@ -5821,7 +5839,7 @@ proc main -> void {
     store s0.0 <- 3_s64
     store s0.1 <- 4_s64
     v1: *Point = addr s0
-    store s2 <- {#id, 8_enum, "Point", 16_s64, 8_s64}
+    store s2 <- {#id, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64}
     v2: *Type_Info = addr s2
     zero s3
     store s3.0 <- v2
@@ -5867,7 +5885,7 @@ proc main -> void {
     goto bb11(v20)
   bb11(v27: s64):
     v22: *Point = addr s0
-    store s6 <- {#id, 8_enum, "Point", 16_s64, 8_s64}
+    store s6 <- {#id, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64}
     v23: *Type_Info = addr s6
     zero s7
     store s7.0 <- v23
@@ -5905,7 +5923,7 @@ proc main -> void {
     store s8 <- 0_s64
     store s8 <- 99_s64
     v39: *s64 = addr s8
-    store s10 <- {#id, 2_enum, "s64", 8_s64, 8_s64}
+    store s10 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
     v40: *Type_Info = addr s10
     zero s11
     store s11.0 <- v40
@@ -5931,7 +5949,7 @@ proc main -> void {
   bb25(v55: s64):
     v51: *Type_Info = load s9.0
     v52: s64 = load (v51).*.0
-    store s13 <- {#id, 2_enum, "s64", 8_s64, 8_s64}
+    store s13 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
     v53: s64 = load s13.0
     v54: bool = v52 == v53
     branch v54 ? bb26() : bb27()
@@ -5941,8 +5959,8 @@ proc main -> void {
   bb27():
     goto bb28(v55)
   bb28(v60: s64):
-    store s14 <- {#id, 8_enum, "Point", 16_s64, 8_s64}
-    store s15 <- {#id, 8_enum, "Pair", 16_s64, 8_s64}
+    store s14 <- {#id, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64}
+    store s15 <- {#id, 8_enum, "Pair", 16_s64, 8_s64, 2_s64, 0_s64}
     v57: s64 = load s14.0
     v58: s64 = load s15.0
     v59: bool = v57 != v58
