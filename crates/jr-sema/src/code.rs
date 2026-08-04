@@ -331,3 +331,18 @@ pub(crate) const E0267: &str = "E0267";
 /// refused with this code, which is a *by-design* refusal — the construct is named as arriving later —
 /// rather than an unimplemented gap left to miscompile.
 pub(crate) const E0268: &str = "E0268";
+
+/// A type-argument reference `Name(args)` whose `Name` is not a parameterised struct (ADR-0085 §3).
+///
+/// `Box(s64)` requires `Box` to be a `struct($T) { … }` declared in this file. This is raised when the
+/// name is undeclared, names something that is not a struct, or names an ordinary (non-parameterised)
+/// struct — in the last case the arguments are meaningless, so the reference is refused rather than the
+/// arguments silently ignored. Cross-file parameterised structs are deferred (ADR-0085 §5), so a name
+/// imported from another module lands here too.
+pub(crate) const E0269: &str = "E0269";
+
+/// A parameterised type reference `Name(args)` supplied the wrong number of type arguments (ADR-0085 §3).
+///
+/// `Box($T)` takes exactly one; `Box(s64, bool)` and `Box()` are both refused with this code, naming the
+/// count wanted and the count written — the type-side counterpart of an arity error on a call.
+pub(crate) const E0270: &str = "E0270";

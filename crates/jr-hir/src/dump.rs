@@ -575,6 +575,12 @@ fn fmt_type_ref_impl(
         // return `TypeRefId`s index an arena this function may not have, and a snapshot must not
         // carry an index that load order can renumber.
         TypeRef::Proc { params, .. } => format!("({} params) -> _", params.len()),
+        // Printed by name and *arity* — `Box(1 args)` — rather than by argument, because the argument
+        // `TypeRefId`s index an arena this function may not have, the same reason `Proc` and `Results`
+        // print by count (ADR-0085 §3).
+        TypeRef::Apply { name, args } => {
+            format!("{}({} args)", interner.resolve(*name), args.len())
+        }
         TypeRef::Struct(sid) => format!("struct#{}", sid.index()),
         TypeRef::Union(sid) => format!("union#{}", sid.index()),
         TypeRef::Variant(sid) => format!("variant#{}", sid.index()),

@@ -120,6 +120,8 @@ ast_node!(ArrayType, ARRAY_TYPE);
 ast_node!(ViewType, VIEW_TYPE);
 ast_node!(ProcType, PROC_TYPE);
 ast_node!(ProcTypeParams, PROC_TYPE_PARAMS);
+ast_node!(TypeArguments, TYPE_ARGUMENTS);
+ast_node!(StructTypeParams, STRUCT_TYPE_PARAMS);
 ast_node!(StructType, STRUCT_TYPE);
 ast_node!(UnionType, UNION_TYPE);
 ast_node!(VariantType, VARIANT_TYPE);
@@ -740,6 +742,27 @@ impl NameType {
     pub fn text(&self) -> Option<String> {
         self.name_token().map(|t| t.text().to_owned())
     }
+
+    /// The type arguments of a parameterised reference — `(s64)` in `Box(s64)` (ADR-0085 §3).
+    ///
+    /// `None` for an ordinary name, which has no argument list.
+    pub fn arguments(&self) -> Option<TypeArguments> {
+        child_node(&self.0)
+    }
+}
+
+impl TypeArguments {
+    /// The argument types, in order — `s64` in `Box(s64)` (ADR-0085 §3).
+    pub fn args(&self) -> impl Iterator<Item = TypeExpr> + '_ {
+        child_nodes(&self.0)
+    }
+}
+
+impl StructTypeParams {
+    /// The type-variable parameters, in order — `$T` in `struct($T) { … }` (ADR-0085 §3).
+    pub fn vars(&self) -> impl Iterator<Item = PolyType> + '_ {
+        child_nodes(&self.0)
+    }
 }
 
 impl PointerType {
@@ -833,6 +856,13 @@ impl IndexExpr {
 impl StructType {
     /// The field list.
     pub fn field_list(&self) -> Option<FieldList> {
+        child_node(&self.0)
+    }
+
+    /// The type parameters of a parameterised struct — `($T)` in `struct($T) { … }` (ADR-0085 §3).
+    ///
+    /// `None` for an ordinary `struct { … }`.
+    pub fn params(&self) -> Option<StructTypeParams> {
         child_node(&self.0)
     }
 }

@@ -6471,3 +6471,72 @@ proc $inst4 -> s64 {
     v2: s64 = load s0.view_count
     return v2
 }
+
+========================================
+070-polymorphic-struct.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: struct  // local 1
+    s1: struct  // local 2
+    s2: struct  // local 3
+    s3: struct  // local 4
+  bb0(v0: *Context):
+    zero s0
+    store s0.0 <- 7_s64
+    v1: s64 = load s0.0
+    v2: bool = v1 == 7_s64
+    branch v2 ? bb1() : bb2()
+  bb1():
+    v3: s64 = 0_s64 + 1_s64
+    goto bb3(v3)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v5: s64):
+    zero s1
+    store s1.0 <- true
+    v4: bool = load s1.0
+    branch v4 ? bb4() : bb5()
+  bb4():
+    v6: s64 = v5 + 2_s64
+    goto bb6(v6)
+  bb5():
+    goto bb6(v5)
+  bb6(v11: s64):
+    zero s2
+    store s2.0 <- 4_s64
+    store s2.1 <- 8_s64
+    v7: s64 = load s2.0
+    v8: s64 = load s2.1
+    v9: s64 = v7 + v8
+    v10: bool = v9 == 12_s64
+    branch v10 ? bb7() : bb8()
+  bb7():
+    v12: s64 = v11 + 4_s64
+    goto bb9(v12)
+  bb8():
+    goto bb9(v11)
+  bb9(v15: s64):
+    zero s3
+    store s3.0.0 <- 8_s64
+    v13: s64 = load s3.0.0
+    v14: bool = v13 == 8_s64
+    branch v14 ? bb10() : bb11()
+  bb10():
+    v16: s64 = v15 + 8_s64
+    goto bb12(v16)
+  bb11():
+    goto bb12(v15)
+  bb12(v17: s64):
+    v18: bool = v17 == 15_s64
+    branch v18 ? bb13() : bb14()
+  bb13():
+    discard call extern proc1(0_s64)
+    goto bb15()
+  bb14():
+    goto bb15()
+  bb15():
+    discard call extern proc1(1_s64)
+    return
+}

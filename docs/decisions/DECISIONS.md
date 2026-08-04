@@ -1376,3 +1376,42 @@ change is this project's named catastrophic failure mode (a well-typed placehold
   fork 1 avoids. The ordinary path stays `DeclId`-keyed and provably identical; the instance path is new
   and reached only once grammar exists (5b), so 5a adds a map nobody writes yet — a dormant generalisation,
   not a speculative half-change, because 5b is the same wave.
+
+### Fork 3 — the surface syntax for a parameterised type reference
+
+- Options: **`Box(s64)` — call-shaped, a name applied to arguments in parentheses (taken, recommended,
+  ADR-0085 §3)**; `Box[s64]` (bracket, Rust/Zed-ish); `Box<s64>` (angle, C++/Rust generics).
+- Why call-shaped: it is what ADR-0085 §3 fixed, it reuses the type-value view (a type argument *is* an
+  interned type, ADR-0071), and it reads as "apply the `Box` constructor to `s64`" — the same mental model
+  as a procedure instantiation. Brackets collide with `[N]T` array syntax in type position; angle brackets
+  reintroduce the `<` / less-than parsing ambiguity Jai itself avoids. The `(` binds tightly to the name in
+  `parse_type_inner`, and a proc-pointer type's leading `(` is a different arm, so there is no ambiguity.
+
+### Fork 4 — one field map re-keyed vs a second instance-keyed map (implementation of 5a fork 2)
+
+- Resolved as fork 2 planned: `Pool::fields_of(ty)` dispatches on whether the `Item` carries arguments —
+  ordinary structs stay in the `DeclId`-keyed `struct_fields`, instances land in a new `PoolId`-keyed
+  `instance_fields`. Every field-*reading* site (layout, field_offset, sema, mir, codegen, vm, lsp, db)
+  moved to `fields_of`; the *writers* for ordinary structs are unchanged. Proven zero-diff before the
+  parameterised path had a writer (commit de1c4dd, 969 tests, no snapshot moved).
+
+### Fork 5 — where a parameterised struct's fields are resolved, and the recursion guard
+
+- Options: **resolve per reference, in `resolve_apply`, keyed on the instance `PoolId`, guarding recursion
+  by reserving an empty field list before resolving (taken, recommended)**; resolve once at the
+  declaration into a template and substitute lazily at each read.
+- Why per-reference: it mirrors the procedure instantiation already in place (bind the variables, resolve
+  under the bindings) and it puts the substituted fields exactly where `fields_of` looks. The recursion
+  guard — `set_instance_fields(instance, vec![])` before resolving the body — is ADR-0015 §1's
+  identity-before-fields fixpoint applied per instance, so a future `List($T) { next: *List(T); }` does not
+  loop. Lazy substitution at each read would recompute on every field access and would need the bindings
+  reconstructed at each site, which is where the two would eventually disagree.
+
+### Fork 6 — what this sub-wave defers (ADR-0085 §5)
+
+- Deferred, each with a by-design no-op arm rather than a half-implementation: inferring a struct's argument
+  through a `$T` procedure parameter (`(b: Box($T))` — nested inference, `infer_var_in`/`collect_poly_in_type`
+  leave `Apply` unbound); `using` on a parameterised struct (`type_ref_name_in` returns `None` for `Apply`);
+  cross-file parameterised structs (E0269 names the limit). Multiple struct type parameters *do* parse and
+  lower (`Map($K, $V)`), matching how the corpus exercises them, though the differential corpus file uses
+  one variable — the resolution path handles N by construction (zip of vars and args).

@@ -33,12 +33,13 @@
 use jr_base::{FileId, Interner, Span, Symbol};
 use jr_diag::{Diagnostic, Diagnostics};
 use jr_hir::{
-    BodyId, ExprScope, FileHir, ItemId, ItemKind, LocalId, ResolveMap, StructId, TypeRef, TypeRefId,
+    BodyId, ConstValue, ExprScope, FileHir, ItemId, ItemKind, LocalId, ResolveMap, StructId,
+    TypeRef, TypeRefId,
 };
 use jr_pool::{ContextKind, DeclId, IntKind, Item, Pool, PoolId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::code::{E0211, E0212, E0213, E0214, E0233, E0237, E0240};
+use crate::code::{E0211, E0212, E0213, E0214, E0233, E0237, E0240, E0269, E0270};
 use crate::map::TypeMap;
 use crate::sigs::{FileSignatures, SigEntry, SigKind};
 
@@ -453,7 +454,119 @@ impl<'a> Ctx<'a> {
                 self.resolve_enum_body(eid, span);
                 ty
             }
+            // `Box(s64)` — a parameterised type reference (ADR-0085 §3).
+            TypeRef::Apply { name, args } => self.resolve_apply(scope, name, &args, span),
         }
+    }
+
+    /// Resolves a parameterised type reference `Box(s64)` to its interned instance (ADR-0085 §3).
+    ///
+    /// Looks the constructor name up to a `struct($T) { … }` declared in this file, resolves each
+    /// argument to a type, binds the struct's type variables to them, interns the instance
+    /// `StructType { decl, args }`, and resolves the field list *under those bindings* — so
+    /// `Box(s64)` records `value: s64` and `Box(bool)` records `value: bool` from the one
+    /// declaration. The bindings are saved and restored around the call, so a nested `Box(Box(s64))`
+    /// and a sibling reference each see only their own.
+    fn resolve_apply(
+        &mut self,
+        scope: ExprScope,
+        name: Symbol,
+        arg_refs: &[TypeRefId],
+        span: Span,
+    ) -> PoolId {
+        // Resolve the arguments first, in the *caller's* bindings — an argument may itself be a bound
+        // `$T` (`Pair(T)` inside a polymorphic body) or another `Apply`.
+        let mut args = Vec::with_capacity(arg_refs.len());
+        let mut poisoned = false;
+        for &arg in arg_refs {
+            let ty = self.resolve_type(scope, arg, span);
+            poisoned |= ty == PoolId::ERROR;
+            args.push(ty);
+        }
+
+        // The constructor must be a parameterised struct declared in this file. A cross-file or
+        // non-struct constructor, a bad arity, or an argument that failed to resolve, each poison —
+        // reported once, here, at the reference.
+        let Some((sid, poly_vars)) = self.parameterised_struct(name) else {
+            self.not_a_parameterised_struct(name, span);
+            return PoolId::ERROR;
+        };
+        if args.len() != poly_vars.len() {
+            self.wrong_type_argument_count(name, poly_vars.len(), args.len(), span);
+            return PoolId::ERROR;
+        }
+        if poisoned {
+            return PoolId::ERROR;
+        }
+
+        let decl = DeclId::new(self.file, sid.as_u32());
+        let instance = self.pool.struct_instance(decl, args.clone());
+
+        // Resolve the field list under the argument bindings, once per instance. Guarded so a
+        // recursive `List(s64)` — whose field mentions `List(s64)` again — does not re-enter and
+        // loop: the instance's identity exists before its fields, exactly as ADR-0015 §1's fixpoint
+        // for an ordinary recursive struct.
+        if self.pool.fields_of(instance).is_none() {
+            // Reserve the slot so the recursion guard sees "in progress" as a non-empty field list.
+            self.pool.set_instance_fields(instance, Vec::new());
+            let saved: Vec<(Symbol, Option<PoolId>)> = poly_vars
+                .iter()
+                .map(|&var| (var, self.type_bindings.get(&var).copied()))
+                .collect();
+            for (&var, &arg) in poly_vars.iter().zip(&args) {
+                self.type_bindings.insert(var, arg);
+            }
+            let fields = self.resolve_instance_fields(sid);
+            self.pool.set_instance_fields(instance, fields);
+            for (var, prev) in saved {
+                match prev {
+                    Some(ty) => self.type_bindings.insert(var, ty),
+                    None => self.type_bindings.remove(&var),
+                };
+            }
+        }
+        instance
+    }
+
+    /// The `StructId` and type parameters of `name` if it is a parameterised struct in this file.
+    ///
+    /// `None` for a name that is not declared here, is not a struct, or has no type parameters —
+    /// each of which means a `Name(args)` reference is malformed, reported by the caller.
+    fn parameterised_struct(&self, name: Symbol) -> Option<(StructId, Vec<Symbol>)> {
+        let item = self.hir.scope.get(name)?;
+        let ItemKind::Const {
+            value: ConstValue::Struct(sid),
+        } = self.hir.item(item).kind
+        else {
+            return None;
+        };
+        let poly_vars = self.hir.struct_def(sid).poly_vars.clone();
+        if poly_vars.is_empty() {
+            return None;
+        }
+        Some((sid, poly_vars))
+    }
+
+    /// Resolves the field list of struct `sid` under the currently-bound type variables.
+    ///
+    /// The same field loop as [`Ctx::resolve_struct_body`], but returning the fields rather than
+    /// recording them under the `DeclId` — because a parameterised instance's fields key on the
+    /// instance `PoolId`, not the declaration (ADR-0085 §2).
+    fn resolve_instance_fields(&mut self, sid: StructId) -> Vec<jr_pool::Field> {
+        let fields = self.hir.struct_def(sid).fields.clone();
+        let mut resolved = Vec::with_capacity(fields.len());
+        for field in &fields {
+            let field_ty = match field.ty {
+                Some(id) => self.resolve_type(ExprScope::TopLevel, id, field.name_span),
+                None => PoolId::ERROR,
+            };
+            resolved.push(if field.using {
+                jr_pool::Field::embedded(field.name, field_ty)
+            } else {
+                jr_pool::Field::new(field.name, field_ty)
+            });
+        }
+        resolved
     }
 
     /// Resolves a named type: builtins, then this file, then imports.
@@ -1024,6 +1137,42 @@ impl<'a> Ctx<'a> {
         };
         self.diags.push(
             Diagnostic::error(span, format!("`{name}` is {what}, not a type")).with_code(E0213),
+        );
+    }
+
+    /// Reports a `Name(args)` whose `Name` is not a parameterised struct (ADR-0085 §3, E0269).
+    fn not_a_parameterised_struct(&mut self, name: Symbol, span: Span) {
+        let text = self.interner.resolve(name);
+        self.diags.push(
+            Diagnostic::error(
+                span,
+                format!("`{text}` is not a parameterised struct, so it takes no type arguments"),
+            )
+            .with_code(E0269)
+            .with_note(
+                "type arguments apply to a `struct($T) { … }` declared in this file; a \
+                 parameterised struct imported from another module is not yet supported",
+            )
+            .with_help(format!(
+                "declare `{text}` as `struct($T) {{ … }}`, or drop the `(…)` if `{text}` is an \
+                 ordinary type"
+            )),
+        );
+    }
+
+    /// Reports the wrong number of type arguments to a parameterised struct (ADR-0085 §3, E0270).
+    fn wrong_type_argument_count(&mut self, name: Symbol, wanted: usize, got: usize, span: Span) {
+        let text = self.interner.resolve(name);
+        self.diags.push(
+            Diagnostic::error(
+                span,
+                format!(
+                    "`{text}` takes {wanted} type argument{}, but {got} {} given",
+                    if wanted == 1 { "" } else { "s" },
+                    if got == 1 { "was" } else { "were" },
+                ),
+            )
+            .with_code(E0270),
         );
     }
 }

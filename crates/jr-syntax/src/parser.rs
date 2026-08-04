@@ -1206,6 +1206,13 @@ impl<'src> Parser<'src> {
             IDENT => {
                 self.start_node(NAME_TYPE);
                 self.bump();
+                // `Box(s64)` — a parameterised type reference (ADR-0085 §3). The `(` binds tightly to
+                // the name here, so `Box(s64)` is one type; a `(` that begins a *proc-pointer* type is
+                // handled by the `L_PAREN` arm above and never reaches a bare name, so there is no
+                // ambiguity to resolve.
+                if self.at(L_PAREN) {
+                    self.parse_type_arguments();
+                }
                 self.finish_node();
             }
             // `$T` — a polymorphic type variable (ADR-0081 §1). Its own node, not a `NAME_TYPE` with a
@@ -1324,9 +1331,36 @@ impl<'src> Parser<'src> {
         self.finish_node(); // PROC_TYPE
     }
 
+    /// `(s64)` or `(s64, bool)` after a type name — the arguments of a parameterised type reference
+    /// (ADR-0085 §3).
+    ///
+    /// Each argument is a type, because a type argument *is* a type (ADR-0071). Shaped like
+    /// [`Parser::parse_proc_type`]'s parameter loop, with a distinct node kind so a consumer tells a
+    /// type application from a proc-pointer parameter list.
+    fn parse_type_arguments(&mut self) {
+        self.start_node(TYPE_ARGUMENTS);
+        self.expect(L_PAREN);
+        if !self.at(R_PAREN) {
+            self.parse_type();
+            while self.eat(COMMA) {
+                if self.at(R_PAREN) {
+                    break; // trailing comma
+                }
+                self.parse_type();
+            }
+        }
+        self.expect(R_PAREN);
+        self.finish_node(); // TYPE_ARGUMENTS
+    }
+
     fn parse_struct_type(&mut self) {
         self.start_node(STRUCT_TYPE);
         self.bump(); // `struct`
+        // `struct($T) { … }` — a parameterised struct (ADR-0085 §3). The parameter list is optional,
+        // so an ordinary `struct { … }` is unchanged; when present each parameter is a `$T`.
+        if self.at(L_PAREN) {
+            self.parse_struct_type_params();
+        }
         self.start_node(FIELD_LIST);
         self.expect(L_BRACE);
         while !self.at(R_BRACE) && !self.at(EOF) {
@@ -1347,6 +1381,28 @@ impl<'src> Parser<'src> {
         self.expect(R_BRACE);
         self.finish_node(); // FIELD_LIST
         self.finish_node(); // STRUCT_TYPE
+    }
+
+    /// `($T)` or `($K, $V)` after `struct` — the type parameters of a parameterised struct
+    /// (ADR-0085 §3).
+    ///
+    /// Each parameter is a `$T`, parsed by the same [`Parser::parse_type`] path a `POLY_TYPE`
+    /// reaches, so a bare name here is rejected the way `$` demands: a struct type parameter binds a
+    /// variable, it does not name a type.
+    fn parse_struct_type_params(&mut self) {
+        self.start_node(STRUCT_TYPE_PARAMS);
+        self.expect(L_PAREN);
+        if !self.at(R_PAREN) {
+            self.parse_type();
+            while self.eat(COMMA) {
+                if self.at(R_PAREN) {
+                    break; // trailing comma
+                }
+                self.parse_type();
+            }
+        }
+        self.expect(R_PAREN);
+        self.finish_node(); // STRUCT_TYPE_PARAMS
     }
 
     /// Parses `union { i: s64; f: float64; }` (ADR-0045).
@@ -2613,6 +2669,33 @@ mod tests {
     #[test]
     fn struct_decl() {
         check_no_errors("Point :: struct { x: s64; y: s64; }");
+    }
+
+    #[test]
+    fn parameterised_struct_decl() {
+        // `struct($T) { … }` — the type-parameter list before the brace (ADR-0085 §3).
+        check_no_errors("Box :: struct($T) { value: T; }");
+        check_round_trip("Box :: struct($T) { value: T; }");
+    }
+
+    #[test]
+    fn parameterised_struct_decl_multiple_vars() {
+        check_no_errors("Map :: struct($K, $V) { key: K; value: V; }");
+        check_round_trip("Map :: struct($K, $V) { key: K; value: V; }");
+    }
+
+    #[test]
+    fn type_argument_reference() {
+        // `Box(s64)` — a name applied to type arguments in type position (ADR-0085 §3).
+        check_no_errors("f :: () { b: Box(s64); }");
+        check_round_trip("f :: () { b: Box(s64); }");
+    }
+
+    #[test]
+    fn nested_type_argument_reference() {
+        // `Box(Box(s64))` — an application whose argument is itself an application.
+        check_no_errors("f :: () { b: Box(Box(s64)); }");
+        check_round_trip("f :: () { b: Box(Box(s64)); }");
     }
 
     // ---- statements --------------------------------------------------------

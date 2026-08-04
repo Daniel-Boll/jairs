@@ -399,6 +399,35 @@ fn code_splices_identically_in_both_engines() {
     );
 }
 
+/// A **polymorphic struct** `Box(s64)` must build, store and read back identically in both engines
+/// (ADR-0085).
+///
+/// Four assertions summing to 15, so a wrong field type or a misplaced offset changes the exit value. The
+/// value matters more than the agreement here: each instance's fields are the declaration's substituted per
+/// type argument, and each engine computes the instance's layout from those substituted fields
+/// independently — the VM through `layout_of`, the native back end when it materialises the instance's
+/// storage. If `Box(s64)` and `Box(bool)` shared a field type, or `Pair(s64)`'s second field sat at the
+/// wrong offset, both engines would agree on a consistent wrong number, and only asserting 15 catches it.
+#[test]
+fn a_polymorphic_struct_agrees_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/070-polymorphic-struct.jr");
+
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    assert_eq!(
+        vm.status, 0,
+        "the VM exited {} — a parameterised struct's field did not read back as written",
+        vm.status
+    );
+    assert_eq!(
+        native.status, 0,
+        "the native back end exited {} — see the VM assertion above",
+        native.status
+    );
+}
+
 /// A `*T` **coerces to `Any`** at a call argument, identically in both engines (ADR-0076 §1).
 ///
 /// The ergonomic half of `any_of`: `takes(*x)` where `takes` wants an `Any` erases the pointer at the

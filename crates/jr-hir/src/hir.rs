@@ -167,6 +167,18 @@ pub enum TypeRef {
     Variant(StructId),
     /// An inline enum type `enum { ... }` (ADR-0041).
     Enum(EnumId),
+    /// A parameterised type reference `Box(s64)` — a name applied to type arguments (ADR-0085 §3).
+    ///
+    /// Distinct from [`TypeRef::Name`] because it *applies* a type constructor rather than naming an
+    /// existing type: sema resolves `name` to a parameterised declaration, resolves each argument to a
+    /// type, and interns the instance. Keeping them apart is what lets an ordinary `Point` stay a
+    /// `Name` — with no argument list to resolve — while `Box(s64)` carries its arguments.
+    Apply {
+        /// The type constructor's name — `Box` in `Box(s64)`.
+        name: Symbol,
+        /// The type arguments, in order — `[s64]` in `Box(s64)`.
+        args: Vec<TypeRefId>,
+    },
     /// A type that could not be lowered (error recovery).
     Error,
 }
@@ -999,6 +1011,13 @@ pub struct Struct {
     pub kind: AggregateKind,
     /// The fields.
     pub fields: Vec<Field>,
+    /// The type parameters of a parameterised struct — `[T]` for `struct($T) { … }` (ADR-0085 §3).
+    ///
+    /// **Empty for an ordinary struct**, which is not parameterised. A non-empty list makes this a
+    /// type constructor: sema does not intern it as a type directly, but instantiates it per
+    /// [`TypeRef::Apply`] reference, binding these variables to the arguments — the type-side mirror
+    /// of a polymorphic procedure's [`Proc`] poly variables.
+    pub poly_vars: Vec<Symbol>,
     /// Span of the whole struct.
     pub span: Span,
     /// **Always empty**, for the same reason as

@@ -225,7 +225,21 @@ impl Ctx<'_> {
                     let interner = self.interner;
                     self.sigs
                         .insert_type_name(ty, interner.resolve(name).to_owned());
+                    // A parameterised `struct($T) { … }` is a **template**, not a type: its field type
+                    // `T` has no meaning until an instantiation binds it (ADR-0085 §3). Bind its
+                    // variables to `ERROR` around the body resolution so a bare `T` resolves quietly
+                    // rather than reporting E0212 — the same discipline a polymorphic procedure's
+                    // template uses (ADR-0081 §1). Each `Box(s64)` reference resolves its own fields
+                    // under real bindings, keyed on the instance, so this template entry's fields are
+                    // never read.
+                    let poly_vars = self.hir.struct_def(sid).poly_vars.clone();
+                    for &var in &poly_vars {
+                        self.type_bindings.insert(var, PoolId::ERROR);
+                    }
                     self.resolve_struct_body(sid, ty, span);
+                    for &var in &poly_vars {
+                        self.type_bindings.remove(&var);
+                    }
                     Some(SigEntry {
                         ty: PoolId::TYPE,
                         type_value: Some(ty),
@@ -512,9 +526,13 @@ impl Ctx<'_> {
             // A `$T` inside a proc-pointer or results type is not part of this sub-wave's one-`$T` slice;
             // it is left for the sub-wave that generalises, and reaching one resolves to `ERROR` rather
             // than binding — which refuses the signature rather than half-supporting it (ADR-0081 §4).
+            // A `$T` inside a parameterised type reference — `f :: (b: Box($T))` — is nested inference
+            // through a nominal type, deferred with the rest of that step (ADR-0085 §5). So `Apply` does
+            // not bind here this sub-wave; a `Box(s64)` parameter is an ordinary concrete type.
             TypeRef::Proc { .. }
             | TypeRef::Results(_)
             | TypeRef::Name(_)
+            | TypeRef::Apply { .. }
             | TypeRef::Struct(_)
             | TypeRef::Union(_)
             | TypeRef::Variant(_)

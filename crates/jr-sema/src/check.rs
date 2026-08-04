@@ -3315,10 +3315,14 @@ impl Ctx<'_> {
             // here — a struct, a proc type) contains no directly-bindable variable in this sub-wave's
             // model, so it contributes no binding. A later sub-wave that wants `[$N]$T` inference adds
             // arms here.
+            // Inferring `$T` through a parameterised struct — `(b: Box($T))` binding `T` from a
+            // `Box(s64)` argument — is nested inference through a nominal type, deferred with the rest
+            // of that step (ADR-0085 §5). So `Apply` binds nothing here this sub-wave.
             TypeRef::Name(_)
             | TypeRef::Array { .. }
             | TypeRef::Results(_)
             | TypeRef::Proc { .. }
+            | TypeRef::Apply { .. }
             | TypeRef::Struct(_)
             | TypeRef::Union(_)
             | TypeRef::Variant(_)
