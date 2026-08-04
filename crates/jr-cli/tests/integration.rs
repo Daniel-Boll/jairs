@@ -717,3 +717,85 @@ fn a_refused_body_is_a_diagnostic_rather_than_a_crash() {
         "the internal compiler error must not reach the user: {message}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// jr build — a build script naming its own artefact (ADR-0102)
+// ---------------------------------------------------------------------------
+
+/// Build `path`, returning the exit code. `output` is `-o` when present.
+fn run_build(path: PathBuf, output: Option<PathBuf>) -> i32 {
+    jr_cli::commands::build::run(
+        jr_cli::cli::BuildArgs {
+            path,
+            output,
+            emit_object: false,
+            no_bounds_check: false,
+            module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
+        },
+        &quiet_global(),
+    )
+    .expect("build should not fail at the io layer")
+}
+
+#[test]
+fn build_output_constant_names_the_executable() {
+    // The claim: `BUILD_OUTPUT :: #run choose();` names the artefact, so a build script does the
+    // makefile's most basic job. Asserted on the *file that appears*, not on any message, because the
+    // whole point is that the driver acted on a value the program computed.
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("prog.jr");
+    fs::write(
+        &source,
+        "#import \"Basic\";\nchoose :: () -> string { return \"named_by_script\"; }\n\
+         BUILD_OUTPUT :: #run choose();\nmain :: () {\n    exit(3);\n}\n",
+    )
+    .unwrap();
+
+    assert_eq!(run_build(source.clone(), None), 0);
+    assert!(
+        dir.path().join("named_by_script").exists() || Path::new("named_by_script").exists(),
+        "the declared name should be the artefact's"
+    );
+    assert!(
+        !dir.path().join("prog").exists(),
+        "the default name should not also be written"
+    );
+}
+
+#[test]
+fn explicit_output_flag_beats_the_build_output_constant() {
+    // ADR-0102 §2's precedence, and the reason it is that way round: a person at a terminal is
+    // overriding on purpose, so a script that could silently defeat `-o` would make the flag
+    // untrustworthy.
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("prog.jr");
+    fs::write(
+        &source,
+        "#import \"Basic\";\nBUILD_OUTPUT :: \"from_the_script\";\nmain :: () {\n    exit(3);\n}\n",
+    )
+    .unwrap();
+    let flag = dir.path().join("from_the_flag");
+
+    assert_eq!(run_build(source, Some(flag.clone())), 0);
+    assert!(flag.exists(), "`-o` should decide");
+    assert!(
+        !dir.path().join("from_the_script").exists(),
+        "the declared name should be ignored when `-o` is given"
+    );
+}
+
+#[test]
+fn a_file_with_no_build_output_still_defaults_to_its_own_name() {
+    // The unchanged path, asserted so that adding the query cannot silently change what every
+    // existing program builds to.
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("plain.jr");
+    fs::write(
+        &source,
+        "#import \"Basic\";\nmain :: () {\n    exit(3);\n}\n",
+    )
+    .unwrap();
+
+    assert_eq!(run_build(source, None), 0);
+    assert!(dir.path().join("plain").exists(), "`plain.jr` → `plain`");
+}

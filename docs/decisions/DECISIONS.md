@@ -2009,3 +2009,38 @@ block, and a word-shaped placeholder could collide with a real name in the gener
 **Deferred with reasons:** a template referring to a note's *payload* as well as its name (wants two
 placeholders and a decision about escaping); generating *declarations* rather than statements (`#insert` at
 file scope is refused by ADR-0072 §5, which is a separate decision); a separator other than concatenation.
+
+## W6 sub-wave 5 — `#run build()` build scripts: what a script can *say*
+
+**The claim PLAN §2.1 makes** is that a build script replaces the makefile. What that needs, concretely, is a
+way for a compile-time program to **tell the driver** something the driver then acts on — an output name, an
+extra module path, a bounds-check setting. Today a `#run` can compute a value and splice code, but nothing it
+computes reaches `jr build`.
+
+**The fork: how does a compile-time value reach the driver?** Four options.
+
+- **(a) Declared build options: a `#run`-evaluated constant the driver reads by name.**
+  `BUILD_OUTPUT :: #run choose_name();` and `jr build` uses it unless `-o` overrides. The driver already has
+  `file_consts`, so reading a named constant's interned value is a query it can make with no new machinery.
+  Cost: the option set is fixed by the compiler, so a script cannot invent one. Benefit: every part exists,
+  the precedence rule is obvious (an explicit flag wins), and it is genuinely the makefile's job — naming the
+  artefact. **Chosen.**
+- **(b) An intrinsic the script *calls* — `set_build_output("app")`.** Reads more like Jai's
+  `compiler_set_build_options`. But a call has to *happen*, so its effect depends on evaluation order and on
+  the script being reached at all; a declared constant is a fact about the file. Order-dependent
+  configuration is the failure mode makefiles are notorious for.
+- **(c) A whole `Build_Options` struct returned from `#run build()`.** The most Jai-like, and it needs
+  `Type_Info`'s field walking to read generically — or a hard-coded field list, which is ADR-0075 §2's
+  validated-declaration dance for a much larger struct. Worth doing once there are enough options to justify
+  a struct; two is not enough.
+- **(d) The driver runs the script as a separate program that prints a manifest.** No language surface at all,
+  and it is how many build systems work — but it makes the build a two-phase process with a text protocol
+  between the phases, which is a build-system design, not a language feature.
+
+**Why an explicit flag wins over the declared constant.** A person at a terminal is overriding on purpose,
+and a build script that could silently defeat `-o` would make the flag untrustworthy. The reverse precedence
+would also make a script's own output name unpredictable from the file.
+
+**Deferred with reasons:** a script *adding* a module path (wants a list-valued constant and a decision about
+whether it appends or replaces); a script setting `--no-bounds-check` (it is a *safety* setting, and letting a
+file silently disable checks for its own build deserves its own argument); plugin hooks; workspaces.

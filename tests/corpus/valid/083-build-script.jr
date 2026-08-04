@@ -1,0 +1,53 @@
+// **A build script names its own artefact** (ADR-0102): `BUILD_OUTPUT`. W6's fifth sub-wave, and the first
+// time anything in a Jairs file has influenced the **build** rather than the program.
+//
+// PLAN §2.1's claim is that a build script replaces the makefile. Sub-waves 1–4 gave a metaprogram data
+// (ADR-0098), a reader (ADR-0099), a query (ADR-0100) and code generation (ADR-0101) — all of which act on the
+// *program*. What "replaces the makefile" actually needs is a way for a compile-time program to **tell the
+// driver** something the driver then obeys, and the most obvious such thing, the one a makefile most clearly
+// owns, is the name of the executable.
+//
+// `BUILD_OUTPUT :: #run choose();` is read by `jr build` through `file_consts`, so a **computed** name works
+// exactly as a literal does — there is no second path for the computed case, which is what ADR-0073's
+// machinery bought and this is the first place that collects on it.
+//
+// **A declared constant rather than a `set_build_output("app")` call**, which would be closer to Jai's
+// spelling. A call has to *happen*, so its effect depends on evaluation order and on the script being reached
+// at all; a declared constant is a **fact about the file**. Order-dependent configuration is the failure mode
+// makefiles are notorious for, and importing it into their replacement would be strange to do on purpose.
+//
+// **`-o` still wins.** A person at a terminal is overriding deliberately, and a script that could silently
+// defeat the flag would make the flag untrustworthy — and would make the artefact's name unpredictable from
+// reading the file, since you would have to know how the compiler was invoked.
+//
+// What this file checks is that the *program* is unaffected: `BUILD_OUTPUT` is an ordinary compile-time
+// constant, so it type-checks, formats, appears in no MIR, and changes nothing about what `main` does. That is
+// the property worth pinning here, because the driver's behaviour is not something a corpus file can observe —
+// it is pinned by three integration tests in `jr-cli` instead (the declared name is used, `-o` beats it, and a
+// file without the constant still defaults to its own stem).
+//
+// The name is screaming-case because it *is* a constant, and one the compiler knows by name: a lowercase
+// `build_output` would read like an ordinary local and give no hint that the driver is watching it.
+//
+// What this is **not** is a build *system*. There is no dependency graph, no incremental rule, and no way to
+// build several artefacts. One build decision has moved inside the language, and the honest claim is that
+// PLAN §2.1's sentence is now true of *something* rather than true in general.
+#import "Basic";
+
+/// The script: an ordinary compile-time procedure whose result names the artefact. Nothing marks it as
+/// special — it is `#run` at the constant's declaration that makes it a build script, which means any
+/// procedure can be one.
+choose_name :: () -> string {
+    return "note_driven_app";
+}
+
+/// The declaration the driver reads. A `#run` here, so the name is *computed*; `BUILD_OUTPUT :: "app";` is the
+/// same feature with the computation elided.
+BUILD_OUTPUT :: #run choose_name();
+
+main :: () {
+    // The program is entirely unaffected by the constant above: it is compile-time data for the driver, so it
+    // contributes no code and this exits on its own arithmetic.
+    n := 8;
+    exit(n + 1);
+}
