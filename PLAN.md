@@ -507,7 +507,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 ## 7. Immediate next actions
 
-**W5 — Polymorphism is OPEN, eleven sub-waves done.** `$T` procedures, polymorphic structs and `$N`
+**W5 — Polymorphism is OPEN, twelve sub-waves done.** `$T` procedures, polymorphic structs and `$N`
 comptime-value parameters are **complete**; `#expand` macros **work** — a call splices the body into the
 caller's scope — and `type_info(T)` reflects a **bound** type variable. **980 workspace tests**, all six gates green, **166 Neovim checks**. See §1.5.
 
@@ -588,9 +588,19 @@ caller's scope — and `type_info(T)` reflects a **bound** type variable. **980 
       `FileHir::modify_predicates` and body lowering exposed from `LowerCtx`, which is an API change.
 
 **What W5 has left, largest last:**
-- [ ] **`#modify` evaluation** — append the predicate per instantiation and refuse a `false`, lifting E0274.
-      **Recommended next**; its design is settled in ADR-0093 §2, and ADR-0092 already gave it the reflection
-      a predicate needs;
+- [x] **`#modify` predicate lowering** (ADR-0094, sub-wave 7e): the predicate is lowered **at the template**
+      as a synthetic no-parameter `bool` procedure — by the same `lower_body` every procedure uses, because
+      ADR-0093 §2's stated blocker (needing to lower a body from *text*) did not exist: `lower_body` takes an
+      AST `Block` and a `#modify` block is one. `Proc::modify` is now an `Option<ProcId>`. Each instantiation
+      **clones** it with that instantiation's bindings (`FileHir::modify_predicates`), so `type_info(T)`
+      inside describes the bound type; sharing one would evaluate once and apply the answer to both.
+      `FileHir::predicate_vars` lets sema withhold `type_info(T)` at the template. Excluded from MIR lowering
+      and native declaration — the *same three exclusions a macro needed*, found the same way.
+- [ ] **`#modify` evaluation** — run the predicate clone and refuse a `false`, lifting E0274. **Recommended
+      next.** What it needs is now precise (ADR-0094 §3): the clone is an ordinary `bool` procedure in the
+      **expanded** tree, so it needs that tree's MIR and the VM — `instantiated()` runs before `file_mir` and
+      `file_consts` evaluates the *unexpanded* tree, so this is the one part that genuinely needs a new query
+      (or a second evaluation pass inside `file_mir`);
 - [ ] **~~The `#expand` splice~~** — done above. What remains of it: the **caller-return** semantics for an
       early `return`, and a **cross-file** splice. Each its own decision;
 - [ ] **Two-way unification** (ADR-0084 §3) and **explicit type arguments** (`id(s64, x)`), neither of which

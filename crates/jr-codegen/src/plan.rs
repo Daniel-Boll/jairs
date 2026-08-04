@@ -127,6 +127,23 @@ pub fn declarations(input: &FileInput<'_>, pool: &Pool, entry: Option<ProcId>) -
         if input.hir.procs[index].expand {
             continue;
         }
+        // **A `#modify` predicate is not declared either** (ADR-0094 §1): it is a compile-time guard, not
+        // runtime code — nothing calls it, and the template it guards is a polymorphic template that is
+        // skipped above anyway. Leaving it declared left the linker an undefined local symbol, exactly as a
+        // macro did (ADR-0091 §1), caught by the corpus differential on this wave's own file.
+        if input
+            .hir
+            .predicate_vars
+            .iter()
+            .any(|(pred, _)| pred.index() == index)
+            || input
+                .hir
+                .modify_predicates
+                .iter()
+                .any(|(_, pred)| pred.index() == index)
+        {
+            continue;
+        }
         let data = &input.hir.procs[index];
 
         let kind = match &data.foreign {

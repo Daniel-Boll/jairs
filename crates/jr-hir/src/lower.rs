@@ -119,6 +119,8 @@ struct LowerCtx<'a> {
     ///
     /// Held here so each `BodyLowerCtx` this context creates can be handed it, the same way `operands` is.
     macros: MacroBodies,
+    /// Predicate → guarded template's `$T` names, staged until the `FileHir` is built (ADR-0094 §1).
+    predicate_vars: Vec<(ProcId, Vec<Symbol>)>,
 
     // File-level arenas
     items: Vec<Item>,
@@ -152,6 +154,7 @@ impl<'a> LowerCtx<'a> {
             interner,
             operands,
             macros,
+            predicate_vars: Vec::new(),
             diags: Diagnostics::new(),
             items: Vec::new(),
             scope: ItemScope::new(),
@@ -497,6 +500,55 @@ impl<'a> LowerCtx<'a> {
         // standalone would resolve its names against the macro's own (empty) scope, so a macro that reads
         // the caller's locals — the whole point of `#expand` — would report them as unresolved. It also
         // emits no MIR, exactly as a `$T` template does not.
+        // **A `#modify` block is lowered here, as its own synthetic procedure** (ADR-0094 §1): no
+        // parameters, returning `bool`, body = the block. Lowering it at the *template* means it goes
+        // through the same `lower_body` every procedure does — so it needs no text round-trip and no new
+        // lowering entry point, which is what ADR-0093 §2 thought it would. Each instantiation appends a
+        // *clone* of it with that instantiation's bindings, exactly as the instantiation is cloned.
+        let modify_pred = ast_proc.modify_block().map(|block| {
+            let bool_sym = self.intern("bool");
+            let ret_id = self.alloc_top_type_ref(TypeRef::Name(bool_sym));
+            let body = self.lower_body(&block, &[]);
+            let body_id = self.alloc_body(body);
+            let pred_span = self.span_of_node(block.syntax());
+            let pred = self.alloc_proc(Proc {
+                params: Vec::new(),
+                c_call: false,
+                no_abc: false,
+                expand: false,
+                modify: None,
+                ret: Some(ret_id),
+                body: Some(body_id),
+                foreign: None,
+                span: pred_span,
+                type_refs: Vec::new(),
+            });
+            // A **synthetic, unexported** name, and deliberately **not** in `scope`: the signature phase
+            // computes a signature only for a *named* item, but nothing should be able to call the
+            // predicate by name — it is reached only through `Proc::modify`. The same arrangement an
+            // instantiation gets (ADR-0082 §2).
+            let synthetic = self.intern(&format!("$modify{}", pred.index()));
+            self.items.push(Item {
+                name: Some(synthetic),
+                exported: false,
+                span: pred_span,
+                name_span: pred_span,
+                kind: ItemKind::Const {
+                    value: ConstValue::Proc(pred),
+                },
+            });
+            pred
+        });
+        // The guarded template's `$T` names, recorded against its predicate (ADR-0094 §1) so sema can
+        // withhold `type_info(T)` inside it the way it does inside the template's own body — a predicate
+        // has no `$T` of its own, but its body names the template's.
+        if let Some(pred) = modify_pred {
+            let vars = poly_var_names_of(&params, &self.top_type_refs);
+            if !vars.is_empty() {
+                self.predicate_vars.push((pred, vars));
+            }
+        }
+
         let is_macro = ast_proc.is_expand();
         let body = ast_proc.body().filter(|_| !is_macro).map(|b| {
             let body = self.lower_body(&b, &params);
@@ -519,9 +571,7 @@ impl<'a> LowerCtx<'a> {
             c_call: ast_proc.is_c_call(),
             no_abc: ast_proc.is_no_abc(),
             expand: ast_proc.is_expand(),
-            modify: ast_proc
-                .modify_block()
-                .map(|b| block_inner_text(b.syntax())),
+            modify: modify_pred,
             ret,
             body,
             foreign,
@@ -1001,6 +1051,8 @@ impl<'a> LowerCtx<'a> {
             // cloned tree (ADR-0082 §2).
             proc_bindings: Vec::new(),
             param_values: Vec::new(),
+            modify_predicates: Vec::new(),
+            predicate_vars: self.predicate_vars,
         };
         (hir, self.diags)
     }
@@ -2814,6 +2866,8 @@ pub fn lower_file_with_inserts(
                 type_refs: Vec::new(),
                 proc_bindings: Vec::new(),
                 param_values: Vec::new(),
+                modify_predicates: Vec::new(),
+                predicate_vars: Vec::new(),
             },
             diags,
         );
@@ -3059,4 +3113,32 @@ fn check_directive_as_expression(name: &str, span: Span) -> Option<Diagnostic> {
 fn has_target_list(node: &SyntaxNode) -> bool {
     node.children()
         .any(|n| n.kind() == jr_syntax::SyntaxKind::TARGET_LIST)
+}
+
+/// The `$T` variable names a parameter list introduces, read from the shared type-ref arena
+/// (ADR-0094 §1).
+///
+/// Duplicates a little of `jr-sema`'s `collect_poly_vars`, deliberately: that one runs on resolved
+/// signatures and this needs the answer during *lowering*, before any signature exists. Both read the same
+/// `TypeRef::Poly`, so they cannot disagree about what a variable is.
+fn poly_var_names_of(params: &[Param], arena: &[TypeRef]) -> Vec<Symbol> {
+    fn walk(id: TypeRefId, arena: &[TypeRef], out: &mut Vec<Symbol>) {
+        match arena.get(id.index()) {
+            Some(TypeRef::Poly(sym)) => {
+                if !out.contains(sym) {
+                    out.push(*sym);
+                }
+            }
+            Some(TypeRef::Pointer(inner)) => walk(*inner, arena, out),
+            Some(TypeRef::Array { elem, .. } | TypeRef::View { elem }) => walk(*elem, arena, out),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for param in params {
+        if let Some(id) = param.ty {
+            walk(id, arena, &mut out);
+        }
+    }
+    out
 }
