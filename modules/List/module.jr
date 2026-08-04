@@ -1,0 +1,203 @@
+//! The List module: a **genuinely growable** array of `s64`, backed by the heap.
+//!
+//! The fifth module, and the one `Array` could not be. ADR-0105 shipped a fixed-capacity buffer and named three
+//! refusals as the reason; ADR-0106 lifted the first of them, so this exists.
+//!
+//! # Why this is a new module rather than a rewrite of `Array`
+//!
+//! The two have genuinely different contracts, and collapsing them would hide that. An `Int_Array` needs **no
+//! cleanup** — its storage is inline, so a caller can forget about it — while an `Int_List` **owns heap memory**
+//! and a caller must call `free_data`. That is not a detail: there are no destructors in Jairs, which is a
+//! design value rather than a missing feature, so ownership is something a caller reads in a type's name and
+//! docs or does not learn at all.
+//!
+//! An `Int_Array` is also the better choice when a bound is known — no allocation, no failure mode, no
+//! cleanup. Replacing it would have traded a simpler thing for a more capable one, which is not an improvement
+//! when both are cheap to keep.
+//!
+//! # Why `Int_`, still
+//!
+//! **Cross-file parameterised structs are deferred** (E0269, ADR-0085 §5), so a `struct($T)` here would be
+//! unusable by every importer — exactly the discovery that shaped `Array`. And **inference through a
+//! parameterised struct** is deferred too, so even inside one file the routines could not be generic. Typed
+//! allocation lifted the *storage* blocker; these two remain, and they are what stand between this and a real
+//! `List($T)`.
+//!
+//! # Why growth doubles
+//!
+//! `n` pushes cost `O(n)` amortised, which is the property that makes a growable array worth having. A fixed
+//! increment makes it `O(n²)` — a bug wearing a policy's clothes. The first allocation is **4** elements: 1
+//! would mean three reallocations before a small list settles, and 16 would make a list that stays small hold
+//! 128 unused bytes.
+//!
+//! # Why a failed allocation is `false` and not a trap
+//!
+//! ADR-0058 §4's line is that a trap is for a **program** error. Running out of memory is not one — the program
+//! is correct and the machine said no — so aborting the process would take away the caller's only chance to
+//! recover. `push` returns `false`, which is what it already returned when `Int_Array` was full: a caller can do
+//! nothing different about the two reasons, so one answer serves both.
+//!
+//! # What it cannot do yet
+//!
+//! There is **no view of the used prefix**. `[]s64` would be the natural way to hand a list's contents to
+//! `Sort` or `String`, and building a view from a pointer and a count is not something any expression can spell
+//! — a slice takes an *array*, not a pointer. That is a real gap rather than an oversight, and it is the next
+//! thing this module wants.
+//!
+//! # Why this module imports `Basic`
+//!
+//! It calls `malloc` and `free`, so it needs them — and **needing them is not the same as having them**. Without
+//! the import the names still *resolved*, because ADR-0014 merges the root file's imports flatly, so the module
+//! type-checked and then failed at run time with `no routine for file 2 proc 0`: a signature had crossed the
+//! boundary and a body had not. A module must import what it uses, and this is the first module that uses
+//! anything.
+
+#import "Basic";
+
+/// A count, a capacity, and heap storage: the list's elements are `data[0 .. count)`.
+///
+/// **The caller owns `data`.** `free_data` releases it, and nothing else will — there are no destructors. A list
+/// that is dropped without `free_data` leaks, which is the honest cost of explicit memory and the reason the
+/// type's name says `List` rather than pretending to be a value.
+///
+/// `data` is null until the first `push`, so declaring a list allocates nothing. That makes an unused list free
+/// and makes `free_data` safe to call on one that never grew.
+Int_List :: struct {
+    /// The storage, or null before the first `push`. Typed `*s64` via `typed` (ADR-0106 §1), because an
+    /// allocator returns `*u8` and a general pointer cast is refused.
+    data: *s64;
+    /// How many elements are in use.
+    count: s64;
+    /// How many the current allocation holds. Zero exactly when `data` is null.
+    capacity: s64;
+}
+
+/// The capacity of a list's first allocation.
+///
+/// Exported so a caller can reason about the first `push`'s cost, and because a number that governs behaviour
+/// should be nameable rather than buried in a routine.
+FIRST_CAPACITY :: 4;
+
+/// Appends `v`, answering `false` when the allocation it needed failed.
+///
+/// **`false` means "out of memory"**, which is the only way this can fail — a list has no fixed bound. A caller
+/// can do nothing different about that than about `Int_Array`'s "full", which is why the signature is the same.
+///
+/// Amortised `O(1)`: the capacity doubles, so `n` pushes copy `O(n)` elements in total.
+push :: (a: *Int_List, v: s64) -> bool {
+    if a.count >= a.capacity {
+        if !grow(a) {
+            return false;
+        }
+    }
+    (a.data + a.count).* = v;
+    a.count = a.count + 1;
+    return true;
+}
+
+/// Removes and returns the last element, plus whether there was one.
+///
+/// Two return values (ADR-0008) rather than a sentinel, for the reason `Int_Array.pop` gives: every `s64` is a
+/// legitimate element, so no value could mean "empty" without excluding it from the list.
+///
+/// **The capacity is not reduced.** A caller who pops and pushes would otherwise thrash the allocator, and
+/// nothing has asked for the memory back — `free_data` is how a caller says they are finished.
+pop :: (a: *Int_List) -> (s64, bool) {
+    if a.count == 0 {
+        return 0, false;
+    }
+    a.count = a.count - 1;
+    return (a.data + a.count).*, true;
+}
+
+/// The element at `index`, plus whether the index was in the **used** range.
+///
+/// Bounded on `count`, not `capacity`: the slots between them hold whatever the allocator gave back, which is
+/// genuinely undefined rather than merely unused. That is a sharper reason than `Int_Array`'s — there the extra
+/// slots were zeroed and therefore only *indistinguishable* from real elements — and it is why this bound is not
+/// a matter of taste.
+get :: (a: *Int_List, index: s64) -> (s64, bool) {
+    if index < 0 {
+        return 0, false;
+    }
+    if index >= a.count {
+        return 0, false;
+    }
+    return (a.data + index).*, true;
+}
+
+/// Replaces the element at `index`, answering `false` when the index is outside the used range.
+///
+/// It will not extend the list — `set(a, a.count, v)` is `false`, not a push — because growth through
+/// assignment would make the length depend on which indices a caller happened to touch.
+set :: (a: *Int_List, index: s64, v: s64) -> bool {
+    if index < 0 {
+        return false;
+    }
+    if index >= a.count {
+        return false;
+    }
+    (a.data + index).* = v;
+    return true;
+}
+
+/// Forgets the elements, keeping the allocation.
+///
+/// Deliberately **not** the same as `free_data`: reusing a buffer a caller has already paid for is a real thing
+/// to want, and naming both makes the choice visible. A reader who wants the memory back wants `free_data`.
+clear :: (a: *Int_List) {
+    a.count = 0;
+}
+
+/// Releases the storage and empties the list.
+///
+/// **This is the routine a caller must not forget.** There are no destructors, so nothing else will free the
+/// memory. Safe to call on a list that never grew (`data` is null and `free` of null is a no-op) and safe to
+/// call twice, because it resets `data` — a second call frees nothing rather than freeing again.
+free_data :: (a: *Int_List) {
+    if a.data != null {
+        free(untyped(a.data));
+    }
+    a.data = null;
+    a.count = 0;
+    a.capacity = 0;
+}
+
+/// Whether the list holds nothing.
+is_empty :: (a: *Int_List) -> bool {
+    return a.count == 0;
+}
+
+#scope_module
+
+/// Doubles the capacity, copying the elements across; `false` when the allocation failed.
+///
+/// Module-private because it is an implementation detail of `push` — a caller who called it directly would be
+/// reasoning about capacity, which is precisely what a growable array exists to stop them doing.
+///
+/// **Allocate, copy, free** rather than `realloc`. The platform's `realloc` may extend in place, and using it
+/// would make growth depend on an allocator behaviour the comptime VM does not model — so the two engines could
+/// differ in *timing*. Not in results, but a divergence worth not introducing casually in a project whose whole
+/// test strategy is comparing them.
+grow :: (a: *Int_List) -> bool {
+    wanted := FIRST_CAPACITY;
+    if a.capacity > 0 {
+        wanted = a.capacity * 2;
+    }
+    raw := malloc(wanted * size_of(s64));
+    if raw == null {
+        return false;
+    }
+    fresh := typed(s64, raw);
+    i := 0;
+    while i < a.count {
+        (fresh + i).* = (a.data + i).*;
+        i = i + 1;
+    }
+    if a.data != null {
+        free(untyped(a.data));
+    }
+    a.data = fresh;
+    a.capacity = wanted;
+    return true;
+}
