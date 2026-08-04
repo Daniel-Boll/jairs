@@ -124,6 +124,9 @@ pub struct CheckResult {
     /// mechanism it has for "this call is a constant" rather than a second one.
     pub folded_calls:
         Arc<rustc_hash::FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), jr_pool::PoolId>>,
+    /// The same folded values keyed by **span** (ADR-0101 §3), so `file_mir` can find them in an *expanded*
+    /// tree whose `ExprId`s were renumbered by a splice.
+    pub folded_call_spans: Arc<rustc_hash::FxHashMap<jr_base::Span, jr_pool::PoolId>>,
     /// The type each `type_info(T)` call describes (ADR-0075 §2).
     ///
     /// Carried through from `jr-sema` because a *type* is not an operand — nothing in the expression
@@ -721,6 +724,7 @@ fn translate_check_output(
         operator_calls: Arc::new(operator_calls),
         filled_args: Arc::new(filled_args),
         folded_calls: Arc::new(output.folded_calls),
+        folded_call_spans: Arc::new(output.folded_call_spans),
         type_info_calls: Arc::new(output.type_info_calls),
         any_calls: Arc::new(output.any_calls),
         instantiations: Arc::new(output.instantiations),

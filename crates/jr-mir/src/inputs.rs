@@ -210,6 +210,17 @@ impl ConstValues {
         self.runs.insert((scope, expr), value);
     }
 
+    /// Forgets the value of one `run`-keyed expression (ADR-0101 §3).
+    ///
+    /// Needed because a folded value is keyed by `ExprId`, and a computed `#insert` renumbers every id after
+    /// its splice — so a value recorded against the *unexpanded* tree names a different expression in the
+    /// expanded one. `file_mir` clears the unexpanded entries before re-recording the expanded check's, and
+    /// clearing is the load-bearing half: a stale entry left at a live id is a genuine value in the wrong
+    /// place, which no verifier can recognise as wrong.
+    pub fn clear_run(&mut self, scope: ExprScope, expr: ExprId) {
+        self.runs.remove(&(scope, expr));
+    }
+
     /// The value of a file-level item, if one is known.
     #[must_use]
     pub fn item(&self, item: ItemId) -> Option<PoolId> {

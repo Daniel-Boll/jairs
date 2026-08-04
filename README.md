@@ -18,7 +18,8 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated during **wave W6 — Metaprogram**, three sub-waves in, with 981 tests green: a declaration can
+Last updated during **wave W6 — Metaprogram**, four sub-waves in, with 981 tests green — and its headline claim is met, since a metaprogram
+can now find declarations by note and generate code for each. A declaration can
 carry **`@note` metadata** for a metaprogram to read (ADR-0098). `@deprecated` and `@requires "x"` sit in the
 same attribute loop as `#c_call`/`#expand`/`#modify`, so notes and directives interleave freely — but a note
 is its own node kind, because a note is *data for a metaprogram* while a directive is an *instruction to the
@@ -42,10 +43,31 @@ can predict from the source, since sorting by name would renumber every index wh
 and a hash order would make one program answer differently between runs. An out-of-range index answers `""`
 rather than being refused, because unrolling to a fixed bound is the intended use and its tail has to be quiet.
 
-**What is still missing is the loop, and the reason is worth stating plainly** rather than filed as a
+**And it can generate code for each of them** (ADR-0101): `#insert noted_insert("serialise", "write(#);")`
+emits the template once per noted declaration, with `#` standing for each name — so one line of source
+generates a call to every `@serialise` procedure in the file. That is the metaprogram loop for the case that
+matters, and it needed no new machinery: the query was already there, the fold channel was already there, and
+`#insert` of a computed string has been there since ADR-0073.
+
+**The loop lives inside the fold, and that is the right place rather than a workaround.** A run-time loop
+could not do this job at all — generated code has to exist before checking, so a loop running after the
+program was compiled could not declare a procedure, add a field, or emit a statement. What is still genuinely
+missing is *inspection*: a run-time loop reading declarations as values, which needs the compiler-emitted
+table and is bundled with `Type_Info`'s variable-length field list. Stating the split that way is a
+correction — the earlier claim deferred generation and inspection as one thing.
+
+Building it found a **latent miscompile** that predates it: a folded value is keyed by expression id, a
+computed `#insert` renumbers every id after its splice, and so with *two* computed inserts in one body the
+second's value landed on a different expression — a `string` on an arithmetic operand. It surfaced as the MIR
+verifier panicking rather than as any diagnostic, which makes it the sharpest well-typed-placeholder this
+project has had: the value is genuine and merely in the wrong place, so nothing in the type system can see
+that it is wrong.
+
+**Iteration at run time is still missing, and the reason is worth stating plainly** rather than filed as a
 limitation: all four of these are answered while *checking*, so every argument must be readable then — and a
 `for` variable is not, because it exists only at run time. `for i: 0..noted_count(…)` cannot be made to work by
-folding whatever it is called. It needs the query to lower to real code reading a **compiler-emitted table**:
+folding whatever it is called — which is why *generation* takes the fold route above instead. Reading
+declarations as run-time values needs the query to lower to real code reading a **compiler-emitted table**:
 static data a back end emits and the VM can also read, which Jairs has never had, and which is the same
 mechanism `Type_Info`'s variable-length field list has been deferred for since ADR-0078. So notes can be
 counted and named, and cannot yet be looped over. That makes the message loop a wave about static data rather
@@ -286,7 +308,7 @@ The authoritative version of this list is
 | a **type as a compile-time value**: `T :: Point;` binds one, and `T` is usable wherever `Point` is — as an annotation, a parameter, a field, an array element, a pointee; an enum alias carries its members (ADR-0071) | a chain (`B :: A`); comparing types (`T == U`); a `Type` parameter; `Type` as an annotation, which does not parse |
 | using a type where a **runtime** value is expected is refused (E0261) — it has no runtime representation, so there is nothing to store | — |
 | `#import`, `#foreign`, `#system_library`; `#expand` macros that splice; `#modify` predicates; `#bake_arguments` specialisations | — |
-| `@note` metadata on a declaration — `@deprecated`, `@requires "x"` (ADR-0098) — read at compile time by `has_note` / `note_value` (ADR-0099), and queried without naming by `noted_count` / `noted_name` (ADR-0100) | a **loop**: iteration needs a compiler-emitted table, which also lifts `Type_Info`'s field list (**W6**) |
+| `@note` metadata on a declaration — `@deprecated`, `@requires "x"` (ADR-0098) — read at compile time by `has_note` / `note_value` (ADR-0099), and queried without naming by `noted_count` / `noted_name` (ADR-0100), and used to **generate code** for each noted declaration by `noted_insert` (ADR-0101) | run-time **inspection**: a loop reading declarations as values, which needs a compiler-emitted table and lifts `Type_Info`'s field list (**W6**) |
 | overflow traps with a source location (ADR-0002, ADR-0020), and a **call chain** of the frames that were live (ADR-0066) | a per-frame line number; inlined frames, which have no runtime existence |
 | `context` — a hidden parameter passed by pointer, so a callee reads what its caller wrote; `#c_call` opts out and gets none | — |
 | `push_context { … }` — a block with its own copy of the context, so a write inside it is restored on exit (ADR-0063) | — |

@@ -1973,3 +1973,39 @@ Four options, given that:
 
 **What this deliberately does not claim.** After (a), notes can be *counted* and *named*; they cannot be
 *looped over*. `PLAN.md` §7 says so in those words, so the message loop's remaining scope is not overstated.
+
+## W6 sub-wave 4 — generating code for *every* noted declaration
+
+**A capability found by probing, not by planning.** `#insert note_value(f, "gen")` **already works**:
+`@gen "n = n + 5;"` on a declaration, spliced into a body, runs. Three shapes were checked and all three
+worked with no changes — two splices in one body, a splice that calls a procedure, and a splice of an absent
+note (empty, quiet). So the *effect* half of a metaprogram — a note driving code generation — was already
+there and undocumented, which is exactly the kind of thing PLAN §1.5 is supposed to make visible.
+
+**What is missing is the `for` over it**, and ADR-0100 §2 established that folding can never supply one. But
+that argument only forbids a loop *in the program*. It says nothing about looping **inside the fold**.
+
+**The fork: how does a script generate code for each noted declaration?** Four options.
+
+- **(a) `noted_insert(note, template)` — the fold does the loop, `#` stands for each name.**
+  `#insert noted_insert("serialise", "write(#);")` folds to `write(a);write(c);`, which `#insert` then splices
+  through the mechanism ADR-0073 already built. Cost: one placeholder character to specify, and a template is
+  text rather than structure. Benefit: it is the *whole* remaining metaprogram loop for the code-generation
+  case, it needs **no table, no `String`, and no run-time iteration**, and every part of it already exists —
+  the query (ADR-0100), the fold channel (ADR-0099 §2), and the splice (ADR-0073). **Chosen.**
+- **(b) Wait for the static-data table and a real `for`.** The eventual right answer for *inspection*, and it
+  is still owed its wave. But for *generation* it is the wrong tool: a run-time loop cannot declare
+  procedures or fields, because those are decided at check time. Generation is inherently a fold, so a table
+  would not actually deliver this use case.
+- **(c) Return the names as one space-separated string and let the script build the code.** Needs `String` to
+  split, which is W7 — ADR-0080 §3's rule, a facility whose consumer does not exist.
+- **(d) A `#for_each_note name { … }` directive expanding at lowering.** Rejected in ADR-0100 §2 already, and
+  the same objection stands: a second, hidden iteration construct with its own scoping rules.
+
+**Why `#` rather than `$name` or `{}`.** A single character that is **not** valid in a Jairs identifier and not
+already an operator, so a template containing it is unambiguous. `$` is taken by polymorphism, `{}` reads as a
+block, and a word-shaped placeholder could collide with a real name in the generated text.
+
+**Deferred with reasons:** a template referring to a note's *payload* as well as its name (wants two
+placeholders and a decision about escaping); generating *declarations* rather than statements (`#insert` at
+file scope is refused by ADR-0072 §5, which is a separate decision); a separator other than concatenation.

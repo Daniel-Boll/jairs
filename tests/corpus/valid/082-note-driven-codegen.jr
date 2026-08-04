@@ -1,0 +1,83 @@
+// **Generating code for every noted declaration** (ADR-0101): `noted_insert("x", template)`. W6's fourth
+// sub-wave, and the point at which a metaprogram can do the *whole* job — find declarations by note, and emit
+// code for each one.
+//
+// **ADR-0100 §2 said this could not be done yet, and it was wrong about the scope.** Its argument was sound:
+// a folding intrinsic is answered at *check* time, so a `for` variable — which exists only at run time — can
+// never be its argument. But that forbids a loop **in the program** and says nothing about a loop **inside
+// the fold**, which is what `noted_insert` is. Noticing that distinction is what made this sub-wave possible
+// with no compiler-emitted table at all.
+//
+// **And a loop in the fold is the *right* shape for generation, not a workaround.** A run-time loop could not
+// do this job under any circumstances: generated code has to exist before checking, so a loop running after
+// the program was compiled could not declare a procedure, add a field, or emit a statement. Generation is
+// inherently a compile-time fold. What is still genuinely deferred is *inspection* — a run-time loop reading
+// declarations as values — which is what the static-data wave is for, alongside `Type_Info`'s
+// variable-length field list (ADR-0078).
+//
+// **Half of this file was already possible and nobody had written it down.** `#insert note_value(f, "gen")`
+// worked before this sub-wave: a note's payload spliced as code. It worked by composition — the reader
+// (ADR-0099) folds to a string, and `#insert` of a computed string is ADR-0073 — and it was undocumented,
+// which is exactly what PLAN §1.5 exists to surface. It has a corpus file now, so it cannot silently regress.
+//
+// What is checked here:
+//
+//   * `noted_insert` emitting a template **once per noted declaration**, with `#` standing for each name, so
+//     one line of source generates a call to every `@counted` procedure — including one declared *after* the
+//     splice, since the query walks the file's items rather than what is in scope so far;
+//   * a declaration **without** the note skipped, sitting between two that have it;
+//   * a template with **several** `#`s, so substitution is per-occurrence rather than once per template;
+//   * `noted_insert` for a note **nothing carries**, folding to `""` — which `#insert` accepts as "splice
+//     nothing" (ADR-0072 §4), so a generated section is simply empty rather than a diagnostic about a correct
+//     program;
+//   * `#insert note_value(f, "gen")` — a note's **payload spliced as code**, the capability found by probing.
+//
+// `#` is the placeholder because it is a single character that is **not** valid in a Jairs identifier and is
+// not already an operator, so a template containing one is unambiguous. `$` is taken by polymorphism, `{}`
+// reads as a block, and a word-shaped placeholder could collide with a real name in the generated text.
+//
+// The exit code is **78** and depends on every generated line: 1×1 + 2×2 = 5 from the two `@counted` calls
+// under the two-`#` template, plus 8 from the payload splice, plus the base 65. Emptying the generated text
+// moves it to 73, which is what makes the generation load-bearing rather than decorative — the corpus
+// differential compares the two engines to each other, so a wrong answer both give is invisible.
+#import "Basic";
+
+/// The first `@counted`, so the generated code calls this one first — declaration order (ADR-0100 §1).
+alpha :: () -> s64 @counted {
+    return 1;
+}
+
+/// No note, so the generated code skips it. It sits *between* the two that are counted, so order is genuinely
+/// tested rather than accidentally satisfied.
+skipped :: () -> s64 {
+    return 100;
+}
+
+/// A note whose **payload is code**, spliced directly by `#insert note_value(…)`. This is the capability that
+/// already worked and was undocumented.
+configured :: () -> s64 @gen "n = n + 8;" {
+    return 0;
+}
+
+main :: () {
+    n := 0;
+
+    // One line generating a call to every `@counted` procedure. The template has **two** `#`s, so each name
+    // is substituted at both occurrences: `n = n + alpha() * alpha();` and the same for `beta`.
+    #insert noted_insert("counted", "n = n + #() * #();");
+
+    // A note nothing carries: folds to `""`, which splices nothing. A build script's generated section is
+    // empty in a file with nothing to generate for, rather than a diagnostic.
+    #insert noted_insert("nosuchnote", "n = n + 1000;");
+
+    // The payload of a note, spliced as code.
+    #insert note_value(configured, "gen");
+
+    exit(n + 65);
+}
+
+/// The second `@counted`, declared **after** the splice that calls it — the query walks the file's items, not
+/// what happens to be in scope at the splice point, so generation is not order-dependent in that way.
+beta :: () -> s64 @counted {
+    return 2;
+}

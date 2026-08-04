@@ -762,7 +762,19 @@ pub fn insert_operands(
         let Wanted::InsertOperand(_, body, expr, span) = target else {
             continue;
         };
-        let Some(value) = consts.values.run(ExprScope::Body(body), expr) else {
+        // **A folded operand is found by span first** (ADR-0101 §3). `noted_insert(…)` and the other note
+        // intrinsics are folded by *sema*, and the value is stored under the id sema saw — but this walk
+        // re-derives targets from the HIR, and a body containing *two* computed `#insert`s has its ids
+        // renumbered by the first splice, so the second one's `(body, expr)` key missed. It then stayed
+        // pending, MIR read a hole in the type map, and the failure surfaced as the verifier panicking with
+        // `mixed operand types` rather than as any diagnostic: the "well-typed placeholder" family AGENTS.md
+        // names, and the reason the insert-operand map itself is keyed by span (ADR-0072 §2).
+        let Some(value) = checked_file
+            .folded_call_spans
+            .get(&span)
+            .copied()
+            .or_else(|| consts.values.run(ExprScope::Body(body), expr))
+        else {
             // The operand did not evaluate to a value (a non-string, a trap, a refusal). Left out, so
             // the insert stays pending; the reason was already reported by `checked` or `file_consts`.
             continue;

@@ -7077,3 +7077,43 @@ proc main -> void {
     discard call extern proc1(v11)
     return
 }
+
+========================================
+082-note-driven-codegen.jr
+========================================
+proc alpha -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    return 1_s64
+}
+proc skipped -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    return 100_s64
+}
+proc configured -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    return 0_s64
+}
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call proc0(v0)
+    v2: s64 = call proc0(v0)
+    v3: s64 = v1 * v2
+    v4: s64 = 0_s64 + v3
+    v5: s64 = call proc4(v0)
+    v6: s64 = call proc4(v0)
+    v7: s64 = v5 * v6
+    v8: s64 = v4 + v7
+    v9: s64 = v8 + 8_s64
+    v10: s64 = v9 + 65_s64
+    discard call extern proc1(v10)
+    return
+}
+proc beta -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    return 2_s64
+}
