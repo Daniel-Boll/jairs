@@ -318,6 +318,11 @@ fn imports_invalid_corpus_fails() {
         // the `using` refusals above: E0262 comes out of **lowering**, so `type-errors/`' harness would
         // fail it for not lowering cleanly before ever checking the code it declares.
         "imports/invalid/011-insert-needs-a-literal.jr",
+        // A `#run` whose callee reads an **imported constant** (ADR-0073 §4). Here because reaching the
+        // case needs the import resolved, and E0230 is `jr-db`'s code — no corpus directory holds one.
+        // What this pins is the *diagnostic*: it used to be "internal compiler error: no routine for
+        // file 0 proc 0", the third instance of internals leaking for a reasonable program.
+        "imports/invalid/012-run-reads-an-imported-constant.jr",
     ] {
         let code = check_with_modules(vec![corpus_path(file)], Some("modules"));
         assert_eq!(code, 1, "{file} must report an error");

@@ -2870,14 +2870,9 @@ main :: () {
         let p = parse(text, file());
         assert!(p.has_errors(), "`#code` with no body must be refused");
         assert!(
-            p.diagnostics()
-                .iter()
-                .any(|d| d.code == Some("E0131")),
+            p.diagnostics().iter().any(|d| d.code == Some("E0131")),
             "expected E0131, got: {:?}",
-            p.diagnostics()
-                .iter()
-                .map(|d| d.code)
-                .collect::<Vec<_>>()
+            p.diagnostics().iter().map(|d| d.code).collect::<Vec<_>>()
         );
     }
 
