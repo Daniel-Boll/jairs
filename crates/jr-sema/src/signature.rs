@@ -651,9 +651,31 @@ impl Ctx<'_> {
         // for it; a call supplies one at instantiation. The names are collected into `poly_vars`, in
         // first-seen order, so a consumer knows the signature is a template. The bindings are cleared at
         // the end of this function, so they never leak into another signature.
-        let poly_vars = self.collect_poly_vars(&declaration.params);
-        for &var in &poly_vars {
-            self.type_bindings.insert(var, PoolId::ERROR);
+        // An **instantiation** has a `proc_bindings` entry, which makes it *concrete*: its `poly_vars` is
+        // empty, so it is lowered and declared like any other procedure (ADR-0082 §2). Only a *template*
+        // — a `$T` proc with no binding — keeps its variables here.
+        let is_instantiation = self.hir.proc_bindings.iter().any(|(p, _, _)| *p == proc);
+        let poly_vars = if is_instantiation {
+            Vec::new()
+        } else {
+            self.collect_poly_vars(&declaration.params)
+        };
+        // Bind whatever variables the params introduce — for a template, to `ERROR`; for an
+        // instantiation, `poly_vars` is empty but its params still mention `$T`, so bind those from
+        // `proc_bindings` too, else the concrete signature would resolve `$T` to `ERROR`.
+        let vars_to_bind = self.collect_poly_vars(&declaration.params);
+        for &var in &vars_to_bind {
+            // An **instantiation** binds its variable to a concrete type (ADR-0082 §2), carried on the
+            // expanded HIR's `proc_bindings`; the *template* binds to `ERROR`. Reading the concrete
+            // binding here is what makes an instantiation's signature — and, downstream, its body —
+            // resolve `$T`/`T` to the real type and be checked against it.
+            let bound = self
+                .hir
+                .proc_bindings
+                .iter()
+                .find(|(p, v, _)| *p == proc && *v == var)
+                .map_or(PoolId::ERROR, |(_, _, ty)| *ty);
+            self.type_bindings.insert(var, bound);
         }
 
         for param in &declaration.params {
@@ -712,7 +734,7 @@ impl Ctx<'_> {
 
         // Clear this signature's bindings before returning, so they never leak into the next signature
         // computed on the same context (ADR-0081 §1: the map is empty outside a polymorphic signature).
-        for &var in &poly_vars {
+        for &var in &vars_to_bind {
             self.type_bindings.remove(&var);
         }
 

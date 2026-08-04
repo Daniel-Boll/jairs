@@ -949,6 +949,9 @@ impl<'a> LowerCtx<'a> {
             exprs: self.top_exprs,
             expr_spans: self.top_expr_spans,
             type_refs: self.top_type_refs,
+            // No instantiations from ordinary lowering; the expansion pass in `jr-db` fills this on the
+            // cloned tree (ADR-0082 §2).
+            proc_bindings: Vec::new(),
         };
         (hir, self.diags)
     }
@@ -2542,6 +2545,7 @@ pub fn lower_file_with_inserts(
                 exprs: Vec::new(),
                 expr_spans: Vec::new(),
                 type_refs: Vec::new(),
+                proc_bindings: Vec::new(),
             },
             diags,
         );

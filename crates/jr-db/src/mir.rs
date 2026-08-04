@@ -291,6 +291,17 @@ pub struct MirResult {
     /// typo: the unexpanded resolve withholds E0201 there (it cannot know what the insert declares), so
     /// the expanded resolve is the only pass that can report it.
     pub expanded_diagnostics: Arc<jr_diag::Diagnostics>,
+    /// The HIR the `mir` was lowered from, and its signatures — the **expanded** ones when a polymorphic
+    /// instantiation added procedures (ADR-0082 §2), else the base file's.
+    ///
+    /// Carried because instantiation makes `mir` have *more procedures* than the base HIR, so a consumer
+    /// that paired `mir` with `file_hir(db, file)` — as `jr-vm`'s `add_file` and the native build both do
+    /// — would find no declaration for an appended `ProcId`. The `#insert` expansion did not need this
+    /// (an insert adds no procedures, so the counts matched and a base-HIR pairing worked); instantiation
+    /// is the first expansion that does, which is why this field arrives with it.
+    pub hir: Arc<FileHir>,
+    /// The signatures matching [`Self::hir`] — expanded when instantiation added procedures.
+    pub signatures: Arc<jr_sema::FileSignatures>,
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +321,8 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
             gated: true,
             // Nothing was expanded: the gate ran before the operand pre-pass.
             expanded_diagnostics: Arc::new(jr_diag::Diagnostics::new()),
+            hir: file_hir(db, file),
+            signatures: crate::sema::file_signatures(db, file, search_paths).signatures,
         };
     }
 
@@ -341,25 +354,59 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
         Some((tree, resolve_map, check, diags))
     };
 
-    let hir = match &expanded {
-        Some((tree, _, _, _)) => tree.clone(),
-        None => file_hir(db, file),
+    // **Polymorphic instantiations, expanded** (ADR-0082 §2). When a file has polymorphic calls, the HIR
+    // gains one appended procedure per distinct instantiation, and signatures/resolve/check are recomputed
+    // over that expanded tree — unlike the `#insert` branch, which reuses signatures because it adds no
+    // items (§3). `None` for a file with no polymorphic calls, which takes the ordinary path.
+    //
+    // The two expansions do not currently compose: a computed `#insert` that introduces a polymorphic call
+    // is out of scope (ADR-0082 §5's spirit), so this runs only when there was no `#insert` expansion.
+    let instantiated = if expanded.is_some() {
+        None
+    } else {
+        crate::sema::instantiated(db, file, search_paths)
     };
-    let own_resolve = match &expanded {
-        Some((_, resolve_map, _, _)) => resolve_map.clone(),
-        None => resolved(db, file, search_paths).map,
+
+    let hir = match (&expanded, &instantiated) {
+        (Some((tree, _, _, _)), _) => tree.clone(),
+        (_, Some(inst)) => inst.hir.clone(),
+        _ => file_hir(db, file),
     };
-    let own = crate::sema::file_signatures(db, file, search_paths);
-    let checked_file = match &expanded {
-        Some((_, _, check, _)) => check.clone(),
-        None => checked(db, file, search_paths),
+    let own_resolve = match (&expanded, &instantiated) {
+        (Some((_, resolve_map, _, _)), _) => resolve_map.clone(),
+        (_, Some(inst)) => inst.resolve.clone(),
+        _ => resolved(db, file, search_paths).map,
+    };
+    let base_sigs = crate::sema::file_signatures(db, file, search_paths);
+    let own_signatures = match &instantiated {
+        Some(inst) => inst.signatures.clone(),
+        None => base_sigs.signatures.clone(),
+    };
+    let checked_file = match (&expanded, &instantiated) {
+        (Some((_, _, check, _)), _) => check.clone(),
+        (_, Some(inst)) => inst.check.clone(),
+        _ => checked(db, file, search_paths),
     };
     let types = checked_file.types;
     let operators = checked_file.operator_calls;
     let filled = checked_file.filled_args;
     let imports = imported_procs(db, file, search_paths);
     let imported_constants = imported_values(db, file, search_paths);
-    let consts = crate::consts::file_consts(db, file, search_paths).values;
+    // The const values, plus the call→instantiation redirects (ADR-0082): `call_rvalue` consults these to
+    // target the appended procedure rather than the template.
+    let consts = {
+        let base = crate::consts::file_consts(db, file, search_paths).values;
+        match &instantiated {
+            Some(inst) => {
+                let mut values = (*base).clone();
+                for (call, target) in &inst.redirects {
+                    values.set_instantiation(call.0, call.1, *target);
+                }
+                Arc::new(values)
+            }
+            None => base,
+        }
+    };
     let interner = db.interner();
 
     // Gather everything from other queries *before* locking the pool: the lock
@@ -369,7 +416,7 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
         hir.as_ref(),
         own_resolve.as_ref(),
         types.as_ref(),
-        own.signatures.as_ref(),
+        own_signatures.as_ref(),
         consts.as_ref(),
         imports.as_ref(),
         imported_constants.as_ref(),
@@ -380,12 +427,21 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
     );
     drop(pool);
 
+    // The expanded tree's own resolve/check diagnostics — from a computed `#insert` (ADR-0073) or an
+    // instantiation (ADR-0082), whichever expanded. Only this pass can produce them.
+    let expanded_diagnostics = expanded
+        .map(|(_, _, _, diags)| diags)
+        .or_else(|| instantiated.map(|inst| inst.diagnostics))
+        .unwrap_or_default();
+
     MirResult {
         mir: Arc::new(lowered),
         gated: false,
-        // The expanded tree's own resolve/check diagnostics, which only this pass can produce
-        // (ADR-0073 §1). Empty when no computed `#insert` was expanded.
-        expanded_diagnostics: Arc::new(expanded.map(|(_, _, _, diags)| diags).unwrap_or_default()),
+        expanded_diagnostics: Arc::new(expanded_diagnostics),
+        // The HIR and signatures the MIR was lowered from — expanded when instantiation added procedures
+        // (ADR-0082 §2), so a consumer pairing MIR with them finds every appended procedure.
+        hir,
+        signatures: own_signatures,
     }
 }
 
@@ -395,7 +451,7 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
 /// compares would cost memory for no invalidation benefit.
 #[must_use]
 pub fn dump_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) -> String {
-    render(db, file, search_paths, file_mir(db, file, search_paths))
+    render(db, file_mir(db, file, search_paths))
 }
 
 /// A textual dump of a file's MIR *after* inlining.
@@ -410,25 +466,18 @@ pub fn dump_optimized_mir(
     search_paths: ModuleSearchPaths,
     config: BuildConfig,
 ) -> String {
-    render(
-        db,
-        file,
-        search_paths,
-        optimized_file_mir(db, file, search_paths, config),
-    )
+    render(db, optimized_file_mir(db, file, search_paths, config))
 }
 
-fn render(
-    db: &dyn Db,
-    file: SourceFile,
-    search_paths: ModuleSearchPaths,
-    result: MirResult,
-) -> String {
+fn render(db: &dyn Db, result: MirResult) -> String {
     if result.gated {
         return String::from("gated: the file has errors\n");
     }
-    let hir = file_hir(db, file);
-    let signatures = crate::sema::file_signatures(db, file, search_paths).signatures;
+    // The **expanded** HIR and signatures the MIR was lowered from (ADR-0082 §2), not the base file's —
+    // an instantiation added procedures the base HIR does not have, and pairing base HIR with expanded
+    // MIR would dump a procedure with no declaration. The result now carries what this used to recompute.
+    let hir = result.hir;
+    let signatures = result.signatures;
     let interner = db.interner();
     let pool = crate::sema::lock_pool(db);
     jr_mir::dump_file(
@@ -558,6 +607,10 @@ pub fn optimized_file_mir(
         // The optimiser consumes already-expanded MIR, so expansion diagnostics were reported by the
         // built-MIR query this one reads.
         expanded_diagnostics: Arc::new(jr_diag::Diagnostics::new()),
+        // Carried through from the built result: the optimiser rewrites bodies, not the procedure set, so
+        // the expanded HIR and signatures still match (ADR-0082 §2).
+        hir: built.hir.clone(),
+        signatures: built.signatures.clone(),
     }
 }
 

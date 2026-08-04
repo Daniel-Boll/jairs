@@ -1171,3 +1171,66 @@ Taken as recommended. Sub-wave 1: a single `$T`, inferred, instantiated structur
 check phase, monomorphic body, both engines. Deferred to later W5 sub-waves: `$$T` (comptime-only
 parameters), `#modify`, `#bake_arguments`, `#expand` macros, multiple *distinct* type parameters,
 polymorphic structs, and instantiation backtraces beyond a single frame.
+
+---
+
+## Wave: W5 Polymorphism, sub-wave 2 — instantiation (ADR-0082), 2026-08-04
+
+Recommended option taken automatically per the standing autonomy directive; logged for later review.
+
+### Fork 1 — how an instantiation gets a procedure identity
+
+- Options: **expand the HIR with instantiated procedures appended, then re-resolve/re-check/lower it,
+  reusing ADR-0073's computed-`#insert` machinery (taken, recommended)**; a parallel instantiation table
+  the back ends consult; monomorphise in MIR by cloning `MirBody`s.
+- Why the expanded-HIR route: the compiler keys everything by `ProcRef = (FileId, ProcId)`, and an
+  instantiation is a *new procedure* not in the source `procs` arena. ADR-0073 already solved the
+  isomorphic "produce N program elements from one source, then check them like any other" problem by
+  building an expanded `FileHir`, re-resolving and re-checking it (`checked_expanded`), and lowering
+  *that* — `file_mir` already branches on `expanded`. Appending instantiated `Proc`s to that expanded HIR
+  gives each a real `ProcId`, so MIR, the signature phase, both engines and the differential treat it as
+  an ordinary procedure with **no new keying**. A parallel table would make every `ProcRef` consumer
+  learn about instantiations. Cloning `MirBody`s skips checking, so a body wrong for the instantiated type
+  (e.g. `a + b` on a struct) would miscompile rather than be rejected — ADR-0081 §2's "checked per
+  instantiation" would be violated.
+
+### Fork 2 — where instantiations are collected
+
+- Options: **in the check phase, recorded like `type_info_calls`, keyed by call expression → (proc, bound
+  type) (taken, recommended)**; a dedicated pre-pass over the HIR.
+- Why in check: `check_call` already infers the argument types a `$T` binds from, and ADR-0081 §2 put
+  instantiation there. It records each polymorphic call's (callee proc, bound type tuple) the way it
+  records `type_info_calls`, and the expansion pass reads that set — one type inference, reused, exactly
+  as ADR-0075's `type_info_calls` avoided a second walk.
+
+### Fork 3 — de-duplication key
+
+- Options: **the structural key ADR-0005 fixed — the tuple of bound interned type IDs (taken,
+  recommended, and mandated by ADR-0005)**.
+- Why: not a fresh decision. ADR-0005 fixed instantiation identity as structural on interned
+  comptime-argument IDs; this builds it. `id(s64)` reached from two calls or two files interns to one
+  instantiation because the bound-type tuple is the same `PoolId` sequence.
+
+### Resolution (ADR-0082 records it)
+
+Taken as recommended. Sub-wave 2: `check_call` infers `$T` and records the instantiation; an expansion
+pass appends a substituted `Proc` per distinct structural key and rewrites the call to target it;
+`checked_expanded` and `file_mir` check and lower the result. The E0268 refusal is removed — a call now
+instantiates. Still deferred: `$$T`, multiple distinct type variables, macros, polymorphic structs.
+
+### Fork 4 — how a call is redirected to its instantiation (refinement while building ADR-0082)
+
+- Building §2 surfaced a cleaner split than "rewrite the HIR call's callee". MIR's `call_rvalue` already
+  consults `ConstValues` (keyed by `(scope, ExprId)`) for `#run`/`type_info`/`any_op`. Adding an
+  **instantiation-target** entry there — call expr → the instantiated `ProcRef` — lets `call_rvalue`
+  redirect the call with no HIR rewrite: the expanded HIR only needs the *appended instantiated procedures*
+  (so they get checked and lowered), and the call site is redirected MIR-side.
+- Options: **redirect via a `ConstValues` instantiation map (taken, recommended)**; rewrite the call
+  node's `Res`/callee in the expanded HIR.
+- Why the map: rewriting a call's `Res` means editing resolution results in the cloned HIR and keeping
+  every consumer (sema re-check, dump) consistent with the edit; the map leaves the HIR call untouched and
+  redirects only where the `ProcRef` is finally chosen — `direct_callee`/`call_rvalue`. It reuses the exact
+  channel `#run` and `any_op` already ride, which `scan` and both engines already understand.
+- Consequence: the expanded HIR is the original tree **plus** the instantiated procedures appended; no call
+  node changes. The instantiations carry their bindings via a `FileHir` side map the signature/check
+  phases consult, so a clone need not be substituted in the HIR.

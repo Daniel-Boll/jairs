@@ -774,6 +774,7 @@ dependencies = [
  "insta",
  "jr-base",
  "jr-diag",
+ "jr-pool",
  "jr-syntax",
  "rustc-hash 2.1.3",
 ]

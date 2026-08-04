@@ -169,6 +169,13 @@ pub(crate) struct Ctx<'a> {
     /// later `T` in that signature is the same variable. It is cleared when the signature or
     /// instantiation is left.
     pub(crate) type_bindings: FxHashMap<Symbol, PoolId>,
+    /// Each polymorphic call and the instantiation it requires: `(proc, bound type)` (ADR-0082 §1).
+    ///
+    /// Recorded by `check_polymorphic_call` and read by the expansion pass in `jr-db`, the way
+    /// `type_info_calls` is — one type inference, reused, rather than a second walk. Keyed by the call
+    /// expression's `(scope, id)`, so the pass can rewrite that exact call to target the instantiated
+    /// procedure. Empty for a file with no polymorphic calls, which is every ordinary program.
+    pub(crate) instantiations: FxHashMap<(ExprScope, jr_hir::ExprId), (jr_hir::ProcId, PoolId)>,
 }
 
 impl<'a> Ctx<'a> {
@@ -187,6 +194,7 @@ impl<'a> Ctx<'a> {
             type_position: FxHashSet::default(),
             type_info_calls: FxHashMap::default(),
             type_bindings: FxHashMap::default(),
+            instantiations: FxHashMap::default(),
             any_calls: FxHashMap::default(),
             hir,
             file,

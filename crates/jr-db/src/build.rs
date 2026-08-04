@@ -24,9 +24,7 @@ use jr_hir::ProcId;
 use jr_pool::TargetLayout;
 
 use crate::{
-    BuildConfig, Db, SourceFile,
-    mir::optimized_file_mir,
-    module_loader::{ModuleSearchPaths, file_hir},
+    BuildConfig, Db, SourceFile, mir::optimized_file_mir, module_loader::ModuleSearchPaths,
     run::main_of,
 };
 
@@ -67,11 +65,15 @@ pub fn build_object(
         if mir.gated {
             continue;
         }
+        // The **expanded** HIR and signatures the MIR was lowered from (ADR-0082 §2): an instantiation
+        // appended procedures, so the declare phase must see them or the define phase (which reads the
+        // expanded MIR) declares a body for a procedure the declare phase never announced —
+        // "defined without being declared".
         inputs.push((
             crate::queries::resolve_file_id(db, file),
-            file_hir(db, file),
-            mir.mir,
-            crate::sema::file_signatures(db, file, search_paths).signatures,
+            mir.hir.clone(),
+            mir.mir.clone(),
+            mir.signatures.clone(),
         ));
     }
 
