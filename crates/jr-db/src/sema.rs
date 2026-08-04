@@ -72,8 +72,10 @@ pub struct SignatureResult {
 
 /// Each polymorphic call and the instantiation it needs: the template procedure and the tuple of types
 /// its variables bind to, in `poly_vars` order (ADR-0082 §1, ADR-0083 §1).
-pub type Instantiations =
-    rustc_hash::FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), (jr_hir::ProcId, Vec<jr_pool::PoolId>)>;
+pub type Instantiations = rustc_hash::FxHashMap<
+    (jr_hir::ExprScope, jr_hir::ExprId),
+    (jr_hir::ProcId, Vec<jr_pool::PoolId>),
+>;
 
 /// The result of type-checking a file.
 #[derive(Debug, Clone)]

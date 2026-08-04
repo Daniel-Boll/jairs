@@ -6324,3 +6324,150 @@ proc $inst4 -> s64 {
   bb0(v0: *Context, v1: s64):
     return v1
 }
+
+========================================
+069-nested-inference.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: s64  // local 1
+    s1: [3]s64  // local 2
+    s2: []s64  // temporary
+    s3: Point  // local 3
+    s4: Point  // local 4
+    s5: s64  // local 5
+    s6: s64  // local 6
+    s7: [2]u8  // local 7
+    s8: []u8  // temporary
+    s9: s64  // local 8
+  bb0(v0: *Context):
+    store s0 <- 42_s64
+    v1: *s64 = addr s0
+    v2: s64 = call proc4(v0, v1)
+    v3: bool = v2 == 42_s64
+    branch v3 ? bb1() : bb2()
+  bb1():
+    v4: s64 = 0_s64 + 1_s64
+    goto bb3(v4)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v9: s64):
+    zero s1
+    v5: *s64 = addr s1[0_s64]
+    zero s2
+    store s2.view_data <- v5
+    store s2.view_count <- 3_s64
+    v6: []s64 = load s2
+    v7: s64 = call proc5(v0, v6)
+    v8: bool = v7 == 3_s64
+    branch v8 ? bb4() : bb5()
+  bb4():
+    v10: s64 = v9 + 2_s64
+    goto bb6(v10)
+  bb5():
+    goto bb6(v9)
+  bb6(v17: s64):
+    zero s3
+    store s3.0 <- 4_s64
+    store s3.1 <- 4_s64
+    v11: *Point = addr s3
+    v12: Point = call proc6(v0, v11)
+    store s4 <- v12
+    v13: s64 = load s4.0
+    v14: s64 = load s4.1
+    v15: s64 = v13 + v14
+    v16: bool = v15 == 8_s64
+    branch v16 ? bb7() : bb8()
+  bb7():
+    v18: s64 = v17 + 4_s64
+    goto bb9(v18)
+  bb8():
+    goto bb9(v17)
+  bb9(v23: s64):
+    store s5 <- 16_s64
+    store s6 <- 99_s64
+    v19: *s64 = addr s5
+    v20: *s64 = addr s6
+    v21: s64 = call proc7(v0, v19, v20)
+    v22: bool = v21 == 16_s64
+    branch v22 ? bb10() : bb11()
+  bb10():
+    v24: s64 = v23 + 8_s64
+    goto bb12(v24)
+  bb11():
+    goto bb12(v23)
+  bb12(v29: s64):
+    zero s7
+    v25: *u8 = addr s7[0_s64]
+    zero s8
+    store s8.view_data <- v25
+    store s8.view_count <- 2_s64
+    v26: []u8 = load s8
+    v27: s64 = call proc8(v0, v26)
+    v28: bool = v27 == 2_s64
+    branch v28 ? bb13() : bb14()
+  bb13():
+    v30: s64 = v29 + 16_s64
+    goto bb15(v30)
+  bb14():
+    goto bb15(v29)
+  bb15(v34: s64):
+    store s9 <- 32_s64
+    v31: *s64 = addr s9
+    v32: s64 = call proc4(v0, v31)
+    v33: bool = v32 == 32_s64
+    branch v33 ? bb16() : bb17()
+  bb16():
+    v35: s64 = v34 + 32_s64
+    goto bb18(v35)
+  bb17():
+    goto bb18(v34)
+  bb18(v36: s64):
+    v37: bool = v36 == 63_s64
+    branch v37 ? bb19() : bb20()
+  bb19():
+    discard call extern proc1(0_s64)
+    goto bb21()
+  bb20():
+    goto bb21()
+  bb21():
+    discard call extern proc1(1_s64)
+    return
+}
+proc $inst0 -> s64 {
+  params: v0: *Context, v1: *s64
+  bb0(v0: *Context, v1: *s64):
+    v2: s64 = load (v1).*
+    return v2
+}
+proc $inst1 -> s64 {
+  params: v0: *Context, v1: []s64
+  slots:
+    s0: []s64  // temporary
+  bb0(v0: *Context, v1: []s64):
+    store s0 <- v1
+    v2: s64 = load s0.view_count
+    return v2
+}
+proc $inst2 -> Point {
+  params: v0: *Context, v1: *Point
+  bb0(v0: *Context, v1: *Point):
+    v2: Point = load (v1).*
+    return v2
+}
+proc $inst3 -> s64 {
+  params: v0: *Context, v1: *s64, v2: *s64
+  bb0(v0: *Context, v1: *s64, v2: *s64):
+    v3: s64 = load (v1).*
+    return v3
+}
+proc $inst4 -> s64 {
+  params: v0: *Context, v1: []u8
+  slots:
+    s0: []u8  // temporary
+  bb0(v0: *Context, v1: []u8):
+    store s0 <- v1
+    v2: s64 = load s0.view_count
+    return v2
+}

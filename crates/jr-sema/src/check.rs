@@ -32,7 +32,7 @@ use jr_base::{Interner, Span, Symbol, TextRange};
 use jr_diag::{Diagnostic, Diagnostics};
 use jr_hir::{
     AssignOp, BinOp, BodyId, Expr, ExprId, ExprScope, FileHir, ItemKind, Literal, ProcId, Res,
-    ResolveMap, Stmt, StmtId, UnOp,
+    ResolveMap, Stmt, StmtId, TypeRef, TypeRefId, UnOp,
 };
 use jr_pool::{Item, Pool, PoolId};
 use rustc_hash::FxHashMap;
@@ -3209,17 +3209,15 @@ impl Ctx<'_> {
         for (index, param) in hir_params.iter().enumerate() {
             let Some(arg) = args.get(index) else { continue };
             let arg_ty = self.check_expr(scope, *arg, None);
-            if let Some(var) = param
-                .ty
-                .and_then(|t| match self.type_ref(ExprScope::TopLevel, t) {
-                    jr_hir::TypeRef::Poly(v) => Some(v),
-                    _ => None,
-                })
-            {
-                // First direct binding for this variable wins; a later `$A` is a *use*, checked below.
-                if !bindings.iter().any(|(v, _)| *v == var) && arg_ty != PoolId::ERROR {
-                    bindings.push((var, arg_ty));
-                }
+            if arg_ty == PoolId::ERROR {
+                continue;
+            }
+            // Match the parameter's `TypeRef` structure against the argument's resolved type, binding a
+            // `$T` wherever a `TypeRef::Poly` meets a concrete type — directly (`$T` ↔ `U`) or one layer
+            // deep (`*$T` ↔ `*U`, `[]$T` ↔ `[]U`), ADR-0084 §1. First binding for a variable wins; a later
+            // occurrence is a *use*, checked against it below. A shape mismatch binds nothing (§2).
+            if let Some(t) = param.ty {
+                self.infer_var_in(t, arg_ty, &mut bindings);
             }
         }
 
@@ -3235,7 +3233,7 @@ impl Ctx<'_> {
                 Diagnostic::error(span, "cannot infer every `$T` from the arguments of this call")
                     .with_code(E0268)
                     .with_note(
-                        "each type variable is inferred from a directly `$T`-typed argument (ADR-0083 §3)",
+                        "each type variable is inferred from an argument that pins it — directly, or through a pointer or view (ADR-0084)",
                     ),
             );
             return PoolId::ERROR;
@@ -3276,6 +3274,54 @@ impl Ctx<'_> {
             .collect();
         self.instantiations.insert((scope, id), (proc, key));
         ret
+    }
+
+    /// Binds a type variable by matching a parameter's `TypeRef` structure against an argument's resolved
+    /// type, one structural layer deep (ADR-0084 §1).
+    ///
+    /// `$T` against `U` binds `T = U`; `*$T` against `*U` peels both pointers and binds `T = U`; `[]$T`
+    /// against `[]U` peels both views. A shape that does not align — `*$T` against a non-pointer — binds
+    /// nothing (ADR-0084 §2), leaving the variable for another position to pin or the argument check to
+    /// reject. The first binding for a variable wins; a later occurrence is a *use*, checked against it.
+    ///
+    /// One-directional and not a unifier (ADR-0084 §3): it reads a binding *out of* the argument type,
+    /// with no substitution back and no occurs-check.
+    fn infer_var_in(
+        &self,
+        param_ty: TypeRefId,
+        arg_ty: PoolId,
+        bindings: &mut Vec<(Symbol, PoolId)>,
+    ) {
+        match self.type_ref(ExprScope::TopLevel, param_ty) {
+            TypeRef::Poly(var) => {
+                if !bindings.iter().any(|(v, _)| *v == var) {
+                    bindings.push((var, arg_ty));
+                }
+            }
+            TypeRef::Pointer(inner) => {
+                if let Item::PointerType(pointee) = *self.pool.item(arg_ty) {
+                    self.infer_var_in(inner, pointee, bindings);
+                }
+            }
+            TypeRef::View { elem } => {
+                if let Item::ViewType { elem: arg_elem } = *self.pool.item(arg_ty) {
+                    self.infer_var_in(elem, arg_elem, bindings);
+                }
+            }
+            // Any other shape (a name, an array — whose length is part of its identity and not matched
+            // here — a struct, a proc type) contains no directly-bindable variable in this sub-wave's
+            // model, so it contributes no binding. A later sub-wave that wants `[$N]$T` inference adds
+            // arms here.
+            TypeRef::Name(_)
+            | TypeRef::Array { .. }
+            | TypeRef::Results(_)
+            | TypeRef::Proc { .. }
+            | TypeRef::Struct(_)
+            | TypeRef::Union(_)
+            | TypeRef::Variant(_)
+            | TypeRef::Enum(_)
+            | TypeRef::Error => {}
+        }
     }
 
     /// Resolves an argument list into one slot per parameter (ADR-0053 §1, §3).
