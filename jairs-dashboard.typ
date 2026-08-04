@@ -96,9 +96,9 @@
 #h(4pt)
 #pill[969 tests]
 #h(4pt)
-#pill[ADR-0080 latest]
+#pill[ADR-0085 latest]
 #h(4pt)
-#pill(fill: rgb("#eaf5ea"), stroke: good)[W4 complete · 10 sub-waves]
+#pill(fill: rgb("#fdf2e6"), stroke: warn)[W5 open · 4 sub-waves done]
 
 #v(0.5em)
 #grid(
@@ -106,8 +106,8 @@
   gutter: 8pt,
   metric("Tests", "969", "workspace, all passing"),
   metric("Corpus", "171", "jr files, both engines"),
-  metric("ADRs", "80", "0001 to 0080, immutable"),
-  metric("Diagnostics", "99", "codes, E0268 next free"),
+  metric("ADRs", "85", "0001 to 0085, immutable"),
+  metric("Diagnostics", "100", "codes, E0269 next free"),
   metric("Editor checks", "166", "Neovim, verified not gated"),
 )
 

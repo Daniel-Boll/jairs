@@ -1311,3 +1311,38 @@ Taken as recommended. `infer_var_in` walks a parameter `TypeRef` and the argumen
 lockstep, binding a `$T` where the structures align (`*$T`↔`*U`, `[]$T`↔`[]U`, direct `$T`↔`U`). The
 re-resolution and per-instantiation check are unchanged — only the *inference* reaches one layer deeper.
 Still deferred: `$$T`, polymorphic structs, macros.
+
+---
+
+## Wave: W5 Polymorphism, sub-wave 5 — polymorphic structs (ADR-0085), 2026-08-04
+
+Recommended option taken automatically per the standing autonomy directive; logged for later review.
+
+### Fork 1 — the next W5 increment
+
+- Options: **polymorphic structs `Box($T)` (taken, recommended)**; `$$T` comptime value params; macros.
+- Why polymorphic structs: the most *foundational* remaining piece — the stdlib's `Array`, hash table and
+  bucket array (W7) are all `Struct($T)`, and macros are the largest of the three. It builds on the
+  type-value and instantiation machinery already in place. `$$T` is deferred because it interacts with
+  const-eval (a comptime *value* parameter, not a type) and no W5 corpus needs it yet.
+
+### Fork 2 — how a parameterised struct instance is identified in the pool
+
+- Options: **a new `Item` variant keyed on `(decl, [type args])` (taken, recommended)**; reuse
+  `StructType { decl }` with a side table of args; monomorphise structs into fresh `DeclId`s like the
+  procedure clone.
+- Why a keyed variant: `Box(s64)` and `Box(bool)` must be *distinct types* from one `DeclId`, and the
+  interner keys on the whole `Item`, so putting the type-arg list in the variant makes the pool dedupe and
+  distinguish them for free — the same way `ArrayType { elem, len }` distinguishes `[2]s64` from `[3]s64`.
+  A side table keyed by `DeclId` cannot hold two instances. Cloning into fresh `DeclId`s (the *procedure*
+  approach) would work but a struct's identity is its `DeclId` (ADR-0015 §1), and minting synthetic decls
+  for types is a bigger disturbance to nominal identity than a parameterised variant.
+- The field types are computed per instance by resolving the declaration's field `TypeRef`s under the
+  type-argument bindings — the same substitution-by-binding the procedure instantiation uses, so `Box(s64)`
+  and `Box(bool)` get `value: s64` and `value: bool` from one declaration.
+
+### Resolution (ADR-0085 records it)
+
+Taken as recommended. This is the largest remaining W5 piece; built as its own sub-wave with a refusal for
+anything beyond a single-`$T` struct used monomorphically, so nothing miscompiles. `$$T` and macros stay
+deferred.
