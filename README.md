@@ -181,6 +181,13 @@ rather than an optimisation. Both engines call the same libm, which is correctly
 is an exact comparison — the exactness `Math` said an in-language approximation could not have, and the reason
 its transcendentals belong behind this boundary. That unblocks them as a libm wrap.
 
+**And `Math` grew its transcendentals** (ADR-0115): `sqrt`, `sin`, `cos`, `exp`, `ln`, `powf`, as libm wraps
+now that a float can cross the FFI boundary. `Math` had shipped without them and named FFI floats as the reason;
+they arrive the right way — libm is correctly rounded and both engines call the same libm, so `sqrt(2.0)` is
+bit-identical in the VM and native code, the exactness an in-language approximation could not have. That is a
+three-sub-wave arc worth noting: a library named a language feature it needed, the language delivered it, and
+the library collected. `Math` is complete.
+
 Before it, wave **W6 — Metaprogram**, five sub-waves in, with 984 tests green. Its headline claim is met — a metaprogram can find
 declarations by note and generate code for each — and a build script can name its own artefact. A declaration can
 carry **`@note` metadata** for a metaprogram to read (ADR-0098). `@deprecated` and `@requires "x"` sit in the

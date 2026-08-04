@@ -509,7 +509,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **986 workspace tests** and **203 corpus files**, all six gates green, **166
+waiting. Both are tracked below. **986 workspace tests** and **204 corpus files**, all six gates green, **166
 Neovim checks**. See §1.5.
 
 ### W7 — Stdlib, open
@@ -757,6 +757,14 @@ through them** (ADR-0085 §5). So a growable array has real storage but stays pe
       width. Ships the capability with a corpus file calling `sqrt`/`sqrtf`/`pow` in both engines; both call the
       *same* libm, so `sqrt(16.0) == 4.0` is exact — the exactness ADR-0112 §1 said an approximation could not
       have. **Unblocks `Math`'s transcendentals as a libm wrap.**
+
+- [x] **`Math`'s transcendentals** (ADR-0115, sub-wave 13): `sqrt`, `sin`, `cos`, `exp`, `ln`, `powf` as
+      **libm wraps**, the payoff of ADR-0114. ADR-0112 shipped `Math` without them and named FFI floats as the
+      reason; now they arrive the *right* way — libm is correctly rounded and **both engines call the same
+      libm**, so `sqrt(2.0)` is bit-identical. The three-sub-wave arc: a library (0112) named a language feature,
+      the language delivered it (0114), the library collected (0115). `ln` not `log` (says the base); `powf` not
+      an overload of the integer `pow` (no cross-type resolution). The exact half stays in Jairs. **`Math` is
+      complete.**
 
 **W7 left after that:** the **allocating** half of `String`, once the allocator convention is decided; a merge
 sort and a binary search (the first wants allocation, the second a sortedness precondition nothing can check);

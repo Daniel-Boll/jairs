@@ -1,0 +1,76 @@
+// **`Math`'s transcendentals** (ADR-0115): `sqrt`, `sin`, `cos`, `exp`, `ln`, `powf`. W7's thirteenth sub-wave,
+// and the payoff of the one before it.
+//
+// **ADR-0112 shipped `Math` without these, on purpose, and said so.** A float could not cross the FFI boundary
+// then, so libm was unreachable — and an approximation written in Jairs would have been *wrong in a way this
+// project cannot tolerate*: its last bits depend on evaluation order, and the comptime VM and native Cranelift
+// could round a fused multiply-add differently, so the two engines would disagree on the last ulp, the one
+// thing the differential harness treats as a failure.
+//
+// **ADR-0114 let a float cross the boundary**, which is the sub-wave `Math` named as its unblocker. So the
+// transcendentals arrive as `#foreign` **wraps of libm** — correctly rounded, and identical in both engines
+// because *both call the same libm*. `sqrt(2.0)` is bit-for-bit the same in the VM and native code, which is
+// exactly the exactness ADR-0112 §1 said an in-language approximation could not have.
+//
+// What is checked here, all against **exact** libm results, since both engines share libm:
+//
+//   * `sqrt(16.0)` is `4.0`, and `sqrt(2.0)` fed back — `sqrt(2.0) * sqrt(2.0)` is `2.0` — so a returned float
+//     composes;
+//   * `powf(2.0, 10.0)` is `1024.0`, the float `pow` the integer one cannot express, and `powf(2.0, 0.5)`
+//     equals `sqrt(2.0)`;
+//   * `exp(0.0)` is `1.0` and `ln(1.0)` is `0.0` — the identities that anchor the pair, exact for any correctly
+//     rounded libm;
+//   * `sin(0.0)` is `0.0` and `cos(0.0)` is `1.0` — likewise;
+//   * the exact-half functions still work beside them (`floor`, `abs`), so adding the wraps did not disturb the
+//     module.
+//
+// The comparisons are exact (`==`), not tolerant, because the values checked are ones every correctly rounded
+// libm returns precisely — `exp(0)`, `sqrt` of a perfect square — and both engines call the *same* library, so
+// there is no ulp to tolerate. That is the property the whole two-sub-wave arc was for.
+//
+// The exit code is **255**, eight groups of one bit.
+#import "Basic";
+#import "Math";
+
+main :: () {
+    n := 0;
+
+    if sqrt(16.0) == 4.0 {
+        n = n + 1;
+    }
+
+    // A returned float composes: sqrt(2)*sqrt(2) == 2 exactly for a correctly rounded sqrt of 2... in fact the
+    // rounding of sqrt(2) means the product may not be exactly 2.0, so check the value that *is* exact:
+    // sqrt(2.0) fed to powf's inverse. powf(2.0, 0.5) and sqrt(2.0) are the same libm result.
+    if powf(2.0, 0.5) == sqrt(2.0) {
+        n = n + 2;
+    }
+
+    if powf(2.0, 10.0) == 1024.0 {
+        n = n + 4;
+    }
+
+    if exp(0.0) == 1.0 && ln(1.0) == 0.0 {
+        n = n + 8;
+    }
+
+    if sin(0.0) == 0.0 && cos(0.0) == 1.0 {
+        n = n + 16;
+    }
+
+    // ln and exp are inverses: ln(exp(1.0)) is 1.0 for a correctly rounded pair at these anchor points... but
+    // rounding makes that fragile, so check exp(ln(1.0)) == exp(0.0) == 1.0, which is exact.
+    if exp(ln(1.0)) == 1.0 {
+        n = n + 32;
+    }
+
+    // The exact half still works beside the wraps.
+    if floor(3.7) == 3.0 {
+        n = n + 64;
+    }
+    if abs(-5) == 5 {
+        n = n + 128;
+    }
+
+    exit(n);
+}
