@@ -539,14 +539,19 @@ with a call refused (E0271) pending instantiation. **976 workspace tests**, all 
       body-skip, the native declare-skip and the call refusal on one predicate.
 
 **What W5 has left, largest last:**
-- [ ] **`$N` instantiation — the second half** (ADR-0087's deferred half, **recommended next**). What
-      remains is: evaluate each `$N` argument to a compile-time constant *at the call site* — the sema↔VM
-      mutual recursion `#insert` broke with the acyclic `insert_operands`/`file_consts` pre-pass (ADR-0073),
+- [ ] **`$N` instantiation — the second half** (**design of record in ADR-0088**, **recommended next**).
+      Evaluate each `$N` argument to a compile-time constant *at the call site* — the sema↔VM mutual
+      recursion `#insert` broke with the acyclic `insert_operands`/`file_consts` pre-pass (ADR-0073),
       reused rather than rebuilt — key an instantiation on the tuple of argument *values* (the value-side
       analogue of ADR-0005's structural key over types), append a concrete procedure per value via the same
       `instantiate.rs`/expanded-HIR path `$T` uses, and lift E0271. Then `[N]T` where `N` is such a
       parameter, which needs `N`'s value at the point the array type resolves — the case that meets
-      polymorphic structs (`buf: [N]T`).
+      polymorphic structs (`buf: [N]T`). **ADR-0088 records one gap to settle before writing code**: because
+      `instantiated()` re-resolves the expanded HIR, dropping the comptime parameter makes a bare `N`
+      unresolvable unless the value is substituted at HIR-rewrite time (before re-resolve), which may
+      require rewriting the `Expr::Name` into a literal rather than the MIR-only substitution ADR-0088 §4
+      first assumed. **Do not remove ADR-0087's E0271 refusal until the whole pipeline works** — a comptime
+      call would otherwise fall through to the MIR-less template, a miscompile.
 - [ ] **Macros** — `#modify`, `#bake_arguments`, `#expand` (PLAN §2.1). The largest remaining family;
       `#expand` in particular composes with `#insert`/`#code`, and reading a macro's argument is what
       finally supersedes ADR-0080's declined `Code` value with a real representation.

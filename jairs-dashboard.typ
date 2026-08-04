@@ -96,7 +96,7 @@
 #h(4pt)
 #pill[976 tests]
 #h(4pt)
-#pill[ADR-0087 latest]
+#pill[ADR-0088 latest]
 #h(4pt)
 #pill(fill: rgb("#fdf2e6"), stroke: warn)[W5 open · 5 sub-waves + a 6th's surface]
 
@@ -106,7 +106,7 @@
   gutter: 8pt,
   metric("Tests", "976", "workspace, all passing"),
   metric("Corpus", "180", "jr files, both engines"),
-  metric("ADRs", "87", "0001 to 0087, immutable"),
+  metric("ADRs", "88", "0001 to 0088, immutable"),
   metric("Diagnostics", "103", "codes, E0272 next free"),
   metric("Editor checks", "166", "Neovim, verified not gated"),
 )
@@ -305,7 +305,7 @@
   ),
   (
     "W5 Polymorphism", "in progress",
-    "Five sub-waves plus a sixth's surface. $N comptime-value parameters have their surface (ADR-0087): make :: ($N: s64) marks a parameter polymorphic over a compile-time-known value, the value-side mirror of $T. It parses, formats, and — unlike a $T template whose parameter type is unknown — its body type-checks, because a $N parameter's type is fully known (s64) and only its value varies. A call is refused by design (E0271) pending the second half, which evaluates the argument to a constant and instantiates per value, the same staging $T had. $T procedures work end to end (ADR-0081-0084): a $T parameter is inferred from the call — directly or through a pointer or view — instantiated once per distinct tuple of bound types, checked per instantiation, and run as an ordinary procedure in both engines, so nothing polymorphic survives to the back end. And polymorphic structs (ADR-0085, built per ADR-0086): Box :: struct($T) { value: T; } used as Box(s64) is a type constructor, and Box(s64) and Box(bool) are distinct types from one declaration with substituted fields and layouts, told apart in the pool by the type argument in the key the way [2]s64 and [3]s64 are. It changed the pool's most load-bearing invariant — a struct's identity was its declaration site — and was landed in two commits, a zero-behaviour-change representation refactor proven by an unchanged snapshot and test count, then the parameterised behaviour, so a half-built type-identity change could not hide a miscompile. Left in W5: the $N instantiation half (recommended next — evaluate the argument to a constant, key an instantiation on the value tuple, lift E0271, unlock [N]T), the macro family (modify, bake_arguments, expand), and the deferred struct pieces (inference through Box($T), using on one, cross-file, recursive List($T)), each a refusal today rather than a gap.",
+    "Five sub-waves plus a sixth's surface. $N comptime-value parameters have their surface (ADR-0087): make :: ($N: s64) marks a parameter polymorphic over a compile-time-known value, the value-side mirror of $T. It parses, formats, and — unlike a $T template whose parameter type is unknown — its body type-checks, because a $N parameter's type is fully known (s64) and only its value varies. A call is refused by design (E0271) pending the second half, which evaluates the argument to a constant and instantiates per value, the same staging $T had. $T procedures work end to end (ADR-0081-0084): a $T parameter is inferred from the call — directly or through a pointer or view — instantiated once per distinct tuple of bound types, checked per instantiation, and run as an ordinary procedure in both engines, so nothing polymorphic survives to the back end. And polymorphic structs (ADR-0085, built per ADR-0086): Box :: struct($T) { value: T; } used as Box(s64) is a type constructor, and Box(s64) and Box(bool) are distinct types from one declaration with substituted fields and layouts, told apart in the pool by the type argument in the key the way [2]s64 and [3]s64 are. It changed the pool's most load-bearing invariant — a struct's identity was its declaration site — and was landed in two commits, a zero-behaviour-change representation refactor proven by an unchanged snapshot and test count, then the parameterised behaviour, so a half-built type-identity change could not hide a miscompile. Left in W5: the $N instantiation half (design of record in ADR-0088, recommended next — evaluate the argument to a constant via the acyclic const-eval pre-pass, key an instantiation on the value tuple, bake it into a clone, lift E0271, unlock [N]T; ADR-0088 flags a re-resolve gap to settle first), the macro family (modify, bake_arguments, expand), and the deferred struct pieces (inference through Box($T), using on one, cross-file, recursive List($T)), each a refusal today rather than a gap.",
   ),
   (
     "W6 Metaprogram", "not started",
@@ -357,7 +357,7 @@
   [
     #sub[Thirty-nine waves shipped]
     #text(size: 7.4pt)[
-      ADR-0049 through 0087: for and defer, using, aggregate returns, multiple returns, named and
+      ADR-0049 through 0088 (0088 a design of record, not yet built): for and defer, using, aggregate returns, multiple returns, named and
       default arguments, scope visibility, imported constants, float constants, context, the
       bounds-check build setting, indirect calls, null plus a memory source, the allocator
       protocol, push_context, pointer arithmetic, temporary storage, trap backtraces, switch,
