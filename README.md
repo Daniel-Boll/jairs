@@ -57,7 +57,10 @@ while designing `#modify`, whose predicate needs exactly it, and fixing it also 
 error into working code. And **`#modify` has its surface** (ADR-0093): a compile-time predicate over an instantiation — `#modify {
 return type_info(T).id == type_info(s64).id; }` guards a template in code rather than in a comment. The
 block parses and formats; a call is refused (E0274) pending evaluation, because a parsed-and-ignored
-predicate would accept calls the author rejected. Still ahead in W5: evaluating it, then `#bake_arguments`. On top of **`#code`** (ADR-0080), which **completed wave W4 — Comptime** as scoped: `#code { n := 7; }`
+predicate would accept calls the author rejected. And **the predicate now runs** (ADR-0095): a `false` refuses that instantiation, so a template enforces its
+own constraints in code — `#modify { return type_info(T).id == type_info(s64).id; }` rejects every other
+instantiation, with the rejection pointing at the guarded procedure. A predicate that fails to *run* is
+deliberately not a rejection. Still ahead in W5: `#bake_arguments`. On top of **`#code`** (ADR-0080), which **completed wave W4 — Comptime** as scoped: `#code { n := 7; }`
 is `#insert "n := 7;"` written without quotes, spliced into the enclosing scope. It is deliberately *sugar* —
 `#insert` of a named constant already worked, so what `#code` adds is no quoting and a body parsed where it
 is written, not a new capability. There is no `Code` *value*, and that is **declined rather than deferred**: a

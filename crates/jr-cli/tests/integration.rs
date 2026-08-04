@@ -331,6 +331,10 @@ fn imports_invalid_corpus_fails() {
         // E0262: E0273 comes out of **lowering**, so `type-errors/`' harness would fail it for not
         // lowering cleanly before ever checking the code it declares.
         "imports/invalid/014-macro-early-return.jr",
+        // An instantiation rejected by its `#modify` predicate (ADR-0095 §1). Here because E0275 is
+        // `jr-db`'s code — the predicate runs in `file_mir`, the only place with the expanded tree, its MIR
+        // and the VM — so the sema `type-errors/` harness cannot see it.
+        "imports/invalid/015-modify-rejects.jr",
     ] {
         let code = check_with_modules(vec![corpus_path(file)], Some("modules"));
         assert_eq!(code, 1, "{file} must report an error");
