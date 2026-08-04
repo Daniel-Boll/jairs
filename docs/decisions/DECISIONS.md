@@ -2119,3 +2119,46 @@ is a later decision with a benchmark behind it, not a guess now — W8 owns perf
 **Deferred with reasons:** a stable merge sort (wants allocation); `sort` returning whether it changed
 anything (no caller); binary search (wants a sorted-ness precondition nothing can check); sorting by a *key*
 extractor rather than a comparison (two forms where one suffices today).
+
+## W7 sub-wave 3 — a growable array, and the blocker that decides its shape
+
+**Probed first, and one probe failed — which is the whole design input.**
+
+Working: a **polymorphic struct with an array field** (`items: [4]T`) and a `count`; a **pointer to a
+parameterised instance** (`b: *Fixed(s64)`) mutating it; `malloc`/`free`.
+
+**Not** working, and each is a *documented* deferral rather than a surprise:
+
+- **`cast(*s64, p)` is refused (E0232, ADR-0045 §1)**, so a `malloc`'d region cannot be *typed*. That kills a
+  genuinely heap-backed array: `data: *T` can be declared, but nothing can produce a `*T` from an allocator
+  that returns `*u8`. The refusal is right — a general pointer cast makes a wrong pointee type a silent wrong
+  read — so the fix is a **typed allocation** primitive, not a weaker cast, and that is its own decision.
+- **`b: *Fixed($T)` is E0212** — inference *through* a parameterised struct, deferred in ADR-0085 §5. So every
+  routine has to name a concrete instance (`*Fixed(s64)`), which means the module is **per element type**
+  today.
+
+**The fork: what ships now?**
+
+- **(a) A fixed-capacity array (`Array` with `[N]T` storage), per element type, with `$N` capacity.** Cost:
+  it cannot grow, so it is not the dynamic array W7's list names. Benefit: everything it needs works *today*,
+  it is genuinely useful (a bounded buffer is most of what a compiler's own data structures are), and it
+  makes the two blockers **concrete and demonstrated** rather than predicted — the module's own docs point at
+  the exact refusals. **Chosen.**
+- **(b) Wait for typed allocation and cross-instance inference.** Both are real decisions worth making
+  properly; neither is a W7 *library* decision, and blocking the whole stdlib on two language features would
+  leave W7 empty while they are debated.
+- **(c) A `*u8`-backed array with hand-computed byte offsets.** Expressible today — pointer arithmetic works —
+  but every read needs the element size as a literal and every write reinterprets bytes, which is exactly the
+  "silent wrong read" ADR-0045 §1 refused a cast to prevent. Shipping it would route around a deliberate
+  refusal in the standard library, which is the worst possible place to do that.
+- **(d) Hard-code an `Array_s64` with no polymorphism.** No new language surface, but it abandons the
+  polymorphic struct W5 built, and would need copying per type forever.
+
+**Why `$N` for the capacity.** `Array(s64, 16)` would be the natural spelling, but a parameterised struct takes
+*type* arguments only. `$N` on the **procedures** does not help either — the capacity has to be in the
+*struct*'s type. So capacity is a compile-time constant in the declaration, and a caller who wants a different
+one declares their own struct. That is a real limitation and the corpus file says so.
+
+**Deferred with reasons:** growth (wants typed allocation); `remove_at` preserving order (trivial once `pop`
+exists, and no caller yet); a `[]T` view *of* the used prefix (wants slicing a struct field, worth checking
+separately); iteration via `for` (wants the view).

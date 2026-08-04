@@ -18,7 +18,7 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 984 tests green. W7's first two
+Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 984 tests green. W7's first three
 modules are **`String`** (ADR-0103): `equal`, `compare`, `starts_with`, `ends_with`, `find`, `contains`,
 `byte_at`, `is_empty`, **none of which allocate**. It exists because the *previous* wave named it — ADR-0099 §4
 refused `==` on two strings, since a `string` is `{data, count}` and so "the same storage" and "the same
@@ -56,6 +56,26 @@ is `ERROR` and `ERROR` matches anything, so the call type-checked. It is now a d
 workaround**, and a corpus file checks that the workaround works, since a refusal is only as good as its escape
 route. Both bugs were hiding behind a stale comment that said something checkable nobody had checked; one of
 them recorded the refusal as *intended* while users saw a bug report.
+
+**And `Array`** (ADR-0105) is the third: a **fixed-capacity** array with `push`, `pop`, `get`, `set`. W7's plan
+names a *dynamic* array, and this is not one — for three reasons that were **probed rather than assumed**, each
+a refusal the language already makes on purpose. A `malloc`'d region **cannot be typed**, because a general
+pointer cast makes a wrong pointee type a silent wrong read and is refused; so `data: *T` is declarable and
+nothing can produce a `*T` from an allocator returning `*u8`, which puts heap storage out of reach until a
+*typed allocation* primitive exists. Inference *through* a parameterised struct is deferred. And a parameterised
+struct **cannot cross a module boundary at all** — the one that decided the shape, found by importing the
+module: the first draft compiled cleanly inside it and failed at the importer's first use, so a polymorphic
+struct in a module is unusable by everyone.
+
+Routing around those was considered and rejected. A `*u8`-backed array with hand-computed byte offsets *is*
+expressible, and every read would need the element size as a literal while every write reinterpreted bytes —
+exactly the silent wrong read the cast refusal exists to prevent. The standard library, where a reader looks to
+learn what the language means, is the worst possible place to route around a deliberate refusal.
+
+`push` answers `false` when full rather than trapping, because filling a fixed buffer is something a correct
+program does and then handles, while indexing past a compiler-known bound is a program error. `pop` and `get`
+return two values rather than a sentinel, the opposite call from `find`'s `-1`, and the difference is that an
+index has values outside its domain while an element does not.
 
 Before it, wave **W6 — Metaprogram**, five sub-waves in, with 984 tests green. Its headline claim is met — a metaprogram can find
 declarations by note and generate code for each — and a build script can name its own artefact. A declaration can

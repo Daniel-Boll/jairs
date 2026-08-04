@@ -509,7 +509,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **984 workspace tests** and **194 corpus files**, all six gates green, **166
+waiting. Both are tracked below. **984 workspace tests** and **195 corpus files**, all six gates green, **166
 Neovim checks**. See §1.5.
 
 ### W7 — Stdlib, open
@@ -576,6 +576,41 @@ Neovim checks**. See §1.5.
       report `unresolved name` — the module existed on disk and not in the list, and the failure blamed the
       test file rather than the list. The same drift the file's own comment warns about for the *file* count,
       one level over.
+
+- [x] **`Array`** (ADR-0105, sub-wave 3): a **fixed-capacity** array — `Int_Array` with `[16]s64` storage,
+      `push`, `pop`, `get`, `set`, `clear`, `is_empty`, `is_full`, `CAPACITY`. The fourth module and the first
+      *data structure*. **W7's plan names a dynamic array and this is not one**, and the reason is three
+      refusals — every one *probed* rather than assumed:
+      - **A `malloc`'d region cannot be typed**: `cast(*s64, p)` is E0232 (ADR-0045 §1), because a general
+        pointer cast makes a wrong pointee a *silent wrong read*. `data: *T` is declarable and nothing can
+        produce a `*T` from an allocator returning `*u8`, so **heap storage is unreachable**. The fix is a
+        **typed allocation** primitive, not a weaker cast.
+      - **Inference through a parameterised struct is deferred** (ADR-0085 §5): `*Array($T)` is E0212.
+      - **A parameterised struct cannot cross a module boundary** (E0269, ADR-0085 §5) — *the one that decided
+        the shape*, found by **importing** the module: the first draft's `Array :: struct($T)` compiled cleanly
+        *inside* the module and failed at the importer's first `a: Array(s64)`. A polymorphic struct in a module
+        is **unusable by every importer**, so the struct is concrete and the name says `Int`.
+
+      **Routing around them was rejected**: a `*u8`-backed array with hand-computed offsets *is* expressible,
+      and every read would need the element size as a literal while every write reinterpreted bytes — exactly
+      the silent wrong read E0232 exists to prevent. Doing that in the **standard library**, where a reader
+      looks to learn what the language means, would be the worst place for it.
+
+      `push` answers `false` when full rather than trapping, because filling a fixed buffer is something a
+      correct program does and handles, while indexing past a compiler-known bound is a *program error*. `pop`
+      and `get` return **two values** rather than a sentinel — the opposite call from `String.find`'s `-1`,
+      because **an index has values outside its domain and an element does not**. Both bound on `count`, not
+      `CAPACITY`: an unused slot holds the value the declaration zeroed it to, a real number indistinguishable
+      from an element — the well-typed-placeholder failure in a *library* this time. Teeth-checked twice:
+      bounding `get` on `CAPACITY` clears bit 8 (255→247), and making `push` always succeed made the
+      fill-to-capacity loop never terminate, which is a blunt proof the refusal is load-bearing.
+
+      **No compiler change at all**, worth noting after two sub-waves that each fixed a leak: this one found
+      only refusals that were already correct and already documented.
+
+**What unblocks a real dynamic array**, in order: **typed allocation**, then **cross-file parameterised
+structs** and **inference through them**. Each is a language decision with its own argument, and none belongs
+to a library.
 
 **What W7 has left:** the **allocating** half of `String`, once the allocator convention is decided; a merge
 sort and a binary search (the first wants allocation, the second a sortedness precondition nothing can check);

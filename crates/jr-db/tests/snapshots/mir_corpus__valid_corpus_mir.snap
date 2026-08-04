@@ -7618,3 +7618,256 @@ proc main -> void {
     discard call extern proc1(v84)
     return
 }
+
+========================================
+086-array.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: struct  // local 1
+    s1: (s64, bool)  // temporary
+    s2: (s64, bool)  // temporary
+    s3: (s64, bool)  // temporary
+    s4: (s64, bool)  // temporary
+    s5: (s64, bool)  // temporary
+    s6: (s64, bool)  // temporary
+    s7: (s64, bool)  // temporary
+  bb0(v0: *Context):
+    zero s0
+    store s0.1 <- 0_s64
+    v1: *struct = addr s0
+    v2: (s64, bool) = call extern proc1(v0, v1)
+    store s1 <- v2
+    v3: bool = load s1.1
+    v4: *struct = addr s0
+    v5: bool = call extern proc5(v0, v4)
+    branch v5 ? bb1() : bb2()
+  bb1():
+    v7: *struct = addr s0
+    v8: bool = call extern proc6(v0, v7)
+    v9: bool = !v8
+    goto bb3(v9)
+  bb2():
+    goto bb3(false)
+  bb3(v6: bool):
+    branch v6 ? bb4() : bb5()
+  bb4():
+    v12: bool = !v3
+    goto bb6(v12)
+  bb5():
+    goto bb6(false)
+  bb6(v10: bool):
+    branch v10 ? bb7() : bb8()
+  bb7():
+    v15: s64 = 0_s64 + 1_s64
+    goto bb9(v15)
+  bb8():
+    goto bb9(0_s64)
+  bb9(v26: s64):
+    v16: *struct = addr s0
+    v17: bool = call extern proc0(v0, v16, 10_s64)
+    branch v17 ? bb10() : bb11()
+  bb10():
+    v19: *struct = addr s0
+    v20: bool = call extern proc0(v0, v19, 20_s64)
+    goto bb12(v20)
+  bb11():
+    goto bb12(false)
+  bb12(v18: bool):
+    branch v18 ? bb13() : bb14()
+  bb13():
+    v22: s64 = load s0.1
+    v23: bool = v22 == 2_s64
+    goto bb15(v23)
+  bb14():
+    goto bb15(false)
+  bb15(v21: bool):
+    branch v21 ? bb16() : bb17()
+  bb16():
+    v27: s64 = v26 + 2_s64
+    goto bb18(v27)
+  bb17():
+    goto bb18(v26)
+  bb18(v47: s64):
+    v28: *struct = addr s0
+    v29: (s64, bool) = call extern proc2(v0, v28, 0_s64)
+    store s2 <- v29
+    v30: s64 = load s2.0
+    v31: bool = load s2.1
+    v32: *struct = addr s0
+    v33: (s64, bool) = call extern proc2(v0, v32, 1_s64)
+    store s3 <- v33
+    v34: s64 = load s3.0
+    v35: bool = load s3.1
+    branch v31 ? bb19() : bb20()
+  bb19():
+    goto bb21(v35)
+  bb20():
+    goto bb21(false)
+  bb21(v36: bool):
+    branch v36 ? bb22() : bb23()
+  bb22():
+    v39: bool = v30 == 10_s64
+    goto bb24(v39)
+  bb23():
+    goto bb24(false)
+  bb24(v37: bool):
+    branch v37 ? bb25() : bb26()
+  bb25():
+    v43: bool = v34 == 20_s64
+    goto bb27(v43)
+  bb26():
+    goto bb27(false)
+  bb27(v40: bool):
+    branch v40 ? bb28() : bb29()
+  bb28():
+    v48: s64 = v47 + 4_s64
+    goto bb30(v48)
+  bb29():
+    goto bb30(v47)
+  bb30(v59: s64):
+    v49: *struct = addr s0
+    v50: (s64, bool) = call extern proc2(v0, v49, 2_s64)
+    store s4 <- v50
+    v51: bool = load s4.1
+    v52: *struct = addr s0
+    v53: (s64, bool) = call extern proc2(v0, v52, -1_s64)
+    store s5 <- v53
+    v54: bool = load s5.1
+    v55: bool = !v51
+    branch v55 ? bb31() : bb32()
+  bb31():
+    v57: bool = !v54
+    goto bb33(v57)
+  bb32():
+    goto bb33(false)
+  bb33(v56: bool):
+    branch v56 ? bb34() : bb35()
+  bb34():
+    v60: s64 = v59 + 8_s64
+    goto bb36(v60)
+  bb35():
+    goto bb36(v59)
+  bb36(v68: s64):
+    v61: *struct = addr s0
+    v62: bool = call extern proc3(v0, v61, 0_s64, 11_s64)
+    branch v62 ? bb37() : bb38()
+  bb37():
+    v64: *struct = addr s0
+    v65: bool = call extern proc3(v0, v64, 2_s64, 99_s64)
+    v66: bool = !v65
+    goto bb39(v66)
+  bb38():
+    goto bb39(false)
+  bb39(v63: bool):
+    branch v63 ? bb40() : bb41()
+  bb40():
+    v69: s64 = v68 + 16_s64
+    goto bb42(v69)
+  bb41():
+    goto bb42(v68)
+  bb42(v74: s64):
+    v70: *struct = addr s0
+    v71: (s64, bool) = call extern proc2(v0, v70, 0_s64)
+    store s6 <- v71
+    v72: s64 = load s6.0
+    v73: bool = v72 == 11_s64
+    branch v73 ? bb43() : bb44()
+  bb43():
+    v75: s64 = v74 + 32_s64
+    goto bb45(v75)
+  bb44():
+    goto bb45(v74)
+  bb45(v87: s64):
+    v76: *struct = addr s0
+    v77: (s64, bool) = call extern proc1(v0, v76)
+    store s7 <- v77
+    v78: s64 = load s7.0
+    v79: bool = load s7.1
+    branch v79 ? bb46() : bb47()
+  bb46():
+    v81: bool = v78 == 20_s64
+    goto bb48(v81)
+  bb47():
+    goto bb48(false)
+  bb48(v80: bool):
+    branch v80 ? bb49() : bb50()
+  bb49():
+    v83: s64 = load s0.1
+    v84: bool = v83 == 1_s64
+    goto bb51(v84)
+  bb50():
+    goto bb51(false)
+  bb51(v82: bool):
+    branch v82 ? bb52() : bb53()
+  bb52():
+    v88: s64 = v87 + 64_s64
+    goto bb54(v88)
+  bb53():
+    goto bb54(v87)
+  bb54(v113: s64):
+    goto bb55(true)
+  bb55(v89: bool):
+    branch v89 ? bb56() : bb57()
+  bb56():
+    v90: *struct = addr s0
+    v91: bool = call extern proc0(v0, v90, 1_s64)
+    v92: bool = !v91
+    branch v92 ? bb59() : bb60()
+  bb59():
+    goto bb61(false)
+  bb60():
+    goto bb61(v89)
+  bb61(v93: bool):
+    goto bb55(v93)
+  bb57():
+    goto bb58()
+  bb58():
+    v94: s64 = load s0.1
+    v95: bool = v94 == 16_s64
+    branch v95 ? bb62() : bb63()
+  bb62():
+    v97: *struct = addr s0
+    v98: bool = call extern proc6(v0, v97)
+    goto bb64(v98)
+  bb63():
+    goto bb64(false)
+  bb64(v96: bool):
+    branch v96 ? bb65() : bb66()
+  bb65():
+    v100: *struct = addr s0
+    v101: bool = call extern proc0(v0, v100, 1_s64)
+    v102: bool = !v101
+    goto bb67(v102)
+  bb66():
+    goto bb67(false)
+  bb67(v99: bool):
+    branch v99 ? bb68() : bb69()
+  bb68():
+    v103: *struct = addr s0
+    discard call extern proc4(v0, v103)
+    v104: *struct = addr s0
+    v105: bool = call extern proc5(v0, v104)
+    branch v105 ? bb71() : bb72()
+  bb71():
+    v107: *struct = addr s0
+    v108: bool = call extern proc0(v0, v107, 5_s64)
+    goto bb73(v108)
+  bb72():
+    goto bb73(false)
+  bb73(v106: bool):
+    branch v106 ? bb74() : bb75()
+  bb74():
+    v115: s64 = v113 + 128_s64
+    goto bb76(v115)
+  bb75():
+    goto bb76(v113)
+  bb76(v117: s64):
+    goto bb70(v117)
+  bb69():
+    goto bb70(v113)
+  bb70(v116: s64):
+    discard call extern proc1(v116)
+    return
+}
