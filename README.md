@@ -171,6 +171,16 @@ statistics for a baseline. Writing it surfaced a real language gap: a `u64`-rang
 `name : T : value` form, so the golden-ratio seed is declared through `#run` of a `-> u64` procedure whose
 return type gives the too-large literal its context — recorded rather than worked around silently.
 
+**And a float can now cross the FFI boundary** (ADR-0114), the language unblocker two library sub-waves named:
+a `#foreign` procedure may take and return a float, so `sqrt`, `pow` and friends are callable. A float is passed
+in a floating-point register on every real ABI, not as a machine word — so the VM's libffi path describes the
+argument and return as a float type (which places it in the right register) and native code gives the foreign
+signature a float parameter. Passing the bits as an integer would call the routine on a float register that was
+never written: a plausible-looking wrong number, silently, which is why the register placement is load-bearing
+rather than an optimisation. Both engines call the same libm, which is correctly rounded, so `sqrt(16.0) == 4.0`
+is an exact comparison — the exactness `Math` said an in-language approximation could not have, and the reason
+its transcendentals belong behind this boundary. That unblocks them as a libm wrap.
+
 Before it, wave **W6 — Metaprogram**, five sub-waves in, with 984 tests green. Its headline claim is met — a metaprogram can find
 declarations by note and generate code for each — and a build script can name its own artefact. A declaration can
 carry **`@note` metadata** for a metaprogram to read (ADR-0098). `@deprecated` and `@requires "x"` sit in the

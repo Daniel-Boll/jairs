@@ -509,7 +509,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **986 workspace tests** and **202 corpus files**, all six gates green, **166
+waiting. Both are tracked below. **986 workspace tests** and **203 corpus files**, all six gates green, **166
 Neovim checks**. See §1.5.
 
 ### W7 — Stdlib, open
@@ -747,6 +747,16 @@ through them** (ADR-0085 §5). So a growable array has real storage but stays pe
       beats better statistics for a baseline; a zero seed is replaced by `GOLDEN` rather than left at xorshift's
       zero fixed point. **Surfaced a language gap** (§3): a `u64`-range named constant has no `name : T : value`
       form, so `GOLDEN` is declared via `#run` of a `-> u64` procedure. Third consecutive pure-library sub-wave.
+
+- [x] **Floats across the FFI boundary** (ADR-0114, sub-wave 12): a `#foreign` procedure may take and return a
+      float — the language unblocker `Math` (ADR-0112) named. A float is passed in a **floating-point register**
+      (`xmm0`/`d0`) on every real ABI, not as a word, so the VM's libffi path now describes a float arg/return as
+      `Type::f32`/`Type::f64` (which places it correctly) and native uses an `F32`/`F64` `AbiParam` (which SysV
+      places in the float register). **The bits-as-a-`u64` alternative is silently wrong** — the callee reads a
+      float register that was never written. A `float32` narrows at the boundary, keyed on the parameter's
+      width. Ships the capability with a corpus file calling `sqrt`/`sqrtf`/`pow` in both engines; both call the
+      *same* libm, so `sqrt(16.0) == 4.0` is exact — the exactness ADR-0112 §1 said an approximation could not
+      have. **Unblocks `Math`'s transcendentals as a libm wrap.**
 
 **W7 left after that:** the **allocating** half of `String`, once the allocator convention is decided; a merge
 sort and a binary search (the first wants allocation, the second a sortedness precondition nothing can check);
