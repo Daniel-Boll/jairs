@@ -100,3 +100,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0077](0077-type-info-id.md) | `Type_Info` gains a stable `id` (the pool id) so a type has a runtime identity for `any_as` to check (amends ADR-0075 §3) | Accepted |
 | [0078](0078-type-info-per-kind.md) | `Type_Info` gains fixed-size per-kind facts (`count`, `element`); the variable-length field list stays deferred (amends ADR-0075 §3) | Accepted |
 | [0079](0079-no-pointers-in-compile-time-aggregates.md) | A pointer or view in a compile-time aggregate is refused — it addressed the evaluator's memory and silently miscompiled (completes ADR-0074 §2) | Accepted |
+| [0080](0080-code.md) | `#code { … }` is unquoted source that splices, and it is sugar over `#insert` — no `Code` value, declined until something can inspect a tree | Accepted |

@@ -29,7 +29,7 @@ use rowan::{Checkpoint, GreenNode, GreenNodeBuilder};
 use crate::code::{
     E0100, E0101, E0102, E0103, E0104, E0105, E0106, E0107, E0108, E0109, E0110, E0111, E0112,
     E0113, E0114, E0115, E0116, E0117, E0118, E0119, E0121, E0123, E0124, E0125, E0126, E0127,
-    E0128, E0129, E0130, E0199,
+    E0128, E0129, E0130, E0131, E0199,
 };
 use crate::kind::{SyntaxKind, SyntaxKind::*, SyntaxNode};
 use crate::lexer::{Token, lex};
@@ -1609,12 +1609,48 @@ impl<'src> Parser<'src> {
                 }
                 true
             }
+            // `#code { … }` is a **statement with a braced body** (ADR-0080 §1), so it cannot reach the
+            // `EXPR_START` arm below the way every other directive does: a directive-expression parses an
+            // optional string or operand expression, and a `{` is neither. Checked before that arm and by
+            // *text*, because the lexer produces one `DIRECTIVE` token for every `#word` — the
+            // permissiveness that has let three directives be added without touching it.
+            DIRECTIVE if self.current_directive_text() == "#code" => {
+                self.parse_code_stmt();
+                true
+            }
             _ if self.at_set(EXPR_START) => {
                 self.parse_assign_or_expr_stmt();
                 true
             }
             _ => false,
         }
+    }
+
+    /// Parses `#code { … }` (ADR-0080 §1).
+    ///
+    /// The body is a **block**, parsed as ordinary statements so its faults are reported where they are
+    /// written rather than as an offset into a string. Lowering then takes the block's own source text —
+    /// the CST is lossless, so it is recoverable — and splices it through `#insert`'s path.
+    ///
+    /// Braces are required: a braceless `#code n := 7;` would have to decide where the quoted region ends,
+    /// and "until the next `;`" cannot express two statements — ADR-0063's argument for `push_context`.
+    fn parse_code_stmt(&mut self) {
+        self.start_node(CODE_STMT);
+        // The directive's own span, taken before the bump, so a missing body is reported **at the
+        // `#code`** rather than at whatever followed it: the fault is the directive's incompleteness, and
+        // pointing at the next statement blames code that is fine.
+        let directive_span = self.current_span();
+        self.bump(); // `#code`
+        if self.at(L_BRACE) {
+            self.parse_block();
+        } else {
+            self.error(
+                directive_span,
+                "`#code` needs a braced body, e.g. `#code { x := 1; }`",
+                E0131,
+            );
+        }
+        self.finish_node();
     }
 
     fn parse_if_stmt(&mut self) {
@@ -2815,6 +2851,42 @@ main :: () {
         );
         // Round-trip
         assert_eq!(p.syntax().text().to_string(), text);
+    }
+
+    // ---- `#code` (ADR-0080) -------------------------------------------------
+
+    #[test]
+    fn code_with_a_braced_body_parses() {
+        check_no_errors("main :: () {\n    #code {\n        n := 1;\n    }\n}\n");
+        check_round_trip("main :: () {\n    #code {\n        n := 1;\n    }\n}\n");
+    }
+
+    #[test]
+    fn code_without_a_body_is_e0131() {
+        // Braces are required (ADR-0080 §1): a braceless form would have to decide where the quoted
+        // region ends, and "until the next `;`" cannot express two statements. This refusal cannot be a
+        // `type-errors/` corpus file, because that directory requires its files to *parse*.
+        let text = "main :: () {\n    #code\n}\n";
+        let p = parse(text, file());
+        assert!(p.has_errors(), "`#code` with no body must be refused");
+        assert!(
+            p.diagnostics()
+                .iter()
+                .any(|d| d.code == Some("E0131")),
+            "expected E0131, got: {:?}",
+            p.diagnostics()
+                .iter()
+                .map(|d| d.code)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn code_holding_a_string_needs_no_escaping() {
+        // The ergonomic point of `#code` over `#insert "…"`: a body containing a string literal is
+        // ordinary source, so nothing is escaped and the round-trip is exact.
+        check_no_errors("main :: () {\n    #code {\n        s := \"hi\";\n    }\n}\n");
+        check_round_trip("main :: () {\n    #code {\n        s := \"hi\";\n    }\n}\n");
     }
 
     // ---- snapshot test using `check` ---------------------------------------

@@ -1090,6 +1090,18 @@ impl Formatter {
                 self.emit("}");
                 self.newline();
             }
+            // `#code { … }` (ADR-0080 §1) formats like `push_context`: a keyword-ish head then a braced
+            // block. It must be handled explicitly, because a formatter that dropped the body would
+            // silently delete the spliced code — the lossy-CST failure ADR-0072 §1 warned of and which
+            // ADR-0073 actually hit when `#insert CODE;` formatted to `#insert;`.
+            CODE_STMT => {
+                self.emit_indent();
+                self.emit("#code ");
+                if let Some(body) = node.children().find(|n| n.kind() == BLOCK) {
+                    self.format_block(&body);
+                }
+                self.newline();
+            }
             PUSH_CONTEXT_STMT => {
                 self.emit_indent();
                 self.emit("push_context ");
@@ -1716,6 +1728,7 @@ fn is_stmt_kind(kind: SyntaxKind) -> bool {
             | WHILE_STMT
             | FOR_STMT
             | DEFER_STMT
+            | CODE_STMT
             | PUSH_CONTEXT_STMT
             | SWITCH_STMT
             | LOOP_LABEL

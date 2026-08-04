@@ -1158,6 +1158,31 @@ impl<'a> BodyLowerCtx<'a> {
     /// Every statement's span is the directive's, per ADR-0072 §2: the spans the inner parse produced are
     /// offsets into the *inserted string*, and `jr-diag` clamps an out-of-range offset rather than
     /// rejecting it, so using one would silently underline source the user never wrote.
+    /// Lowers `#code { … }` by splicing the body's own source text (ADR-0080 §1, §2).
+    ///
+    /// The **inner** text — between the braces, exclusive — because the braces are the `#code` syntax
+    /// rather than part of the code: splicing them would produce a nested block, which is precisely the
+    /// nested *name scope* ADR-0072 §1 says an insert must not create.
+    ///
+    /// Reaches the same [`Stmt::Insert`] a literal insert does, so the depth bound (E0264) and the
+    /// pending-insert refusal in `jr-mir`'s `scan` apply unchanged — `#code` inherits every guarantee
+    /// rather than needing its own.
+    fn lower_code(&mut self, code: &jr_syntax::ast::CodeStmt, span: Span) -> StmtId {
+        let Some(block) = code.block() else {
+            // The parser already reported E0131 for a `#code` with no braces; refusing the statement here
+            // keeps lowering from inventing an empty splice, which would be the well-typed-placeholder
+            // shape AGENTS.md names.
+            return self.alloc_stmt(Stmt::Error(span));
+        };
+        let text = block_inner_text(block.syntax());
+        let stmts = self.expand_insert_text(&text, span);
+        self.alloc_stmt(Stmt::Insert {
+            stmts,
+            operand: None,
+            span,
+        })
+    }
+
     fn lower_insert(&mut self, directive: &jr_syntax::ast::DirectiveExpr, span: Span) -> StmtId {
         // **Checked before the operand is even looked at** (ADR-0073 §3), because the thing being
         // bounded is the recursion itself: `lower_stmt` calls this, which calls `lower_stmt`, and an
@@ -1348,6 +1373,17 @@ impl<'a> BodyLowerCtx<'a> {
                 let directive = insert_directive(e).expect("the guard just matched");
                 self.lower_insert(&directive, span)
             }
+            // `#code { … }` splices its body's **source text**, through the same path a literal
+            // `#insert "…"` takes (ADR-0080 §2). The body was already parsed as ordinary statements, so
+            // its faults were reported where they are written; what is reused here is the *splice*, which
+            // is what puts the statements in the **enclosing** scope rather than a nested one.
+            //
+            // Re-parsing the text rather than lowering the block we already have is deliberate: a
+            // `Stmt::Block`'s statements go into a nested name scope (ADR-0072 §1's whole point is that an
+            // insert's do not), and `Stmt::Insert` is the variant that carries "these statements belong to
+            // the enclosing body". The cost is that the spans become the directive's (ADR-0080 §2), which
+            // that section records as a debt shared with `#insert` rather than a surprise.
+            AstStmt::Code(c) => self.lower_code(c, span),
             AstStmt::Expr(e) => {
                 let expr_id = e
                     .expr()
@@ -2539,6 +2575,28 @@ pub fn lower_file_with_inserts(
 /// `None` for anything else, including a nested `#insert` inside a larger expression: `x := #insert "…"`
 /// is not an insert, it is an `#insert` in value position, and it reaches the ordinary directive path
 /// where E0209 refuses it. That is deliberate — an insert produces *statements*, so it has no value.
+/// The source text **inside** a block's braces, exclusive (ADR-0080 §1).
+///
+/// The braces belong to the `#code` syntax rather than to the code, so splicing them would wrap the
+/// statements in a nested block — and a block is a nested *name scope*, which is exactly what ADR-0072 §1
+/// says an insert must not create. Taking the inner text keeps `#code { n := 1; }` equivalent to
+/// `#insert "n := 1;"`, which is what makes the next line able to read `n`.
+///
+/// Works because the CST is lossless: every token and trivium is present, so a node's text is the original
+/// source. That is the property ADR-0080 relies on to need no new representation at all.
+fn block_inner_text(block: &jr_syntax::SyntaxNode) -> String {
+    let text = block.text().to_string();
+    // The braces are the first and last non-trivia characters of a `BLOCK`, so trimming them off the
+    // trimmed text is exact — and it avoids walking children, which would need `rowan` as a direct
+    // dependency this crate deliberately does not have.
+    let trimmed = text.trim();
+    let inner = trimmed
+        .strip_prefix('{')
+        .and_then(|rest| rest.strip_suffix('}'))
+        .unwrap_or(trimmed);
+    inner.to_owned()
+}
+
 fn insert_directive(stmt: &jr_syntax::ast::ExprStmt) -> Option<jr_syntax::ast::DirectiveExpr> {
     let AstExpr::Directive(directive) = stmt.expr()? else {
         return None;

@@ -1,0 +1,97 @@
+// **`#code { … }`** (ADR-0080): unquoted source that splices into the enclosing scope. W4's tenth
+// sub-wave, and the last of the `#insert` family.
+//
+// `#code { n := 7; }` is `#insert "n := 7;"` written without quotes. What that buys is real but narrow,
+// and the ADR is explicit about it rather than implying more:
+//
+//   * **no quoting or escaping.** Code that itself contains a string, or a nested insert, needs none —
+//     and escaping is what made a written nest unpleasant beyond one line (ADR-0072 §5 noted it doubles
+//     the text per level);
+//   * **the body is parsed where it is written**, so a syntax fault in it is an ordinary parse error at
+//     an ordinary position, not an offset into a string.
+//
+// What it is **not** is a `Code` *value*. There is no `Code` type, no pool variant, and `#code` is a
+// statement rather than an expression. ADR-0072 §4 asked whether such a value exists at run time;
+// ADR-0080 §3 answers that it does not exist *at all*, because a quoted syntax tree is only worth
+// representing once something can **inspect or transform** it — and a value that can only be spliced is
+// what a `string` already is. When a macro needs to read its argument, that supersedes this with the real
+// representation, and it will be a better decision for having a working splice to compare against.
+//
+// **The splice is into the enclosing scope, not a nested one**, which is the whole reason this reuses
+// `#insert`'s path rather than lowering the block it already parsed: a block's statements go into a nested
+// *name scope*, so a local the body declares would be invisible afterwards. `inner` below is read after
+// the `#code` closes, which is what proves it.
+//
+// Braces are required. A braceless `#code n := 7;` would have to decide where the quoted region ends, and
+// "until the next `;`" cannot express two statements — ADR-0063's argument for `push_context` taking a
+// block. `type-errors/` cannot hold that refusal because it is a *parse* error (E0131), and that directory
+// requires its files to parse; it is covered by a `jr-syntax` test instead.
+//
+// Six assertions, summing to 63 so any one failing changes the exit value.
+#import "Basic";
+
+main :: () {
+    n := 0;
+
+    // The simplest form: a local declared inside the body is visible after it.
+    #code {
+        seven := 7;
+    }
+    if seven == 7 {
+        n = n + 1;
+    }
+
+    // **Several statements**, which is what a braceless form could not express.
+    #code {
+        a := 2;
+        b := a * 3;
+    }
+    if b == 6 {
+        n = n + 2;
+    }
+
+    // The body **reads an enclosing local**, so the splice is genuinely in this scope rather than a
+    // closure over a copy.
+    outer := 10;
+    #code {
+        from_outer := outer + 5;
+    }
+    if from_outer == 15 {
+        n = n + 4;
+    }
+
+    // A body containing a **string literal**, which in `#insert` form would need escaping. This is the
+    // ergonomic gain, made observable: the string survives the splice intact.
+    #code {
+        greeting := "hi";
+    }
+    if greeting.count == 2 {
+        n = n + 8;
+    }
+
+    // An **empty** body splices nothing and is legal, matching `#insert "";` (ADR-0072 §5). Worth an
+    // assertion because "expands to zero statements" and "was never expanded" were a real bug in the
+    // computed-insert wave, distinguishable only by a field ADR-0073 had to clear.
+    #code {
+    }
+    n = n + 16;
+
+    // **Control flow** inside a body, so the spliced statements are not limited to declarations.
+    #code {
+        counted := 0;
+        i := 0;
+        while i < 4 {
+            counted = counted + i;
+            i = i + 1;
+        }
+    }
+    if counted == 6 {
+        n = n + 32;
+    }
+
+    // Every assertion: 63.
+    if n == 63 {
+        exit(0);
+    }
+    exit(1);
+}

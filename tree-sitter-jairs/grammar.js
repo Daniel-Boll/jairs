@@ -389,6 +389,7 @@ module.exports = grammar({
         $.for_stmt,
         $.defer_stmt,
         $.push_context_stmt,
+        $.code_stmt,
         $.switch_stmt,
         $.return_stmt,
         $.break_stmt,
@@ -494,6 +495,12 @@ module.exports = grammar({
     // context swap has a visible scope.
     push_context_stmt: ($) =>
       seq("push_context", field("body", $.block)),
+
+    // #code { … } (ADR-0080 §1) — unquoted source spliced into the enclosing scope. Its own rule rather
+    // than a directive, because it takes a braced body: the directive rules take an optional string or
+    // expression operand, which a `{` is neither. The body is an ordinary block, so the grammar needs no
+    // special lexing — the splice is a compiler concern, not a syntactic one.
+    code_stmt: ($) => seq("#code", field("body", $.block)),
 
     return_stmt: ($) =>
       seq(

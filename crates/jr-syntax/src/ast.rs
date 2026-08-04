@@ -143,6 +143,7 @@ ast_node!(ForStmt, FOR_STMT);
 ast_node!(RangeExpr, RANGE_EXPR);
 ast_node!(DeferStmt, DEFER_STMT);
 ast_node!(PushContextStmt, PUSH_CONTEXT_STMT);
+ast_node!(CodeStmt, CODE_STMT);
 ast_node!(SwitchStmt, SWITCH_STMT);
 ast_node!(SwitchArm, SWITCH_ARM);
 ast_node!(LoopLabel, LOOP_LABEL);
@@ -320,6 +321,8 @@ pub enum Stmt {
     Defer(DeferStmt),
     /// `push_context { … }` (ADR-0063)
     PushContext(PushContextStmt),
+    /// `#code { … }` (ADR-0080 §1) — unquoted source spliced into the enclosing scope.
+    Code(CodeStmt),
     /// `switch e { case v; … }` (ADR-0067)
     Switch(SwitchStmt),
     /// `label: for …` or `label: while …` (ADR-0049 §2)
@@ -361,6 +364,7 @@ impl AstNode for Stmt {
             FOR_STMT => Some(Self::For(ForStmt(node))),
             DEFER_STMT => Some(Self::Defer(DeferStmt(node))),
             PUSH_CONTEXT_STMT => Some(Self::PushContext(PushContextStmt(node))),
+            CODE_STMT => Some(Self::Code(CodeStmt(node))),
             SWITCH_STMT => Some(Self::Switch(SwitchStmt(node))),
             LOOP_LABEL => Some(Self::Labelled(LoopLabel(node))),
             _ => None,
@@ -381,6 +385,7 @@ impl AstNode for Stmt {
             Self::For(n) => n.syntax(),
             Self::Defer(n) => n.syntax(),
             Self::PushContext(n) => n.syntax(),
+            Self::Code(n) => n.syntax(),
             Self::Switch(n) => n.syntax(),
             Self::Labelled(n) => n.syntax(),
         }
@@ -870,6 +875,16 @@ impl PushContextStmt {
     /// A `Block` rather than a [`ControlBody`]: the parser requires braces (a braceless context swap
     /// reads as a mistake), so there is only ever the one shape and no need for the two-shape helper
     /// `defer` and `if` share.
+    pub fn block(&self) -> Option<Block> {
+        self.0.children().find_map(Block::cast)
+    }
+}
+impl CodeStmt {
+    /// The braced body whose **source text** is spliced (ADR-0080 §1, §2).
+    ///
+    /// A `Block`, parsed as ordinary statements so its faults are reported where they are written. What
+    /// lowering actually uses is the block's own *text* — the CST is lossless, so it is recoverable — which
+    /// is what makes `#code` reuse `#insert`'s path with no new representation.
     pub fn block(&self) -> Option<Block> {
         self.0.children().find_map(Block::cast)
     }
