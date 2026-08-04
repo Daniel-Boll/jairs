@@ -335,6 +335,10 @@ fn imports_invalid_corpus_fails() {
         // `jr-db`'s code — the predicate runs in `file_mir`, the only place with the expanded tree, its MIR
         // and the VM — so the sema `type-errors/` harness cannot see it.
         "imports/invalid/015-modify-rejects.jr",
+        // `#bake_arguments`, whose specialisation is not yet built (ADR-0096 §3). Here for the stage reason
+        // E0262 is: E0276 comes out of **lowering**, so `type-errors/`' harness would fail it for not
+        // lowering cleanly before ever checking the code it declares.
+        "imports/invalid/016-bake-arguments.jr",
     ] {
         let code = check_with_modules(vec![corpus_path(file)], Some("modules"));
         assert_eq!(code, 1, "{file} must report an error");

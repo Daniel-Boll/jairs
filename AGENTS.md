@@ -184,7 +184,10 @@ ADR-0095 **retired** it when the predicate began running, the way E0120/E0122 we
 instantiation **rejected by its `#modify` predicate** — **owned by `jr-db`** beside E0230/E0271, because the
 predicate is evaluated in `file_mir`.
 
-**E0276 is the first free code**; E0131 is the first free *parser* code. E0231 is `jr-db`'s
+E0276 is `#bake_arguments`, refused pending its specialisation (ADR-0096 §3)
+— **owned by `jr-hir`**, since a directive's validity in expression position is judged in lowering.
+
+**E0277 is the first free code**; E0131 is the first free *parser* code. E0231 is `jr-db`'s
 unused-import warning — the first code in this project that is a *warning* rather than an
 error, so a consumer filtering by severity has something to filter.
 

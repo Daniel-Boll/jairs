@@ -61,6 +61,18 @@ const E0264: &str = "E0264";
 /// is built here, and it is here that "the rewrite would fall through" is knowable. Its number continues
 /// `jr-hir`'s block (E0262-E0264 are `#insert`'s) rather than joining `jr-sema`'s.
 const E0273: &str = "E0273";
+/// `#bake_arguments` — a partial application, whose specialisation is not yet built (ADR-0096 §3).
+///
+/// `#bake_arguments add(a = 5)` produces a *specialised procedure* with some arguments built in. The surface
+/// — the directive, its call-shaped operand, and the named-argument spelling reused from an ordinary call —
+/// is this sub-wave; producing the specialised procedure is the next, and it reuses ADR-0088 §3's clone
+/// wholesale (drop the baked parameters, substitute their values, remap the rest).
+///
+/// Refused here, in **lowering**, rather than left to fall through: before this code the declaration lowered
+/// to a poisoned expression and the *caller* reported "the compiler could not lower `main` … this compiler
+/// has a gap — please report it". That message is right for an unknown gap and wrong for a feature whose
+/// absence is known and named, which is the whole difference this code makes.
+const E0276: &str = "E0276";
 
 /// How deep `#insert` expansion may nest before it is refused (ADR-0073 §3).
 ///
@@ -82,7 +94,7 @@ const MAX_INSERT_DEPTH: u32 = 16;
 /// grammar change (see `jr_syntax::lexer`). That permissiveness has to be paid
 /// for here, or `main :: () { #import "Basic"; }` lowers silently and
 /// `jr check` reports success on a program that makes no sense.
-const DIRECTIVES_VALID_AS_EXPRESSIONS: &[&str] = &["system_library", "library"];
+const DIRECTIVES_VALID_AS_EXPRESSIONS: &[&str] = &["system_library", "library", "bake_arguments"];
 
 /// Directives that are only meaningful at file scope.
 const FILE_SCOPE_ONLY_DIRECTIVES: &[&str] = &["import", "load"];
@@ -3086,6 +3098,25 @@ fn insert_directive(stmt: &jr_syntax::ast::ExprStmt) -> Option<jr_syntax::ast::D
 /// Returns the diagnostic to emit, if any. Kept as a free function because both
 /// the file-level and body-level lowering contexts need it.
 fn check_directive_as_expression(name: &str, span: Span) -> Option<Diagnostic> {
+    // **`#bake_arguments` is refused by design, with its own code** (ADR-0096 §3). It is in the allowlist
+    // above so the parser's call-shaped operand is not rejected as "not valid here" — the *surface* is
+    // real — but its specialisation is the next sub-wave. Refused here rather than left to lower to a
+    // poisoned expression, which made the *caller* report "the compiler could not lower `main` … this
+    // compiler has a gap — please report it": right for an unknown gap, wrong for a named one.
+    if name == "bake_arguments" {
+        return Some(
+            Diagnostic::error(
+                span,
+                "`#bake_arguments` is not yet supported",
+            )
+            .with_code(E0276)
+            .with_note(
+                "it produces a specialised procedure with some arguments built in; the specialisation \
+                 arrives in the next sub-wave (ADR-0096)",
+            )
+            .with_help("call the procedure with all its arguments, or write a wrapper procedure"),
+        );
+    }
     if DIRECTIVES_VALID_AS_EXPRESSIONS.contains(&name) {
         return None;
     }

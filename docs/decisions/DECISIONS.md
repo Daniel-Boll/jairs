@@ -1808,3 +1808,52 @@ after E0268, E0271's first meaning and E0272's first meaning). Two things the bu
 2. **A predicate takes the hidden context parameter** like every Jairs procedure (`called a procedure taking
    1 arguments with 0`). Its layout is read before the VM borrows the pool — the non-reentrant-mutex order
    `run_main` already uses.
+
+---
+
+## Wave: `#bake_arguments` (ADR-0096), 2026-08-04 — sub-wave 7g, the last of W5's macro family
+
+Premise verified by running: `add_five :: #bake_arguments add(a = 5);` is a parse error today.
+
+### Fork 1 — what a baked procedure *is*
+
+- Options: **a cloned procedure with the baked arguments dropped from its parameter list and their values
+  substituted in the body — the *same* mechanism `$N` instantiation uses (taken, recommended)**; a wrapper
+  procedure that calls the original with the baked values filled in; a call-site rewrite.
+- Why the clone: it is **literally ADR-0088 §3's mechanism**, already built and teeth-checked — drop the
+  baked parameters from the clone, rewrite their `Res::Param` name-uses into literals, and remap the
+  remaining indices (`append_one` in `instantiate.rs` does all three). A wrapper would work but adds a call
+  layer the inliner would then have to remove, and a call-site rewrite would make `add_five` not a value.
+- **What this buys:** `#bake_arguments` becomes a *reuse* of the polymorphism machinery rather than a new
+  feature, which is why it is the right one to finish W5 with.
+
+### Fork 2 — where the baked value comes from
+
+- Options: **const-eval at the declaration, exactly as a `$N` argument is evaluated (taken, recommended)**;
+  require a literal; allow any expression and evaluate at each use.
+- Why const-eval: a baked argument is a compile-time constant by definition — the whole point is that the
+  specialised procedure has it built in — so it is judged the way a `$N` argument is (ADR-0088 §2, E0271) and
+  a non-constant is refused rather than assumed. Requiring a *literal* would be needlessly narrower than `$N`
+  already is.
+
+### Fork 3 — where `#bake_arguments` is refused, and what that replaced
+
+- Options: **in lowering, with its own code E0276 (taken, recommended)**; in sema; leave it to fall through.
+- Why lowering: that is already where a directive's validity in *expression* position is judged
+  (`check_directive_as_expression`). And leaving it to fall through was not neutral — the declaration lowered
+  to a poisoned expression and the **caller** reported *"the compiler could not lower `main` … this program is
+  legal and this compiler has a gap — please report it"*. That wording is right for an unknown gap and wrong
+  for a feature whose absence is known and named, so the refusal replaces a spurious bug report with a
+  sentence a reader can act on — the same correction ADR-0069 and ADR-0079 made for leaked *internal* errors,
+  here for a leaked *gap report*.
+
+### Resolution (ADR-0096 records the surface)
+
+Surface shipped: the directive parses with a call-shaped operand (the `#insert` arm's shape), reusing the
+ordinary named-argument spelling. E0276 refuses the specialisation, which is the **fifth** by-design refusal
+raised in this project (after E0268, E0271-first, E0272-first, E0274) — every one has named the sub-wave that
+removes it, and four have already been lifted.
+
+Fork 1 stands as the design for the remaining step: the specialised procedure is a **clone with the baked
+parameters dropped**, which is literally ADR-0088 §3's `append_one` — drop, substitute, remap — so the last
+piece of W5 is a reuse rather than a new mechanism.
