@@ -1,0 +1,271 @@
+//! The Map module: a hash table from `s64` to `s64`, open-addressed on the heap.
+//!
+//! The sixth module of the standard library proper (after Basic, String, Sort, Array, List), and the one that
+//! most exercises what the earlier sub-waves built: a heap array of *structs* (typed allocation, ADR-0106),
+//! grown by allocate-copy-free (like `List`, ADR-0107), with field access through pointer arithmetic.
+//!
+//! # Why `Int_Map`, concrete
+//!
+//! Cross-file parameterised structs are deferred (E0269, ADR-0085 §5), so a `Map($K, $V)` declared here would be
+//! unusable by every importer — the same discovery that shaped `Int_Array` and `Int_List`. `s64 -> s64` is the
+//! useful concrete instance (a set of integers, a count-by-id, an index), and the name says which it is. When
+//! cross-file parameterised structs arrive, this becomes `Map($K, $V)` and the `Int_` drops.
+//!
+//! # Why open addressing
+//!
+//! One heap allocation holds all the slots, and the probe sequence is plain arithmetic — so both engines walk
+//! it identically, which the differential harness needs. Separate chaining would need a per-node allocation and
+//! a pointer chase for no benefit at these sizes. Linear probing degrades sharply past about 3/4 full, so the
+//! table grows there rather than when completely full: that is correctness-adjacent, not merely speed.
+//!
+//! # Why the caller frees
+//!
+//! An `Int_Map` owns heap memory, like an `Int_List`, and there are no destructors — so a caller calls
+//! `free_map`, and the type's name and this note are the only warning. A dropped map leaks.
+
+#import "Basic";
+
+/// One slot: a key, its value, and whether it is live.
+///
+/// `used` distinguishes an empty slot (never written) from a live one; a *deleted* slot is `used = false` with
+/// `deleted = true`, a tombstone a probe skips but an insert may reuse. Three states in two bools rather than an
+/// enum, because `enum` across a module boundary is a path this module need not open when two flags say it
+/// plainly.
+Slot :: struct {
+    /// The key. Meaningful only when `used`.
+    key: s64;
+    /// The value. Meaningful only when `used`.
+    value: s64;
+    /// True for a live slot.
+    used: bool;
+    /// True for a tombstone — a slot that was live and was removed. A probe skips it; an insert may reuse it.
+    deleted: bool;
+}
+
+/// A hash table from `s64` to `s64`.
+///
+/// `slots` is null until the first `put`, so an unused map allocates nothing and `free_map` is safe on one that
+/// never grew. `count` is live entries; `tombstones` is deleted-but-not-reused slots, tracked because the *probe
+/// load* is `count + tombstones` — a table thick with tombstones must grow (which clears them) even if `count`
+/// is low, or probes lengthen without bound.
+Int_Map :: struct {
+    /// The slot array, or null before the first `put`.
+    slots: *Slot;
+    /// Live entries.
+    count: s64;
+    /// Tombstones — removed slots not yet reclaimed by a rehash.
+    tombstones: s64;
+    /// The slot array's length. A power of two, so a bucket index is a mask rather than a modulo.
+    capacity: s64;
+}
+
+/// The capacity of a map's first allocation. A power of two, so `hash & (capacity - 1)` is the bucket.
+FIRST_CAPACITY :: 8;
+
+/// Inserts or updates `key`, answering `false` only when a needed allocation failed.
+///
+/// Amortised `O(1)`: the table doubles at 3/4 probe load, so a run of inserts copies `O(n)` slots in total.
+/// Updating an existing key does not change `count` and never grows.
+put :: (m: *Int_Map, key: s64, value: s64) -> bool {
+    // Grow when the *probe load* — live plus tombstones — would exceed 3/4, because a linear-probing table's
+    // probes lengthen with occupied-or-tombstoned slots, not just live ones.
+    if (m.count + m.tombstones + 1) * 4 > m.capacity * 3 {
+        if !grow(m) {
+            return false;
+        }
+    }
+    slot := find_slot(m, key);
+    s := m.slots + slot;
+    if s.used {
+        // An existing key: update in place, no count change.
+        s.value = value;
+        return true;
+    }
+    // A fresh or tombstoned slot becomes live. A reused tombstone stops being one.
+    if s.deleted {
+        m.tombstones = m.tombstones - 1;
+    }
+    s.key = key;
+    s.value = value;
+    s.used = true;
+    s.deleted = false;
+    m.count = m.count + 1;
+    return true;
+}
+
+/// The value for `key`, plus whether it was present.
+///
+/// Two return values (ADR-0008) rather than a sentinel, for the reason `List.get` gives: every `s64` is a
+/// legitimate value, so no value could mean "absent" without excluding it.
+get :: (m: *Int_Map, key: s64) -> (s64, bool) {
+    if m.capacity == 0 {
+        return 0, false;
+    }
+    slot := find_slot(m, key);
+    s := m.slots + slot;
+    if s.used {
+        return s.value, true;
+    }
+    return 0, false;
+}
+
+/// Whether `key` is present.
+has :: (m: *Int_Map, key: s64) -> bool {
+    _, present := get(m, key);
+    return present;
+}
+
+/// Removes `key`, answering whether it was there.
+///
+/// Leaves a **tombstone** rather than clearing the slot, because clearing would break a probe sequence that ran
+/// through it to a key stored later. Tombstones are reclaimed by the next `grow`, which rehashes only live
+/// entries.
+remove :: (m: *Int_Map, key: s64) -> bool {
+    if m.capacity == 0 {
+        return false;
+    }
+    slot := find_slot(m, key);
+    s := m.slots + slot;
+    if s.used {
+        s.used = false;
+        s.deleted = true;
+        m.count = m.count - 1;
+        m.tombstones = m.tombstones + 1;
+        return true;
+    }
+    return false;
+}
+
+/// Live entries.
+size :: (m: *Int_Map) -> s64 {
+    return m.count;
+}
+
+/// Releases the storage and empties the map.
+///
+/// **The routine a caller must not forget** — there are no destructors. Safe on a map that never grew (`slots`
+/// is null) and safe twice, because it resets `slots`.
+free_map :: (m: *Int_Map) {
+    if m.slots != null {
+        free(untyped(m.slots));
+    }
+    m.slots = null;
+    m.count = 0;
+    m.tombstones = 0;
+    m.capacity = 0;
+}
+
+#scope_module
+
+/// The bucket for `key`: a Fibonacci-style `u64` mix, masked to the capacity.
+///
+/// The multiply **wraps** (`*%`), because a hash deliberately discards the high bits that overflow — plain
+/// `*` traps, and an overflow here is the mixing working, not an error (ADR-0002). Cast to `u64` first so a negative key's sign bit participates in the mix rather than breaking the mask. The
+/// multiply-and-xorshift is pure arithmetic — no FFI — so both engines compute the same bucket, which is what a
+/// hash table needs from the differential harness. Masked with `capacity - 1`, valid because the capacity is a
+/// power of two.
+bucket :: (m: *Int_Map, key: s64) -> s64 {
+    h := cast(u64, key);
+    h = h *% 11400714819323198485;
+    h = h ^ (h >> 29);
+    return cast(s64, h % cast(u64, m.capacity));
+}
+
+/// The slot `key` belongs in: the first live slot holding it, or the first insertable slot on its probe path.
+///
+/// Linear probing: walk from the bucket, wrapping, until either the key is found (a live slot with a matching
+/// key) or an insertable slot is reached. **The first tombstone on the path is remembered**, so an insert reuses
+/// it rather than lengthening the probe — but the walk continues past it, because the key may still be live
+/// further along. An empty (never-used, non-tombstone) slot ends the search: nothing was stored past it on this
+/// probe path.
+///
+/// Guaranteed to terminate because `put` keeps the probe load below 3/4, so an empty slot always exists.
+find_slot :: (m: *Int_Map, key: s64) -> s64 {
+    start := bucket(m, key);
+    i := 0;
+    first_tombstone := -1;
+    result := -1;
+    while i < m.capacity {
+        idx := (start + i) % m.capacity;
+        s := m.slots + idx;
+        if s.used {
+            if s.key == key {
+                result = idx;
+                i = m.capacity;
+            } else {
+                i = i + 1;
+            }
+        } else {
+            if s.deleted {
+                // A tombstone: remember the first one, keep looking for a live match.
+                if first_tombstone < 0 {
+                    first_tombstone = idx;
+                }
+                i = i + 1;
+            } else {
+                // An empty slot: the key is not present. Insert here, or in an earlier tombstone if one was
+                // passed.
+                if first_tombstone >= 0 {
+                    result = first_tombstone;
+                } else {
+                    result = idx;
+                }
+                i = m.capacity;
+            }
+        }
+    }
+    // The table was full of live-or-tombstone with no match and no empty slot — impossible while the load stays
+    // below 3/4, but if it happened, an earlier tombstone is the only insertable slot.
+    if result < 0 {
+        result = first_tombstone;
+    }
+    return result;
+}
+
+/// Doubles the capacity (or allocates the first), rehashing every live entry and dropping tombstones.
+///
+/// Allocate-copy-free like `List.grow` (ADR-0107), and for the same reason `realloc` is avoided: it would make
+/// growth depend on an allocator behaviour the comptime VM does not model. Rehashing is required rather than a
+/// copy, because a slot's bucket depends on the capacity — so every live entry is re-inserted into the new
+/// array, which also leaves the tombstones behind.
+grow :: (m: *Int_Map) -> bool {
+    wanted := FIRST_CAPACITY;
+    if m.capacity > 0 {
+        wanted = m.capacity * 2;
+    }
+    raw := malloc(wanted * size_of(Slot));
+    if raw == null {
+        return false;
+    }
+    fresh := typed(Slot, raw);
+    // Every slot starts empty: neither used nor a tombstone.
+    j := 0;
+    while j < wanted {
+        s := fresh + j;
+        s.used = false;
+        s.deleted = false;
+        j = j + 1;
+    }
+
+    old := m.slots;
+    old_cap := m.capacity;
+    m.slots = fresh;
+    m.capacity = wanted;
+    m.count = 0;
+    m.tombstones = 0;
+
+    // Re-insert the live entries from the old array into the new one, which recomputes each bucket for the new
+    // capacity and drops the tombstones by simply not copying them.
+    if old != null {
+        k := 0;
+        while k < old_cap {
+            s := old + k;
+            if s.used {
+                put(m, s.key, s.value);
+            }
+            k = k + 1;
+        }
+        free(untyped(old));
+    }
+    return true;
+}

@@ -2479,3 +2479,37 @@ checks it in both engines.
 
 **Deferred:** an aggregate-of-floats by value (the struct-ABI decision, still deferred for integers too); a
 `float` *variadic* argument (`printf("%f")` promotes `float` to `double`, its own rule).
+
+## W7 sub-wave 14 — a hash table (`Int_Map`)
+
+**Probed first:** a heap array of *structs* (`typed(Slot, malloc(n * size_of(Slot)))`), with field access through
+pointer arithmetic (`(slots + i).key`), works in both engines. That is everything a hash table's storage needs.
+
+**Concrete `Int_Map`, for the reason `Int_Array` and `Int_List` are concrete** (ADR-0105, ADR-0107): cross-file
+parameterised structs are deferred (E0269, ADR-0085 §5), so a `Map($K, $V)` in a module would be unusable by
+every importer. `s64 -> s64` is the useful concrete instance, and the name says so.
+
+**The fork: open addressing or chaining?**
+
+- **(a) Open addressing, linear probing, in one heap array.** One allocation, no per-entry allocation, and the
+  probe sequence is simple arithmetic — so both engines walk it identically, which the differential harness
+  needs. Cost: deletion needs a tombstone or a backshift, and a full table must grow. Benefit: it is the layout
+  whose behaviour is *obvious* and whose storage is one `typed` allocation, exactly what the language makes easy
+  today. **Chosen.**
+- **(b) Separate chaining (a linked list per bucket).** Needs a per-node allocation and a `List`-like pointer
+  chase, which is more allocation and more to get wrong, for no benefit at these sizes.
+
+**Load-factor growth at 3/4**, doubling, rehashing every live entry — the same amortised-`O(1)` argument as
+`List`'s doubling. A linear-probing table degrades sharply past 3/4 full, so growing there rather than at 1 is
+correctness-adjacent, not just speed.
+
+**Deletion by tombstone**, not backshift: a backshift is correct but fiddly to get right under a probe sequence,
+and a tombstone (a slot marked deleted-but-was-used, which a probe skips over but an insert may reuse) is the
+textbook simple answer. Tombstones accumulate, which a rehash-on-grow clears — stated, not hidden.
+
+**The hash is `Basic`-free arithmetic**: a `u64` multiply by an odd constant and a xor-shift (a Fibonacci-style
+mix), so it agrees bit-for-bit between engines and needs no FFI. A key of any `s64` maps to a bucket, including
+negative keys (cast to `u64` first, so the sign bit participates rather than breaking the modulo).
+
+**Deferred:** a generic `Map($K, $V)` (cross-file parameterised structs); a string-keyed map (wants the key
+hash to walk bytes, additive); iteration (wants a view or a cursor, its own shape).

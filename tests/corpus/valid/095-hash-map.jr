@@ -1,0 +1,121 @@
+// **A hash table** (ADR-0116): `Int_Map`, `s64 -> s64`, open-addressed on the heap. W7's fourteenth sub-wave,
+// and the module that most exercises what the earlier ones built — a heap array of *structs* (typed allocation,
+// ADR-0106), grown by allocate-copy-free (like `List`, ADR-0107), with field access through pointer arithmetic.
+//
+// **Why `Int_Map`, concrete.** Cross-file parameterised structs are deferred (E0269, ADR-0085 §5), so a
+// `Map($K, $V)` here would be unusable by every importer — the discovery that shaped `Int_Array` and `Int_List`.
+// `s64 -> s64` is the useful concrete instance, and the name says so.
+//
+// **Why open addressing.** One heap allocation holds every slot and the probe sequence is plain arithmetic, so
+// both engines walk it identically — which the differential harness needs. Chaining would need a per-node
+// allocation for no benefit here. It grows at 3/4 probe load because linear probing degrades sharply past
+// that — correctness-adjacent, not just speed. Deletion leaves a **tombstone** (a slot a probe skips but an
+// insert may reuse), reclaimed by the next rehash.
+//
+// **The hash multiply wraps** (`*%`), because a hash deliberately discards the bits that overflow — plain `*`
+// traps (ADR-0002), and the overflow is the mixing working. Pure `u64` arithmetic, no FFI, so both engines
+// compute the same bucket.
+//
+// What is checked here:
+//
+//   * `put`/`get` round-tripping several keys, and `size` counting them;
+//   * **update** — re-`put`ting a key changes its value and not the count;
+//   * **absence** — `get` of a missing key is `(_, false)`;
+//   * **removal** leaving a tombstone: the key is gone, `has` is false, `size` drops, and a *later* key on the
+//     same probe path is still findable (the tombstone did not break the chain);
+//   * **growth** — fifty inserts force several rehashes, and every key survives with its value, which a broken
+//     rehash or a bucket that differed between engines would break;
+//   * a **negative** key, so the sign bit goes through the hash rather than breaking the modulo.
+//
+// The exit code is **255**, eight groups of one bit — every one depending on the two engines computing the same
+// buckets and probe paths, which is the sharp end of a hash table under a differential harness.
+#import "Basic";
+#import "Map";
+
+main :: () {
+    n := 0;
+
+    m: Int_Map;
+    m.slots = null;
+    m.count = 0;
+    m.tombstones = 0;
+    m.capacity = 0;
+
+    // put / get / size.
+    put(*m, 1, 100);
+    put(*m, 2, 200);
+    put(*m, 3, 300);
+    v, ok := get(*m, 2);
+    if ok && v == 200 && size(*m) == 3 {
+        n = n + 1;
+    }
+
+    // Update leaves the count alone.
+    put(*m, 2, 999);
+    updated, _ := get(*m, 2);
+    if updated == 999 && size(*m) == 3 {
+        n = n + 2;
+    }
+
+    // Absence.
+    _, present := get(*m, 42);
+    if !present && !has(*m, 42) {
+        n = n + 4;
+    }
+
+    // Removal leaves a tombstone; a key later on the same probe path stays findable. Keys 1 and its
+    // near neighbours share a small table's buckets, so removing one must not lose another.
+    remove(*m, 1);
+    if !has(*m, 1) && size(*m) == 2 && has(*m, 3) {
+        n = n + 8;
+    }
+
+    // A negative key hashes cleanly.
+    put(*m, -7, 777);
+    neg, negok := get(*m, -7);
+    if negok && neg == 777 {
+        n = n + 16;
+    }
+
+    free_map(*m);
+
+    // Growth: fifty inserts through several rehashes, every key surviving with its value.
+    big: Int_Map;
+    big.slots = null;
+    big.count = 0;
+    big.tombstones = 0;
+    big.capacity = 0;
+    i := 0;
+    while i < 50 {
+        put(*big, i, i * 3);
+        i = i + 1;
+    }
+    if size(*big) == 50 {
+        n = n + 32;
+    }
+    survived := true;
+    j := 0;
+    while j < 50 {
+        bv, bok := get(*big, j);
+        if !bok {
+            survived = false;
+        }
+        if bv != j * 3 {
+            survived = false;
+        }
+        j = j + 1;
+    }
+    if survived {
+        n = n + 64;
+    }
+
+    // A key never inserted is still absent after all that growth.
+    _, ghost := get(*big, 999);
+    if !ghost {
+        n = n + 128;
+    }
+
+    free_map(*big);
+
+    exit(n);
+}

@@ -188,6 +188,17 @@ bit-identical in the VM and native code, the exactness an in-language approximat
 three-sub-wave arc worth noting: a library named a language feature it needed, the language delivered it, and
 the library collected. `Math` is complete.
 
+**And a hash table** (ADR-0116): `Int_Map`, `s64 -> s64`, open-addressed with linear probing and tombstone
+deletion, grown at 3/4 load — a heap array of structs, the module that most exercises typed allocation and
+`List`-style growth. Concrete, for the same cross-file-generics reason `Array` and `List` are. Its hash is
+FFI-free `u64` arithmetic, so both engines compute the same bucket — and writing it caught the project's
+**second** engine divergence: the wrapping operators (`*%` and friends) decoded their operands to `i128` and
+computed `wrap(a * b)`, and two large `u64`s overflowed `i128` *itself*, panicking the compile-time evaluator
+before the wrap could take the low bits — while native code, which multiplies in a 64-bit register, was correct.
+Both of the differential's real catches have been in arithmetic or memory the native path did in hardware while
+the VM modelled it in Rust, where the model was subtly off. Fixed to wrap on the truncated `u64` values, which
+is what `*%` always promised.
+
 Before it, wave **W6 — Metaprogram**, five sub-waves in, with 984 tests green. Its headline claim is met — a metaprogram can find
 declarations by note and generate code for each — and a build script can name its own artefact. A declaration can
 carry **`@note` metadata** for a metaprogram to read (ADR-0098). `@deprecated` and `@requires "x"` sit in the
