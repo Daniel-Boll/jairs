@@ -6848,3 +6848,52 @@ proc main -> void {
     discard call extern proc1(5_s64)
     return
 }
+
+========================================
+078-bake-arguments.jr
+========================================
+proc add -> s64 {
+  params: v0: *Context, v1: s64, v2: s64
+  bb0(v0: *Context, v1: s64, v2: s64):
+    v3: s64 = v1 + v2
+    return v3
+}
+proc sub -> s64 {
+  params: v0: *Context, v1: s64, v2: s64
+  bb0(v0: *Context, v1: s64, v2: s64):
+    v3: s64 = v1 - v2
+    return v3
+}
+proc add_five -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: s64 = 5_s64 + v1
+    return v2
+}
+proc from_fifty -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: s64 = 50_s64 - v1
+    return v2
+}
+proc minus_eight -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: s64 = v1 - 8_s64
+    return v2
+}
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call proc2(v0, 37_s64)
+    v2: s64 = call proc3(v0, 8_s64)
+    v3: s64 = call proc4(v0, 50_s64)
+    v4: s64 = call proc2(v0, 0_s64)
+    v5: s64 = v1 + v2
+    v6: s64 = v5 + v3
+    v7: s64 = v6 + v4
+    v8: s64 = call proc2(v0, -5_s64)
+    v9: s64 = v7 - v8
+    discard call extern proc1(v9)
+    return
+}

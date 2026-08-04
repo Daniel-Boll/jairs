@@ -1857,3 +1857,21 @@ removes it, and four have already been lifted.
 Fork 1 stands as the design for the remaining step: the specialised procedure is a **clone with the baked
 parameters dropped**, which is literally ADR-0088 §3's `append_one` — drop, substitute, remap — so the last
 piece of W5 is a reuse rather than a new mechanism.
+
+### Resolution — the specialisation shipped, and W5 closes (ADR-0097)
+
+Fork 1 held: the specialised procedure is a **clone with the baked parameters dropped**, and it is ADR-0088
+§3's three steps (drop, substitute, remap) applied during *lowering* rather than at an instantiation, because a
+baked procedure is a **declaration**. W5's last piece is therefore a reuse rather than a new mechanism.
+
+**Fork 2 did not hold, and the correction is the useful part.** It recommended evaluating a baked argument
+through ADR-0088 §2's const-eval pre-pass — and building it showed **that pre-pass runs after lowering**,
+while the value is needed where the clone is built. So a baked value must be a **literal**, which is the same
+narrowing ADR-0039 §3a took for an array length; ADR-0070 §1's widening route (read a literal already in the
+HIR from a named constant) is available here later by the same argument.
+
+Also met again: a `NAMED_ARG` is not an `Expr`, so the arguments must be read from the arg list's *children* —
+ADR-0053 §1's trap, which that ADR recorded after it silently dropped every named argument.
+
+**W5 — Polymorphism is complete** in fifteen sub-waves, ADR-0081 through ADR-0097. Next: W6 — Metaprogram,
+then W7 — Stdlib, whose `Array`/hash table need exactly the polymorphic structs W5 delivered.
