@@ -1,0 +1,141 @@
+//! The Sort module: ordering a view in place, for any element type, given a comparison.
+//!
+//! Written in Jairs like the rest of the standard library (PLAN.md decision #5). The **third** module, after
+//! `Basic` and `String`, and the first that is *polymorphic* — so it is also the first library code to depend
+//! on W5 rather than merely coexisting with it.
+//!
+//! # What made this expressible, all three probed before writing a line
+//!
+//! A `[]T` **view parameter is mutable** through the callee, so an in-place sort can exist at all. A `$T`
+//! parameter **infers through a view** (`xs: []$T`, ADR-0084), so one routine serves every element type. And a
+//! **procedure pointer** can be passed and called (ADR-0059), so the ordering can be a parameter. None of the
+//! three was obvious from the plan, and writing the module first and discovering one missing would have meant
+//! designing around a gap instead of knowing there was none.
+//!
+//! # Why the caller supplies the comparison
+//!
+//! `sort(xs, less)` takes a procedure rather than requiring `<` on the element type, and the reason is a
+//! language fact rather than a taste: resolving an **operator** inside a `$T` template against the
+//! instantiated type is a lookup polymorphic instantiation does not do. `operator <` exists (ADR-0048) and
+//! `#modify` can *reject* an instantiation (ADR-0095), but nothing can *select* an implementation per
+//! instantiated type. That would be operator-bounded polymorphism — a real feature, belonging to whichever
+//! wave decides how a template states its requirements, not to a library that wants it.
+//!
+//! A comparison parameter is also the only form that works for a scalar **and** a struct with nothing the
+//! language lacks, and it composes with `String.compare`, which the previous sub-wave shaped for exactly this.
+//! `sort_ints` exists so the common case is still one word.
+//!
+//! # Why insertion sort, which is not a performance argument
+//!
+//! It is `O(n²)` and that is stated rather than hidden. The reasons to choose it *here* are that it is
+//! **stable** — equal elements keep their relative order, which a caller can rely on and which quicksort does
+//! not give — that it needs **no extra storage**, where a merge sort would need an allocation and allocation is
+//! precisely what ADR-0103 §3 declined to decide, and that it is **short enough to read**, which matters for
+//! the first sorting routine in a language whose test suite compares two independent engines against each
+//! other.
+//!
+//! A faster algorithm is a later decision with a benchmark behind it. W8 owns performance, and guessing now
+//! would be choosing an algorithm without the measurement that justifies one.
+//!
+//! # Why there are `_ints` wrappers
+//!
+//! **Cross-file instantiation is deferred** (ADR-0082 §5). An importing file cannot instantiate `sort` or
+//! `is_sorted` — the call is refused with E0268, which it did *not* used to be: a `$T` parameter's type is
+//! `PoolId::ERROR` and `ERROR` matches anything, so the call type-checked and the missing instantiation leaked
+//! out of an engine as "no routine for file 2 proc 0". Writing this module is what found that, and ADR-0104 §2
+//! turned it into a diagnostic that names the workaround.
+//!
+//! The workaround is a wrapper *in the declaring module*, which is where the instantiation can happen. So
+//! `sort_ints` and `ints_sorted` are not conveniences — they are the only way an importer can use this module
+//! today, and they will become conveniences when cross-file instantiation arrives.
+
+/// Sorts `xs` in place, ordering by `less`.
+///
+/// `less(a, b)` must answer "does `a` come strictly before `b`". A comparison that answers `true` for equal
+/// elements would break stability — and worse, would make the result depend on the traversal order rather than
+/// on the data, which is the kind of bug that reproduces on one engine and not the other.
+///
+/// **Stable**: equal elements keep their relative order, because the inner loop stops as soon as it finds an
+/// element that is *not* strictly greater, so an equal one is never stepped over.
+///
+/// The comparison is called `O(n²)` times in the worst case. That is a property of insertion sort, chosen for
+/// stability and for needing no storage rather than for speed — see the module docs.
+sort :: (xs: []$T, less: (T, T) -> bool) {
+    // Insertion sort. `i` walks the boundary between the sorted prefix and the rest; each iteration takes one
+    // element and moves it left past everything that should follow it.
+    i := 1;
+    while i < xs.count {
+        current := xs[i];
+        j := i;
+        // Shift elements right while they belong after `current`. `j > 0` is checked first so the read at
+        // `j - 1` is always in range — the bound is the loop's, not the array's, which is why no
+        // `bounds_check` diagnostic is involved.
+        keep_going := true;
+        while keep_going {
+            if j == 0 {
+                keep_going = false;
+            } else {
+                if less(current, xs[j - 1]) {
+                    xs[j] = xs[j - 1];
+                    j = j - 1;
+                } else {
+                    // Not strictly less, so `current` belongs here. Stopping on the *first* such element is
+                    // what makes the sort stable: an equal element is never passed.
+                    keep_going = false;
+                }
+            }
+        }
+        xs[j] = current;
+        i = i + 1;
+    }
+}
+
+/// Sorts a view of `s64` ascending.
+///
+/// A named convenience so the common case does not have to spell a comparison. It exists because `sort` cannot
+/// use `<` itself — see the module docs — and a caller writing `sort(xs, less_int)` for every integer sort
+/// would be paying for a language limitation in every call.
+sort_ints :: (xs: []s64) {
+    sort(xs, less_int);
+}
+
+/// Whether a view of `s64` is ordered ascending.
+///
+/// The non-polymorphic counterpart of `is_sorted`, and it exists for the same reason `sort_ints` does:
+/// **cross-file instantiation is deferred** (ADR-0082 §5, refused with E0268 since ADR-0104 §2), so an
+/// importer cannot instantiate `is_sorted` — only call a wrapper this module instantiated for it. That is a
+/// real limitation of the language today rather than a stylistic choice, and naming it here is better than
+/// letting a caller discover it as a diagnostic.
+ints_sorted :: (xs: []s64) -> bool {
+    return is_sorted(xs, less_int);
+}
+
+/// Whether `xs` is ordered by `less`.
+///
+/// Useful to a caller checking a precondition, and to a *test* checking a postcondition — which is the honest
+/// reason it is here: a sort's correctness is "the result is ordered and holds the same elements", and this is
+/// the first half stated once rather than open-coded at every call site that wants it.
+///
+/// An empty or single-element view is ordered, which follows from there being no adjacent pair to violate.
+is_sorted :: (xs: []$T, less: (T, T) -> bool) -> bool {
+    i := 1;
+    while i < xs.count {
+        // Ordered means "no element comes strictly before its predecessor". Written this way round rather than
+        // as `less(xs[i - 1], xs[i])` because the latter is *false* for equal neighbours, which would call a
+        // correctly sorted view with duplicates unsorted.
+        if less(xs[i], xs[i - 1]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/// Ascending order for `s64`.
+///
+/// Exported rather than module-private, because a caller composing it — sorting descending with a wrapper, or
+/// passing it to `is_sorted` to check a postcondition — needs to name it. Hiding it would make `sort_ints` the
+/// only way to use the ordering, which is a narrower module for no benefit.
+less_int :: (a: s64, b: s64) -> bool {
+    return a < b;
+}

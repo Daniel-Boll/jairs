@@ -18,8 +18,8 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 984 tests green. W7's first
-module is **`String`** (ADR-0103): `equal`, `compare`, `starts_with`, `ends_with`, `find`, `contains`,
+Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 984 tests green. W7's first two
+modules are **`String`** (ADR-0103): `equal`, `compare`, `starts_with`, `ends_with`, `find`, `contains`,
 `byte_at`, `is_empty`, **none of which allocate**. It exists because the *previous* wave named it — ADR-0099 §4
 refused `==` on two strings, since a `string` is `{data, count}` and so "the same storage" and "the same
 contents" are both plausible readings, and its stated reason was that comparing contents needs a byte loop,
@@ -37,6 +37,25 @@ an accidental convention.
 `(s.data + i).*` and a cast. It is honestly a workaround, and out of range answers `-1` rather than trapping,
 unlike an array index: an array's bound is known to the compiler so passing it is a mistake, while scanning
 until the bytes run out is an ordinary loop.
+
+**And `Sort`** (ADR-0104) is the second: `sort(xs, less)` orders a view in place for any element type, given a
+comparison. The **caller** supplies the ordering rather than the module requiring `<`, and that is a language
+fact rather than a taste — resolving an *operator* inside a `$T` template against the instantiated type is a
+lookup instantiation does not do. `operator <` exists and `#modify` can *reject* an instantiation, but nothing
+can *select* an implementation per instantiated type; that is operator-bounded polymorphism, and it belongs to
+whichever wave decides how a template states its requirements. The algorithm is **insertion sort**, `O(n²)` said
+plainly: it is *stable*, which quicksort is not, it needs no allocation, which is the decision `String` declined
+to make, and it is short enough to read. A faster one is W8's job, with a benchmark behind it.
+
+**Writing that module found two leaked internal errors**, which is the argument for a standard library written
+in the language paying out twice in one sub-wave. Passing an **imported procedure as a value** reported "this
+compiler has a gap — please report it" for a legal program: the value had been representable all along, and
+what was missing was a three-line bridge. And calling an **imported template** leaked "no routine for file 2
+proc 0" — cross-file instantiation is deferred, but the refusal did not exist, because a `$T` parameter's type
+is `ERROR` and `ERROR` matches anything, so the call type-checked. It is now a diagnostic that **names the
+workaround**, and a corpus file checks that the workaround works, since a refusal is only as good as its escape
+route. Both bugs were hiding behind a stale comment that said something checkable nobody had checked; one of
+them recorded the refusal as *intended* while users saw a bug report.
 
 Before it, wave **W6 — Metaprogram**, five sub-waves in, with 984 tests green. Its headline claim is met — a metaprogram can find
 declarations by note and generate code for each — and a build script can name its own artefact. A declaration can

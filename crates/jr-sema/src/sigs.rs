@@ -259,6 +259,14 @@ pub struct FileSignatures {
     /// than reaching the VM as "no routine for file N proc M". An importer has this file's signatures and
     /// not its HIR, which is why the fact lives here.
     macro_names: rustc_hash::FxHashSet<Symbol>,
+    /// The names this file declares as **templates** — a `$T` or `$N` procedure (ADR-0104 §2).
+    ///
+    /// Here for the reason `macro_names` is, one level over: cross-file *instantiation* is deferred
+    /// (ADR-0082 §5), so a cross-file call must be refused rather than reaching an engine as "no routine for
+    /// file N proc M" — and an importer has these signatures rather than this file's HIR. Separate from
+    /// `macro_names` because the two refusals differ: a macro cannot be *spliced* across a file, a template
+    /// cannot be *instantiated* across one, and a reader hitting either should be told which.
+    template_names: rustc_hash::FxHashSet<Symbol>,
 }
 
 impl FileSignatures {
@@ -271,6 +279,21 @@ impl FileSignatures {
     #[must_use]
     pub fn is_macro(&self, name: Symbol) -> bool {
         self.macro_names.contains(&name)
+    }
+
+    /// Records that `name` is a **template** this file declares — a `$T` or `$N` procedure (ADR-0104 §2).
+    ///
+    /// Shaped exactly like [`Self::insert_macro`], and for the same reason: cross-file instantiation is
+    /// deferred (ADR-0082 §5), so an importing file has to be able to *recognise* an imported template in
+    /// order to refuse the call — and a name-keyed set is what one file has of another's declarations.
+    pub fn insert_template(&mut self, name: Symbol) {
+        self.template_names.insert(name);
+    }
+
+    /// Whether `name` is a template this file declares.
+    #[must_use]
+    pub fn is_template_name(&self, name: Symbol) -> bool {
+        self.template_names.contains(&name)
     }
     /// Creates an empty set of signatures.
     #[must_use]

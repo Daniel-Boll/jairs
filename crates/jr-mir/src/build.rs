@@ -700,6 +700,15 @@ fn scan_name(
                 // callee representable: `jr-db` read the other module's `file_consts` and handed the
                 // value over, so lowering has it in hand and needs no cross-body read.
                 None
+            } else if imports.get(import, name).is_some() {
+                // **An imported procedure used as a value rather than called** (ADR-0104 §1) — a
+                // `String.compare` passed to a procedure-pointer parameter. `ImportedProcs` resolved it, and
+                // a `DeclId` carries the declaring file, so `imported_proc_value` gives it a real
+                // `Item::ProcValue` and this is *not* the placeholder trap. Until this arm existed the body
+                // was refused, which surfaced as a leaked gap report — the comment on the local arm below
+                // even said a cross-file one "is refused by that arm", so the refusal was known and
+                // undocumented rather than unnoticed.
+                None
             } else {
                 // A constant the other file's const-eval could not fold. That is E0230 in *its* file
                 // already, so refusing here rather than inventing a second diagnostic is right.
@@ -734,8 +743,9 @@ fn scan_name(
                 // constant, so this is *not* the placeholder trap: `proc_value_of` gives it a
                 // representation, and refusing here would have refused a legal program while
                 // the value existed to emit. A `#foreign` procedure as a value is E0256 from
-                // sema, raised before lowering runs, so it never reaches here; a cross-file one
-                // resolves to `Res::Imported` and is refused by that arm.
+                // sema, raised before lowering runs, so it never reaches here; a cross-file one resolves
+                // to `Res::Imported` and is handled by `imported_proc_value` in that arm (ADR-0104 §1) —
+                // it used to be *refused* there, which is the leak that ADR fixed.
                 None
             } else if matches!(
                 &item_data.kind,
@@ -2666,7 +2676,17 @@ impl Lower<'_> {
             // poison gate could catch the garbage.
             Res::Imported(import, name) => match self.imported_values.get(import, name) {
                 Some(value) => Operand::Constant(value),
-                None => self.define(ty, Rvalue::Undef, span),
+                // **An imported *procedure* used as a value** (ADR-0104 §1). It is not an imported
+                // *constant*, so `imported_values` has nothing — but `ImportedProcs` resolved the name to a
+                // `ProcRef`, and a `DeclId` carries a file id, so the value is representable with what is
+                // already in hand. Before this arm, passing `String.compare` or `Sort.less_int` to a
+                // procedure-pointer parameter leaked "this compiler has a gap — please report it" for a
+                // program the language allows, which is the *fourth* leaked gap report this project has
+                // turned into working code rather than a better message.
+                None => match self.imported_proc_value(import, name, ty) {
+                    Some(value) => Operand::Constant(value),
+                    None => self.define(ty, Rvalue::Undef, span),
+                },
             },
             Res::Error => self.define(ty, Rvalue::Undef, span),
         }
@@ -3496,6 +3516,23 @@ impl Lower<'_> {
     ///
     /// The value's type is the `ProcType` sema already computed for this expression — passed in as
     /// `ty` rather than recomputed, so the value and the type cannot disagree.
+    /// An `Item::ProcValue` for an **imported** procedure used as a value (ADR-0104 §1).
+    ///
+    /// The counterpart of [`Self::proc_value_of`] across a file boundary, and it needs nothing new:
+    /// `ImportedProcs` already resolved the name to a `ProcRef`, and a `DeclId` is a `(FileId, index)` pair,
+    /// so the other file's procedure is nameable in the pool exactly as a local one is. What was missing was
+    /// this three-line bridge, not a representation.
+    fn imported_proc_value(
+        &mut self,
+        import: jr_hir::ItemId,
+        name: jr_base::Symbol,
+        ty: PoolId,
+    ) -> Option<PoolId> {
+        let target = self.imports.get(import, name)?;
+        let decl = jr_pool::DeclId::new(target.file, u32::try_from(target.proc.index()).ok()?);
+        Some(self.pool.proc_value(ty, decl))
+    }
+
     fn proc_value_of(&mut self, item: jr_hir::ItemId, ty: PoolId) -> Option<PoolId> {
         let ItemKind::Const {
             value: ConstValue::Proc(proc),

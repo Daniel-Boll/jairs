@@ -2675,6 +2675,38 @@ impl Ctx<'_> {
             None => {}
         }
 
+        // **A call to an *imported* polymorphic procedure is refused** (E0268, ADR-0104 §2). Cross-file
+        // instantiation is deferred (ADR-0082 §5), and `callee_poly` deliberately returns `None` for an
+        // imported template — but the claim in its own docs, that the template's signature then "reports an
+        // honest mismatch", turned out to be **false**: a `$T` parameter's type is `PoolId::ERROR`, which
+        // matches anything, so the call was *accepted* and reached the engines as "no routine for file 2
+        // proc 0" — a leaked internal error for a program the module boundary forbids. Refused here, before
+        // the ordinary path, so the deferral is a diagnostic rather than an ICE.
+        if let Some(name) = self.imported_template_callee(scope, callee) {
+            self.check_expr(scope, callee, None);
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!(
+                        "`{}` is polymorphic and declared in another module",
+                        self.interner.resolve(name)
+                    ),
+                )
+                .with_code(E0268)
+                .with_note(
+                    "instantiating a template across a module boundary is not yet supported, so the \
+                     compiler cannot build a concrete copy of it here",
+                )
+                .with_help(
+                    "wrap it in a non-polymorphic procedure in the module that declares it, and call that",
+                ),
+            );
+            return PoolId::ERROR;
+        }
+
         // **A call to a polymorphic procedure is instantiated** (ADR-0082 §1): infer each `$T` from the
         // corresponding argument, record `(proc, bound types)` for the expansion pass, and return the
         // concrete return type. Handled before the ordinary call path, whose signature is a template with
@@ -3759,12 +3791,38 @@ impl Ctx<'_> {
         self.sigs.proc_sig(proc).cloned()
     }
 
+    /// The name of an **imported polymorphic** procedure this callee names, or `None` (ADR-0104 §2).
+    ///
+    /// The counterpart of [`Self::callee_poly`] across a module boundary. It exists because that function's
+    /// documented assumption was wrong: an imported template does *not* report an honest mismatch on the
+    /// ordinary path, because a `$T` parameter's type is `PoolId::ERROR` and `ERROR` matches anything — so
+    /// the call type-checked and the missing instantiation surfaced as an internal error in whichever engine
+    /// ran first.
+    fn imported_template_callee(&mut self, scope: ExprScope, callee: ExprId) -> Option<Symbol> {
+        let Expr::Name { res, name, .. } = self.expr_of(scope, callee) else {
+            return None;
+        };
+        let Res::Imported(_, imported) = self.resolve.get(scope, callee).unwrap_or(res) else {
+            return None;
+        };
+        // Asked of the imported *signatures*, which is what this crate has of another file — the same
+        // evidence `callee_is_imported_macro` uses, and recorded by the same pass.
+        self.imports
+            .iter()
+            .any(|(_, sigs)| sigs.is_template_name(imported))
+            .then_some(name)
+    }
+
     /// The callee's `(ProcId, ProcSig)` when it names a **local polymorphic** procedure (ADR-0082 §1).
     ///
-    /// `None` for an ordinary procedure (no `$T`), and — deliberately, this sub-wave — for an *imported*
-    /// polymorphic one: cross-file instantiation is deferred (ADR-0082 §5), so an imported `$T` callee
-    /// falls through to the ordinary path, where its template signature reports an honest mismatch rather
-    /// than being silently instantiated by a mechanism that does not yet reach across files.
+    /// `None` for an ordinary procedure (no `$T`), and for an *imported* polymorphic one: cross-file
+    /// instantiation is deferred (ADR-0082 §5).
+    ///
+    /// **This used to claim the imported case then "reports an honest mismatch" on the ordinary path, and it
+    /// did not** (ADR-0104 §2). A `$T` parameter's type is `PoolId::ERROR`, and `ERROR` matches anything — so
+    /// the call type-checked and the missing instantiation leaked out of whichever engine ran first as "no
+    /// routine for file N proc M". [`Self::imported_template_callee`] refuses it with E0268 before the
+    /// ordinary path is reached, which is what makes the deferral a diagnostic instead of an ICE.
     fn callee_poly(&mut self, scope: ExprScope, callee: ExprId) -> Option<(ProcId, ProcSig)> {
         let Expr::Name { res, .. } = self.expr_of(scope, callee) else {
             return None;
@@ -3793,8 +3851,9 @@ impl Ctx<'_> {
     /// Shaped like [`Self::callee_poly`], and separate from it because the two templates key on different
     /// things: a `$T` instantiation keys on the argument's *type* (known here), a `$N` one on the
     /// argument's *value* (known only after const-eval, downstream). An imported callee falls through —
-    /// cross-file instantiation is deferred (ADR-0082 §5), and its template signature reports an honest
-    /// mismatch on the ordinary path.
+    /// cross-file instantiation is deferred (ADR-0082 §5) — and is refused by
+    /// [`Self::imported_template_callee`], since the "honest mismatch" this comment used to promise does not
+    /// happen (ADR-0104 §2).
     fn callee_comptime_template(
         &mut self,
         scope: ExprScope,

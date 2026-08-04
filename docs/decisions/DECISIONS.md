@@ -2083,3 +2083,39 @@ allocator argument and a decision about who frees, and `context.allocator` exist
 between "always the context allocator", "an explicit parameter", and "temporary storage" is its own decision
 with real consequences for a caller. A **non-allocating** module is a complete, useful thing on its own, and
 shipping it first means the allocation decision is made with a working baseline to compare against.
+
+## W7 sub-wave 2 — `Sort`, and how the ordering is supplied
+
+**What was probed first, because the whole module depends on it.** Three things had to be true and all three
+are: a `[]T` **view parameter is mutable** through the callee (so an in-place sort is expressible), a `$T`
+parameter **infers through a view** (`xs: []$T`, ADR-0084), and a **procedure pointer** can be passed and
+called (ADR-0059). Writing the module without checking those would have been guessing.
+
+**The fork: how does a caller say what "less than" means?**
+
+- **(a) A comparison *procedure pointer* parameter: `sort(xs, less)`.** Cost: every call names a comparison,
+  even for `s64`. Benefit: it is the only form that works for **both** a scalar and a struct without the
+  language having anything it does not have — no operator overloading resolution at a polymorphic call site, no
+  trait system, no `#modify` predicate deciding which body to use. And it composes with `String.compare`, which
+  W7 sub-wave 1 shaped for exactly this. **Chosen**, with `sort_ints` as a named convenience so the common case
+  is one word.
+- **(b) Require `<` on the element type and use it directly.** Reads best (`sort(xs)`), and `operator <` exists
+  (ADR-0048). But resolving an *operator* inside a `$T` template against the instantiated type is a lookup
+  polymorphic instantiation does not do today — it would be a real feature (call it "operator-bounded
+  polymorphism") and it belongs to whichever wave decides how a template states its requirements. `#modify`
+  can *reject* an instantiation (ADR-0095) but cannot *select* an implementation.
+- **(c) A `Comparable` interface/trait.** The language has no such construct, and inventing one for `Sort`
+  would be deciding the whole generic-bounds question inside a library.
+- **(d) Sort only `s64` and duplicate the module per type.** No new language surface, and no polymorphism at
+  all — which would waste exactly what W5 was built for.
+
+**Which algorithm, and why it is not a performance argument.** **Insertion sort**, with a comment saying so.
+It is `O(n²)`, and the honest reasons to choose it here are: it is **stable** (equal elements keep their order,
+which a caller can rely on and which quicksort does not give), it needs **no extra storage** (a merge sort
+does, and allocation is exactly what ADR-0103 §3 declined to decide), and it is **short enough to read**, which
+matters for the first sorting routine in a language whose test suite compares two engines. A faster algorithm
+is a later decision with a benchmark behind it, not a guess now — W8 owns performance.
+
+**Deferred with reasons:** a stable merge sort (wants allocation); `sort` returning whether it changed
+anything (no caller); binary search (wants a sorted-ness precondition nothing can check); sorting by a *key*
+extractor rather than a comparison (two forms where one suffices today).

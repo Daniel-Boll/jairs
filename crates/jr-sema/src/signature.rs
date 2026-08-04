@@ -206,6 +206,14 @@ impl Ctx<'_> {
                     if self.hir.procs.get(proc.index()).is_some_and(|p| p.expand) {
                         self.sigs.insert_macro(name);
                     }
+                    // Recorded for the same reason one level over (ADR-0104 §2): cross-file *instantiation*
+                    // is deferred, so an importer must be able to recognise an imported template in order to
+                    // refuse the call with E0268 — which it could not, because a `$T` parameter's type is
+                    // `PoolId::ERROR` and `ERROR` matches anything, so the call type-checked and the missing
+                    // instantiation leaked out of an engine as an internal error.
+                    if sig.is_template() {
+                        self.sigs.insert_template(name);
+                    }
                     Some(SigEntry {
                         ty: sig.ty,
                         type_value: None,

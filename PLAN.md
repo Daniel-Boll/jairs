@@ -509,7 +509,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **984 workspace tests** and **190 corpus files**, all six gates green, **166
+waiting. Both are tracked below. **984 workspace tests** and **194 corpus files**, all six gates green, **166
 Neovim checks**. See §1.5.
 
 ### W7 — Stdlib, open
@@ -538,8 +538,48 @@ Neovim checks**. See §1.5.
       until the bytes run out is an ordinary loop. Teeth-checked twice and precisely: length-only `equal` clears
       bit 1 (255→254), deleting `compare`'s prefix check clears bit 2 (255→253).
 
-**What W7 has left:** the **allocating** half of `String`, once the allocator convention is decided; `Sort`
-(which `compare` was shaped for); a dynamic array and a hash table, both of which want W5's polymorphic
+- [x] **`Sort`** (ADR-0104, sub-wave 2): `sort(xs, less)`, `is_sorted`, plus `sort_ints`/`ints_sorted` and
+      `less_int`. The third module and the **first polymorphic** library code, so the first that depends on W5
+      rather than coexisting with it. Three language facts were **probed before a line was written** and all
+      hold: a `[]T` view parameter is *mutable* through the callee, a `$T` infers *through a view* (ADR-0084),
+      and a procedure pointer can be passed and called (ADR-0059).
+
+      **The caller supplies the comparison**, and that is a language fact rather than a taste: resolving an
+      *operator* inside a `$T` template against the instantiated type is a lookup instantiation does not do.
+      `operator <` exists and `#modify` can *reject* an instantiation, but nothing can *select* an
+      implementation per instantiated type — that is operator-bounded polymorphism, owed to whichever wave
+      decides how a template states its requirements.
+
+      **Insertion sort**, `O(n²)` said plainly: **stable** (which quicksort is not), needs **no storage**
+      (a merge sort would allocate, which ADR-0103 §3 declined to decide), and short enough to read. A faster
+      algorithm is W8's, with a benchmark behind it.
+- [x] **Two leaked internal errors, both found by writing a library** (ADR-0104 §1–2), the fourth and fifth
+      such fixes:
+      - an **imported procedure used as a value** reported "this compiler has a gap — please report it".
+        `ImportedProcs` had already resolved it to a `ProcRef` and a `DeclId` carries a file id, so the value
+        was representable and what was missing was a **three-line bridge**. The local arm's own comment said a
+        cross-file one "is refused by that arm" — so the refusal was **known and undocumented**, recorded as
+        intended in a comment while surfacing to users as a compiler bug report.
+      - a call to an **imported template** leaked `no routine for file 2 proc 0`. `callee_poly`'s docs claimed
+        it "reports an honest mismatch" and **that was false**: a `$T` parameter's type is `PoolId::ERROR`,
+        which matches anything, so the call type-checked. Now **E0268**, carried across the boundary by
+        `FileSignatures::template_names` (shaped like `macro_names`, ADR-0091 §3) — and the diagnostic **names
+        the workaround**, with `imports/valid/017` checking that the workaround works, because a refusal is
+        only as good as its escape route. It survived because **nothing in the corpus had ever imported a
+        polymorphic procedure**.
+
+      Both bugs were hiding behind a **stale comment** that said something checkable which nobody had checked.
+      The `_ints` wrappers are therefore **not conveniences**: they are the only way an importer can use a
+      polymorphic module today (ADR-0104 §5).
+- [x] **A hand-maintained module list replaced by a directory walk** (ADR-0104): `jr-hir`'s corpus harness
+      listed eight module names as a literal array, so adding `modules/Generic.jr` made `imports/valid/017`
+      report `unresolved name` — the module existed on disk and not in the list, and the failure blamed the
+      test file rather than the list. The same drift the file's own comment warns about for the *file* count,
+      one level over.
+
+**What W7 has left:** the **allocating** half of `String`, once the allocator convention is decided; a merge
+sort and a binary search (the first wants allocation, the second a sortedness precondition nothing can check);
+a dynamic array and a hash table, both of which want W5's polymorphic
 structs; `Math`, `Random`, `File`, `File_Utilities`, `Process`, `Thread`, `Time`, `Socket`, `JSON`, `Compiler`.
 
 ### W6 — Metaprogram, open

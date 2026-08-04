@@ -339,6 +339,12 @@ fn imports_invalid_corpus_fails() {
         // E0262 is: E0276 comes out of **lowering**, so `type-errors/`' harness would fail it for not
         // lowering cleanly before ever checking the code it declares.
         "imports/invalid/016-bake-arguments.jr",
+        // A call to a polymorphic procedure declared in **another module** (ADR-0104 §2). Here because
+        // reaching the case needs the import resolved — nothing in the corpus had ever imported a template,
+        // which is why the refusal did not exist: the call type-checked (a `$T` parameter's type is
+        // `PoolId::ERROR`, and `ERROR` matches anything) and the missing instantiation leaked out of an
+        // engine as "no routine for file 2 proc 0".
+        "imports/invalid/017-cross-file-instantiation.jr",
     ] {
         let code = check_with_modules(vec![corpus_path(file)], Some("modules"));
         assert_eq!(code, 1, "{file} must report an error");

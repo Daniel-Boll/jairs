@@ -1,0 +1,27 @@
+// EXPECT: E0268 — a call to a polymorphic procedure declared in another module (ADR-0104 §2)
+//
+// **Cross-file instantiation is deferred** (ADR-0082 §5): the compiler builds a concrete copy of a template
+// by appending it to the *calling* file's expanded HIR, and it does not reach across a module boundary to do
+// so. That deferral is old. The **refusal** is new, and the reason is worth recording.
+//
+// `callee_poly`'s own documentation claimed an imported template "reports an honest mismatch" on the ordinary
+// call path — so no explicit refusal was thought necessary. **That claim was false.** A `$T` parameter's type
+// is `PoolId::ERROR`, and `ERROR` matches anything, so the call **type-checked**; the missing instantiation
+// then leaked out of whichever engine ran first as `no routine for file 2 proc 0`, an internal compiler error
+// for a program the module boundary forbids. Writing the `Sort` module is what found it, because nothing in
+// the corpus had ever imported a polymorphic procedure.
+//
+// The diagnostic **names the workaround**, which is what makes this a usable refusal rather than a wall: wrap
+// the template in a non-polymorphic procedure *in the module that declares it*, and call that. `Sort`'s
+// `sort_ints` and `ints_sorted` are exactly that, and `Generic.identity_int` is the same shape — so the
+// wrappers in the standard library are not conveniences today, they are the only way an importer can use a
+// polymorphic module.
+//
+// One refusal per file is this directory's contract, so only the `$T` call is here. `$N` is refused by the
+// same check (`ProcSig::is_template` covers both marks), which is why `Generic` declares one of each.
+#import "Generic";
+
+main :: () {
+    // `identity` is a `$T` template in another module: there is no mechanism to instantiate it here.
+    n := identity(5);
+}

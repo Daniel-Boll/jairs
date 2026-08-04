@@ -159,10 +159,34 @@ fn read_module_source(modules_dir: &Path, name: &str) -> String {
 fn build_module_map(interner: &Interner) -> (HashMap<String, FileHir>, HashMap<String, ItemScope>) {
     let modules_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus/modules");
 
-    // The module names we know about (from the corpus README).
-    let module_names = [
-        "Shapes", "Colors", "Palette", "Palette2", "Cycle_A", "Cycle_B", "Private", "Limits",
-    ];
+    // **Read from the directory rather than listed by hand** (ADR-0104). This was a literal array of eight
+    // names, and adding `Generic.jr` for the cross-file-instantiation refusal made `imports/valid/017` report
+    // `unresolved name` — the module existed on disk and not in the list. That is exactly the drift the
+    // comment below warns about for the *file* count, one level over: a hand-maintained list of what is in a
+    // directory is a list that goes stale, and the failure it produces blames the test file rather than the
+    // list. A directory walk cannot go stale.
+    //
+    // Both layouts are accepted, because the corpus uses both: `Colors.jr` and `Shapes/module.jr`.
+    let mut module_names: Vec<String> = std::fs::read_dir(&modules_dir)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", modules_dir.display()))
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                if !path.join("module.jr").exists() {
+                    return None;
+                }
+                return Some(path.file_name()?.to_string_lossy().into_owned());
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("jr") {
+                return None;
+            }
+            Some(path.file_stem()?.to_string_lossy().into_owned())
+        })
+        .collect();
+    // Sorted so a `FileId` is a function of the directory's contents rather than of the filesystem's
+    // enumeration order — the same reason every other corpus walk sorts (AGENTS.md on `FileId` churn).
+    module_names.sort();
 
     let mut hirs: HashMap<String, FileHir> = HashMap::new();
     let mut scopes: HashMap<String, ItemScope> = HashMap::new();
