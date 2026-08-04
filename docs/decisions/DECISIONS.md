@@ -1277,3 +1277,37 @@ Taken as recommended. Sub-wave 3 lifts the one-variable restriction: `check_poly
 variable, forms the `Vec<PoolId>` key, and the instantiation carries N bindings; `expand_instantiations`
 and `proc_bindings` generalise to N. Still deferred: `$$T`, polymorphic structs, macros, nested-position
 inference.
+
+---
+
+## Wave: W5 Polymorphism, sub-wave 4 — nested-position inference (ADR-0084), 2026-08-04
+
+Recommended option taken automatically per the standing autonomy directive; logged for later review.
+
+### Fork 1 — the next W5 increment
+
+- Options: **nested-position inference, `deref :: (p: *$T)` (taken, recommended)**; `$$T`; polymorphic
+  structs; macros.
+- Why nested inference: smallest remaining piece, no new representation, and it removes a limitation that
+  makes `$T` genuinely partial — a pointer or view parameter is the common polymorphic shape (a `sort`
+  takes `[]$T`), and today none of those can be called. It is a targeted extension of the inference
+  `check_polymorphic_call` already does: match the parameter's `TypeRef` structure against the argument's
+  resolved type structure. The other three are each strictly larger.
+
+### Fork 2 — how a nested binding is inferred
+
+- Options: **structural match of the parameter `TypeRef` against the argument's `PoolId` (taken,
+  recommended)**; a general Hindley-Milner unifier.
+- Why the structural match: it is exactly as much as the direct case, one layer deeper. `*$T` against a
+  `*s64` argument peels the pointer on both sides and binds `T=s64`; `[]$T` against `[]s64` peels the
+  view. A parameter shape that does not match the argument shape (`*$T` given a non-pointer) binds nothing
+  and is a mismatch, reported by the existing argument check against the re-resolved concrete type. A full
+  unifier is a solver with occurs-checks and substitution — far more than one `$T` in one structural
+  position needs, and nothing in W5's scope calls for two-way unification.
+
+### Resolution (ADR-0084 records it)
+
+Taken as recommended. `infer_var_in` walks a parameter `TypeRef` and the argument's resolved `PoolId` in
+lockstep, binding a `$T` where the structures align (`*$T`↔`*U`, `[]$T`↔`[]U`, direct `$T`↔`U`). The
+re-resolution and per-instantiation check are unchanged — only the *inference* reaches one layer deeper.
+Still deferred: `$$T`, polymorphic structs, macros.
