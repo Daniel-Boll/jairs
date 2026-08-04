@@ -98,7 +98,7 @@
 #h(4pt)
 #pill[ADR-0097 latest]
 #h(4pt)
-#pill(fill: rgb("#fdf2e6"), stroke: warn)[W6 OPEN · notes shipped]
+#pill(fill: rgb("#fdf2e6"), stroke: warn)[W6 OPEN · notes end to end]
 
 #v(0.5em)
 #grid(
@@ -106,8 +106,8 @@
   gutter: 8pt,
   metric("Tests", "981", "workspace, all passing"),
   metric("Corpus", "193", "jr files, both engines"),
-  metric("ADRs", "98", "0001 to 0098, immutable"),
-  metric("Diagnostics", "107", "codes, E0277 next free"),
+  metric("ADRs", "101", "0001 to 0101, immutable"),
+  metric("Diagnostics", "109", "codes, E0279 next free"),
   metric("Editor checks", "166", "Neovim, verified not gated"),
 )
 
@@ -309,7 +309,7 @@
   ),
   (
     "W6 Metaprogram", "in progress",
-    "OPEN, one sub-wave shipped. @note attaches metadata to a declaration (ADR-0098) — @deprecated, @requires \"x\" — for a metaprogram to read. It is its own node kind rather than a generic attribute, because a note is DATA for a metaprogram while the directives are INSTRUCTIONS to the compiler, so a consumer collecting notes need not filter directives out of the same list. A note affects no code: the noted program MIR is exactly what it would be without them, which is the point. A clone of a noted procedure keeps its notes, since the clone IS that procedure; the synthetic #modify predicate carries none. Notes ship BEFORE their reader deliberately — ADR-0080 declined to represent a thing until something could inspect it, and for INPUT that argument runs the other way: the message loop job is to hand declarations to a build script, and a declaration with nothing extra to say is not worth handing over, so designing the loop first would mean designing its message shape against no consumer. Two familiar traps, both caught by a gate rather than by reading: jr-fmt dropped every note on the first run (the lossy-CST trap, and this is its metaprogram-INPUT direction — a build script collecting @X would have silently found nothing), and looks_like_proc_signature needed the AT token, the token-set trap for the SEVENTH time. No new diagnostic code. Remaining: the compiler message loop (a reader for @note, whose first fork is whether it polls or is called back, and what a message is as a Jairs value), #run build() build scripts replacing makefiles, plugin hooks, and workspaces.",
+    "OPEN, four sub-waves shipped, and the wave headline claim is MET: a metaprogram can find declarations by note and generate code for each one. @note attaches metadata to a declaration (ADR-0098) — @deprecated, @requires \"x\" — its own node kind rather than a generic attribute, because a note is DATA for a metaprogram while the directives are INSTRUCTIONS to the compiler. has_note and note_value READ it at compile time (ADR-0099), folded in sema with no VM and no new query — unlike type_info, which folds later because it needs a layout; a note answer is in the HIR the checker already holds. The first argument is the declaration itself rather than its name as text, so a misspelling is an unresolved name instead of a silent false, which is the same silence the formatter dropped notes had. An absent note answers false and empty and is NOT an error: asking whether a note is present is the point, the opposite call from any_as which traps, and the difference is that any_as would otherwise return garbage while this returns the truth. noted_count and noted_name QUERY the file without naming declarations (ADR-0100), in declaration order — the one order a reader can predict, since a name sort renumbers every unrolled index when a declaration is inserted and a hash order makes one program answer differently between runs. And noted_insert GENERATES (ADR-0101): one template emitted once per noted declaration, hash standing for each name, spliced by #insert — so a single line generates a call to every noted procedure. The loop lives inside the FOLD, and that corrects ADR-0100 scope the way ADR-0094 corrected ADR-0093: folding cannot take a for variable, but that forbids a loop in the PROGRAM and says nothing about a loop inside the FOLD — and for generation the fold is the only thing that can work at all, since generated code must exist before checking, so a run-time loop could not declare a procedure or emit a statement. Probing found that #insert note_value(f, \"gen\") ALREADY worked, a note payload spliced as code, shipped and undocumented. Two refusals were leaked errors until this wave probed them: == on two strings reached the VM as expected a scalar found an aggregate (E0278), now refused for every aggregate the way a view equality already was, by a structural test since size and alignment cannot tell an s64 from a two-field struct of s32s. And a latent miscompile was fixed (ADR-0101): a folded value keyed by ExprId is STALE once a body expands, because a computed #insert renumbers every id after its splice — so with two computed inserts the second value landed on a different expression, putting a string on an arithmetic operand, and it surfaced as a VERIFIER PANIC rather than a diagnostic. That is the sharpest well-typed placeholder this project has had: the two earlier ones were placeholders that happened to be legal values, while this is a genuine value from the same program merely attached to the wrong expression, so nothing in the type system can see it is wrong. Remaining in W6: run-time INSPECTION — a loop reading declarations as values — which needs a compiler-emitted static-data table and lifts Type_Info variable-length field list at the same time, plus #run build() build scripts, plugin hooks and workspaces.",
   ),
   (
     "W7 Stdlib", "not started",
@@ -368,7 +368,7 @@
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 981. Corpus 116 to 181 files. Neovim checks 103 to 166. *W2, W3, W4.5, W4 and W5 are all
+      Test count 900 to 981. Corpus 116 to 188 files. Neovim checks 103 to 166. *W2, W3, W4.5, W4 and W5 are all
       closed*, and *W6 is open*. W5 shipped fifteen sub-waves: `$T` procedures, polymorphic structs,
       `$N` comptime-value parameters *and* their instantiation. A `$N` call `make(5)` evaluates the
       argument via the same acyclic pre-pass `#insert` uses (ADR-0073), and appends a concrete procedure
@@ -376,7 +376,8 @@
       becomes a literal. Two calls at the same value dedupe, distinct values instantiate separately, and
       mixed comptime+runtime params pass only the runtime ones at the call site. A per-call arg-mask
       filters at MIR, teeth-checked (disabling it makes the verifier catch an arity mismatch).
-      W5 is complete and *W6 Metaprogram is open*, with `@note` attributes shipped. Next in W6: the message loop.
+      W5 is complete and *W6 Metaprogram is open*, four sub-waves in: notes are attached, read, queried and
+      *generated from*. Next in W6: static data for run-time inspection, then build scripts.
     ]
 
     #v(0.3em)
