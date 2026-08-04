@@ -108,3 +108,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0085](0085-polymorphic-structs.md) | A polymorphic struct is a parameterised type keyed on `(decl, args)`; design of record for the sub-wave that builds it | Accepted |
 | [0086](0086-polymorphic-structs-implementation.md) | Polymorphic structs as built: staged (zero-diff representation, then behaviour), a second instance-keyed field map, and every ADR-0085 §5 deferral held as a compile-time refusal | Accepted |
 | [0087](0087-comptime-value-parameter.md) | A comptime-value parameter `$N: s64` — the surface (parses, lowers, body type-checks); a call is refused by design (E0271) pending the instantiation half | Accepted |
+| [0088](0088-comptime-value-instantiation.md) | A comptime-value call is instantiated by evaluating the argument via the acyclic const-eval pre-pass and baking it into a clone; design of record, implementation deferred (a re-resolve gap to settle first) | Accepted |

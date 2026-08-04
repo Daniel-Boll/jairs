@@ -1448,3 +1448,48 @@ change is this project's named catastrophic failure mode (a well-typed placehold
   earlier. What is deferred is only instantiation-per-value (and `[N]T`, where `N` must be a compile-time
   constant, which needs 6b's evaluation). MIR for the template is skipped exactly as a `$T` template's is,
   so no runtime artefact treats `N` as an ordinary parameter.
+
+---
+
+## Wave: comptime-value instantiation `$N` (ADR-0088), 2026-08-04 — sub-wave 6b
+
+### Fork 1 — where the argument value comes from
+
+- Options: **a jr-db pre-pass reusing `file_consts`/`insert_operands`, keyed by call span (taken,
+  recommended)**; evaluate in the checker; a second evaluator.
+- Why the pre-pass: const-eval lives in jr-db over the VM, downstream of check (ADR-0018 §3), so the checker
+  *cannot* know a `$N` argument's value — it records the argument expression, and the pre-pass evaluates it,
+  exactly as `#insert` does (ADR-0073). Keyed by span because the HIR expansion that follows shifts ids
+  ([[jairs-insert-operand-key-by-span]]). A second evaluator would be a second chance to disagree with the
+  VM the corpus differential trusts.
+
+### Fork 2 — does the instantiation keep the comptime parameter or drop it
+
+- Options: **drop it from the clone's parameter list and bake its value into the body (taken,
+  recommended)**; keep it and bind it like a `$T`.
+- Why drop: a comptime parameter has no runtime existence in the instantiation — the caller passes nothing
+  for it — so keeping it would make the instantiation's ABI disagree with its call site. Dropping keeps the
+  clone an ordinary procedure whose parameter count is its runtime arguments, which both engines already
+  handle. The cost, `Res::Param` index shift, is remapped in `instantiate.rs` where the body is already
+  deep-copied. Keeping-and-binding is how `$T` works, but a `$T` occupies no runtime slot either — it is a
+  *type*, erased before MIR — whereas a `$N` left in the list *would* claim a slot.
+
+### Fork 3 — how a bare `N` in the body lowers
+
+- Options: **substitute the baked constant for a `Res::Param` to a dropped comptime parameter, in MIR
+  (taken, recommended)**; rewrite the HIR to replace the name with a literal.
+- Why substitute in MIR: the value is a `PoolId` the pre-pass produced, and MIR already substitutes a folded
+  value for `type_info` — so a `Res::Param(dropped)` emitting the constant reuses that path. Rewriting the
+  HIR would need a literal `Expr` synthesised per use and re-typed, more surface for no gain.
+
+### Resolution (ADR-0088 records the design; implementation deferred)
+
+Taken as recommended for the *design*, but the **implementation is deferred** exactly as ADR-0085's was for
+polymorphic structs. Writing it revealed a real gap fork 3 glossed: `instantiated()` re-resolves the
+expanded HIR, so dropping the comptime parameter (fork 2) makes the body's bare `N` unresolvable unless the
+value is substituted *before* re-resolution — i.e. the HIR-rewrite path fork 3 rejected may actually be
+required, contradicting the MIR-substitution choice. Rather than land a half-built pipeline — and in
+particular rather than remove ADR-0087's E0271 refusal before the whole thing works, which would make a
+comptime call fall through to the MIR-less template — the design is fixed in ADR-0088 and the build is left
+as the next sub-wave's own work, starting from the resolved fork above. The 6a surface (E0271 refuses the
+call) is unchanged and green.
