@@ -200,6 +200,12 @@ impl Ctx<'_> {
             ItemKind::Const { value } => match value {
                 ConstValue::Proc(proc) => {
                     let sig = self.proc_signature(proc);
+                    // Recorded so an *importer* can refuse a cross-file macro call (ADR-0091 §3): a macro
+                    // is spliced from its own file's source text, which does not cross the boundary, and an
+                    // importer has these signatures rather than this file's HIR.
+                    if self.hir.procs.get(proc.index()).is_some_and(|p| p.expand) {
+                        self.sigs.insert_macro(name);
+                    }
                     Some(SigEntry {
                         ty: sig.ty,
                         type_value: None,

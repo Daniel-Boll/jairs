@@ -1633,3 +1633,44 @@ Recorded after tracing the mechanism, so the build starts from a settled plan (t
   keeps 7b's scope to the splice itself, which is already the biggest piece, and names the deferral rather
   than half-supporting it. `valid/074`'s macros all `return`, so they will need rewriting or the refusal must
   arrive with a companion form — that is the first thing the 7b build must settle.
+
+### Fork 3 (revised, at the point of building) — a macro's `return`, and expression position
+
+The earlier note recommended refusing `return` inside a macro. Tracing the *call sites* showed that is not
+viable as written: `valid/074`'s macros all `return`, and a value-producing macro is the common case
+(`double(21)` in expression position needs a value). Refusing `return` would leave `#expand` able to express
+only statement-position void macros, which is not the feature.
+
+- Options: **rewrite the splice into a result local — declare `__macro_result_N: T;` before the splice, and
+  turn the body's `return <e>;` into `__macro_result_N = <e>;` in the generated text, then use that local as
+  the call's value (taken, recommended)**; refuse `return` (rejected above); make a spliced `return` return
+  from the caller (Jai's semantics).
+- Why the result local: it makes a macro work in **both** positions with one mechanism, keeps the splice
+  wholesale (the generated text is still just text handed to `expand_insert_text`), and evaluates each
+  argument once via the prelude. Returning from the *caller* is Jai's real semantics and strictly more
+  powerful, but it changes what `return` means by provenance and interacts with `defer` (ADR-0049 §3) — so it
+  is recorded as the **deferred** generalisation, with a diagnostic when a macro's `return` is not in tail
+  position, rather than silently doing the weaker thing.
+- **Consequence, stated because it is a real limit:** only a `return` in **tail position** is handled this
+  wave. A `return` inside an `if` in a macro body would need the caller-return semantics, so it is refused
+  by its own code rather than miscompiled into a fall-through.
+
+### Resolution (ADR-0091 records the build)
+
+Shipped. Three things the build discovered, each recorded because none was in the design:
+
+1. **A macro's own body must not be lowered.** Lowering it standalone resolves its names against the macro's
+   own (empty) scope, so a macro reading the caller's locals — the entire point — reported them unresolved.
+   It follows that `declarations()` must skip it too: leaving it declared gave the linker
+   `function "jr$0$0" with linkage Local must be defined but is not`, caught by the corpus differential.
+2. **`looks_like_proc_signature` needed `#expand`** — the token-set trap for the fifth time. A *void* macro
+   `f :: (x: s64) #expand { … }` reaches neither `ARROW` nor `L_BRACE`, so it was read as a
+   parenthesised-expression constant and produced fourteen cascading errors. That function's own comment
+   already warned this had happened for `#c_call`.
+3. **A cross-file macro call was reaching the VM as an ICE** (`no routine for file 1 proc 0`) — the fifth
+   leaked internal error for a reasonable program. E0272 was repurposed from ADR-0090's pending-splice
+   refusal (which the splice lifted) to name it, with `FileSignatures::is_macro` carrying the fact across
+   the boundary because an importer has signatures and not HIR.
+
+Fork 3's revised recommendation held: the result local makes a macro work in both positions through one
+mechanism, and an early `return` is refused (E0273) rather than rewritten into a fall-through.

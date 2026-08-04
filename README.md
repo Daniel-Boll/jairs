@@ -45,10 +45,13 @@ params, and each reference to `N` becomes a literal. `make(5)` twice dedupes to 
 is a distinct one, and mixed comptime+runtime params (`scaled :: ($N: s64, factor: s64)`) pass only the
 runtime ones at the call. A non-constant argument is refused with E0271. And `[N]T` sized by a `$N` parameter works (ADR-0089), which is what the feature is *for*: two
 instantiations get genuinely different array types from one declaration. And **`#expand` macros have their surface** (ADR-0090): a macro parses, formats and checks like any
-procedure, with a call refused (E0272) pending the splice — which reuses `#insert`'s mechanism and will be
-deliberately unhygienic, so a macro's body sees the caller's locals. The refusal ships *with* the surface,
-because without it `#expand` was accepted and silently ignored. Still ahead in W5: that splice, then
-`#modify` and `#bake_arguments`. On top of **`#code`** (ADR-0080), which **completed wave W4 — Comptime** as scoped: `#code { n := 7; }`
+procedure, and **a call splices** (ADR-0091): the macro's body lands in the
+caller's scope, so it sees and can modify the caller's locals — deliberately unhygienic, matching Jai. A
+generated prelude binds each argument **once** (substituting it per use would re-evaluate a side-effecting
+argument), and expression position gets a generated result local so one mechanism serves both. The MIR shows
+no calls at all — every body inlined. Refused by design: an early `return` (E0273), a void macro in
+expression position, and a cross-file call (E0272 — which had been reaching the VM as an internal error).
+Still ahead in W5: `#modify` and `#bake_arguments`. On top of **`#code`** (ADR-0080), which **completed wave W4 — Comptime** as scoped: `#code { n := 7; }`
 is `#insert "n := 7;"` written without quotes, spliced into the enclosing scope. It is deliberately *sugar* —
 `#insert` of a named constant already worked, so what `#code` adds is no quoting and a body parsed where it
 is written, not a new capability. There is no `Code` *value*, and that is **declined rather than deferred**: a
@@ -151,7 +154,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 978 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
+`print_int` (ADR-0037). 979 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do
@@ -246,7 +249,7 @@ ignoring the flag a compile error, is owed its own ADR. There is no GC and no RA
 | Formatter | **Works** | Pure function over the CST |
 | HIR, name resolution, module loader | **Works** | Flat import merge (ADR-0014) |
 | InternPool (types, comptime values, layout, arithmetic) | **Works** | One layout computation and one integer evaluator, shared (ADR-0018 §2, ADR-0022 §2) |
-| Sema (signatures, checking, inference) | **Works** | E0212–E0272; a union's diagnostics are a struct's unchanged, deliberately, and a bare `.RED`'s "no such member" is the qualified form's; no const-eval here — ADR-0018 §3 puts it in the VM, which is why an array length must be a literal. Float literals are context-typed with **no** fit check, because IEEE-754 saturates (ADR-0040 §5) |
+| Sema (signatures, checking, inference) | **Works** | E0212–E0273; a union's diagnostics are a struct's unchanged, deliberately, and a bare `.RED`'s "no such member" is the qualified form's; no const-eval here — ADR-0018 §3 puts it in the VM, which is why an array length must be a literal. Float literals are context-typed with **no** fit check, because IEEE-754 saturates (ADR-0040 §5) |
 | MIR (typed SSA, Braun construction) | **Works** | Block parameters, not phis (ADR-0017); CFG diagnostics E0227–E0229, the last of which now also reports a `break`/`continue` naming an unknown label (ADR-0049 §2); an explicit `bounds_check` statement and an explicit `zero`, both ADR-0039. `for` reuses the `while` shape with a synthesised induction variable and needs no new node; `defer`'s statements appear once per exit path |
 | Mid-end | **Four passes** | Inliner, store-to-load forwarding, const-prop, DCE, to a bounded fixed point (ADR-0021 – ADR-0023). Forwarding is block-local, so a value read across a loop stays in memory, and it refuses two unequal array indices as possibly-aliasing; no SROA; the SSA value arena is never compacted |
 | Bytecode VM + libffi | **Works** | Per-instruction spans, so a trap names its line. Floats need no new value variant, but are dispatched *before* the bit-compare fallback that would answer `NaN == NaN` and `-0.0 == 0.0` backwards. No JIT |

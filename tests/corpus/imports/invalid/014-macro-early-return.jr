@@ -1,0 +1,34 @@
+// EXPECT: E0273 — an early `return` in a `#expand` macro body (ADR-0090 §2)
+//
+// A macro's statements are **spliced into the caller**, so it has no frame of its own to return from. This
+// wave gives a `return` in **tail position** the weaker, well-defined meaning: assign the value to the local
+// the call's value is read from (that is what makes `double(21)` work in expression position, `valid/075`).
+//
+// An **early** `return` — one that is not the last statement — cannot mean that. It would have to return
+// from the *caller*, which is Jai's real semantics and strictly more powerful, but it changes what `return`
+// means depending on where the text came from and it interacts with `defer` (ADR-0049 §3). So it is refused
+// rather than rewritten into an assignment, which would silently **fall through** to the statements after it
+// — a wrong answer, not a missing feature.
+//
+// The sibling outcomes, so they stay distinct:
+//
+//   * `return x * 2;` as the last statement — works, in `valid/075`;
+//   * a `return` before other statements — **this file**, E0273;
+//   * a macro with no return type used in an expression — also E0273, a different message (it produces no
+//     value to read).
+//
+// **Not a corpus `type-errors/` file**, for the stage reason ADR-0074 §4 gave and ADR-0050's `using`
+// refusals established: E0273 comes out of **lowering** — the splice is built there, and it is there that
+// "the rewrite would fall through" is knowable — and that directory's harness requires its files to lower
+// cleanly *before* checking the code they declare. It lives here for the same reason E0262 does.
+
+/// A macro whose `return` is not last. Its declaration is fine; the *call* is what cannot be spliced.
+guard :: (x: s64) -> s64 #expand {
+    return x;
+    y := x + 1;
+}
+
+caller :: () -> s64 {
+    // The refusal: splicing this would drop the `y := x + 1;` after the rewritten return.
+    return guard(1);
+}

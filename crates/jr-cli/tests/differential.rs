@@ -399,6 +399,35 @@ fn code_splices_identically_in_both_engines() {
     );
 }
 
+/// The **`#expand` splice** must run a macro's body in the caller's scope and exit **96** in both engines
+/// (ADR-0090 §2).
+///
+/// The value matters more than the agreement, and unusually so: a macro is not a call, so the things that
+/// can go wrong are all *silent*. A body spliced twice would double `total`; an argument substituted per use
+/// instead of bound once would re-evaluate it; a result local leaked between two calls in one expression
+/// would give the second's value to the first. Each of those gives both engines the same wrong number, so
+/// only asserting 96 catches them. The void macro modifying the caller's `total` is the part no ordinary
+/// call could reproduce.
+#[test]
+fn the_expand_splice_agrees_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/075-macro-splice.jr");
+
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    assert_eq!(
+        vm.status, 96,
+        "the VM exited {} — a macro splice bound an argument or a result wrongly",
+        vm.status
+    );
+    assert_eq!(
+        native.status, 96,
+        "the native back end exited {} — see the VM assertion above",
+        native.status
+    );
+}
+
 /// **`[N]T` sized by a `$N` comptime parameter** must give each instantiation its own array length and
 /// exit **16** in both engines (ADR-0089).
 ///
