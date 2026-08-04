@@ -96,18 +96,18 @@
 #h(4pt)
 #pill[978 tests]
 #h(4pt)
-#pill[ADR-0089 latest]
+#pill[ADR-0090 latest]
 #h(4pt)
-#pill(fill: rgb("#fdf2e6"), stroke: warn)[W5 open · 7 sub-waves done]
+#pill(fill: rgb("#fdf2e6"), stroke: warn)[W5 open · 8 sub-waves done]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
   metric("Tests", "978", "workspace, all passing"),
-  metric("Corpus", "182", "jr files, both engines"),
-  metric("ADRs", "89", "0001 to 0089, immutable"),
-  metric("Diagnostics", "103", "codes, E0272 next free"),
+  metric("Corpus", "184", "jr files, both engines"),
+  metric("ADRs", "90", "0001 to 0090, immutable"),
+  metric("Diagnostics", "104", "codes, E0273 next free"),
   metric("Editor checks", "166", "Neovim, verified not gated"),
 )
 
@@ -305,7 +305,7 @@
   ),
   (
     "W5 Polymorphism", "in progress",
-    "Seven sub-waves done. $N comptime-value parameters are complete — surface, instantiation, and [N]T sized by one (ADR-0089), where two instantiations get genuinely different array types from one declaration. They work end to end (ADR-0087 surface, ADR-0088 build): make :: ($N: s64) called as make(5) evaluates the argument via the same acyclic pre-pass #insert uses, and appends a concrete procedure with N baked into the body — parameter list drops the $N, each reference to N becomes a literal. Two calls at the same value dedupe (ADR-0005 extended to values), distinct values instantiate separately. Mixed comptime+runtime params (scaled :: ($N: s64, factor: s64)) pass only the runtime one at the call site — a per-call arg-mask filters at MIR, teeth-checked (disabling it makes the verifier catch an arity mismatch). E0271 refuses a non-constant argument at the call's span. Before that, $T procedures work end to end (ADR-0081-0084): a $T parameter is inferred from the call — directly or through a pointer or view — instantiated once per distinct tuple of bound types, checked per instantiation, and run as an ordinary procedure in both engines, so nothing polymorphic survives to the back end. And polymorphic structs (ADR-0085, built per ADR-0086): Box :: struct($T) { value: T; } used as Box(s64) is a type constructor, and Box(s64) and Box(bool) are distinct types from one declaration with substituted fields and layouts, told apart in the pool by the type argument in the key the way [2]s64 and [3]s64 are. It changed the pool's most load-bearing invariant — a struct's identity was its declaration site — and was landed in two commits, a zero-behaviour-change representation refactor proven by an unchanged snapshot and test count, then the parameterised behaviour, so a half-built type-identity change could not hide a miscompile. Left in W5: the macro family (modify, bake_arguments, expand), and the deferred struct pieces (inference through Box($T), using on one, cross-file, recursive List($T)), each a refusal today rather than a gap.",
+    "Eight sub-waves done. #expand macros have their surface (ADR-0090): a macro parses, formats and checks like any procedure, and a call is refused E0272 pending the splice — a refusal that ships WITH the surface, because without it #expand was accepted and silently ignored (a macro behaved as an ordinary procedure). jr-fmt dropped #expand on the first run, caught by gate 5. $N comptime-value parameters are complete — surface, instantiation, and [N]T sized by one (ADR-0089), where two instantiations get genuinely different array types from one declaration. They work end to end (ADR-0087 surface, ADR-0088 build): make :: ($N: s64) called as make(5) evaluates the argument via the same acyclic pre-pass #insert uses, and appends a concrete procedure with N baked into the body — parameter list drops the $N, each reference to N becomes a literal. Two calls at the same value dedupe (ADR-0005 extended to values), distinct values instantiate separately. Mixed comptime+runtime params (scaled :: ($N: s64, factor: s64)) pass only the runtime one at the call site — a per-call arg-mask filters at MIR, teeth-checked (disabling it makes the verifier catch an arity mismatch). E0271 refuses a non-constant argument at the call's span. Before that, $T procedures work end to end (ADR-0081-0084): a $T parameter is inferred from the call — directly or through a pointer or view — instantiated once per distinct tuple of bound types, checked per instantiation, and run as an ordinary procedure in both engines, so nothing polymorphic survives to the back end. And polymorphic structs (ADR-0085, built per ADR-0086): Box :: struct($T) { value: T; } used as Box(s64) is a type constructor, and Box(s64) and Box(bool) are distinct types from one declaration with substituted fields and layouts, told apart in the pool by the type argument in the key the way [2]s64 and [3]s64 are. It changed the pool's most load-bearing invariant — a struct's identity was its declaration site — and was landed in two commits, a zero-behaviour-change representation refactor proven by an unchanged snapshot and test count, then the parameterised behaviour, so a half-built type-identity change could not hide a miscompile. Left in W5: the #expand splice (its surface is done — ADR-0090), then #modify and #bake_arguments (modify, bake_arguments, expand), and the deferred struct pieces (inference through Box($T), using on one, cross-file, recursive List($T)), each a refusal today rather than a gap.",
   ),
   (
     "W6 Metaprogram", "not started",
@@ -355,9 +355,9 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[Forty-one waves shipped]
+    #sub[Forty-two waves shipped]
     #text(size: 7.4pt)[
-      ADR-0049 through 0089: for and defer, using, aggregate returns, multiple returns, named and
+      ADR-0049 through 0090: for and defer, using, aggregate returns, multiple returns, named and
       default arguments, scope visibility, imported constants, float constants, context, the
       bounds-check build setting, indirect calls, null plus a memory source, the allocator
       protocol, push_context, pointer arithmetic, temporary storage, trap backtraces, switch,
@@ -368,7 +368,7 @@
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 978. Corpus 116 to 182 files. Neovim checks 103 to 166. *W2, W3, W4.5 and W4 are all
+      Test count 900 to 978. Corpus 116 to 184 files. Neovim checks 103 to 166. *W2, W3, W4.5 and W4 are all
       closed*, and *W5 is open* with six sub-waves shipped: `$T` procedures, polymorphic structs, and now
       `$N` comptime-value parameters *and* their instantiation. A `$N` call `make(5)` evaluates the
       argument via the same acyclic pre-pass `#insert` uses (ADR-0073), and appends a concrete procedure
@@ -376,7 +376,7 @@
       becomes a literal. Two calls at the same value dedupe, distinct values instantiate separately, and
       mixed comptime+runtime params pass only the runtime ones at the call site. A per-call arg-mask
       filters at MIR, teeth-checked (disabling it makes the verifier catch an arity mismatch).
-      Remaining in W5: the macro family (`#modify`, `#bake_arguments`, `#expand`) — the last of it.
+      Remaining in W5: the `#expand` splice, then `#modify` and `#bake_arguments`.
     ]
 
     #v(0.3em)

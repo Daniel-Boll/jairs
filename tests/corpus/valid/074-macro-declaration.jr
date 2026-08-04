@@ -1,0 +1,52 @@
+// **`#expand` macros — the surface** (ADR-0090): a procedure marked `#expand` is a *macro*, whose body a
+// call **splices into the caller's scope** rather than calling. W5's seventh sub-wave, and — like `$T`'s
+// first (ADR-0081) and `$N`'s (ADR-0087) — deliberately the surface only: a macro parses, formats, lowers
+// and **checks like any other procedure declaration**. *Calling* one is refused (E0272) until the splice
+// sub-wave, which is exercised in `type-errors/068`.
+//
+// Why the refusal ships *with* the surface rather than after it: before it existed, `#expand` parsed and was
+// then **silently ignored** — a macro behaved as an ordinary procedure, so `double(21)` returned 42 by
+// calling rather than splicing. A directive that is accepted and does nothing is worse than one that is
+// rejected (ADR-0058 §3's rule, applied again), because nothing tells the writer their intent did not land.
+//
+// The splice will be **deliberately unhygienic**, matching Jai and matching `#insert`'s existing behaviour
+// (ADR-0072 §1): the macro's statements land in the *enclosing* scope, so the body can read and modify the
+// caller's locals — which is what makes `#expand` useful for a custom loop. Any hygiene mechanism is its
+// own later decision, because one designed against no use case would be designed blind.
+//
+// What is checked here:
+//
+//   * a `#expand` procedure with a return type and a body (`double`);
+//   * `#expand` **beside another attribute** (`#no_abc`), in both orders — the attribute loop takes them in
+//     any order, the ordering rule ADR-0058 refused to add;
+//   * a macro taking several parameters and using them (`combine`), so the body is a real one rather than a
+//     trivial shape.
+//
+// None of them is *called*, so `main` does ordinary work: the point is that declaring a macro checks clean,
+// which before this sub-wave it did not — `#expand` was E0106, "expected a procedure body".
+#import "Basic";
+
+/// The canonical macro: doubles its argument. Its body will be spliced at each call site.
+double :: (x: s64) -> s64 #expand {
+    return x * 2;
+}
+
+/// `#expand` beside `#no_abc`, in that order.
+indexed :: (n: s64) -> s64 #expand #no_abc {
+    return n + 1;
+}
+
+/// And in the other order, because the attribute loop takes either.
+indexed_too :: (n: s64) -> s64 #no_abc #expand {
+    return n + 2;
+}
+
+/// Several parameters, all used — a real body rather than a trivial one.
+combine :: (a: s64, b: s64, c: s64) -> s64 #expand {
+    return a * 100 + b * 10 + c;
+}
+
+main :: () {
+    n := 9;
+    exit(n);
+}

@@ -693,6 +693,12 @@ impl Proc {
     pub fn is_no_abc(&self) -> bool {
         self.0.children().any(|n| n.kind() == NO_ABC_ATTR)
     }
+
+    /// Whether this procedure is `#expand` — a **macro**, spliced into the caller's scope rather than
+    /// called (ADR-0090 §1).
+    pub fn is_expand(&self) -> bool {
+        self.0.children().any(|n| n.kind() == EXPAND_ATTR)
+    }
 }
 
 impl ScopeDecl {

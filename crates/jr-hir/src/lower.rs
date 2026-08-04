@@ -496,6 +496,7 @@ impl<'a> LowerCtx<'a> {
             params,
             c_call: ast_proc.is_c_call(),
             no_abc: ast_proc.is_no_abc(),
+            expand: ast_proc.is_expand(),
             ret,
             body,
             foreign,

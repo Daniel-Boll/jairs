@@ -914,6 +914,15 @@ pub struct Proc {
     /// flag from here to `Projection::Index` through every pass and both back ends. A flag some of
     /// those consumers ignored would be a bounds check silently restored or silently dropped.
     pub no_abc: bool,
+    /// `true` for a `#expand` procedure — a **macro** (ADR-0090 §1).
+    ///
+    /// A call to one is **spliced**: the macro's statements are lowered into the *caller's* scope rather
+    /// than the call being emitted, which is why this is a flag on the declaration rather than anything
+    /// on the call. Deliberately **unhygienic**, matching Jai and matching `#insert`'s existing splice
+    /// (ADR-0072 §1): the body sees and may modify the caller's locals, which is what makes a macro
+    /// useful for a custom loop. A macro therefore emits no MIR of its own, exactly as a `$T` template
+    /// does not (ADR-0090 §3).
+    pub expand: bool,
     /// The return type, if present.
     pub ret: Option<TypeRefId>,
     /// The body, if this is not a foreign procedure.

@@ -205,13 +205,17 @@ module.exports = grammar({
         ),
       ),
 
-    _proc_attr: ($) => choice($.c_call_attr, $.no_abc_attr),
+    _proc_attr: ($) => choice($.c_call_attr, $.no_abc_attr, $.expand_attr),
 
     // #c_call (ADR-0057 §3)
     c_call_attr: (_$) => field("directive", "#c_call"),
 
     // #no_abc (ADR-0058 §3)
     no_abc_attr: (_$) => field("directive", "#no_abc"),
+
+    // #expand — the procedure is a macro, spliced into the caller's scope rather than called
+    // (ADR-0090 §1). Its own rule beside the other two attributes, so a query can tell them apart.
+    expand_attr: (_$) => field("directive", "#expand"),
 
     param_list: ($) =>
       seq(
