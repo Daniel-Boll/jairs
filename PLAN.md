@@ -563,7 +563,16 @@ comptime-value parameters are **complete**; `#expand` macros have their *surface
 **What W5 has left, largest last:**
 - [ ] **The `#expand` splice** — lower a call by splicing the macro's body into the *caller's* scope,
       reusing `Stmt::Insert` (ADR-0090 §2 settles the mechanism and the unhygienic choice), and lift E0272.
-      **Recommended next.** Then `#modify` and `#bake_arguments`, each owed its own decision;
+      **Recommended next**, and its three forks are already traced and recorded in
+      `docs/decisions/DECISIONS.md` so the build starts settled: (1) a **macro-body-text map** collected in a
+      pre-scan of the `SourceFile` and threaded to `BodyLowerCtx` exactly as `InsertOperands` is —
+      `lower_file_with_inserts` already holds the AST and already threads one such map; (2) arguments bind by
+      a synthesized **`x := <arg text>;` prelude** before the spliced body, so an argument is evaluated
+      **once** (substituting it per use would re-evaluate a side-effecting argument — a real wrong answer);
+      (3) **a `return` inside a macro body is refused first** — a spliced `return` returning from the
+      *caller* is Jai's semantics and the useful one, but it changes what `return` means by provenance and
+      interacts with `defer` (ADR-0049 §3), so 7b's first task is to settle that and rewrite `valid/074`'s
+      macros, which currently all `return`. Then `#modify` and `#bake_arguments`, each owed its own decision;
       `#expand` in particular composes with `#insert`/`#code`, and reading a macro's argument is what
       finally supersedes ADR-0080's declined `Code` value with a real representation.
 - [ ] **Two-way unification** (ADR-0084 §3) and **explicit type arguments** (`id(s64, x)`), neither of which
