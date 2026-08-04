@@ -88,7 +88,12 @@ pub(crate) fn call(
                 .map_or(0, |v| v.as_int(IntKind::S64).unwrap_or(0)) as u64;
             // 16-byte alignment, matching what libc `malloc` guarantees, so a program that assumes
             // it holds in the VM too is not surprised. Zero size still yields a usable pointer.
-            let address = vm.memory_mut().allocate(size, 16)?;
+            // **From the heap region**, not the frame bump (ADR-0107 §2). `malloc` memory must outlive the
+            // call that allocated it — a procedure whose job is to allocate and return the pointer is the
+            // ordinary case — and a frame release would otherwise reclaim it, so a heap write inside a callee
+            // read back as zero in the caller while the native back end (calling libc) was right. The two
+            // engines disagreed, which the corpus differential caught.
+            let address = vm.memory_mut().allocate_heap(size, 16)?;
             return Ok(Value::Scalar(address));
         }
         // `free` is a no-op: the VM's region is bump-allocated with no reclamation (the same model

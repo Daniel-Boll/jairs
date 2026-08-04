@@ -509,7 +509,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **984 workspace tests** and **197 corpus files**, all six gates green, **166
+waiting. Both are tracked below. **984 workspace tests** and **198 corpus files**, all six gates green, **166
 Neovim checks**. See §1.5.
 
 ### W7 — Stdlib, open
@@ -636,8 +636,39 @@ Neovim checks**. See §1.5.
       construction back. That is the snapshot doing its stated job — an optimisation quietly not happening is
       invisible to every other gate.
 
+- [x] **`List` — a genuinely growable array** (ADR-0107, sub-wave 5): `Int_List` with heap storage, **doubling**
+      from 4, `push`/`pop`/`get`/`set`/`clear`/`free_data`. A **new module rather than a rewrite of `Array`**,
+      because the two have different *contracts*: an `Int_Array` needs no cleanup while an `Int_List` **owns**
+      memory and a caller must free it — and there are no destructors, so ownership is read in a name and docs or
+      never learnt. `Int_Array` also stays the better choice when a bound is known.
+
+      Doubling because `n` pushes then cost `O(n)` amortised, which is what makes a growable array worth having;
+      a fixed increment is `O(n²)`, a bug wearing a policy's clothes. `push` answers `false` on a failed
+      allocation and does **not** trap, because ADR-0058 §4's line is that a trap is for a *program* error and
+      running out of memory is not one. `allocate–copy–free` rather than `realloc`, which may extend in place and
+      would make growth depend on allocator behaviour the VM does not model.
+- [x] **A VM miscompile, and the corpus differential's FIRST REAL CATCH** (ADR-0107 §2). `valid/088` exited
+      **247 in the VM and 255 natively**. Bisected to thirteen lines: a callee allocates, writes, and stores the
+      pointer into its caller's struct — the write succeeded *inside* and read back **zero** outside. The VM
+      satisfies `malloc` from its own linear region (ADR-0061 §1) whose cursor **is the frame bump mark, restored
+      on return** — so heap memory allocated in a callee was reclaimed and the next frame reused the bytes,
+      reading back zero rather than garbage because release *zeroes* for determinism. The heap now grows downward
+      from the top, where no frame release touches it.
+
+      Every previous differential catch was a construct **both** engines got wrong, or a leaked internal error.
+      This is one engine right and the other wrong, which is the failure two independent implementations exist to
+      expose — and why the corpus asserts *exit codes* rather than agreement. Nothing had caught it because a
+      growable array is the first construct whose whole point is memory outliving the call that made it.
+
 **What still blocks a fully generic dynamic array**: **cross-file parameterised structs** and **inference
-through them** (ADR-0085 §5). So a growable array can now have real storage but stays per element type.
+through them** (ADR-0085 §5). So a growable array has real storage but stays per element type.
+
+**W7's next sub-wave, found and deliberately left alone** (ADR-0107 §5): **an imported module's own diagnostics
+are not reported.** `List` first called `malloc` without importing `Basic`; the program *checked clean* and failed
+at run time. Resolution is correct — the module alone reports E0201 — but `file_diagnostics` reports **one file**,
+so a root whose imported module is broken looks fine. Fixing it changes what `jr check`, `jr run` and `jr build`
+all report and needs a decision about attributing a module's errors, so it is its own sub-wave rather than
+something smuggled into a data structure.
 
 **What W7 has left:** the **allocating** half of `String`, once the allocator convention is decided; a merge
 sort and a binary search (the first wants allocation, the second a sortedness precondition nothing can check);

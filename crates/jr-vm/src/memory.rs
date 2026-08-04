@@ -65,6 +65,13 @@ pub struct Memory {
     bytes: Vec<u8>,
     /// The next free offset. Starts at 1 so that 0 is null.
     next: u64,
+    /// The heap's low-water mark: `malloc` allocates **downward** from here (ADR-0107 §2).
+    ///
+    /// A separate cursor because frames restore `next` on return while heap memory must outlive the call that
+    /// allocated it — sharing one made a heap write inside a callee read back as zero in the caller, a
+    /// disagreement between the two engines that the corpus differential caught. The two regions meet in the
+    /// middle, and either running into the other is `Exhausted`.
+    heap_next: u64,
 }
 
 impl Memory {
@@ -85,6 +92,8 @@ impl Memory {
             // bug does read an unwritten slot.
             bytes: vec![0; capacity.max(1)],
             next: 1,
+            // The heap starts at the top and grows down, so it begins empty.
+            heap_next: capacity.max(1) as u64,
         }
     }
 
@@ -130,10 +139,51 @@ impl Memory {
         let end = start
             .checked_add(size.max(1))
             .ok_or(VmError::Exhausted("memory"))?;
-        if end > self.bytes.len() as u64 {
+        // Bounded by the **heap's** low-water mark rather than by the region's end (ADR-0107 §2): the heap
+        // grows downward from the top, so the two meet in the middle and either one running into the other is
+        // exhaustion.
+        if end > self.heap_next {
             return Err(VmError::Exhausted("memory"));
         }
         self.next = end;
+        Ok(start)
+    }
+
+    /// Allocates `size` bytes for the **heap** — `malloc` — which a frame release never reclaims.
+    ///
+    /// # Why the heap grows from the far end
+    ///
+    /// Frames are a bump mark restored on return (see the module docs), and for a *slot* that is exactly
+    /// right: a local's bytes should die with its frame. But `malloc` memory must **outlive the call that
+    /// allocated it** — a procedure whose whole job is to allocate and hand the pointer back is the ordinary
+    /// case, and it is what a growable array's `grow` does.
+    ///
+    /// Sharing one bump pointer made that silently wrong: the memory was released on return and the next
+    /// frame reused the same bytes, so a heap write performed inside a callee read back as **zero** in the
+    /// caller — zero rather than garbage, because `release` deliberately zeroes for determinism. The native
+    /// back end calls libc and was correct, so the two engines **disagreed**, which is exactly the failure the
+    /// corpus differential exists to catch and the first time it has caught one (ADR-0107 §2).
+    ///
+    /// Growing downward from the top is the standard answer and needs no free list: the two regions cannot
+    /// overlap while `next <= heap_next`, which is the one check `allocate` and this share. Exhaustion is
+    /// still [`VmError::Exhausted`], a diagnosable limit rather than a fault.
+    ///
+    /// Nothing reclaims heap bytes — `free` is a no-op — so a long-running comptime allocator leaks within the
+    /// VM. That was already true and is unchanged; the bound turns it into a diagnosable error.
+    pub fn allocate_heap(&mut self, size: u64, align: u32) -> Result<Address, VmError> {
+        let align = u64::from(align.max(1));
+        let size = size.max(1);
+        let end = self
+            .heap_next
+            .checked_sub(size)
+            .ok_or(VmError::Exhausted("memory"))?;
+        // Aligned *downward*, since the block grows toward lower addresses: rounding up would move the start
+        // into bytes the previous heap block already owns.
+        let start = end - (end % align);
+        if start < self.next {
+            return Err(VmError::Exhausted("memory"));
+        }
+        self.heap_next = start;
         Ok(start)
     }
 

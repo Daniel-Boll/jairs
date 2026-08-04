@@ -1,0 +1,142 @@
+// **A genuinely growable array** (ADR-0107): `Int_List`, heap-backed, doubling. W7's fifth sub-wave, the fifth
+// module, and the one `Array` could not be — ADR-0105 shipped a fixed-capacity buffer and named three refusals
+// as the reason, and ADR-0106's typed allocation lifted the first of them.
+//
+// **Why this is a new module rather than a rewrite of `Array`.** The two have genuinely different contracts, and
+// collapsing them would hide that. An `Int_Array` needs **no cleanup** — its storage is inline, so a caller can
+// forget about it — while an `Int_List` **owns heap memory** and a caller must call `free_data`. There are no
+// destructors in Jairs, which is a design value rather than a missing feature, so ownership is something a
+// caller reads in a type's name and docs or does not learn at all. And an `Int_Array` is still the better choice
+// when a bound is known: no allocation, no failure mode, no cleanup.
+//
+// **Growth doubles**, from 4. `n` pushes then cost `O(n)` amortised, which is the property that makes a growable
+// array worth having at all — a fixed increment makes it `O(n²)`, a bug wearing a policy's clothes. Starting at
+// 4 rather than 1 avoids three reallocations before a small list settles; rather than 16 because a list that
+// stays small should not hold 128 unused bytes.
+//
+// **A failed allocation is `false`, not a trap.** ADR-0058 §4's line is that a trap is for a *program* error, and
+// running out of memory is not one: the program is correct and the machine said no, so aborting would take away
+// the caller's only chance to recover. It is the same `false` `Int_Array` returned when full — a caller can do
+// nothing different about the two reasons, so one answer serves both.
+//
+// **`get` bounds on `count` for a sharper reason than `Array`'s.** There the unused slots were *zeroed*, so
+// reading one gave a real number merely indistinguishable from an element. Here they hold whatever the allocator
+// returned, which is genuinely undefined — so the bound is not a matter of taste.
+//
+// **Writing it found a genuine two-engine divergence**, which is the first the corpus differential has caught:
+// `valid/088` exited **247 in the VM and 255 natively**. Bisected to thirteen lines — a callee that allocates,
+// writes, and stores the pointer into its caller's struct — where the write succeeded *inside* the callee and
+// read back **zero** outside. The VM satisfies `malloc` from its own linear region (ADR-0061 §1, so a pointer
+// stays a bounds-checked offset), and that region's cursor is the **frame bump mark, restored on return**. So
+// heap memory allocated in a callee was reclaimed when it returned and the next frame reused the bytes — reading
+// back zero rather than garbage precisely because release *zeroes* for determinism, which made the symptom a
+// clean wrong answer. The heap now grows downward from the top, where no frame release touches it (ADR-0107 §2).
+//
+// Nothing had caught it because nothing before this allocated in a callee and used the memory in the caller: a
+// growable array is the first construct whose whole point is memory outliving the call that made it.
+//
+// **A second gap was found and deliberately left alone**: this module first called `malloc` *without* importing
+// `Basic`, and the program checked clean before failing at run time. Resolution is correct — the module alone
+// reports `E0201` — but `file_diagnostics` reports one file and nothing else, so a root file whose imported
+// module is broken looks fine. Fixing that changes what `jr check`, `jr run` and `jr build` all report, so it is
+// W7's next sub-wave rather than something smuggled in here (ADR-0107 §5).
+//
+// What is checked here:
+//
+//   * pushing **past the first capacity** so growth actually happens — ten elements through a 4-element first
+//     allocation means two reallocations, and the elements must survive both copies;
+//   * every element readable **after** growth, which is what a broken copy loop would break;
+//   * `pop` shortening the list and leaving the capacity alone;
+//   * `get` and `set` refusing an index in `[count, capacity)`, where the memory exists and the element does not;
+//   * `clear` keeping the allocation and `free_data` releasing it, which are deliberately different routines —
+//     reusing a buffer a caller has paid for is a real thing to want;
+//   * `free_data` on a list that **never grew** (null storage) and **twice** on the same list, both safe.
+//
+// The exit code is **255**, eight groups of one bit, so a routine that returned a constant could not pass.
+#import "Basic";
+#import "List";
+
+main :: () {
+    n := 0;
+
+    l: Int_List;
+    l.data = null;
+    l.count = 0;
+    l.capacity = 0;
+
+    // A fresh list allocates nothing, so it is free to declare and safe to free.
+    if is_empty(*l) && l.capacity == 0 && l.data == null {
+        n = n + 1;
+    }
+
+    // Ten pushes through a 4-element first allocation: growth happens twice.
+    pushed := true;
+    i := 0;
+    while i < 10 {
+        if !push(*l, i * 3) {
+            pushed = false;
+        }
+        i = i + 1;
+    }
+    if pushed && l.count == 10 {
+        n = n + 2;
+    }
+    if l.capacity >= 10 && l.capacity > FIRST_CAPACITY {
+        n = n + 4;
+    }
+
+    // Every element survived both copies — what a broken copy loop would break.
+    survived := true;
+    j := 0;
+    while j < 10 {
+        v, ok := get(*l, j);
+        if !ok {
+            survived = false;
+        }
+        if v != j * 3 {
+            survived = false;
+        }
+        j = j + 1;
+    }
+    if survived {
+        n = n + 8;
+    }
+
+    // `pop` shortens the list and leaves the capacity alone.
+    before := l.capacity;
+    last, last_ok := pop(*l);
+    if last_ok && last == 27 && l.count == 9 && l.capacity == before {
+        n = n + 16;
+    }
+
+    // The memory exists between `count` and `capacity`; the element does not.
+    _, past := get(*l, 9);
+    if !past && !set(*l, 9, 1) && set(*l, 0, 99) {
+        n = n + 32;
+    }
+    replaced, _ := get(*l, 0);
+    if replaced == 99 {
+        n = n + 64;
+    }
+
+    // `clear` keeps the buffer, `free_data` releases it — deliberately different routines. The capacity is
+    // re-read rather than compared against `before`, because the `set` above may have been the last thing to
+    // touch it and this assertion is about `clear`, not about what came before.
+    kept := l.capacity;
+    clear(*l);
+    if is_empty(*l) && l.capacity == kept && push(*l, 1) {
+        free_data(*l);
+        // Safe twice, and safe on a list that never grew.
+        free_data(*l);
+        fresh: Int_List;
+        fresh.data = null;
+        fresh.count = 0;
+        fresh.capacity = 0;
+        free_data(*fresh);
+        if l.data == null && l.capacity == 0 {
+            n = n + 128;
+        }
+    }
+
+    exit(n);
+}

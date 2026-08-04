@@ -2211,3 +2211,41 @@ three lines, rather than leaving a caller unable to release what they allocated.
 is the caller that will ask for it — so it belongs with the dynamic array, one sub-wave later); alignment beyond
 the type's own (`malloc` guarantees suitable alignment for any scalar, and an over-aligned request has no
 caller); allocating an *aggregate* whose fields need initialisation (a zeroing decision of its own).
+
+## W7 sub-wave 5 — a genuinely growable array
+
+**What typed allocation unblocked, probed and confirmed.** A struct holding `data: *s64` allocated via
+`typed(s64, malloc(n * size_of(s64)))`; growth by **allocate, copy, free**; indexing through pointer
+arithmetic. All three work in both engines.
+
+**The fork: how does growth report failure, and how much does it grow by?**
+
+*Failure.* `malloc` can return null, so `push` can fail for a reason that is nothing to do with the caller.
+
+- **(a) `push` keeps returning `bool`, now meaning "allocation failed" rather than "full".** No signature
+  change from `Int_Array`, and a caller who already handles `false` handles this. Cost: the two reasons are
+  conflated — but a caller can do nothing different about either, and `is_full` is gone since the array is no
+  longer bounded. **Chosen.**
+- **(b) Trap on allocation failure.** Jai's default posture, and wrong here: ADR-0058 §4's line is that a trap
+  is for a *program* error, and running out of memory is not one. A library that aborts the process removes the
+  caller's only chance to recover.
+- **(c) Return `(bool, Error)`.** There is exactly one failure mode; an enum with one variant is a worse `bool`.
+
+*Growth factor.* **Doubling**, from a capacity of 4 on first push.
+
+- Doubling makes `n` pushes cost `O(n)` amortised, which is the property that makes a growable array worth
+  having at all — a fixed increment makes it `O(n²)` and would be a bug disguised as a policy.
+- Starting at 4 rather than 1 avoids three reallocations for the common small array, and rather than 16 because
+  an array that stays small should not hold 128 unused bytes.
+
+**`free_data` rather than `clear`, and why the module is honest about ownership.** `Int_Array.clear` was a
+one-liner because its storage was inline. Heap storage must be **released explicitly**: there are no
+destructors (a design value, ADR-0008's neighbours), so a caller who allocates must free. The module names the
+routine `free_data` rather than `clear` so a reader cannot mistake it for "forget the elements" — and `clear`
+survives as the count-only operation, since resetting to reuse the buffer is a real and different thing to want.
+
+**Deferred with reasons:** `realloc` (the platform's may extend in place; using it would make `grow` depend on
+an allocator behaviour the VM does not model, so the two engines could diverge in *timing* — not in results,
+but a difference worth not introducing casually); shrinking on `pop` (a caller who pops then pushes would
+thrash, and nothing asks for the memory back); a `[]T` view of the used prefix (wants a view built from a
+pointer and a count, which no expression can spell — a real gap, and its own decision).

@@ -18,8 +18,7 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 984 tests green. W7's first three
-modules are **`String`** (ADR-0103): `equal`, `compare`, `starts_with`, `ends_with`, `find`, `contains`,
+Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 984 tests green. W7's modules so far are **`String`** (ADR-0103): `equal`, `compare`, `starts_with`, `ends_with`, `find`, `contains`,
 `byte_at`, `is_empty`, **none of which allocate**. It exists because the *previous* wave named it — ADR-0099 §4
 refused `==` on two strings, since a `string` is `{data, count}` and so "the same storage" and "the same
 contents" are both plausible readings, and its stated reason was that comparing contents needs a byte loop,
@@ -94,6 +93,24 @@ caught it, which is the good outcome, but the *pass* was wrong: there the store 
 rather than a redundant pair. The first fix was too broad and lost a real optimisation on struct fields — caught
 by the optimized-MIR snapshot, which is precisely the job a snapshot has, since an optimisation quietly not
 happening is invisible to every other check.
+
+**And `List`** (ADR-0107) is the genuinely growable array typed allocation unblocked: heap storage, doubling from
+four, `push`/`pop`/`free_data`. It is a **new module rather than a rewrite of `Array`**, because the two have
+different contracts — an `Int_Array` needs no cleanup while an `Int_List` **owns** memory a caller must free, and
+with no destructors in the language that is something read in a type's name or never learnt.
+
+**Writing it produced the corpus differential's first real catch.** The test exited 247 in the bytecode VM and
+255 natively, and bisecting gave thirteen lines: a callee that allocates, writes, and hands the pointer back,
+where the write succeeded *inside* the callee and read back zero outside. The VM satisfies `malloc` from its own
+linear region — so a pointer stays a bounds-checked offset — and that region's cursor **was the frame bump mark,
+restored on return**. Heap memory allocated inside a callee was therefore reclaimed when it returned, and read
+back as zero rather than garbage precisely because release zeroes for determinism, which made the symptom a clean
+wrong answer instead of a crash. The heap now grows downward from the top of the region.
+
+Every earlier catch was a construct **both** engines got wrong together, or a leaked internal error. This was one
+engine right and the other wrong — the failure two independent implementations exist to expose, and the reason
+the corpus asserts exit codes rather than agreement. Nothing had found it because a growable array is the first
+construct whose whole point is memory outliving the call that made it.
 
 Before it, wave **W6 — Metaprogram**, five sub-waves in, with 984 tests green. Its headline claim is met — a metaprogram can find
 declarations by note and generate code for each — and a build script can name its own artefact. A declaration can
