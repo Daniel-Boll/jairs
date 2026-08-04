@@ -8500,3 +8500,182 @@ proc main -> void {
     discard call extern proc1(v97)
     return
 }
+
+========================================
+090-string-alloc.jr
+========================================
+proc libc_alloc -> *u8 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: *u8 = call extern proc2(v1)
+    return v2
+}
+proc libc_free -> void {
+  params: v0: *Context, v1: *u8
+  bb0(v0: *Context, v1: *u8):
+    discard call extern proc3(v1)
+    return
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: string  // local 1
+    s1: string  // local 2
+    s2: string  // local 3
+    s3: string  // local 4
+    s4: string  // local 5
+    s5: string  // local 6
+    s6: string  // local 7
+    s7: string  // local 8
+    s8: string  // local 9
+    s9: string  // local 10
+  bb0(v0: *Context):
+    store (v0).*.0 <- proc0
+    store (v0).*.1 <- proc1
+    v1: string = call extern proc8(v0, "ab", "cd")
+    store s0 <- v1
+    v2: s64 = load s0.count
+    v3: bool = v2 == 4_s64
+    branch v3 ? bb1() : bb2()
+  bb1():
+    v5: string = load s0
+    v6: bool = call extern proc2(v0, v5, "abcd")
+    goto bb3(v6)
+  bb2():
+    goto bb3(false)
+  bb3(v4: bool):
+    branch v4 ? bb4() : bb5()
+  bb4():
+    v8: s64 = 0_s64 + 1_s64
+    goto bb6(v8)
+  bb5():
+    goto bb6(0_s64)
+  bb6(v18: s64):
+    v9: string = load s0
+    discard call extern proc12(v0, v9)
+    v10: string = call extern proc8(v0, "", "xy")
+    store s1 <- v10
+    v11: string = call extern proc8(v0, "xy", "")
+    store s2 <- v11
+    v12: string = load s1
+    v13: bool = call extern proc2(v0, v12, "xy")
+    branch v13 ? bb7() : bb8()
+  bb7():
+    v15: string = load s2
+    v16: bool = call extern proc2(v0, v15, "xy")
+    goto bb9(v16)
+  bb8():
+    goto bb9(false)
+  bb9(v14: bool):
+    branch v14 ? bb10() : bb11()
+  bb10():
+    v19: s64 = v18 + 2_s64
+    goto bb12(v19)
+  bb11():
+    goto bb12(v18)
+  bb12(v25: s64):
+    v20: string = load s1
+    discard call extern proc12(v0, v20)
+    v21: string = load s2
+    discard call extern proc12(v0, v21)
+    v22: string = call extern proc9(v0, "hello", 1_s64, 3_s64)
+    store s3 <- v22
+    v23: string = load s3
+    v24: bool = call extern proc2(v0, v23, "ell")
+    branch v24 ? bb13() : bb14()
+  bb13():
+    v26: s64 = v25 + 4_s64
+    goto bb15(v26)
+  bb14():
+    goto bb15(v25)
+  bb15(v36: s64):
+    v27: string = load s3
+    discard call extern proc12(v0, v27)
+    v28: string = call extern proc9(v0, "hello", 0_s64, 2_s64)
+    store s4 <- v28
+    v29: string = call extern proc9(v0, "hello", 3_s64, 2_s64)
+    store s5 <- v29
+    v30: string = load s4
+    v31: bool = call extern proc2(v0, v30, "he")
+    branch v31 ? bb16() : bb17()
+  bb16():
+    v33: string = load s5
+    v34: bool = call extern proc2(v0, v33, "lo")
+    goto bb18(v34)
+  bb17():
+    goto bb18(false)
+  bb18(v32: bool):
+    branch v32 ? bb19() : bb20()
+  bb19():
+    v37: s64 = v36 + 8_s64
+    goto bb21(v37)
+  bb20():
+    goto bb21(v36)
+  bb21(v47: s64):
+    v38: string = load s4
+    discard call extern proc12(v0, v38)
+    v39: string = load s5
+    discard call extern proc12(v0, v39)
+    v40: string = call extern proc9(v0, "hello", 2_s64, 99_s64)
+    store s6 <- v40
+    v41: string = load s6
+    v42: bool = call extern proc2(v0, v41, "llo")
+    branch v42 ? bb22() : bb23()
+  bb22():
+    v44: s64 = load s6.count
+    v45: bool = v44 == 3_s64
+    goto bb24(v45)
+  bb23():
+    goto bb24(false)
+  bb24(v43: bool):
+    branch v43 ? bb25() : bb26()
+  bb25():
+    v48: s64 = v47 + 16_s64
+    goto bb27(v48)
+  bb26():
+    goto bb27(v47)
+  bb27(v53: s64):
+    v49: string = load s6
+    discard call extern proc12(v0, v49)
+    v50: string = call extern proc9(v0, "hi", 5_s64, 2_s64)
+    store s7 <- v50
+    v51: s64 = load s7.count
+    v52: bool = v51 == 0_s64
+    branch v52 ? bb28() : bb29()
+  bb28():
+    v54: s64 = v53 + 32_s64
+    goto bb30(v54)
+  bb29():
+    goto bb30(v53)
+  bb30(v59: s64):
+    v55: string = load s7
+    discard call extern proc12(v0, v55)
+    v56: string = call extern proc10(v0, "aB3z")
+    store s8 <- v56
+    v57: string = load s8
+    v58: bool = call extern proc2(v0, v57, "AB3Z")
+    branch v58 ? bb31() : bb32()
+  bb31():
+    v60: s64 = v59 + 64_s64
+    goto bb33(v60)
+  bb32():
+    goto bb33(v59)
+  bb33(v65: s64):
+    v61: string = load s8
+    discard call extern proc12(v0, v61)
+    v62: string = call extern proc11(v0, "aB3z")
+    store s9 <- v62
+    v63: string = load s9
+    v64: bool = call extern proc2(v0, v63, "ab3z")
+    branch v64 ? bb34() : bb35()
+  bb34():
+    v66: s64 = v65 + 128_s64
+    goto bb36(v66)
+  bb35():
+    goto bb36(v65)
+  bb36(v68: s64):
+    v67: string = load s9
+    discard call extern proc12(v0, v67)
+    discard call extern proc1(v68)
+    return
+}

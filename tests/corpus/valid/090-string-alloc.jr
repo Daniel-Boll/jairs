@@ -1,0 +1,110 @@
+// **The allocating half of `String`** (ADR-0111): `concat`, `substring`, `to_upper`, `to_lower`, `free_string`.
+// W7's ninth sub-wave, and the decision ADR-0103 §3 deferred when it shipped the non-allocating half.
+//
+// **Where the memory comes from.** Each of these produces a *new* string, so each allocates — through
+// `context.allocator` (ADR-0062), and the **caller frees** with `free_string`. That convention was the fork
+// ADR-0103 §3 left open, and ADR-0111 settles it: not `talloc`, because a result that silently expires on an
+// unrelated `reset_temporary_storage()` is a trap; not an explicit allocator parameter on every routine,
+// because the context exists to carry exactly this (ADR-0001) — a caller who wants arena behaviour installs an
+// arena and gets it for every routine at once, with no second API.
+//
+// **A caller must install an allocator first**, and forgetting is not silent: `context.allocator` is null until
+// installed (ADR-0057 §5), and calling a null one **traps** (ADR-0110) — which is why the null-call trap shipped
+// the sub-wave before this one, found while probing exactly this convention. A failed allocation returns `""`,
+// because ADR-0058 §4's line is that a trap is for a *program* error and running out of memory is not one.
+//
+// This file installs libc `malloc`/`free` through the wrapper shape `valid/050` established (a `#foreign`
+// procedure cannot fill a procedure-pointer field, E0256), and frees every result — so under the differential
+// harness a leak or a double-free or a wrong copy is a different exit status in one engine.
+//
+// What is checked here:
+//
+//   * `concat` joining two strings, and joining with an **empty** one on each side (no allocation, `free_string`
+//     a no-op);
+//   * `substring` in the middle, at the **start**, at the **end**, and **clamped** past the end — clamped rather
+//     than trapping, because "up to n bytes from here" is an ordinary thing to want, the reasoning `byte_at`'s
+//     `-1` follows;
+//   * `to_upper` and `to_lower` on mixed case, leaving non-letters alone;
+//   * every result compared with `equal` from the non-allocating half, so the two halves compose;
+//   * every result freed, so the harness can catch a leak or a double-free as a divergence.
+//
+// The exit code is **255**, eight groups of one bit.
+#import "Basic";
+#import "String";
+
+/// The allocate half of an allocator: a wrapper around libc `malloc`, because a `#foreign` procedure cannot fill
+/// a procedure-pointer field directly (E0256, ADR-0059 §3).
+libc_alloc :: (n: s64) -> *u8 {
+    return malloc(n);
+}
+
+/// The release half, returning nothing — the `(*u8)` form ADR-0062 §1 made spellable.
+libc_free :: (p: *u8) {
+    free(p);
+}
+
+main :: () {
+    context.allocator = libc_alloc;
+    context.allocator_free = libc_free;
+
+    n := 0;
+
+    // `concat`, and the empty cases that allocate nothing.
+    c := concat("ab", "cd");
+    if c.count == 4 && equal(c, "abcd") {
+        n = n + 1;
+    }
+    free_string(c);
+
+    left := concat("", "xy");
+    right := concat("xy", "");
+    if equal(left, "xy") && equal(right, "xy") {
+        n = n + 2;
+    }
+    free_string(left);
+    free_string(right);
+
+    // `substring` in the middle, at the start, and at the end.
+    mid := substring("hello", 1, 3);
+    if equal(mid, "ell") {
+        n = n + 4;
+    }
+    free_string(mid);
+
+    head := substring("hello", 0, 2);
+    tail := substring("hello", 3, 2);
+    if equal(head, "he") && equal(tail, "lo") {
+        n = n + 8;
+    }
+    free_string(head);
+    free_string(tail);
+
+    // Clamped past the end: "up to 99 bytes from index 2" is "llo".
+    clamped := substring("hello", 2, 99);
+    if equal(clamped, "llo") && clamped.count == 3 {
+        n = n + 16;
+    }
+    free_string(clamped);
+
+    // A start past the end is empty.
+    past := substring("hi", 5, 2);
+    if past.count == 0 {
+        n = n + 32;
+    }
+    free_string(past);
+
+    // `to_upper` and `to_lower`, leaving the digit alone.
+    u := to_upper("aB3z");
+    if equal(u, "AB3Z") {
+        n = n + 64;
+    }
+    free_string(u);
+
+    l := to_lower("aB3z");
+    if equal(l, "ab3z") {
+        n = n + 128;
+    }
+    free_string(l);
+
+    exit(n);
+}
