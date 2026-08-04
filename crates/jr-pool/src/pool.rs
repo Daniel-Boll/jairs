@@ -431,7 +431,20 @@ impl Pool {
     /// through a pointer — `Node :: struct { next: *Node; }` needs `Node` to
     /// already have an ID while its own fields are still being lowered.
     pub fn struct_type(&mut self, decl: DeclId) -> PoolId {
-        self.intern(Item::StructType { decl })
+        self.intern(Item::StructType {
+            decl,
+            args: Vec::new(),
+        })
+    }
+
+    /// Interns a parameterised struct instance — `Box(s64)` (ADR-0085 §1).
+    ///
+    /// Distinct from [`Pool::struct_type`] only in carrying `args`: `Box(s64)` and `Box(bool)` share
+    /// one `decl` and are two `Item`s, so the interner gives them two `PoolId`s the way it does
+    /// `[2]s64` and `[3]s64`. An empty `args` is exactly [`Pool::struct_type`], so this never mints a
+    /// second ID for an ordinary struct.
+    pub fn struct_instance(&mut self, decl: DeclId, args: Vec<PoolId>) -> PoolId {
+        self.intern(Item::StructType { decl, args })
     }
 
     /// Interns the nominal union type declared at `decl` (ADR-0045 §4).
@@ -439,7 +452,10 @@ impl Pool {
     /// Its fields go in the *same* side table a struct's do — [`Pool::set_struct_fields`] —
     /// because the field list is the same data. Only the layout differs.
     pub fn union_type(&mut self, decl: DeclId) -> PoolId {
-        self.intern(Item::UnionType { decl })
+        self.intern(Item::UnionType {
+            decl,
+            args: Vec::new(),
+        })
     }
 
     /// Interns the nominal variant type declared at `decl` (ADR-0068 §1).
@@ -447,7 +463,10 @@ impl Pool {
     /// Its cases go in the *same* side table a struct's fields do, because a case list is a field
     /// list — what differs is the layout (a leading tag, §3) and the check on a read (§4).
     pub fn variant_type(&mut self, decl: DeclId) -> PoolId {
-        self.intern(Item::VariantType { decl })
+        self.intern(Item::VariantType {
+            decl,
+            args: Vec::new(),
+        })
     }
 
     /// Records the resolved fields of the struct declared at `decl`.

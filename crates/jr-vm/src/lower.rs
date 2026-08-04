@@ -653,8 +653,9 @@ impl Compiler<'_> {
         }
         // A union's field list is a struct's, so this accepts both; only `field_offset`
         // distinguishes them, and that is `jr-pool`'s (ADR-0045 §5).
-        let (Item::StructType { decl } | Item::UnionType { decl } | Item::VariantType { decl }) =
-            self.pool.item(ty)
+        let (Item::StructType { decl, .. }
+        | Item::UnionType { decl, .. }
+        | Item::VariantType { decl, .. }) = self.pool.item(ty)
         else {
             return Err(VmError::internal("a field of a non-aggregate"));
         };

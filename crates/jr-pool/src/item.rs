@@ -362,14 +362,24 @@ pub enum Item {
     /// filled in after the type has an ID — see
     /// [`Pool::set_struct_fields`](crate::Pool::set_struct_fields).
     StructType {
-        /// Where the struct was declared. This alone is the identity.
+        /// Where the struct was declared.
         decl: DeclId,
+        /// The type arguments of a parameterised struct — `[s64]` for `Box(s64)` (ADR-0085 §1).
+        ///
+        /// **Empty for an ordinary `struct { … }`**, which interns exactly as it did before this
+        /// field existed: an empty `Vec` changes no key, so every non-parameterised struct keeps
+        /// its old `PoolId`. `Box(s64)` and `Box(bool)` share one `decl` and are told apart *here* —
+        /// two distinct `Item`s, two distinct `PoolId`s — the same way [`Item::ArrayType`]
+        /// distinguishes `[2]s64` from `[3]s64`. The field side table keys on the instance `PoolId`
+        /// (ADR-0085 §2), so the two instances carry two field lists, substituted per argument.
+        args: Vec<PoolId>,
     },
     /// A nominal union type, keyed on its declaration site (ADR-0045 §4).
     ///
     /// Structurally identical to [`Item::StructType`] and nominal for the same reason, and it
-    /// shares the *same* field side table — `set_struct_fields` keys on [`DeclId`] and knows
-    /// nothing about which kind of declaration it was, so the fields are the same data.
+    /// shares the *same* field side table — [`Pool::set_struct_fields`](crate::Pool::set_struct_fields)
+    /// keys on the instance and knows nothing about which kind of declaration it was, so the fields
+    /// are the same data.
     ///
     /// A **separate variant** rather than a `union: bool` on `StructType`, because the two
     /// differ in *layout*: every field of a union sits at offset 0 and the size is the largest
@@ -377,8 +387,10 @@ pub enum Item {
     /// union and produce wrong addresses silently; a variant makes every offset-computing site
     /// a compile error until it handles both.
     UnionType {
-        /// Where the union was declared. This alone is the identity.
+        /// Where the union was declared.
         decl: DeclId,
+        /// The type arguments of a parameterised union — empty for an ordinary `union` (ADR-0085 §1).
+        args: Vec<PoolId>,
     },
     /// A `variant { … }` type, nominal for the reason [`Item::StructType`] and [`Item::UnionType`]
     /// are: two variants with identical cases in two files are two types (ADR-0068 §1).
@@ -389,6 +401,9 @@ pub enum Item {
     VariantType {
         /// The declaration site that gives this variant its identity.
         decl: DeclId,
+        /// The type arguments of a parameterised variant — empty for an ordinary `variant`
+        /// (ADR-0085 §1).
+        args: Vec<PoolId>,
     },
     /// A procedure type.
     ///

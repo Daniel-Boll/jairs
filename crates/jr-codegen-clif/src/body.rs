@@ -1769,8 +1769,9 @@ impl Translator<'_, '_> {
         }
         // Accepts a union as well as a struct: the field *list* is shared and only the
         // offsets differ (ADR-0045 §5).
-        let (Item::StructType { decl } | Item::UnionType { decl } | Item::VariantType { decl }) =
-            self.ctx.pool.item(ty)
+        let (Item::StructType { decl, .. }
+        | Item::UnionType { decl, .. }
+        | Item::VariantType { decl, .. }) = self.ctx.pool.item(ty)
         else {
             return Err(CodegenError::Internal(
                 "a field of a non-aggregate".to_owned(),

@@ -1346,3 +1346,33 @@ Recommended option taken automatically per the standing autonomy directive; logg
 Taken as recommended. This is the largest remaining W5 piece; built as its own sub-wave with a refusal for
 anything beyond a single-`$T` struct used monomorphically, so nothing miscompiles. `$$T` and macros stay
 deferred.
+
+---
+
+## Wave: polymorphic structs — implementation (ADR-0085), 2026-08-04
+
+The build of the design ADR-0085 fixed. Staged into two sub-waves because a half-finished type-identity
+change is this project's named catastrophic failure mode (a well-typed placeholder that miscompiles).
+
+### Fork 1 — how to stage the identity change
+
+- Options: **sub-wave 5a lands the representation as a zero-behavioral-change refactor, 5b layers grammar +
+  instantiation on top (taken, recommended)**; do it all in one commit.
+- Why staged: 5a changes the pool's most load-bearing key (a struct's identity) and re-keys the field side
+  table across ~40 call sites and ~44 match sites. Proving that state byte-identical (same snapshots, same
+  corpus output) isolates the risky identity change from the new *behaviour*. If a snapshot moves in 5a, the
+  refactor is wrong and it is visible before any new grammar can hide it. One big commit would tangle "the
+  representation changed" with "Box(s64) now works", so a snapshot move could not be attributed.
+
+### Fork 2 — one field map re-keyed, or two maps
+
+- Options: **keep `struct_fields: DeclId→fields` for ordinary structs untouched, add
+  `instance_fields: PoolId→fields` for parameterised instances, dispatch in `fields_of` (taken,
+  recommended)**; re-key the single map from `DeclId` to instance `PoolId` as ADR-0085 §2 states literally.
+- Why two maps: it reaches ADR-0085's stated *consequence* verbatim — "an ordinary struct is unchanged, a
+  parameterised one is a generalisation" — while making 5a a genuine zero-diff refactor. Re-keying the one
+  map to `PoolId` would touch every `set_struct_fields(decl, …)` and `struct_fields(decl)` caller in 5a
+  (sema, sigs, ctx, mir, codegen, vm, lsp) and change what they pass, which is exactly the behaviour-mixing
+  fork 1 avoids. The ordinary path stays `DeclId`-keyed and provably identical; the instance path is new
+  and reached only once grammar exists (5b), so 5a adds a map nobody writes yet — a dormant generalisation,
+  not a speculative half-change, because 5b is the same wave.

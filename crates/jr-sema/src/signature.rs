@@ -461,9 +461,9 @@ impl Ctx<'_> {
     /// Whether `ty` is a nominal type declared in *this* file (ADR-0048 §3).
     fn declared_here(&self, ty: PoolId) -> bool {
         match self.pool.item(ty) {
-            Item::StructType { decl } | Item::UnionType { decl } | Item::EnumType { decl, .. } => {
-                decl.file == self.file
-            }
+            Item::StructType { decl, .. }
+            | Item::UnionType { decl, .. }
+            | Item::EnumType { decl, .. } => decl.file == self.file,
             _ => false,
         }
     }

@@ -410,7 +410,7 @@ fn layout_at_depth(
         // rather than a change to layout.
         Item::EnumType { .. } => layout_at_depth(pool, target, PoolId::S64, depth + 1),
 
-        Item::StructType { decl } => struct_layout_at_depth(pool, target, *decl, depth),
+        Item::StructType { decl, .. } => struct_layout_at_depth(pool, target, *decl, depth),
 
         // A results aggregate lays out exactly as a struct of the same field types, through the
         // *same* function (ADR-0052 §1). The element list is right here, so unlike a struct there
@@ -431,8 +431,8 @@ fn layout_at_depth(
         // computed — and for a union that is not a formality: a layout disagreement between the
         // engines would be *invisible*, since both would read plausible bits from the wrong
         // place rather than crashing.
-        Item::UnionType { decl } => union_layout_at_depth(pool, target, *decl, depth),
-        Item::VariantType { decl } => variant_layout_at_depth(pool, target, *decl, depth),
+        Item::UnionType { decl, .. } => union_layout_at_depth(pool, target, *decl, depth),
+        Item::VariantType { decl, .. } => variant_layout_at_depth(pool, target, *decl, depth),
 
         Item::VoidValue
         | Item::BoolValue(_)
@@ -626,7 +626,7 @@ pub fn field_offset(
     // **Every field of a union is at offset 0.** This is the single line that makes a union a
     // union, it is shared by both engines, and getting it wrong would be a silent
     // wrong-address bug rather than an error (ADR-0045 §3).
-    if let Item::UnionType { decl } = pool.item(ty) {
+    if let Item::UnionType { decl, .. } = pool.item(ty) {
         let fields = pool
             .struct_fields(*decl)
             .ok_or(LayoutError::UnresolvedStruct(*decl))?;
@@ -641,7 +641,7 @@ pub fn field_offset(
     // (ADR-0068 §3). Getting this wrong would read the tag as part of a case, or a case as the tag —
     // a silent wrong-address bug of exactly the kind the union arm above warns about, which is why
     // the offset is computed here and in neither engine.
-    if let Item::VariantType { decl } = pool.item(ty) {
+    if let Item::VariantType { decl, .. } = pool.item(ty) {
         let fields = pool
             .struct_fields(*decl)
             .ok_or(LayoutError::UnresolvedStruct(*decl))?;
@@ -661,7 +661,7 @@ pub fn field_offset(
         Item::ResultsType { elems } => elems.clone(),
         // The context's fields, from the one list every consumer reads (ADR-0057 §1).
         Item::ContextType => CONTEXT_FIELD_TYPES.to_vec(),
-        Item::StructType { decl } => pool
+        Item::StructType { decl, .. } => pool
             .struct_fields(*decl)
             .ok_or(LayoutError::UnresolvedStruct(*decl))?
             .iter()

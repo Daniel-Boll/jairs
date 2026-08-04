@@ -1226,7 +1226,7 @@ impl Ctx<'_> {
         // variant's case list as the namespace instead of an enum's members. Handled before the enum
         // gate below so that a `switch v { case .i; … }` resolves rather than being told it needs an
         // enum, and the *type* is the variant, because that is what the arm is compared against.
-        if let Item::VariantType { decl } = *self.pool.item(target) {
+        if let Item::VariantType { decl, .. } = *self.pool.item(target) {
             let known = self
                 .pool
                 .struct_fields(decl)
@@ -1620,7 +1620,10 @@ impl Ctx<'_> {
                     while let Some(inner) = self.pointee(base_ty) {
                         base_ty = inner;
                     }
-                    let Item::StructType { decl: inner_decl } = self.pool.item(base_ty) else {
+                    let Item::StructType {
+                        decl: inner_decl, ..
+                    } = self.pool.item(base_ty)
+                    else {
                         continue;
                     };
                     let inner_decl = *inner_decl;
@@ -1662,7 +1665,7 @@ impl Ctx<'_> {
         // case into scope would make a name read a field the tag may say is not live. Resolution has
         // already reported it; accepting one here would give a value to a promotion that was refused.
         let decl = match self.pool.item(ty) {
-            Item::StructType { decl } => *decl,
+            Item::StructType { decl, .. } => *decl,
             _ => return PoolId::ERROR,
         };
         self.pool
@@ -1896,7 +1899,7 @@ impl Ctx<'_> {
         // both — which is why this wave adds no diagnostic: E0258 and E0260 already say the right
         // things about "handles every member of".
         let variant_cases: Option<Vec<Symbol>> = match self.pool.item(scrutinee) {
-            Item::VariantType { decl } => Some(
+            Item::VariantType { decl, .. } => Some(
                 self.pool
                     .struct_fields(*decl)
                     .unwrap_or(&[])
@@ -3026,7 +3029,7 @@ impl Ctx<'_> {
             self.report_library_shape(span, type_name, "it is not declared, or is not a type");
             return None;
         };
-        let Item::StructType { decl } = *self.pool.item(ty) else {
+        let Item::StructType { decl, .. } = *self.pool.item(ty) else {
             self.report_library_shape(span, type_name, "it is not a struct");
             return None;
         };
@@ -3466,9 +3469,9 @@ impl Ctx<'_> {
             // diagnostics. Only the offsets differ, and those are `jr-pool`'s (ADR-0045 §5). A
             // variant's cases are a field list too (ADR-0068 §1), so it joins them — what differs is
             // the tag check MIR emits on the *read*, which is not a typing question.
-            Item::StructType { decl } | Item::UnionType { decl } | Item::VariantType { decl } => {
-                ReceiverKind::Struct(*decl)
-            }
+            Item::StructType { decl, .. }
+            | Item::UnionType { decl, .. }
+            | Item::VariantType { decl, .. } => ReceiverKind::Struct(*decl),
             // The context's fields are the compiler's, not a side table's — there is no `DeclId` to
             // key one on (ADR-0057 §1), so this is its own receiver kind rather than a `Struct`.
             Item::ContextType => ReceiverKind::Context,
@@ -3825,14 +3828,15 @@ impl Ctx<'_> {
             // Only `count`. Listing `data` would suggest a pseudo-field arrays do not have
             // (ADR-0039 §5), which is worse than no suggestion.
             Item::ArrayType { .. } | Item::ViewType { .. } => vec![String::from("count")],
-            Item::StructType { decl } | Item::UnionType { decl } | Item::VariantType { decl } => {
-                self.pool
-                    .struct_fields(*decl)
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(|f| self.interner.resolve(f.name).to_owned())
-                    .collect()
-            }
+            Item::StructType { decl, .. }
+            | Item::UnionType { decl, .. }
+            | Item::VariantType { decl, .. } => self
+                .pool
+                .struct_fields(*decl)
+                .unwrap_or(&[])
+                .iter()
+                .map(|f| self.interner.resolve(f.name).to_owned())
+                .collect(),
             _ => Vec::new(),
         };
 

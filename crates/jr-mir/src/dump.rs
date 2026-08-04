@@ -515,7 +515,7 @@ impl Dumper<'_> {
         if self.type_info_id_field(ty).is_some() {
             return Some("Type_Info");
         }
-        let Item::StructType { decl } = self.pool.item(ty) else {
+        let Item::StructType { decl, .. } = self.pool.item(ty) else {
             return None;
         };
         let fields = self.pool.struct_fields(*decl)?;
@@ -542,7 +542,7 @@ impl Dumper<'_> {
     /// would at worst mask its first `s64`, a snapshot-cosmetic risk rather than a correctness one — and
     /// no other struct in the corpus has an enum as its second field beside those four scalars.
     fn type_info_id_field(&self, ty: PoolId) -> Option<usize> {
-        let Item::StructType { decl } = self.pool.item(ty) else {
+        let Item::StructType { decl, .. } = self.pool.item(ty) else {
             return None;
         };
         let fields = self.pool.struct_fields(*decl)?;
@@ -702,13 +702,13 @@ impl Dumper<'_> {
             // Prints the *keyword* it is, so a dump cannot make a union look like a struct —
             // which matters here more than usual, since the two differ only in offsets and a
             // dump is where a wrong offset would first be visible.
-            Item::UnionType { decl } => match self.signatures.type_name(id) {
+            Item::UnionType { decl, .. } => match self.signatures.type_name(id) {
                 Some(name) => name.to_owned(),
                 None => format!("union{decl:?}"),
             },
             // Likewise prints `variant`, so a dump cannot make one look like a union — the two differ
             // in the tag, which is exactly the thing a wrong offset would hide (ADR-0068 §3).
-            Item::VariantType { decl } => match self.signatures.type_name(id) {
+            Item::VariantType { decl, .. } => match self.signatures.type_name(id) {
                 Some(name) => name.to_owned(),
                 None => format!("variant{decl:?}"),
             },

@@ -922,9 +922,9 @@ fn type_info_value(
     let (count, element) = match *pool.item(described) {
         jr_pool::Item::ArrayType { elem, len } => (len, u64::from(elem.as_u32())),
         jr_pool::Item::PointerType(pointee) => (0, u64::from(pointee.as_u32())),
-        jr_pool::Item::StructType { decl }
-        | jr_pool::Item::UnionType { decl }
-        | jr_pool::Item::VariantType { decl } => {
+        jr_pool::Item::StructType { decl, .. }
+        | jr_pool::Item::UnionType { decl, .. }
+        | jr_pool::Item::VariantType { decl, .. } => {
             let n = pool.struct_fields(decl).map_or(0, <[_]>::len);
             (n as u64, 0)
         }
@@ -1019,7 +1019,7 @@ fn type_info_struct_type(
 
 /// The fields of a struct type, if it is one and they are recorded.
 fn struct_fields_of(pool: &Pool, ty: PoolId) -> Option<Vec<jr_pool::Field>> {
-    let jr_pool::Item::StructType { decl } = *pool.item(ty) else {
+    let jr_pool::Item::StructType { decl, .. } = *pool.item(ty) else {
         return None;
     };
     pool.struct_fields(decl).map(<[_]>::to_vec)
@@ -1279,7 +1279,7 @@ fn aggregate_placements(pool: &Pool, ty: PoolId) -> Result<Vec<(PoolId, u64, u64
                 .map(|index| (elem, elem_layout.size * index, elem_layout.size))
                 .collect())
         }
-        jr_pool::Item::StructType { decl } | jr_pool::Item::VariantType { decl } => {
+        jr_pool::Item::StructType { decl, .. } | jr_pool::Item::VariantType { decl, .. } => {
             let fields = pool
                 .struct_fields(decl)
                 .ok_or_else(|| "a struct constant's fields are not recorded".to_owned())?
