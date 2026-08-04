@@ -18,7 +18,16 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after **`#code`** (ADR-0080), which **completes wave W4 — Comptime** as scoped: `#code { n := 7; }`
+Last updated during **wave W5 — Polymorphism**, four sub-waves in: `$T` procedures work end to end.
+`id :: (x: $T) -> T` is declared as a template (no concrete signature, no MIR), a call `id(42)` infers `$T`
+from its argument, and the compiler appends a **concrete procedure** — one per distinct structural tuple of
+bound types (ADR-0005), deduped across call sites — that both engines run like any other. Nothing
+polymorphic survives to the back end, which is what lets the differential harness check a polymorphic
+program at all. The body is checked *per instantiation*, so `add(a, b)` on a struct with no `+` is a
+diagnostic rather than a miscompile. It handles several type variables (`pair :: (a: $A, b: $B)`) and
+inference through a pointer or view (`deref :: (p: *$T)`, `sort :: (items: []$T)`), by a one-layer
+structural match rather than a full unifier. Still ahead in W5: polymorphic *structs* (`Box($T)`, design of
+record in ADR-0085), comptime-value parameters (`$$T`), and the macro family. On top of **`#code`** (ADR-0080), which **completed wave W4 — Comptime** as scoped: `#code { n := 7; }`
 is `#insert "n := 7;"` written without quotes, spliced into the enclosing scope. It is deliberately *sugar* —
 `#insert` of a named constant already worked, so what `#code` adds is no quoting and a body parsed where it
 is written, not a new capability. There is no `Code` *value*, and that is **declined rather than deferred**: a
@@ -190,6 +199,7 @@ The authoritative version of this list is
 | `#insert "…"` of a **string literal**, lowered where it is written — same scope, so a local it declares is visible after it; nesting works, and every diagnostic points at the directive and names its offset into the inserted text (ADR-0072) | `#insert` at file scope, which would change the item tree; `#code` and the `Code` type |
 | `#insert <expr>;` of a **computed** operand — a constant or a `#run` whose text is evaluated at compile time and spliced (ADR-0073). The operand resolves and type-checks like any expression (`#insert undefined;` → E0201; a non-string → E0214), and a pending insert the evaluator has not reached is refused, never miscompiled. This is where sema and the VM become mutually recursive; the cycle is broken by an acyclic pre-pass | a **cross-file** `#run` value (its own decision, ADR-0073 §4); expansion past 16 levels (E0264) |
 | **`#code { … }`** — unquoted source spliced into the enclosing scope; the body is parsed where it is written, so no quoting and no escaping (ADR-0080). Deliberately *sugar* over `#insert`, reusing its depth bound and its refusal of a pending splice | a `Code` **value** — **declined**, not deferred: a quoted syntax tree is worth representing only once something can inspect or transform one (ADR-0080 §3); spans into the body's real source, so a fault inside it points at the `#code` |
+| **`$T` polymorphic procedures** — inferred from the argument (directly or through `*$T`/`[]$T`), instantiated once per distinct tuple of bound types, checked per instantiation, run as ordinary procedures in both engines (ADR-0081–0084) | polymorphic **structs** (`Box($T)`, design in ADR-0085); comptime-value params (`$$T`); macros (`#modify`/`#bake_arguments`/`#expand`); two-way unification and explicit type arguments |
 | a **type as a compile-time value**: `T :: Point;` binds one, and `T` is usable wherever `Point` is — as an annotation, a parameter, a field, an array element, a pointee; an enum alias carries its members (ADR-0071) | a chain (`B :: A`); comparing types (`T == U`); a `Type` parameter; `Type` as an annotation, which does not parse |
 | using a type where a **runtime** value is expected is refused (E0261) — it has no runtime representation, so there is nothing to store | — |
 | `#import`, `#foreign`, `#system_library` | polymorphs `$T`, `#expand` macros (**W5**) |

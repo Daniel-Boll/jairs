@@ -105,3 +105,4 @@ The ADR numbers are stable and are referenced from code comments and
 | [0082](0082-instantiation.md) | A polymorphic call instantiates by expanding the HIR with a substituted procedure per structural key, checked and lowered per instantiation (lifts E0268) | Accepted |
 | [0083](0083-multiple-type-variables.md) | A polymorphic procedure may introduce several type variables; the structural key is the tuple of all bindings (generalises ADR-0082) | Accepted |
 | [0084](0084-nested-inference.md) | A type variable is inferred through a pointer or view parameter (`*$T`, `[]$T`) by a one-layer structural match | Accepted |
+| [0085](0085-polymorphic-structs.md) | A polymorphic struct is a parameterised type keyed on `(decl, args)`; design of record for the sub-wave that builds it | Accepted |
