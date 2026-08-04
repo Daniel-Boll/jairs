@@ -509,7 +509,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **986 workspace tests** and **199 corpus files**, all six gates green, **166
+waiting. Both are tracked below. **986 workspace tests** and **200 corpus files**, all six gates green, **166
 Neovim checks**. See §1.5.
 
 ### W7 — Stdlib, open
@@ -720,6 +720,16 @@ through them** (ADR-0085 §5). So a growable array has real storage but stays pe
       immediately. Native needs no bias (a code address is never zero), so this is the VM's encoding earning a
       property native had, not a language change — nothing observes a proc pointer's bits. The **seventh** leaked
       internal error turned into a real diagnostic, and the first found by probing a *library convention*.
+
+- [x] **`String`'s allocating half** (ADR-0111, sub-wave 9): `concat`, `substring`, `to_upper`, `to_lower`,
+      `free_string` — the convention ADR-0103 §3 deferred, now chosen and built. Each allocates through
+      `context.allocator` (ADR-0062) and the **caller frees**: not `talloc` (a result expiring on an unrelated
+      `reset_temporary_storage()` is a trap), not an explicit parameter (the context carries it, ADR-0001).
+      Forgetting to install an allocator is **not silent** — a null one traps (ADR-0110), which is why that trap
+      shipped first. `substring` clamps rather than trapping; `to_upper`/`to_lower` are ASCII only, said plainly.
+      **The first W7 sub-wave in several to touch no compiler crate** — built entirely on what the language had,
+      which is what a maturing language should let a library do. `split` stays deferred: it wants a *list of
+      strings*, and `List($T)` needs cross-file parameterised structs (ADR-0085 §5).
 
 **W7 left after that:** the **allocating** half of `String`, once the allocator convention is decided; a merge
 sort and a binary search (the first wants allocation, the second a sortedness precondition nothing can check);

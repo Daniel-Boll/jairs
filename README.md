@@ -144,6 +144,15 @@ jumped to address zero. It is now one trap in both, exit 4 with a source locatio
 one so that zero can mean null — `valid/048` calls the first procedure in the file, which packed to the same
 handle as null and proved the bias necessary.
 
+**And `String` grew an allocating half** (ADR-0111): `concat`, `substring`, `to_upper`, `to_lower`,
+`free_string`. Each produces a new string through `context.allocator`, and the caller frees it — the convention
+`String` deferred when it shipped its non-allocating half. Not temporary storage, because a result that expired
+on an unrelated reset would be a trap; not an explicit allocator parameter, because the context exists to carry
+exactly this, so a caller who wants arena behaviour installs an arena and gets it for every routine at once.
+Forgetting to install one is not silent — a null allocator traps, which is why that trap was built first. This
+was the first W7 sub-wave in several to touch no compiler crate at all: built entirely on what the language
+already had, which is what a maturing language should let a library do.
+
 Before it, wave **W6 — Metaprogram**, five sub-waves in, with 984 tests green. Its headline claim is met — a metaprogram can find
 declarations by note and generate code for each — and a build script can name its own artefact. A declaration can
 carry **`@note` metadata** for a metaprogram to read (ADR-0098). `@deprecated` and `@requires "x"` sit in the

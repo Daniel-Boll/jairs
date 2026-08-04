@@ -39,6 +39,22 @@
 //! `tests/corpus/valid/084-string.jr` exercises every procedure here and exits on a value that depends on all
 //! of them, so both engines must agree on each answer. That matters more than usual for this module: a
 //! comparison routine that returned a constant would pass any test that only asked "did it run".
+//!
+//! # The allocating half, and where its memory comes from
+//!
+//! `concat`, `substring`, `to_upper` and `to_lower` each produce a **new** string, so each allocates — through
+//! `context.allocator` (ADR-0062), and the **caller frees** with `free_string`. That is the convention ADR-0103
+//! §3 deferred, chosen in ADR-0111: not `talloc`, because a result that silently expires on an unrelated
+//! `reset_temporary_storage()` is a trap; not an explicit allocator parameter, because the context exists to
+//! carry exactly this (ADR-0001) and a caller who wants arena behaviour installs an arena and gets it for every
+//! routine at once.
+//!
+//! **A caller must install an allocator first.** `context.allocator` is null until then (ADR-0057 §5), and
+//! calling a null one traps (ADR-0110) — so a program that concatenates without installing an allocator gets a
+//! trap naming the null pointer, not a silent wrong answer. A failed allocation returns `""`, because ADR-0058
+//! §4's line is that a trap is for a *program* error and running out of memory is not one.
+
+#import "Basic";
 
 /// The byte at `index`, or `-1` when the index is out of range.
 ///
@@ -201,4 +217,152 @@ find :: (haystack: string, needle: string) -> s64 {
 /// not use — the same argument `is_empty` makes against `count == 0`.
 contains :: (haystack: string, needle: string) -> bool {
     return find(haystack, needle) >= 0;
+}
+
+// ---------------------------------------------------------------------------
+// The allocating half (ADR-0111): each returns a new string the caller frees.
+// ---------------------------------------------------------------------------
+
+/// Two strings joined into a new one, allocated through `context.allocator`.
+///
+/// The caller frees the result with `free_string`. Concatenating two empty strings gives `""`, which needs no
+/// allocation and none is made — so `free_string` on it is a no-op, which is the honest answer rather than a
+/// zero-byte allocation to track.
+///
+/// A failed allocation returns `""`. That is distinguishable from every non-empty result, and a caller joining
+/// two non-empty strings and getting `""` back has detected the failure.
+concat :: (a: string, b: string) -> string {
+    total := a.count + b.count;
+    if total == 0 {
+        return make_string(null, 0);
+    }
+    buf := context.allocator(total);
+    if buf == null {
+        return make_string(null, 0);
+    }
+    copy_bytes(buf, a.data, 0, a.count);
+    copy_bytes(buf, b.data, a.count, b.count);
+    return make_string(buf, total);
+}
+
+/// The `count` bytes of `s` starting at `start`, as a new string the caller frees.
+///
+/// An out-of-range request is **clamped** rather than trapping: asking for more than remains gives what remains,
+/// and a `start` past the end gives `""`. Clamping rather than trapping because a substring of "whatever is
+/// there, up to n" is an ordinary thing to want at the end of a string, the same reasoning `byte_at`'s `-1`
+/// follows.
+substring :: (s: string, start: s64, count: s64) -> string {
+    from := start;
+    if from < 0 {
+        from = 0;
+    }
+    if from > s.count {
+        from = s.count;
+    }
+    take := count;
+    if take < 0 {
+        take = 0;
+    }
+    if from + take > s.count {
+        take = s.count - from;
+    }
+    if take == 0 {
+        return make_string(null, 0);
+    }
+    buf := context.allocator(take);
+    if buf == null {
+        return make_string(null, 0);
+    }
+    copy_bytes(buf, s.data + from, 0, take);
+    return make_string(buf, take);
+}
+
+/// A copy of `s` with ASCII lowercase letters raised to uppercase; other bytes unchanged.
+///
+/// ASCII only, and said so: a `string` is bytes (ADR-0004), and case-folding beyond ASCII needs a Unicode table
+/// this language does not have. `'a'` is 97 and `'z'` is 122; subtracting 32 reaches `'A'`.
+to_upper :: (s: string) -> string {
+    if s.count == 0 {
+        return make_string(null, 0);
+    }
+    buf := context.allocator(s.count);
+    if buf == null {
+        return make_string(null, 0);
+    }
+    i := 0;
+    while i < s.count {
+        c := (s.data + i).*;
+        if c >= 97 {
+            if c <= 122 {
+                c = c - 32;
+            }
+        }
+        (buf + i).* = c;
+        i = i + 1;
+    }
+    return make_string(buf, s.count);
+}
+
+/// A copy of `s` with ASCII uppercase letters lowered; other bytes unchanged.
+///
+/// The mirror of `to_upper`. `'A'` is 65 and `'Z'` is 90; adding 32 reaches `'a'`.
+to_lower :: (s: string) -> string {
+    if s.count == 0 {
+        return make_string(null, 0);
+    }
+    buf := context.allocator(s.count);
+    if buf == null {
+        return make_string(null, 0);
+    }
+    i := 0;
+    while i < s.count {
+        c := (s.data + i).*;
+        if c >= 65 {
+            if c <= 90 {
+                c = c + 32;
+            }
+        }
+        (buf + i).* = c;
+        i = i + 1;
+    }
+    return make_string(buf, s.count);
+}
+
+/// Releases a string this module allocated.
+///
+/// **The routine a caller must not forget** — there are no destructors, so nothing else frees it. Safe on a
+/// `""` result (its data is null and `allocator_free` of null is a no-op), so a caller need not special-case the
+/// empty case. Must be given a string from one of the allocating routines above, not a literal: freeing a
+/// literal's storage would release memory the compiler owns.
+free_string :: (s: string) {
+    if s.data != null {
+        context.allocator_free(s.data);
+    }
+}
+
+#scope_module
+
+/// Builds a `string` from a data pointer and a count.
+///
+/// Module-private: a caller has no business constructing a `string` from raw parts, and the allocating routines
+/// are the supported way to get one. It exists because the fields are assignable and this is the one place that
+/// should assign them.
+make_string :: (data: *u8, count: s64) -> string {
+    r: string;
+    r.data = data;
+    r.count = count;
+    return r;
+}
+
+/// Copies `count` bytes from `src` into `dest` at byte offset `at`.
+///
+/// The one loop the allocating routines share, named so a bug in it is fixed once. `dest` is `*u8` and `at` is a
+/// byte offset, so `dest + at` is the write cursor — pointer arithmetic on `*u8` is element-scaled by 1
+/// (ADR-0064), which is what makes a byte offset and a pointer offset the same number here.
+copy_bytes :: (dest: *u8, src: *u8, at: s64, count: s64) {
+    i := 0;
+    while i < count {
+        (dest + at + i).* = (src + i).*;
+        i = i + 1;
+    }
 }

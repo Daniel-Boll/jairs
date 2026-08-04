@@ -2370,3 +2370,10 @@ concatenating two empty strings has nothing to detect.
 **Deferred with reasons:** `split` (wants a container of strings — an `Int_List` of what? a list of strings needs
 `List($T)`, which cross-file parameterised structs still block); `concat_into` (option (d), additive, no caller
 yet); `trim` (wants a definition of whitespace, which is a table, not a decision).
+
+## W7 sub-wave 9 — the allocating half of String, delivered
+
+ADR-0111 records the convention chosen (sub-wave 8's fork, now built): `concat`, `substring`, `to_upper`,
+`to_lower` allocate through `context.allocator` and the caller frees with `free_string`. `talloc`-always and an
+explicit-parameter form were both rejected in that fork; this sub-wave is the implementation. `split` stays
+deferred (wants a list of strings, which needs `List($T)`, which cross-file parameterised structs still block).
