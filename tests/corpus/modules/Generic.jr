@@ -1,0 +1,26 @@
+// A module declaring **templates**, for `imports/invalid/017` to try (and fail) to instantiate.
+//
+// Cross-file instantiation is deferred (ADR-0082 §5), so a call to any of these from an importing file is
+// refused with E0268 (ADR-0104 §2). This module exists to make that refusal *reachable*: before it, nothing
+// in the corpus imported a polymorphic procedure, which is why the refusal did not exist at all — the call
+// type-checked (a `$T` parameter's type is `PoolId::ERROR` and `ERROR` matches anything) and the missing
+// instantiation leaked out of whichever engine ran first as "no routine for file N proc M".
+//
+// The wrapper is here too, because it is the *workaround* the diagnostic names: a non-polymorphic procedure
+// in the declaring module, which instantiates the template where instantiation works. `imports/valid/017`
+// calls it, so the two halves of the story are both pinned.
+
+/// A `$T` template. Instantiating this from another file is E0268.
+identity :: (x: $T) -> T {
+    return x;
+}
+
+/// A `$N` comptime-value template, so the refusal covers both marks rather than only `$T`.
+scaled :: ($N: s64, factor: s64) -> s64 {
+    return N * factor;
+}
+
+/// The workaround: instantiated *here*, where cross-file instantiation is not in the way.
+identity_int :: (x: s64) -> s64 {
+    return identity(x);
+}

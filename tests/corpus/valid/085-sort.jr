@@ -1,0 +1,117 @@
+// **The `Sort` module** (ADR-0104): ordering a view in place, for any element type, given a comparison. W7's
+// second sub-wave, the project's **third** module, and the first library code that is *polymorphic* — so the
+// first that depends on W5 rather than merely coexisting with it.
+//
+// **Three things were probed before a line was written**, because the whole module rests on them and all three
+// hold: a `[]T` **view parameter is mutable** through the callee (so an in-place sort can exist), a `$T`
+// parameter **infers through a view** (`xs: []$T`, ADR-0084), and a **procedure pointer** can be passed and
+// called (ADR-0059). Writing the module first and finding one missing would have meant designing around a gap
+// instead of knowing there was none.
+//
+// **Why the caller supplies the comparison.** `sort(xs, less)` takes a procedure rather than requiring `<` on
+// the element type, and that is a language fact rather than a taste: resolving an **operator** inside a `$T`
+// template against the instantiated type is a lookup instantiation does not do. `operator <` exists (ADR-0048)
+// and `#modify` can *reject* an instantiation (ADR-0095), but nothing can *select* an implementation per
+// instantiated type — that would be operator-bounded polymorphism, a real feature belonging to whichever wave
+// decides how a template states its requirements. A comparison parameter is also the only form that serves a
+// scalar **and** a struct with nothing the language lacks, and it composes with `String.compare`, which the
+// previous sub-wave shaped for exactly this.
+//
+// **Why insertion sort, which is not a performance argument.** It is `O(n²)`, said plainly. The reasons to
+// choose it here are that it is **stable** (equal elements keep their order, which quicksort does not give),
+// that it needs **no extra storage** (a merge sort would allocate, and allocation is what ADR-0103 §3 declined
+// to decide), and that it is **short enough to read**, which matters for the first sorting routine in a
+// language whose test suite compares two independent engines. A faster algorithm is a later decision with a
+// benchmark behind it; W8 owns performance.
+//
+// **Why the calls here are the `_ints` wrappers.** Cross-file instantiation is deferred (ADR-0082 §5), so this
+// file *cannot* call `sort(a[], less_int)` — that is E0268, and `type-errors/072` pins it. Writing this module
+// is what found that the refusal did not exist: a `$T` parameter's type is `PoolId::ERROR` and `ERROR` matches
+// anything, so the call type-checked and the missing instantiation leaked out of an engine as "no routine for
+// file 2 proc 0". So `sort_ints` and `ints_sorted` are not conveniences today — they are the only way an
+// importer can use this module, because the wrapper lives where the instantiation can happen.
+//
+// The same work found a second leak: passing an **imported procedure as a value** — `less_int` handed to a
+// procedure-pointer parameter — reported "this compiler has a gap; please report it" for a program the language
+// allows. `ImportedProcs` had already resolved the name to a `ProcRef` and a `DeclId` carries a file id, so the
+// value was representable all along and what was missing was a three-line bridge (ADR-0104 §1).
+//
+// What is checked here:
+//
+//   * a **reversed** array sorted ascending, which is insertion sort's worst case and the one an accidentally
+//     correct implementation is least likely to get right;
+//   * **duplicates**, so stability has something to preserve, and the count is checked after so no element is
+//     lost or duplicated by the shifting;
+//   * an **already sorted** array, which must come out unchanged;
+//   * a **single element** and an **empty** view, both of which `is_sorted` calls ordered because there is no
+//     adjacent pair to violate;
+//   * `ints_sorted` disagreeing with an unsorted array, so the postcondition check is not vacuously true —
+//     without this, a sort that did nothing would pass every other assertion here.
+//
+// The exit code is **63**, six independent groups each contributing one bit, so a routine that returned a
+// constant could not pass: the corpus differential compares the two engines to each other, so a wrong answer
+// both give is invisible unless the *value* is asserted.
+#import "Basic";
+#import "Sort";
+
+main :: () {
+    n := 0;
+
+    // A reversed array — insertion sort's worst case, and the case that actually exercises the shifting.
+    a: [5]s64;
+    a[0] = 5;
+    a[1] = 4;
+    a[2] = 3;
+    a[3] = 2;
+    a[4] = 1;
+    sort_ints(a[]);
+    if a[0] == 1 && a[1] == 2 && a[2] == 3 && a[3] == 4 && a[4] == 5 {
+        n = n + 1;
+    }
+    if ints_sorted(a[]) {
+        n = n + 2;
+    }
+
+    // Duplicates, so stability has something to preserve — and so a lost or repeated element shows up.
+    b: [6]s64;
+    b[0] = 3;
+    b[1] = 1;
+    b[2] = 3;
+    b[3] = 2;
+    b[4] = 1;
+    b[5] = 2;
+    sort_ints(b[]);
+    if b[0] == 1 && b[1] == 1 && b[2] == 2 && b[3] == 2 && b[4] == 3 && b[5] == 3 {
+        n = n + 4;
+    }
+
+    // Already sorted: it must come out unchanged rather than merely ordered.
+    c: [3]s64;
+    c[0] = 7;
+    c[1] = 8;
+    c[2] = 9;
+    sort_ints(c[]);
+    if c[0] == 7 && c[1] == 8 && c[2] == 9 {
+        n = n + 8;
+    }
+
+    // One element, which the loop never enters, and which is ordered.
+    d: [1]s64;
+    d[0] = 42;
+    sort_ints(d[]);
+    if d[0] == 42 && ints_sorted(d[]) {
+        n = n + 16;
+    }
+
+    // **The check that keeps the rest honest**: an unsorted view must be reported unsorted. Without it, a
+    // `sort` that did nothing at all would satisfy every assertion above that only reads a sorted array.
+    e: [3]s64;
+    e[0] = 2;
+    e[1] = 1;
+    e[2] = 3;
+    if !ints_sorted(e[]) {
+        n = n + 32;
+    }
+
+    exit(n);
+}

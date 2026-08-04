@@ -1,0 +1,25 @@
+// **The workaround for cross-file instantiation, working** (ADR-0104 §2). The other half of
+// `imports/invalid/017`, and the reason that refusal is usable rather than a wall.
+//
+// A template cannot be instantiated across a module boundary (E0268, ADR-0082 §5). What *can* cross is an
+// ordinary procedure — so a module that wants to offer a polymorphic routine offers a **wrapper** it
+// instantiated itself, in the file where instantiation works. `Generic.identity_int` is that wrapper, and
+// `Sort`'s `sort_ints` and `ints_sorted` are the same shape in the standard library.
+//
+// This is worth its own file because a refusal is only as good as its escape route: without this, "wrap it in
+// a non-polymorphic procedure in the module that declares it" would be advice nothing had checked.
+//
+// It also pins the second half of ADR-0104: `identity_int` is an **imported procedure**, and until §1 an
+// imported procedure used as a *value* leaked a gap report — so a module offering wrappers had to be sure both
+// halves worked.
+// No `#import "Basic"`, because this directory's harness searches `tests/corpus/modules` only — and nothing
+// here needs `exit`: what the file asserts is that the wrapper *checks*, which is the property the refusal's
+// escape route depends on. `valid/085` is where the standard library's own wrappers are *run*.
+#import "Generic";
+
+main :: () {
+    // The wrapper, instantiated inside `Generic` where that is possible. Its result is bound rather than
+    // returned, since a corpus file in this directory is checked rather than executed.
+    n := identity_int(6);
+    m := n + 1;
+}
