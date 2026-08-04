@@ -1591,3 +1591,45 @@ Taken as recommended. The surface ships with E0272; the splice is the next sub-w
 `Stmt::Insert` unhygienically (fork 2). Confirmed the lossy-CST trap is still live: **jr-fmt dropped
 `#expand` on the first run**, turning every macro into an ordinary procedure, and gate 5 caught it on this
 wave's own corpus file. `#modify` and `#bake_arguments` remain unbuilt, each owed its own decision.
+
+---
+
+## Wave: the `#expand` splice (sub-wave 7b) — design recorded, 2026-08-04
+
+Recorded after tracing the mechanism, so the build starts from a settled plan (the ADR-0085/0088 pattern).
+
+### Fork 1 — how the macro's body text reaches the call site
+
+- Options: **a macro-body-text map collected in a pre-scan of the `SourceFile` and threaded to
+  `BodyLowerCtx`, exactly as `InsertOperands` is (taken, recommended)**; look the declaration up through
+  the CST from the call; store the text on `Proc`.
+- Why the map: `lower_file_with_inserts` already holds the whole `SourceFile` AST and already threads one
+  such map (`operands`) into every `BodyLowerCtx`, so this is the *same proven shape* — `name → block inner
+  text`, collected by walking the file's items for a `#expand` proc and calling the existing
+  `block_inner_text`. Walking the CST from the call site would need the call to find its declaration, which
+  lowering does not do (resolution is a later pass). Storing text on `Proc` would put source text in the HIR,
+  which nothing else there does.
+
+### Fork 2 — how arguments bind
+
+- Options: **synthesize a `name := arg;` prelude per parameter before the spliced body, in the generated
+  text (taken, recommended)**; substitute argument expressions into the body text; bind them as HIR locals
+  directly.
+- Why the prelude: it reuses the splice wholesale — the generated text is `x := <arg text>; <body text>` and
+  `expand_insert_text` lowers it in the enclosing scope, so argument evaluation happens **once** (a
+  substitution would re-evaluate a side-effecting argument per use, a real wrong answer) and each parameter
+  becomes an ordinary local the body's names resolve to. It also keeps the whole feature inside the
+  mechanism ADR-0072/0080 built, which is ADR-0090 §2's decision.
+- **The argument's text** comes from the call's own CST node, which lowering has in hand.
+
+### Fork 3 — what a macro's `return` means
+
+- Options: **refuse a `return` inside a macro body for now (its own diagnostic), and support the
+  value-producing form via a trailing expression later (taken, recommended)**; make `return` return from the
+  *caller*; make it produce the splice's value.
+- Why refuse first: a spliced `return` returning from the **caller** is what Jai does and is the useful
+  semantics, but it changes what `return` means depending on where the text came from — and the corpus's
+  `defer`/`return` interaction (ADR-0049 §3) makes that a real risk of a silent wrong exit path. Refusing it
+  keeps 7b's scope to the splice itself, which is already the biggest piece, and names the deferral rather
+  than half-supporting it. `valid/074`'s macros all `return`, so they will need rewriting or the refusal must
+  arrive with a companion form — that is the first thing the 7b build must settle.
