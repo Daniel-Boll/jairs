@@ -98,7 +98,7 @@
 #h(4pt)
 #pill[ADR-0097 latest]
 #h(4pt)
-#pill(fill: rgb("#fdf2e6"), stroke: warn)[W5 COMPLETE · 15 sub-waves]
+#pill(fill: rgb("#fdf2e6"), stroke: warn)[W6 OPEN · notes shipped]
 
 #v(0.5em)
 #grid(
@@ -106,7 +106,7 @@
   gutter: 8pt,
   metric("Tests", "981", "workspace, all passing"),
   metric("Corpus", "193", "jr files, both engines"),
-  metric("ADRs", "97", "0001 to 0097, immutable"),
+  metric("ADRs", "98", "0001 to 0098, immutable"),
   metric("Diagnostics", "107", "codes, E0277 next free"),
   metric("Editor checks", "166", "Neovim, verified not gated"),
 )
@@ -191,7 +191,7 @@
   ("if, else, while, for, break, continue, defer, using", ""),
   ("switch with exhaustiveness checking over an enum; else", "patterns, ranges, guards; a jump table"),
   ("Multiple returns, named args, literal defaults", "#must; a multi-result call in a return"),
-  ("import, foreign, system_library, #scope_module", "macros (W5)"),
+  ("import, foreign, system_library, #scope_module, #expand macros that splice, #modify predicates, #bake_arguments, @note metadata", "a reader for @note: the message loop (W6)"),
   ("$T procedures, Box($T) structs, and $N comptime-value parameters — complete, including [N]T sized by a $N; all instantiated in both engines", "#expand macros; inference through Box($T); a length needing arithmetic"),
   ("Compile-time run at file scope or in a body, across files; type_info(), Any, #insert, #code", "a cross-file #run value; a Code value (declined)"),
   ("A type as a compile-time value: T :: Point aliases one, usable anywhere Point is", "a chain B :: A; comparing types; Type as an annotation"),
@@ -308,8 +308,8 @@
     "COMPLETE in fifteen sub-waves (ADR-0081 to ADR-0097). The last piece, #bake_arguments specialisation, lowers a declaration to a REAL procedure — a clone with the baked parameters dropped, their literals substituted and the kept ones remapped, which is the same machinery $N instantiation uses, so W5 ends on a reuse rather than a new mechanism. A baked value must be a literal: ADR-0096 planned to use the const-eval pre-pass and building it showed that pre-pass runs AFTER lowering. #bake_arguments has its surface (ADR-0096) — a partial application producing a specialised procedure; its operand is a call so the named-argument spelling is the ordinary one, and its specialisation is refused E0276 pending the last W5 sub-wave. That refusal replaced a leaked gap report (the compiler could not lower main, please report it) which is right for an unknown gap and wrong for a named one. #modify is COMPLETE (ADR-0093/0094/0095): a compile-time predicate over an instantiation runs when a call binds the type variables, and a false refuses that instantiation (E0275) — so a template enforces its own constraints in code. It is hosted in file_mir, the only place with the expanded tree, its MIR and the VM, and rejections ride the existing diagnostics channel so it needed no new query. A predicate that fails to RUN is deliberately not a rejection. E0274 was retired when the predicate began running — the fourth by-design refusal raised then lifted. #modify has its surface (ADR-0093): a compile-time predicate over an instantiation, guarding a template in code rather than a comment. The block parses (the one procedure attribute carrying a block) and formats with its body; a call is refused E0274 pending evaluation, because a parsed-and-ignored predicate would accept calls the author rejected — ADR-0058 rule for the third time. Its evaluation is designed and deferred. type_info(T) now reflects a BOUND type variable (ADR-0092) — a $T procedure can ask its own bound type size, field count or identity, each instantiation seeing its own. That was found missing while designing #modify, whose predicate needs exactly it, and fixing it also turned a sixth leaked internal error into working code. The #expand SPLICE works (ADR-0091): a call splices the macro body into the caller scope, so a macro can modify the caller local — deliberately unhygienic like Jai. A generated prelude binds each argument once (substituting per use would re-evaluate a side-effecting argument), and expression position gets a generated result local so one mechanism serves both. The MIR shows no calls at all. Refused by design: an early return (E0273), a void macro in expression position, a cross-file call (E0272, which had been reaching the VM as an internal error). looks_like_proc_signature needed #expand too — the token-set trap for the fifth time, since a void macro reaches neither arrow nor brace. #expand macros have their surface (ADR-0090): a macro parses, formats and checks like any procedure, and a call is refused E0272 pending the splice — a refusal that ships WITH the surface, because without it #expand was accepted and silently ignored (a macro behaved as an ordinary procedure). jr-fmt dropped #expand on the first run, caught by gate 5. $N comptime-value parameters are complete — surface, instantiation, and [N]T sized by one (ADR-0089), where two instantiations get genuinely different array types from one declaration. They work end to end (ADR-0087 surface, ADR-0088 build): make :: ($N: s64) called as make(5) evaluates the argument via the same acyclic pre-pass #insert uses, and appends a concrete procedure with N baked into the body — parameter list drops the $N, each reference to N becomes a literal. Two calls at the same value dedupe (ADR-0005 extended to values), distinct values instantiate separately. Mixed comptime+runtime params (scaled :: ($N: s64, factor: s64)) pass only the runtime one at the call site — a per-call arg-mask filters at MIR, teeth-checked (disabling it makes the verifier catch an arity mismatch). E0271 refuses a non-constant argument at the call's span. Before that, $T procedures work end to end (ADR-0081-0084): a $T parameter is inferred from the call — directly or through a pointer or view — instantiated once per distinct tuple of bound types, checked per instantiation, and run as an ordinary procedure in both engines, so nothing polymorphic survives to the back end. And polymorphic structs (ADR-0085, built per ADR-0086): Box :: struct($T) { value: T; } used as Box(s64) is a type constructor, and Box(s64) and Box(bool) are distinct types from one declaration with substituted fields and layouts, told apart in the pool by the type argument in the key the way [2]s64 and [3]s64 are. It changed the pool's most load-bearing invariant — a struct's identity was its declaration site — and was landed in two commits, a zero-behaviour-change representation refactor proven by an unchanged snapshot and test count, then the parameterised behaviour, so a half-built type-identity change could not hide a miscompile. W5 is done; next is W6 Metaprogram then W7 Stdlib (modify, bake_arguments, expand), and the deferred struct pieces (inference through Box($T), using on one, cross-file, recursive List($T)), each a refusal today rather than a gap.",
   ),
   (
-    "W6 Metaprogram", "not started",
-    "Workspaces, the compiler message loop, build scripts replacing makefiles, note attributes.",
+    "W6 Metaprogram", "in progress",
+    "OPEN, one sub-wave shipped. @note attaches metadata to a declaration (ADR-0098) — @deprecated, @requires \"x\" — for a metaprogram to read. It is its own node kind rather than a generic attribute, because a note is DATA for a metaprogram while the directives are INSTRUCTIONS to the compiler, so a consumer collecting notes need not filter directives out of the same list. A note affects no code: the noted program MIR is exactly what it would be without them, which is the point. A clone of a noted procedure keeps its notes, since the clone IS that procedure; the synthetic #modify predicate carries none. Notes ship BEFORE their reader deliberately — ADR-0080 declined to represent a thing until something could inspect it, and for INPUT that argument runs the other way: the message loop job is to hand declarations to a build script, and a declaration with nothing extra to say is not worth handing over, so designing the loop first would mean designing its message shape against no consumer. Two familiar traps, both caught by a gate rather than by reading: jr-fmt dropped every note on the first run (the lossy-CST trap, and this is its metaprogram-INPUT direction — a build script collecting @X would have silently found nothing), and looks_like_proc_signature needed the AT token, the token-set trap for the SEVENTH time. No new diagnostic code. Remaining: the compiler message loop (a reader for @note, whose first fork is whether it polls or is called back, and what a message is as a Jairs value), #run build() build scripts replacing makefiles, plugin hooks, and workspaces.",
   ),
   (
     "W7 Stdlib", "not started",
@@ -368,15 +368,15 @@
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      Test count 900 to 981. Corpus 116 to 193 files. Neovim checks 103 to 166. *W2, W3, W4.5 and W4 are all
-      closed*, and *W5 is open* with six sub-waves shipped: `$T` procedures, polymorphic structs, and now
+      Test count 900 to 981. Corpus 116 to 181 files. Neovim checks 103 to 166. *W2, W3, W4.5, W4 and W5 are all
+      closed*, and *W6 is open*. W5 shipped fifteen sub-waves: `$T` procedures, polymorphic structs,
       `$N` comptime-value parameters *and* their instantiation. A `$N` call `make(5)` evaluates the
       argument via the same acyclic pre-pass `#insert` uses (ADR-0073), and appends a concrete procedure
       with the value **baked** into the body — the parameter list drops the `$N`s, each reference to `N`
       becomes a literal. Two calls at the same value dedupe, distinct values instantiate separately, and
       mixed comptime+runtime params pass only the runtime ones at the call site. A per-call arg-mask
       filters at MIR, teeth-checked (disabling it makes the verifier catch an arity mismatch).
-      W5 is complete. Next: W6 Metaprogram, then W7 Stdlib.
+      W5 is complete and *W6 Metaprogram is open*, with `@note` attributes shipped. Next in W6: the message loop.
     ]
 
     #v(0.3em)
