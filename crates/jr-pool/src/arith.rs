@@ -337,9 +337,17 @@ pub const fn int_binary(op: IntOp, out: IntKind, a: i128, b: i128) -> Result<u64
                 Err(trap) => return Err(trap),
             }
         }
-        IntOp::WrapAdd => out.wrap(a + b),
-        IntOp::WrapSub => out.wrap(a - b),
-        IntOp::WrapMul => out.wrap(a * b),
+        // **The wrapping operators compute in the destination width, not in `i128`** (ADR-0116 §2). `a` and
+        // `b` are decoded to `i128`, and for two `u64` operands near the top of the range `a * b` is ~2^128,
+        // which overflows `i128` itself and panicked in a debug build — *before* `wrap` could take the low
+        // bits. The whole point of the wrapping forms is that the high bits are discarded (ADR-0002's opt-out),
+        // so the arithmetic is done on the truncated `u64` values with Rust's `wrapping_*`, which is exactly
+        // "keep the low `bits`, discarding overflow" for any width the mask then normalises. Found by `Map`'s
+        // hash multiply overflowing at comptime while native code (which has no `i128` intermediary) was fine —
+        // an engine divergence the corpus differential caught.
+        IntOp::WrapAdd => out.wrap((a as u64).wrapping_add(b as u64) as i128),
+        IntOp::WrapSub => out.wrap((a as u64).wrapping_sub(b as u64) as i128),
+        IntOp::WrapMul => out.wrap((a as u64).wrapping_mul(b as u64) as i128),
 
         // Bitwise operations are done on the *stored bits*, then re-normalised. Working on
         // the decoded `i128` would sign-extend a negative narrow value into the high bits and
