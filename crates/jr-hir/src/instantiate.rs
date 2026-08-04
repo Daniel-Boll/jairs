@@ -184,7 +184,7 @@ fn append_one(
         c_call: template.c_call,
         no_abc: template.no_abc,
         expand: template.expand,
-        modify: template.modify.clone(),
+        modify: template.modify,
         ret,
         body,
         foreign: template.foreign.clone(),
@@ -213,6 +213,17 @@ fn append_one(
     // (ADR-0083 §2). Empty for a `$N`-only instantiation, so this loop is a no-op there.
     for (var, ty) in &inst.bindings {
         hir.proc_bindings.push((proc_id, *var, *ty));
+    }
+
+    // **Clone the `#modify` predicate for this instantiation** (ADR-0094 §2). The template lowered it once
+    // as a synthetic no-parameter `bool` procedure; the clone gets *this* instantiation's `proc_bindings`,
+    // so `type_info(T)` inside it describes the bound type (ADR-0092 §1). Cloned rather than shared because
+    // two instantiations of one template must evaluate the predicate against *different* bindings — sharing
+    // one procedure would evaluate it once and apply the answer to both, which is the wrong answer for at
+    // least one of them.
+    if let Some(pred) = template.modify {
+        let cloned = clone_predicate(hir, interner, pool, n, pred, inst);
+        hir.modify_predicates.push((proc_id, cloned));
     }
 
     // Record each **baked comptime value** under this instantiation's `ProcId` and the parameter's *name*
@@ -296,4 +307,58 @@ fn copy_type_ref(hir: &mut FileHir, id: TypeRefId) -> TypeRefId {
     let new_id = TypeRefId::from_usize(hir.type_refs.len());
     hir.type_refs.push(cloned);
     new_id
+}
+
+/// Clones a `#modify` predicate for one instantiation, binding it to that instantiation's types
+/// (ADR-0094 §2).
+///
+/// The predicate is an ordinary synthetic procedure the template already lowered, so this is the same
+/// structural copy [`append_one`] makes: its body's arenas copy wholesale, its return `TypeRef` is copied
+/// into the shared arena, and it gets a named synthetic item so the signature phase computes its signature.
+/// What differs is only which `proc_bindings` it carries.
+fn clone_predicate(
+    hir: &mut FileHir,
+    interner: &jr_base::Interner,
+    _pool: &Pool,
+    n: usize,
+    pred: ProcId,
+    inst: &Instantiation,
+) -> ProcId {
+    let template = hir.proc(pred).clone();
+    let ret = template.ret.map(|t| copy_type_ref(hir, t));
+    let body = template.body.map(|b| {
+        let cloned = hir.body(b).clone();
+        let id = crate::hir::BodyId::from_usize(hir.bodies.len());
+        hir.bodies.push(cloned);
+        id
+    });
+    let proc = Proc {
+        params: Vec::new(),
+        c_call: false,
+        no_abc: false,
+        expand: false,
+        modify: None,
+        ret,
+        body,
+        foreign: None,
+        span: template.span,
+        type_refs: Vec::new(),
+    };
+    let proc_id = ProcId::from_usize(hir.procs.len());
+    hir.procs.push(proc);
+
+    let synthetic = interner.intern(&format!("$modinst{n}"));
+    hir.items.push(Item {
+        name: Some(synthetic),
+        exported: false,
+        span: template.span,
+        name_span: template.span,
+        kind: ItemKind::Const {
+            value: ConstValue::Proc(proc_id),
+        },
+    });
+    for (var, ty) in &inst.bindings {
+        hir.proc_bindings.push((proc_id, *var, *ty));
+    }
+    proc_id
 }

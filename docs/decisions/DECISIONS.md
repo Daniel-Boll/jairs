@@ -1737,3 +1737,38 @@ instantiation (body = the block text, returns `bool`, same `proc_bindings` as th
 has that machinery. Attempting it showed why it is its own sub-wave: it needs `FileHir::modify_predicates`
 and a way to lower a body *from text* outside `LowerCtx`, which owns the arenas — an API change, and a
 half-built version leaves exactly the parsed-and-unevaluated predicate the refusal exists to prevent.
+
+---
+
+## Wave: `#modify` predicate lowering (ADR-0094), 2026-08-04 — sub-wave 7e
+
+### Fork 1 — text re-lowered per instantiation, or lowered once at the template
+
+- Options: **lowered once at the template as a synthetic procedure, then *cloned* per instantiation (taken,
+  recommended)**; carry the block's source text and re-lower it per instantiation (ADR-0093 §1's choice).
+- Why lowering once: **ADR-0093 §2's stated blocker did not exist.** It said this needed "a way to lower a
+  body from text outside `LowerCtx`" — but `lower_body` takes an AST `Block`, and a `#modify` block *is* one,
+  so the predicate lowers through the same path every procedure uses. Text was the right shape only while the
+  block had to be re-lowered per instantiation; lowering once makes it unnecessary. `Proc::modify` changed
+  from `Option<String>` to `Option<ProcId>`.
+- **Cloned rather than shared** per instantiation, and not as an optimisation: two instantiations must
+  evaluate the predicate against *different* bindings, so one shared procedure would evaluate once and apply
+  the answer to both — silently wrong for at least one.
+
+### Fork 2 — how the predicate's `type_info(T)` resolves at the template
+
+- Options: **record the guarded template's `$T` names against the predicate (`FileHir::predicate_vars`) and
+  have sema withhold on them (taken, recommended)**; skip checking the predicate's body at the template.
+- Why record-and-withhold: a predicate has no `poly_vars` of its own, so `type_info(T)` in it was E0261 —
+  the same gap ADR-0092 fixed one level up, and the same withholding answer. Skipping the body would give up
+  checking the predicate at all, and a predicate with a type error would then only fail once something
+  instantiated it.
+
+### Resolution (ADR-0094 records it)
+
+Shipped. The predicate is a real lowered procedure, cloned per instantiation with its bindings, and excluded
+from MIR lowering and native declaration — the **same three exclusions a macro needed** (ADR-0091 §1),
+discovered the same way: the linker's "must be defined but is not", then "defined without being declared",
+both caught by the corpus differential. What remains is *running* the clone, which needs the expanded tree's
+MIR and so a new query — the one thing ADR-0093 §2 sized correctly. E0274 keeps refusing a call meanwhile, so
+nothing is silently unguarded.

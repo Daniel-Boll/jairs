@@ -929,7 +929,17 @@ pub struct Proc {
     /// reason a macro's body is (ADR-0091 §1) — it is evaluated per instantiation, against that
     /// instantiation's bindings, by generating a body from it; lowering it once against the *template*
     /// would resolve `T` where nothing binds it.
-    pub modify: Option<String>,
+    /// The `ProcId` of the **lowered** `#modify` predicate, if this procedure has one (ADR-0094 §1).
+    ///
+    /// The block is lowered at the *template* as an ordinary synthetic procedure — no parameters, returning
+    /// `bool` — so it goes through the same body lowering every procedure does. Each instantiation then
+    /// appends a **clone** of it with that instantiation's bindings, exactly as the instantiation itself is
+    /// cloned (ADR-0082 §2), which is why evaluating it needs no new machinery: the clone is an ordinary
+    /// procedure and `file_consts` already evaluates one as a `#run`-shaped target.
+    ///
+    /// Replaces the source text ADR-0093 §1 carried: text was the right shape when the block had to be
+    /// re-lowered per instantiation, and lowering it once at the template makes it unnecessary.
+    pub modify: Option<ProcId>,
     /// The return type, if present.
     pub ret: Option<TypeRefId>,
     /// The body, if this is not a foreign procedure.
@@ -1333,6 +1343,21 @@ pub struct FileHir {
     /// **No evaluation happens in sema because of this**, which is why ADR-0039 §3a's constraint still
     /// holds: the value arrives through the HIR, already interned, exactly as a bound `$T` does.
     pub param_values: Vec<(ProcId, Symbol, PoolId)>,
+    /// Each instantiation's cloned `#modify` predicate: `(instantiation, predicate clone)` (ADR-0094 §2).
+    ///
+    /// Empty for an ordinary file. `jr-db` evaluates each predicate clone as a `#run`-shaped target and
+    /// refuses the guarded instantiation when it answers `false` — so the pairing is what says *which*
+    /// instantiation a `false` rejects.
+    pub modify_predicates: Vec<(ProcId, ProcId)>,
+    /// Every `#modify` predicate procedure and the **type-variable names** its guarded template introduces
+    /// (ADR-0094 §1).
+    ///
+    /// A predicate is a synthetic no-parameter procedure, so it has no `$T` of its own — but its body says
+    /// `type_info(T)`, where `T` is the *guarded template's* variable. Without this, checking the
+    /// template's predicate reported E0261 "needs a type", because sema had no way to know `T` was a
+    /// variable awaiting a binding rather than a name that resolves to nothing. Sema withholds on these
+    /// exactly as it withholds inside the template itself (ADR-0092 §1).
+    pub predicate_vars: Vec<(ProcId, Vec<Symbol>)>,
 }
 
 impl FileHir {

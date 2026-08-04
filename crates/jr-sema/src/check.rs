@@ -314,6 +314,19 @@ pub fn check_file(
                     ctx.poly_var_names.insert(var);
                 }
             }
+            // **A `#modify` predicate names its guarded template's `$T`** (ADR-0094 §1). The predicate is a
+            // synthetic no-parameter procedure, so it has no `poly_vars` of its own — but its body says
+            // `type_info(T)`, where `T` is the template's variable. Without this, checking the *template's*
+            // predicate reported E0261 "needs a type", because nothing said `T` was a variable awaiting a
+            // binding rather than a name resolving to nothing. A predicate *clone* gets real bindings from
+            // `proc_bindings` above; this covers the template's own copy, which is checked and never run.
+            for (pred, vars) in &hir.predicate_vars {
+                if pred == proc {
+                    for var in vars {
+                        ctx.poly_var_names.insert(*var);
+                    }
+                }
+            }
             // The comptime parameter *names* of this body's procedure, so a template's own body withholds
             // E0233 for a length naming one rather than refusing a correct program (ADR-0089 §2).
             for param in hir.proc(*proc).params.iter().filter(|p| p.comptime) {

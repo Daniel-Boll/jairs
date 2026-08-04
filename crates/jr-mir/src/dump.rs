@@ -980,6 +980,8 @@ proc <0> -> s64 {
             type_refs: Vec::new(),
             proc_bindings: Vec::new(),
             param_values: Vec::new(),
+            modify_predicates: Vec::new(),
+            predicate_vars: Vec::new(),
         };
         let mut file = FileMir::new();
         file.push(

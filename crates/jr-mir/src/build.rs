@@ -144,6 +144,15 @@ pub fn lower_file(
         {
             continue;
         }
+        // **A `#modify` predicate's body is not lowered as runtime code** (ADR-0094 §1): it is a
+        // compile-time guard, evaluated on its own, and nothing calls it. Skipped exactly as a template's
+        // body is — and it must be, or the native back end reports "procedure N was defined without being
+        // declared", since `declarations()` skips it for the same reason.
+        let is_predicate = hir.predicate_vars.iter().any(|(pred, _)| *pred == proc)
+            || hir.modify_predicates.iter().any(|(_, pred)| *pred == proc);
+        if is_predicate {
+            continue;
+        }
         let lowered = lower_body(
             hir,
             proc,
