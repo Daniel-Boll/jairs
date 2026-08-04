@@ -653,14 +653,14 @@ impl Compiler<'_> {
         }
         // A union's field list is a struct's, so this accepts both; only `field_offset`
         // distinguishes them, and that is `jr-pool`'s (ADR-0045 §5).
-        let (Item::StructType { decl, .. }
-        | Item::UnionType { decl, .. }
-        | Item::VariantType { decl, .. }) = self.pool.item(ty)
+        let (Item::StructType { .. } | Item::UnionType { .. } | Item::VariantType { .. }) =
+            self.pool.item(ty)
         else {
             return Err(VmError::internal("a field of a non-aggregate"));
         };
+        // By the *instance*, so a parameterised `Box(s64)`'s field is `s64` (ADR-0085 §2).
         self.pool
-            .struct_fields(*decl)
+            .fields_of(ty)
             .and_then(|fields| fields.get(index as usize))
             .map(|field| field.ty)
             .ok_or_else(|| VmError::internal(format!("no field {index}")))

@@ -188,9 +188,9 @@ impl Decl<'_> {
             .and_then(|sym| self.sigs.lookup(sym))
             .and_then(|entry| entry.type_value)
             .and_then(|ty| match self.pool.item(ty) {
-                Item::StructType { decl, .. }
-                | Item::UnionType { decl, .. }
-                | Item::VariantType { decl, .. } => self.pool.struct_fields(*decl),
+                Item::StructType { .. } | Item::UnionType { .. } | Item::VariantType { .. } => {
+                    self.pool.fields_of(ty)
+                }
                 _ => None,
             });
 

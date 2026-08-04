@@ -515,10 +515,10 @@ impl Dumper<'_> {
         if self.type_info_id_field(ty).is_some() {
             return Some("Type_Info");
         }
-        let Item::StructType { decl, .. } = self.pool.item(ty) else {
+        let Item::StructType { .. } = self.pool.item(ty) else {
             return None;
         };
-        let fields = self.pool.struct_fields(*decl)?;
+        let fields = self.pool.fields_of(ty)?;
         // `Any` is `{type: *Type_Info, data: *u8}` — two pointers, the second a `*u8`.
         if let [type_field, data_field] = fields {
             let type_is_ptr = matches!(self.pool.item(type_field.ty), Item::PointerType(_));
@@ -542,10 +542,10 @@ impl Dumper<'_> {
     /// would at worst mask its first `s64`, a snapshot-cosmetic risk rather than a correctness one — and
     /// no other struct in the corpus has an enum as its second field beside those four scalars.
     fn type_info_id_field(&self, ty: PoolId) -> Option<usize> {
-        let Item::StructType { decl, .. } = self.pool.item(ty) else {
+        let Item::StructType { .. } = self.pool.item(ty) else {
             return None;
         };
-        let fields = self.pool.struct_fields(*decl)?;
+        let fields = self.pool.fields_of(ty)?;
         let [id, kind, name, size, align, count, element] = fields else {
             return None;
         };

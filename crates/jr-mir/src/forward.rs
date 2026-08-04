@@ -309,10 +309,8 @@ fn step_type(ty: PoolId, step: &Projection, pool: &Pool) -> PoolId {
     }
     match step {
         Projection::Field(index) => match pool.item(ty) {
-            Item::StructType { decl, .. }
-            | Item::UnionType { decl, .. }
-            | Item::VariantType { decl, .. } => pool
-                .struct_fields(*decl)
+            Item::StructType { .. } | Item::UnionType { .. } | Item::VariantType { .. } => pool
+                .fields_of(ty)
                 .and_then(|fields| fields.get(*index as usize))
                 .map_or(PoolId::ERROR, |field| field.ty),
             _ => PoolId::ERROR,

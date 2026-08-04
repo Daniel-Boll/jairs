@@ -410,7 +410,7 @@ fn layout_at_depth(
         // rather than a change to layout.
         Item::EnumType { .. } => layout_at_depth(pool, target, PoolId::S64, depth + 1),
 
-        Item::StructType { decl, .. } => struct_layout_at_depth(pool, target, *decl, depth),
+        Item::StructType { decl, .. } => struct_layout_at_depth(pool, target, ty, *decl, depth),
 
         // A results aggregate lays out exactly as a struct of the same field types, through the
         // *same* function (ADR-0052 §1). The element list is right here, so unlike a struct there
@@ -431,8 +431,8 @@ fn layout_at_depth(
         // computed — and for a union that is not a formality: a layout disagreement between the
         // engines would be *invisible*, since both would read plausible bits from the wrong
         // place rather than crashing.
-        Item::UnionType { decl, .. } => union_layout_at_depth(pool, target, *decl, depth),
-        Item::VariantType { decl, .. } => variant_layout_at_depth(pool, target, *decl, depth),
+        Item::UnionType { decl, .. } => union_layout_at_depth(pool, target, ty, *decl, depth),
+        Item::VariantType { decl, .. } => variant_layout_at_depth(pool, target, ty, *decl, depth),
 
         Item::VoidValue
         | Item::BoolValue(_)
@@ -456,6 +456,7 @@ fn layout_at_depth(
 fn union_layout_at_depth(
     pool: &Pool,
     target: TargetLayout,
+    ty: PoolId,
     decl: DeclId,
     depth: u32,
 ) -> Result<Layout, LayoutError> {
@@ -463,7 +464,7 @@ fn union_layout_at_depth(
         return Err(LayoutError::Recursive(decl));
     }
     let fields = pool
-        .struct_fields(decl)
+        .fields_of(ty)
         .ok_or(LayoutError::UnresolvedStruct(decl))?;
 
     let mut size = 0u64;
@@ -492,10 +493,11 @@ fn union_layout_at_depth(
 fn variant_layout_at_depth(
     pool: &Pool,
     target: TargetLayout,
+    ty: PoolId,
     decl: DeclId,
     depth: u32,
 ) -> Result<Layout, LayoutError> {
-    let cases = union_layout_at_depth(pool, target, decl, depth)?;
+    let cases = union_layout_at_depth(pool, target, ty, decl, depth)?;
     // The payload begins after the tag, rounded up to the payload's own alignment.
     let align = cases.align.max(TAG_ALIGN);
     let payload_at = align_up(u64::from(TAG_SIZE), align);
@@ -515,9 +517,10 @@ fn variant_layout_at_depth(
 pub fn variant_payload_offset(
     pool: &Pool,
     target: TargetLayout,
+    ty: PoolId,
     decl: DeclId,
 ) -> Result<u64, LayoutError> {
-    let cases = union_layout_at_depth(pool, target, decl, 0)?;
+    let cases = union_layout_at_depth(pool, target, ty, decl, 0)?;
     let align = cases.align.max(TAG_ALIGN);
     Ok(align_up(u64::from(TAG_SIZE), align))
 }
@@ -534,6 +537,7 @@ pub const TAG_ALIGN: u32 = 1;
 fn struct_layout_at_depth(
     pool: &Pool,
     target: TargetLayout,
+    ty: PoolId,
     decl: DeclId,
     depth: u32,
 ) -> Result<Layout, LayoutError> {
@@ -541,7 +545,7 @@ fn struct_layout_at_depth(
         return Err(LayoutError::Recursive(decl));
     }
     let fields = pool
-        .struct_fields(decl)
+        .fields_of(ty)
         .ok_or(LayoutError::UnresolvedStruct(decl))?;
     let tys: Vec<PoolId> = fields.iter().map(|field| field.ty).collect();
     sequential_layout(pool, target, &tys, depth)
@@ -628,7 +632,7 @@ pub fn field_offset(
     // wrong-address bug rather than an error (ADR-0045 §3).
     if let Item::UnionType { decl, .. } = pool.item(ty) {
         let fields = pool
-            .struct_fields(*decl)
+            .fields_of(ty)
             .ok_or(LayoutError::UnresolvedStruct(*decl))?;
         let field = fields
             .get(index as usize)
@@ -643,12 +647,12 @@ pub fn field_offset(
     // the offset is computed here and in neither engine.
     if let Item::VariantType { decl, .. } = pool.item(ty) {
         let fields = pool
-            .struct_fields(*decl)
+            .fields_of(ty)
             .ok_or(LayoutError::UnresolvedStruct(*decl))?;
         let field = fields
             .get(index as usize)
             .ok_or(LayoutError::NotAType(ty))?;
-        let at = variant_payload_offset(pool, target, *decl)?;
+        let at = variant_payload_offset(pool, target, ty, *decl)?;
         return Ok((at, layout_of(pool, target, field.ty)?));
     }
 
@@ -662,7 +666,7 @@ pub fn field_offset(
         // The context's fields, from the one list every consumer reads (ADR-0057 §1).
         Item::ContextType => CONTEXT_FIELD_TYPES.to_vec(),
         Item::StructType { decl, .. } => pool
-            .struct_fields(*decl)
+            .fields_of(ty)
             .ok_or(LayoutError::UnresolvedStruct(*decl))?
             .iter()
             .map(|field| field.ty)

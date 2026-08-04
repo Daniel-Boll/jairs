@@ -1834,11 +1834,11 @@ impl Lower<'_> {
             self.give_up("a `switch` over a variant that has no place");
             return;
         };
-        let Item::VariantType { decl, .. } = *self.pool.item(ty) else {
+        let Item::VariantType { .. } = *self.pool.item(ty) else {
             self.give_up("a variant `switch` on a non-variant");
             return;
         };
-        let cases = match self.pool.struct_fields(decl) {
+        let cases = match self.pool.fields_of(ty) {
             Some(cases) => cases.to_vec(),
             None => {
                 self.give_up("a variant whose cases were never resolved");
@@ -3196,11 +3196,11 @@ impl Lower<'_> {
         // The `Any` struct's field *types*, read from the pool rather than assumed — so a `Basic` whose
         // `Any` was reshaped is caught by sema's E0265 rather than miscompiled here. Field 0 is `type`
         // (a `*Type_Info`) and field 1 is `data` (a `*u8`).
-        let Item::StructType { decl, .. } = *self.pool.item(any_ty) else {
+        let Item::StructType { .. } = *self.pool.item(any_ty) else {
             self.give_up("the `Any` argument of any_as is not a struct");
             return self.define(result, Rvalue::Undef, span);
         };
-        let Some(fields) = self.pool.struct_fields(decl).map(<[_]>::to_vec) else {
+        let Some(fields) = self.pool.fields_of(any_ty).map(<[_]>::to_vec) else {
             self.give_up("`Any`'s fields are not recorded");
             return self.define(result, Rvalue::Undef, span);
         };
@@ -3790,15 +3790,15 @@ impl Lower<'_> {
             let index = jr_pool::Pool::context_field(self.interner.resolve(name))?;
             return Some((place.project(Projection::Field(index)), field_ty));
         }
-        let decl = match self.pool.item(ty) {
+        match self.pool.item(ty) {
             // All three aggregate forms keep their fields in one side table (ADR-0068 §2), so a
-            // field lookup reaches them the same way.
-            Item::StructType { decl, .. }
-            | Item::UnionType { decl, .. }
-            | Item::VariantType { decl, .. } => *decl,
+            // field lookup reaches them the same way. The lookup is by the *instance* type, so a
+            // parameterised `Box(s64)`'s `value` field is `s64` (ADR-0085 §2); an ordinary struct
+            // reads the same fields it always has.
+            Item::StructType { .. } | Item::UnionType { .. } | Item::VariantType { .. } => {}
             _ => return None,
-        };
-        let fields = self.pool.struct_fields(decl)?.to_vec();
+        }
+        let fields = self.pool.fields_of(ty)?.to_vec();
         // A direct field first — its own declaration shadows an embedded one, matching
         // `jr-sema`'s `check_field` (ADR-0050 §4).
         if let Some(index) = fields.iter().position(|field| field.name == name) {

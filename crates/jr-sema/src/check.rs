@@ -1664,12 +1664,12 @@ impl Ctx<'_> {
         // on a union — and a variant is refused for the same reason plus a stronger one: promoting a
         // case into scope would make a name read a field the tag may say is not live. Resolution has
         // already reported it; accepting one here would give a value to a promotion that was refused.
-        let decl = match self.pool.item(ty) {
-            Item::StructType { decl, .. } => *decl,
+        match self.pool.item(ty) {
+            Item::StructType { .. } => {}
             _ => return PoolId::ERROR,
-        };
+        }
         self.pool
-            .struct_fields(decl)
+            .fields_of(ty)
             .and_then(|fields| fields.iter().find(|f| f.name == field).map(|f| f.ty))
             .unwrap_or(PoolId::ERROR)
     }
@@ -3469,9 +3469,9 @@ impl Ctx<'_> {
             // diagnostics. Only the offsets differ, and those are `jr-pool`'s (ADR-0045 §5). A
             // variant's cases are a field list too (ADR-0068 §1), so it joins them — what differs is
             // the tag check MIR emits on the *read*, which is not a typing question.
-            Item::StructType { decl, .. }
-            | Item::UnionType { decl, .. }
-            | Item::VariantType { decl, .. } => ReceiverKind::Struct(*decl),
+            Item::StructType { .. } | Item::UnionType { .. } | Item::VariantType { .. } => {
+                ReceiverKind::Struct(ty)
+            }
             // The context's fields are the compiler's, not a side table's — there is no `DeclId` to
             // key one on (ADR-0057 §1), so this is its own receiver kind rather than a `Struct`.
             Item::ContextType => ReceiverKind::Context,
@@ -3536,16 +3536,27 @@ impl Ctx<'_> {
                     PoolId::ERROR
                 }
             }
-            ReceiverKind::Struct(decl) => {
+            ReceiverKind::Struct(instance) => {
                 // A direct field first, then — failing that — a field of any `using`-embedded
                 // base (ADR-0050 §4). Direct wins, so a struct that declares `x` *and* embeds
                 // something declaring `x` means its own, which matches the rule everywhere else
                 // in the language: the nearer declaration shadows.
+                //
+                // Direct fields come from `fields_of` on the *instance*, so `Box(s64).value` is
+                // `s64` (ADR-0085 §2); `using`-promotion stays keyed on the `DeclId`, since a
+                // parameterised struct with a `using` field is out of this sub-wave's scope
+                // (ADR-0085 §5) and an ordinary struct's instance carries its own `DeclId`.
+                let embed_decl = match self.pool.item(instance) {
+                    Item::StructType { decl, .. }
+                    | Item::UnionType { decl, .. }
+                    | Item::VariantType { decl, .. } => *decl,
+                    _ => unreachable!("ReceiverKind::Struct holds a struct/union/variant instance"),
+                };
                 let found = self
                     .pool
-                    .struct_fields(decl)
+                    .fields_of(instance)
                     .and_then(|fields| fields.iter().find(|f| f.name == name).map(|f| f.ty))
-                    .or_else(|| self.embedded_field_type(decl, name));
+                    .or_else(|| self.embedded_field_type(embed_decl, name));
                 match found {
                     Some(field_ty) => field_ty,
                     None => {
@@ -4072,8 +4083,13 @@ impl Ctx<'_> {
 enum ReceiverKind {
     /// The builtin `string`, whose `.data`/`.count` are pseudo-fields.
     Str,
-    /// A nominal struct, whose fields live in the pool under this declaration.
-    Struct(jr_pool::DeclId),
+    /// A nominal struct, whose fields the pool holds for this **instance** type.
+    ///
+    /// Carries the instance `PoolId` rather than a bare `DeclId` (ADR-0085 §2): a parameterised
+    /// `Box(s64)` and `Box(bool)` share a declaration but have substituted field types, so the
+    /// lookup must be through `Pool::fields_of` on the instance. An ordinary struct's instance is
+    /// its `DeclId`-keyed type, so its fields are found unchanged.
+    Struct(PoolId),
     /// A fixed-size array, whose `.count` is a pseudo-field read from the type.
     Array,
     /// The implicit context, whose fields are the compiler's (ADR-0057 §1).
