@@ -713,6 +713,33 @@ fn evaluate(
     let mut program = jr_vm::comptime_program();
     jr_vm::add_file(&mut program, file_id, hir, mir, signatures, pool)
         .map_err(|e: VmError| e.to_string())?;
+
+    // **A body this file could not lower has no routine, and calling one must not surface as an ICE.**
+    //
+    // `add_file` skips a refused body (it has no bytecode to add), so a thunk that calls one reached the
+    // VM's `no routine for file N proc M` — compiler internals shown to someone who wrote a reasonable
+    // program. That is the third instance of this shape; ADR-0069 fixed two.
+    //
+    // The case that actually reaches here is a `#run` calling a procedure that reads an **imported
+    // constant**: `ImportedValues` is deliberately empty during const-eval (see the `lower_file` call
+    // below for why), so such a body is refused, and the refusal is the honest thing to report. The
+    // reason is taken from the outcome rather than invented, so it says *which* construct was not
+    // lowerable.
+    let refused: Vec<String> = mir
+        .iter()
+        .filter_map(|(_proc, outcome)| match outcome {
+            Ok(_) => None,
+            // Named by index rather than by identifier: this function has no interner, and the
+            // *reason* is what a reader acts on. `jr-db`'s own unlowerable-body warning (E0245) names the
+            // procedure, so the two together identify it.
+            Err(Poisoned::Here(reason)) => {
+                Some(format!("a body in this file was refused: {reason}"))
+            }
+            Err(Poisoned::Transitive(_)) => {
+                Some("a body in this file depends on another that was refused".to_owned())
+            }
+        })
+        .collect();
     // Then every imported file, so a cross-file call resolves (ADR-0069 §1). Lowered here rather than
     // taken from `file_mir`, for the cycle reason `ModuleFrontend` documents — and with the same empty
     // maps this module passes for its own file, so an imported callee is subject to exactly the same
@@ -759,7 +786,24 @@ fn evaluate(
     let is_float = jr_pool::FloatKind::of(pool, ty).is_some();
     let raw = {
         let mut vm = Vm::new(&program, pool, Mode::Comptime).map_err(|e: VmError| e.to_string())?;
-        let value = vm.call(thunk_proc, Vec::new()).map_err(|e| e.to_string())?;
+        // A failure here is reported with the refused bodies *this file* has, when there are any: the
+        // VM's own message for a missing routine is an internal one, and the refusal is the real cause
+        // (see `refused` above). When nothing was refused, the VM's message stands — it is then a genuine
+        // trap or an unsupported operation, which is information rather than internals.
+        let value = vm.call(thunk_proc, Vec::new()).map_err(|e| {
+            if refused.is_empty() {
+                e.to_string()
+            } else {
+                // The **first** reason only. Every refused body in the file is collected, but a reader
+                // needs the cause, not an inventory — and listing several made the one-line message
+                // unreadable. `jr-db`'s E0245 warning names each unlowerable body separately, so the
+                // full set is still reachable.
+                format!(
+                    "it calls a procedure this compiler could not lower at compile time — {}",
+                    refused[0]
+                )
+            }
+        })?;
         reduce(&vm, pool, &value, ty, is_float).map_err(|e| e.to_string())?
     };
 

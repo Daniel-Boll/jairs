@@ -469,6 +469,13 @@ pub enum SyntaxKind {
     /// statements is forced to decide what a context scope means rather than treating it as an
     /// ordinary block that happens to swap a pointer.
     PUSH_CONTEXT_STMT,
+    /// `#code { … }` (ADR-0080 §1) — unquoted source that splices into the enclosing scope.
+    ///
+    /// Holds a [`SyntaxKind::BLOCK`], parsed as ordinary statements so its faults are reported where they
+    /// are written. Its own node rather than a `DIRECTIVE_EXPR` because it takes a **braced body**, which
+    /// a directive-expression's optional string-or-operand shape cannot express — and because it is a
+    /// statement, not an expression: there is no `Code` value (ADR-0080 §3).
+    CODE_STMT,
     /// `switch e { case v; … else; … }` (ADR-0067) — a value match with exhaustiveness checking.
     ///
     /// Holds the scrutinee expression and one [`SyntaxKind::SWITCH_ARM`] per arm.

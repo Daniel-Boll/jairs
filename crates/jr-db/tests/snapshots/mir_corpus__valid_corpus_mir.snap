@@ -5986,3 +5986,79 @@ proc main -> void {
   bb2():
     unreachable // trap
 }
+
+========================================
+065-code.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: string  // local 6
+  bb0(v0: *Context):
+    v1: bool = 7_s64 == 7_s64
+    branch v1 ? bb1() : bb2()
+  bb1():
+    v2: s64 = 0_s64 + 1_s64
+    goto bb3(v2)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v5: s64):
+    v3: s64 = 2_s64 * 3_s64
+    v4: bool = v3 == 6_s64
+    branch v4 ? bb4() : bb5()
+  bb4():
+    v6: s64 = v5 + 2_s64
+    goto bb6(v6)
+  bb5():
+    goto bb6(v5)
+  bb6(v9: s64):
+    v7: s64 = 10_s64 + 5_s64
+    v8: bool = v7 == 15_s64
+    branch v8 ? bb7() : bb8()
+  bb7():
+    v10: s64 = v9 + 4_s64
+    goto bb9(v10)
+  bb8():
+    goto bb9(v9)
+  bb9(v13: s64):
+    store s0 <- "hi"
+    v11: s64 = load s0.count
+    v12: bool = v11 == 2_s64
+    branch v12 ? bb10() : bb11()
+  bb10():
+    v14: s64 = v13 + 8_s64
+    goto bb12(v14)
+  bb11():
+    goto bb12(v13)
+  bb12(v15: s64):
+    v16: s64 = v15 + 16_s64
+    goto bb13(0_s64, 0_s64)
+  bb13(v17: s64, v19: s64):
+    v18: bool = v17 < 4_s64
+    branch v18 ? bb14() : bb15()
+  bb14():
+    v20: s64 = v19 + v17
+    v21: s64 = v17 + 1_s64
+    goto bb13(v21, v20)
+  bb15():
+    goto bb16()
+  bb16():
+    v22: bool = v19 == 6_s64
+    branch v22 ? bb17() : bb18()
+  bb17():
+    v24: s64 = v16 + 32_s64
+    goto bb19(v24)
+  bb18():
+    goto bb19(v16)
+  bb19(v25: s64):
+    v26: bool = v25 == 63_s64
+    branch v26 ? bb20() : bb21()
+  bb20():
+    discard call extern proc1(0_s64)
+    goto bb22()
+  bb21():
+    goto bb22()
+  bb22():
+    discard call extern proc1(1_s64)
+    return
+}

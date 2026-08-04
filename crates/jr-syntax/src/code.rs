@@ -201,6 +201,13 @@ pub(crate) const E0129: &str = "E0129";
 /// "the `=` has nothing after it", and the *message* says which.
 pub(crate) const E0130: &str = "E0130";
 
+/// A `#code` with no braced body (ADR-0080 §1).
+///
+/// `#code` needs a block, because a braceless form would have to decide where the quoted region ends and
+/// "until the next `;`" cannot express two statements — ADR-0063's argument for `push_context` taking a
+/// block rather than the two-shape `ControlBody`.
+pub(crate) const E0131: &str = "E0131";
+
 /// Input nested more deeply than the parser's depth limit.
 ///
 /// Deliberately at the top of the parser's range rather than in sequence: it is a
@@ -247,6 +254,7 @@ mod tests {
         ("E0128", "malformed using declaration"),
         ("E0129", "malformed result or target list"),
         ("E0130", "malformed named argument or default"),
+        ("E0131", "`#code` without a braced body"),
         ("E0199", "nesting depth limit"),
     ];
 

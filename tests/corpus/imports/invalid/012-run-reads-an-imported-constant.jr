@@ -1,0 +1,44 @@
+// EXPECT: E0230 — a `#run` whose callee reads an **imported constant** (ADR-0073 §4)
+//
+// This refusal is deliberate and documented; what this file pins is that it **reports itself honestly**.
+// Before this, the message was:
+//
+//     error[E0230]: compile-time evaluation failed: internal compiler error:
+//                   no routine for file 0 proc 0
+//
+// — compiler internals shown to someone who wrote a reasonable program, and the *third* instance of that
+// shape (ADR-0069 fixed two). The cause is a chain worth stating, because none of its links is a bug:
+//
+//   * const-eval runs with an **empty** `ImportedValues`, on purpose: evaluating *this* file's constants
+//     has no business reading another file's, and ADR-0055 §3's acyclicity argument is about
+//     `optimized_file_mir` rather than about this query;
+//   * so a body that reads an imported constant cannot be lowered *during const-eval* — the value it
+//     needs is not there;
+//   * `jr-vm`'s `add_file` skips a body with no MIR, because there is no bytecode to add;
+//   * so the thunk's call found no routine, and the VM said so in its own internal terms.
+//
+// The fix reports the **refusal** instead: `file_consts` collects the bodies its own lowering could not
+// build and, when the VM call then fails, names the first reason rather than the missing routine. The
+// message now reads "it calls a procedure this compiler could not lower at compile time — a body in this
+// file was refused: an imported constant has no value that const-eval could compute", which is a sentence
+// a reader can act on: move the computation, or make the constant local.
+//
+// **Not a corpus `type-errors/` file**, for ADR-0074 §4's reason: E0230 is `jr-db`'s code and that
+// directory is `jr-sema`'s. It lives here because reaching the case *needs the import resolved* — the same
+// stage argument that put the `using` refusals and E0262 in this directory.
+//
+// The refusal itself is still owed a decision (PLAN §7): lifting it needs a general cross-file value
+// dependency, which the narrow acyclic pre-pass ADR-0073 built deliberately does not deliver.
+#import "Cycle_A";
+
+/// Reads an imported constant. Legal at run time — this is an ordinary cross-module read — and not
+/// evaluable at *compile* time, which is what the diagnostic has to say clearly.
+uses_imported :: () -> s64 {
+    return A_VALUE + 1;
+}
+
+/// The `#run` that forces the evaluation, and so the refusal.
+V :: #run uses_imported();
+
+main :: () {
+}

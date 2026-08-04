@@ -374,6 +374,31 @@ fn any_round_trips_a_value_in_both_engines() {
     );
 }
 
+/// `#code { … }` must splice identically in both engines (ADR-0080).
+///
+/// Six assertions summing to 63, so a dropped or misplaced statement changes the exit value. `#code` lowers
+/// to the same `Stmt::Insert` a literal `#insert` does, so this is really a check that the *splice* — into
+/// the enclosing scope, with the body's own text — reaches both back ends the same way.
+#[test]
+fn code_splices_identically_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/065-code.jr");
+
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    assert_eq!(
+        vm.status, 0,
+        "the VM exited {} — a `#code` body did not splice as written",
+        vm.status
+    );
+    assert_eq!(
+        native.status, 0,
+        "the native back end exited {} — see the VM assertion above",
+        native.status
+    );
+}
+
 /// A `*T` **coerces to `Any`** at a call argument, identically in both engines (ADR-0076 §1).
 ///
 /// The ergonomic half of `any_of`: `takes(*x)` where `takes` wants an `Any` erases the pointer at the
