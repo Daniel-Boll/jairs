@@ -578,6 +578,7 @@ mod tests {
             name_span: span,
             ty: None,
             using: false,
+            comptime: false,
             default: None,
         };
         let params = vec![param("a"), param("b")];

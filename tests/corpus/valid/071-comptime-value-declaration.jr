@@ -1,0 +1,45 @@
+// **`$N` comptime-value parameters** (ADR-0087): a procedure whose parameter is polymorphic over a
+// compile-time-known *value*, the value-side mirror of `$T`. W5's sixth sub-wave, and — like `$T`'s first
+// (ADR-0081) — deliberately the *surface* only: a `$N` procedure parses, formats, lowers as a template,
+// and **its body type-checks when declared**. *Calling* one is refused (E0271) until the second half,
+// which is exercised in `type-errors/068`.
+//
+// The load-bearing difference from `$T`, and why more is checkable here: a `$T` parameter's *type* is
+// unknown until a call, so its body cannot be checked; a `$N: s64` parameter's type is fully known
+// (`s64`), and only its *value* varies — so `N` is a genuine `s64` in the body and the body type-checks
+// soundly at template time. `sized`'s `N + 1` and `scaled`'s `N * factor` below are ordinary `s64`
+// arithmetic, checked here, where a `$T` body could not be.
+//
+// What is checked here:
+//
+//   * a single `$N`, used in the body as an ordinary `s64` (`sized`);
+//   * a `$N` beside an **ordinary** value parameter, so a template may mix the two (`scaled`);
+//   * two `$N`/`$M` comptime parameters in one signature (`area`), the shape a later sub-wave
+//     instantiates per tuple of values.
+//
+// A `$N` procedure lowers to **no MIR** — it is a template, skipped exactly as a `#foreign` body or a
+// `$T` template is — so none appears in a MIR snapshot, which is correct: there is no value for `N` until
+// a call fixes it.
+#import "Basic";
+
+/// The canonical example: one `$N`, used as an ordinary `s64` in the body.
+sized :: ($N: s64) -> s64 {
+    return N + 1;
+}
+
+/// A `$N` beside an ordinary value parameter — a template may mix comptime and runtime parameters.
+scaled :: ($N: s64, factor: s64) -> s64 {
+    return N * factor;
+}
+
+/// Two comptime-value parameters in one signature — the shape a later sub-wave keys per value tuple.
+area :: ($N: s64, $M: s64) -> s64 {
+    return N * M;
+}
+
+// None of the above is *called*, so `main` does ordinary work: the file's point is that declaring these
+// checks clean and their bodies type-check, which no earlier sub-wave allowed — `$N` did not even parse.
+main :: () {
+    n := 7;
+    exit(n);
+}

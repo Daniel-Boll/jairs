@@ -6540,3 +6540,13 @@ proc main -> void {
     discard call extern proc1(1_s64)
     return
 }
+
+========================================
+071-comptime-value-declaration.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    discard call extern proc1(7_s64)
+    return
+}

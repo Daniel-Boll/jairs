@@ -40,7 +40,7 @@ use rustc_hash::FxHashMap;
 use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
-    E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268,
+    E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0271,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -2494,6 +2494,31 @@ impl Ctx<'_> {
             return self.check_polymorphic_call(scope, id, callee, proc, &sig, args, span);
         }
 
+        // **A call to a comptime-value-parameterised procedure is refused, by design** (ADR-0087 §3):
+        // `$N`'s value must be a compile-time constant evaluated at the call site, which is the
+        // second half of this sub-wave. Refused before the ordinary call path — the template's `params`
+        // are concrete (a `$N`'s type is ordinary), so a direct type-check would *succeed* and silently
+        // lower a call that has no value for `N`, a placeholder miscompile. Every argument is still
+        // typed, so an error inside one is reported too.
+        if self.callee_comptime_template(scope, callee) {
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    "a call to a procedure with a `$N` comptime-value parameter is not yet supported",
+                )
+                .with_code(E0271)
+                .with_note(
+                    "the `$N` surface parses and its body type-checks; evaluating the argument to a \
+                     constant and instantiating per value arrives in the second half of this sub-wave \
+                     (ADR-0087)",
+                ),
+            );
+            return PoolId::ERROR;
+        }
+
         // The callee is in **call position**, where a `#foreign` procedure is a legal thing to
         // name — it is only illegal to take one as a *value* (E0256, ADR-0059 §5). This id is
         // recorded so `check_expr`'s `Name` arm skips the E0256 refusal for it, while still typing
@@ -3155,6 +3180,31 @@ impl Ctx<'_> {
         };
         let sig = self.sigs.proc_sig(proc).cloned()?;
         (!sig.poly_vars.is_empty()).then_some((proc, sig))
+    }
+
+    /// Whether `callee` names a **local** procedure with a `$N` comptime-value parameter (ADR-0087 §3).
+    ///
+    /// Shaped like [`Self::callee_poly`], and separate from it because the two templates are refused or
+    /// instantiated for different reasons: a `$T` template is instantiated *now* (its argument's type is
+    /// the key), a `$N` template is refused *now* (its argument's value needs const-eval, the second
+    /// half). An imported callee falls through — cross-file instantiation is deferred (ADR-0082 §5), and
+    /// its template signature reports an honest mismatch on the ordinary path.
+    fn callee_comptime_template(&mut self, scope: ExprScope, callee: ExprId) -> bool {
+        let Some(res) = self.resolve.get(scope, callee) else {
+            return false;
+        };
+        let Res::Item(item) = res else {
+            return false;
+        };
+        let jr_hir::ItemKind::Const {
+            value: jr_hir::ConstValue::Proc(proc),
+        } = self.hir.item(item).kind.clone()
+        else {
+            return false;
+        };
+        self.sigs
+            .proc_sig(proc)
+            .is_some_and(|sig| sig.comptime_params.iter().any(|&c| c))
     }
 
     /// Types a call to a local polymorphic procedure, recording the instantiation (ADR-0082 §1).

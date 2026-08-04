@@ -530,6 +530,17 @@ impl Formatter {
 
     fn format_param(&mut self, node: &SyntaxNode) {
         self.emit_using(node);
+        // `$N: s64` — a comptime-value parameter (ADR-0087 §1). The `$` precedes the name and dropping
+        // it would silently turn a comptime parameter into an ordinary one — a change in what the
+        // program means, the lossy-CST failure this file guards against, so a round-trip corpus file
+        // pins it. It is a `DOLLAR` token child of `PARAM`, not part of the type (that would be a `$T`).
+        if node
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .any(|t| t.kind() == DOLLAR)
+        {
+            self.emit("$");
+        }
         if let Some(name_tok) = node
             .children_with_tokens()
             .filter_map(|e| e.into_token())

@@ -110,12 +110,12 @@ pub fn declarations(input: &FileInput<'_>, pool: &Pool, entry: Option<ProcId>) -
         let Some(sig) = input.signatures.proc_sig(proc) else {
             continue;
         };
-        // **A polymorphic procedure is not declared** (ADR-0081 §2): its `$T` parameters have no concrete
-        // type — `sig.params` holds `PoolId::ERROR` for each — so building a native signature for it would
-        // try to lay out a poisoned type and fail. It is a *template*; the instantiation sub-wave declares
-        // a concrete copy per call. Skipped exactly as `jr-mir` skips its body and as a `#foreign` with no
-        // symbol is skipped here, and keyed on the same `poly_vars` the body skip and the call refusal use.
-        if !sig.poly_vars.is_empty() {
+        // **A template procedure is not declared** (ADR-0081 §2, ADR-0087 §2): a `$T` parameter's type is
+        // `PoolId::ERROR` (nothing to lay out) and a `$N` template's body is never lowered, so there is no
+        // code to declare. It is a *template*; the instantiation sub-wave declares a concrete copy per
+        // call. Skipped exactly as `jr-mir` skips its body, keyed on the same `is_template` predicate the
+        // body skip and the call refusal use, so the three cannot disagree.
+        if sig.is_template() {
             continue;
         }
         let data = &input.hir.procs[index];

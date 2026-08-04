@@ -945,6 +945,13 @@ pub struct Param {
     /// `true` for `using p: Point` — the type's fields resolve unqualified in the body
     /// (ADR-0050 §1).
     pub using: bool,
+    /// `true` for `$N: s64` — a comptime-value parameter, polymorphic over a compile-time-known
+    /// value (ADR-0087 §1).
+    ///
+    /// The value-side counterpart of a `$T` type parameter's mark. Its *type* is ordinary and fully
+    /// known (`s64`), so unlike `$T` the body type-checks at template time; only its *value* varies,
+    /// and a procedure with one is a **template** with no concrete signature until instantiation.
+    pub comptime: bool,
     /// The default value, for `b: s64 = 10` (ADR-0053 §2).
     ///
     /// Lowered as an ordinary expression so the tree stays faithful; **sema refuses anything but a

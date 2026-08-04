@@ -1415,3 +1415,36 @@ change is this project's named catastrophic failure mode (a well-typed placehold
   cross-file parameterised structs (E0269 names the limit). Multiple struct type parameters *do* parse and
   lower (`Map($K, $V)`), matching how the corpus exercises them, though the differential corpus file uses
   one variable — the resolution path handles N by construction (zip of vars and args).
+
+---
+
+## Wave: comptime-value parameters `$N: s64` (ADR-0087), 2026-08-04
+
+### Fork 1 — the next W5 increment
+
+- Options: **comptime-value parameters `$N: s64` (taken, recommended)**; the macro family; the deferred
+  polymorphic-struct pieces.
+- Why `$N`: §7's own recommendation, smaller than macros, reuses the instantiation harness. Its premise was
+  checked first (AGENTS.md's rule): `$N: s64` genuinely does not parse today (E0108 "expected a parameter
+  name"), so it is a real feature and not already done.
+
+### Fork 2 — stage it, or do the whole feature in one pass
+
+- Options: **6a delivers the surface with the call refused by design, 6b makes it run (taken,
+  recommended)**; one pass.
+- Why staged: the hard part is evaluating a `$N` argument to a compile-time constant *at the call site*,
+  which is the sema↔VM mutual recursion ADR-0073 broke with an acyclic pre-pass — a substantial, risky
+  integration. `$T` was staged for the same reason (ADR-0081 surface, ADR-0082 run), and this follows that
+  precedent. 6a is a complete, gate-green, non-miscompiling unit: the surface parses and the body checks,
+  the call is refused with a by-design code.
+
+### Fork 3 — is a `$N: s64` proc's body checked, like an ordinary proc, or left unchecked like a `$T` template?
+
+- Options: **checked, with `N` typed as its ordinary annotation `s64` (taken, recommended)**; left
+  unchecked like a `$T` template.
+- Why checked: unlike `$T` — whose *type* is unknown until instantiation, so its body cannot be checked —
+  a `$N: s64` parameter's **type is fully known** (`s64`); only its *value* varies. So `N` is a genuine
+  `s64` in the body and the body type-checks soundly at template time, catching body errors a sub-wave
+  earlier. What is deferred is only instantiation-per-value (and `[N]T`, where `N` must be a compile-time
+  constant, which needs 6b's evaluation). MIR for the template is skipped exactly as a `$T` template's is,
+  so no runtime artefact treats `N` as an ordinary parameter.

@@ -666,6 +666,14 @@ impl Param {
         child_token(&self.0, USING_KW).is_some()
     }
 
+    /// Whether this parameter is `$N` — comptime-value polymorphic (ADR-0087 §1).
+    ///
+    /// The `$` precedes the *name*, so it is a `DOLLAR` token child of the `PARAM` node — distinct
+    /// from a `$T` in type position, which is a `POLY_TYPE` node inside the parameter's type.
+    pub fn is_comptime(&self) -> bool {
+        child_token(&self.0, DOLLAR).is_some()
+    }
+
     /// The default value, if the parameter has one (ADR-0053 §2).
     pub fn default_value(&self) -> Option<Expr> {
         child_node(&self.0)
