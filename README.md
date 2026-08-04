@@ -18,7 +18,15 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated after **`Type_Info`'s per-kind facts** (ADR-0078): `type_info(T)` now also reports a struct's
+Last updated after **`#code`** (ADR-0080), which **completes wave W4 — Comptime** as scoped: `#code { n := 7; }`
+is `#insert "n := 7;"` written without quotes, spliced into the enclosing scope. It is deliberately *sugar* —
+`#insert` of a named constant already worked, so what `#code` adds is no quoting and a body parsed where it
+is written, not a new capability. There is no `Code` *value*, and that is **declined rather than deferred**: a
+quoted syntax tree is worth representing only once something can inspect or transform it, and a value that
+can only be spliced is what a `string` already is. The same sub-wave refused a **shipped silent miscompile**
+found while probing — a pointer or view inside a compile-time aggregate interned the evaluator's own address
+as a plain integer, so reading it gave 48 in one engine and a segfault in the other, with no diagnostic — and
+turned a third leaked "internal compiler error" into a sentence a reader can act on. On top of **`Type_Info`'s per-kind facts** (ADR-0078): `type_info(T)` now also reports a struct's
 field `count` and an array's/pointer's `element` type. The trick that made it a small wave is that these
 are *fixed-size* — a count is a number, an element type is a pool id (an `s64` since ADR-0077) — so they
 need none of the memory-ownership decision the variable-length field *list* does, and that list stays
@@ -113,7 +121,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 963 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
+`print_int` (ADR-0037). 969 workspace tests; six CI gates green on macOS arm64, plus 166 Neovim
 checks that are verified rather than gated.
 
 ### What you can actually do
@@ -178,9 +186,10 @@ The authoritative version of this list is
 | `#run` at file scope or in a body, calling local or **imported** procedures, with loops and nested calls | `type_info()`, `Any`, `#code` (**W4**, in sub-waves) |
 | a `#run` returning a **struct or array**, interned as its element values and materialised by both engines (ADR-0074), including one holding a **string** (ADR-0075) | a `#run` returning a **union** — untagged storage makes "which field is valid" unanswerable; a struct or array *literal* (`P.{1, 2}`), which is a separate syntax question |
 | **`type_info(T)`** — a type's kind, name, size, alignment, a stable `id`, and the fixed-size per-kind facts `count` (a struct's field count / array length) and `element` (an array's element / pointer's pointee, as a type id); `Type_Info` is declared in `Basic` and validated on lookup (ADR-0075, ADR-0077, ADR-0078) | the variable-length **field list** — the elements need the program's lifetime, so it is a static-data-vs-comptime-table decision; following an `element` id back to a `Type_Info`; `type_info([4]s64)`, blocked on structural type aliases |
-| **`Any`** — `any_of(*x)` erases a value to a `{*Type_Info, *u8}` pair, `any_as(a, T)` reads it back and traps unless the type's `id` matches; the erasing pointer conversion is allowed only at that boundary (ADR-0076) | every value coercing to `Any` **implicitly** (a literal has no address to point at, so it needs a materialised temporary — a storage decision deferred); an `Any` in a compile-time constant |
+| **`Any`** — `any_of(*x)` erases a value to a `{*Type_Info, *u8}` pair, `any_as(a, T)` reads it back and traps unless the type's `id` matches; the erasing pointer conversion is allowed only at that boundary (ADR-0076) | a bare **value** coercing to `Any` implicitly (a literal has no address, so it needs a materialised temporary — the *pointer* form `takes(*x)` is done); an `Any` in a compile-time constant |
 | `#insert "…"` of a **string literal**, lowered where it is written — same scope, so a local it declares is visible after it; nesting works, and every diagnostic points at the directive and names its offset into the inserted text (ADR-0072) | `#insert` at file scope, which would change the item tree; `#code` and the `Code` type |
 | `#insert <expr>;` of a **computed** operand — a constant or a `#run` whose text is evaluated at compile time and spliced (ADR-0073). The operand resolves and type-checks like any expression (`#insert undefined;` → E0201; a non-string → E0214), and a pending insert the evaluator has not reached is refused, never miscompiled. This is where sema and the VM become mutually recursive; the cycle is broken by an acyclic pre-pass | a **cross-file** `#run` value (its own decision, ADR-0073 §4); expansion past 16 levels (E0264) |
+| **`#code { … }`** — unquoted source spliced into the enclosing scope; the body is parsed where it is written, so no quoting and no escaping (ADR-0080). Deliberately *sugar* over `#insert`, reusing its depth bound and its refusal of a pending splice | a `Code` **value** — **declined**, not deferred: a quoted syntax tree is worth representing only once something can inspect or transform one (ADR-0080 §3); spans into the body's real source, so a fault inside it points at the `#code` |
 | a **type as a compile-time value**: `T :: Point;` binds one, and `T` is usable wherever `Point` is — as an annotation, a parameter, a field, an array element, a pointee; an enum alias carries its members (ADR-0071) | a chain (`B :: A`); comparing types (`T == U`); a `Type` parameter; `Type` as an annotation, which does not parse |
 | using a type where a **runtime** value is expected is refused (E0261) — it has no runtime representation, so there is nothing to store | — |
 | `#import`, `#foreign`, `#system_library` | polymorphs `$T`, `#expand` macros (**W5**) |
