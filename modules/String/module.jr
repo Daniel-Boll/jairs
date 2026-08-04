@@ -1,0 +1,204 @@
+//! The String module: byte-wise operations on a `string`, none of which allocate.
+//!
+//! Written in Jairs, like `Basic`, because PLAN.md decision #5 puts the standard library in the language
+//! rather than in the compiler. This is the second module the project has, and the first that is not
+//! `Basic` — so it is also the first real exercise of importing two modules at once (ADR-0014's flat merge).
+//!
+//! # Why this module exists, and why it is W7's first
+//!
+//! ADR-0099 §4 refused `==` on two strings: a `string` is `{data: *u8, count: s64}` (ADR-0004), so "the same
+//! storage" and "the same contents" are both plausible readings, and picking one silently would make the
+//! other a bug that looks like working code. That refusal's own reasoning named the fix — comparing contents
+//! needs a byte loop — and a byte loop is a *library*'s job, not an operator's. So the previous wave named
+//! this module as the answer to a refusal it raised, which is the clearest possible reason to write it first.
+//!
+//! An `==` that looped would also be the only implicitly-looping operator in the language, which is a much
+//! larger thing to introduce than a procedure called `equal`.
+//!
+//! # Why nothing here allocates
+//!
+//! `concat`, `substring`, `to_upper` and `split` are all deliberately absent. Each needs somewhere to put its
+//! result, which means an allocator argument and a decision about who frees it. `context.allocator` exists
+//! (ADR-0057) and so does temporary storage (ADR-0065), so the mechanism is not missing — but *choosing*
+//! between "always the context allocator", "an explicit parameter" and "always temporary" has real
+//! consequences for every caller, and it deserves its own decision rather than being settled in passing by
+//! whichever one this file happened to use.
+//!
+//! A non-allocating module is a complete and useful thing on its own. Shipping it first means the allocation
+//! decision gets made with a working baseline to compare against.
+//!
+//! # Why `byte_at` exists at all
+//!
+//! `s.data[i]` **does not compile**: `data` is a `*u8` and a pointer is not indexable (E0234). Reading a byte
+//! therefore takes `(s.data + i).*` plus a cast to `s64`, which is pointer arithmetic in the middle of
+//! otherwise ordinary code. `byte_at` is that expression with a name, and it is honest about being a
+//! workaround: when pointer indexing arrives, this becomes a one-line wrapper rather than the only way.
+//!
+//! # What is checked, and where
+//!
+//! `tests/corpus/valid/084-string.jr` exercises every procedure here and exits on a value that depends on all
+//! of them, so both engines must agree on each answer. That matters more than usual for this module: a
+//! comparison routine that returned a constant would pass any test that only asked "did it run".
+
+/// The byte at `index`, or `-1` when the index is out of range.
+///
+/// **`-1` rather than a trap**, unlike an out-of-range array index (ADR-0003): an array's bound is known to
+/// the compiler and indexing past it is a *mistake*, while scanning a string until the bytes run out is an
+/// ordinary way to write a loop. A caller who wants the strict reading can compare against `count` first.
+///
+/// The cast to `s64` is not a convenience: a `u8` cannot be compared to an integer literal without one
+/// (ADR-0016 §1 gives a literal its type from context, and there is no implicit widening — ADR-0015), so
+/// returning `u8` would push a cast into every caller.
+byte_at :: (s: string, index: s64) -> s64 {
+    if index < 0 {
+        return -1;
+    }
+    if index >= s.count {
+        return -1;
+    }
+    p := s.data + index;
+    return cast(s64, p.*);
+}
+
+/// Whether `s` has no bytes.
+///
+/// One line, and worth a name: `is_empty(s)` says what it means at a call site where `s.count == 0` says how
+/// it is measured.
+is_empty :: (s: string) -> bool {
+    return s.count == 0;
+}
+
+/// Whether `a` and `b` have the same bytes.
+///
+/// **The reason this module exists.** E0278's help says "compare `.count`, or compare fields one at a time";
+/// this is the real answer it was pointing at.
+///
+/// Lengths are compared first, which is not merely an optimisation: it is what makes the loop below safe to
+/// write against one bound instead of two.
+equal :: (a: string, b: string) -> bool {
+    if a.count != b.count {
+        return false;
+    }
+    i := 0;
+    while i < a.count {
+        if byte_at(a, i) != byte_at(b, i) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/// Negative when `a` sorts before `b`, zero when they are equal, positive when after.
+///
+/// Byte order, not locale or case: a `string` is bytes (ADR-0004), and anything else would need a notion of
+/// encoding this language does not have. A shorter string that is a prefix of a longer one sorts first, which
+/// is the ordinary lexicographic rule.
+///
+/// The **sign** is what is specified, not the magnitude — a caller must not read the difference of two bytes
+/// out of it, because that would pin an implementation detail no other comparison routine promises.
+compare :: (a: string, b: string) -> s64 {
+    i := 0;
+    while i < a.count {
+        if i >= b.count {
+            // `a` is longer and matched so far, so `b` is a prefix of `a`.
+            return 1;
+        }
+        x := byte_at(a, i);
+        y := byte_at(b, i);
+        if x < y {
+            return -1;
+        }
+        if x > y {
+            return 1;
+        }
+        i = i + 1;
+    }
+    if b.count > a.count {
+        return -1;
+    }
+    return 0;
+}
+
+/// Whether `s` begins with `prefix`.
+///
+/// An empty prefix is `true`, which is the reading every other language takes and the one that makes
+/// `starts_with(s, "")` composable rather than a special case a caller has to guard.
+starts_with :: (s: string, prefix: string) -> bool {
+    if prefix.count > s.count {
+        return false;
+    }
+    i := 0;
+    while i < prefix.count {
+        if byte_at(s, i) != byte_at(prefix, i) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/// Whether `s` ends with `suffix`.
+///
+/// The offset is computed once rather than being folded into the index expression, because the interesting
+/// thing about this procedure is that it reads `s` from a *different* starting point than `starts_with`, and
+/// naming the offset is what makes that visible.
+ends_with :: (s: string, suffix: string) -> bool {
+    if suffix.count > s.count {
+        return false;
+    }
+    offset := s.count - suffix.count;
+    i := 0;
+    while i < suffix.count {
+        if byte_at(s, offset + i) != byte_at(suffix, i) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/// The index of the first occurrence of `needle` in `haystack`, or `-1`.
+///
+/// **`-1` rather than a second return value**, even though Jairs has multiple returns (ADR-0008): a caller of
+/// `find` almost always feeds the result straight into a comparison, and `if find(h, n) >= 0` reads better than
+/// naming an index it is about to discard. The error model earns its keep where the *value* is meaningless on
+/// failure; here the sentinel is outside the domain of valid indices, so it cannot be mistaken for one.
+///
+/// An empty needle is found at 0, which follows from "every string starts with the empty string".
+find :: (haystack: string, needle: string) -> s64 {
+    if needle.count > haystack.count {
+        return -1;
+    }
+    // The last start position worth trying: past it the needle cannot fit.
+    last := haystack.count - needle.count;
+    start := 0;
+    while start <= last {
+        i := 0;
+        matched := true;
+        while i < needle.count {
+            if byte_at(haystack, start + i) != byte_at(needle, i) {
+                matched = false;
+                // The inner loop stops on the first mismatch rather than running to the end: `while` has no
+                // `break` out of a nested loop without a label (ADR-0049), and setting the bound is clearer
+                // here than labelling.
+                i = needle.count;
+            } else {
+                i = i + 1;
+            }
+        }
+        if matched {
+            return start;
+        }
+        start = start + 1;
+    }
+    return -1;
+}
+
+/// Whether `needle` occurs anywhere in `haystack`.
+///
+/// Named separately from `find` because a predicate at a call site should not have to mention an index it does
+/// not use — the same argument `is_empty` makes against `count == 0`.
+contains :: (haystack: string, needle: string) -> bool {
+    return find(haystack, needle) >= 0;
+}

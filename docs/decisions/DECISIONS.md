@@ -2044,3 +2044,42 @@ would also make a script's own output name unpredictable from the file.
 **Deferred with reasons:** a script *adding* a module path (wants a list-valued constant and a decision about
 whether it appends or replaces); a script setting `--no-bounds-check` (it is a *safety* setting, and letting a
 file silently disable checks for its own build deserves its own argument); plugin hooks; workspaces.
+
+## W7 sub-wave 1 — `String`, and where it lives
+
+**Why `String` is W7's first module.** ADR-0099 §4 refused `==` on two strings because "same storage" and
+"same contents" are both plausible, and said comparing contents needs a byte loop — *which is `String`'s job*.
+So the previous wave named this module as the fix for a refusal it raised. Nothing else in W7 has a caller
+already waiting.
+
+**The fork: a new `modules/String` or more of `modules/Basic`?**
+
+- **(a) A new `modules/String/module.jr`, imported separately.** Cost: a second `#import` line in any program
+  that wants it, and `String` cannot use `Basic`'s private helpers. Benefit: a program that only prints does
+  not pay for string machinery, the module boundary is where a reader expects it, and it **dogfoods
+  cross-module use** — every existing module test imports `Basic` only, so a second module is the first real
+  exercise of ADR-0014's flat merge with two modules in play. **Chosen.**
+- **(b) Add to `Basic`.** Cheapest, and `Basic` already declares `string`-taking procedures (`print`). But
+  `Basic` is the module every program imports, so everything in it is a tax on every program, and it would
+  never be tested that two modules can be imported at once.
+- **(c) A `#scope_export` section inside `Basic` with a comment saying "string things"** — organisation
+  without a boundary, which is the worst of both: the tax stays, and nothing is proven about modules.
+
+**What goes in, and why exactly this much.** The set is decided by *what a refusal or an existing gap asks
+for*, not by what a string library usually has:
+
+- `equal(a, b)` — **the reason this module exists** (E0278's help says "compare `.count`, or compare fields
+  one at a time"; this is the real answer).
+- `compare(a, b)` → `s64` — needed for sorting, which W7 also wants, and it is the same loop as `equal`.
+- `starts_with` / `ends_with` — the two most common predicates that are *not* expressible by `equal`.
+- `find(haystack, needle)` → `s64` (or `-1`) — the smallest search that is not a predicate.
+- `byte_at(s, i)` — because `s.data[i]` **does not work** (a `*u8` is not indexable, E0234), so reading a byte
+  currently takes `(s.data + i).*` and a cast. A named accessor is the honest fix until pointer indexing
+  arrives.
+- `is_empty` — trivially `count == 0`, and included because it reads at the call site and costs nothing.
+
+**Deliberately out:** anything that **allocates** (`concat`, `substring`, `to_upper`, `split`). Those need an
+allocator argument and a decision about who frees, and `context.allocator` exists (ADR-0057) — but choosing
+between "always the context allocator", "an explicit parameter", and "temporary storage" is its own decision
+with real consequences for a caller. A **non-allocating** module is a complete, useful thing on its own, and
+shipping it first means the allocation decision is made with a working baseline to compare against.

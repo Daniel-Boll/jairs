@@ -18,7 +18,27 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated during **wave W6 — Metaprogram**, five sub-waves in, with 984 tests green. Its headline claim is met — a metaprogram can find
+Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 984 tests green. W7's first
+module is **`String`** (ADR-0103): `equal`, `compare`, `starts_with`, `ends_with`, `find`, `contains`,
+`byte_at`, `is_empty`, **none of which allocate**. It exists because the *previous* wave named it — ADR-0099 §4
+refused `==` on two strings, since a `string` is `{data, count}` and so "the same storage" and "the same
+contents" are both plausible readings, and its stated reason was that comparing contents needs a byte loop,
+which is a library's job rather than an operator's. So `equal(a, b)` is what E0278's help was pointing at.
+
+It is **its own module rather than more of `Basic`**, and the deciding argument is not size: `Basic` is imported
+by every program, so anything in it is a tax on all of them — but more importantly, adding to `Basic` would mean
+nothing ever tested that **two modules can be imported at once**. Every module test to date imported `Basic`
+alone. Nothing allocates on purpose: `concat` and friends need somewhere to put a result, and while the
+mechanism exists (`context.allocator`, temporary storage), the *choice* between "always the context allocator",
+"an explicit parameter" and "always temporary" does not — and settling it in passing is how a library acquires
+an accidental convention.
+
+`byte_at` is there because `s.data[i]` **does not compile** — a `*u8` is not indexable — so reading a byte takes
+`(s.data + i).*` and a cast. It is honestly a workaround, and out of range answers `-1` rather than trapping,
+unlike an array index: an array's bound is known to the compiler so passing it is a mistake, while scanning
+until the bytes run out is an ordinary loop.
+
+Before it, wave **W6 — Metaprogram**, five sub-waves in, with 984 tests green. Its headline claim is met — a metaprogram can find
 declarations by note and generate code for each — and a build script can name its own artefact. A declaration can
 carry **`@note` metadata** for a metaprogram to read (ADR-0098). `@deprecated` and `@requires "x"` sit in the
 same attribute loop as `#c_call`/`#expand`/`#modify`, so notes and directives interleave freely — but a note

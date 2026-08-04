@@ -507,6 +507,43 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 ## 7. Immediate next actions
 
+**W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
+architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
+waiting. Both are tracked below. **984 workspace tests** and **190 corpus files**, all six gates green, **166
+Neovim checks**. See §1.5.
+
+### W7 — Stdlib, open
+
+- [x] **`String`** (ADR-0103, sub-wave 1): `equal`, `compare`, `starts_with`, `ends_with`, `find`, `contains`,
+      `byte_at`, `is_empty` — **none of which allocate**. It exists because **ADR-0099 §4 named it**: that
+      refusal declined `==` on two strings (a `string` is `{data, count}`, so "same storage" and "same
+      contents" are both plausible) and said comparing contents needs a byte loop, *which is `String`'s job*.
+      So the previous wave named this module as the fix for a refusal it raised — a better reason than "a
+      string library usually has one", and why it comes before `Sort` or `Math`.
+
+      **Its own module rather than more of `Basic`**, and the deciding argument is not size: `Basic` is
+      imported by every program, so anything in it is a tax on all of them — but more importantly, adding to
+      `Basic` would mean **nothing ever tested that two modules can be imported at once**. Every module test
+      to date imports `Basic` alone, so this is the first real exercise of ADR-0014's flat merge with two in
+      play.
+
+      **Nothing allocates, deliberately** (ADR-0103 §3). `concat`/`substring`/`to_upper`/`split` each need
+      somewhere to put a result, and the *mechanism* is not missing (`context.allocator`, temporary storage) —
+      the *choice* between "always the context allocator", "an explicit parameter" and "always temporary" is,
+      and settling it in passing is how a library acquires an accidental convention.
+
+      `byte_at` exists because **`s.data[i]` does not compile** (a `*u8` is not indexable, E0234), so reading a
+      byte takes `(s.data + i).*` and a cast. Out of range answers `-1` rather than trapping, unlike an array
+      index (ADR-0003): an array's bound is known to the compiler and passing it is a *mistake*, while scanning
+      until the bytes run out is an ordinary loop. Teeth-checked twice and precisely: length-only `equal` clears
+      bit 1 (255→254), deleting `compare`'s prefix check clears bit 2 (255→253).
+
+**What W7 has left:** the **allocating** half of `String`, once the allocator convention is decided; `Sort`
+(which `compare` was shaped for); a dynamic array and a hash table, both of which want W5's polymorphic
+structs; `Math`, `Random`, `File`, `File_Utilities`, `Process`, `Thread`, `Time`, `Socket`, `JSON`, `Compiler`.
+
+### W6 — Metaprogram, open
+
 **W6 — Metaprogram is OPEN**, five sub-waves in. Its headline claim is met — **a metaprogram can find
 declarations by note and generate code for each one** (ADR-0101) — and a **build script can now name its own
 artefact** (ADR-0102), the first time anything in a Jairs file has influenced the build rather than the
@@ -514,7 +551,7 @@ program. A declaration can carry `@name`/`@name "payload"` metadata
 (ADR-0098), a metaprogram can **read** it — `has_note(f, "x")`, `note_value(f, "x")` (ADR-0099) — can
 **query** it — `noted_count("x")`, `noted_name("x", i)` (ADR-0100) — and can **generate** from it:
 `noted_insert("x", "write(#);")` emits a template once per noted declaration. All five fold at compile time
-with no VM and no new query. **984 workspace tests** and **189 corpus files**, all six gates green, **166 Neovim checks**. See §1.5.
+with no VM and no new query.
 
 W5 — Polymorphism is **COMPLETE** in fifteen sub-waves (ADR-0081–0097); its inventory is below.
 
