@@ -135,6 +135,15 @@ stands for a better reason. The element type comes from the pointer, so nothing 
 **unchecked**, and that is said plainly, because a pointer's allocation size is tracked nowhere and a checked
 version would need a registry the native back end could not share with the VM.
 
+**And calling a null procedure pointer now traps** (ADR-0110), found while probing what allocator `String`'s
+allocating half should use: the first thing tried — `context.allocator(8)` before installing an allocator — leaked
+an internal compiler error, and `context.allocator` is null until installed, so that is a mistake a reader will
+actually make. Both engines were wrong differently: the VM's packed proc-pointer handle decoded null to file 0
+procedure 0 (an arbitrary real procedure, giving a message about an arity nobody wrote), while native would have
+jumped to address zero. It is now one trap in both, exit 4 with a source location. The VM's handle is biased by
+one so that zero can mean null — `valid/048` calls the first procedure in the file, which packed to the same
+handle as null and proved the bias necessary.
+
 Before it, wave **W6 — Metaprogram**, five sub-waves in, with 984 tests green. Its headline claim is met — a metaprogram can find
 declarations by note and generate code for each — and a build script can name its own artefact. A declaration can
 carry **`@note` metadata** for a metaprogram to read (ADR-0098). `@deprecated` and `@requires "x"` sit in the

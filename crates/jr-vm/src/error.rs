@@ -143,6 +143,17 @@ pub enum Trap {
     /// located failure. Not statically decidable, which is why it is a trap rather than a diagnostic:
     /// the last write may be in another procedure, behind a pointer, or in a loop.
     WrongVariantCase,
+    /// A call **through a null procedure pointer** (ADR-0110 §1).
+    ///
+    /// A proc pointer is a scalar handle, and a null one is zero — which decodes to file 0, procedure 0: an
+    /// arbitrary real procedure. So calling one used to *call something else*, and the symptom was whatever that
+    /// procedure's arity happened to be: `called a procedure taking 1 arguments with 2`, an internal compiler
+    /// error for the ordinary configuration mistake of using `context.allocator` before installing one.
+    ///
+    /// A **language** trap that both engines raise, so `differential.rs` compares the two — unlike
+    /// [`Trap::BadAddress`], which is a property of this VM's memory model and has no native counterpart. It is
+    /// the honest failure for a null callee: there is no procedure to call, and no answer to invent.
+    NullCall,
     /// A memory access was out of bounds or misaligned.
     ///
     /// Reachable from a valid program: `ptr := *sum;` followed by arithmetic on the
@@ -170,6 +181,7 @@ impl fmt::Display for Trap {
             ),
             Self::UninitialisedRead => write!(f, "read a value that was never assigned"),
             Self::IndexOutOfBounds => write!(f, "index out of bounds"),
+            Self::NullCall => write!(f, "call through a null procedure pointer"),
             Self::WrongVariantCase => write!(f, "read the wrong variant case"),
             Self::BadAddress { address, size } => {
                 write!(f, "invalid access of {size} bytes at address {address:#x}")

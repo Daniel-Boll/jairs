@@ -2329,3 +2329,44 @@ operation safe, it makes it **visible and searchable**.
 
 **Deferred with reasons:** `p[0 .. n]` syntax (above); a view of a *sub*range of a list; a checked view (wants an
 allocation registry); `view` on a `*u8` producing `[]u8` is allowed and is how a caller would build a byte view.
+
+## W7 sub-wave 8 — the allocating half of `String`, and the convention it needs
+
+**The decision ADR-0103 §3 deferred, verbatim:** `concat`, `substring`, `to_upper` and `split` each need somewhere
+to put a result, and the *mechanism* is not missing — `context.allocator` is a real protocol (ADR-0062: two
+procedure pointers and a state word) and `talloc` is a real arena (ADR-0065). What was missing was the **choice**
+between "always the context allocator", "an explicit parameter", and "always temporary".
+
+**Probed first:** `context.allocator` is reachable from a callee and travels with the call (ADR-0057 §2), and
+`talloc` reads the context so a callee's `talloc` uses its caller's arena. Both hold.
+
+**The fork.**
+
+- **(a) Always `context.allocator`, and the caller frees.** The result is an ordinary allocation a caller releases
+  with `context.allocator_free`. Cost: every caller must free, and a forgotten free leaks — but that is already
+  true of `Int_List` and is the honest cost of explicit memory in a language with no destructors. Benefit: the
+  allocator is **installable**, so a caller who wants arena behaviour installs an arena and gets it for every
+  `String` routine at once, with no second API. That is what a context is *for* (ADR-0001), and it means the
+  module needs no allocator parameter and no second spelling. **Chosen.**
+- **(b) Always temporary storage (`talloc`).** No caller ever frees, which is genuinely pleasant — and it makes
+  every result *silently invalid* after `reset_temporary_storage()`, with nothing to warn a caller who kept one.
+  A library whose returns expire on an unrelated call is a trap. It is also strictly less capable: a caller who
+  wants this installs `talloc` as the context allocator and gets exactly it.
+- **(c) An explicit allocator parameter on every routine.** Most explicit, and it doubles every signature for a
+  choice a caller almost always makes once. The context exists to carry precisely this.
+- **(d) Return a `[]u8` the caller supplies (`concat_into(dest, a, b)`).** No allocation at all and no ownership
+  question — genuinely the right shape for a *hot* path, and it is additive later. But it cannot be the only form:
+  a caller who does not know the length in advance would have to compute it separately, which is `concat`'s job.
+
+**What ships:** `concat`, `substring`, `to_upper`, `to_lower`, `free_string`. Each returns a `string` allocated
+through `context.allocator`, and `free_string` releases one — named so a reader cannot mistake it for anything
+else, and symmetric because a facility that can allocate and not free leaks by construction (ADR-0106's argument
+for `untyped`).
+
+**A failed allocation returns `""`**, not a trap: ADR-0058 §4's line is that a trap is for a *program* error, and
+running out of memory is not one. An empty result is distinguishable from every non-empty one, and a caller
+concatenating two empty strings has nothing to detect.
+
+**Deferred with reasons:** `split` (wants a container of strings — an `Int_List` of what? a list of strings needs
+`List($T)`, which cross-file parameterised structs still block); `concat_into` (option (d), additive, no caller
+yet); `trim` (wants a definition of whitespace, which is a table, not a decision).

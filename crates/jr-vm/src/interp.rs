@@ -547,11 +547,17 @@ impl<'a> Vm<'a> {
             // nothing observes a proc pointer's bits, only calling through it, which the
             // differential harness compares. The pack is `(file << 32) | proc`, matching
             // `resolve_callee`'s unpack exactly; a mismatch there would be a wrong call, not a
-            // wrong number, so the two live next to each other in intent.
+            // wrong number, so the two live next to each other in intent. The `+ 1` is what keeps
+            // zero free for `null` (ADR-0110 §1).
             Item::ProcValue { ty: _, decl } => {
                 let file = decl.file.index() as u64;
                 let proc = u64::from(decl.index);
-                Ok(Value::Scalar((file << 32) | proc))
+                // **Biased by one so that no real procedure encodes as zero** (ADR-0110 §1). Without the bias,
+                // file 0 procedure 0 — an ordinary procedure, and the *first* one in the file — packed to the
+                // same handle as `null`, so a null check could not tell them apart. The native back end has no
+                // such collision (a code address is never zero), so this is the VM's encoding earning the same
+                // property rather than a language change.
+                Ok(Value::Scalar(((file << 32) | proc) + 1))
             }
             // A type or a library used as a *value* is comptime-only (wave W4) and has
             // no runtime representation; `jr_pool::LayoutError::ComptimeOnly` says
@@ -929,11 +935,23 @@ impl<'a> Vm<'a> {
         match callee {
             Callee::Direct(target) => Ok(*target),
             // A procedure pointer is a scalar handle encoding its `ProcRef` (ADR-0059 §4):
-            // `(file << 32) | proc`, the exact inverse of `constant`'s pack for an
+            // `((file << 32) | proc) + 1`, the exact inverse of `constant`'s biased pack for an
             // `Item::ProcValue`. The two must agree bit-for-bit, so they are written to be read
             // together — a mismatch is a call to the wrong procedure, not a diagnosable failure.
             Callee::Indirect(operand) => {
                 let handle = self.operand(frame, *operand)?.scalar()?;
+                // **A null handle is a trap, not a call to file 0 proc 0** (ADR-0110 §1). Zero decodes to an
+                // arbitrary *real* procedure, so calling a null pointer used to call something else — and the
+                // symptom was whatever that procedure's arity happened to be, surfacing as "called a procedure
+                // taking 1 arguments with 2" for the ordinary mistake of using `context.allocator` before
+                // installing one. There is no procedure to call and no answer to invent.
+                if handle == 0 {
+                    return Err(VmError::Trap(crate::error::Trap::NullCall));
+                }
+                // The inverse of `constant`'s biased pack: subtract the bias before unpacking. The two must
+                // agree bit-for-bit, so they are written to be read together — a mismatch is a call to the wrong
+                // procedure rather than a diagnosable failure.
+                let handle = handle - 1;
                 let file = FileId::from_usize((handle >> 32) as usize);
                 let proc = ProcId::from_u32((handle & 0xFFFF_FFFF) as u32);
                 Ok(ProcRef::new(file, proc))

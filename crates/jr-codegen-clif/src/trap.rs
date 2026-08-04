@@ -77,6 +77,12 @@ pub enum TrapKind {
     /// [`TrapKind::UninitialisedRead`], nothing reports this statically in general — a
     /// *literal* index out of range is E0236, but a computed one is only knowable here.
     IndexOutOfBounds,
+    /// A call through a **null procedure pointer** (ADR-0110 §1).
+    ///
+    /// A language trap that both engines raise, so the differential harness compares them. Native code would
+    /// otherwise jump to address zero and take a signal the compiler has nothing to say about; the VM would decode
+    /// zero into an arbitrary real procedure and call it.
+    NullCall,
     /// A `variant`'s case was read while its tag named a different one (ADR-0068 §4).
     ///
     /// Nothing reports this statically — which case is live is not decidable — so this is the runtime
@@ -132,6 +138,7 @@ impl TrapKind {
             Self::DivideByZero => "division by zero",
             Self::ShiftOutOfRange => "shift count out of range",
             Self::IndexOutOfBounds => "index out of bounds",
+            Self::NullCall => "call through a null procedure pointer",
             Self::WrongVariantCase => "read the wrong variant case",
             Self::Deliberate => "reached a deliberate trap",
             Self::StrayJump => "a `break` or `continue` outside a loop was reached",

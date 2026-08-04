@@ -509,7 +509,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **985 workspace tests** and **199 corpus files**, all six gates green, **166
+waiting. Both are tracked below. **986 workspace tests** and **199 corpus files**, all six gates green, **166
 Neovim checks**. See §1.5.
 
 ### W7 — Stdlib, open
@@ -706,6 +706,20 @@ through them** (ADR-0085 §5). So a growable array has real storage but stays pe
       value*, which has no place to project from, and it leaked "this compiler has a gap — please report it". Given
       a slot, exactly as ADR-0077 did for `type_info(s64).id`. The pattern across all six is now unmistakable —
       every one appeared the first time a **value-returning** form met a construct only ever used through a place.
+
+- [x] **Calling a null procedure pointer traps** (ADR-0110, sub-wave 8) — found while probing the allocator
+      convention for `String`'s allocating half: the *first* thing tried, `context.allocator(8)` without
+      installing one, leaked an internal error. `context.allocator` is null until installed (ADR-0057 §5), so
+      that is a mistake a reader will actually make. **Both engines were wrong differently**: the VM's packed
+      handle decoded null to **file 0 proc 0** — an arbitrary real procedure — giving "called a procedure taking
+      1 arguments with 2", while native would have jumped to address zero. Now `Trap::NullCall` in both, exit 4
+      with a source location.
+
+      **The VM handle is biased by one**, because `valid/048` calls `add` — file 0 proc 0, the *first* procedure —
+      which packed to the same handle as null, and the first check trapped on it. The corpus differential said so
+      immediately. Native needs no bias (a code address is never zero), so this is the VM's encoding earning a
+      property native had, not a language change — nothing observes a proc pointer's bits. The **seventh** leaked
+      internal error turned into a real diagnostic, and the first found by probing a *library convention*.
 
 **W7 left after that:** the **allocating** half of `String`, once the allocator convention is decided; a merge
 sort and a binary search (the first wants allocation, the second a sortedness precondition nothing can check);
