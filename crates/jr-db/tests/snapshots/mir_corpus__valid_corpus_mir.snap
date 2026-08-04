@@ -8686,11 +8686,11 @@ proc main -> void {
 proc main -> void {
   params: v0: *Context
   bb0(v0: *Context):
-    v1: s64 = call extern proc0(v0, -5_s64)
+    v1: s64 = call extern proc6(v0, -5_s64)
     v2: bool = v1 == 5_s64
     branch v2 ? bb1() : bb2()
   bb1():
-    v4: s64 = call extern proc0(v0, 5_s64)
+    v4: s64 = call extern proc6(v0, 5_s64)
     v5: bool = v4 == 5_s64
     goto bb3(v5)
   bb2():
@@ -8698,7 +8698,7 @@ proc main -> void {
   bb3(v3: bool):
     branch v3 ? bb4() : bb5()
   bb4():
-    v7: s64 = call extern proc0(v0, 0_s64)
+    v7: s64 = call extern proc6(v0, 0_s64)
     v8: bool = v7 == 0_s64
     goto bb6(v8)
   bb5():
@@ -8711,11 +8711,11 @@ proc main -> void {
   bb8():
     goto bb9(0_s64)
   bb9(v22: s64):
-    v12: s64 = call extern proc2(v0, 3_s64, 7_s64)
+    v12: s64 = call extern proc8(v0, 3_s64, 7_s64)
     v13: bool = v12 == 3_s64
     branch v13 ? bb10() : bb11()
   bb10():
-    v15: s64 = call extern proc3(v0, 3_s64, 7_s64)
+    v15: s64 = call extern proc9(v0, 3_s64, 7_s64)
     v16: bool = v15 == 7_s64
     goto bb12(v16)
   bb11():
@@ -8723,7 +8723,7 @@ proc main -> void {
   bb12(v14: bool):
     branch v14 ? bb13() : bb14()
   bb13():
-    v18: s64 = call extern proc2(v0, -2_s64, -9_s64)
+    v18: s64 = call extern proc8(v0, -2_s64, -9_s64)
     v19: bool = v18 == -9_s64
     goto bb15(v19)
   bb14():
@@ -8736,11 +8736,11 @@ proc main -> void {
   bb17():
     goto bb18(v22)
   bb18(v34: s64):
-    v24: s64 = call extern proc5(v0, -3_s64)
+    v24: s64 = call extern proc11(v0, -3_s64)
     v25: bool = v24 == -1_s64
     branch v25 ? bb19() : bb20()
   bb19():
-    v27: s64 = call extern proc5(v0, 0_s64)
+    v27: s64 = call extern proc11(v0, 0_s64)
     v28: bool = v27 == 0_s64
     goto bb21(v28)
   bb20():
@@ -8748,7 +8748,7 @@ proc main -> void {
   bb21(v26: bool):
     branch v26 ? bb22() : bb23()
   bb22():
-    v30: s64 = call extern proc5(v0, 8_s64)
+    v30: s64 = call extern proc11(v0, 8_s64)
     v31: bool = v30 == 1_s64
     goto bb24(v31)
   bb23():
@@ -8761,11 +8761,11 @@ proc main -> void {
   bb26():
     goto bb27(v34)
   bb27(v48: s64):
-    v36: s64 = call extern proc4(v0, 10_s64, 0_s64, 5_s64)
+    v36: s64 = call extern proc10(v0, 10_s64, 0_s64, 5_s64)
     v37: bool = v36 == 5_s64
     branch v37 ? bb28() : bb29()
   bb28():
-    v39: s64 = call extern proc4(v0, -1_s64, 0_s64, 5_s64)
+    v39: s64 = call extern proc10(v0, -1_s64, 0_s64, 5_s64)
     v40: bool = v39 == 0_s64
     goto bb30(v40)
   bb29():
@@ -8773,7 +8773,7 @@ proc main -> void {
   bb30(v38: bool):
     branch v38 ? bb31() : bb32()
   bb31():
-    v42: s64 = call extern proc4(v0, 3_s64, 0_s64, 5_s64)
+    v42: s64 = call extern proc10(v0, 3_s64, 0_s64, 5_s64)
     v43: bool = v42 == 3_s64
     goto bb33(v43)
   bb32():
@@ -8781,7 +8781,7 @@ proc main -> void {
   bb33(v41: bool):
     branch v41 ? bb34() : bb35()
   bb34():
-    v44: s64 = call extern proc4(v0, 3_s64, 8_s64, 2_s64)
+    v44: s64 = call extern proc10(v0, 3_s64, 8_s64, 2_s64)
     v45: bool = v44 == 8_s64
     branch v45 ? bb37() : bb38()
   bb37():
@@ -8794,11 +8794,11 @@ proc main -> void {
   bb35():
     goto bb36(v48)
   bb36(v60: s64):
-    v50: s64 = call extern proc6(v0, 2_s64, 10_s64)
+    v50: s64 = call extern proc12(v0, 2_s64, 10_s64)
     v51: bool = v50 == 1024_s64
     branch v51 ? bb40() : bb41()
   bb40():
-    v53: s64 = call extern proc6(v0, 5_s64, 0_s64)
+    v53: s64 = call extern proc12(v0, 5_s64, 0_s64)
     v54: bool = v53 == 1_s64
     goto bb42(v54)
   bb41():
@@ -8806,7 +8806,7 @@ proc main -> void {
   bb42(v52: bool):
     branch v52 ? bb43() : bb44()
   bb43():
-    v56: s64 = call extern proc6(v0, 3_s64, 3_s64)
+    v56: s64 = call extern proc12(v0, 3_s64, 3_s64)
     v57: bool = v56 == 27_s64
     goto bb45(v57)
   bb44():
@@ -8819,11 +8819,11 @@ proc main -> void {
   bb47():
     goto bb48(v60)
   bb48(v73: s64):
-    v63: s64 = call extern proc7(v0, 12_s64, 18_s64)
+    v63: s64 = call extern proc13(v0, 12_s64, 18_s64)
     v64: bool = v63 == 6_s64
     branch v64 ? bb49() : bb50()
   bb49():
-    v66: s64 = call extern proc7(v0, 7_s64, 0_s64)
+    v66: s64 = call extern proc13(v0, 7_s64, 0_s64)
     v67: bool = v66 == 7_s64
     goto bb51(v67)
   bb50():
@@ -8831,7 +8831,7 @@ proc main -> void {
   bb51(v65: bool):
     branch v65 ? bb52() : bb53()
   bb52():
-    v69: s64 = call extern proc7(v0, 0_s64, 0_s64)
+    v69: s64 = call extern proc13(v0, 0_s64, 0_s64)
     v70: bool = v69 == 0_s64
     goto bb54(v70)
   bb53():
@@ -8844,11 +8844,11 @@ proc main -> void {
   bb56():
     goto bb57(v73)
   bb57(v85: s64):
-    v75: float64 = call extern proc8(v0, 3.7_float64)
+    v75: float64 = call extern proc14(v0, 3.7_float64)
     v76: bool = v75 == 3.0_float64
     branch v76 ? bb58() : bb59()
   bb58():
-    v78: float64 = call extern proc9(v0, 3.2_float64)
+    v78: float64 = call extern proc15(v0, 3.2_float64)
     v79: bool = v78 == 4.0_float64
     goto bb60(v79)
   bb59():
@@ -8856,7 +8856,7 @@ proc main -> void {
   bb60(v77: bool):
     branch v77 ? bb61() : bb62()
   bb61():
-    v81: float64 = call extern proc10(v0, 3.5_float64)
+    v81: float64 = call extern proc16(v0, 3.5_float64)
     v82: bool = v81 == 4.0_float64
     goto bb63(v82)
   bb62():
@@ -8870,13 +8870,13 @@ proc main -> void {
     goto bb66(v85)
   bb66(v103: s64):
     v87: float64 = -1.5_float64
-    v88: float64 = call extern proc8(v0, v87)
+    v88: float64 = call extern proc14(v0, v87)
     v89: float64 = -2.0_float64
     v90: bool = v88 == v89
     branch v90 ? bb67() : bb68()
   bb67():
     v92: float64 = -1.5_float64
-    v93: float64 = call extern proc9(v0, v92)
+    v93: float64 = call extern proc15(v0, v92)
     v94: float64 = -1.0_float64
     v95: bool = v93 == v94
     goto bb69(v95)
@@ -8886,7 +8886,7 @@ proc main -> void {
     branch v91 ? bb70() : bb71()
   bb70():
     v97: float64 = -2.5_float64
-    v98: float64 = call extern proc10(v0, v97)
+    v98: float64 = call extern proc16(v0, v97)
     v99: float64 = -3.0_float64
     v100: bool = v98 == v99
     goto bb72(v100)
@@ -9109,5 +9109,105 @@ proc main -> void {
     goto bb12(v15)
   bb12(v17: s64):
     discard call extern proc1(v17)
+    return
+}
+
+========================================
+094-math-transcendentals.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: float64 = call extern proc0(16.0_float64)
+    v2: bool = v1 == 4.0_float64
+    branch v2 ? bb1() : bb2()
+  bb1():
+    v3: s64 = 0_s64 + 1_s64
+    goto bb3(v3)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v7: s64):
+    v4: float64 = call extern proc5(2.0_float64, 0.5_float64)
+    v5: float64 = call extern proc0(2.0_float64)
+    v6: bool = v4 == v5
+    branch v6 ? bb4() : bb5()
+  bb4():
+    v8: s64 = v7 + 2_s64
+    goto bb6(v8)
+  bb5():
+    goto bb6(v7)
+  bb6(v11: s64):
+    v9: float64 = call extern proc5(2.0_float64, 10.0_float64)
+    v10: bool = v9 == 1024.0_float64
+    branch v10 ? bb7() : bb8()
+  bb7():
+    v12: s64 = v11 + 4_s64
+    goto bb9(v12)
+  bb8():
+    goto bb9(v11)
+  bb9(v19: s64):
+    v13: float64 = call extern proc3(0.0_float64)
+    v14: bool = v13 == 1.0_float64
+    branch v14 ? bb10() : bb11()
+  bb10():
+    v16: float64 = call extern proc4(1.0_float64)
+    v17: bool = v16 == 0.0_float64
+    goto bb12(v17)
+  bb11():
+    goto bb12(false)
+  bb12(v15: bool):
+    branch v15 ? bb13() : bb14()
+  bb13():
+    v20: s64 = v19 + 8_s64
+    goto bb15(v20)
+  bb14():
+    goto bb15(v19)
+  bb15(v27: s64):
+    v21: float64 = call extern proc1(0.0_float64)
+    v22: bool = v21 == 0.0_float64
+    branch v22 ? bb16() : bb17()
+  bb16():
+    v24: float64 = call extern proc2(0.0_float64)
+    v25: bool = v24 == 1.0_float64
+    goto bb18(v25)
+  bb17():
+    goto bb18(false)
+  bb18(v23: bool):
+    branch v23 ? bb19() : bb20()
+  bb19():
+    v28: s64 = v27 + 16_s64
+    goto bb21(v28)
+  bb20():
+    goto bb21(v27)
+  bb21(v32: s64):
+    v29: float64 = call extern proc4(1.0_float64)
+    v30: float64 = call extern proc3(v29)
+    v31: bool = v30 == 1.0_float64
+    branch v31 ? bb22() : bb23()
+  bb22():
+    v33: s64 = v32 + 32_s64
+    goto bb24(v33)
+  bb23():
+    goto bb24(v32)
+  bb24(v36: s64):
+    v34: float64 = call extern proc14(v0, 3.7_float64)
+    v35: bool = v34 == 3.0_float64
+    branch v35 ? bb25() : bb26()
+  bb25():
+    v37: s64 = v36 + 64_s64
+    goto bb27(v37)
+  bb26():
+    goto bb27(v36)
+  bb27(v40: s64):
+    v38: s64 = call extern proc6(v0, -5_s64)
+    v39: bool = v38 == 5_s64
+    branch v39 ? bb28() : bb29()
+  bb28():
+    v41: s64 = v40 + 128_s64
+    goto bb30(v41)
+  bb29():
+    goto bb30(v40)
+  bb30(v42: s64):
+    discard call extern proc1(v42)
     return
 }

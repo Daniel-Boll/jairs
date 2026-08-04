@@ -1,27 +1,55 @@
-//! The Math module: the **exact, closed-form** functions — the ones that are the same bits in both engines.
+//! The Math module: the exact closed-form functions **and** the libm transcendentals.
 //!
-//! Written in Jairs, and it has no `sqrt`, `sin` or `log`, which is the surprising part and the whole design.
+//! Written in Jairs, with two halves that reach `float` correctness by different routes — and that split is the
+//! interesting thing about the module.
 //!
-//! # Why no transcendentals
+//! # The exact half, computed in Jairs
 //!
-//! The obvious `Math` wraps libm — `sqrt` is a `#foreign` declaration. But **a float cannot cross the FFI
-//! boundary yet**: `sqrt :: (x: float64) -> float64 #foreign libc "sqrt"` is refused, "passing FloatType to a
-//! foreign procedure arrives with a later wave". So libm is unreachable, and the module is pure Jairs.
+//! `abs`, `min`, `max`, `sign`, `clamp`, `pow`, `gcd`, and `floor`/`ceil`/`round` are computed here, in Jairs,
+//! **exactly** — so both engines produce identical bits. `floor` is closed-form (truncate toward zero with a
+//! cast, adjust by sign), which is why it is on this side even though it is a "float function": the line is
+//! **exactness**, not difficulty.
 //!
-//! A transcendental *approximated* in Jairs would compile — and it would be **wrong in a way this project
-//! cannot tolerate**. An approximation's last bits depend on the order the arithmetic is evaluated, and the
-//! comptime VM and native Cranelift may round a fused multiply-add differently, so the two engines could
-//! disagree on the last ulp. Disagreement between the engines is the one thing the differential harness treats
-//! as a failure. So a transcendental belongs behind the FFI boundary (libm is correctly rounded) or behind a
-//! decision about ulp tolerance — neither of which is a library call — and this module ships only what it can
-//! make **exact**.
+//! # The transcendentals, as libm wraps (ADR-0115)
 //!
-//! # Why `floor` is in and `sqrt` is out, though both are "float functions"
+//! `sqrt`, `sin`, `cos`, `exp`, `ln`, `powf` are **`#foreign` wraps of libm**, not Jairs approximations.
+//! ADR-0112 shipped `Math` *without* them and said so plainly, because a float could not cross the FFI boundary
+//! then and an approximation written in Jairs would be **wrong in a way this project cannot tolerate**: its last
+//! bits depend on evaluation order, and the comptime VM and native Cranelift could round a fused multiply-add
+//! differently, so the two engines would disagree on the last ulp — the one thing the differential harness
+//! treats as a failure.
 //!
-//! The line is **exactness**, not difficulty. `floor` is closed-form — truncate toward zero with a cast, adjust
-//! by sign — so both engines compute identical bits. `sqrt` is not expressible without a loop whose rounding
-//! the two engines need not share. Everything here is on the exact side of that line, and the differential
-//! harness holds it there.
+//! ADR-0114 let a float cross the boundary, which is the sub-wave `Math` named as its unblocker. So the
+//! transcendentals arrive the *right* way: libm is correctly rounded, and **both engines call the same libm**,
+//! so `sqrt(2.0)` is bit-identical in the VM and native code. A library named the language feature it needed and
+//! the language delivered it — the same shape as typed allocation unblocking `List`.
+
+#import "Basic";
+
+/// The square root of `x`. NaN for a negative `x`, as IEEE-754 defines.
+sqrt :: (x: float64) -> float64 #foreign libc "sqrt";
+
+/// The sine of `x` radians.
+sin :: (x: float64) -> float64 #foreign libc "sin";
+
+/// The cosine of `x` radians.
+cos :: (x: float64) -> float64 #foreign libc "cos";
+
+/// `e` raised to `x`.
+exp :: (x: float64) -> float64 #foreign libc "exp";
+
+/// The natural logarithm of `x`. NaN or -inf for `x <= 0`, as IEEE-754 defines.
+///
+/// Named `ln`, not `log`: C's `log` *is* the natural logarithm, but the name misleads a reader expecting base
+/// 10. `ln` says which base without a comment, and a `log10` wrap is separate when a caller wants it.
+ln :: (x: float64) -> float64 #foreign libc "log";
+
+/// `base` raised to a real `exponent` — the floating-point counterpart of the integer `pow` below.
+///
+/// A different name from the integer `pow`, because they take different types and there is no overload
+/// resolution that would pick between them (the reason `Sort` takes a comparison, ADR-0104 §3). `powf(2.0, 0.5)`
+/// is a square root, which the integer `pow` cannot express.
+powf :: (base: float64, exponent: float64) -> float64 #foreign libc "pow";
 
 /// The absolute value of an `s64`.
 ///
