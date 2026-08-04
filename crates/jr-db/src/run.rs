@@ -211,11 +211,16 @@ pub fn main_of(db: &dyn Db, file: SourceFile) -> Option<ProcRef> {
     ))
 }
 
-/// Every already-loaded file reachable from `root` through `#import`, including it.
+/// Every file the program reaches: the root plus every module reachable through `#import`, transitively.
 ///
-/// Shared with `build`, which needs the same walk for the same reason: a cross-file
-/// call is only resolvable if the callee's file is in the program.
-pub(crate) fn reachable_files(
+/// **Public since ADR-0108 §1**, because the CLI needs it to report an imported module's own diagnostics. It was
+/// crate-private while its only use was assembling MIR, and the gap that made it public is worth recording: a
+/// root whose imported module was broken *checked clean* and failed at run time, because `file_diagnostics`
+/// reports one file and nothing else.
+///
+/// The root is first, and the rest follow in discovery order. Distinct by construction — the seen-set is what
+/// makes a legal import cycle (ADR-0014 §4) terminate rather than an assumption.
+pub fn reachable_files(
     db: &dyn Db,
     root: SourceFile,
     search_paths: ModuleSearchPaths,

@@ -54,13 +54,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo run -q -p jr-cli -- fmt --check tests/corpus/valid tests/corpus/imports/valid \
-    tests/corpus/type-errors tests/corpus/cfg-errors tests/corpus/modules modules
+    tests/corpus/type-errors tests/corpus/cfg-errors tests/corpus/modules modules tests/fixtures
 # corpus drift + query validation (tree-sitter is not installed locally):
 cd tree-sitter-jairs && npx --yes tree-sitter-cli@0.26.11 generate \
   && npx --yes tree-sitter-cli@0.26.11 parse --quiet ../tests/corpus/valid/*.jr \
      ../tests/corpus/imports/valid/*.jr ../tests/corpus/type-errors/*.jr \
      ../tests/corpus/cfg-errors/*.jr ../tests/corpus/modules/*.jr \
-     ../tests/corpus/modules/*/*.jr ../modules/*/*.jr \
+     ../tests/corpus/modules/*/*.jr ../modules/*/*.jr ../tests/fixtures/*/*/*.jr \
   && for q in highlights folds indents locals; do \
        npx --yes tree-sitter-cli@0.26.11 query "queries/$q.scm" \
          ../tests/corpus/valid/024-hello.jr > /dev/null || exit 1; \

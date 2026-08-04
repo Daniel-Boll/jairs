@@ -2249,3 +2249,43 @@ an allocator behaviour the VM does not model, so the two engines could diverge i
 but a difference worth not introducing casually); shrinking on `pop` (a caller who pops then pushes would
 thrash, and nothing asks for the memory back); a `[]T` view of the used prefix (wants a view built from a
 pointer and a count, which no expression can spell — a real gap, and its own decision).
+
+## W7 sub-wave 6 — reporting an imported module's own diagnostics
+
+**The gap, as ADR-0107 §5 recorded it.** `file_diagnostics(root)` reports **one file**. A root whose *imported
+module* is broken therefore checks clean and fails at run time — `List` calling `malloc` without importing
+`Basic` gave `no routine for file 2 proc 0` for a program `jr check` had just approved. Resolution is correct;
+the *reporting* is not.
+
+**The fork: where does the extra reporting happen, and whose diagnostics are they?**
+
+- **(a) The CLI reports every reachable file, each attributed to itself.** `jr check`/`run`/`build` already
+  compute the reachable set (`reachable_files`, used to assemble MIR), so this is one loop over an existing
+  list, and every diagnostic keeps its own file and span — a reader is told the module's line, which is where
+  the fix goes. Cost: `jr check foo.jr` can now report errors in a file the user did not name. Benefit: that is
+  *correct* — the errors are real, and the alternative is a program that fails at run time. **Chosen.**
+- **(b) A new `program_diagnostics` query in `jr-db` that folds every reachable file's.** Same result, and the
+  right shape eventually — but it adds a salsa query whose only consumers are the three CLI commands that
+  already have the reachable set, and it would make `file_diagnostics`'s meaning ("this file") ambiguous by
+  proximity.
+- **(c) Attribute a module's errors to the `#import` line in the root.** Reads as "your import is broken", which
+  is what a *user of a third-party module* wants — but it discards the module's own span, so a person who can
+  fix the module (which, for the standard library, is us) loses the line number. A diagnostic that is true and
+  useless is ADR-0043's lesson.
+- **(d) Refuse to compile a module with errors, with a new code.** A new refusal for something already
+  diagnosed — the module's own E0201 *is* the diagnostic, and a second one saying "that module had an error"
+  would be noise.
+
+**Deduplication matters and is nearly free.** The reachable set includes the root, and two roots may share a
+module, so the loop must not report the same file twice. Reachability is already a seen-set walk, so the list is
+distinct by construction — but `jr check a.jr b.jr` checks several roots in one run, so the *command* dedupes by
+file across roots.
+
+**Why a warning stays a warning.** An unused import in a module (E0231) is reported too, and it is still a
+warning: a module's diagnostics are reported *as they are*, not re-graded by distance. Re-grading would mean the
+same code meant different things depending on which file you compiled.
+
+**Deferred with a reason:** ordering. Diagnostics come out root-first then per reachable file in load order,
+which is deterministic but not source-ordered across files. Sorting by file and line would be nicer and needs a
+decision about whether the root's own errors should still come first (they should, and that is the argument for
+leaving it).

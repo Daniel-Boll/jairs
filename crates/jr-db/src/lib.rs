@@ -139,7 +139,7 @@ pub use jr_mir::ConstValues;
 pub use mir::{
     MirResult, dump_mir, dump_optimized_mir, file_mir, imported_procs, optimized_file_mir,
 };
-pub use run::{RunOutcome, main_of, run_main};
+pub use run::{RunOutcome, main_of, reachable_files, run_main};
 pub use workspace::{MAX_FILES, WorkspaceFileList, WorkspaceFiles, walk};
 
 pub use sema::{CheckResult, SignatureResult, checked, file_signatures};

@@ -509,7 +509,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **984 workspace tests** and **198 corpus files**, all six gates green, **166
+waiting. Both are tracked below. **985 workspace tests** and **198 corpus files**, all six gates green, **166
 Neovim checks**. See §1.5.
 
 ### W7 — Stdlib, open
@@ -663,12 +663,27 @@ Neovim checks**. See §1.5.
 **What still blocks a fully generic dynamic array**: **cross-file parameterised structs** and **inference
 through them** (ADR-0085 §5). So a growable array has real storage but stays per element type.
 
-**W7's next sub-wave, found and deliberately left alone** (ADR-0107 §5): **an imported module's own diagnostics
-are not reported.** `List` first called `malloc` without importing `Basic`; the program *checked clean* and failed
-at run time. Resolution is correct — the module alone reports E0201 — but `file_diagnostics` reports **one file**,
-so a root whose imported module is broken looks fine. Fixing it changes what `jr check`, `jr run` and `jr build`
-all report and needs a decision about attributing a module's errors, so it is its own sub-wave rather than
-something smuggled into a data structure.
+- [x] **A program's diagnostics are every reachable file's** (ADR-0108, sub-wave 6) — the gap sub-wave 5 found
+      and deliberately left. `file_diagnostics` answers for **one file**, so a root whose imported module was
+      broken passed every gate (`jr check` printed "0 errors") and then failed inside an engine with `no routine
+      for file 2 proc 0`. **Resolution was never the bug** — the module alone always reported `unresolved name` —
+      nothing *asked* it. The fifth leaked internal error turned into a real diagnostic, and the second that was a
+      cross-file body which never got compiled.
+
+      All three commands now walk `reachable_files` — the set they **already** use to assemble MIR, so no new
+      query and nothing that can disagree with what is about to be compiled. **Each diagnostic keeps its own file
+      and span**, because attributing it to the `#import` line reads better for someone using a module they cannot
+      edit and discards the only thing that locates the bug (ADR-0043's lesson). Deduped **across roots**, since
+      `jr check a.jr b.jr` may reach one module from both and a shared module should not look worse the more files
+      import it. A warning stays a warning: a module's diagnostics are reported *as they are*, not re-graded by
+      distance, because one code meaning different things by distance is the property a code must not have.
+
+      **This makes the compiler reject programs it used to accept**, and that is the point: every one of them was
+      going to fail from inside an engine with a message naming a `FileId`. Nothing that *worked* stops working.
+
+      The broken fixture lives in `tests/fixtures/broken-modules/`, not `tests/corpus/modules/`, because that
+      directory's `fixture_modules_check_cleanly` invariant is worth keeping — a *fixture* module is scenery, and a
+      broken one makes every test importing it ambiguous. That invariant caught the first attempt at this test.
 
 **What W7 has left:** the **allocating** half of `String`, once the allocator convention is decided; a merge
 sort and a binary search (the first wants allocation, the second a sortedness precondition nothing can check);
