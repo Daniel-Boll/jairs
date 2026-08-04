@@ -501,6 +501,12 @@ impl Formatter {
                 // gets slower rather than unsound. `#c_call` above is the opposite — dropping that
                 // silently changes a calling convention.
                 NO_ABC_ATTR => self.emit(" #no_abc"),
+                // `#expand` (ADR-0090 §1). The trap again, and this one is the *unsound* direction like
+                // `#c_call`: dropping it turns a macro into an ordinary procedure, so a body meant to be
+                // spliced into the caller's scope — reading the caller's locals — becomes a call that
+                // cannot see them. Caught by gate 5 on this wave's own corpus file, which is what that
+                // gate is for.
+                EXPAND_ATTR => self.emit(" #expand"),
                 _ => {}
             }
         }

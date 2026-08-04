@@ -6714,3 +6714,40 @@ proc $inst1 -> s64 {
   bb8():
     return v7
 }
+
+========================================
+074-macro-declaration.jr
+========================================
+proc double -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: s64 = v1 * 2_s64
+    return v2
+}
+proc indexed -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: s64 = v1 + 1_s64
+    return v2
+}
+proc indexed_too -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: s64 = v1 + 2_s64
+    return v2
+}
+proc combine -> s64 {
+  params: v0: *Context, v1: s64, v2: s64, v3: s64
+  bb0(v0: *Context, v1: s64, v2: s64, v3: s64):
+    v4: s64 = v1 * 100_s64
+    v5: s64 = v2 * 10_s64
+    v6: s64 = v4 + v5
+    v7: s64 = v6 + v3
+    return v7
+}
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    discard call extern proc1(9_s64)
+    return
+}

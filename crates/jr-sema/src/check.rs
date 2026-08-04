@@ -40,7 +40,7 @@ use rustc_hash::FxHashMap;
 use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
-    E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268,
+    E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -2524,6 +2524,27 @@ impl Ctx<'_> {
             return self.check_polymorphic_call(scope, id, callee, proc, &sig, args, span);
         }
 
+        // **A call to a `#expand` macro is refused, by design** (ADR-0090 §3): a macro's body must be
+        // *spliced* into this scope, and the splice is the next sub-wave. Refused rather than allowed to
+        // fall through to the ordinary call path, which is what happened before this check existed —
+        // `#expand` was accepted and silently behaved as an ordinary procedure, the "a directive that is
+        // ignored is worse than one that is rejected" failure ADR-0058 §3 names. Arguments are still
+        // typed, so an error inside one is reported too.
+        if self.callee_is_macro(scope, callee) {
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            self.diags.push(
+                Diagnostic::error(span, "a call to a `#expand` macro is not yet supported")
+                    .with_code(E0272)
+                    .with_note(
+                        "a macro's body is spliced into the caller's scope rather than called; the \
+                         splice arrives in the next sub-wave (ADR-0090)",
+                    ),
+            );
+            return PoolId::ERROR;
+        }
+
         // **A call to a comptime-value-parameterised procedure is instantiated** (ADR-0088 §1): its `$N`
         // arguments are recorded as *expressions* for the `jr-db` pre-pass to evaluate to constants — a
         // value is not known here, because const-eval is downstream (ADR-0018 §3). Handled before the
@@ -3228,6 +3249,24 @@ impl Ctx<'_> {
         // (see `callee_poly`) and falls through to the ordinary path.
         let has_comptime = sig.comptime_params.iter().any(|&c| c);
         (has_comptime && sig.poly_vars.is_empty()).then_some((proc, sig))
+    }
+
+    /// Whether `callee` names a **local** `#expand` macro (ADR-0090 §3).
+    ///
+    /// Shaped like [`Self::callee_comptime_template`]. An imported macro falls through — a cross-file
+    /// splice is deferred with the splice itself — and its ordinary signature makes the call an ordinary
+    /// call, which is wrong but *reported* by the same refusal once the splice exists cross-file.
+    fn callee_is_macro(&mut self, scope: ExprScope, callee: ExprId) -> bool {
+        let Some(Res::Item(item)) = self.resolve.get(scope, callee) else {
+            return false;
+        };
+        let jr_hir::ItemKind::Const {
+            value: jr_hir::ConstValue::Proc(proc),
+        } = self.hir.item(item).kind.clone()
+        else {
+            return false;
+        };
+        self.hir.procs.get(proc.index()).is_some_and(|p| p.expand)
     }
 
     /// Types a call to a comptime-value-parameterised procedure and records it for instantiation

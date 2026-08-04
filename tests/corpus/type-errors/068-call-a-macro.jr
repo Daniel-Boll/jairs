@@ -1,0 +1,28 @@
+// EXPECT: E0272 — a call to a `#expand` macro, whose splice is not yet built (ADR-0090 §3)
+//
+// `#expand` marks a procedure as a **macro**: a call splices its body into the *caller's* scope rather than
+// calling it, so the body can read and modify the caller's locals (deliberately unhygienic, matching Jai and
+// matching `#insert`'s existing splice, ADR-0072 §1). The surface — parsing, lowering, formatting, and
+// checking the declaration like any other procedure — is this sub-wave; the splice is the next.
+//
+// So a call is refused, by design, exactly as a `$T` call was refused (E0268) before ADR-0082 made it run
+// and a `$N` call was (E0271) before ADR-0088 did. This is a refusal that names what arrives later.
+//
+// **The refusal ships with the surface for a specific reason.** Before it, `#expand` parsed and was then
+// *silently ignored*: `double(21)` returned 42 by ordinary call, so a macro behaved as a procedure with
+// nothing to say it had not spliced. "A directive that is silently ignored is worse than one that is
+// rejected" is ADR-0058 §3's rule, and this is its second application.
+//
+// **One** refusal, and the file lowers cleanly: the macro's declaration checks like any procedure, and the
+// call yields a poisoned type rather than a placeholder. No `#import "Basic"` — the sema corpus harness
+// resolves without modules, and nothing here needs an imported name to raise the diagnostic.
+
+/// A macro. Its declaration is fine; only calling it is refused for now.
+double :: (x: s64) -> s64 #expand {
+    return x * 2;
+}
+
+caller :: () -> s64 {
+    // The refusal: this must splice `double`'s body here, and the splice is the next sub-wave.
+    return double(21);
+}

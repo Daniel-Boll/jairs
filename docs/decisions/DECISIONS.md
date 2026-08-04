@@ -1542,3 +1542,52 @@ call) is unchanged and green.
 Taken as recommended, shipped, teeth-checked (clearing the bindings makes the instantiation report E0233,
 a refusal rather than a wrong length). `$N` is now complete: surface (0087), instantiation (0088), `[N]T`
 (0089). No new diagnostic code — E0233 and E0236 are *withheld* in one new case rather than joined.
+
+---
+
+## Wave: `#expand` macros (ADR-0090), 2026-08-04 — sub-wave 7a
+
+### Fork 1 — which macro first
+
+- Options: **`#expand` (taken, recommended)**; `#modify`; `#bake_arguments`.
+- Why `#expand`: it is the *core* of Jai's macro family — a procedure whose body is spliced into the
+  caller's scope rather than called — and the other two are refinements *of a macro* (`#modify` runs at
+  compile time to reject or alter an instantiation; `#bake_arguments` produces a specialised procedure from
+  a partial application). Neither is meaningful before a macro exists. `#expand` also composes with the
+  `#insert`/`#code` splice already built (ADR-0072/0080), so the mechanism is partly in place.
+- Premise verified by running first, per AGENTS.md: `double :: (x: s64) -> s64 #expand { … }` is **E0106**
+  today ("expected a procedure body or `#foreign`"), so this is a real feature and not already present.
+
+### Fork 2 — how a macro's body reaches the caller
+
+- Options: **reuse `Stmt::Insert`'s splice — lower the macro's body text into the call site's scope, the
+  mechanism ADR-0072/0080 built (taken, recommended)**; a new MIR-level inlining pass; a HIR-level body
+  clone like `$T` instantiation.
+- Why the splice: ADR-0080 already showed that "unquoted source spliced into the enclosing scope" is what
+  `#code` is, and a macro is *that* with arguments bound. The splice's hygiene question (does the macro's
+  body see the caller's locals?) is exactly what ADR-0072 §1 answered for `#insert` — the statements land in
+  the **enclosing** scope, so they do. A MIR inliner (ADR-0021) already exists but inlines a *call*, which
+  keeps the callee's own scope — the opposite of what a macro needs. A HIR body clone is what `$T` does, and
+  it also keeps the callee's scope.
+- **The hygiene decision this forces**, recorded because it is the interesting one: a Jai macro is
+  *deliberately unhygienic* — it can read and modify the caller's locals, which is what makes `#expand`
+  useful for things like a custom `for` — and PLAN §2.1 lists "hygiene" as W5 scope. The recommendation is
+  to ship the **unhygienic** splice first (matching Jai and matching `#insert`'s existing behaviour) and
+  treat any hygiene mechanism as its own later decision, because a hygiene scheme that nothing needs yet
+  would be designed against no use case.
+
+### Fork 3 — ship the refusal with the surface, or after it
+
+- Options: **with it (taken, recommended)**; after, as a separate step.
+- Why with it: this is not merely staging. With `#expand` parsed and nothing consuming it, a macro was
+  **accepted and silently ignored** — `double(21)` returned 42 by ordinary call, with nothing to say it had
+  not spliced. That is exactly ADR-0058 §3's "a directive that is silently ignored is worse than one that is
+  rejected", and it made the surface-only state a live defect rather than a partial feature. E0272 refuses
+  the call, so the sub-wave ships nothing that quietly does the wrong thing.
+
+### Resolution (ADR-0090 records it)
+
+Taken as recommended. The surface ships with E0272; the splice is the next sub-wave and will reuse
+`Stmt::Insert` unhygienically (fork 2). Confirmed the lossy-CST trap is still live: **jr-fmt dropped
+`#expand` on the first run**, turning every macro into an ordinary procedure, and gate 5 caught it on this
+wave's own corpus file. `#modify` and `#bake_arguments` remain unbuilt, each owed its own decision.

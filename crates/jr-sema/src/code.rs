@@ -347,6 +347,19 @@ pub(crate) const E0269: &str = "E0269";
 /// count wanted and the count written — the type-side counterpart of an arity error on a call.
 pub(crate) const E0270: &str = "E0270";
 
+/// A call to a `#expand` macro, whose splice is not yet built (ADR-0090 §3).
+///
+/// `#expand` marks a procedure as a **macro**: a call splices its body into the *caller's* scope rather
+/// than calling it, so the body can read and modify the caller's locals (deliberately unhygienic, matching
+/// Jai and matching `#insert`'s existing splice). The surface — parsing, lowering, formatting, and the
+/// declaration checking like any other procedure — is this sub-wave; the **splice** is the next.
+///
+/// Refused rather than allowed to fall through to an ordinary call, which is what it did before this code
+/// existed: `#expand` was *accepted and ignored*, so a macro silently behaved as a procedure. That is the
+/// "a directive that is silently ignored is worse than one that is rejected" rule ADR-0058 §3 states, and
+/// the reason this refusal ships with the surface rather than after it.
+pub(crate) const E0272: &str = "E0272";
+
 // E0271 — a `$N` comptime-value argument that is not a compile-time constant — is raised by `jr-db`'s
 // comptime-call pre-pass (ADR-0088), not here, because a value's constancy is a const-eval judgement that
 // lives downstream of this crate (ADR-0018 §3). It is defined in `jr-db` beside E0230, the way E0245 is,

@@ -991,6 +991,10 @@ impl<'src> Parser<'src> {
             let kind = match self.current_directive_text() {
                 "#c_call" => C_CALL_ATTR,
                 "#no_abc" => NO_ABC_ATTR,
+                // `#expand` makes the procedure a macro: a call splices its body into the caller's
+                // scope rather than calling it (ADR-0090 §1). Accepted in the same loop, so it may be
+                // written in any order with the other two — the ordering rule ADR-0058 refused to add.
+                "#expand" => EXPAND_ATTR,
                 _ => break,
             };
             self.start_node(kind);

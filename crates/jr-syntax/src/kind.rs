@@ -413,6 +413,16 @@ pub enum SyntaxKind {
     /// every one of the eleven passes and back ends that match on a projection, and a flag some of
     /// them ignore is this project's first named failure mode.
     NO_ABC_ATTR,
+    /// A `#expand` attribute on a procedure, making it a **macro** (ADR-0090 §1).
+    ///
+    /// Its own node beside `C_CALL_ATTR` and `NO_ABC_ATTR`, for the reason those two are separate: a
+    /// consumer that handles one and forgets this one is a *missing arm* rather than a string comparison
+    /// that falls through silently — the route by which `jr-fmt` has lost a construct in most of the last
+    /// dozen waves.
+    ///
+    /// A macro's body is **spliced into the caller's scope** rather than called (§2), so this is not a
+    /// calling-convention flag like `#c_call` but a statement about what a *call* to it means.
+    EXPAND_ATTR,
     /// The `context` keyword used as an expression (ADR-0057 §1).
     ///
     /// Its own kind rather than a `NAME_EXPR`, because `context` is a keyword and not a name — a
