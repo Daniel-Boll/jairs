@@ -512,6 +512,8 @@ mod tests {
             &resolve,
             &sigs.signatures,
             &[],
+            // No imported HIRs: this unit test checks a file alone (ADR-0117 §1).
+            &[],
             &mut pool,
             &interner,
         );

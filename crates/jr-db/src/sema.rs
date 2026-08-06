@@ -293,6 +293,25 @@ pub fn checked(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) -
         .map(|(name, sigs)| (name.as_ref(), sigs.signatures.as_ref()))
         .collect();
 
+    // **The imported HIRs the check phase needs** (ADR-0117 §1): a *parameterised* imported struct's fields are
+    // resolved by the importer, under the arguments it supplies, and that needs the field `TypeRef` tree in the
+    // declaring file's arena. `file_signatures` has always taken these through `ImportedFile`; this is the same
+    // values, for the same reason, one phase later.
+    let imported_module_hirs: Vec<(jr_base::FileId, Arc<jr_hir::FileHir>)> =
+        imported_module_files(db, file, search_paths)
+            .into_iter()
+            .map(|(_, module)| {
+                (
+                    crate::queries::resolve_file_id(db, module),
+                    file_hir(db, module),
+                )
+            })
+            .collect();
+    let imported_hirs: Vec<(jr_base::FileId, &jr_hir::FileHir)> = imported_module_hirs
+        .iter()
+        .map(|(id, hir)| (*id, hir.as_ref()))
+        .collect();
+
     let mut pool = lock_pool(db);
     let output = jr_sema::check_file(
         hir.as_ref(),
@@ -300,6 +319,7 @@ pub fn checked(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) -
         own_resolve.as_ref(),
         own.signatures.as_ref(),
         &imports,
+        &imported_hirs,
         &mut pool,
         interner,
     );
@@ -362,6 +382,25 @@ pub(crate) fn checked_expanded(
         .map(|(name, sigs)| (name.as_ref(), sigs.signatures.as_ref()))
         .collect();
 
+    // **The imported HIRs the check phase needs** (ADR-0117 §1): a *parameterised* imported struct's fields are
+    // resolved by the importer, under the arguments it supplies, and that needs the field `TypeRef` tree in the
+    // declaring file's arena. `file_signatures` has always taken these through `ImportedFile`; this is the same
+    // values, for the same reason, one phase later.
+    let imported_module_hirs: Vec<(jr_base::FileId, Arc<jr_hir::FileHir>)> =
+        imported_module_files(db, file, search_paths)
+            .into_iter()
+            .map(|(_, module)| {
+                (
+                    crate::queries::resolve_file_id(db, module),
+                    file_hir(db, module),
+                )
+            })
+            .collect();
+    let imported_hirs: Vec<(jr_base::FileId, &jr_hir::FileHir)> = imported_module_hirs
+        .iter()
+        .map(|(id, hir)| (*id, hir.as_ref()))
+        .collect();
+
     let mut pool = lock_pool(db);
     let output = jr_sema::check_file(
         expanded,
@@ -369,6 +408,7 @@ pub(crate) fn checked_expanded(
         &resolve_map,
         own.signatures.as_ref(),
         &imports,
+        &imported_hirs,
         &mut pool,
         interner,
     );
@@ -595,12 +635,30 @@ pub(crate) fn instantiated(
         .iter()
         .map(|(name, sigs)| (name.as_ref(), sigs.signatures.as_ref()))
         .collect();
+    // The imported HIRs, as the ordinary check path takes them (ADR-0117 §1). Gathered here too so that an
+    // *expanded* tree resolves an imported parameterised struct exactly as the unexpanded one does — a
+    // difference between the two would be a construct that worked until something in the file expanded.
+    let check_imported_hirs_owned: Vec<(jr_base::FileId, Arc<jr_hir::FileHir>)> =
+        imported_module_files(db, file, search_paths)
+            .into_iter()
+            .map(|(_, module)| {
+                (
+                    crate::queries::resolve_file_id(db, module),
+                    file_hir(db, module),
+                )
+            })
+            .collect();
+    let check_imported_hirs: Vec<(jr_base::FileId, &jr_hir::FileHir)> = check_imported_hirs_owned
+        .iter()
+        .map(|(id, hir)| (*id, hir.as_ref()))
+        .collect();
     let output = jr_sema::check_file(
         hir.as_ref(),
         file_id,
         resolve_map.as_ref(),
         signatures.as_ref(),
         &check_imports,
+        &check_imported_hirs,
         &mut pool,
         interner,
     );

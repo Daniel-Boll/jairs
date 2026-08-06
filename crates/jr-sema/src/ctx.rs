@@ -101,6 +101,33 @@ pub(crate) struct Ctx<'a> {
     /// flat-merged name comes from when reporting ambiguity, and iteration order
     /// over a hash map is not stable.
     pub(crate) imports: Vec<(&'a str, &'a FileSignatures)>,
+    /// Each imported module's **HIR and `FileId`**, for resolving a *parameterised* imported struct's fields
+    /// (ADR-0117 §1).
+    ///
+    /// Signatures are not enough. A parameterised struct's fields must be resolved **per instance, under the
+    /// caller's type arguments** (ADR-0085 §2) — and its own file cannot do that, because it does not know what
+    /// arguments an importer will supply and records its body with the variables bound to `PoolId::ERROR`. So the
+    /// *importer* resolves them, which needs the field `TypeRef` tree — and a `TypeRef` is a `TypeRefId` into the
+    /// **declaring** file's arena.
+    ///
+    /// The HIR rather than a flattened copy of those `TypeRef`s on the signatures (ADR-0117 §1): a copy would be
+    /// a second representation of the same tree, re-indexed into a private arena — a second thing to keep
+    /// correct, which is the drift ADR-0022 §2 refuses for arithmetic. The HIR is already loaded and is what the
+    /// *signature* phase uses for the same job.
+    ///
+    /// Empty in every test harness that checks a file alone, which is why every reader must tolerate a miss.
+    pub(crate) imported_hirs: Vec<(FileId, &'a FileHir)>,
+    /// While resolving an **imported** parameterised struct's fields, that module's signatures (ADR-0117 §2).
+    ///
+    /// `None` in the ordinary case. Set for the duration of `resolve_instance_fields_in`, because a field naming
+    /// a type — `Wrapper($T) { helper: Helper; }` — must find the **declaring** module's `Helper`, not the
+    /// importer's. `self.hir` is swapped so `hir.scope` is right, but the *type value* comes from a
+    /// `FileSignatures`, and this is which one to ask.
+    ///
+    /// A field's type cannot depend on who imported the struct, so consulting the importer's signatures here
+    /// would be wrong even when it happened to find a same-named type — the worse failure, because it would
+    /// silently resolve to a *different* type rather than not resolving at all.
+    pub(crate) resolving_in_module: Option<&'a FileSignatures>,
     /// This file's signatures: under construction in [`Mode::Signatures`],
     /// already complete in [`Mode::Check`].
     pub(crate) sigs: FileSignatures,
@@ -244,6 +271,7 @@ impl<'a> Ctx<'a> {
         interner: &'a Interner,
         pool: &'a mut Pool,
         imports: Vec<(&'a str, &'a FileSignatures)>,
+        imported_hirs: Vec<(FileId, &'a FileHir)>,
         mode: Mode,
     ) -> Self {
         Self {
@@ -267,6 +295,8 @@ impl<'a> Ctx<'a> {
             interner,
             pool,
             imports,
+            imported_hirs,
+            resolving_in_module: None,
             sigs: FileSignatures::new(),
             mode,
             diags: Diagnostics::new(),
@@ -563,13 +593,29 @@ impl<'a> Ctx<'a> {
             args.push(ty);
         }
 
-        // The constructor must be a parameterised struct declared in this file. A cross-file or
-        // non-struct constructor, a bad arity, or an argument that failed to resolve, each poison —
-        // reported once, here, at the reference.
-        let Some((sid, poly_vars)) = self.parameterised_struct(name) else {
+        // The constructor must be a parameterised struct — **in this file or any imported one** (ADR-0117 §2).
+        // A non-struct constructor, a bad arity, or an argument that failed to resolve each poison, reported
+        // once, here, at the reference.
+        let Some((decl_file, decl_hir, sid, poly_vars)) = self.parameterised_struct_anywhere(name)
+        else {
             self.not_a_parameterised_struct(name, span);
             return PoolId::ERROR;
         };
+        // **A type-argument reference marks its import used** (ADR-0117 §2). `ResolveMap` covers `Expr::Name`
+        // only, and an ordinary imported type annotation is recorded by `resolve_type_name` — but `Box(s64)`
+        // never reaches that function, because the constructor is looked up here. Without this, a file importing
+        // a module *solely* for a parameterised struct reads as an unused import (E0231), and the quick fix
+        // beside that warning would break the build — ADR-0031 §2's rule, and the same trap the ordinary
+        // annotation path already had to close.
+        if decl_file != self.file
+            && let Some((module, _)) = self
+                .imports
+                .iter()
+                .find(|(_, sigs)| sigs.file() == decl_file)
+        {
+            let module = *module;
+            self.sigs.insert_type_name_import(name, module);
+        }
         if args.len() != poly_vars.len() {
             self.wrong_type_argument_count(name, poly_vars.len(), args.len(), span);
             return PoolId::ERROR;
@@ -578,7 +624,10 @@ impl<'a> Ctx<'a> {
             return PoolId::ERROR;
         }
 
-        let decl = DeclId::new(self.file, sid.as_u32());
+        // **The declaring file's id**, not this one (ADR-0117 §2): a nominal type's identity is its declaration
+        // site (ADR-0015 §1), so `Box(s64)` must be the *same* type in two importers rather than one per
+        // importer — which is what makes a value of it pass between them.
+        let decl = DeclId::new(decl_file, sid.as_u32());
         let instance = self.pool.struct_instance(decl, args.clone());
 
         // Resolve the field list under the argument bindings, once per instance. Guarded so a
@@ -595,7 +644,7 @@ impl<'a> Ctx<'a> {
             for (&var, &arg) in poly_vars.iter().zip(&args) {
                 self.type_bindings.insert(var, arg);
             }
-            let fields = self.resolve_instance_fields(sid);
+            let fields = self.resolve_instance_fields_in(decl_hir, sid);
             self.pool.set_instance_fields(instance, fields);
             for (var, prev) in saved {
                 match prev {
@@ -605,6 +654,47 @@ impl<'a> Ctx<'a> {
             }
         }
         instance
+    }
+
+    /// The declaring file, `StructId` and type parameters of the parameterised struct `name` names — in **this
+    /// file or any imported one** (ADR-0117 §2).
+    ///
+    /// `None` for a name that is nowhere, is not a struct, or has no type parameters — each of which means a
+    /// `Name(args)` reference is malformed, reported by the caller.
+    ///
+    /// This file is searched **first**, which is ADR-0014 §3's resolution order unchanged: a local declaration
+    /// shadows an imported one of the same name, and this must not be the one place that differs.
+    fn parameterised_struct_anywhere(
+        &self,
+        name: Symbol,
+    ) -> Option<(FileId, &'a FileHir, StructId, Vec<Symbol>)> {
+        if let Some((sid, poly_vars)) = self.parameterised_struct(name) {
+            return Some((self.file, self.hir, sid, poly_vars));
+        }
+        // An **imported** parameterised struct. Its fields are resolved from *its* HIR (ADR-0117 §1), because a
+        // `TypeRef` is an index into the declaring file's arena — which is the whole reason the check phase now
+        // receives these.
+        //
+        // `export_scope` rather than `scope`, so a `#scope_module` struct stays private (ADR-0054 §1): an
+        // importer must not reach a name its module hides, and using the wrong scope here would be a hole in
+        // that filter reachable only through a type argument.
+        for &(file, hir) in &self.imported_hirs {
+            let Some(item) = hir.export_scope().get(name) else {
+                continue;
+            };
+            let ItemKind::Const {
+                value: ConstValue::Struct(sid),
+            } = hir.item(item).kind
+            else {
+                continue;
+            };
+            let poly_vars = hir.struct_def(sid).poly_vars.clone();
+            if poly_vars.is_empty() {
+                continue;
+            }
+            return Some((file, hir, sid, poly_vars));
+        }
+        None
     }
 
     /// The `StructId` and type parameters of `name` if it is a parameterised struct in this file.
@@ -631,7 +721,53 @@ impl<'a> Ctx<'a> {
     /// The same field loop as [`Ctx::resolve_struct_body`], but returning the fields rather than
     /// recording them under the `DeclId` — because a parameterised instance's fields key on the
     /// instance `PoolId`, not the declaration (ADR-0085 §2).
-    fn resolve_instance_fields(&mut self, sid: StructId) -> Vec<jr_pool::Field> {
+    /// Resolves struct `sid`'s fields **from `hir`**, under the currently-bound type variables (ADR-0117 §2).
+    ///
+    /// The declaring file's HIR is passed explicitly because a field's `TypeRef` is a `TypeRefId` into *its*
+    /// arena — so resolving an imported parameterised struct's fields means reading that file's arena while this
+    /// file's bindings are in force. `self.hir` is swapped for the duration and restored, which is the smallest
+    /// correct move: `resolve_type` walks `self.hir.type_refs`, and giving it a second source would mean a second
+    /// path through every type-resolution arm.
+    ///
+    /// A **name** inside those fields still resolves in the *declaring* file's scope — `Box(T) { value: Helper; }`
+    /// means that file's `Helper` — which the swap gets right for free, and which is the only correct reading: a
+    /// struct's fields cannot depend on who imported it.
+    fn resolve_instance_fields_in(
+        &mut self,
+        hir: &'a FileHir,
+        sid: StructId,
+    ) -> Vec<jr_pool::Field> {
+        let saved_hir = self.hir;
+        let saved_file = self.file;
+        let saved_module = self.resolving_in_module;
+        self.hir = hir;
+        // The `FileId` moves too, because a nominal type named in those fields must intern with the *declaring*
+        // file's identity (ADR-0015 §1) — a `Point` field in an imported `Box` is that module's `Point`.
+        if let Some(&(file, _)) = self
+            .imported_hirs
+            .iter()
+            .find(|(_, h)| core::ptr::eq(*h, hir))
+        {
+            self.file = file;
+        }
+        // The declaring module's signatures, so a field naming one of *its* types resolves there (ADR-0117 §2).
+        // Found by matching the HIR pointer against the imports, the same way the `FileId` is.
+        if let Some(&(_, sigs)) = self
+            .imports
+            .iter()
+            .find(|(_, sigs)| sigs.file() == self.file)
+        {
+            self.resolving_in_module = Some(sigs);
+        }
+        let resolved = self.resolve_instance_fields_inner(sid);
+        self.hir = saved_hir;
+        self.file = saved_file;
+        self.resolving_in_module = saved_module;
+        resolved
+    }
+
+    /// The field loop itself, reading whatever `self.hir` currently is.
+    fn resolve_instance_fields_inner(&mut self, sid: StructId) -> Vec<jr_pool::Field> {
         let fields = self.hir.struct_def(sid).fields.clone();
         let mut resolved = Vec::with_capacity(fields.len());
         for field in &fields {
@@ -689,6 +825,17 @@ impl<'a> Ctx<'a> {
                 (false, 8) => PoolId::U8,
                 (signed, bits) => self.pool.intern(Item::IntType { signed, bits }),
             };
+        }
+
+        // **Inside an imported struct's fields, that module's signatures answer** (ADR-0117 §2). Checked before
+        // the local scope, because `self.hir` is already the module's — so `hir.scope.get` would find the
+        // module's item while `self.sigs.lookup` asked the *importer's* signatures about it, and the mismatch is
+        // what made an imported `Wrapper($T)` whose field names its own `Helper` fail to resolve.
+        if let Some(module_sigs) = self.resolving_in_module
+            && let Some(entry) = module_sigs.lookup(sym)
+            && let Some(ty) = entry.type_value
+        {
+            return ty;
         }
 
         if let Some(item) = self.hir.scope.get(sym) {
@@ -1254,8 +1401,8 @@ impl<'a> Ctx<'a> {
             )
             .with_code(E0269)
             .with_note(
-                "type arguments apply to a `struct($T) { … }` declared in this file; a \
-                 parameterised struct imported from another module is not yet supported",
+                "type arguments apply to a `struct($T) { … }` — declared in this file or exported by an \
+                 imported module",
             )
             .with_help(format!(
                 "declare `{text}` as `struct($T) {{ … }}`, or drop the `(…)` if `{text}` is an \

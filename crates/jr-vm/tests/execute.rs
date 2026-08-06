@@ -58,6 +58,8 @@ impl Fixture {
             &resolve,
             &signatures.signatures,
             &[],
+            // No imported HIRs: this harness checks a file alone (ADR-0117 §1).
+            &[],
             &mut pool,
             &interner,
         );

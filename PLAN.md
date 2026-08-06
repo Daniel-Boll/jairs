@@ -509,7 +509,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **986 workspace tests** and **205 corpus files**, all six gates green, **166
+waiting. Both are tracked below. **986 workspace tests** and **209 corpus files**, all six gates green, **166
 Neovim checks**. See §1.5.
 
 ### W7 — Stdlib, open
@@ -776,6 +776,34 @@ through them** (ADR-0085 §5). So a growable array has real storage but stays pe
       divergence the differential caught**, both in arithmetic/memory the native path did in hardware while the
       VM modelled it in Rust. Now done on truncated `u64` with `wrapping_*`. Would have hit any comptime wrapping
       arithmetic near the range — a `#run` hash, a checksum. `valid/096` is the regression.
+
+- [x] **A parameterised struct crosses a module boundary** (ADR-0117, sub-wave 15) — **the biggest language
+      unblocker the wave had left**, named by *three* library sub-waves: `Array`, `List` and `Map` are concrete
+      `Int_*` types **only** because a `struct($T)` in a module was E0269 to every importer.
+
+      **Why it was not a lookup change.** A parameterised struct's fields are resolved *per instance, under the
+      caller's arguments* — and its own file cannot do that (it does not know what an importer will supply and
+      records its body with the variables bound to `ERROR`). So the **importer** resolves them, which needs the
+      field `TypeRef` tree, and a `TypeRef` indexes the **declaring** file's arena. `check_file` now takes the
+      imported HIR, which `jr-db` already holds — rather than flattening the TypeRefs onto the signatures, which
+      would be a second representation of the same tree. **Identity stays the declaring file's**, so `Box(s64)` is
+      the same type in two importers. **The pool needed nothing**: ADR-0086's instance-keyed field map already
+      keys on an instance carrying the declaring file, so a cross-file instance was representable from the day
+      that map existed.
+
+      **Three things building it found, each by running**: a field naming the declaring module's *own* type
+      resolved in the **importer's** signatures (the sharper failure — with a same-named local type it would have
+      silently resolved to a *different* type); a type-argument reference did not mark its import used, so a file
+      importing solely for `Box(s64)` reported E0231 and the quick fix would break the build; and a **module name
+      is global across both trees** — `modules/Generic` shadowed the `tests/corpus/modules/Generic.jr` fixture and
+      `imports/valid/017` silently resolved the wrong one.
+
+      Staging followed ADR-0086 §1 but **could not be two commits**: a commit whose only change is an unread field
+      fails `clippy -D warnings`. The plumbing was still proven alone first (986 tests, no moved snapshot) and the
+      ADR says so.
+
+      **Deliberately not converting `Array`/`List`/`Map` yet**: the language change and the library rewrite are
+      separate work, so a regression in either stays attributable.
 
 **W7 left after that:** the **allocating** half of `String`, once the allocator convention is decided; a merge
 sort and a binary search (the first wants allocation, the second a sortedness precondition nothing can check);

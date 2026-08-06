@@ -1,0 +1,33 @@
+// A module exporting **parameterised structs**, for `imports/valid/018` (ADR-0117).
+//
+// Before that ADR a `struct($T)` here was unusable by every importer: `Ctx::parameterised_struct` looked a name
+// up in the *importing* file's own declarations, so `Box(s64)` was E0269 — "not a parameterised struct". That was
+// the refusal which forced `Array`, `List` and `Map` to be concrete `Int_*` types.
+//
+// What made it more than a lookup change is that a parameterised struct's fields are resolved **per instance,
+// under the caller's type arguments** — and its own file cannot do that, since it does not know what an importer
+// will supply. So the *importer* resolves them, from this file's `TypeRef` arena.
+
+/// One type parameter.
+Box :: struct($T) {
+    value: T;
+}
+
+/// Two, so the argument list is genuinely a list.
+Pair :: struct($A, $B) {
+    first: A;
+    second: B;
+}
+
+/// An ordinary struct in this module, named by `Wrapper`'s field below.
+Helper :: struct {
+    n: s64;
+}
+
+/// A parameterised struct whose field names **this module's** type. An importer resolving these fields must find
+/// *this* `Helper`, not one of its own with the same name — a field's type cannot depend on who imported it, and
+/// getting that wrong would resolve to a different type rather than failing to resolve.
+Wrapper :: struct($T) {
+    item: T;
+    helper: Helper;
+}

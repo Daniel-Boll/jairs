@@ -166,6 +166,12 @@ fn valid_corpus_files_produce_no_sema_diagnostics() {
     // (`a: Any`, from `Basic`), so without the import `Any` is genuinely unknown — the same "a name the
     // import would provide" the comment above means. A real misspelled type is caught by the with-modules
     // CLI corpus test; a mismatch (E0214) or any other code still fails here.
+    //
+    // **E0269 is tolerated for the same reason** (ADR-0117): `Box(s64)` naming a *parameterised* struct an
+    // imported module exports is "not a parameterised struct" when no module is loaded — the exact
+    // type-argument analogue of `Any` being an unknown type name. `097-cross-file-generic-struct.jr` is the
+    // first `valid/` file to use one. The with-modules CLI corpus test is what proves it resolves; a genuinely
+    // undeclared constructor is caught there.
     let mut failures = Vec::new();
     for (name, text) in corpus_files("valid") {
         let mut program = Program::new();
@@ -173,7 +179,7 @@ fn valid_corpus_files_produce_no_sema_diagnostics() {
         let real: Vec<&_> = analysis
             .sema_diagnostics
             .iter()
-            .filter(|d| d.code != Some("E0212"))
+            .filter(|d| d.code != Some("E0212") && d.code != Some("E0269"))
             .collect();
         if !real.is_empty() {
             let messages: Vec<String> = real
