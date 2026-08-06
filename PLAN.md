@@ -805,6 +805,24 @@ through them** (ADR-0085 §5). So a growable array has real storage but stays pe
       **Deliberately not converting `Array`/`List`/`Map` yet**: the language change and the library rewrite are
       separate work, so a regression in either stays attributable.
 
+- [x] **The containers become generic structs** (ADR-0118, sub-wave 16): `Array($T)` and `List($T)` — the
+      storage declaration written **once** instead of per element type. Their **procedures stay concrete**
+      (`*Array(s64)`), because inference *through* a parameterised struct is still deferred (E0212) — so this is
+      **half a conversion on purpose**, and the module docs say which half. It leaves the modules in the shape
+      the inference lift *completes* rather than one it must undo. The MIR snapshot **did not move**, which is the
+      right outcome: `Array(s64)` lays out exactly as `Int_Array` did.
+
+      **`Map` stays concrete**, blocked by something new: it needs `size_of(Slot(K, V))`, and **an intrinsic's
+      type argument is not parsed in type position** — `unresolved name s64`. Reverted rather than hand-computing
+      the slot size, which is the silent wrong read ADR-0105 §3 refused. A **fourth named unblocker**, and a
+      small one: the intrinsics' argument grammar.
+- [x] **Two more unused-import traps closed** (ADR-0118 §4): a `#foreign` **library** name imported from a module
+      did not mark the import used — `Math` imports `Basic` for `libc`, named in a *declaration attribute* rather
+      than an expression, so `ResolveMap` never saw it and the quick fix would have broken every libm wrap. The
+      **third** time this trap has needed closing, always the same shape: a name reached through a
+      non-expression path. And `String`'s import was **genuinely** unused, which the warning was right about —
+      its allocator comes from `context`, a language facility, so it imports nothing.
+
 **W7 left after that:** the **allocating** half of `String`, once the allocator convention is decided; a merge
 sort and a binary search (the first wants allocation, the second a sortedness precondition nothing can check);
 a dynamic array and a hash table, both of which want W5's polymorphic

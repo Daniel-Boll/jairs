@@ -997,7 +997,20 @@ impl Ctx<'_> {
         if let Some(item) = self.hir.scope.get(name) {
             return self.entry_for_item(item);
         }
-        self.imports.iter().find_map(|(_, sigs)| sigs.lookup(name))
+        // **An imported name found here marks its import used** (ADR-0118 §2). The only caller is the
+        // `#foreign` library check, and a library is named in a *declaration attribute* rather than an
+        // expression — so `ResolveMap` (which covers `Expr::Name`) never sees it, and a module imported
+        // *solely* for its `#system_library` read as unused. `Math` importing `Basic` for `libc` is exactly
+        // that, and the quick fix beside the warning would have broken every libm wrap in it — ADR-0031 §2's
+        // rule, and the third place this trap has had to be closed after an ordinary type annotation and a
+        // type-argument reference (ADR-0117 §5).
+        let found = self
+            .imports
+            .iter()
+            .find_map(|(module, sigs)| sigs.lookup(name).map(|entry| (*module, entry)))?;
+        let (module, entry) = found;
+        self.sigs.insert_type_name_import(name, module);
+        Some(entry)
     }
 }
 

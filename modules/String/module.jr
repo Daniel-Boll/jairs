@@ -53,8 +53,11 @@
 //! calling a null one traps (ADR-0110) — so a program that concatenates without installing an allocator gets a
 //! trap naming the null pointer, not a silent wrong answer. A failed allocation returns `""`, because ADR-0058
 //! §4's line is that a trap is for a *program* error and running out of memory is not one.
-
-#import "Basic";
+//!
+//! **And it needs no `#import "Basic"`.** The allocator comes from `context`, which is a *language* facility
+//! (ADR-0057) rather than a library name — so this module reaches its allocation through a hidden parameter every
+//! procedure already has, and imports nothing at all. A `#import "Basic"` here was an unused import (E0231), and
+//! the warning was right.
 
 /// The byte at `index`, or `-1` when the index is out of range.
 ///

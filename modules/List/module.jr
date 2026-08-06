@@ -5,13 +5,13 @@
 //!
 //! # Why this is a new module rather than a rewrite of `Array`
 //!
-//! The two have genuinely different contracts, and collapsing them would hide that. An `Int_Array` needs **no
-//! cleanup** — its storage is inline, so a caller can forget about it — while an `Int_List` **owns heap memory**
+//! The two have genuinely different contracts, and collapsing them would hide that. An `Array(s64)` needs **no
+//! cleanup** — its storage is inline, so a caller can forget about it — while an `List(s64)` **owns heap memory**
 //! and a caller must call `free_data`. That is not a detail: there are no destructors in Jairs, which is a
 //! design value rather than a missing feature, so ownership is something a caller reads in a type's name and
 //! docs or does not learn at all.
 //!
-//! An `Int_Array` is also the better choice when a bound is known — no allocation, no failure mode, no
+//! An `Array(s64)` is also the better choice when a bound is known — no allocation, no failure mode, no
 //! cleanup. Replacing it would have traded a simpler thing for a more capable one, which is not an improvement
 //! when both are cheap to keep.
 //!
@@ -34,7 +34,7 @@
 //!
 //! ADR-0058 §4's line is that a trap is for a **program** error. Running out of memory is not one — the program
 //! is correct and the machine said no — so aborting the process would take away the caller's only chance to
-//! recover. `push` returns `false`, which is what it already returned when `Int_Array` was full: a caller can do
+//! recover. `push` returns `false`, which is what it already returned when `Array(s64)` was full: a caller can do
 //! nothing different about the two reasons, so one answer serves both.
 //!
 //! # Composing with the rest of the library
@@ -62,10 +62,10 @@
 ///
 /// `data` is null until the first `push`, so declaring a list allocates nothing. That makes an unused list free
 /// and makes `free_data` safe to call on one that never grew.
-Int_List :: struct {
-    /// The storage, or null before the first `push`. Typed `*s64` via `typed` (ADR-0106 §1), because an
-    /// allocator returns `*u8` and a general pointer cast is refused.
-    data: *s64;
+List :: struct($T) {
+    /// The storage, or null before the first `push`. Typed via `typed` (ADR-0106 §1), because an allocator
+    /// returns `*u8` and a general pointer cast is refused.
+    data: *T;
     /// How many elements are in use.
     count: s64;
     /// How many the current allocation holds. Zero exactly when `data` is null.
@@ -81,10 +81,10 @@ FIRST_CAPACITY :: 4;
 /// Appends `v`, answering `false` when the allocation it needed failed.
 ///
 /// **`false` means "out of memory"**, which is the only way this can fail — a list has no fixed bound. A caller
-/// can do nothing different about that than about `Int_Array`'s "full", which is why the signature is the same.
+/// can do nothing different about that than about `Array(s64)`'s "full", which is why the signature is the same.
 ///
 /// Amortised `O(1)`: the capacity doubles, so `n` pushes copy `O(n)` elements in total.
-push :: (a: *Int_List, v: s64) -> bool {
+push :: (a: *List(s64), v: s64) -> bool {
     if a.count >= a.capacity {
         if !grow(a) {
             return false;
@@ -102,7 +102,7 @@ push :: (a: *Int_List, v: s64) -> bool {
 ///
 /// **The capacity is not reduced.** A caller who pops and pushes would otherwise thrash the allocator, and
 /// nothing has asked for the memory back — `free_data` is how a caller says they are finished.
-pop :: (a: *Int_List) -> (s64, bool) {
+pop :: (a: *List(s64)) -> (s64, bool) {
     if a.count == 0 {
         return 0, false;
     }
@@ -113,10 +113,10 @@ pop :: (a: *Int_List) -> (s64, bool) {
 /// The element at `index`, plus whether the index was in the **used** range.
 ///
 /// Bounded on `count`, not `capacity`: the slots between them hold whatever the allocator gave back, which is
-/// genuinely undefined rather than merely unused. That is a sharper reason than `Int_Array`'s — there the extra
+/// genuinely undefined rather than merely unused. That is a sharper reason than `Array(s64)`'s — there the extra
 /// slots were zeroed and therefore only *indistinguishable* from real elements — and it is why this bound is not
 /// a matter of taste.
-get :: (a: *Int_List, index: s64) -> (s64, bool) {
+get :: (a: *List(s64), index: s64) -> (s64, bool) {
     if index < 0 {
         return 0, false;
     }
@@ -130,7 +130,7 @@ get :: (a: *Int_List, index: s64) -> (s64, bool) {
 ///
 /// It will not extend the list — `set(a, a.count, v)` is `false`, not a push — because growth through
 /// assignment would make the length depend on which indices a caller happened to touch.
-set :: (a: *Int_List, index: s64, v: s64) -> bool {
+set :: (a: *List(s64), index: s64, v: s64) -> bool {
     if index < 0 {
         return false;
     }
@@ -145,7 +145,7 @@ set :: (a: *Int_List, index: s64, v: s64) -> bool {
 ///
 /// Deliberately **not** the same as `free_data`: reusing a buffer a caller has already paid for is a real thing
 /// to want, and naming both makes the choice visible. A reader who wants the memory back wants `free_data`.
-clear :: (a: *Int_List) {
+clear :: (a: *List(s64)) {
     a.count = 0;
 }
 
@@ -154,7 +154,7 @@ clear :: (a: *Int_List) {
 /// **This is the routine a caller must not forget.** There are no destructors, so nothing else will free the
 /// memory. Safe to call on a list that never grew (`data` is null and `free` of null is a no-op) and safe to
 /// call twice, because it resets `data` — a second call frees nothing rather than freeing again.
-free_data :: (a: *Int_List) {
+free_data :: (a: *List(s64)) {
     if a.data != null {
         free(untyped(a.data));
     }
@@ -164,7 +164,7 @@ free_data :: (a: *Int_List) {
 }
 
 /// Whether the list holds nothing.
-is_empty :: (a: *Int_List) -> bool {
+is_empty :: (a: *List(s64)) -> bool {
     return a.count == 0;
 }
 
@@ -183,7 +183,7 @@ is_empty :: (a: *Int_List) -> bool {
 ///
 /// A view over an **empty** list is `view(null, 0)`, which is well-formed: a zero-count view is never indexed,
 /// and every routine that takes one loops `while i < count`.
-elements :: (a: *Int_List) -> []s64 {
+elements :: (a: *List(s64)) -> []s64 {
     return view(a.data, a.count);
 }
 
@@ -198,7 +198,7 @@ elements :: (a: *Int_List) -> []s64 {
 /// would make growth depend on an allocator behaviour the comptime VM does not model — so the two engines could
 /// differ in *timing*. Not in results, but a divergence worth not introducing casually in a project whose whole
 /// test strategy is comparing them.
-grow :: (a: *Int_List) -> bool {
+grow :: (a: *List(s64)) -> bool {
     wanted := FIRST_CAPACITY;
     if a.capacity > 0 {
         wanted = a.capacity * 2;

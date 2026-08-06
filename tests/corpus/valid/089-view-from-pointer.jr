@@ -2,7 +2,7 @@
 // the standard library **compose** — `sort_ints(elements(*l))` sorts a growable list in place, which is three
 // modules cooperating on one buffer.
 //
-// **The gap, as ADR-0107 named it.** `Int_List` could not hand its contents to `Sort` or `String`, because a
+// **The gap, as ADR-0107 named it.** `List(s64)` could not hand its contents to `Sort` or `String`, because a
 // slice takes an *array* and nothing could turn a pointer and a count into a `[]s64`. So a growable array and a
 // sorting routine sat side by side, unable to be combined — a poor advertisement for a standard library.
 //
@@ -85,7 +85,7 @@ main :: () {
     free(untyped(ps));
 
     // **The point of the sub-wave**: a growable list's contents, sorted in place by another module.
-    l: Int_List;
+    l: List(s64);
     l.data = null;
     l.count = 0;
     l.capacity = 0;

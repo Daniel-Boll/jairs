@@ -21,7 +21,7 @@
 //! that decided the shape, and it was found by *importing the module*: the first draft declared
 //! `Array :: struct($T)`, which compiled fine inside the module and gave `Array is not a parameterised struct,
 //! so it takes no type arguments` at the first `a: Array(s64)` in an importing file. A polymorphic struct in a
-//! module is therefore **unusable by anyone**, so this module declares a concrete `Int_Array` and says so in
+//! module is therefore **unusable by anyone**, so this module declares a concrete `Array(s64)` and says so in
 //! the name.
 //!
 //! All three limits are demonstrated rather than predicted, which is the point of writing the library in the
@@ -53,16 +53,16 @@
 /// The capacity is 16 because it has to be *something*: even with a parameterised struct the arguments are
 /// **types** (ADR-0085 §3), so a capacity cannot come from a caller at all. Sixteen is enough to fill an array
 /// in a test without making the struct large.
-Int_Array :: struct {
+Array :: struct($T) {
     /// The storage. Only the first `count` elements are meaningful; the rest hold what the declaration zeroed
     /// them to, which is a real value rather than garbage (ADR-0039's explicit `zero`) — and therefore
     /// indistinguishable from a genuine element, which is why `count` is the boundary every routine respects.
-    items: [16]s64;
+    items: [16]T;
     /// How many elements are in use. Never greater than [`CAPACITY`], which every routine here maintains.
     count: s64;
 }
 
-/// The capacity of every `Int_Array`, as a constant a caller can compare against.
+/// The capacity of every `Array(s64)`, as a constant a caller can compare against.
 ///
 /// Exported so a caller can ask "will this fit" without hard-coding 16 — the number appears once here and
 /// nowhere else, so changing it cannot leave a stale bound behind in a caller.
@@ -77,7 +77,7 @@ CAPACITY :: 16;
 ///
 /// Takes a pointer because it mutates: a by-value struct parameter would append to a copy, and the caller would
 /// see nothing — the kind of silent no-op a `bool` return cannot warn about.
-push :: (a: *Int_Array, v: s64) -> bool {
+push :: (a: *Array(s64), v: s64) -> bool {
     if a.count >= CAPACITY {
         return false;
     }
@@ -95,7 +95,7 @@ push :: (a: *Int_Array, v: s64) -> bool {
 ///
 /// The element is left in `items`, not cleared. Nothing can read it — `count` is the boundary and every routine
 /// here respects it — and clearing would need a zero value the element type may not have.
-pop :: (a: *Int_Array) -> (s64, bool) {
+pop :: (a: *Array(s64)) -> (s64, bool) {
     if a.count == 0 {
         return 0, false;
     }
@@ -109,7 +109,7 @@ pop :: (a: *Int_Array) -> (s64, bool) {
 /// declaration zeroed it to, which is a real number and therefore indistinguishable from a genuine element.
 /// That is the well-typed-placeholder failure one level up from the compiler, and refusing it here is what
 /// keeps `count` meaningful.
-get :: (a: *Int_Array, index: s64) -> (s64, bool) {
+get :: (a: *Array(s64), index: s64) -> (s64, bool) {
     if index < 0 {
         return 0, false;
     }
@@ -124,7 +124,7 @@ get :: (a: *Int_Array, index: s64) -> (s64, bool) {
 /// It will not *extend* the array — `set(a, a.count, v)` is `false`, not a push. Growing through an assignment
 /// would make the array's length depend on which indices a caller happened to touch, and `push` is the routine
 /// that has something to say about capacity.
-set :: (a: *Int_Array, index: s64, v: s64) -> bool {
+set :: (a: *Array(s64), index: s64, v: s64) -> bool {
     if index < 0 {
         return false;
     }
@@ -140,12 +140,12 @@ set :: (a: *Int_Array, index: s64, v: s64) -> bool {
 /// Setting `count` to zero is the whole operation, because the storage holds no resources: an element is a
 /// value, and there is nothing to release. When element types can own memory this becomes a real question, and
 /// answering it then is better than pretending now.
-clear :: (a: *Int_Array) {
+clear :: (a: *Array(s64)) {
     a.count = 0;
 }
 
 /// Whether the array holds nothing.
-is_empty :: (a: *Int_Array) -> bool {
+is_empty :: (a: *Array(s64)) -> bool {
     return a.count == 0;
 }
 
@@ -153,6 +153,6 @@ is_empty :: (a: *Int_Array) -> bool {
 ///
 /// Named rather than left to `a.count == CAPACITY`, so a caller checking before a loop reads as intent — and so
 /// the comparison lives in one place if the capacity ever stops being a constant.
-is_full :: (a: *Int_Array) -> bool {
+is_full :: (a: *Array(s64)) -> bool {
     return a.count >= CAPACITY;
 }

@@ -2513,3 +2513,30 @@ negative keys (cast to `u64` first, so the sign bit participates rather than bre
 
 **Deferred:** a generic `Map($K, $V)` (cross-file parameterised structs); a string-keyed map (wants the key
 hash to walk bytes, additive); iteration (wants a view or a cursor, its own shape).
+
+## W7 sub-wave 16 — converting the containers to generic structs
+
+**What ADR-0117 unblocked, and what it did not.** A `struct($T)` in a module now works for an importer. But
+**inference through a parameterised struct is still deferred** (ADR-0085 §5): `push :: (a: *Array($T), v: T)` is
+E0212, because `T` is not in scope there. So the *struct* can be generic while the *procedures* cannot.
+
+**Probed:** a module declaring `Holder($T)` and exporting `push_int :: (a: *Holder(s64), v: s64)` works from an
+importer — struct generic, procedure concrete.
+
+**The fork: convert now, or wait for inference?**
+
+- **(a) Convert the structs to `struct($T)` and keep the procedures concrete, one set per element type.** The
+  storage declaration is written **once** instead of per type, so a second element type needs procedures but not
+  a new struct — genuine progress, and it puts the modules in the shape the eventual inference lift will complete
+  rather than a shape it will have to undo. Cost: the procedure names keep an `_int` flavour, and the honest
+  reading is "half converted". **Chosen**, with the module docs saying which half and why.
+- **(b) Wait for inference through a parameterised struct.** Then `push` is generic too and the conversion is
+  one step. But that is another language sub-wave, and leaving three modules declaring storage they no longer
+  need to declare concretely is leaving the language's new capability unused in the very place that asked for it.
+- **(c) Convert and add `$T`-inferring procedures anyway.** They do not compile. Not an option, listed because
+  it is the obvious wrong turn: the refusal is real, not a lint.
+
+**Deliberately scoped to `Array` first**, not all three at once. `List` and `Map` own heap memory and their
+`grow` paths are where a conversion could go subtly wrong; `Array`'s storage is inline, so it is the one where a
+mistake is visible immediately. If `Array` converts cleanly the other two follow in the same sub-wave; if it does
+not, the ADR says so and they stay concrete.
