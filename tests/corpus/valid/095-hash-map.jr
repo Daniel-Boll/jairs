@@ -3,7 +3,7 @@
 // ADR-0106), grown by allocate-copy-free (like `List`, ADR-0107), with field access through pointer arithmetic.
 //
 // **Why `Int_Map`, concrete.** Cross-file parameterised structs are deferred (E0269, ADR-0085 §5), so a
-// `Map($K, $V)` here would be unusable by every importer — the discovery that shaped `Int_Array` and `Int_List`.
+// `Map($K, $V)` here would be unusable by every importer — the discovery that shaped `Array(s64)` and `List(s64)`.
 // `s64 -> s64` is the useful concrete instance, and the name says so.
 //
 // **Why open addressing.** One heap allocation holds every slot and the probe sequence is plain arithmetic, so

@@ -1,12 +1,12 @@
-// **A genuinely growable array** (ADR-0107): `Int_List`, heap-backed, doubling. W7's fifth sub-wave, the fifth
+// **A genuinely growable array** (ADR-0107): `List(s64)`, heap-backed, doubling. W7's fifth sub-wave, the fifth
 // module, and the one `Array` could not be — ADR-0105 shipped a fixed-capacity buffer and named three refusals
 // as the reason, and ADR-0106's typed allocation lifted the first of them.
 //
 // **Why this is a new module rather than a rewrite of `Array`.** The two have genuinely different contracts, and
-// collapsing them would hide that. An `Int_Array` needs **no cleanup** — its storage is inline, so a caller can
-// forget about it — while an `Int_List` **owns heap memory** and a caller must call `free_data`. There are no
+// collapsing them would hide that. An `Array(s64)` needs **no cleanup** — its storage is inline, so a caller can
+// forget about it — while a `List(s64)` **owns heap memory** and a caller must call `free_data`. There are no
 // destructors in Jairs, which is a design value rather than a missing feature, so ownership is something a
-// caller reads in a type's name and docs or does not learn at all. And an `Int_Array` is still the better choice
+// caller reads in a type's name and docs or does not learn at all. And an `Array(s64)` is still the better choice
 // when a bound is known: no allocation, no failure mode, no cleanup.
 //
 // **Growth doubles**, from 4. `n` pushes then cost `O(n)` amortised, which is the property that makes a growable
@@ -16,7 +16,7 @@
 //
 // **A failed allocation is `false`, not a trap.** ADR-0058 §4's line is that a trap is for a *program* error, and
 // running out of memory is not one: the program is correct and the machine said no, so aborting would take away
-// the caller's only chance to recover. It is the same `false` `Int_Array` returned when full — a caller can do
+// the caller's only chance to recover. It is the same `false` `Array(s64)` returned when full — a caller can do
 // nothing different about the two reasons, so one answer serves both.
 //
 // **`get` bounds on `count` for a sharper reason than `Array`'s.** There the unused slots were *zeroed*, so
@@ -59,7 +59,7 @@
 main :: () {
     n := 0;
 
-    l: Int_List;
+    l: List(s64);
     l.data = null;
     l.count = 0;
     l.capacity = 0;
@@ -128,7 +128,7 @@ main :: () {
         free_data(*l);
         // Safe twice, and safe on a list that never grew.
         free_data(*l);
-        fresh: Int_List;
+        fresh: List(s64);
         fresh.data = null;
         fresh.count = 0;
         fresh.capacity = 0;

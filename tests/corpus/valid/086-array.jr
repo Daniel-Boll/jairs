@@ -16,7 +16,7 @@
 //     that decided the shape, and it was found by *importing the module*: the first draft declared
 //     `Array :: struct($T)`, which compiled inside the module and failed at the first `a: Array(s64)` here. A
 //     polymorphic struct in a module is therefore **unusable by every importer**, so the module declares a
-//     concrete `Int_Array` and says so in the name.
+//     concrete `Array(s64)` and says so in the name.
 //
 // **Routing around them was considered and rejected.** A `*u8`-backed array with hand-computed byte offsets
 // *is* expressible — pointer arithmetic works — but every read would need the element size as a literal and
@@ -50,7 +50,7 @@
 main :: () {
     n := 0;
 
-    a: Int_Array;
+    a: Array(s64);
     a.count = 0;
 
     // Empty to start with, and `pop` says so.

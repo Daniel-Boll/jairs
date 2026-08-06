@@ -7,7 +7,7 @@
 //! # Why `Int_Map`, concrete
 //!
 //! Cross-file parameterised structs are deferred (E0269, ADR-0085 §5), so a `Map($K, $V)` declared here would be
-//! unusable by every importer — the same discovery that shaped `Int_Array` and `Int_List`. `s64 -> s64` is the
+//! unusable by every importer — the same discovery that shaped `Array(s64)` and `List(s64)`. `s64 -> s64` is the
 //! useful concrete instance (a set of integers, a count-by-id, an index), and the name says which it is. When
 //! cross-file parameterised structs arrive, this becomes `Map($K, $V)` and the `Int_` drops.
 //!
@@ -20,7 +20,7 @@
 //!
 //! # Why the caller frees
 //!
-//! An `Int_Map` owns heap memory, like an `Int_List`, and there are no destructors — so a caller calls
+//! An `Int_Map` owns heap memory, like an `List(s64)`, and there are no destructors — so a caller calls
 //! `free_map`, and the type's name and this note are the only warning. A dropped map leaks.
 
 #import "Basic";
