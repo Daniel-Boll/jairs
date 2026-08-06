@@ -9573,14 +9573,9 @@ proc main -> void {
 proc main -> void {
   params: v0: *Context
   slots:
-    s0: *struct  // temporary
-    s1: *struct  // temporary
+    s0: struct  // local 1
+    s1: *u8  // temporary
     s2: *struct  // temporary
-    s3: *struct  // temporary
-    s4: *struct  // temporary
-    s5: *struct  // temporary
-    s6: *struct  // temporary
-    s7: *u8  // temporary
   bb0(v0: *Context):
     v1: bool = 16_s64 == 16_s64
     branch v1 ? bb1() : bb2()
@@ -9620,57 +9615,39 @@ proc main -> void {
     goto bb15(v14)
   bb14():
     goto bb15(v13)
-  bb15(v37: s64):
-    v15: s64 = 2_s64 * 16_s64
-    v16: *u8 = call extern proc2(v15)
-    v17: bool = v16 == 0_*u8
-    branch v17 ? bb16() : bb17()
+  bb15(v27: s64):
+    zero s0
+    store s0.0 <- 7_s64
+    store s0.1 <- 9_s64
+    v15: *struct = addr s0
+    store s1 <- v15
+    v16: *u8 = load s1
+    store s2 <- v16
+    v17: *struct = load s2
+    v18: s64 = load (v17).*.0
+    v19: bool = v18 == 7_s64
+    branch v19 ? bb16() : bb17()
   bb16():
-    discard call extern proc1(200_s64)
-    goto bb18()
+    v21: s64 = load (v17).*.1
+    v22: bool = v21 == 9_s64
+    goto bb18(v22)
   bb17():
-    goto bb18()
-  bb18():
-    store s0 <- v16
-    v19: *struct = load s0
-    store s1 <- v19
-    v20: *struct = addr s1[0_s64]
-    store (v20).*.0 <- 7_s64
-    store s2 <- v19
-    v21: *struct = addr s2[0_s64]
-    store (v21).*.1 <- 9_s64
-    store s3 <- v19
-    v22: *struct = addr s3[1_s64]
-    store (v22).*.0 <- 1_s64
-    store s4 <- v19
-    v23: *struct = addr s4[0_s64]
-    v24: s64 = load (v23).*.0
-    store s5 <- v19
-    v25: *struct = addr s5[0_s64]
-    v26: s64 = load (v25).*.1
-    v27: s64 = v24 + v26
-    store s6 <- v19
-    v28: *struct = addr s6[1_s64]
-    v29: s64 = load (v28).*.0
-    v30: s64 = v27 + v29
-    store s7 <- v19
-    v31: *u8 = load s7
-    discard call extern proc3(v31)
-    v32: bool = v30 == 17_s64
-    branch v32 ? bb19() : bb20()
+    goto bb18(false)
+  bb18(v20: bool):
+    branch v20 ? bb19() : bb20()
   bb19():
-    v34: bool = 8_s64 == 8_s64
-    goto bb21(v34)
+    v24: bool = 8_s64 == 8_s64
+    goto bb21(v24)
   bb20():
     goto bb21(false)
-  bb21(v33: bool):
-    branch v33 ? bb22() : bb23()
+  bb21(v23: bool):
+    branch v23 ? bb22() : bb23()
   bb22():
-    v38: s64 = v37 + 16_s64
-    goto bb24(v38)
+    v28: s64 = v27 + 16_s64
+    goto bb24(v28)
   bb23():
-    goto bb24(v37)
-  bb24(v39: s64):
-    discard call extern proc1(v39)
+    goto bb24(v27)
+  bb24(v29: s64):
+    discard call extern proc1(v29)
     return
 }

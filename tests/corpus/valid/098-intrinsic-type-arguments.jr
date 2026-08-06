@@ -23,7 +23,8 @@
 //   * `size_of` of a **two-parameter** instance, against the layout its fields imply (two `s64`s: 16);
 //   * `size_of` of a **one-parameter** instance, and of two *different* instantiations, since a wrong
 //     implementation could bind only the first argument or share one layout;
-//   * `typed` with a parameterised type, allocating and writing through it — the case `Map` needs;
+//   * `typed` with a parameterised type — the case `Map` needs — round-tripping a local's address, so the file
+//     needs no allocator and the no-modules sema harness can check it;
 //   * a **nested** application (`Box(Box(s64))`), so the recursion in the argument path is real;
 //   * an ordinary `size_of(s64)` beside them, so the plain path still works.
 //
@@ -62,18 +63,15 @@ main :: () {
         n = n + 8;
     }
 
-    // `typed` with a parameterised type — the case `Map` needs — allocating and writing through it.
-    raw := malloc(2 * size_of(Slot(s64, s64)));
-    if raw == null {
-        exit(200);
-    }
-    s := typed(Slot(s64, s64), raw);
-    (s + 0).key = 7;
-    (s + 0).value = 9;
-    (s + 1).key = 1;
-    total := (s + 0).key + (s + 0).value + (s + 1).key;
-    free(untyped(s));
-    if total == 17 && size_of(s64) == 8 {
+    // `typed` with a parameterised type — the case `Map` needs. Applied to the address of a **local** rather
+    // than to `malloc`'s result, so this file needs no allocator: the sema corpus harness checks it with no
+    // modules loaded, and an unresolved `malloc` would poison `s` and cascade into E0220 on every write through
+    // it. `valid/095` is where a parameterised `typed` allocates for real, inside `Map`'s own `grow`.
+    slot: Slot(s64, s64);
+    slot.key = 7;
+    slot.value = 9;
+    reinterpreted := typed(Slot(s64, s64), untyped(*slot));
+    if reinterpreted.key == 7 && reinterpreted.value == 9 && size_of(s64) == 8 {
         n = n + 16;
     }
 
