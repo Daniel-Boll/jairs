@@ -3911,6 +3911,36 @@ impl Ctx<'_> {
     /// is perfectly well known, and the objection is that it is a value rather than a type. Returning
     /// `None` lets the caller raise E0261, which says exactly that.
     fn described_type(&mut self, scope: ExprScope, arg: ExprId) -> Option<PoolId> {
+        // **A parameterised type argument** — `size_of(Slot(s64, s64))` (ADR-0119 §1). In *type* position that is
+        // a `TypeRef::Apply`, but an intrinsic's argument is an **expression**, so it parses as a call: the
+        // constructor is the callee name and the arguments are ordinary expressions. Recognised here rather than
+        // in the parser, because the parser cannot know that this particular call is in a type position — only
+        // the intrinsic does, and this is the one function every intrinsic asks.
+        //
+        // Blocked `Map($K, $V)`'s conversion until now (ADR-0118 §2): its allocation needs
+        // `size_of(Slot(K, V))`, and without this the arguments were typed as *values*, so `s64` was an
+        // unresolved name.
+        if let Expr::Call { callee, args, .. } = self.expr_of(scope, arg) {
+            let Expr::Name { name, .. } = self.expr_of(scope, callee) else {
+                return None;
+            };
+            // The callee names no runtime value, so it is typed `void` — the same move every intrinsic makes for
+            // its own callee, and for the same reason: MIR reports a hole in the type map, and this is never
+            // lowered because the whole expression folds to a type.
+            self.types.set_expr(scope, callee, PoolId::VOID);
+            // Each argument is itself a **type**, resolved recursively so `Box(Box(s64))` works, and marked a
+            // type position so E0261 does not refuse it for being a type used as a runtime value.
+            let mut resolved = Vec::with_capacity(args.len());
+            for &a in &args {
+                self.type_position.insert((scope, a));
+                let ty = self.described_type(scope, a)?;
+                self.types.set_expr(scope, a, PoolId::TYPE);
+                resolved.push(ty);
+            }
+            let span = self.expr_of(scope, arg).span();
+            let instance = self.apply_resolved(name, resolved, span);
+            return (instance != PoolId::ERROR).then_some(instance);
+        }
         let Expr::Name { name, res, .. } = self.expr_of(scope, arg) else {
             return None;
         };

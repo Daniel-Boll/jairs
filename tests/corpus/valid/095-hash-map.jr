@@ -1,8 +1,8 @@
-// **A hash table** (ADR-0116): `Int_Map`, `s64 -> s64`, open-addressed on the heap. W7's fourteenth sub-wave,
+// **A hash table** (ADR-0116): `Map(s64, s64)`, `s64 -> s64`, open-addressed on the heap. W7's fourteenth sub-wave,
 // and the module that most exercises what the earlier ones built — a heap array of *structs* (typed allocation,
 // ADR-0106), grown by allocate-copy-free (like `List`, ADR-0107), with field access through pointer arithmetic.
 //
-// **Why `Int_Map`, concrete.** Cross-file parameterised structs are deferred (E0269, ADR-0085 §5), so a
+// **Why `Map(s64, s64)`, concrete.** Cross-file parameterised structs are deferred (E0269, ADR-0085 §5), so a
 // `Map($K, $V)` here would be unusable by every importer — the discovery that shaped `Array(s64)` and `List(s64)`.
 // `s64 -> s64` is the useful concrete instance, and the name says so.
 //
@@ -35,7 +35,7 @@
 main :: () {
     n := 0;
 
-    m: Int_Map;
+    m: Map(s64, s64);
     m.slots = null;
     m.count = 0;
     m.tombstones = 0;
@@ -80,7 +80,7 @@ main :: () {
     free_map(*m);
 
     // Growth: fifty inserts through several rehashes, every key surviving with its value.
-    big: Int_Map;
+    big: Map(s64, s64);
     big.slots = null;
     big.count = 0;
     big.tombstones = 0;

@@ -732,7 +732,21 @@ fn scan_name(
             if reach.callees.contains(&id) {
                 // A direct call to a procedure declared in this file is the one
                 // file-level reference that lowers, because `ProcId` names it.
-                if is_proc {
+                //
+                // **Unless the name is a parameterised struct** (ADR-0119 §3): `size_of(Slot(s64, s64))` has a
+                // *call*-shaped type argument whose callee names a struct, and the whole `size_of` folds to a
+                // constant — so that inner callee is never emitted and refusing the body for it would refuse
+                // every program that measures a parameterised instance. Recognised by what the name *is*, like
+                // the enum-member-receiver arm below, rather than by the fold: a struct name in callee position
+                // is only ever a type application, since a struct is not callable.
+                if is_proc
+                    || matches!(
+                        &item_data.kind,
+                        ItemKind::Const {
+                            value: ConstValue::Struct(_)
+                        }
+                    )
+                {
                     None
                 } else {
                     Some("a call to something that is not a procedure")
