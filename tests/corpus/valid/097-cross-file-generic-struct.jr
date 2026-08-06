@@ -1,0 +1,67 @@
+// **An imported parameterised struct, running** (ADR-0117). W7's fifteenth sub-wave, and the biggest language
+// unblocker the wave had left — named by *three* library sub-waves.
+//
+// `Array` (ADR-0105), `List` (ADR-0107) and `Map` (ADR-0116) are each a concrete `Int_*` type **only** because a
+// `struct($T)` declared in a module was unusable by every importer: the lookup searched the importing file's own
+// declarations, so `Box(s64)` was E0269. `Array`'s sub-wave found it by *importing* its own first draft.
+//
+// **Why it was not a one-line lookup change.** A parameterised struct's fields are resolved per instance, under
+// the caller's type arguments — and its own file cannot do that: it does not know what an importer will supply,
+// and it records its body with the variables bound to an error type because nothing concrete exists there yet. So
+// the **importer** resolves the fields, which means the field `TypeRef` tree must cross the boundary — and a
+// `TypeRef` is an index into the *declaring* file's arena, which the check phase never had. Passing the imported
+// HIR, which `jr-db` already holds, is what closed it.
+//
+// **Identity is the declaring file's**: a nominal type's identity is its declaration site, so `Box(s64)` is the
+// *same* type in two importers rather than one each — which is what lets a value of it pass between them.
+//
+// What is checked here, at run time in both engines:
+//
+//   * `Box(s64)` — an imported one-parameter struct, written and read;
+//   * `Box(bool)` beside it, so two instantiations of one imported declaration are distinct types with distinct
+//     field types (a shared field list would make one of them wrong);
+//   * `Pair(s64, bool)` — two arguments, so the list is genuinely a list rather than a first argument;
+//   * a `Box(s64)` passed **to a procedure** by pointer and mutated, so the imported instance is a real type at
+//     the ABI level and not just a checkable annotation.
+//
+// The exit code is **15**, four groups of one bit.
+#import "Basic";
+#import "Generic_Types";
+
+/// Mutates an imported parameterised struct through a pointer — the instance is a real type, layout and all.
+fill :: (b: *Box(s64), v: s64) {
+    b.value = v;
+}
+
+main :: () {
+    n := 0;
+
+    b: Box(s64);
+    b.value = 7;
+    if b.value == 7 {
+        n = n + 1;
+    }
+
+    // A second instantiation of the same imported declaration, with a different field type.
+    c: Box(bool);
+    c.value = true;
+    if c.value {
+        n = n + 2;
+    }
+
+    // Two arguments.
+    p: Pair(s64, bool);
+    p.first = 5;
+    p.second = false;
+    if p.first == 5 && !p.second {
+        n = n + 4;
+    }
+
+    // Through a pointer, into a procedure: a real type at the ABI level.
+    fill(*b, 11);
+    if b.value == 11 {
+        n = n + 8;
+    }
+
+    exit(n);
+}

@@ -253,6 +253,7 @@ pub fn check_file(
     resolve: &ResolveMap,
     signatures: &FileSignatures,
     imports: &[(&str, &FileSignatures)],
+    imported_hirs: &[(jr_base::FileId, &FileHir)],
     pool: &mut Pool,
     interner: &Interner,
 ) -> CheckOutput {
@@ -271,6 +272,7 @@ pub fn check_file(
         interner,
         pool,
         imports.to_vec(),
+        imported_hirs.to_vec(),
         Mode::Check,
     );
     ctx.sigs = signatures.clone();

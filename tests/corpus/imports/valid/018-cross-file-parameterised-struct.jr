@@ -1,0 +1,53 @@
+// **A parameterised struct crossing a module boundary** (ADR-0117): `Box(s64)` from an imported module. The
+// biggest language unblocker W7 had left, named by **three** library sub-waves.
+//
+// `Array` (ADR-0105), `List` (ADR-0107) and `Map` (ADR-0116) are each concrete `Int_*` types *only* because a
+// `struct($T)` declared in a module was unusable by every importer — E0269, "not a parameterised struct",
+// because the lookup searched the importing file's own declarations. `Array`'s sub-wave found it by *importing*
+// its own first draft.
+//
+// **Why it was not a one-line lookup change.** A parameterised struct's fields must be resolved per instance,
+// under the caller's type arguments — and its own file cannot do that: it does not know what an importer will
+// supply, and it records its body with the variables bound to an error type precisely because nothing concrete
+// exists there. So the **importer** resolves the fields, which means the field `TypeRef` tree has to cross the
+// boundary — and a `TypeRef` is an index into the *declaring* file's arena, which the check phase never had.
+// Passing the imported HIR (which `jr-db` already holds) is what closed it.
+//
+// **Identity is the declaring file's**, not the importer's: a nominal type's identity is its declaration site,
+// so `Box(s64)` is the *same* type in two importers rather than one per importer — which is what lets a value of
+// it pass between them.
+//
+// What is checked here:
+//
+//   * `Box(s64)` — one type argument, imported;
+//   * `Pair(s64, bool)` — two, so the argument list is a list;
+//   * `Box(bool)` beside `Box(s64)`, since two instantiations of one imported declaration must be distinct
+//     types with distinct field types;
+//   * `Wrapper(s64)`, whose field names the **declaring module's own** `Helper` — the case that failed first,
+//     because the field's type was being looked up in the *importer's* signatures. A field's type cannot depend
+//     on who imported the struct, and resolving it in the wrong file would find a different type rather than
+//     failing.
+//
+// No `#import "Basic"`: this directory's harness searches `tests/corpus/modules` only, so the file asserts that
+// the types *check* rather than running. `valid/097` is where an imported parameterised struct is executed.
+#import "Generic_Structs";
+
+main :: () {
+    b: Box(s64);
+    b.value = 7;
+
+    p: Pair(s64, bool);
+    p.first = 5;
+    p.second = true;
+
+    // A second instantiation of the same imported declaration: a distinct type with a distinct field type.
+    c: Box(bool);
+    c.value = true;
+
+    // The field naming the declaring module's own type.
+    w: Wrapper(s64);
+    w.item = 9;
+    w.helper.n = 3;
+
+    total := b.value + p.first + w.item + w.helper.n;
+}

@@ -173,6 +173,8 @@ impl Program {
             &resolve,
             &signatures.signatures,
             &[],
+            // No imported HIRs: an imported *parameterised* struct is out of this harness's scope (ADR-0117 §1).
+            &[],
             &mut self.pool,
             &self.interner,
         );

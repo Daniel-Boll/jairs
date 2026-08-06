@@ -96,6 +96,11 @@ pub fn file_signatures(
     let import_refs: Vec<(&str, &FileSignatures)> =
         shallow.iter().map(|(name, sigs)| (*name, sigs)).collect();
 
+    // The imported HIRs the *signature* phase already has, for the reason ADR-0117 §1 gives — this phase has
+    // always had them through `ImportedFile`, and `Ctx` now carries them so the check phase can too.
+    let imported_hirs: Vec<(jr_base::FileId, &FileHir)> =
+        imports.iter().map(|i| (i.file, i.hir)).collect();
+
     let mut ctx = Ctx::new(
         hir,
         file,
@@ -103,6 +108,7 @@ pub fn file_signatures(
         interner,
         pool,
         import_refs,
+        imported_hirs,
         Mode::Signatures,
     );
     // Recorded so that an *imported* overload can become a `ProcRef` (ADR-0048 §5).

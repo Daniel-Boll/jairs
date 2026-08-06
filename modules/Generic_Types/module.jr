@@ -1,0 +1,29 @@
+//! A module of **parameterised structs** — named `Generic_Types` rather than `Generic`, because
+//! `tests/corpus/modules/Generic.jr` already exists (it declares the *templates* ADR-0104 refuses to instantiate
+//! across a file) and a stdlib module shadowing a fixture module made a corpus file resolve the wrong one. A
+//! module name is a global identifier in the search path, so a new one must be checked against both trees.
+//!
+//! A module of parameterised structs, exported for `valid/097` — the first library module whose types are
+//! generic across a module boundary (ADR-0117).
+//!
+//! Until that ADR a `struct($T)` here was unusable by every importer, which is why `Array`, `List` and `Map` are
+//! concrete `Int_*` types. This module exists to *exercise* the capability, deliberately separate from converting
+//! those three: the language change and a library rewrite are different work, and keeping them apart is what
+//! makes a regression in either attributable.
+
+/// A single value of any type — the smallest parameterised struct, and the shape ADR-0085 used to introduce them.
+Box :: struct($T) {
+    /// The value.
+    value: T;
+}
+
+/// Two values of independent types.
+///
+/// Two parameters rather than one, because a list of arguments has to be genuinely a list: an implementation that
+/// bound only the first would pass every one-parameter test.
+Pair :: struct($A, $B) {
+    /// The first.
+    first: A;
+    /// The second.
+    second: B;
+}

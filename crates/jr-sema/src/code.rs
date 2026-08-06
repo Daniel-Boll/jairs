@@ -337,8 +337,11 @@ pub(crate) const E0268: &str = "E0268";
 /// `Box(s64)` requires `Box` to be a `struct($T) { … }` declared in this file. This is raised when the
 /// name is undeclared, names something that is not a struct, or names an ordinary (non-parameterised)
 /// struct — in the last case the arguments are meaningless, so the reference is refused rather than the
-/// arguments silently ignored. Cross-file parameterised structs are deferred (ADR-0085 §5), so a name
-/// imported from another module lands here too.
+/// arguments silently ignored.
+///
+/// **Its meaning narrowed in ADR-0117**: it used to catch an *imported* parameterised struct too, because
+/// cross-file ones were deferred (ADR-0085 §5). They now work, so this means "not a parameterised struct in this
+/// file **or any imported one**" — and the note no longer says cross-file is unsupported, because it is not.
 pub(crate) const E0269: &str = "E0269";
 
 /// A parameterised type reference `Name(args)` supplied the wrong number of type arguments (ADR-0085 §3).

@@ -199,6 +199,23 @@ Both of the differential's real catches have been in arithmetic or memory the na
 the VM modelled it in Rust, where the model was subtly off. Fixed to wrap on the truncated `u64` values, which
 is what `*%` always promised.
 
+**And a parameterised struct can now cross a module boundary** (ADR-0117) — the biggest language unblocker the
+wave had left, named by *three* library sub-waves: `Array`, `List` and `Map` are concrete `Int_*` types only
+because a `struct($T)` declared in a module was unusable by every importer.
+
+It was not a lookup change. A parameterised struct's fields are resolved *per instance, under the caller's type
+arguments*, and its own file cannot do that — it does not know what an importer will supply. So the **importer**
+resolves them, which needs the field type tree, and that tree is indexed into the *declaring* file's arena. The
+check phase now receives the imported HIR, which the database already holds, rather than copying those types onto
+the signatures as a second representation of the same thing. Identity stays the declaring file's, so `Box(s64)` is
+the same type in two importers — which is what lets a value of it pass between them. The pool needed nothing: the
+instance-keyed field map built for local parameterised structs already keyed on an instance carrying its declaring
+file, so a cross-file one was representable from the day that map existed.
+
+Building it found three things by running, the sharpest being that a field naming the *declaring* module's own type
+was resolved in the **importer's** signatures — which, had the importer declared a same-named type, would have
+resolved silently to a different type rather than failing.
+
 Before it, wave **W6 — Metaprogram**, five sub-waves in, with 984 tests green. Its headline claim is met — a metaprogram can find
 declarations by note and generate code for each — and a build script can name its own artefact. A declaration can
 carry **`@note` metadata** for a metaprogram to read (ADR-0098). `@deprecated` and `@requires "x"` sit in the
