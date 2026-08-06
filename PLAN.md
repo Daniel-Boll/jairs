@@ -509,7 +509,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **986 workspace tests** and **209 corpus files**, all six gates green, **166
+waiting. Both are tracked below. **986 workspace tests** and **211 corpus files**, all six gates green, **166
 Neovim checks**. See §1.5.
 
 ### W7 — Stdlib, open
@@ -822,6 +822,19 @@ through them** (ADR-0085 §5). So a growable array has real storage but stays pe
       **third** time this trap has needed closing, always the same shape: a name reached through a
       non-expression path. And `String`'s import was **genuinely** unused, which the warning was right about —
       its allocator comes from `context`, a language facility, so it imports nothing.
+
+- [x] **An intrinsic may take a parameterised type argument** (ADR-0119, sub-wave 17): `size_of(Slot(s64, s64))`,
+      `typed(Slot(K, V), raw)` — the fourth small unblocker ADR-0118 named, and the one blocking `Map`. It was
+      **three separate refusals of one construct**, each fix revealing the next: sema's `described_type` only
+      understood a bare name; the resolver's type-position flag was *assigned* per call so a **nested** call
+      cleared it (`s64` became E0201); and MIR's `scan` refused "a call to something that is not a procedure",
+      since the inner callee names a struct. Recognised in sema rather than the parser, because the parser cannot
+      know a given call is in type position — only the intrinsic does. `scan` keys on **what the name is** (a
+      struct is not callable) rather than on the fold, which would depend on the const query having run.
+
+      **`Map($K, $V)` is now generic too**, so all three containers are — ADR-0118's deferred half, closed. The
+      MIR snapshot did not move. **Three unblockers remain, all in *procedure* polymorphism**: inference through a
+      parameterised struct, cross-file `$T` instantiation, and `using` on an imported struct.
 
 **W7 left after that:** the **allocating** half of `String`, once the allocator convention is decided; a merge
 sort and a binary search (the first wants allocation, the second a sortedness precondition nothing can check);

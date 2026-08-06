@@ -576,6 +576,28 @@ impl<'a> Ctx<'a> {
     /// `Box(s64)` records `value: s64` and `Box(bool)` records `value: bool` from the one
     /// declaration. The bindings are saved and restored around the call, so a nested `Box(Box(s64))`
     /// and a sibling reference each see only their own.
+    /// A parameterised instance from a **name and already-resolved arguments** (ADR-0119 §1).
+    ///
+    /// The expression-position counterpart of [`Ctx::resolve_apply`]: an intrinsic's type argument —
+    /// `size_of(Slot(s64, s64))` — parses as a *call*, so its arguments are `ExprId`s the caller has already
+    /// turned into types, not `TypeRefId`s in a type-reference tree. Everything after that point is identical,
+    /// so the shared work lives in [`Ctx::instantiate_parameterised`] and both entry points call it.
+    pub(crate) fn apply_resolved(&mut self, name: Symbol, args: Vec<PoolId>, span: Span) -> PoolId {
+        let Some((decl_file, decl_hir, sid, poly_vars)) = self.parameterised_struct_anywhere(name)
+        else {
+            self.not_a_parameterised_struct(name, span);
+            return PoolId::ERROR;
+        };
+        if args.len() != poly_vars.len() {
+            self.wrong_type_argument_count(name, poly_vars.len(), args.len(), span);
+            return PoolId::ERROR;
+        }
+        if args.contains(&PoolId::ERROR) {
+            return PoolId::ERROR;
+        }
+        self.instantiate_parameterised(decl_file, decl_hir, sid, &poly_vars, args)
+    }
+
     fn resolve_apply(
         &mut self,
         scope: ExprScope,
@@ -627,6 +649,22 @@ impl<'a> Ctx<'a> {
         // **The declaring file's id**, not this one (ADR-0117 §2): a nominal type's identity is its declaration
         // site (ADR-0015 §1), so `Box(s64)` must be the *same* type in two importers rather than one per
         // importer — which is what makes a value of it pass between them.
+        self.instantiate_parameterised(decl_file, decl_hir, sid, &poly_vars, args)
+    }
+
+    /// Interns a parameterised instance and resolves its fields, once per instance (ADR-0086 §3).
+    ///
+    /// Shared by the two entry points — a type-position `Apply` and an intrinsic's call-shaped type argument
+    /// (ADR-0119 §1) — because everything from "the constructor and its arguments are known" onward is identical.
+    /// Two copies would be two chances for the recursion guard or the binding save/restore to drift.
+    fn instantiate_parameterised(
+        &mut self,
+        decl_file: FileId,
+        decl_hir: &'a FileHir,
+        sid: StructId,
+        poly_vars: &[Symbol],
+        args: Vec<PoolId>,
+    ) -> PoolId {
         let decl = DeclId::new(decl_file, sid.as_u32());
         let instance = self.pool.struct_instance(decl, args.clone());
 

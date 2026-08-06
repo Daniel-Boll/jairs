@@ -31,11 +31,11 @@
 /// `deleted = true`, a tombstone a probe skips but an insert may reuse. Three states in two bools rather than an
 /// enum, because `enum` across a module boundary is a path this module need not open when two flags say it
 /// plainly.
-Slot :: struct {
+Slot :: struct($K, $V) {
     /// The key. Meaningful only when `used`.
-    key: s64;
+    key: K;
     /// The value. Meaningful only when `used`.
-    value: s64;
+    value: V;
     /// True for a live slot.
     used: bool;
     /// True for a tombstone — a slot that was live and was removed. A probe skips it; an insert may reuse it.
@@ -48,9 +48,9 @@ Slot :: struct {
 /// never grew. `count` is live entries; `tombstones` is deleted-but-not-reused slots, tracked because the *probe
 /// load* is `count + tombstones` — a table thick with tombstones must grow (which clears them) even if `count`
 /// is low, or probes lengthen without bound.
-Int_Map :: struct {
+Map :: struct($K, $V) {
     /// The slot array, or null before the first `put`.
-    slots: *Slot;
+    slots: *Slot(K, V);
     /// Live entries.
     count: s64;
     /// Tombstones — removed slots not yet reclaimed by a rehash.
@@ -66,7 +66,7 @@ FIRST_CAPACITY :: 8;
 ///
 /// Amortised `O(1)`: the table doubles at 3/4 probe load, so a run of inserts copies `O(n)` slots in total.
 /// Updating an existing key does not change `count` and never grows.
-put :: (m: *Int_Map, key: s64, value: s64) -> bool {
+put :: (m: *Map(s64, s64), key: s64, value: s64) -> bool {
     // Grow when the *probe load* — live plus tombstones — would exceed 3/4, because a linear-probing table's
     // probes lengthen with occupied-or-tombstoned slots, not just live ones.
     if (m.count + m.tombstones + 1) * 4 > m.capacity * 3 {
@@ -97,7 +97,7 @@ put :: (m: *Int_Map, key: s64, value: s64) -> bool {
 ///
 /// Two return values (ADR-0008) rather than a sentinel, for the reason `List.get` gives: every `s64` is a
 /// legitimate value, so no value could mean "absent" without excluding it.
-get :: (m: *Int_Map, key: s64) -> (s64, bool) {
+get :: (m: *Map(s64, s64), key: s64) -> (s64, bool) {
     if m.capacity == 0 {
         return 0, false;
     }
@@ -110,7 +110,7 @@ get :: (m: *Int_Map, key: s64) -> (s64, bool) {
 }
 
 /// Whether `key` is present.
-has :: (m: *Int_Map, key: s64) -> bool {
+has :: (m: *Map(s64, s64), key: s64) -> bool {
     _, present := get(m, key);
     return present;
 }
@@ -120,7 +120,7 @@ has :: (m: *Int_Map, key: s64) -> bool {
 /// Leaves a **tombstone** rather than clearing the slot, because clearing would break a probe sequence that ran
 /// through it to a key stored later. Tombstones are reclaimed by the next `grow`, which rehashes only live
 /// entries.
-remove :: (m: *Int_Map, key: s64) -> bool {
+remove :: (m: *Map(s64, s64), key: s64) -> bool {
     if m.capacity == 0 {
         return false;
     }
@@ -137,7 +137,7 @@ remove :: (m: *Int_Map, key: s64) -> bool {
 }
 
 /// Live entries.
-size :: (m: *Int_Map) -> s64 {
+size :: (m: *Map(s64, s64)) -> s64 {
     return m.count;
 }
 
@@ -145,7 +145,7 @@ size :: (m: *Int_Map) -> s64 {
 ///
 /// **The routine a caller must not forget** — there are no destructors. Safe on a map that never grew (`slots`
 /// is null) and safe twice, because it resets `slots`.
-free_map :: (m: *Int_Map) {
+free_map :: (m: *Map(s64, s64)) {
     if m.slots != null {
         free(untyped(m.slots));
     }
@@ -164,7 +164,7 @@ free_map :: (m: *Int_Map) {
 /// multiply-and-xorshift is pure arithmetic — no FFI — so both engines compute the same bucket, which is what a
 /// hash table needs from the differential harness. Masked with `capacity - 1`, valid because the capacity is a
 /// power of two.
-bucket :: (m: *Int_Map, key: s64) -> s64 {
+bucket :: (m: *Map(s64, s64), key: s64) -> s64 {
     h := cast(u64, key);
     h = h *% 11400714819323198485;
     h = h ^ (h >> 29);
@@ -180,7 +180,7 @@ bucket :: (m: *Int_Map, key: s64) -> s64 {
 /// probe path.
 ///
 /// Guaranteed to terminate because `put` keeps the probe load below 3/4, so an empty slot always exists.
-find_slot :: (m: *Int_Map, key: s64) -> s64 {
+find_slot :: (m: *Map(s64, s64), key: s64) -> s64 {
     start := bucket(m, key);
     i := 0;
     first_tombstone := -1;
@@ -228,16 +228,16 @@ find_slot :: (m: *Int_Map, key: s64) -> s64 {
 /// growth depend on an allocator behaviour the comptime VM does not model. Rehashing is required rather than a
 /// copy, because a slot's bucket depends on the capacity — so every live entry is re-inserted into the new
 /// array, which also leaves the tombstones behind.
-grow :: (m: *Int_Map) -> bool {
+grow :: (m: *Map(s64, s64)) -> bool {
     wanted := FIRST_CAPACITY;
     if m.capacity > 0 {
         wanted = m.capacity * 2;
     }
-    raw := malloc(wanted * size_of(Slot));
+    raw := malloc(wanted * size_of(Slot(s64, s64)));
     if raw == null {
         return false;
     }
-    fresh := typed(Slot, raw);
+    fresh := typed(Slot(s64, s64), raw);
     // Every slot starts empty: neither used nor a tombstone.
     j := 0;
     while j < wanted {

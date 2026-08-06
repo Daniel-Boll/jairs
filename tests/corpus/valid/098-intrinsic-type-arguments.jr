@@ -1,0 +1,81 @@
+// **An intrinsic may take a parameterised type argument** (ADR-0119): `size_of(Slot(s64, s64))`. W7's seventeenth
+// sub-wave, and the fourth of the small unblockers ADR-0118 named — the one that was blocking `Map`.
+//
+// **What was wrong.** `size_of`, `typed` and `view` take a *type*, but an intrinsic's argument is an
+// **expression** — so `Slot(s64, s64)` parses as a **call**, not a `TypeRef::Apply`. Three things had to learn
+// that a call in this position is a type application:
+//
+//   * the **resolver**, whose "this is a type position" flag was assigned rather than inherited, so a *nested*
+//     call cleared it and `s64` inside one was an unresolved name;
+//   * **sema**, whose `described_type` only understood a bare name;
+//   * **MIR's `scan`**, which refused the body for "a call to something that is not a procedure" — the inner
+//     callee names a *struct*, and the whole `size_of` folds so it is never emitted.
+//
+// Each of the three was a separate refusal of the same construct, which is why the first two fixes moved the
+// error rather than removing it. The last is recognised by what the name *is* — a struct is not callable, so a
+// struct name in callee position is only ever a type application.
+//
+// **This unblocked `Map($K, $V)`**: its allocation needs `size_of(Slot(K, V))` and `typed(Slot(K, V), raw)`, and
+// ADR-0118 §2 reverted its conversion for exactly this. All three containers are generic structs now.
+//
+// What is checked here:
+//
+//   * `size_of` of a **two-parameter** instance, against the layout its fields imply (two `s64`s: 16);
+//   * `size_of` of a **one-parameter** instance, and of two *different* instantiations, since a wrong
+//     implementation could bind only the first argument or share one layout;
+//   * `typed` with a parameterised type, allocating and writing through it — the case `Map` needs;
+//   * a **nested** application (`Box(Box(s64))`), so the recursion in the argument path is real;
+//   * an ordinary `size_of(s64)` beside them, so the plain path still works.
+//
+// The exit code is **31**, five groups of one bit.
+#import "Basic";
+
+Slot :: struct($K, $V) {
+    key: K;
+    value: V;
+}
+
+Box :: struct($T) {
+    value: T;
+}
+
+main :: () {
+    n := 0;
+
+    // Two `s64`s: sixteen bytes.
+    if size_of(Slot(s64, s64)) == 16 {
+        n = n + 1;
+    }
+
+    // One parameter, and two *different* instantiations — a wrong implementation could share a layout.
+    if size_of(Box(s64)) == 8 && size_of(Box(u8)) == 1 {
+        n = n + 2;
+    }
+
+    // A mixed pair, so the second argument is genuinely used: an `s64` key and a `u8` value pad to 16.
+    if size_of(Slot(s64, u8)) == 16 {
+        n = n + 4;
+    }
+
+    // A **nested** application: a `Box` holding a `Box`, which is still eight bytes of payload.
+    if size_of(Box(Box(s64))) == 8 {
+        n = n + 8;
+    }
+
+    // `typed` with a parameterised type — the case `Map` needs — allocating and writing through it.
+    raw := malloc(2 * size_of(Slot(s64, s64)));
+    if raw == null {
+        exit(200);
+    }
+    s := typed(Slot(s64, s64), raw);
+    (s + 0).key = 7;
+    (s + 0).value = 9;
+    (s + 1).key = 1;
+    total := (s + 0).key + (s + 0).value + (s + 1).key;
+    free(untyped(s));
+    if total == 17 && size_of(s64) == 8 {
+        n = n + 16;
+    }
+
+    exit(n);
+}

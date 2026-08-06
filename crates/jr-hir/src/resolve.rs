@@ -896,7 +896,11 @@ impl<'a> ResolveCtx<'a> {
                 let intrinsic = self.callee_is_intrinsic(ExprScope::TopLevel, callee);
                 self.resolve_top_expr(callee);
                 let outer = self.in_type_info_argument;
-                self.in_type_info_argument = intrinsic;
+                // **Sticky through a nested call** (ADR-0119 §2): `size_of(Slot(s64, s64))` has a *call* as the
+                // intrinsic's argument, and its own callee is not an intrinsic — so assigning `intrinsic` here
+                // would clear the flag and `s64` inside it would be an unresolved name. `outer ||` keeps it set,
+                // which is right because a type argument's arguments are types all the way down.
+                self.in_type_info_argument = outer || intrinsic;
                 for arg in args {
                     self.resolve_top_expr(arg);
                 }
@@ -1134,7 +1138,11 @@ impl<'a> ResolveCtx<'a> {
                 // Only the *arguments* are in the intrinsic's type position; the callee is not, and it
                 // is resolved above with the flag still at its outer value.
                 let outer = self.in_type_info_argument;
-                self.in_type_info_argument = intrinsic;
+                // **Sticky through a nested call** (ADR-0119 §2): `size_of(Slot(s64, s64))` has a *call* as the
+                // intrinsic's argument, and that call's own callee is not an intrinsic — so assigning `intrinsic`
+                // would clear the flag and `s64` inside it would be an unresolved name. `outer ||` keeps it set,
+                // which is right because a type argument's own arguments are types all the way down.
+                self.in_type_info_argument = outer || intrinsic;
                 for arg in args {
                     self.resolve_body_expr(body_id, arg);
                 }
