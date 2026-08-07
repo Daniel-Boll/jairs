@@ -9691,3 +9691,30 @@ proc $inst0 -> s64 {
   bb0(v0: *Context, v1: s64):
     return v1
 }
+
+========================================
+101-print-int.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    discard call extern proc11(v0, 0_s64)
+    discard call extern proc6(v0, "\n")
+    discard call extern proc11(v0, 7_s64)
+    discard call extern proc6(v0, "\n")
+    discard call extern proc11(v0, 42_s64)
+    discard call extern proc6(v0, "\n")
+    discard call extern proc11(v0, 1234567890_s64)
+    discard call extern proc6(v0, "\n")
+    discard call extern proc11(v0, -7_s64)
+    discard call extern proc6(v0, "\n")
+    discard call extern proc11(v0, -1234567890_s64)
+    discard call extern proc6(v0, "\n")
+    discard call extern proc11(v0, 9223372036854775807_s64)
+    discard call extern proc6(v0, "\n")
+    discard call extern proc7(v0, "to stderr\n")
+    v1: s64 = 7_s64 + 42_s64
+    v2: s64 = v1 - 7_s64
+    discard call extern proc1(v2)
+    return
+}

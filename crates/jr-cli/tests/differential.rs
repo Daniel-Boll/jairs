@@ -513,6 +513,46 @@ fn an_insert_beside_an_instantiation_agrees_in_both_engines() {
     );
 }
 
+/// **`print_int` must actually print** — and this is the first test that ever ran it (ADR-0125).
+///
+/// The README advertises "Print a number" as a capability, and until this test nothing executed it:
+/// `print_int` and `print_error` appeared in the whole tree only in their own definitions and in
+/// comments, so both engines could have broken them with all six gates green. That is the project's own
+/// named failure shape — `modules/Basic` hid a bug for a whole wave for exactly this reason.
+///
+/// The **output** is what has teeth here, not the exit code: the digits are where a recursion emitting
+/// them in the wrong order, an off-by-one in the `+ 48` byte arithmetic, or a lost sign would show. The
+/// exit code is a checksum of the same values, so a wrong digit fails twice.
+#[test]
+fn printing_a_number_agrees_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/101-print-int.jr");
+
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    let expected = "0\n7\n42\n1234567890\n-7\n-1234567890\n9223372036854775807\n";
+    assert_eq!(
+        vm.stdout, expected,
+        "the VM printed {:?} — a digit, an order or a sign is wrong",
+        vm.stdout
+    );
+    assert_eq!(
+        native.stdout, expected,
+        "the native back end printed {:?} — see the VM assertion above",
+        native.stdout
+    );
+    // `print_error` writes to STDERR, so a swapped file descriptor is caught rather than washing out.
+    assert_eq!(vm.stderr, "to stderr\n", "the VM's stderr");
+    assert_eq!(native.stderr, "to stderr\n", "the native back end's stderr");
+    assert_eq!(vm.status, 42, "the VM exited {}", vm.status);
+    assert_eq!(
+        native.status, 42,
+        "the native back end exited {}",
+        native.status
+    );
+}
+
 /// The **`#expand` splice** must run a macro's body in the caller's scope and exit **96** in both engines
 /// (ADR-0090 §2).
 ///

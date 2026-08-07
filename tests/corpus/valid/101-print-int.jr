@@ -1,0 +1,51 @@
+// **`print_int`, executed** — the capability the README advertises as "Print a number" and which,
+// until this file, **nothing ran**.
+//
+// The audit at `354d900` found it: `print_int` and `print_error` appeared in the whole tree only in
+// their own definitions and in comments. No `.jr` file called either, so both engines could have
+// broken them with all six gates green. That is the project's own named failure shape recurring —
+// `modules/Basic` hid a bug for a whole wave because it is not in `tests/corpus/valid/` and
+// `file_mir` is per file, so its bodies never appeared in a snapshot.
+//
+// What this actually checks is **stdout**, not just the exit code: the differential harness compares
+// output between the engines, and the digits are the only place a recursion emitting them in the
+// wrong order, an off-by-one in the `+ 48` byte arithmetic, or a lost sign would show. The exit code
+// is a checksum of the same values so a wrong digit is caught twice.
+//
+// Deliberately **not** the most negative `s64`: `print_int` negates a negative, and
+// `-(-9223372036854775808)` overflows, which ADR-0002 makes a trap. `modules/Basic` says so in its
+// own doc comment, so a corpus file proving it traps belongs with the trap tests rather than here.
+#import "Basic";
+
+main :: () {
+    // Zero, which the `n >= 10` recursion base case reaches without recursing at all.
+    print_int(0);
+    print("\n");
+
+    // One digit, then two, then a value crossing several recursion levels — the order the recursion
+    // exists to get right.
+    print_int(7);
+    print("\n");
+    print_int(42);
+    print("\n");
+    print_int(1234567890);
+    print("\n");
+
+    // The sign, handled in `print_int` rather than in `print_digits`.
+    print_int(-7);
+    print("\n");
+    print_int(-1234567890);
+    print("\n");
+
+    // `s64` max: twenty digits, which is `print_digits`' deepest recursion.
+    print_int(9223372036854775807);
+    print("\n");
+
+    // `print_error` writes to STDERR, which the harness compares separately — so a swapped file
+    // descriptor is caught rather than washing out into stdout.
+    print_error("to stderr\n");
+
+    // A checksum of the values above, so a wrong digit changes the exit code as well as the output.
+    // 7 + 42 - 7 = 42.
+    exit(7 + 42 - 7);
+}

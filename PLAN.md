@@ -206,11 +206,14 @@ flowchart LR
 - [x] Neovim: tree-sitter highlighting — and diagnostics, hover and goto-definition
       besides. `editors/nvim/` is a runtimepath directory needing no plugin manager
       (ADR-0025); two lines in `init.lua` and one build script. Verified by
-      `nvim --headless -u NONE -l editors/nvim/verify.lua`, 67 checks against the real
+      `nvim --headless -u NONE -l editors/nvim/verify.lua`, 166 checks against the real
       editor and the real server. Verified rather than gated: Neovim is not a build
       dependency of this workspace.
 - [ ] CI green on macOS arm64 **and** Linux x86-64 — the matrix is configured for
-      both; only macOS arm64 has been verified locally.
+      both, and **no CI run has ever happened**: `main` has never been pushed, so every
+      gate has only ever been green locally, on macOS arm64. That also means the
+      tree-sitter corpus job — the only check that can see a *wrong parse tree* rather
+      than an error count — has never run.
 - [x] CI drift gate: every corpus file parses cleanly in *both* the compiler and
       tree-sitter
 - [x] Differential test harness exists: every corpus program's output must match
@@ -255,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0120. See [`docs/adr/README.md`](docs/adr/README.md).
+Accepted ADRs: 0001–0125. See [`docs/adr/README.md`](docs/adr/README.md).
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
 plus `jr-sema`'s crate docs are the only record of the typing rules today.
@@ -509,20 +512,24 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **1005 workspace tests** and **213 corpus files**, all six gates green, **166
-Neovim checks**. See §1.5.
+waiting. Both are tracked below. **1008 workspace tests** and **214 corpus files**, all six gates green
+**locally** — no CI run has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!IMPORTANT]
 > **An audit was run at `354d900`** and is recorded in
-> [`docs/assessment-2026-08-07.md`](docs/assessment-2026-08-07.md). Sub-waves 18–21 closed its Critical
-> finding (ADR-0120), its unbounded-compile finding (ADR-0121), its filesystem-escape finding (ADR-0122) and
-> its diagnostic-code finding (ADR-0123). Its remaining findings are the next work, in this order: **the
-> attribute token-set trap** (two unlinked literal lists, seven bugs and counting), and **the docs' own
-> drift** — including that `README.md` claims Linux "is kept green in CI" when **CI has never run once**, that
-> `print_int` is executed by no test at all, and that ~7 items in "Open, and honest about it" have shipped
-> while five more have had their stated reason expire. The audit's *security* scope is also only partly
-> covered: its assessor failed twice, so the VM's memory region, `Any`/proc-pointer forgery,
-> comptime-FFI-gate bypasses and `jr-lsp` path handling are **unexamined**, and a second pass is owed.
+> [`docs/assessment-2026-08-07.md`](docs/assessment-2026-08-07.md). Sub-waves 18–22 closed every finding
+> it raised that was actionable without a second pass: the Critical expansion defect (ADR-0120), the
+> unbounded compile (ADR-0121), the filesystem escape (ADR-0122), the unchecked diagnostic-code registry
+> (ADR-0123), two latent traps (ADR-0124) and the documentation drift including `print_int`'s total
+> absence of coverage (ADR-0125).
+>
+> **What the audit leaves owed.** Its *security* scope is only partly covered — the assessor responsible
+> failed twice, so the VM's linear memory region and heap/frame collision, forging an `Any` or a
+> procedure pointer through the untagged `union`, comptime-FFI-gate bypasses, and `jr-lsp` path handling
+> are **unexamined**. A second pass is owed and should be split into three narrow dispatches rather than
+> one broad one. Its *performance* findings are also open and unmeasured: const-eval rebuilds the whole
+> VM program per constant per round, every query is keyed per file with `no_eq`, and `jr-lsp` does
+> O(workspace) file I/O synchronously on the write thread for `codeAction`.
 
 ### W7 — Stdlib, open
 
@@ -969,6 +976,73 @@ through them** (ADR-0085 §5). So a growable array has real storage but stays pe
       no `code.rs`** rather than leaving a reader to find out. Consolidating them is now *tidiness* — the
       collision risk that motivated the rule is closed by the test — so it is recorded as owed instead of
       touching two 1,000-line files for no behavioural gain.
+
+- [x] **Two latent traps closed structurally** (ADR-0124, sub-wave 21): neither a live defect, both one small
+      change from becoming one, and both invariants this project relies on that nothing enforced.
+
+      **The attribute token-set trap**, which this project has counted **seven** bugs from. The set of
+      procedure attributes was written twice — once in `looks_like_proc_signature`'s lookahead, which decides
+      whether `f :: (…)` is a *procedure* or a parenthesised-expression constant, and once in the loop that
+      consumes them. Each time an attribute reached the loop and not the lookahead, every procedure carrying it
+      was read as a parenthesised expression; `#expand` produced **fourteen cascading errors**, none pointing at
+      the attribute. A shared `&str` list fixes the symptom; `ProcAttr` fixes the mechanism — the loop matches it
+      **exhaustively** and the lookahead derives from `from_text`, so an eighth attribute is a **compile error**.
+      Teeth-checked by adding a fifth variant: two errors. A string match cannot be made exhaustive, which is
+      precisely why seven got through. `#foreign` is deliberately *not* a `ProcAttr` — it stands where the body
+      goes — and a test pins that, since folding it in would leave the procedure bodyless.
+
+      **`type_bindings` leaking into an imported struct's fields.** `resolve_instance_fields_in` documents that
+      "a struct's fields cannot depend on who imported it", and that was true only by accident:
+      `resolve_type_name` consults the bindings *before* the declaring module's signatures (ADR-0081 §1), and
+      the caller saves only the struct's **own** `poly_vars`, so any other binding leaked in — a field naming
+      one of the declaring module's types, colliding with a variable the *importer* bound, resolved to the
+      importer's type, and `set_instance_fields` cached it for every later user. Silent wrong type and layout.
+
+      **Not reachable today, for a reason that is not the obvious one**: making an instance resolve while a
+      foreign binding is in scope needs a type argument depending on one, and `Box(T)` for a bound `T` is
+      E0212 — inference through a parameterised struct is deferred (ADR-0085 §5). Both shapes were probed; one
+      checks clean, one is E0212. So the invariant is held by an *unrelated* refusal and would break the day it
+      lifts, which is why three lines now are cheaper than a debugging session later.
+
+      The `poly_vars` are read from the **declaring** file's HIR: `sid` indexes that arena, so asking the
+      importer's panics when it has fewer structs and would silently read a *different declaration* when it has
+      more. The first draft made exactly that mistake and the corpus caught it at once — worth recording,
+      because the wrong version is the one that reads more naturally.
+
+      Rejected: reordering `resolve_type_name` to consult module signatures first. It fixes this and breaks
+      ADR-0081 §1, under which a bound `T` must win inside a signature. The ordering is right; the leak was in
+      what was in scope.
+
+- [x] **`print_int` is executed, and the documents match the code** (ADR-0125, sub-wave 22): the audit's last
+      two findings, one a genuine coverage hole in the capability the README leads with.
+
+      **Nothing ran `print_int`.** It and `print_error` appeared in the whole tree only in their own definitions
+      and in comments — so both engines could have broken the README's "Print a number" row with all six gates
+      green. That is this project's own named failure shape recurring: `modules/Basic` hid a bug for a whole
+      wave for exactly this reason. `valid/101` prints zero, one digit, several, both signs and `s64` max, and
+      the differential asserts **stdout and stderr** rather than only the exit code, because the digits are
+      where a wrong recursion order, an off-by-one in the `+ 48` byte arithmetic or a lost sign would show. It
+      was **correct** — no bug found — which is the good outcome and not an argument against having looked.
+
+      **The documents were wrong in fourteen places**, and the worst were not stale numbers but **false
+      capability claims**: `README.md` said Linux "is kept green in CI as a sanity oracle" while **no CI run has
+      ever happened**, contradicting two other lines in the same tree; the Absent column listed `type_info`,
+      `Any` and `#code` as missing on the same page that documents them working; and a bullet said "a cross-file
+      `#run` does not work" when only the *imported-constant* half is refused. Counts: 95 codes → **115**,
+      981/984 tests → **1008**, 23/67/151 Neovim checks → **166**, "Accepted ADRs 0001–0056" → **0001–0125**.
+
+      **"Open, and honest about it" was frozen ~15 waves back** and is reconciled. Seven items had **shipped**
+      and were never struck. Five had a **stated reason that had expired** — the class ADR-0109 caught once, and
+      the highest-value thing the audit found, because an expired justification reads as a considered decision
+      while being false. The two sharpest: `talloc` was listed as unable to store a wider type "without a
+      pointer cast the language does not have", which `typed(T, p)` has been since ADR-0106; and `T == U` was
+      deferred pending ADR-0015's type-identity question, which ADR-0077 answered by giving every type a stable
+      `id` — `type_info(T).id == type_info(s64).id` is what `#modify` predicates already use. **None was
+      secretly broken**, which is worth stating: the deferrals were honest, they had just stopped being current.
+
+      **The prose is still prose**, and that is the residue: only the first-free-code sentence is enforced
+      (ADR-0123). The test and corpus counts had drifted in three places each, so `AGENTS.md` now tells a reader
+      to trust §7 rather than a count found anywhere else.
 
 **W7 left after that:** the **allocating** half of `String`, once the allocator convention is decided; a merge
 sort and a binary search (the first wants allocation, the second a sortedness precondition nothing can check);
@@ -1426,48 +1500,23 @@ Three things worth carrying forward.
   wrong is not a style matter: `type-errors/`' harness fails a lowering diagnostic twice over, and the
   temptation is to weaken the contract rather than move the file.
 
-Diagnostic codes: **E0264 is the first free code**, **E0131 the first free *parser* code**. This wave
-added **two** (E0262, E0263) and *reused* one (the parser's E0114, re-worded as E0263 — same fault,
-different text indexed). The project defines **94** codes.
+Diagnostic codes: **E0282 is the first free code**, **E0132 the first free *parser* code**. The project
+defines **115** codes, and their cross-crate uniqueness is enforced by `crates/jr-cli/tests/codes.rs`
+(ADR-0123), which also checks the first-free claim above — so that number now fails a test when it rots
+instead of drifting the way the sentence it replaced did. (It read "E0264 is the first free code … the
+project defines 94 codes", frozen roughly fifteen waves back.)
 
 ### Open, and honest about it
 
-- [ ] **`type_info()` and `Any` are what remains of RTTI**, and they are the next thing (ADR-0071 §4).
-      `Type` values shipped; these two are a different size of problem, because both make a type into
-      **runtime data** — which is exactly what `LayoutError::ComptimeOnly` currently forbids for
-      `Item::TypeType`. `type_info()` needs a describing struct declared in `modules/Basic`, populated by
-      the compiler and given a layout; `Any` needs that *plus* a `{type, pointer}` pair and rules for what
-      may go in one and how it is read back out. This is the sub-wave §5 means by "sema and the VM become
-      mutually recursive", and the named deliverable is **cycle detection with readable errors** rather
-      than the features. Three refusals wait on it and come free: an array length needing evaluation
-      (ADR-0070 §2), an operator overload or default argument in a `#run`, and a `#run` reading another
-      file's constant.
-- [ ] **Comparing two types (`T == U`) is deliberately absent** (ADR-0071 §5), though it is decidable and
-      cheap — a `PoolId` comparison. Its *meaning* is ADR-0015's type-identity question, and answering it
-      in passing would settle a design question no ADR has argued. A **chain** of aliases (`B :: A` where
-      `A :: Point`) is refused for the reason ADR-0070 §4 refused a length chain: one level is a lookup, a
-      chain needs a fixpoint and a cycle check. A **`Type` parameter** is a second route to W5's `$T`.
-- [ ] **A `#insert` with a *computed* operand is the sub-wave that breaks the cycle** (ADR-0072 §4), and it
-      is the same problem `type_info()` has, reached from the other side. `#insert build_it()` needs
-      `file_hir` to depend on `file_consts`, closing
-      `file_hir → file_consts → checked → resolved → file_hir` — a salsa cycle, the shape ADR-0069 §1 had to
-      restructure around, resting on the `file_consts`-is-downstream fact ADR-0018 §3 established and
-      ADR-0070 §1, ADR-0071 §2 and ADR-0072 §4 have each relied on since. **It also owes the depth bound a
-      literal insert does not need**: escaping bounds a written nest exponentially, but a *generated* string
-      can reproduce itself without growing. A **named** operand (`#insert CODE;`) is refused with it, even
-      where the signature phase may already know the string, so the refusal does not depend on how the
-      string was written.
-- [ ] **`#code` and the `Code` type** (ADR-0072 §4) need a representation for a quoted syntax tree, and the
-      first question is ADR-0071 §4's: does it exist at run time? If not — the likely answer — it is
-      comptime-only like `Item::TypeType` and wants the treatment `Type` just got. Either way it is only
-      useful once something can splice it, so it follows the computed `#insert` rather than preceding it.
-      **`#insert` at file scope** is separately absent (§5): an insert that declares a *procedure* changes
-      the item tree, so the signature phase would see declarations no `#import` and no file walk produced.
-- [ ] **W4 as a whole remains what §2.1 calls the hardest wave**: full `#run` over arbitrary code,
-      aggressive const folding, RTTI (`Type` values shipped; `type_info()` and `Any` open), `#insert` (the
-      literal form shipped), `#code` and the `Code` type. Sema and the VM become **mutually recursive**, and
-      the deliverable §2.1 names is cycle detection with readable errors — not the features themselves.
-      Estimated 10–14 weeks, and four sub-waves in, splitting it is doing what it was meant to.
+> [!NOTE]
+> **This list was frozen around W4 sub-wave 5 and has been reconciled** (ADR-0125). The audit at
+> `354d900` classified every entry and found three kinds of rot: seven items that had **shipped** and
+> were never struck, five whose **stated reason had expired** — the justification was now false, the
+> pattern ADR-0109 caught once when a view's `.data` was refused on two grounds that had both stopped
+> being true — and none that were secretly broken. The shipped items are gone; the expired reasons are
+> rewritten below with what is *actually* still missing. The classification is in
+> [`docs/assessment-2026-08-07.md`](docs/assessment-2026-08-07.md) §3 F6.
+
 - [ ] **`switch` is a statement, not an expression** (ADR-0067 §1), cases are *values* or variant case
       *names* rather than patterns (§2, ADR-0068 §5) — no destructuring, ranges or guards, and a `case .i`
       binds nothing — there is **no fallthrough** and no multi-value `case`, and no jump table (§6): the
@@ -1483,9 +1532,11 @@ different text indexed). The project defines **94** codes.
 - [ ] **`p - q`, the pointer difference, is deferred** (ADR-0064 §5): it needs the element stride to
       divide by, which is layout `jr-mir` does not carry, so it wants a new MIR node or a layout query —
       its own decision. `p[n]` indexing sugar and pointer ordering (`<`, `>`) are likewise separate.
-- [ ] **`talloc` hands out byte buffers only** (ADR-0065 §5): its `*u8` return cannot store a wider type
-      without a pointer cast the language does not have (ADR-0046 §2). Aligned `talloc` and a
-      configurable region size are later refinements, not slice needs.
+- [ ] **`talloc` still hands out `*u8`** (ADR-0065 §5) — but the *reason* it was listed here has
+      expired. It said a `*u8` "cannot store a wider type without a pointer cast the language does not
+      have (ADR-0046 §2)", and `typed(T, p)` (ADR-0106) is exactly that conversion: `typed(s64, talloc(n))`
+      is spellable today. What remains genuinely owed is **aligned** `talloc` and a configurable region
+      size, neither of which the slice needs.
 - [ ] **`push_context <expr>` (the value-taking form) is absent** (ADR-0063 §5), because `Context` is
       unspellable; a compatible extension when it is not. `push_context` as an *expression* is
       deliberately not a thing.
@@ -1494,20 +1545,48 @@ different text indexed). The project defines **94** codes.
 - [ ] **`modules/Basic` deliberately has no `alloc`/`free` wrappers** that read the context
       (ADR-0062 §5): a program calls `context.allocator(n)` directly, so the protocol belongs to the
       language rather than to a library.
-- [ ] **Cross-file and `#foreign` procedure values** stay refused (ADR-0059 §1, §5); **comparing or
-      printing a proc pointer** is absent.
+- [ ] **A `#foreign` procedure value** stays refused (ADR-0059 §5); **comparing or printing a proc
+      pointer** is absent. The *cross-file* half of that refusal **shipped** in ADR-0104 §1 — an imported
+      procedure used as a value was a three-line bridge behind a leaked gap report — so this entry no
+      longer covers it.
+- [ ] **Comparing two types has an idiom rather than an operator.** ADR-0071 §5 deferred `T == U`
+      because its *meaning* was ADR-0015's open type-identity question. ADR-0077 then gave every type a
+      stable `id` precisely so identity could be compared, and `type_info(T).id == type_info(s64).id` is
+      now the blessed spelling — it is what `#modify` predicates use (`valid/077`). So the design question
+      is answered and `T == U` is **sugar nobody has argued for**, which is a different and much smaller
+      thing than what this entry used to claim. A **chain** of aliases (`B :: A`) is still refused for
+      ADR-0070 §4's reason: one level is a lookup, a chain needs a fixpoint and a cycle check.
+- [ ] **`#insert` at file scope** is absent (ADR-0072 §5): an insert that declares a *procedure* changes
+      the item tree, so the signature phase would see declarations no `#import` and no file walk produced.
+      A `Code` **value** is **declined** rather than deferred (ADR-0080 §3) — a quoted syntax tree is
+      worth representing only once something can inspect or transform one, and a value that can only be
+      spliced is what a `string` already is.
 - [ ] **`grammar.js` has no gate against loss** — gate 6 checks drift by regenerating, not reversion.
       Committing it between waves is the only guard, which the per-wave-commit rule (AGENTS.md §5) now
-      enforces; each wave is committed on its own `feat/` branch as it greens.
-- [ ] **No `--release` / `opt_level`** (ADR-0058); **W4.5 pattern matching** scheduled; **a typed
-      float constant** unwritable (ADR-0056 §2); **`#must`** owed an ADR (ADR-0052 §5).
-- [ ] **Three cross-file gaps**, three fixes (ADR-0055 §4); **field-type walks should be one**
-      (ADR-0052, four kinds now); **a multi-result call through a `return`** (ADR-0052 §4);
+      enforces; each wave is committed on its own `feat/` branch as it greens. And the one check that can
+      see a **wrong tree** rather than an error count — `tree-sitter test` against
+      `tree-sitter-jairs/test/corpus/jairs.txt` — is in CI and *not* in the six gates, so with CI never
+      having run it has never executed. Adding it to gate 6 is one line and is owed.
+- [ ] **No `--release` / `opt_level`** (ADR-0058); **a typed float constant** unwritable (ADR-0056 §2);
+      **`#must`** owed an ADR (ADR-0052 §5). W4.5 pattern matching **shipped** (ADR-0067/0068) and W4
+      **completed** all ten sub-waves, both of which this list claimed were pending.
+- [ ] **Three cross-file gaps**, three fixes (ADR-0055 §4); **field-type walks should be one** —
+      **three crates × five kinds** (Struct, Union, Results, Context, Variant), not the four this entry
+      used to say; **a multi-result call through a `return`** (ADR-0052 §4);
       **`#foreign` aggregate params/returns** (ADR-0051 §4); **`workspaceSymbol` sees `#scope_module`
       names** (ADR-0054 §3).
-- [ ] **A verified Linux x86-64 CI run.** Configured, never run. Needs a push, unauthorised.
+- [ ] **A verified Linux x86-64 CI run.** Configured, never run — and now known to be *never run at
+      all*, for any platform: no CI run has ever happened on this repository.
 - [ ] **Iterate-by-reference, a range as a first-class type, `for` over a user type** (ADR-0049
       §1/§4).
+- [ ] **`check_polymorphic_call` removes rather than restores a shadowed binding**
+      (`jr-sema/src/check.rs`), unlike the save/restore idiom beside it in `ctx.rs`. ADR-0124 fixed the
+      sibling leak in `resolve_instance_fields_in` and left this one, because it sits in a different
+      function with a different caller contract. Masked today by the same E0212 deferral that masks the
+      other, so it becomes live the day inference through a parameterised struct lands.
+- [ ] **`E0245` is only a warning**, so a body `scan` refused still links and the call ICEs when it is
+      reached. That is what let ADR-0120's four defects reach an engine at all. Gating it on reachability
+      is its own change and would have *masked* those defects rather than exposing them.
 
 #### Also open, and smaller
 

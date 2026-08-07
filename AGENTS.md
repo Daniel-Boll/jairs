@@ -76,6 +76,18 @@ visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919
 case, which is why the *corpus* count is tracked too — and sub-wave 5 reaches **984** with three `jr-cli`
 integration tests, because the driver's behaviour is not something a corpus file can observe (210 corpus files).
 
+W7 sub-waves 1–17 reach **986** (211 corpus files). The audit sub-waves then go **988** (ADR-0120, the
+expansion fixed point, +2 corpus files) → **990** (ADR-0121, the comptime step budget) → **1001**
+(ADR-0122, `BUILD_OUTPUT` confinement — nine of the eleven are unit tests on the predicate, which is
+why a wave can move this number a long way without touching the corpus) → **1005** (ADR-0123, the
+cross-crate code check) → **1007** (ADR-0124, two latent traps) → **1008** (ADR-0125, `print_int`
+executed at last, +1 corpus file = **213**).
+
+**A number in this file is now partly enforced.** `crates/jr-cli/tests/codes.rs` fails when the
+"first free code" claim below rots. The test count and the corpus count are still prose, and both were
+wrong in three places each when the audit looked — which is the argument for reading §7 rather than
+trusting a count you find anywhere else.
+
 ## House style
 
 Enforced by the first four gates, so it is not a matter of taste:
@@ -153,7 +165,7 @@ picking a side quietly.
   `Invalid node type`, which is why gate 6 now runs it over all four query files
   (ADR-0025 §4).
 - Editor integration is **verified, not gated**:
-  `nvim --headless -u NONE -l editors/nvim/verify.lua` (23 checks, non-zero on failure).
+  `nvim --headless -u NONE -l editors/nvim/verify.lua` (166 checks, non-zero on failure).
   Neovim is not a build dependency, so it is not one of the six — but run it after
   touching `jr-lsp`, `grammar.js` or the queries.
 - `insta` snapshots: review the `.snap.new` diff, then move it over the `.snap` and
