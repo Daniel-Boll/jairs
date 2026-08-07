@@ -509,20 +509,20 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **1001 workspace tests** and **213 corpus files**, all six gates green, **166
+waiting. Both are tracked below. **1005 workspace tests** and **213 corpus files**, all six gates green, **166
 Neovim checks**. See §1.5.
 
 > [!IMPORTANT]
 > **An audit was run at `354d900`** and is recorded in
-> [`docs/assessment-2026-08-07.md`](docs/assessment-2026-08-07.md). Sub-waves 18–20 closed its Critical
-> finding (ADR-0120), its unbounded-compile finding (ADR-0121) and its filesystem-escape finding (ADR-0122).
-> Its remaining findings are the next work, in this order: **no cross-crate diagnostic-code uniqueness check**
-> (`jr-hir` and `jr-db` have no `code.rs` at all, and the range table is hand-copied in three drifting
-> places), **the attribute token-set trap** (two unlinked literal lists, seven bugs and counting), and **the
-> docs' own drift** — including that `README.md` claims Linux "is kept green in CI" when **CI has never run
-> once**. The audit's *security* scope is also only partly covered: its assessor failed twice, so the VM's
-> memory region, `Any`/proc-pointer forgery, comptime-FFI-gate bypasses and `jr-lsp` path handling are
-> **unexamined**, and a second pass is owed.
+> [`docs/assessment-2026-08-07.md`](docs/assessment-2026-08-07.md). Sub-waves 18–21 closed its Critical
+> finding (ADR-0120), its unbounded-compile finding (ADR-0121), its filesystem-escape finding (ADR-0122) and
+> its diagnostic-code finding (ADR-0123). Its remaining findings are the next work, in this order: **the
+> attribute token-set trap** (two unlinked literal lists, seven bugs and counting), and **the docs' own
+> drift** — including that `README.md` claims Linux "is kept green in CI" when **CI has never run once**, that
+> `print_int` is executed by no test at all, and that ~7 items in "Open, and honest about it" have shipped
+> while five more have had their stated reason expire. The audit's *security* scope is also only partly
+> covered: its assessor failed twice, so the VM's memory region, `Any`/proc-pointer forgery,
+> comptime-FFI-gate bypasses and `jr-lsp` path handling are **unexamined**, and a second pass is owed.
 
 ### W7 — Stdlib, open
 
@@ -938,6 +938,37 @@ through them** (ADR-0085 §5). So a growable array has real storage but stays pe
 
       The escape test asserts the artefact **does not appear**, not merely the exit code: a refusal that still
       wrote the file somewhere would pass an exit-code-only test.
+
+- [x] **Diagnostic-code uniqueness is enforced across crates** (ADR-0123, sub-wave 21): the audit's fourth
+      finding, raised independently by *two* assessors. The per-crate `code.rs` convention exists because the
+      parser once emitted **E0200/E0201/E0202** — `jr-hir`'s codes — for three refusals of its own, and it stood
+      for waves because a `&str` cannot collide at compile time. The fix at the time gave `jr-syntax` a
+      `code.rs` with per-crate tests, and **those cannot catch the bug they were written for**, as that file's
+      own header admitted: "they cannot check a claim about somebody else's range, so the claim is a comment and
+      the comment is a liability."
+
+      Both halves had come true. **`jr-hir` and `jr-db` had no `code.rs` at all** — the two crates holding every
+      exception in the table — and the range table was **hand-copied into three files and had drifted three
+      ways**: `jr-syntax`'s claimed "E0131 the first free parser code" while E0131 was in use, listed in that
+      same file's own test data twenty lines below.
+
+      `crates/jr-cli/tests/codes.rs` reads the **union** and checks: no two crates declare one code; a constant
+      *named* after a code binds that code (`const E0231: &str = "E0232";` compiles, passes every per-crate test
+      and reports the wrong code forever); `AGENTS.md`'s first-free sentence is true; and the walk still finds
+      things, which is the guard `differential.rs::the_corpus_has_executable_programs` is the model for.
+      Teeth-checked — pointing E0230 at `"E0201"` fails two of the four.
+
+      Keyed on the code's **value**, not the constant's name, because `jr-mir` names its codes semantically
+      (`USE_OF_UNINITIALISED`) while the others name them after the code. Both conventions are legitimate.
+
+      Rejected: a `pub const CODES` in each crate — type-safe, not fragile, and it widens five crates' public
+      API for a test's convenience, against the house rule that exists to stop exactly that; it also could not
+      catch the name/value disagreement, being built from the same constants.
+
+      `AGENTS.md` now holds the one authoritative table, and says plainly that **`jr-hir` and `jr-db` still have
+      no `code.rs`** rather than leaving a reader to find out. Consolidating them is now *tidiness* — the
+      collision risk that motivated the rule is closed by the test — so it is recorded as owed instead of
+      touching two 1,000-line files for no behavioural gain.
 
 **W7 left after that:** the **allocating** half of `String`, once the allocator convention is decided; a merge
 sort and a binary search (the first wants allocation, the second a sortedness precondition nothing can check);
