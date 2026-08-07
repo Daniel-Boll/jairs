@@ -384,21 +384,41 @@ column is filled in as work lands; an empty cell means outstanding.
 
 | # | Item | Finding | Closed by |
 |---|---|---|---|
-| 1 | Verify F4 and F6 of §4 before touching their areas | §4 | |
-| 2 | Correct the false CI claim; add `tree-sitter test` to gate 6 | F2 | |
-| 3 | Write the corpus files that expose F1 — they must fail first | F1, F5 | |
-| 4 | Make expansion iterate to a fixed point; rebuild every id-keyed table | F1 | |
-| 5 | Add a VM step budget | F3 | |
-| 6 | Confine `BUILD_OUTPUT` | F4 | |
-| 7 | One workspace-level code-uniqueness test; `code.rs` for `jr-hir` and `jr-db` | F7 | |
-| 8 | Reconcile the docs: true counts, strike shipped items, revisit expired refusals | F5, F6 | |
-| 9 | Shared `PROC_ATTRS` constant | F9 | |
-| 10 | Hoist the const-eval `Program` rebuild, once measured | F8 | |
+| 1 | Verify F4 and F6 of §4 before touching their areas | §4 | `505950e` — **both NOT reachable.** F6: `typed(s64, null)` is E0257, and there is no other pointer *constant*, so `forward.rs`'s comment is currently true. F4: a bound type variable cannot be a parameterised struct's type argument (E0212, ADR-0085 §5), so every instance resolves before any binding is live — the invariant held by an *unrelated* refusal. Hardened anyway in `3fa61cb` |
+| 2 | Correct the false CI claim; add `tree-sitter test` to gate 6 | F2 | `7b318e9` (claim corrected in README, `PLAN.md` §1.4 and §7). **Gate 6 addition still owed** — recorded in the reconciled "Open" list |
+| 3 | Write the corpus files that expose F1 — they must fail first | F1, F5 | `505950e` (`valid/099`, `valid/100`, both reproducing `no routine for file 0 proc 0` before the fix), `7b318e9` (`valid/101`, `print_int`) |
+| 4 | Make expansion iterate to a fixed point; rebuild every id-keyed table | F1 | `505950e` — ADR-0120. All four symptoms fixed or refused; MIR snapshot grew by exactly the two new files |
+| 5 | Add a VM step budget | F3 | `3fb7cd7` — ADR-0121 |
+| 6 | Confine `BUILD_OUTPUT` | F4 | `444850b` — ADR-0122 |
+| 7 | One workspace-level code-uniqueness test; `code.rs` for `jr-hir` and `jr-db` | F7 | `b7ef89e` — ADR-0123. The **test** is done and teeth-checked; the two `code.rs` files are **not**, deliberately downgraded to tidiness since the test closes the collision risk that motivated the rule |
+| 8 | Reconcile the docs: true counts, strike shipped items, revisit expired refusals | F5, F6 | `7b318e9` — ADR-0125 |
+| 9 | Shared `PROC_ATTRS` constant | F9 | `3fa61cb` — ADR-0124, as an exhaustive `ProcAttr` enum rather than a shared `&str` list, so an eighth attribute is a compile error |
+| 10 | Hoist the const-eval `Program` rebuild, once measured | F8 | **Open.** Unmeasured; the settling measurement is named in §4 |
 
 Step 3 precedes step 4 deliberately, and the ordering is not a preference. F1 exists
 *because* those tests do not, and fixing a single-round pipeline without them risks a
 half-fix that hides a miscompile — the exact hazard ADR-0085 was landed in two commits to
 avoid.
+
+### What remains open after the remediation waves
+
+Recorded here so the ledger above is not read as "the audit is discharged".
+
+- **The whole security scope** (§6). `nemesis` failed twice; only `BUILD_OUTPUT` and the
+  `unsafe` inventory were covered, by hand. A second pass is owed and should be **three
+  narrow dispatches** — VM memory region; `Any`/proc-pointer forgery; LSP and supply chain —
+  since two broad ones died.
+- **Every performance finding** (F8). Structural only, none measured.
+- **`tests/corpus/imports/valid/`'s thirteen files** are still never executed in either
+  engine, and `Sort`'s generic surface is unreachable across a module boundary while E0268
+  stands.
+- **`E0245` is only a warning**, so a body `scan` refused still links. That is what let F1's
+  four defects reach an engine. Gating it on reachability would have *masked* them, so it was
+  deliberately not done in the same wave.
+- **`check_polymorphic_call`'s binding leak** (§4, `argus` F5) — the sibling of the one
+  ADR-0124 fixed, masked by the same E0212 deferral.
+- **`jr-hir` and `jr-db` still have no `code.rs`**, which `AGENTS.md` now states rather than
+  implies.
 
 ---
 
