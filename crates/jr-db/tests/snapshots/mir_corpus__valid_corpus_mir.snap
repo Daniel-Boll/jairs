@@ -9651,3 +9651,43 @@ proc main -> void {
     discard call extern proc1(v29)
     return
 }
+
+========================================
+099-template-calls-template.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call proc4(v0, true)
+    discard call extern proc1(v1)
+    return
+}
+proc $inst0 -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    return v1
+}
+proc $inst1 -> s64 {
+  params: v0: *Context, v1: bool
+  bb0(v0: *Context, v1: bool):
+    v2: s64 = call proc3(v0, 40_s64)
+    v3: s64 = v2 + 2_s64
+    return v3
+}
+
+========================================
+100-insert-with-instantiation.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call proc2(v0, 40_s64)
+    v2: s64 = v1 + 2_s64
+    discard call extern proc1(v2)
+    return
+}
+proc $inst0 -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    return v1
+}

@@ -308,6 +308,12 @@ pub struct MirResult {
 // mir — tracked query
 // ---------------------------------------------------------------------------
 
+/// A `$N` comptime-value call in a file whose computed `#insert` has expanded (ADR-0120 §6).
+///
+/// Owned by this crate beside E0230, E0271 and E0275, because the incompatibility is between two
+/// *expansions*, which is a property of this query rather than of the checker.
+const E0281: &str = "E0281";
+
 /// Lowers every body in a file to typed SSA, unless the file has errors.
 ///
 /// Uses `no_eq` to match the rest of this crate's queries.
@@ -359,22 +365,34 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
     // over that expanded tree — unlike the `#insert` branch, which reuses signatures because it adds no
     // items (§3). `None` for a file with no polymorphic calls, which takes the ordinary path.
     //
-    // The two expansions do not currently compose: a computed `#insert` that introduces a polymorphic call
-    // is out of scope (ADR-0082 §5's spirit), so this runs only when there was no `#insert` expansion.
-    let instantiated = if expanded.is_some() {
-        None
-    } else {
-        crate::sema::instantiated(db, file, search_paths)
+    // **The two expansions compose** (ADR-0120 §3). They used to be exclusive: this ran only when there
+    // had been no `#insert` expansion, justified as "a computed `#insert` that *introduces* a polymorphic
+    // call is out of scope". But the code skipped instantiation whenever **any** insert expanded, and the
+    // two features need not touch each other — a `$T` call in a file that also has a computed insert owes
+    // it nothing. So such a file lost every redirect and lowered `Callee::Direct(template)`, which has no
+    // MIR: `no routine for file N proc M` on a program `jr check` called clean. Instantiation now runs on
+    // whichever tree is current, which is the narrow exclusion the comment always described.
+    let instantiated = match &expanded {
+        // `None` for the comptime values: they are keyed to the *unexpanded* tree, which the splice
+        // renumbered, so a `$N` call here is refused (E0281) rather than paired with a value that may
+        // belong to another expression (ADR-0120 §6).
+        Some((tree, _, check, _)) => {
+            crate::sema::instantiated_from(db, file, search_paths, tree.clone(), check, None)
+        }
+        None => crate::sema::instantiated(db, file, search_paths),
     };
 
-    let hir = match (&expanded, &instantiated) {
-        (Some((tree, _, _, _)), _) => tree.clone(),
-        (_, Some(inst)) => inst.hir.clone(),
+    // **The instantiated tree wins where both exist**, because instantiation now runs *on* the
+    // insert-expanded tree (ADR-0120 §3) — so `inst.hir` already contains the splice, and preferring the
+    // insert's tree would drop every appended procedure.
+    let hir = match (&instantiated, &expanded) {
+        (Some(inst), _) => inst.hir.clone(),
+        (_, Some((tree, _, _, _))) => tree.clone(),
         _ => file_hir(db, file),
     };
-    let own_resolve = match (&expanded, &instantiated) {
-        (Some((_, resolve_map, _, _)), _) => resolve_map.clone(),
-        (_, Some(inst)) => inst.resolve.clone(),
+    let own_resolve = match (&instantiated, &expanded) {
+        (Some(inst), _) => inst.resolve.clone(),
+        (_, Some((_, resolve_map, _, _))) => resolve_map.clone(),
         _ => resolved(db, file, search_paths).map,
     };
     let base_sigs = crate::sema::file_signatures(db, file, search_paths);
@@ -382,9 +400,9 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
         Some(inst) => inst.signatures.clone(),
         None => base_sigs.signatures.clone(),
     };
-    let checked_file = match (&expanded, &instantiated) {
-        (Some((_, _, check, _)), _) => check.clone(),
-        (_, Some(inst)) => inst.check.clone(),
+    let checked_file = match (&instantiated, &expanded) {
+        (Some(inst), _) => inst.check.clone(),
+        (_, Some((_, _, check, _))) => check.clone(),
         _ => checked(db, file, search_paths),
     };
     let types = checked_file.types;
@@ -423,6 +441,16 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
         match &instantiated {
             Some(inst) => {
                 let mut values = (*base).clone();
+                // **A clone inherits its template body's values first** (ADR-0120 §5). A `#run`, a
+                // `typed`/`untyped` or an `any_of` *inside a template body* was folded by `file_consts`
+                // against the template's scope and had no entry under the clone's, so `scan` refused the
+                // clone — E0245, only a warning — and the call then reported `no routine for file N proc M`
+                // when it was reached. The clone shares its template's `ExprId`s (the body arena is copied
+                // whole), so carrying them across is a scope substitution. Done *before* the folds below so
+                // that `type_info(T)` — the one value that legitimately differs per binding — overrides.
+                for (from, to) in &inst.body_scopes {
+                    values.copy_body_scope(*from, *to);
+                }
                 for (call, target) in &inst.redirects {
                     values.set_instantiation(call.0, call.1, *target);
                 }
@@ -496,11 +524,38 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
         evaluate_modify_predicates(db, file, hir.as_ref(), &lowered, &own_signatures);
 
     // The expanded tree's own resolve/check diagnostics — from a computed `#insert` (ADR-0073) or an
-    // instantiation (ADR-0082), whichever expanded. Only this pass can produce them.
-    let mut expanded_diagnostics = expanded
-        .map(|(_, _, _, diags)| diags)
-        .or_else(|| instantiated.map(|inst| inst.diagnostics))
-        .unwrap_or_default();
+    // instantiation (ADR-0082). **Both**, where both expanded: they compose now (ADR-0120 §3), and the
+    // `or_else` this replaced would have reported one set and silently dropped the other.
+    let mut expanded_diagnostics = jr_diag::Diagnostics::new();
+    if let Some((_, _, check, diags)) = &expanded {
+        expanded_diagnostics.extend(diags.iter().cloned());
+        // **A `$N` call cannot be trusted once a splice has renumbered the tree** (ADR-0120 §6). Its
+        // argument's value was folded by `file_consts` against the unexpanded tree and keyed by `ExprId`,
+        // and a splice shifts every id after it — so a call *before* the splice keeps its key while one
+        // after it moves, and the pairing can deliver another expression's value. That is the
+        // well-typed-placeholder family, so it is refused rather than guessed at.
+        for call in check.comptime_calls.keys() {
+            let span = match call.0 {
+                jr_hir::ExprScope::Body(body) => hir.body(body).expr_span(call.1),
+                jr_hir::ExprScope::TopLevel => hir.expr_span(call.1),
+            };
+            expanded_diagnostics.push(
+                jr_diag::Diagnostic::error(
+                    span,
+                    "a comptime-value call cannot appear in a file whose `#insert` operand is computed",
+                )
+                .with_code(E0281)
+                .with_help(
+                    "the argument's value is keyed to the unexpanded tree, which the splice renumbers; \
+                     make the `#insert` operand a string literal, or move the comptime-value call to \
+                     another file",
+                ),
+            );
+        }
+    }
+    if let Some(inst) = &instantiated {
+        expanded_diagnostics.extend(inst.diagnostics.iter().cloned());
+    }
     // A rejected instantiation is reported through the same channel the expansion's own diagnostics take,
     // so `file_diagnostics` picks it up with no new plumbing (ADR-0095 §1).
     for diag in modify_rejections {

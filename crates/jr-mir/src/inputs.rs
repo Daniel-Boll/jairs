@@ -228,6 +228,54 @@ impl ConstValues {
         self.runs.remove(&(scope, expr));
     }
 
+    /// Copies every entry keyed on `from` to the same [`ExprId`] under `to` (ADR-0120 §5).
+    ///
+    /// An instantiation's body is cloned from its template's **arena and all** — `hir.body(b).clone()` — so
+    /// the clone's expression at index *i* is the template's expression at index *i*, and only the
+    /// [`ExprScope`] differs. That is what makes this a scope substitution rather than a remap: without it, a
+    /// `#run`, a `typed`/`untyped` or an `any_of` *inside a template body* had a value under the template's
+    /// scope and none under the clone's, so `scan` refused the clone — E0245, a warning — and the call then
+    /// reported `no routine for file N proc M` when it was reached.
+    ///
+    /// Deliberately does **not** copy the instantiation redirects or the comptime argument masks: a clone's
+    /// own polymorphic calls are redirected from the *final* check by `instantiated_from`, which knows the
+    /// appended targets, and copying the template's would point a clone's call at whatever the template's
+    /// call resolved to.
+    ///
+    /// Existing entries under `to` are left alone, so a per-instantiation fold — `type_info(T)`, which is the
+    /// one value that genuinely differs per binding — overrides rather than being overridden.
+    pub fn copy_body_scope(&mut self, from: ExprScope, to: ExprScope) {
+        let runs: Vec<(ExprId, PoolId)> = self
+            .runs
+            .iter()
+            .filter(|((scope, _), _)| *scope == from)
+            .map(|((_, expr), value)| (*expr, *value))
+            .collect();
+        for (expr, value) in runs {
+            self.runs.entry((to, expr)).or_insert(value);
+        }
+
+        let any_ops: Vec<(ExprId, AnyLowering)> = self
+            .any_ops
+            .iter()
+            .filter(|((scope, _), _)| *scope == from)
+            .map(|((_, expr), op)| (*expr, *op))
+            .collect();
+        for (expr, op) in any_ops {
+            self.any_ops.entry((to, expr)).or_insert(op);
+        }
+
+        let views: Vec<(ExprId, PoolId)> = self
+            .pointer_views
+            .iter()
+            .filter(|((scope, _), _)| *scope == from)
+            .map(|((_, expr), ty)| (*expr, *ty))
+            .collect();
+        for (expr, ty) in views {
+            self.pointer_views.entry((to, expr)).or_insert(ty);
+        }
+    }
+
     /// The value of a file-level item, if one is known.
     #[must_use]
     pub fn item(&self, item: ItemId) -> Option<PoolId> {

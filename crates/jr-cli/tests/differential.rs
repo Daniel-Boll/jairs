@@ -456,6 +456,63 @@ fn reflecting_a_bound_type_agrees_in_both_engines() {
     );
 }
 
+/// **A template calling a template** must reach the inner instantiation and exit **42** in both engines
+/// (ADR-0120 §2).
+///
+/// An instantiation's body is a *clone*, with its own `BodyId` and `ExprId`s — so `inner(40)` inside
+/// `outer`'s body is a call site the base tree's redirect map cannot name. One expansion round therefore
+/// lowered `Callee::Direct(inner)`, and a template produces no MIR, so both engines reported
+/// `no routine for file 0 proc 0` on a program `jr check` called clean. Asserting the *value* rather than
+/// agreement is what has teeth here: a redirect landing on the wrong instantiation, or an argument reaching
+/// the wrong parameter, would give both engines the same wrong number.
+#[test]
+fn a_template_calling_a_template_agrees_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/099-template-calls-template.jr");
+
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    assert_eq!(
+        vm.status, 42,
+        "the VM exited {} — a clone body's polymorphic call was not redirected",
+        vm.status
+    );
+    assert_eq!(
+        native.status, 42,
+        "the native back end exited {} — see the VM assertion above",
+        native.status
+    );
+}
+
+/// **A computed `#insert` beside a polymorphic call** must expand both and exit **42** in both engines
+/// (ADR-0120 §3).
+///
+/// The two expansions used to be exclusive — instantiation ran only when no `#insert` had expanded — so a
+/// file using both lost every redirect and reported `no routine for file 0 proc 0`. The value is asserted
+/// because it separates the two failures: `bonus` comes from the inserted statement and `40` from the
+/// instantiation, so a dropped splice and a dropped redirect are told apart by the number rather than by
+/// the engines agreeing with each other.
+#[test]
+fn an_insert_beside_an_instantiation_agrees_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/100-insert-with-instantiation.jr");
+
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    assert_eq!(
+        vm.status, 42,
+        "the VM exited {} — a computed `#insert` and an instantiation did not compose",
+        vm.status
+    );
+    assert_eq!(
+        native.status, 42,
+        "the native back end exited {} — see the VM assertion above",
+        native.status
+    );
+}
+
 /// The **`#expand` splice** must run a macro's body in the caller's scope and exit **96** in both engines
 /// (ADR-0090 §2).
 ///

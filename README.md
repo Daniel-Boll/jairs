@@ -18,7 +18,29 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 984 tests green. W7's modules so far are **`String`** (ADR-0103): `equal`, `compare`, `starts_with`, `ends_with`, `find`, `contains`,
+Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 988 tests green.
+
+**The most recent wave was driven by an audit rather than a feature** (ADR-0120,
+[`docs/assessment-2026-08-07.md`](docs/assessment-2026-08-07.md)), and it closed **four programs that reported
+`internal compiler error: no routine for file N proc M` while `jr check` reported "0 errors"**: a template
+calling a template, a computed `#insert` sharing a file with any polymorphic call, and a `#run` or a
+`typed(…)` inside a template body. One shape behind all three — *a key computed against one tree and read
+against another*. An instantiation's body is a **clone** with its own `BodyId`, so redirects built from the
+base check could not name its call sites; expansion now iterates to a fixed point and reads the **final**
+check. A computed `#insert` used to disable instantiation for the whole file, on a justification its own
+comment described far more narrowly than the code implemented. And a clone now inherits its template body's
+folded values, which is a scope substitution rather than a remap because the body arena is cloned whole. Two
+things are refused rather than guessed: an unbounded instantiation family (E0280), and a `$N` call in a file
+whose `#insert` operand is computed (E0281) — there the argument's value is keyed to the unexpanded tree, so a
+call before the splice keeps its key while one after it shifts, and the pairing could deliver *another
+expression's* value.
+
+The audit's remaining findings are open and listed in `PLAN.md` §7. Two are worth stating here because they
+are about this project's own honesty: **compile-time execution has no fuel**, so a `#run while true {}` hangs
+the compiler and, under `jr lsp`, the editor — on a file merely opened; and **`BUILD_OUTPUT` is
+unconstrained**, so a program can name an absolute path and `jr build` will write an executable there.
+
+W7's modules so far are **`String`** (ADR-0103): `equal`, `compare`, `starts_with`, `ends_with`, `find`, `contains`,
 `byte_at`, `is_empty`, **none of which allocate**. It exists because the *previous* wave named it — ADR-0099 §4
 refused `==` on two strings, since a `string` is `{data, count}` and so "the same storage" and "the same
 contents" are both plausible readings, and its stated reason was that comparing contents needs a byte loop,
