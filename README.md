@@ -18,10 +18,18 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 990 tests green.
+Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 1001 tests green.
 
-**The two most recent waves were driven by an audit rather than by a feature**
+**The three most recent waves were driven by an audit rather than by a feature**
 ([`docs/assessment-2026-08-07.md`](docs/assessment-2026-08-07.md)).
+
+**A declared `BUILD_OUTPUT` is now confined to the working directory** (ADR-0122). ADR-0102 let a program name
+its own artefact, and nothing checked the value — which is computed by arbitrary compile-time code *in the file
+being compiled*, so it is attacker-controlled whenever the source is, and for a compiler that is the ordinary
+case. `BUILD_OUTPUT :: "../../.git/hooks/pre-commit";` made `jr build` write an executable to a path git runs
+on the next commit, which turns "I compiled a file someone sent me" into "I ran their code". A leading `-` was
+read by `cc` as a flag. An explicit `-o` is deliberately still unconfined: that is the operator's instruction
+rather than the artefact's, the same asymmetry that already makes `-o` win.
 
 **Compile-time execution now has a step budget** (ADR-0121) — 10 million instructions, after which a `#run`
 reports E0230. It had none: only recursion was bounded, so `HANG :: #run spin();` with a `while true` inside
@@ -44,9 +52,10 @@ body arena is cloned whole. Two things are refused rather than guessed: an unbou
 keyed to the unexpanded tree, so a call before the splice keeps its key while one after it shifts, and the
 pairing could deliver *another expression's* value.
 
-The audit's remaining findings are open and listed in `PLAN.md` §7. One is worth stating here because it is
-about this project's own honesty: **`BUILD_OUTPUT` is unconstrained**, so a program can name an absolute path
-and `jr build` will write an executable there.
+The audit's remaining findings are open and listed in `PLAN.md` §7. Its **security scope is only partly
+covered** and that is worth stating rather than implying: the assessor responsible for it failed twice, so the
+VM's memory region, forging an `Any` or a procedure pointer, comptime-FFI-gate bypasses and `jr-lsp` path
+handling are **unexamined**. A second pass is owed.
 
 W7's modules so far are **`String`** (ADR-0103): `equal`, `compare`, `starts_with`, `ends_with`, `find`, `contains`,
 `byte_at`, `is_empty`, **none of which allocate**. It exists because the *previous* wave named it — ADR-0099 §4

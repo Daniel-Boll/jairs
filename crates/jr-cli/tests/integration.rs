@@ -820,6 +820,52 @@ fn build_output_constant_names_the_executable() {
 }
 
 #[test]
+fn a_declared_build_output_cannot_escape_the_working_directory() {
+    // ADR-0122. `BUILD_OUTPUT` is computed by arbitrary compile-time code *in the file being compiled*, so
+    // it is attacker-controlled whenever the source is — the ordinary case for a compiler. Nothing checked
+    // it, so this wrote an executable to a path git runs on the next commit, from nothing but a build.
+    //
+    // Asserted on the file **not** appearing as well as on the exit code, because a refusal that still wrote
+    // the artefact somewhere would pass an exit-code-only test.
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("prog.jr");
+    fs::write(
+        &source,
+        "#import \"Basic\";\nBUILD_OUTPUT :: \"../escaped\";\nmain :: () {\n    exit(3);\n}\n",
+    )
+    .unwrap();
+
+    assert_eq!(
+        run_build(source, None),
+        2,
+        "a declared output climbing out of the working directory must be refused"
+    );
+    assert!(
+        !dir.path().parent().unwrap().join("escaped").exists(),
+        "nothing should have been written outside the working directory"
+    );
+}
+
+#[test]
+fn a_declared_build_output_cannot_be_read_as_a_linker_flag() {
+    // The other half of ADR-0122: `jr-link` passes the object path as `cc`'s **first positional argument**,
+    // so a value starting with `-` was read as a flag rather than a path.
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("prog.jr");
+    fs::write(
+        &source,
+        "#import \"Basic\";\nBUILD_OUTPUT :: \"-Wl,--version\";\nmain :: () {\n    exit(3);\n}\n",
+    )
+    .unwrap();
+
+    assert_eq!(
+        run_build(source, None),
+        2,
+        "a declared output starting with `-` must be refused"
+    );
+}
+
+#[test]
 fn explicit_output_flag_beats_the_build_output_constant() {
     // ADR-0102 §2's precedence, and the reason it is that way round: a person at a terminal is
     // overriding on purpose, so a script that could silently defeat `-o` would make the flag
