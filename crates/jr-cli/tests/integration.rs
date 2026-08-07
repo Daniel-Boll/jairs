@@ -483,6 +483,57 @@ fn a_pointer_in_a_compile_time_aggregate_is_refused() {
     );
 }
 
+/// A **non-terminating compile-time loop** must be refused rather than hang the compiler (ADR-0121).
+///
+/// Before the step budget this hung `jr check` outright, with no diagnostic and no way out but a signal —
+/// and under `jr lsp` it hung the single worker thread on a file the user had merely *opened*, because
+/// salsa's cancellation cannot reach a loop that never touches the database. So the blast radius was much
+/// larger than "the compiler is slow on a silly program": opening a repository was enough.
+///
+/// A CLI exit-code test rather than a corpus file for the reason the two above are: E0230 is `jr-db`'s code
+/// and no corpus directory holds one. It also must *not* be a corpus file — every corpus program is
+/// executed by the differential harness, and this one is designed never to finish.
+#[test]
+fn a_non_terminating_compile_time_loop_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("hang.jr");
+    fs::write(
+        &path,
+        "spin :: () -> s64 { n := 0; while true { n = n + 1; } return n; }\n\
+         HANG :: #run spin();\n\
+         main :: () { }\n",
+    )
+    .unwrap();
+    assert_eq!(
+        check_with_modules(vec![path], None),
+        1,
+        "a `#run` that never terminates must exhaust the step budget and report, not hang"
+    );
+}
+
+/// A **long but terminating** compile-time loop must still be evaluated (ADR-0121).
+///
+/// The other half of the budget, and the one that says it is not merely a small number: a hundred thousand
+/// iterations is far more than any constant a real program folds, and it must fold. Without this the budget
+/// could be lowered until it broke legitimate work and no test would notice.
+#[test]
+fn a_long_but_terminating_compile_time_loop_still_folds() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("long.jr");
+    fs::write(
+        &path,
+        "count :: () -> s64 { n := 0; i := 0; while i < 100000 { n = n + 1; i = i + 1; } return n; }\n\
+         TOTAL :: #run count();\n\
+         main :: () { }\n",
+    )
+    .unwrap();
+    assert_eq!(
+        check_with_modules(vec![path], None),
+        0,
+        "100_000 iterations is well inside the budget and must fold"
+    );
+}
+
 /// A **view** in a compile-time aggregate must be refused, for the same reason a pointer is.
 ///
 /// A view is `{data, count}`, and its `data` word is a pointer into the evaluator's memory. Before the
