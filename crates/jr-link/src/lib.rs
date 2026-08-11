@@ -119,8 +119,8 @@ pub fn link(request: &LinkRequest<'_>) -> Result<(), LinkError> {
     })?;
 
     let mut command = Command::new(&driver);
-    command.arg(&object_path);
-    command.arg("-o").arg(request.output);
+    command.arg(not_a_flag(&object_path));
+    command.arg("-o").arg(not_a_flag(request.output));
     for library in request.libraries {
         command.arg(format!("-l{library}"));
     }
@@ -145,6 +145,24 @@ pub fn link(request: &LinkRequest<'_>) -> Result<(), LinkError> {
 
 /// The C drivers tried, in order of preference.
 const DRIVERS: [&str; 3] = ["cc", "clang", "gcc"];
+
+/// A path `cc` cannot mistake for an option, by prefixing `./` when it begins with `-`.
+///
+/// The object path is the driver's **first positional argument** and the output its `-o` value, so a path
+/// beginning with `-` is read as a flag rather than as a file — `-Wl,…` being the interesting case. Prefixing
+/// `./` is behaviour-preserving for the filesystem (`./-x` and `-x` name the same file) and removes the
+/// ambiguity for the argument parser.
+///
+/// Done **here** rather than trusting the caller, even though `jr build` now confines a declared
+/// `BUILD_OUTPUT` (ADR-0122): an explicit `-o` is deliberately not confined, because that is a person saying
+/// where they want the file, and this module should not depend on which of its callers checked what. A linker
+/// driver that cannot be made to read its own arguments wrongly is one less thing to reason about.
+fn not_a_flag(path: &Path) -> PathBuf {
+    if path.as_os_str().as_encoded_bytes().starts_with(b"-") {
+        return Path::new(".").join(path);
+    }
+    path.to_owned()
+}
 
 /// The first C driver on `PATH`.
 fn find_driver() -> Option<PathBuf> {
@@ -176,7 +194,7 @@ fn ensure_signed(path: &Path) {
     }
     let signed = Command::new("codesign")
         .arg("--verify")
-        .arg(path)
+        .arg(not_a_flag(path))
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -186,8 +204,33 @@ fn ensure_signed(path: &Path) {
     }
     let _ = Command::new("codesign")
         .args(["--sign", "-", "--force"])
-        .arg(path)
+        .arg(not_a_flag(path))
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::not_a_flag;
+
+    #[test]
+    fn an_ordinary_path_is_unchanged() {
+        assert_eq!(not_a_flag(Path::new("app")), Path::new("app"));
+        assert_eq!(not_a_flag(Path::new("build/app")), Path::new("build/app"));
+        assert_eq!(not_a_flag(Path::new("/tmp/app")), Path::new("/tmp/app"));
+    }
+
+    #[test]
+    fn a_leading_dash_is_hidden_behind_a_current_directory() {
+        // `./-x` and `-x` name the same file, so this is behaviour-preserving for the filesystem while
+        // removing the ambiguity for `cc`'s argument parser.
+        assert_eq!(
+            not_a_flag(Path::new("-Wl,--version")),
+            Path::new("./-Wl,--version")
+        );
+        assert_eq!(not_a_flag(Path::new("-o")), Path::new("./-o"));
+    }
 }

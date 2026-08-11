@@ -56,9 +56,14 @@ use crate::{
 
 /// The diagnostic code for an import nothing in the file uses.
 ///
-/// E0231 was the first free code when this query claimed it. Ranges: E0001–E0006 lexer,
-/// E0100–E0199 parser, E0200–E0211 `jr-hir`, E0212–E0226 `jr-sema`, E0227–E0229 `jr-mir`,
-/// E0230 this crate's const-eval.
+/// E0231 was the first free code when this query claimed it, and it is this project's first
+/// diagnostic that is a **warning** rather than an error — so a consumer filtering by severity has
+/// something to filter.
+///
+/// The workspace's range table is in `AGENTS.md`, and is deliberately not restated here: this comment
+/// used to carry a copy of it, and the three copies (here, `AGENTS.md`, `jr-syntax/src/code.rs`) had
+/// drifted apart by the time the audit at `354d900` looked. `crates/jr-cli/tests/codes.rs` now
+/// enforces what the copies were trying to convey.
 const E0231: &str = "E0231";
 
 /// Every `#import` in a file that nothing in it uses.

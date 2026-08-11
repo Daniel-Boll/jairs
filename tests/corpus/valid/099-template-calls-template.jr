@@ -1,0 +1,32 @@
+// **A template calling a template** — the instantiation a single expansion round cannot see.
+//
+// `instantiated` collected its call sites from the *base* check and built one redirect per
+// site. But an instantiation's body is a **clone**, with its own `BodyId` and its own
+// `ExprId`s, so the clone's copy of `inner(40)` is a call site no base-tree redirect
+// mentions. `call_rvalue` then found no redirect and lowered `Callee::Direct(inner)` — and a
+// template produces no MIR, so both engines reported
+// `internal compiler error: no routine for file 0 proc 0` on a program `jr check` called
+// clean. Expansion now iterates to a fixed point and the redirects are built from the
+// **final** check, which is the only one that has seen every clone body.
+//
+// Exits **42**, asserted as a value in `differential.rs` rather than merely compared between
+// the engines: a redirect landing on the wrong instantiation, or an argument arriving at the
+// wrong parameter, would give both engines the same wrong number.
+#import "Basic";
+
+/// The inner template. Instantiated *only* from inside another template's body, so nothing
+/// in the base tree records the call site that matters.
+inner :: (x: $T) -> T {
+    return x;
+}
+
+/// Calls `inner` with a concrete argument. Its own `$U` makes it a template too, so its body
+/// exists only as a clone by the time MIR is built.
+outer :: (flag: $U) -> s64 {
+    n := inner(40);
+    return n + 2;
+}
+
+main :: () {
+    exit(outer(true));
+}

@@ -40,6 +40,67 @@ use crate::report::{emit_diagnostics, make_renderer};
 /// Exit status for a program that was accepted but could not be built.
 const BUILD_EXIT: i32 = 2;
 
+/// Checks a **declared** `BUILD_OUTPUT` and turns it into a path, or says why not (ADR-0122).
+///
+/// `BUILD_OUTPUT :: #run choose_name();` lets the program name its own artefact (ADR-0102), and the value is
+/// computed by arbitrary compile-time code *in the file being compiled*. So it is attacker-controlled exactly
+/// when the source is — which is the ordinary case for a compiler: someone builds code they did not write.
+/// Nothing checked it, and the consequences were not subtle:
+///
+/// - an **absolute** path, or one climbing out with `..`, made `jr build` write an executable anywhere the
+///   user could — `.git/hooks/pre-commit` being the sharp example, since git runs it on the next commit;
+/// - a leading `-` was passed to `cc` as its **first positional argument** and to `codesign` as its last, so
+///   it was read as a flag rather than a path.
+///
+/// Only a *declared* name is checked. An explicit `-o` is not, because that is a person at a terminal saying
+/// where they want the file, and second-guessing them would make the flag less useful than a shell
+/// redirection — the same reasoning that lets `-o` beat the declaration in the first place.
+///
+/// Relative subdirectories stay legal (`build/app`), because naming one is an ordinary thing for a build
+/// script to do and forbidding it would push people back to `-o`. Confinement is by rejecting anything that
+/// *leaves* the working directory, not by flattening the name.
+///
+/// # Errors
+/// A sentence naming what is wrong, for the driver to print.
+fn confined_output(declared: &str) -> Result<std::path::PathBuf, String> {
+    use std::path::{Component, Path};
+
+    if declared.is_empty() {
+        return Err("it is empty".to_owned());
+    }
+    if declared.contains('\0') {
+        return Err("it contains a NUL byte".to_owned());
+    }
+    // Checked on the string rather than on a component, because it is `cc`'s argument parser that will read
+    // a leading `-` as a flag, and that sees the whole path.
+    if declared.starts_with('-') {
+        return Err(
+            "it starts with `-`, which a linker reads as a flag rather than a path".to_owned(),
+        );
+    }
+
+    let path = Path::new(declared);
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => {
+                return Err(
+                    "it is an absolute path, and a build writes inside the working directory"
+                        .to_owned(),
+                );
+            }
+            Component::ParentDir => {
+                return Err("it climbs out of the working directory with `..`".to_owned());
+            }
+            Component::CurDir | Component::Normal(_) => {}
+        }
+    }
+    // Every component was `.` — `"."` or `"./."` — so there is no file to write.
+    if path.file_name().is_none() {
+        return Err("it names a directory rather than a file".to_owned());
+    }
+    Ok(path.to_owned())
+}
+
 /// Run `jr build`.
 ///
 /// Returns 0 on success, 1 when the file has errors, and 2 when code generation or
@@ -112,13 +173,27 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
     // **`-o` wins over a declared `BUILD_OUTPUT`** (ADR-0102 §2). A person at a terminal is overriding on
     // purpose, and a build script that could silently defeat `-o` would make the flag untrustworthy. The
     // reverse precedence would also make a script's own output name unpredictable from reading the file.
-    let output = args.output.clone().unwrap_or_else(|| {
-        jr_db::declared_build_output(&db, root, search)
-            .map(std::path::PathBuf::from)
+    let output = match args.output.clone() {
+        Some(explicit) => explicit,
+        None => match jr_db::declared_build_output(&db, root, search) {
+            // **A declared name is confined** (ADR-0122). The value is computed by arbitrary compile-time
+            // code in the file being compiled, so it is attacker-controlled whenever the source is, and
+            // nothing checked it: an absolute path or a `..` chain made `jr build` write an executable
+            // anywhere the user could, and a leading `-` was read as a flag by `cc`.
+            Some(declared) => match confined_output(&declared) {
+                Ok(path) => path,
+                Err(reason) => {
+                    crate::report::error(&format!(
+                        "the declared BUILD_OUTPUT {declared:?} is not a usable output name: {reason}"
+                    ));
+                    return Ok(BUILD_EXIT);
+                }
+            },
             // `hello.jr` becomes `hello`, which is what every other compiler does and what
             // a shell completion expects.
-            .unwrap_or_else(|| args.path.with_extension(""))
-    });
+            None => args.path.with_extension(""),
+        },
+    };
 
     if args.emit_object {
         let object_path = output.with_extension("o");
@@ -139,4 +214,61 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
     }
 
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::confined_output;
+
+    #[test]
+    fn an_ordinary_name_is_accepted() {
+        assert!(confined_output("app").is_ok());
+        assert!(confined_output("my-app").is_ok());
+        assert!(confined_output("./app").is_ok());
+    }
+
+    #[test]
+    fn a_relative_subdirectory_stays_legal() {
+        // Naming a subdirectory is an ordinary thing for a build script to do, and forbidding it would push
+        // people back to `-o` — confinement is about *leaving* the working directory, not about flattening.
+        assert!(confined_output("build/app").is_ok());
+        assert!(confined_output("target/release/app").is_ok());
+    }
+
+    #[test]
+    fn an_absolute_path_is_refused() {
+        let reason = confined_output("/tmp/app").expect_err("an absolute path escapes the build");
+        assert!(reason.contains("absolute"), "{reason}");
+    }
+
+    #[test]
+    fn climbing_out_is_refused() {
+        // The sharp case: git runs `.git/hooks/pre-commit` on the next commit, so writing an executable
+        // there turns "I compiled someone's file" into "I ran their code".
+        let reason = confined_output("../../.git/hooks/pre-commit")
+            .expect_err("`..` escapes the working directory");
+        assert!(reason.contains(".."), "{reason}");
+    }
+
+    #[test]
+    fn a_leading_dash_is_refused() {
+        // `jr-link` passes the object path as `cc`'s **first positional argument**, so a leading `-` is read
+        // as a flag. Checked on the whole string rather than a component, because that is what `cc` parses.
+        let reason =
+            confined_output("-Wl,--version").expect_err("a linker reads a leading `-` as a flag");
+        assert!(reason.contains("flag"), "{reason}");
+    }
+
+    #[test]
+    fn an_empty_or_directory_name_is_refused() {
+        assert!(confined_output("").is_err());
+        assert!(confined_output(".").is_err());
+    }
+
+    #[test]
+    fn a_nul_byte_is_refused() {
+        // Rust strings admit NUL; the OS boundary does not. Rejected here so the message names the cause
+        // rather than surfacing as an opaque io error.
+        assert!(confined_output("app\0evil").is_err());
+    }
 }

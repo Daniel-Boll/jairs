@@ -19,23 +19,23 @@
 //!
 //! # The ranges
 //!
-//! | Range | Owner |
-//! |-------|-------|
-//! | E0001–E0006 | this crate's lexer |
-//! | E0100–E0199 | this crate's parser |
-//! | E0200–E0211 | `jr-hir` (E0210 raised by `jr-db`'s module loader) |
-//! | E0212–E0226 | `jr-sema` |
-//! | E0227–E0229 | `jr-mir` |
-//! | E0230 | `jr-db` const-eval |
-//! | E0231 | `jr-db` unused imports |
-//! | E0232–E0247, E0250–E0257 | `jr-sema` and `jr-hir`, past the original blocks |
+//! This crate owns **E0001–E0006** (lexer) and **E0100–E0199** (parser). Those two are checked by
+//! [`tests::every_code_is_in_a_range_this_crate_owns`] below.
 //!
-//! **E0258 is the first free code overall**, and **E0131 the first free parser code.**
+//! The **whole** workspace's range table lives in `AGENTS.md`, and deliberately not here as well.
+//! This header used to restate it, and the restatement rotted exactly as its own closing paragraph
+//! predicted: it claimed "E0258 is the first free code overall, and E0131 the first free parser
+//! code" while E0131 was already used, two dozen codes below the real ceiling. A table copied into
+//! three files — here, `AGENTS.md`, and `jr-db/src/imports.rs` — had drifted three ways, which the
+//! audit at `354d900` recorded as finding F7.
 //!
-//! This table and that sentence are the thing most likely to be stale, because a wave that
-//! claims a code in another crate has no reason to open this file. ADR-0047 found the same
-//! sentence wrong once already. The tests below check what this crate *owns*; they cannot check
-//! a claim about somebody else's range, so the claim is a comment and the comment is a liability.
+//! What replaced the copies is a test rather than a better comment:
+//! `crates/jr-cli/tests/codes.rs` reads every code declaration in the workspace and checks the one
+//! invariant no per-crate test can state — that **no two crates declare the same code** — plus that a
+//! constant named after a code binds that code, and that `AGENTS.md`'s first-free claim is true. The
+//! collision this file was created to prevent (the parser emitting `jr-hir`'s E0200/E0201/E0202, which
+//! stood for waves because a `&str` cannot collide at compile time) is now caught across the boundary
+//! it actually crossed.
 
 // ---------------------------------------------------------------------------
 // Lexer: E0001–E0006

@@ -770,6 +770,20 @@ impl<'a> Ctx<'a> {
     /// A **name** inside those fields still resolves in the *declaring* file's scope — `Box(T) { value: Helper; }`
     /// means that file's `Helper` — which the swap gets right for free, and which is the only correct reading: a
     /// struct's fields cannot depend on who imported it.
+    ///
+    /// **`type_bindings` is narrowed to the instance's own arguments** for the duration, which is what makes the
+    /// paragraph above true rather than nearly true. `resolve_type_name` consults the bindings *before* the
+    /// declaring module's signatures (ADR-0081 §1's "a bound variable wins over everything"), and the caller
+    /// saves and restores only the struct's own `poly_vars` — so any *other* binding in scope leaked in. A field
+    /// whose type names something the declaring module declares, where that name collides with a type variable
+    /// the **importer** has bound, resolved to the importer's type; `set_instance_fields` then cached it for
+    /// every later user of that instance. Silent wrong type and wrong layout, with no diagnostic.
+    ///
+    /// The audit at `354d900` found this **latent rather than live** (`docs/assessment-2026-08-07.md` §4): the
+    /// only way to make an instance resolve while a foreign binding is in scope is to give it a type argument
+    /// that depends on one, and `Box(T)` for a bound `T` is E0212 — inference through a parameterised struct is
+    /// deferred (ADR-0085 §5). So the invariant held by accident of an unrelated refusal, and would have broken
+    /// the day that refusal lifted. It is cheaper to make it structural now than to rediscover it then.
     fn resolve_instance_fields_in(
         &mut self,
         hir: &'a FileHir,
@@ -778,6 +792,21 @@ impl<'a> Ctx<'a> {
         let saved_hir = self.hir;
         let saved_file = self.file;
         let saved_module = self.resolving_in_module;
+        // **Only the instance's own arguments are in scope.** The caller bound this struct's `poly_vars` just
+        // before calling, so those are the bindings to keep; everything else belongs to whoever is *using* the
+        // instance and must not reach its fields. Taken by `mem::take` and put back below, so the narrowing is
+        // exact rather than a filter that has to know which names matter.
+        //
+        // Read from `hir`, the **declaring** file's, and not from `self.hir`: `sid` indexes the declaring file's
+        // arena, so asking the importer's would index a different one — which panics outright when the importer
+        // has fewer structs, and would silently read the wrong declaration when it has more.
+        let vars: Vec<Symbol> = hir.struct_def(sid).poly_vars.to_vec();
+        let saved_bindings = core::mem::take(&mut self.type_bindings);
+        for var in vars {
+            if let Some(&bound) = saved_bindings.get(&var) {
+                self.type_bindings.insert(var, bound);
+            }
+        }
         self.hir = hir;
         // The `FileId` moves too, because a nominal type named in those fields must intern with the *declaring*
         // file's identity (ADR-0015 §1) — a `Point` field in an imported `Box` is that module's `Point`.
@@ -801,6 +830,7 @@ impl<'a> Ctx<'a> {
         self.hir = saved_hir;
         self.file = saved_file;
         self.resolving_in_module = saved_module;
+        self.type_bindings = saved_bindings;
         resolved
     }
 

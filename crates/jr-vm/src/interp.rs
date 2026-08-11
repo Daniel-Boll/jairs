@@ -55,6 +55,19 @@ use crate::value::{Address, IntKind, Value};
 /// call chain is `main` → `print` → `write`.
 pub const MAX_DEPTH: usize = 256;
 
+/// How many instructions **compile-time** execution may run before the VM gives up (ADR-0121).
+///
+/// Ten million: far past any constant a program folds — the whole corpus's compile-time work is orders of
+/// magnitude below it — and well under a second, which is what matters. Without it a `#run while true {}`
+/// hung the compiler outright, and under `jr lsp` it hung the worker thread on a file the user had merely
+/// *opened*, because salsa's cancellation cannot reach a loop that never touches the database.
+///
+/// Deliberately **not** applied under [`Mode::Runtime`]: there the interpreter is running the user's own
+/// program under `jr run`, where a long loop is the program working rather than the compiler hanging, and a
+/// budget would refuse legitimate work. So this bounds *compilation*, which is the thing a user did not ask
+/// to be unbounded.
+pub const MAX_COMPTIME_STEPS: u64 = 10_000_000;
+
 // ---------------------------------------------------------------------------
 // Execution mode
 // ---------------------------------------------------------------------------
@@ -173,6 +186,12 @@ pub struct Vm<'a> {
     /// unwound as the error propagates and a caller reading it afterwards would see only its own
     /// prefix. `None` until something traps.
     trap_frames: Option<Vec<ProcRef>>,
+    /// Instructions left before compile-time execution is refused (ADR-0121).
+    ///
+    /// `u64::MAX` under [`Mode::Runtime`], which is effectively unmetered — see [`MAX_COMPTIME_STEPS`] for
+    /// why only compilation is bounded. A plain counter rather than an `Option` so the hot loop pays one
+    /// decrement and one branch.
+    fuel: u64,
 }
 
 impl<'a> Vm<'a> {
@@ -192,6 +211,10 @@ impl<'a> Vm<'a> {
             at: None,
             frames: Vec::new(),
             trap_frames: None,
+            fuel: match mode {
+                Mode::Comptime => MAX_COMPTIME_STEPS,
+                Mode::Runtime => u64::MAX,
+            },
         };
         vm.intern_strings()?;
         Ok(vm)
@@ -391,6 +414,14 @@ impl<'a> Vm<'a> {
     fn run_instrs(&mut self, code: &'a Code, frame: &mut Frame) -> Result<Value, VmError> {
         let mut pc = code.entry;
         loop {
+            // **The step budget** (ADR-0121). Checked here because this is the one place every instruction
+            // passes through, and counted per *VM* rather than per frame so a loop that calls a procedure a
+            // billion times is bounded too. Unmetered under `Mode::Runtime`, where the counter starts at
+            // `u64::MAX`.
+            self.fuel = self
+                .fuel
+                .checked_sub(1)
+                .ok_or(VmError::Exhausted("steps"))?;
             let instr = code.instr(pc).ok_or_else(|| {
                 VmError::internal(format!("ran off the end of the bytecode at {pc}"))
             })?;

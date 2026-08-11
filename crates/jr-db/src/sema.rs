@@ -448,6 +448,13 @@ pub(crate) struct Instantiated {
     /// than the source call's argument list — the `$N` params were baked in — so the call must pass only
     /// the non-comptime arguments.
     pub comptime_masks: Vec<((jr_hir::ExprScope, jr_hir::ExprId), Vec<bool>)>,
+    /// Each appended clone's body scope, paired with the template body it was cloned from (ADR-0120 §5).
+    ///
+    /// A clone copies its template's body arena wholesale, so every `ExprId` is shared and only the scope
+    /// differs — which lets `file_mir` carry the template's `#run`, `typed`/`untyped` and `any_of` values
+    /// across to the clone. Without it those calls had no value under the clone's scope and `scan` refused
+    /// the body.
+    pub body_scopes: Vec<(jr_hir::ExprScope, jr_hir::ExprScope)>,
 }
 
 /// Builds the expanded HIR for a file's instantiations and re-checks it (ADR-0082 §2, §3).
@@ -462,54 +469,90 @@ pub(crate) fn instantiated(
     search_paths: ModuleSearchPaths,
 ) -> Option<Instantiated> {
     let base_check = checked(db, file, search_paths);
-    if base_check.instantiations.is_empty() && base_check.comptime_calls.is_empty() {
-        return None;
-    }
-    let file_id = crate::queries::resolve_file_id(db, file);
-    let interner = db.interner();
+    let values = crate::consts::file_consts(db, file, search_paths).values;
+    instantiated_from(
+        db,
+        file,
+        search_paths,
+        file_hir(db, file),
+        &base_check,
+        Some(values),
+    )
+}
 
-    // Every `$T` call in a **deterministic** order, because `FxHashMap` iteration is not stable and the
-    // appended `ProcId`s must be reproducible across runs (a snapshot depends on it). Sorted by call
-    // site.
-    type Call = (
-        (jr_hir::ExprScope, jr_hir::ExprId),
-        (jr_hir::ProcId, Vec<jr_pool::PoolId>),
-    );
-    let mut calls: Vec<Call> = base_check
+/// How many expansion rounds to attempt before refusing.
+///
+/// A bound rather than "until stable" for the reason [`crate::consts`]'s round limit is one: a bug in the
+/// progress check should be a diagnosable stop rather than a hang. Eight is far past anything a written
+/// program reaches, because a round only happens when a *new* structural key appeared.
+const MAX_INSTANTIATION_ROUNDS: usize = 8;
+
+/// Instantiation did not reach a fixed point (ADR-0120 §4).
+///
+/// Owned by this crate beside E0230 and E0271, because convergence is a property of the expansion loop,
+/// which lives here. The alternative to refusing is lowering a call whose target was never appended —
+/// which is exactly the `no routine for file N proc M` this ADR exists to remove, so a stop that names
+/// itself is strictly better than running out of rounds quietly.
+const E0280: &str = "E0280";
+
+/// A polymorphic call site.
+type CallSite = (jr_hir::ExprScope, jr_hir::ExprId);
+
+/// The structural key an instantiation dedupes on: the template plus its bound types, or its baked
+/// values (ADR-0005, ADR-0088 §3).
+type CallKey = (jr_hir::ProcId, Vec<jr_pool::PoolId>);
+
+/// One expansion round's output.
+struct Expansion {
+    /// The starting HIR with one appended procedure per distinct key.
+    hir: Arc<jr_hir::FileHir>,
+    /// Name resolution over it.
+    resolve: Arc<ResolveMap>,
+    /// Signatures over it, the appended procedures included.
+    signatures: Arc<FileSignatures>,
+    /// Its check.
+    check: CheckResult,
+    /// The resolve's and check's diagnostics.
+    diagnostics: Diagnostics,
+    /// The appended procedures, `new_ids[i]` for the i-th key.
+    new_ids: Vec<jr_hir::ProcId>,
+    /// Each clone's body scope paired with its template's (ADR-0120 §5).
+    body_scopes: Vec<(jr_hir::ExprScope, jr_hir::ExprScope)>,
+    /// Where the comptime-value keys start in [`Self::new_ids`].
+    comptime_start: usize,
+}
+
+/// Every `$T` call site and its key, in a **deterministic** order.
+///
+/// `FxHashMap` iteration is not stable and the appended `ProcId`s must be reproducible across runs, since
+/// a snapshot depends on them. Sorted by call site.
+fn type_call_sites(check: &CheckResult) -> Vec<(CallSite, CallKey)> {
+    let mut calls: Vec<(CallSite, CallKey)> = check
         .instantiations
         .iter()
         .map(|(&call, target)| (call, target.clone()))
         .collect();
     calls.sort_by_key(|(call, _)| (scope_ord(call.0), call.1.index()));
+    calls
+}
 
-    // De-duplicate `$T` calls by the structural key (ADR-0005): the `(template, bound type)` tuple. The
-    // first distinct key seen in sorted order is appended first, so `keys[i]` ↔ the i-th appended
-    // procedure.
-    let mut keys: Vec<(jr_hir::ProcId, Vec<jr_pool::PoolId>)> = Vec::new();
-    for (_, key) in &calls {
-        if !keys.contains(key) {
-            keys.push(key.clone());
-        }
-    }
-
-    // **Comptime-value calls** (ADR-0088 §3). For each, look up each argument's evaluated value in
-    // `file_consts` — which the pre-pass populated via `Wanted::ComptimeArg` — and build a structural
-    // key on those values. Any argument whose value is missing means the pre-pass refused it (E0271),
-    // which is a diagnostic already; the call is skipped here so the instantiation is not built with a
-    // hole. Deterministic order, same discipline as the `$T` calls above.
-    type ComptimeCall = (
-        (jr_hir::ExprScope, jr_hir::ExprId),
-        (jr_hir::ProcId, Vec<jr_pool::PoolId>),
-    );
-    let const_values = crate::consts::file_consts(db, file, search_paths).values;
-    let mut comptime_calls_vec: Vec<ComptimeCall> = Vec::new();
-    let base_sigs_for_vars = file_signatures(db, file, search_paths);
-    for (call_key, (template, args)) in base_check.comptime_calls.iter() {
-        let mut values = Vec::with_capacity(args.len());
+/// Every `$N` call site and its key, keyed on values read from `values` (ADR-0088 §3).
+///
+/// An argument whose value is missing means the pre-pass refused it (E0271, a diagnostic already) — or
+/// that the call site is one `values` was not computed for, which is the case for a clone's body. Either
+/// way the call is skipped rather than keyed with a hole, and the caller's redirect for it is absent,
+/// which `scan` then refuses.
+fn comptime_call_sites(
+    check: &CheckResult,
+    values: &jr_mir::ConstValues,
+) -> Vec<(CallSite, CallKey)> {
+    let mut calls: Vec<(CallSite, CallKey)> = Vec::new();
+    for (call, (template, args)) in check.comptime_calls.iter() {
+        let mut resolved = Vec::with_capacity(args.len());
         let mut all_present = true;
         for arg in args {
-            match const_values.run(call_key.0, *arg) {
-                Some(v) => values.push(v),
+            match values.run(call.0, *arg) {
+                Some(value) => resolved.push(value),
                 None => {
                     all_present = false;
                     break;
@@ -517,24 +560,152 @@ pub(crate) fn instantiated(
             }
         }
         if all_present {
-            comptime_calls_vec.push((*call_key, (*template, values)));
+            calls.push((*call, (*template, resolved)));
         }
     }
-    comptime_calls_vec.sort_by_key(|(call, _)| (scope_ord(call.0), call.1.index()));
+    calls.sort_by_key(|(call, _)| (scope_ord(call.0), call.1.index()));
+    calls
+}
 
-    // De-duplicate `$N` calls the same way: `(template, [value PoolIds])`.
-    let mut comptime_keys: Vec<(jr_hir::ProcId, Vec<jr_pool::PoolId>)> = Vec::new();
-    for (_, key) in &comptime_calls_vec {
-        if !comptime_keys.contains(key) {
-            comptime_keys.push(key.clone());
+/// Expands `start_hir` from base each round with the **whole** accumulated key list, iterating until no
+/// new key appears (ADR-0120 §2).
+///
+/// One round is not enough, and that was the defect: an instantiation's body is a **clone** with its own
+/// `BodyId` and its own `ExprId`s, so a polymorphic call inside a template's body is a call site the base
+/// tree's redirect map cannot name. Redirects are therefore built from the **final** check, which is the
+/// only one that has seen every clone body.
+///
+/// Rebuilding from `start_hir` each round rather than appending incrementally keeps `new_ids[i]` paired
+/// with `keys[i]`, so the appended `ProcId`s stay a function of the key list alone.
+pub(crate) fn instantiated_from(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+    start_hir: Arc<jr_hir::FileHir>,
+    start_check: &CheckResult,
+    comptime_values: Option<Arc<jr_mir::ConstValues>>,
+) -> Option<Instantiated> {
+    if start_check.instantiations.is_empty() && start_check.comptime_calls.is_empty() {
+        return None;
+    }
+    let file_id = crate::queries::resolve_file_id(db, file);
+
+    let mut keys: Vec<CallKey> = Vec::new();
+    let mut comptime_keys: Vec<CallKey> = Vec::new();
+    let mut expansion: Option<Expansion> = None;
+    let mut converged = false;
+
+    // Harvest from the caller's check first, then from each round's own.
+    let mut harvest: CheckResult = start_check.clone();
+    for _ in 0..MAX_INSTANTIATION_ROUNDS {
+        let mut fresh = false;
+        for (_, key) in type_call_sites(&harvest) {
+            if !keys.contains(&key) {
+                keys.push(key);
+                fresh = true;
+            }
+        }
+        if let Some(values) = comptime_values.as_deref() {
+            for (_, key) in comptime_call_sites(&harvest, values) {
+                if !comptime_keys.contains(&key) {
+                    comptime_keys.push(key);
+                    fresh = true;
+                }
+            }
+        }
+        if !fresh {
+            converged = true;
+            break;
+        }
+        let built = expand_round(db, file, search_paths, &start_hir, &keys, &comptime_keys);
+        harvest = built.check.clone();
+        expansion = Some(built);
+    }
+
+    let expansion = expansion?;
+    let base_sigs = file_signatures(db, file, search_paths);
+
+    // **Redirects from the final check**, which is the fix: every call site in the tree MIR will lower,
+    // clone bodies included, mapped to the procedure its key was appended as.
+    let mut redirects: Vec<(CallSite, jr_mir::ProcRef)> = Vec::new();
+    for (call, key) in type_call_sites(&expansion.check) {
+        if let Some(index) = keys.iter().position(|k| *k == key) {
+            redirects.push((
+                call,
+                jr_mir::ProcRef::new(file_id, expansion.new_ids[index]),
+            ));
         }
     }
+    let mut comptime_masks: Vec<(CallSite, Vec<bool>)> = Vec::new();
+    if let Some(values) = comptime_values.as_deref() {
+        for (call, key) in comptime_call_sites(&expansion.check, values) {
+            let Some(index) = comptime_keys.iter().position(|k| *k == key) else {
+                continue;
+            };
+            redirects.push((
+                call,
+                jr_mir::ProcRef::new(file_id, expansion.new_ids[expansion.comptime_start + index]),
+            ));
+            // The template's `comptime_params` flags exactly, because the checker preserved source order.
+            let mask = base_sigs
+                .signatures
+                .proc_sig(key.0)
+                .map(|sig| sig.comptime_params.clone())
+                .unwrap_or_default();
+            comptime_masks.push((call, mask));
+        }
+    }
+
+    let mut diagnostics = expansion.diagnostics;
+    if !converged {
+        // Every span here would be arbitrary — the family is the file's, not one call's — so the file's
+        // start is used, which `jr-diag` renders as the first line rather than clamping.
+        diagnostics.push(
+            jr_diag::Diagnostic::error(
+                jr_base::Span::from_offsets(file_id, 0, 0),
+                format!(
+                    "instantiation did not settle after {MAX_INSTANTIATION_ROUNDS} rounds: this file \
+                     produces an unbounded family of instantiations"
+                ),
+            )
+            .with_code(E0280)
+            .with_help(
+                "a polymorphic procedure instantiating itself at a new type each round cannot \
+                 terminate; give the recursion a concrete type",
+            ),
+        );
+    }
+
+    Some(Instantiated {
+        hir: expansion.hir,
+        resolve: expansion.resolve,
+        signatures: expansion.signatures,
+        check: expansion.check,
+        diagnostics,
+        redirects,
+        comptime_masks,
+        body_scopes: expansion.body_scopes,
+    })
+}
+
+/// One round: append a procedure per key and recompute resolve, signatures and the check.
+fn expand_round(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+    start_hir: &jr_hir::FileHir,
+    keys: &[CallKey],
+    comptime_keys: &[CallKey],
+) -> Expansion {
+    let file_id = crate::queries::resolve_file_id(db, file);
+    let interner = db.interner();
+    let base_sigs_for_vars = file_signatures(db, file, search_paths);
 
     // Append one procedure per distinct key. Each key's bound types are paired with the template's type
     // variables — both in `poly_vars` order (ADR-0083 §1, §2), so the i-th bound type is the i-th
     // variable's. The variable names come from the base file's signatures, which is where the template's
     // `poly_vars` lives.
-    let mut hir = (*file_hir(db, file)).clone();
+    let mut hir = start_hir.clone();
     let mut instantiations: Vec<jr_hir::Instantiation> = keys
         .iter()
         .map(|(template, bound_types)| {
@@ -558,7 +729,7 @@ pub(crate) fn instantiated(
     // position, `None` at a runtime parameter's, and the appender drops the `Some` params and bakes
     // their literals.
     let comptime_start = instantiations.len();
-    for (template, values) in &comptime_keys {
+    for (template, values) in comptime_keys {
         let sig = base_sigs_for_vars.signatures.proc_sig(*template);
         let comptime_flags = sig.map(|s| s.comptime_params.clone()).unwrap_or_default();
         let mut value_iter = values.iter().copied();
@@ -576,6 +747,19 @@ pub(crate) fn instantiated(
     let new_ids =
         jr_hir::expand_instantiations(&mut hir, interner, &pool_for_expand, &instantiations);
     drop(pool_for_expand);
+
+    // Pair each clone's body scope with its template's (ADR-0120 §5). Both are read *after* the append, so
+    // the clone's `BodyId` exists; a template with no body (a `#foreign` one cannot be polymorphic, but the
+    // field is an `Option`) contributes no pair, which reads as "nothing to carry across".
+    let body_scopes: Vec<(jr_hir::ExprScope, jr_hir::ExprScope)> = instantiations
+        .iter()
+        .zip(&new_ids)
+        .filter_map(|(inst, &new_id)| {
+            let from = hir.proc(inst.template).body?;
+            let to = hir.proc(new_id).body?;
+            Some((jr_hir::ExprScope::Body(from), jr_hir::ExprScope::Body(to)))
+        })
+        .collect();
     let hir = Arc::new(hir);
 
     // Recompute resolve and signatures over the expanded tree.
@@ -669,55 +853,16 @@ pub(crate) fn instantiated(
     let check = translate_check_output(output, &sig_output.types);
     diagnostics.extend(check.diagnostics.iter().cloned());
 
-    // Map each call to the `ProcRef` of the procedure appended for its key. The `$T` calls are indexed
-    // into the first `keys.len()` entries of `new_ids`; the `$N` calls into the tail, offset by
-    // `comptime_start`. Both share the redirects vector because MIR's `call_rvalue` reads one map.
-    let mut redirects: Vec<((jr_hir::ExprScope, jr_hir::ExprId), jr_mir::ProcRef)> = calls
-        .iter()
-        .map(|(call, key)| {
-            let index = keys
-                .iter()
-                .position(|k| k == key)
-                .expect("key was collected above");
-            (*call, jr_mir::ProcRef::new(file_id, new_ids[index]))
-        })
-        .collect();
-    for (call, key) in &comptime_calls_vec {
-        let index = comptime_keys
-            .iter()
-            .position(|k| k == key)
-            .expect("comptime key was collected above");
-        redirects.push((
-            *call,
-            jr_mir::ProcRef::new(file_id, new_ids[comptime_start + index]),
-        ));
-    }
-
-    // For each comptime call, record its argument-drop mask — one boolean per source-order argument,
-    // `true` for a `$N` argument to drop. The mask is the template's `comptime_params` flags exactly,
-    // because the checker preserved source order (an ordinary call's arguments correspond 1:1 to the
-    // template's parameters).
-    let comptime_masks: Vec<((jr_hir::ExprScope, jr_hir::ExprId), Vec<bool>)> = comptime_calls_vec
-        .iter()
-        .map(|(call, (template, _))| {
-            let mask = base_sigs_for_vars
-                .signatures
-                .proc_sig(*template)
-                .map(|sig| sig.comptime_params.clone())
-                .unwrap_or_default();
-            (*call, mask)
-        })
-        .collect();
-
-    Some(Instantiated {
+    Expansion {
         hir,
         resolve: resolve_map,
         signatures,
         check,
         diagnostics,
-        redirects,
-        comptime_masks,
-    })
+        new_ids,
+        comptime_start,
+        body_scopes,
+    }
 }
 
 /// Every imported module's signatures, for a consumer that needs to look a library type up (ADR-0092 §1).

@@ -76,6 +76,18 @@ visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919
 case, which is why the *corpus* count is tracked too — and sub-wave 5 reaches **984** with three `jr-cli`
 integration tests, because the driver's behaviour is not something a corpus file can observe (210 corpus files).
 
+W7 sub-waves 1–17 reach **986** (211 corpus files). The audit sub-waves then go **988** (ADR-0120, the
+expansion fixed point, +2 corpus files) → **990** (ADR-0121, the comptime step budget) → **1001**
+(ADR-0122, `BUILD_OUTPUT` confinement — nine of the eleven are unit tests on the predicate, which is
+why a wave can move this number a long way without touching the corpus) → **1005** (ADR-0123, the
+cross-crate code check) → **1007** (ADR-0124, two latent traps) → **1008** (ADR-0125, `print_int`
+executed at last, +1 corpus file = **213**).
+
+**A number in this file is now partly enforced.** `crates/jr-cli/tests/codes.rs` fails when the
+"first free code" claim below rots. The test count and the corpus count are still prose, and both were
+wrong in three places each when the audit looked — which is the argument for reading §7 rather than
+trusting a count you find anywhere else.
+
 ## House style
 
 Enforced by the first four gates, so it is not a matter of taste:
@@ -153,7 +165,7 @@ picking a side quietly.
   `Invalid node type`, which is why gate 6 now runs it over all four query files
   (ADR-0025 §4).
 - Editor integration is **verified, not gated**:
-  `nvim --headless -u NONE -l editors/nvim/verify.lua` (23 checks, non-zero on failure).
+  `nvim --headless -u NONE -l editors/nvim/verify.lua` (166 checks, non-zero on failure).
   Neovim is not a build dependency, so it is not one of the six — but run it after
   touching `jr-lsp`, `grammar.js` or the queries.
 - `insta` snapshots: review the `.snap.new` diff, then move it over the `.snap` and
@@ -165,7 +177,9 @@ picking a side quietly.
 
 ## Diagnostic codes
 
-There is no central registry; each crate has a `code.rs` with one constant per code and
+There is no central registry of *constants*; the ownership table below is the central record, and
+`crates/jr-cli/tests/codes.rs` enforces the part of it that is mechanically checkable. Each crate
+keeps its codes near where they are raised — most in a `code.rs`, with one constant per code and
 a `///` saying exactly what raises it. Ranges: E0001–E0006 lexer, E0100–E0199 parser,
 E0200–E0211 `jr-hir` (E0210 actually raised by `jr-db`'s module loader, E0204 relocated
 to `jr-sema`), E0212–E0226 `jr-sema`, E0227–E0229 `jr-mir`, E0230 `jr-db` const-eval,
@@ -192,14 +206,25 @@ E0274 was a call to a `#modify` procedure while its predicate was unevaluated;
 ADR-0095 **retired** it when the predicate began running, the way E0120/E0122 were retired. E0275 is an
 instantiation **rejected by its `#modify` predicate** — **owned by `jr-db`** beside E0230/E0271, because the
 predicate is evaluated in `file_mir`.
-
 E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0280 is the first free code**; E0132 is the first free *parser* code. E0231 is `jr-db`'s
+**E0282 is the first free code**; E0132 is the first free *parser* code. E0280 refuses an
+instantiation family that never settles and E0281 a `$N` call in a file whose `#insert`
+operand is computed (both ADR-0120, **owned by `jr-db`**). E0231 is `jr-db`'s
 unused-import warning — the first code in this project that is a *warning* rather than an
 error, so a consumer filtering by severity has something to filter.
+
+**This table is the authoritative one, and it is partly enforced.**
+`crates/jr-cli/tests/codes.rs` reads every code declaration in the workspace and checks the
+invariant no per-crate test can state — that no two crates declare the same code — plus that a
+constant named after a code binds that code, and that the "first free code" sentence above is
+true. So the number in bold fails a test when it rots; the prose around it still does not, and
+`AGENTS.md` is the only place the ownership story is written down. Two other copies of this table
+existed, in `jr-syntax/src/code.rs` and `jr-db/src/imports.rs`, and by the time the audit at
+`354d900` looked they had drifted three ways — `jr-syntax`'s claimed E0131 was free while E0131
+was in use. Both copies are now pointers here.
 
 `jr-syntax` used to be the exception that proved the rule — it had no `code.rs`, its codes
 were inline `&str` literals, and so its parser emitted **E0200/E0201/E0202** for three
@@ -208,3 +233,12 @@ unresolved-name and use-before-declaration. A `&str` cannot collide at compile t
 this stood for waves behind a warning here telling people not to filter tests by those
 codes. The codes are now E0120–E0122 and the crate has a `code.rs` whose tests assert that
 no code is used twice and that every one falls inside a range the crate owns.
+
+**`jr-hir` and `jr-db` still have no `code.rs`** — their codes are inline constants at or near
+their emission sites (`jr-hir/src/lower.rs`, `jr-hir/src/resolve.rs`, `jr-db/src/consts.rs`,
+`imports.rs`, `module_loader.rs`, `mir.rs`, `sema.rs`). That contradicts the first sentence of
+this section and is recorded rather than quietly tolerated: the cross-crate test above closes the
+*collision* risk those files carried, which was the reason the rule existed, so consolidating them
+is now tidiness rather than a defect. `jr-mir` shows the other legitimate convention — it names its
+codes semantically (`USE_OF_UNINITIALISED`) and binds the code as the value, which the test
+accommodates deliberately.

@@ -1,0 +1,30 @@
+// **A computed `#insert` and a polymorphic call in one file** — two expansions that had to
+// compose and did not.
+//
+// `file_mir` ran `instantiated` only when there had been no `#insert` expansion, on the
+// stated grounds that "a computed `#insert` that *introduces* a polymorphic call is out of
+// scope". But the code skipped instantiation whenever **any** insert expanded, and the two
+// features need not touch: the `$T` call here is in the same body as the insert but owes it
+// nothing. So a file combining them lost every redirect, lowered `Callee::Direct(id)` and
+// reported `internal compiler error: no routine for file 0 proc 0` — a program `jr check`
+// called clean. The narrow exclusion the comment described is now the one the code
+// implements: the two expansions compose, and only a *pending* operand still refuses.
+//
+// Exits **42**, asserted as a value: `bonus` comes from the inserted statement and `40` from
+// the instantiation, so a lost insert and a lost redirect are told apart by the number rather
+// than by agreement between the engines.
+#import "Basic";
+
+/// A computed operand — a named constant, which is ADR-0073's computed form rather than the
+/// literal one, so the expansion this file needs is genuinely the `#insert` branch.
+CODE :: "bonus := 2;";
+
+/// An ordinary template, owing the insert nothing.
+id :: (x: $T) -> T {
+    return x;
+}
+
+main :: () {
+    #insert CODE;
+    exit(id(40) + bonus);
+}

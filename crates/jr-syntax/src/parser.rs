@@ -242,6 +242,63 @@ const MAX_DEPTH: u32 = 256;
 /// nowhere near the code that caused it.
 const MAX_CHAIN: u32 = 1024;
 
+/// The directive that replaces a procedure's body rather than decorating it.
+///
+/// Not a [`ProcAttr`]: `#foreign` stands *where the body goes*, so it is parsed by the body arm and
+/// not by the attribute loop. It appears in [`Parser::looks_like_proc_signature`] because it ends a
+/// signature just as an attribute does — which is the one thing the two have in common, and the
+/// reason that lookahead's list was never quite the attribute list.
+const FOREIGN_DIRECTIVE: &str = "#foreign";
+
+/// A procedure **attribute**: a directive written between a signature and its body.
+///
+/// # Why this is an enum and not two lists of strings
+///
+/// The set of attributes was written out twice — once in
+/// [`Parser::looks_like_proc_signature`]'s lookahead, which decides whether `f :: (…)` is a
+/// *procedure* or a parenthesised-expression constant, and once in the loop that consumes them. The
+/// two lists were unlinked, and this project has recorded **seven** separate bugs from that: each
+/// time an attribute was added to the loop and not to the lookahead, a procedure carrying it was read
+/// as a parenthesised expression and collapsed into a cascade — fourteen errors, in `#expand`'s case,
+/// none of them pointing at the attribute.
+///
+/// One `&str` list shared by both sites would have fixed the *symptom*. This fixes the mechanism: the
+/// loop matches on the enum **exhaustively**, so adding a variant is a compile error there, and the
+/// lookahead is derived from [`Self::from_text`] rather than restated. A string match cannot be made
+/// exhaustive, which is exactly why seven of these got through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcAttr {
+    /// `#c_call` — the C calling convention (ADR-0001).
+    CCall,
+    /// `#no_abc` — no array bounds checks in this procedure (ADR-0003, ADR-0058).
+    NoAbc,
+    /// `#expand` — a macro whose call splices its body into the caller's scope (ADR-0090).
+    Expand,
+    /// `#modify { … }` — a compile-time predicate guarding instantiation (ADR-0093). The only
+    /// attribute carrying a block, which is why the loop's arm for it is not a bare kind.
+    Modify,
+}
+
+impl ProcAttr {
+    /// Every attribute, so a test can check that each is accepted at both sites.
+    const ALL: [Self; 4] = [Self::CCall, Self::NoAbc, Self::Expand, Self::Modify];
+
+    /// The directive text that names this attribute.
+    const fn text(self) -> &'static str {
+        match self {
+            Self::CCall => "#c_call",
+            Self::NoAbc => "#no_abc",
+            Self::Expand => "#expand",
+            Self::Modify => "#modify",
+        }
+    }
+
+    /// The attribute `text` names, or `None` for any other directive.
+    fn from_text(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|attr| attr.text() == text)
+    }
+}
+
 struct Parser<'src> {
     text: &'src str,
     tokens: &'src [Token],
@@ -372,10 +429,10 @@ impl<'src> Parser<'src> {
                 // reach `L_BRACE`/`ARROW` above — was read as a parenthesised-expression constant and
                 // collapsed into fourteen cascading errors. The fifth time this list has decided what a
                 // construct is.
-                DIRECTIVE => matches!(
-                    &self.text[self.tokens[i].range],
-                    "#foreign" | "#c_call" | "#no_abc" | "#expand" | "#modify"
-                ),
+                DIRECTIVE => {
+                    let text = &self.text[self.tokens[i].range];
+                    text == FOREIGN_DIRECTIVE || ProcAttr::from_text(text).is_some()
+                }
                 _ => false,
             },
         }
@@ -385,7 +442,6 @@ impl<'src> Parser<'src> {
     fn at_set(&mut self, set: TokenSet) -> bool {
         set.contains(self.current())
     }
-
     // ---- trivia handling -------------------------------------------------
 
     /// Advance `pos` past trivia, collecting them into `pending_trivia`.
@@ -1003,16 +1059,19 @@ impl<'src> Parser<'src> {
             if !self.at(DIRECTIVE) {
                 break;
             }
-            let kind = match self.current_directive_text() {
-                "#c_call" => C_CALL_ATTR,
-                "#no_abc" => NO_ABC_ATTR,
+            let Some(attr) = ProcAttr::from_text(self.current_directive_text()) else {
+                break;
+            };
+            let kind = match attr {
+                ProcAttr::CCall => C_CALL_ATTR,
+                ProcAttr::NoAbc => NO_ABC_ATTR,
                 // `#expand` makes the procedure a macro: a call splices its body into the caller's
                 // scope rather than calling it (ADR-0090 §1). Accepted in the same loop, so it may be
                 // written in any order with the other two — the ordering rule ADR-0058 refused to add.
-                "#expand" => EXPAND_ATTR,
+                ProcAttr::Expand => EXPAND_ATTR,
                 // `#modify { … }` carries a **block** — the compile-time predicate (ADR-0093 §1) — so it
                 // is parsed here rather than being a bare token like the other three.
-                "#modify" => {
+                ProcAttr::Modify => {
                     self.start_node(MODIFY_ATTR);
                     self.bump(); // `#modify`
                     if self.at(L_BRACE) {
@@ -1024,7 +1083,6 @@ impl<'src> Parser<'src> {
                     self.finish_node();
                     continue;
                 }
-                _ => break,
             };
             self.start_node(kind);
             self.bump();
@@ -1033,7 +1091,7 @@ impl<'src> Parser<'src> {
         // Body or foreign attribute
         match self.current() {
             L_BRACE => self.parse_block(),
-            DIRECTIVE if self.current_directive_text() == "#foreign" => {
+            DIRECTIVE if self.current_directive_text() == FOREIGN_DIRECTIVE => {
                 self.parse_foreign_attr();
                 self.expect(SEMICOLON);
             }
@@ -2618,6 +2676,61 @@ fn dump_token(token: &crate::kind::SyntaxToken, out: &mut String, indent: usize)
 mod tests {
     use super::*;
     use expect_test::{Expect, expect};
+
+    /// Every [`ProcAttr`] must end a signature *and* be consumed by the attribute loop.
+    ///
+    /// The check the token-set trap needed **seven** times. Each of those bugs was an attribute added
+    /// to the loop and not to `looks_like_proc_signature`'s lookahead, after which a procedure carrying
+    /// it was read as a parenthesised-expression constant — `#expand` produced fourteen cascading
+    /// errors, none pointing at the attribute.
+    ///
+    /// A **void** procedure is used deliberately: with no `->` and the attribute between the parameter
+    /// list and the brace, the lookahead reaches neither `ARROW` nor `L_BRACE`, so the attribute is the
+    /// only thing that can tell it this is a procedure. That is the exact shape every one of the seven
+    /// bugs took, and a test using `-> s64` would pass with the lookahead completely broken.
+    #[test]
+    fn every_proc_attribute_ends_a_signature_and_is_consumed() {
+        for attr in ProcAttr::ALL {
+            // `#modify` carries a block; the others are bare.
+            let written = if attr == ProcAttr::Modify {
+                format!("{} {{ return true; }}", attr.text())
+            } else {
+                attr.text().to_owned()
+            };
+            let source = format!("f :: (x: s64) {written} {{ }}\n");
+            let p = parse(&source, file());
+            assert!(
+                !p.has_errors(),
+                "`{}` on a void procedure did not parse cleanly: {:?}\nsource: {source}",
+                attr.text(),
+                p.diagnostics()
+                    .iter()
+                    .map(|d| d.message.clone())
+                    .collect::<Vec<_>>(),
+            );
+            let dumped = dump_tree(&p.syntax());
+            assert!(
+                dumped.contains("(PROC\n"),
+                "`{}` was not read as a procedure — the lookahead is missing it, which is the \
+                 token-set trap for the eighth time\nsource: {source}\ntree:\n{dumped}",
+                attr.text(),
+            );
+        }
+    }
+
+    /// `#foreign` ends a signature too, but is **not** an attribute.
+    ///
+    /// It stands where the body goes, so it is the body arm's rather than the loop's. Pinned because
+    /// the distinction is the reason the lookahead's list was never quite the attribute list, and a
+    /// future tidy-up that folded `#foreign` into [`ProcAttr`] would make the loop consume it and leave
+    /// the procedure bodyless.
+    #[test]
+    fn foreign_ends_a_signature_without_being_an_attribute() {
+        assert!(ProcAttr::from_text(FOREIGN_DIRECTIVE).is_none());
+        let p = parse("f :: (x: s64) #foreign libc;\n", file());
+        assert!(!p.has_errors());
+        assert!(dump_tree(&p.syntax()).contains("(PROC\n"));
+    }
 
     fn file() -> FileId {
         FileId::from_usize(0)
