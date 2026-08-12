@@ -190,3 +190,294 @@ round :: (x: float64) -> float64 {
     }
     return cast(float64, cast(s64, x + 0.5));
 }
+
+// ============================================================================
+// Vectors (ADR-0130, sub-wave 3a)
+// ============================================================================
+//
+// `Vector2`, `Vector3` and `Vector4`, with `+ - * / ==` as **operator overloads** and the rest as
+// named procedures. ADR-0115 declared this module complete without them, which ADR-0127 §3 recorded as
+// one of six promises a completed wave did not keep; this is that promise, in the part that needs no
+// language change.
+//
+// # Why the element type is `float64`
+//
+// Jai's `Vector3` is `float32`, for SIMD packing and GPU interchange. Neither exists here yet — SIMD is
+// W8 and graphics W10 — while `sqrt` is `#foreign libc "sqrt"`, which is a **double**. `length` therefore
+// needs a `float64` at the boundary, so a `float32` vector would cast on the way in and back on the way
+// out at every call. The element type follows the module it lives in rather than the language it is
+// modelled on. A packed `float32` vector belongs with the wave that has a reason for it.
+//
+// # Why the names carry a dimension
+//
+// `dot3` rather than `dot`, because **Jairs has no procedure overloading**: a second `dot` is E0200,
+// duplicate declaration. Only *operators* resolve by parameter type, which is why `+` needs no suffix and
+// `dot` does. This is a language gap showing through a library's names, not a naming preference — when
+// overloading arrives these collapse into one overloaded `dot`, and the operators will not change at all.
+//
+// # Why there are three types rather than one generic `Vector($T, $N)`
+//
+// Because a template body cannot use the operators it would need. Resolving `a + b` inside a `$T` body
+// against the *instantiated* type is operator-bounded polymorphism, which `Sort` also names as absent
+// (`modules/Sort` §18). A generic vector would have to spell out `a.x + b.x` per component anyway, and
+// could not offer `+` to its callers, so it would be strictly worse than three concrete types.
+
+/// A 2-component vector of `float64`.
+Vector2 :: struct {
+    /// The first component.
+    x: float64;
+    /// The second component.
+    y: float64;
+}
+
+/// A 3-component vector of `float64`.
+Vector3 :: struct {
+    /// The first component.
+    x: float64;
+    /// The second component.
+    y: float64;
+    /// The third component.
+    z: float64;
+}
+
+/// A 4-component vector of `float64`. The `w` component is what makes a `Matrix4` translation reachable.
+Vector4 :: struct {
+    /// The first component.
+    x: float64;
+    /// The second component.
+    y: float64;
+    /// The third component.
+    z: float64;
+    /// The fourth component.
+    w: float64;
+}
+
+/// Builds a [`Vector2`].
+vec2 :: (x: float64, y: float64) -> Vector2 {
+    r: Vector2;
+    r.x = x;
+    r.y = y;
+    return r;
+}
+
+/// Builds a [`Vector3`].
+vec3 :: (x: float64, y: float64, z: float64) -> Vector3 {
+    r: Vector3;
+    r.x = x;
+    r.y = y;
+    r.z = z;
+    return r;
+}
+
+/// Builds a [`Vector4`].
+vec4 :: (x: float64, y: float64, z: float64, w: float64) -> Vector4 {
+    r: Vector4;
+    r.x = x;
+    r.y = y;
+    r.z = z;
+    r.w = w;
+    return r;
+}
+
+operator + :: (a: Vector2, b: Vector2) -> Vector2 {
+    return vec2(a.x + b.x, a.y + b.y);
+}
+
+operator + :: (a: Vector3, b: Vector3) -> Vector3 {
+    return vec3(a.x + b.x, a.y + b.y, a.z + b.z);
+}
+
+operator + :: (a: Vector4, b: Vector4) -> Vector4 {
+    return vec4(a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w);
+}
+
+operator - :: (a: Vector2, b: Vector2) -> Vector2 {
+    return vec2(a.x - b.x, a.y - b.y);
+}
+
+operator - :: (a: Vector3, b: Vector3) -> Vector3 {
+    return vec3(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+operator - :: (a: Vector4, b: Vector4) -> Vector4 {
+    return vec4(a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w);
+}
+
+operator * :: (a: Vector2, s: float64) -> Vector2 {
+    return vec2(a.x * s, a.y * s);
+}
+
+operator * :: (s: float64, a: Vector2) -> Vector2 {
+    return vec2(a.x * s, a.y * s);
+}
+
+operator * :: (a: Vector3, s: float64) -> Vector3 {
+    return vec3(a.x * s, a.y * s, a.z * s);
+}
+
+operator * :: (s: float64, a: Vector3) -> Vector3 {
+    return vec3(a.x * s, a.y * s, a.z * s);
+}
+
+operator * :: (a: Vector4, s: float64) -> Vector4 {
+    return vec4(a.x * s, a.y * s, a.z * s, a.w * s);
+}
+
+operator * :: (s: float64, a: Vector4) -> Vector4 {
+    return vec4(a.x * s, a.y * s, a.z * s, a.w * s);
+}
+
+operator / :: (a: Vector2, s: float64) -> Vector2 {
+    return vec2(a.x / s, a.y / s);
+}
+
+operator / :: (a: Vector3, s: float64) -> Vector3 {
+    return vec3(a.x / s, a.y / s, a.z / s);
+}
+
+operator / :: (a: Vector4, s: float64) -> Vector4 {
+    return vec4(a.x / s, a.y / s, a.z / s, a.w / s);
+}
+
+operator == :: (a: Vector2, b: Vector2) -> bool {
+    return a.x == b.x && a.y == b.y;
+}
+
+operator == :: (a: Vector3, b: Vector3) -> bool {
+    return a.x == b.x && a.y == b.y && a.z == b.z;
+}
+
+operator == :: (a: Vector4, b: Vector4) -> bool {
+    return a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w;
+}
+
+/// Negates each component. A **procedure, not `operator -`**, because a unary overload would collide
+/// with the binary one on arity alone and is out of scope (`type-errors/048`).
+negate2 :: (a: Vector2) -> Vector2 {
+    return vec2(-a.x, -a.y);
+}
+
+/// Negates each component. See [`negate2`] for why this is not `operator -`.
+negate3 :: (a: Vector3) -> Vector3 {
+    return vec3(-a.x, -a.y, -a.z);
+}
+
+/// Negates each component. See [`negate2`] for why this is not `operator -`.
+negate4 :: (a: Vector4) -> Vector4 {
+    return vec4(-a.x, -a.y, -a.z, -a.w);
+}
+
+/// The dot product.
+dot2 :: (a: Vector2, b: Vector2) -> float64 {
+    return a.x * b.x + a.y * b.y;
+}
+
+/// The dot product.
+dot3 :: (a: Vector3, b: Vector3) -> float64 {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+/// The dot product.
+dot4 :: (a: Vector4, b: Vector4) -> float64 {
+    return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+}
+
+/// The **squared** length. Exact for exact components, since it takes no square root — prefer it when
+/// comparing magnitudes, where the root is a cost with no effect on the ordering.
+length_squared2 :: (a: Vector2) -> float64 {
+    return dot2(a, a);
+}
+
+/// The squared length. See [`length_squared2`].
+length_squared3 :: (a: Vector3) -> float64 {
+    return dot3(a, a);
+}
+
+/// The squared length. See [`length_squared2`].
+length_squared4 :: (a: Vector4) -> float64 {
+    return dot4(a, a);
+}
+
+/// The length. Calls libm's `sqrt`, so both engines agree to the last bit (ADR-0115).
+length2 :: (a: Vector2) -> float64 {
+    return sqrt(length_squared2(a));
+}
+
+/// The length. See [`length2`].
+length3 :: (a: Vector3) -> float64 {
+    return sqrt(length_squared3(a));
+}
+
+/// The length. See [`length2`].
+length4 :: (a: Vector4) -> float64 {
+    return sqrt(length_squared4(a));
+}
+
+/// The distance between two points.
+distance2 :: (a: Vector2, b: Vector2) -> float64 {
+    return length2(a - b);
+}
+
+/// The distance between two points.
+distance3 :: (a: Vector3, b: Vector3) -> float64 {
+    return length3(a - b);
+}
+
+/// The distance between two points.
+distance4 :: (a: Vector4, b: Vector4) -> float64 {
+    return length4(a - b);
+}
+
+/// A unit vector in the same direction.
+///
+/// **A zero vector answers the zero vector**, rather than a NaN or a trap. There is no unit vector in
+/// "no direction", so every implementation has to choose; returning zero keeps the result usable in the
+/// arithmetic that follows, where a NaN would silently poison every later component and a trap would make
+/// a degenerate case unsurvivable. A caller who needs to know tests [`length_squared2`] first.
+normalize2 :: (a: Vector2) -> Vector2 {
+    len := length2(a);
+    if len == 0.0 {
+        return vec2(0.0, 0.0);
+    }
+    return a / len;
+}
+
+/// A unit vector in the same direction. See [`normalize2`] for the zero case.
+normalize3 :: (a: Vector3) -> Vector3 {
+    len := length3(a);
+    if len == 0.0 {
+        return vec3(0.0, 0.0, 0.0);
+    }
+    return a / len;
+}
+
+/// A unit vector in the same direction. See [`normalize2`] for the zero case.
+normalize4 :: (a: Vector4) -> Vector4 {
+    len := length4(a);
+    if len == 0.0 {
+        return vec4(0.0, 0.0, 0.0, 0.0);
+    }
+    return a / len;
+}
+
+/// The cross product — **`Vector3` only**, because the cross product is only a binary operation in three
+/// dimensions. There is deliberately no `cross2` or `cross4`.
+cross :: (a: Vector3, b: Vector3) -> Vector3 {
+    return vec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+}
+
+/// Linear interpolation: `t = 0.0` gives `a`, `t = 1.0` gives `b`. `t` outside that range extrapolates,
+/// which is deliberate — clamping would hide a caller's mistake and [`clamp`] is one call away.
+lerp2 :: (a: Vector2, b: Vector2, t: float64) -> Vector2 {
+    return a + (b - a) * t;
+}
+
+/// Linear interpolation. See [`lerp2`].
+lerp3 :: (a: Vector3, b: Vector3, t: float64) -> Vector3 {
+    return a + (b - a) * t;
+}
+
+/// Linear interpolation. See [`lerp2`].
+lerp4 :: (a: Vector4, b: Vector4, t: float64) -> Vector4 {
+    return a + (b - a) * t;
+}

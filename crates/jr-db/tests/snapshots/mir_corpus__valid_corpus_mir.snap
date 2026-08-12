@@ -9809,3 +9809,301 @@ proc main -> void {
     discard call extern proc1(1_s64)
     return
 }
+
+========================================
+103-math-vectors.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: struct  // local 1
+    s1: struct  // local 2
+  bb0(v0: *Context):
+    v1: struct = call extern proc18(v0, 1.0_float64, 2.0_float64, 3.0_float64)
+    store s0 <- v1
+    v2: float64 = load s0.0
+    v3: bool = v2 == 1.0_float64
+    branch v3 ? bb1() : bb2()
+  bb1():
+    v5: float64 = load s0.1
+    v6: bool = v5 == 2.0_float64
+    goto bb3(v6)
+  bb2():
+    goto bb3(false)
+  bb3(v4: bool):
+    branch v4 ? bb4() : bb5()
+  bb4():
+    v8: float64 = load s0.2
+    v9: bool = v8 == 3.0_float64
+    goto bb6(v9)
+  bb5():
+    goto bb6(false)
+  bb6(v7: bool):
+    branch v7 ? bb7() : bb8()
+  bb7():
+    v12: s64 = 0_s64 + 1_s64
+    goto bb9(v12)
+  bb8():
+    goto bb9(0_s64)
+  bb9(v19: s64):
+    v13: struct = call extern proc18(v0, 4.0_float64, 5.0_float64, 6.0_float64)
+    store s1 <- v13
+    v14: struct = load s0
+    v15: struct = load s1
+    v16: struct = call extern proc21(v0, v14, v15)
+    v17: struct = call extern proc18(v0, 5.0_float64, 7.0_float64, 9.0_float64)
+    v18: bool = call extern proc36(v0, v16, v17)
+    branch v18 ? bb10() : bb11()
+  bb10():
+    v20: s64 = v19 + 2_s64
+    goto bb12(v20)
+  bb11():
+    goto bb12(v19)
+  bb12(v26: s64):
+    v21: struct = load s1
+    v22: struct = load s0
+    v23: struct = call extern proc24(v0, v21, v22)
+    v24: struct = call extern proc18(v0, 3.0_float64, 3.0_float64, 3.0_float64)
+    v25: bool = call extern proc36(v0, v23, v24)
+    branch v25 ? bb13() : bb14()
+  bb13():
+    v27: s64 = v26 + 4_s64
+    goto bb15(v27)
+  bb14():
+    goto bb15(v26)
+  bb15(v38: s64):
+    v28: struct = load s0
+    v29: struct = call extern proc28(v0, v28, 2.0_float64)
+    v30: struct = call extern proc18(v0, 2.0_float64, 4.0_float64, 6.0_float64)
+    v31: bool = call extern proc36(v0, v29, v30)
+    branch v31 ? bb16() : bb17()
+  bb16():
+    v33: struct = load s0
+    v34: struct = call extern proc29(v0, 2.0_float64, v33)
+    v35: struct = call extern proc18(v0, 2.0_float64, 4.0_float64, 6.0_float64)
+    v36: bool = call extern proc36(v0, v34, v35)
+    goto bb18(v36)
+  bb17():
+    goto bb18(false)
+  bb18(v32: bool):
+    branch v32 ? bb19() : bb20()
+  bb19():
+    v39: s64 = v38 + 8_s64
+    goto bb21(v39)
+  bb20():
+    goto bb21(v38)
+  bb21(v44: s64):
+    v40: struct = call extern proc18(v0, 2.0_float64, 4.0_float64, 6.0_float64)
+    v41: struct = call extern proc33(v0, v40, 2.0_float64)
+    v42: struct = load s0
+    v43: bool = call extern proc36(v0, v41, v42)
+    branch v43 ? bb22() : bb23()
+  bb22():
+    v45: s64 = v44 + 16_s64
+    goto bb24(v45)
+  bb23():
+    goto bb24(v44)
+  bb24(v50: s64):
+    v46: struct = call extern proc18(v0, 1.0_float64, 0.0_float64, 0.0_float64)
+    v47: struct = call extern proc18(v0, 0.0_float64, 1.0_float64, 0.0_float64)
+    v48: float64 = call extern proc42(v0, v46, v47)
+    v49: bool = v48 == 0.0_float64
+    branch v49 ? bb25() : bb26()
+  bb25():
+    v51: s64 = v50 + 32_s64
+    goto bb27(v51)
+  bb26():
+    goto bb27(v50)
+  bb27(v63: s64):
+    v52: struct = load s0
+    v53: struct = load s0
+    v54: float64 = call extern proc42(v0, v52, v53)
+    v55: struct = load s0
+    v56: float64 = call extern proc45(v0, v55)
+    v57: bool = v54 == v56
+    branch v57 ? bb28() : bb29()
+  bb28():
+    v59: struct = load s0
+    v60: float64 = call extern proc45(v0, v59)
+    v61: bool = v60 == 14.0_float64
+    goto bb30(v61)
+  bb29():
+    goto bb30(false)
+  bb30(v58: bool):
+    branch v58 ? bb31() : bb32()
+  bb31():
+    v64: s64 = v63 + 64_s64
+    goto bb33(v64)
+  bb32():
+    goto bb33(v63)
+  bb33(v70: s64):
+    v65: struct = call extern proc18(v0, 1.0_float64, 0.0_float64, 0.0_float64)
+    v66: struct = call extern proc18(v0, 0.0_float64, 1.0_float64, 0.0_float64)
+    v67: struct = call extern proc56(v0, v65, v66)
+    v68: struct = call extern proc18(v0, 0.0_float64, 0.0_float64, 1.0_float64)
+    v69: bool = call extern proc36(v0, v67, v68)
+    branch v69 ? bb34() : bb35()
+  bb34():
+    v71: s64 = v70 + 128_s64
+    goto bb36(v71)
+  bb35():
+    goto bb36(v70)
+  bb36(v78: s64):
+    v72: struct = call extern proc18(v0, 0.0_float64, 1.0_float64, 0.0_float64)
+    v73: struct = call extern proc18(v0, 1.0_float64, 0.0_float64, 0.0_float64)
+    v74: struct = call extern proc56(v0, v72, v73)
+    v75: float64 = -1.0_float64
+    v76: struct = call extern proc18(v0, 0.0_float64, 0.0_float64, v75)
+    v77: bool = call extern proc36(v0, v74, v76)
+    branch v77 ? bb37() : bb38()
+  bb37():
+    v79: s64 = v78 + 256_s64
+    goto bb39(v79)
+  bb38():
+    goto bb39(v78)
+  bb39(v83: s64):
+    v80: struct = call extern proc18(v0, 3.0_float64, 4.0_float64, 0.0_float64)
+    v81: float64 = call extern proc48(v0, v80)
+    v82: bool = v81 == 5.0_float64
+    branch v82 ? bb40() : bb41()
+  bb40():
+    v84: s64 = v83 + 512_s64
+    goto bb42(v84)
+  bb41():
+    goto bb42(v83)
+  bb42(v89: s64):
+    v85: struct = call extern proc18(v0, 1.0_float64, 1.0_float64, 0.0_float64)
+    v86: struct = call extern proc18(v0, 4.0_float64, 5.0_float64, 0.0_float64)
+    v87: float64 = call extern proc51(v0, v85, v86)
+    v88: bool = v87 == 5.0_float64
+    branch v88 ? bb43() : bb44()
+  bb43():
+    v90: s64 = v89 + 1024_s64
+    goto bb45(v90)
+  bb44():
+    goto bb45(v89)
+  bb45(v95: s64):
+    v91: struct = call extern proc18(v0, 0.0_float64, 3.0_float64, 4.0_float64)
+    v92: struct = call extern proc54(v0, v91)
+    v93: struct = call extern proc18(v0, 0.0_float64, 0.6_float64, 0.8_float64)
+    v94: bool = call extern proc36(v0, v92, v93)
+    branch v94 ? bb46() : bb47()
+  bb46():
+    v96: s64 = v95 + 2048_s64
+    goto bb48(v96)
+  bb47():
+    goto bb48(v95)
+  bb48(v101: s64):
+    v97: struct = call extern proc18(v0, 0.0_float64, 0.0_float64, 0.0_float64)
+    v98: struct = call extern proc54(v0, v97)
+    v99: struct = call extern proc18(v0, 0.0_float64, 0.0_float64, 0.0_float64)
+    v100: bool = call extern proc36(v0, v98, v99)
+    branch v100 ? bb49() : bb50()
+  bb49():
+    v102: s64 = v101 + 4096_s64
+    goto bb51(v102)
+  bb50():
+    goto bb51(v101)
+  bb51(v115: s64):
+    v103: struct = load s0
+    v104: struct = load s1
+    v105: struct = call extern proc58(v0, v103, v104, 0.0_float64)
+    v106: struct = load s0
+    v107: bool = call extern proc36(v0, v105, v106)
+    branch v107 ? bb52() : bb53()
+  bb52():
+    v109: struct = load s0
+    v110: struct = load s1
+    v111: struct = call extern proc58(v0, v109, v110, 1.0_float64)
+    v112: struct = load s1
+    v113: bool = call extern proc36(v0, v111, v112)
+    goto bb54(v113)
+  bb53():
+    goto bb54(false)
+  bb54(v108: bool):
+    branch v108 ? bb55() : bb56()
+  bb55():
+    v116: s64 = v115 + 8192_s64
+    goto bb57(v116)
+  bb56():
+    goto bb57(v115)
+  bb57(v122: s64):
+    v117: struct = call extern proc18(v0, 0.0_float64, 0.0_float64, 0.0_float64)
+    v118: struct = call extern proc18(v0, 2.0_float64, 4.0_float64, 8.0_float64)
+    v119: struct = call extern proc58(v0, v117, v118, 0.5_float64)
+    v120: struct = call extern proc18(v0, 1.0_float64, 2.0_float64, 4.0_float64)
+    v121: bool = call extern proc36(v0, v119, v120)
+    branch v121 ? bb58() : bb59()
+  bb58():
+    v123: s64 = v122 + 16384_s64
+    goto bb60(v123)
+  bb59():
+    goto bb60(v122)
+  bb60(v131: s64):
+    v124: struct = load s0
+    v125: struct = call extern proc39(v0, v124)
+    v126: float64 = -1.0_float64
+    v127: float64 = -2.0_float64
+    v128: float64 = -3.0_float64
+    v129: struct = call extern proc18(v0, v126, v127, v128)
+    v130: bool = call extern proc36(v0, v125, v129)
+    branch v130 ? bb61() : bb62()
+  bb61():
+    v132: s64 = v131 + 32768_s64
+    goto bb63(v132)
+  bb62():
+    goto bb63(v131)
+  bb63(v143: s64):
+    v133: struct = call extern proc17(v0, 1.0_float64, 2.0_float64)
+    v134: struct = call extern proc17(v0, 3.0_float64, 4.0_float64)
+    v135: struct = call extern proc20(v0, v133, v134)
+    v136: struct = call extern proc17(v0, 4.0_float64, 6.0_float64)
+    v137: bool = call extern proc35(v0, v135, v136)
+    branch v137 ? bb64() : bb65()
+  bb64():
+    v139: struct = call extern proc17(v0, 3.0_float64, 4.0_float64)
+    v140: float64 = call extern proc47(v0, v139)
+    v141: bool = v140 == 5.0_float64
+    goto bb66(v141)
+  bb65():
+    goto bb66(false)
+  bb66(v138: bool):
+    branch v138 ? bb67() : bb68()
+  bb67():
+    v144: s64 = v143 + 65536_s64
+    goto bb69(v144)
+  bb68():
+    goto bb69(v143)
+  bb69(v155: s64):
+    v145: struct = call extern proc19(v0, 1.0_float64, 2.0_float64, 3.0_float64, 4.0_float64)
+    v146: struct = call extern proc30(v0, v145, 2.0_float64)
+    v147: struct = call extern proc19(v0, 2.0_float64, 4.0_float64, 6.0_float64, 8.0_float64)
+    v148: bool = call extern proc37(v0, v146, v147)
+    branch v148 ? bb70() : bb71()
+  bb70():
+    v150: struct = call extern proc19(v0, 1.0_float64, 0.0_float64, 0.0_float64, 0.0_float64)
+    v151: struct = call extern proc19(v0, 0.0_float64, 1.0_float64, 0.0_float64, 0.0_float64)
+    v152: float64 = call extern proc43(v0, v150, v151)
+    v153: bool = v152 == 0.0_float64
+    goto bb72(v153)
+  bb71():
+    goto bb72(false)
+  bb72(v149: bool):
+    branch v149 ? bb73() : bb74()
+  bb73():
+    v156: s64 = v155 + 131072_s64
+    goto bb75(v156)
+  bb74():
+    goto bb75(v155)
+  bb75(v157: s64):
+    v158: bool = v157 == 262143_s64
+    branch v158 ? bb76() : bb77()
+  bb76():
+    discard call extern proc1(0_s64)
+    goto bb78()
+  bb77():
+    goto bb78()
+  bb78():
+    discard call extern proc1(1_s64)
+    return
+}
