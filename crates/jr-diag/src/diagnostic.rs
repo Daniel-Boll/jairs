@@ -68,9 +68,18 @@ impl Label {
 /// compiler records a chain of these frames so that errors inside the
 /// instantiation can be traced back to the call site.
 ///
-/// This type is defined now (in the vertical slice) even though polymorphs
-/// land in wave W5, because retrofitting instantiation backtraces after the
-/// fact is a known failure mode (see PLAN.md §5).
+/// This type was defined in the vertical slice, ahead of the polymorphs that would
+/// use it, because retrofitting instantiation backtraces afterwards is a known
+/// failure mode (`PLAN.md` §5).
+///
+/// **The retrofit is owed anyway, and this is the honest status.** W5 is complete
+/// (ADR-0081–0097) and `PLAN.md` §2.1's W5 row promised "instantiation backtraces in
+/// diagnostics", but nothing outside this crate ever constructs a frame: `with_frame`
+/// and [`InstantiationFrame::new`] are called only by the renderer's own tests. So the
+/// machinery and its renderer exist and are exercised in isolation, while no real
+/// diagnostic carries a backtrace — which means the pre-emptive definition bought
+/// nothing yet, rather than that the feature shipped. Wiring it is a call-site change in
+/// `jr-sema`'s instantiation path, not a change here.
 #[derive(Debug, Clone)]
 pub struct InstantiationFrame {
     /// The call-site span that triggered this instantiation.

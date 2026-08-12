@@ -80,6 +80,12 @@ impl Renderer {
         // Append instantiation backtrace as plain text after the snippet output.
         if self.config.show_backtrace && !diag.backtrace.is_empty() {
             let mut s = output;
+            // `annotate-snippets` does not end its output with a newline, so without this the first
+            // frame was glued onto the caret line: "^^^^^  note: in instantiation of ...". Added here
+            // rather than inside `render_backtrace`, which is also called where the separator differs.
+            if !s.is_empty() && !s.ends_with('\n') {
+                s.push('\n');
+            }
             s.push_str(&render_backtrace(map, &diag.backtrace));
             s
         } else {

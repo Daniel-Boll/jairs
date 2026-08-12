@@ -373,7 +373,16 @@ pub fn check_file(
             }
         }
         let root = hir.body(body).root;
+        // **Watermark, then stamp** (ADR-0128 §3). Every diagnostic this body produces is stamped with
+        // the instantiation backtrace afterwards, rather than each of the checker's hundreds of `push`
+        // sites learning about polymorphism — which is the only version of this that cannot be forgotten
+        // by the next diagnostic somebody adds.
+        let watermark = ctx.diags.len();
         ctx.check_stmt(body, root);
+        if let Some(proc) = owner.get(&body) {
+            let frames = instantiation_backtrace(hir, &owner, *proc);
+            ctx.diags.attach_frames_since(watermark, &frames);
+        }
         ctx.body = None;
         ctx.value_bindings.clear();
         ctx.comptime_param_names.clear();
@@ -405,6 +414,56 @@ pub fn check_file(
         instantiations: ctx.instantiations,
         comptime_calls: ctx.comptime_calls,
     }
+}
+
+/// The instantiation backtrace for a body's procedure, innermost frame first.
+///
+/// Empty for an ordinary procedure, which is the common case and costs one failed map lookup.
+///
+/// # Why it walks, rather than reporting one frame
+///
+/// A template that calls a template produces a clone whose body calls another clone, so a diagnostic in
+/// the innermost one is only explicable by the whole chain: `main` demanded `outer($T = bool)`, whose
+/// body demanded `inner($T = bool)`, and the error is in `inner`. Each site records the *arena* its
+/// demanding call sat in, so `owner` turns that into the enclosing procedure and the walk continues while
+/// that procedure is itself an instantiation.
+///
+/// Innermost first because that is the order [`jr_diag`]'s renderer prints, and it matches how a reader
+/// reads an error: the thing that broke, then why it was asked for.
+///
+/// **Bounded**, like every other fixed-point walk in this compiler (`MAX_OPT_ROUNDS`,
+/// `MAX_INSTANTIATION_ROUNDS`): a recursive template could otherwise produce a cycle, and a diagnostic
+/// path is the worst place to hang. A truncated backtrace is still useful; a hung `jr check` is not.
+fn instantiation_backtrace(
+    hir: &FileHir,
+    owner: &FxHashMap<BodyId, ProcId>,
+    proc: ProcId,
+) -> Vec<jr_diag::InstantiationFrame> {
+    /// Enough to explain any chain a person wrote, and short enough that a cycle costs nothing.
+    const MAX_BACKTRACE_FRAMES: usize = 8;
+
+    let mut frames = Vec::new();
+    let mut current = proc;
+    for _ in 0..MAX_BACKTRACE_FRAMES {
+        let Some((_, site)) = hir.instantiation_sites.iter().find(|(p, _)| *p == current) else {
+            break;
+        };
+        frames.push(site.frame.clone());
+        // Continue only while the demanding call sat in a body whose procedure is itself an
+        // instantiation; a call from an ordinary procedure ends the chain, which is where the user's
+        // own code begins.
+        let Some(ExprScope::Body(body)) = site.called_from else {
+            break;
+        };
+        let Some(next) = owner.get(&body) else {
+            break;
+        };
+        if *next == current {
+            break;
+        }
+        current = *next;
+    }
+    frames
 }
 
 // ---------------------------------------------------------------------------
@@ -571,7 +630,13 @@ impl Ctx<'_> {
                                     "a `for` iterates a fixed-size array `[N]T`, a view `[]T`,                                      or a range `a..b`",
                                 )
                                 .with_help(
-                                    "a user type cannot be iterated yet — that needs the                                      iteration protocol wave W5's macros unlock",
+                                    // **Not "wave W5's macros unlock it".** W5 is complete and
+                                    // `#expand` macros ship (ADR-0090, ADR-0091), so the stated
+                                    // blocker is gone while the feature is still absent — an
+                                    // expired reason reads as a considered decision.
+                                    "a user type cannot be iterated: the macros such a protocol \
+                                     would be built on exist (ADR-0091), but no iteration \
+                                     protocol is defined and no wave owns one",
                                 ),
                             );
                         }
@@ -5354,8 +5419,8 @@ pub(crate) fn bin_op_text(op: BinOp) -> &'static str {
 /// it is a real limitation: the most negative value of a signed type cannot be
 /// written as a literal, because its magnitude is one past the positive bound.
 ///
-/// Written against `(signed, bits)` rather than against `s64` and `u8` because
-/// wave W1's full numeric tower would otherwise rewrite it.
+/// Written against `(signed, bits)` rather than against `s64` and `u8` so that W1's
+/// full numeric tower would not have to rewrite it — which it did not (ADR-0037).
 fn literal_fits(signed: bool, bits: u16, value: i128) -> bool {
     // Against the type's **range**, not its maximum magnitude. The old test compared a
     // magnitude, so `-128` was 128 tested against `s8`'s 127 and every signed minimum was

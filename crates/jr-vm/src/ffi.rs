@@ -204,7 +204,9 @@ fn is_pointer_return(vm: &Vm<'_>, foreign: &ForeignProc) -> bool {
 /// refused rather than flattened: the arm64 and x86-64 rules for passing a struct by
 /// value differ from each other and from the naive "one word per field", so guessing
 /// would produce a call that works on one platform and corrupts the stack on the
-/// other. `to_c_string()` and by-value aggregates arrive with wave W3.
+/// other. `to_c_string()` and by-value aggregates are **still absent, and wave W3 has
+/// shipped** — this comment named W3 for several waves after that, so it described a
+/// schedule rather than a plan. Neither is owned by a wave today.
 fn marshal(vm: &Vm<'_>, value: &Value, ty: PoolId) -> Result<u64, VmError> {
     let pool = vm.pool();
     match pool.item(ty) {

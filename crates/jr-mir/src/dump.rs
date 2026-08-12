@@ -979,6 +979,7 @@ proc <0> -> s64 {
             expr_spans: Vec::new(),
             type_refs: Vec::new(),
             proc_bindings: Vec::new(),
+            instantiation_sites: Vec::new(),
             param_values: Vec::new(),
             modify_predicates: Vec::new(),
             predicate_vars: Vec::new(),

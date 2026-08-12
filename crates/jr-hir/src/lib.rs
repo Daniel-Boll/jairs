@@ -65,6 +65,6 @@ pub use hir::{
     Literal, Local, LocalId, Param, ParamId, Proc, ProcId, Res, Stmt, StmtId, Struct, StructId,
     SwitchArm, TypeRef, TypeRefId, UnOp,
 };
-pub use instantiate::{Instantiation, expand_instantiations};
+pub use instantiate::{Instantiation, InstantiationSite, expand_instantiations};
 pub use lower::{lower_file, lower_file_with_inserts};
 pub use resolve::{ExprScope, ResolveMap, resolve};

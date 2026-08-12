@@ -18,10 +18,24 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 1009 tests green.
+Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 1010 tests green.
 
 **The four most recent waves were driven by an audit rather than by a feature**
 ([`docs/assessment-2026-08-07.md`](docs/assessment-2026-08-07.md)).
+
+**Instantiation diagnostics now name the call that demanded them** (ADR-0128) — the first of the six
+unkept promises below to be kept. The frame machinery had existed since the vertical slice, defined early
+so the feature "would not need retrofitting", and W5 shipped without ever constructing one; the real gap
+was that an instantiation carried no call span. A multi-level chain is still owed.
+
+**Expired deferrals have been swept out of the code** (ADR-0127), and this one was found by a user
+reading a single diagnostic rather than by a gate. `E0207` told people that nested procedures "arrive in
+wave W2" **six waves after W2 shipped** — and W2's scope never included them, so the note named a wave
+that had both passed and never owned the feature. Eleven such places now say what is *owed* instead of
+when it arrives. `E0212` also stopped claiming "`void` is not a type name in Jairs" while
+`size_of(void)` folds to 0. §2.1 of [`PLAN.md`](PLAN.md) now records **six features a completed wave
+promised and did not deliver**, including instantiation backtraces, whose machinery exists and has no
+production caller at all.
 
 **A foreign call's pointer span is now bounded by the VM's own check** (ADR-0126), the first of the three
 narrow security dispatches that audit said it still owed. Translating a pointer argument for libffi validated
@@ -494,7 +508,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 1009 workspace tests; six gates green on macOS arm64 — **locally**, since CI
+`print_int` (ADR-0037). 1010 workspace tests; six gates green on macOS arm64 — **locally**, since CI
 has never run — plus 166 Neovim checks that are verified rather than gated.
 
 ### What you can actually do

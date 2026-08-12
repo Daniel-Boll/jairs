@@ -47,7 +47,7 @@ pub enum SyntaxKind {
     // ---- literals --------------------------------------------------------
     /// `42`, `0xdead_beef`, `0b1010`, `0o755`.
     INT_LITERAL,
-    /// `1.5`, `1.0e9`. Reserved: floats arrive in wave W1.
+    /// `1.5`, `1.0e9`. Real syntax as of ADR-0040, not reserved.
     FLOAT_LITERAL,
     /// `"text"`.
     STRING_LITERAL,
@@ -88,20 +88,20 @@ pub enum SyntaxKind {
     /// renumbering the kind space to move one keyword out would churn every `u16` in it for
     /// no behavioural gain. The parser is what decides whether a keyword is refused.
     ENUM_KW,
-    /// `union` — reserved, wave W1.
+    /// `union` — real syntax as of ADR-0045, not reserved.
     UNION_KW,
-    /// `for` — reserved, wave W2.
+    /// `for` — real syntax as of ADR-0049, not reserved.
     FOR_KW,
-    /// `defer` — reserved, wave W2.
+    /// `defer` — real syntax as of ADR-0049, not reserved.
     DEFER_KW,
-    /// `using` — reserved, wave W2.
+    /// `using` — real syntax as of ADR-0050, not reserved.
     USING_KW,
     /// `cast` — real syntax as of ADR-0037, not a reserved word.
     ///
     /// This comment said "reserved, wave W1" for three waves after `cast` landed. See
     /// [`SyntaxKind::ENUM_KW`] for why it stays in this block regardless.
     CAST_KW,
-    /// `xx` (autocast) — reserved, wave W1.
+    /// `xx` (autocast) — real syntax as of ADR-0046, not reserved.
     XX_KW,
     /// `null` — real syntax as of ADR-0060, a context-typed pointer literal.
     ///
@@ -190,7 +190,9 @@ pub enum SyntaxKind {
     DOT,
     /// `.*` — postfix dereference.
     DOT_STAR,
-    /// `..` — reserved, wave W1 (`[..]T`).
+    /// `..` — still reserved. `[..]T` was W1's and **W1 shipped without it**:
+    /// a dynamic array is E0124, and the growable array that exists is the
+    /// `List($T)` *library* type (ADR-0107). No wave owns the syntax.
     DOT_DOT,
     /// `---` — explicitly uninitialised.
     UNINIT,
@@ -265,7 +267,7 @@ pub enum SyntaxKind {
     /// `!`
     BANG,
 
-    // ---- bitwise (reserved, wave W1) -------------------------------------
+    // ---- bitwise (real syntax as of ADR-0042) ----------------------------
     /// `&` — reserved.
     AMP,
     /// `|` — reserved.
@@ -278,7 +280,7 @@ pub enum SyntaxKind {
     SHL,
     /// `>>` — reserved.
     SHR,
-    /// `@` — reserved, wave W6 (declaration notes).
+    /// `@` — real syntax as of ADR-0098 (declaration notes), not reserved.
     AT,
     /// `$` — introduces a polymorphic type variable, `$T` (ADR-0081 §1).
     DOLLAR,

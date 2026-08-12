@@ -1,6 +1,6 @@
 //! The [`Diagnostics`] sink: collects, queries, and sorts diagnostics.
 
-use crate::diagnostic::{Diagnostic, Severity};
+use crate::diagnostic::{Diagnostic, InstantiationFrame, Severity};
 
 /// A sink that collects [`Diagnostic`]s produced during compilation.
 ///
@@ -26,6 +26,33 @@ impl Diagnostics {
     /// Adds all diagnostics from an iterator.
     pub fn extend(&mut self, iter: impl IntoIterator<Item = Diagnostic>) {
         self.inner.extend(iter);
+    }
+
+    /// Attaches `frames` to every diagnostic pushed at or after `watermark`.
+    ///
+    /// # Why a watermark rather than mutable iteration
+    ///
+    /// An instantiation's diagnostics are produced by the ordinary checker, at hundreds of
+    /// `push` sites that know nothing about polymorphism. Threading a frame to each would
+    /// touch every one of them and be forgotten at the next; recording [`Diagnostics::len`]
+    /// before a body is checked and stamping everything added since is one call at the one
+    /// place that knows the body *is* an instantiation.
+    ///
+    /// A public `iter_mut` would do this too, and would widen the sink's API to every
+    /// consumer so one caller could stamp a field — the trade ADR-0123 refused when it
+    /// declined a `pub const CODES` for a test's convenience. This method says what it is
+    /// for, so nothing else can quietly depend on mutating a collected diagnostic.
+    ///
+    /// Frames already present are kept and the new ones appended after them, so an inner
+    /// instantiation's frame stays innermost. A `watermark` past the end is not an error: a
+    /// body that produced no diagnostics stamps nothing.
+    pub fn attach_frames_since(&mut self, watermark: usize, frames: &[InstantiationFrame]) {
+        if frames.is_empty() {
+            return;
+        }
+        for diag in self.inner.iter_mut().skip(watermark) {
+            diag.backtrace.extend(frames.iter().cloned());
+        }
     }
 
     /// Returns `true` if no diagnostics have been collected.

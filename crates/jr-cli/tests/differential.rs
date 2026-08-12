@@ -756,16 +756,22 @@ fn both_engines(source: &str, dir: &Path, name: &str) -> (Behaviour, Behaviour) 
 
 /// A program that computes `expr` and makes the answer observable.
 ///
-/// Jairs-0 cannot print an integer — that needs a `s64`-to-`u8` conversion and `cast`
-/// is reserved until wave W1, which `modules/Basic` documents at length. But
-/// `modules/Basic` does export `exit`, so a computation's result can leave the program
-/// as its **exit status**, and an exit status is observable in both engines.
+/// A computation's result leaves the program as its **exit status**, via `exit` from
+/// `modules/Basic`, because an exit status is observable in both engines.
 ///
-/// This matters because it is what gives the corpus differential teeth. Only two of
-/// the fifteen executable corpus programs print anything, so on its own that test
-/// largely compares "no output, exit 0" with "no output, exit 0" — it would catch a
-/// crash or a spurious trap, and it did catch a wrong exit status, but it says almost
-/// nothing about whether the two back ends *compute* the same values.
+/// This used to say Jairs "cannot print an integer" because `cast` was "reserved until
+/// wave W1". Both halves expired: `cast` landed in ADR-0037 and `print_int` is written
+/// in Jairs and executed by `valid/101` (ADR-0125). An exit status is still the right
+/// mechanism here — it is the cheapest thing both engines agree on — but it is now a
+/// choice rather than the only option.
+///
+/// This matters because it is what gives the corpus differential teeth. Only a few of
+/// the executable corpus programs print anything, so on its own that test largely
+/// compares "no output, exit 0" with "no output, exit 0" — it would catch a crash or a
+/// spurious trap, and it did catch a wrong exit status, but it says almost nothing about
+/// whether the two back ends *compute* the same values. (This sentence carried a count —
+/// "two of the fifteen" — which the corpus outgrew long ago; a bare count in prose rots,
+/// so the shape of the argument is stated without one.)
 fn exit_with(expr: &str) -> String {
     format!("#import \"Basic\";\n\nmain :: () {{\n    exit({expr});\n}}\n")
 }
