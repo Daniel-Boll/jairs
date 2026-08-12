@@ -32,6 +32,26 @@
 //! ADR-0004's stated payoff, that Jairs strings are already the `(pointer, length)`
 //! shape `write(2)` wants.
 //!
+//! # What that bounds check does and does not cover
+//!
+//! [`marshal`] validates a pointer argument for **one byte**, because one byte is all it
+//! knows the callee will touch: a C signature does not say how far a `*u8` reaches. So the
+//! check confirms the pointer is *inside* the region and nothing more.
+//!
+//! Where the VM **itself** dereferences a span it must validate that span, and
+//! [`capture_write`] does — an over-long `write` is `Trap::BadAddress` rather than a read
+//! past the end of the region's `Vec<u8>`. That distinction is the whole of ADR-0126.
+//!
+//! **Still owed, and stated rather than implied**: a foreign callee that reads further than
+//! one byte through a pointer the VM handed it — `strlen` on an unterminated buffer at the
+//! region's end, a `memcpy` whose length outruns its source — reads outside the region, and
+//! `Memory`'s module docs call that the same hazard native code has. Bounding it needs the
+//! length to come from somewhere, and the candidates are a per-symbol table of `(pointer,
+//! count)` shapes — the token-set trap this project has counted seven bugs from (ADR-0124) —
+//! or a real sandbox that copies in and out, which would cost ADR-0004's zero-copy payoff
+//! above. Neither is worth deciding in passing, so the honest position is that the region
+//! bounds the VM and does not bound libc.
+//!
 //! # Why `#foreign` is not yet resolved through a real `dlopen`
 //!
 //! Every symbol the slice needs — `write`, `exit` — is already linked into this
@@ -104,12 +124,69 @@ pub(crate) fn call(
         _ => {}
     }
 
+    // Capture what a `write` will produce, **before** marshalling and from the Jairs address
+    // rather than from a host pointer — see [`capture_write`] for why that ordering is the fix
+    // and not a detail.
+    if foreign.symbol == "write" {
+        capture_write(vm, args)?;
+    }
+
     let mut raw = Vec::with_capacity(args.len());
     for (value, ty) in args.iter().zip(&foreign.params) {
         raw.push(marshal(vm, value, *ty)?);
     }
 
     dispatch(vm, foreign, &raw)
+}
+
+/// Records what a `write` call is about to produce, refusing a span the VM does not own.
+///
+/// # Why this reads the Jairs address instead of the host pointer
+///
+/// The bytes have to be validated over **`count`**, and only the Jairs address can be: the
+/// bound is a property of the VM's region, so the check belongs to [`Memory::read`], which is
+/// the same check every other access goes through. Doing it here — before [`marshal`] — is
+/// what makes that possible, because after marshalling only a raw host pointer survives and
+/// nothing can bound one.
+///
+/// This replaces a `slice::from_raw_parts(buf, count)` over a pointer [`marshal`] had
+/// validated **one byte** of. That is not a narrow miss: `count` is the program's own value,
+/// so `write(1, s.data, 4_000_000)` on a two-byte string read ~3 MB past the end of the
+/// region's `Vec<u8>` and captured it as the program's output, and a count of 2e9 killed the
+/// compiler with `SIGBUS`. The `unsafe` block's comment asserted the address had been
+/// "bounds-checked", which was true only at one byte — a stated invariant nobody had checked,
+/// the failure mode `AGENTS.md` names.
+///
+/// It also removes the `unsafe` rather than fixing it: [`Memory::read`] hands back a safe
+/// `&[u8]`, so the span is bounded *by construction* instead of by a comment. Copying it to
+/// own the bytes costs one memcpy that `Vm::capture` was doing anyway.
+///
+/// An over-long count is `Trap::BadAddress`, not a new diagnostic: passing a count past the
+/// end of a buffer is a program error exactly as an out-of-range index is (ADR-0003), and it
+/// already has the right trap. Refusing **before** the call also keeps the bogus `(pointer,
+/// count)` pair away from the real `write(2)`, so the trap fixes the VM's own undefined
+/// behaviour and the host call in one place.
+///
+/// The file descriptor is deliberately ignored, exactly as before: whether a `write` to
+/// `STDERR` belongs in `captured_output` is a separate question, and answering it here would
+/// change what every existing test observes.
+fn capture_write(vm: &mut Vm<'_>, args: &[Value]) -> Result<(), VmError> {
+    let [_, buf, count] = args else {
+        // A program may declare `write` with some other arity; it is then not the one whose
+        // output is captured, and the call is left to the bridge as any other.
+        return Ok(());
+    };
+    let address = buf.scalar()?;
+    let count = count.as_int(IntKind::S64)?;
+    // A null buffer or a non-positive count produces nothing, and a *negative* count is
+    // skipped rather than trapped so that this reports what the previous `usize::try_from`
+    // did — the fix is the missing bound, not a new refusal.
+    if address == 0 || count <= 0 {
+        return Ok(());
+    }
+    let bytes = vm.memory().read(address, count as u64)?.to_vec();
+    vm.capture(&bytes);
+    Ok(())
 }
 
 /// Whether a foreign procedure's declared return type is a pointer.
@@ -174,21 +251,6 @@ fn dispatch(vm: &mut Vm<'_>, foreign: &ForeignProc, args: &[u64]) -> Result<Valu
     if foreign.symbol == "exit" {
         let status = args.first().copied().unwrap_or(0);
         return Err(VmError::Exited(status as i64));
-    }
-
-    // Capture what a write would produce before making the call, so a test can assert
-    // on a program's output without capturing the process's own stdout.
-    if foreign.symbol == "write"
-        && let [_, buf, count] = *args
-    {
-        let count = usize::try_from(count).unwrap_or(0);
-        if buf != 0 && count != 0 {
-            // SAFETY: `marshal` produced `buf` from `Memory::host_pointer`, which
-            // bounds-checked the address inside the VM's non-moving region, and
-            // nothing has allocated or released since.
-            let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, count) };
-            vm.capture(bytes);
-        }
     }
 
     let code = symbol(foreign)?;

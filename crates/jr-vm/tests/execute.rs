@@ -567,6 +567,34 @@ fn a_foreign_result_comes_back_as_a_value() {
 }
 
 #[test]
+fn a_write_whose_count_leaves_the_region_traps_rather_than_reading_past_it() {
+    // ADR-0126. `marshal` validates a pointer argument for **one byte**, and the capture path
+    // then built a `slice::from_raw_parts(buf, count)` over it — so `count` was never bounded.
+    // With a two-byte string in a 1 MiB region, `4_000_000` read ~3 MB past the end of that
+    // region's `Vec<u8>` and captured it as the program's own output; `2e9` killed the process
+    // with `SIGBUS`; and the native back end wrote 114,688 bytes for the same program, so the
+    // two engines disagreed. The span the VM itself dereferences must go through the same
+    // bounds check as every other access.
+    //
+    // Note what this pins and what it does not: the bound is the **region**, not the buffer.
+    // `s.count + 100` still reads neighbouring VM bytes, which is the linear-memory model
+    // `Memory`'s own docs describe. What can no longer happen is *leaving* the region.
+    let source =
+        format!("{BASIC}go :: () -> s64 {{ s := \"hi\"; return write(1, s.data, 4000000); }}");
+    let fixture = Fixture::build(&source);
+    let mut vm = Vm::new(&fixture.program, &fixture.pool, Mode::Runtime).expect("room");
+    let args = fixture.with_context(&mut vm, "go", Vec::new());
+    match vm.call(fixture.proc("go"), args) {
+        Err(VmError::Trap(Trap::BadAddress { .. })) => {}
+        other => panic!("an over-long write must trap, got {other:?}"),
+    }
+    assert!(
+        vm.captured_output().is_empty(),
+        "nothing may be captured from a span the VM does not own"
+    );
+}
+
+#[test]
 fn exit_stops_the_program_without_stopping_the_compiler() {
     // Calling the host `exit` would end the build. It becomes a value the CLI turns
     // into an exit status instead.
