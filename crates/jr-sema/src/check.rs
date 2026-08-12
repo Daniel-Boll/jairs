@@ -373,7 +373,16 @@ pub fn check_file(
             }
         }
         let root = hir.body(body).root;
+        // **Watermark, then stamp** (ADR-0128 §3). Every diagnostic this body produces is stamped with
+        // the instantiation backtrace afterwards, rather than each of the checker's hundreds of `push`
+        // sites learning about polymorphism — which is the only version of this that cannot be forgotten
+        // by the next diagnostic somebody adds.
+        let watermark = ctx.diags.len();
         ctx.check_stmt(body, root);
+        if let Some(proc) = owner.get(&body) {
+            let frames = instantiation_backtrace(hir, &owner, *proc);
+            ctx.diags.attach_frames_since(watermark, &frames);
+        }
         ctx.body = None;
         ctx.value_bindings.clear();
         ctx.comptime_param_names.clear();
@@ -405,6 +414,56 @@ pub fn check_file(
         instantiations: ctx.instantiations,
         comptime_calls: ctx.comptime_calls,
     }
+}
+
+/// The instantiation backtrace for a body's procedure, innermost frame first.
+///
+/// Empty for an ordinary procedure, which is the common case and costs one failed map lookup.
+///
+/// # Why it walks, rather than reporting one frame
+///
+/// A template that calls a template produces a clone whose body calls another clone, so a diagnostic in
+/// the innermost one is only explicable by the whole chain: `main` demanded `outer($T = bool)`, whose
+/// body demanded `inner($T = bool)`, and the error is in `inner`. Each site records the *arena* its
+/// demanding call sat in, so `owner` turns that into the enclosing procedure and the walk continues while
+/// that procedure is itself an instantiation.
+///
+/// Innermost first because that is the order [`jr_diag`]'s renderer prints, and it matches how a reader
+/// reads an error: the thing that broke, then why it was asked for.
+///
+/// **Bounded**, like every other fixed-point walk in this compiler (`MAX_OPT_ROUNDS`,
+/// `MAX_INSTANTIATION_ROUNDS`): a recursive template could otherwise produce a cycle, and a diagnostic
+/// path is the worst place to hang. A truncated backtrace is still useful; a hung `jr check` is not.
+fn instantiation_backtrace(
+    hir: &FileHir,
+    owner: &FxHashMap<BodyId, ProcId>,
+    proc: ProcId,
+) -> Vec<jr_diag::InstantiationFrame> {
+    /// Enough to explain any chain a person wrote, and short enough that a cycle costs nothing.
+    const MAX_BACKTRACE_FRAMES: usize = 8;
+
+    let mut frames = Vec::new();
+    let mut current = proc;
+    for _ in 0..MAX_BACKTRACE_FRAMES {
+        let Some((_, site)) = hir.instantiation_sites.iter().find(|(p, _)| *p == current) else {
+            break;
+        };
+        frames.push(site.frame.clone());
+        // Continue only while the demanding call sat in a body whose procedure is itself an
+        // instantiation; a call from an ordinary procedure ends the chain, which is where the user's
+        // own code begins.
+        let Some(ExprScope::Body(body)) = site.called_from else {
+            break;
+        };
+        let Some(next) = owner.get(&body) else {
+            break;
+        };
+        if *next == current {
+            break;
+        }
+        current = *next;
+    }
+    frames
 }
 
 // ---------------------------------------------------------------------------

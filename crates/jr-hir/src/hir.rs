@@ -1342,6 +1342,16 @@ pub struct FileHir {
     /// through `check_file`'s parameters because only the expanded tree ever has entries, and every other
     /// caller would pass an empty map.
     pub proc_bindings: Vec<(ProcId, Symbol, PoolId)>,
+    /// Where each appended instantiation was demanded, for a diagnostic's backtrace (ADR-0128).
+    ///
+    /// Empty for an ordinary file, exactly as [`FileHir::proc_bindings`] is, and carried on the HIR for
+    /// the same reason: only the expanded tree ever has entries, so threading it through `check_file`'s
+    /// parameters would make every other caller pass an empty vector.
+    ///
+    /// `jr-sema` reads this to stamp every diagnostic produced while checking an instantiation's body,
+    /// which is what turns "`bool` does not support `+`" — reported against a template a user may never
+    /// have opened — into that plus "in instantiation of `add($T = bool)`" at the call they wrote.
+    pub instantiation_sites: Vec<(ProcId, crate::instantiate::InstantiationSite)>,
     /// Per-procedure **comptime-value** bindings, for instantiated procedures (ADR-0089 §1).
     ///
     /// The value-side counterpart of [`FileHir::proc_bindings`]: an instantiation of a `$N` template maps

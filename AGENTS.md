@@ -85,7 +85,8 @@ executed at last, +1 corpus file = **213**) → **1009** (ADR-0126, the foreign-
 corpus file, because the VM traps where native writes short, so a program exercising it has no home in
 `valid/`, whose whole premise is that the two engines agree; the test lives in `jr-vm` instead).
 ADR-0127 holds at **1009** and adds one corpus file = **214**: a wording sweep changes no behaviour,
-and `type-errors/073` is iterated by the existing harness rather than adding a test case.
+and `type-errors/073` is iterated by the existing harness rather than adding a test case. ADR-0128 reaches
+**1010** (the instantiation-backtrace test) with no new corpus file.
 
 **A number in this file is now partly enforced.** `crates/jr-cli/tests/codes.rs` fails when the
 "first free code" claim below rots. The test count and the corpus count are still prose, and both were

@@ -1474,3 +1474,45 @@ fn checking_records_the_types_it_learned() {
     );
     assert!(result.types.local_count() >= 2);
 }
+
+/// **A diagnostic inside an instantiation names the call that demanded it** (ADR-0128).
+///
+/// Before this, `bool` reaching `a + b` reported "operator `+` is not supported for `bool`" against the
+/// *template's* line — code the reader may never have opened, and which is correct for every other
+/// instantiation of it. Nothing said which call produced `$T = bool`.
+///
+/// `jr-diag` had carried `InstantiationFrame`, `with_frame` and a renderer since the vertical slice,
+/// defined early *specifically* so this would not need retrofitting — and W5 shipped without ever
+/// constructing one, so the machinery was exercised only by its own tests. This is the test that would
+/// have caught that: it asserts a real diagnostic carries a real frame.
+#[test]
+fn a_diagnostic_inside_an_instantiation_carries_its_call_site() {
+    let (mut db, sp) = make_module_db_with_corpus();
+    let file = load_with_modules(
+        &mut db,
+        "backtrace.jr",
+        "add :: (a: $T, b: T) -> T {\n    return a + b;\n}\n\nmain :: () {\n    x := add(true, false);\n}\n",
+    );
+    let diags = file_diagnostics(&db, file, sp);
+    let framed: Vec<_> = diags.iter().filter(|d| !d.backtrace.is_empty()).collect();
+    assert!(
+        !framed.is_empty(),
+        "a diagnostic from an instantiated body must carry a backtrace, got {:?}",
+        diags
+            .iter()
+            .map(|d| (d.code, d.backtrace.len()))
+            .collect::<Vec<_>>()
+    );
+    // The description names the template *and* the binding, because "in instantiation of `add`" would
+    // not distinguish the `bool` call from a correct `s64` one beside it.
+    assert!(
+        framed
+            .iter()
+            .any(|d| d.backtrace[0].description == "in instantiation of `add($T = bool)`"),
+        "the frame must name the template and its bindings, got {:?}",
+        framed
+            .iter()
+            .map(|d| d.backtrace[0].description.clone())
+            .collect::<Vec<_>>()
+    );
+}

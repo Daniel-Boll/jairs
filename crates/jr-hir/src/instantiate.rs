@@ -27,6 +27,7 @@ use crate::hir::{
     ConstValue, Expr, FileHir, Item, ItemKind, Literal, Param, ParamId, Proc, ProcId, Res, TypeRef,
     TypeRefId,
 };
+use crate::resolve::ExprScope;
 
 /// One instantiation to append: the template procedure, its type bindings, and — for a comptime-value
 /// template — the baked value of each `$N` parameter (ADR-0083 §2, ADR-0088 §3).
@@ -45,6 +46,29 @@ pub struct Instantiation {
     /// For each of the template's parameters, `Some(value)` for a `$N` parameter baked to that value or
     /// `None` for a runtime one (ADR-0088 §3). Empty for a `$T`-only template (ordinary `$T` path).
     pub comptime_values: Vec<Option<PoolId>>,
+    /// Where this instantiation was demanded, for a diagnostic's backtrace (ADR-0128).
+    ///
+    /// `None` when the caller has no site to offer — a `jr-hir` unit test appending an instantiation
+    /// directly, for instance. The appender then records nothing, so a missing site costs a backtrace
+    /// rather than producing a wrong one.
+    pub site: Option<InstantiationSite>,
+}
+
+/// Where an instantiation was demanded, and how to describe it in a backtrace.
+///
+/// # Why the scope is kept beside the rendered frame
+///
+/// The [`frame`](Self::frame) alone gives one `note:` line. A **chain** — `main` calls `outer`, whose
+/// body calls `inner` — needs to know which *body* the call sat in, so the walk can ask whether that
+/// body's own procedure was itself an instantiation. [`ExprScope::Body`] carries exactly that, and
+/// `check_file` already holds the `BodyId → ProcId` map, so keeping the scope turns one frame into a
+/// full backtrace with no new bookkeeping.
+#[derive(Debug, Clone)]
+pub struct InstantiationSite {
+    /// The rendered frame: the call's span, and a description like ``in instantiation of `f($T = bool)` ``.
+    pub frame: jr_diag::InstantiationFrame,
+    /// The expression arena the demanding call sat in, or `None` for a top-level one.
+    pub called_from: Option<ExprScope>,
 }
 
 /// Appends one procedure per instantiation to `hir`, returning each instantiation's new `ProcId`
@@ -194,6 +218,14 @@ fn append_one(
     };
     let proc_id = ProcId::from_usize(hir.procs.len());
     hir.procs.push(proc);
+
+    // Recorded here because this is the first point at which the clone's `ProcId` exists, and the site
+    // has to be keyed on the clone rather than the template: two instantiations of one template were
+    // demanded from different call sites, and attributing a diagnostic to the template's own span would
+    // name the code the reader did not write (ADR-0128 §2).
+    if let Some(site) = inst.site.clone() {
+        hir.instantiation_sites.push((proc_id, site));
+    }
 
     // A **synthetic, unexported** name so the signature phase computes this procedure's signature — it
     // returns early for an unnamed item. The name cannot collide with a source name (a `$` is not a valid

@@ -258,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0127. See [`docs/adr/README.md`](docs/adr/README.md).
+Accepted ADRs: 0001–0128. See [`docs/adr/README.md`](docs/adr/README.md).
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
 plus `jr-sema`'s crate docs are the only record of the typing rules today.
@@ -329,9 +329,8 @@ dependency chain requires it. `rust-toolchain.toml` still floats on stable.
 > rather than inferred. A wave marked complete elsewhere in this document did not deliver:
 > **`[..]T` dynamic arrays** (W1 — E0124; the growable array that exists is the `List($T)` *library*
 > type, ADR-0107), **`it`/`it_index`** (W2 — `for xs { it }` does not parse; only `for x: xs` works),
-> **`$$T`** (W5 — E0107), **instantiation backtraces** (W5 — `InstantiationFrame` and its renderer
-> exist but have **no production caller**, so no real diagnostic carries one), and **`Math`
-> vec/mat/quat** (W7, still open — but ADR-0115 declared `Math` *complete*, which this row
+> **`$$T`** (W5 — E0107), **instantiation backtraces** (W5 — **now delivered** as a single frame by
+> ADR-0128; a multi-level *chain* is still owed), and **`Math` vec/mat/quat** (W7, still open — but ADR-0115 declared `Math` *complete*, which this row
 > contradicts). **Nested procedures and local constants** appear in no wave's scope at all, yet E0207
 > blamed W2 for them for six waves. Marked inline below as **[NOT DELIVERED]**.
 
@@ -342,7 +341,7 @@ dependency chain requires it. `rust-toolchain.toml` still floats on stable.
 | **W3 — Runtime core** | `context` (hidden param, `#c_call` opt-out), allocators, temporary storage, bounds-check build config, panics/traps with backtraces | Unlocks a real stdlib | 6–8 wks |
 | **W4 — Comptime** | Full `#run` (arbitrary code), aggressive const folding, RTTI (`Type` values, `type_info()`, `Any`), `#insert`, `#code`, the `Code` type | **Hardest wave.** Sema ↔ VM become mutually recursive; cycle detection with readable errors is the deliverable. **Delivered in sub-waves** (ADR-0069 §0), because a wave five times the size of any other cannot be verified the way the others were: **all ten shipped**: (1) `#run` across files and in a body (ADR-0069); (2) an array length from a constant (ADR-0070), which *replaced* "aggressive const folding" after ADR-0070 §0 found ADR-0022's const-prop had already delivered it; (3) a type as a compile-time value (ADR-0071); (4) `#insert` of a literal operand (ADR-0072); (5) of a **computed** operand (ADR-0073) — the mutual recursion this row calls the hardest part, broken by an acyclic pre-pass rather than salsa's fixed-point recovery; (6) aggregate constants (ADR-0074); (7) `type_info()` and a constant holding a string (ADR-0075); (8) `Any` with a checked read, plus `Type_Info`'s stable `id` the check needed (ADR-0076, ADR-0077); (9) `Type_Info`'s fixed-size per-kind facts (ADR-0078); (10) `#code` (ADR-0080), with a shipped silent miscompile refused on the way (ADR-0079). **Out of scope, each with a recorded reason**: `Type_Info`'s variable-length field list (owed its own wave — it needs a declared static-data mechanism, ADR-0079 §1); a `Code` *value* (**declined** until something can inspect a tree, ADR-0080 §3); a `#run` reading another file's constant (ADR-0073 §4, now reporting itself rather than an ICE) | 10–14 wks |
 | **W4.5 — Pattern matching** | `switch` with exhaustiveness checking, a bare `.RED` as a case (ADR-0041 §2 step 5), and a **tagged** variant type beside `union` (ADR-0045 §1) | **Was missing from this table entirely.** Two accepted ADRs deferred decisions to it while no wave scheduled it — found while closing W2 (ADR-0054's handoff). **Reordered before W4 by ADR-0067 §0.** This row used to say "placed after W4 because exhaustiveness diagnostics want comptime type info" — a *want*, not a need, and checking disproved it: `Pool::enum_members` is populated during checking (ADR-0041 §4), and `c == .GREEN` already worked, so `switch` and exhaustiveness needed nothing from W4. A wave order justified by a dependency that does not exist is §5's "plans that contradict themselves". Still before W5, because a polymorph over a variant type needs the variant | 4–6 wks |
-| **W5 — Polymorphism** | `$T`, `$$T` **[NOT DELIVERED — E0107]**, `#modify`, `#bake_arguments`, `#expand` macros + hygiene, instantiation caching, **instantiation backtraces** in diagnostics **[NOT DELIVERED — `InstantiationFrame` has no production caller]** | Depends on W4's InternPool value identity | 8–12 wks |
+| **W5 — Polymorphism** | `$T`, `$$T` **[NOT DELIVERED — E0107]**, `#modify`, `#bake_arguments`, `#expand` macros + hygiene, instantiation caching, **instantiation backtraces** in diagnostics **[single frame DELIVERED by ADR-0128; multi-level chain still owed]** | Depends on W4's InternPool value identity | 8–12 wks |
 | **W6 — Metaprogram** | Workspaces, compiler message loop, `#run build()` build scripts replacing makefiles, plugin hooks, `@note` attributes | The Jai superpower. Build scripts become the build system. | 6–8 wks |
 | **W7 — Stdlib** | In Jairs: `Basic`, `String`, dynamic array / hash table / bucket array, `Sort`, `Math` (vec/mat/quat **[NOT DELIVERED — ADR-0115 declared `Math` complete without them]**), `Random`, `File`, `File_Utilities`, `Process`, `Thread` + atomics, `Time`, `Socket`, `JSON`, `Compiler` | Runs partly in parallel with W5/W6; each module is a wave-acceptance test | 14–18 wks |
 | **W8 — Performance** | LLVM backend via `inkwell` (`--release`), inliner maturity, `#soa`, SIMD vectors, `#align`/`#place`, parallel Sema + parallel codegen, published compile-throughput number | Three-way differential testing: VM ≡ Cranelift ≡ LLVM | 10–14 wks |
@@ -523,7 +522,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **1009 workspace tests** and **214 corpus files**, all six gates green
+waiting. Both are tracked below. **1010 workspace tests** and **214 corpus files**, all six gates green
 **locally** — no CI run has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -1169,6 +1168,38 @@ through them** (ADR-0085 §5). So a growable array has real storage but stays pe
       **The residue: prose is still prose.** ADR-0123's lesson is that only enforced claims stay true,
       and nothing stops the next "arrives in wave WN" from being written. A lint refusing that literal
       phrase inside a `with_note`/`with_help` is conceivable and was not attempted.
+
+- [x] **A diagnostic inside an instantiation names the call that demanded it** (ADR-0128, sub-wave 25):
+      the first of ADR-0127 §3's six unkept promises to be **kept**, and the sharpest of them, because the
+      machinery *looked* present. `jr-diag` had carried `InstantiationFrame`, `with_frame`, a `backtrace`
+      field and a renderer **since the vertical slice** — defined that early, its own docs said, precisely
+      so this "would not need retrofitting". W5 then shipped in fifteen sub-waves and **nothing ever
+      constructed a frame**; the only callers were the renderer's own tests. The type existed, the tests
+      passed, and no real diagnostic carried a backtrace.
+
+      **The actual gap was that `Instantiation` carried no span** — not the renderer, which worked. It now
+      records one representative call site per distinct key (the *first* demand, since a second call with
+      the same bindings reuses the clone, and "first" is deterministic for a snapshot). The span is the
+      **call's**, never the template's: ADR-0043's argument one level out, since the template's line is
+      already the primary span and only the call locates *this* user's mistake. A missing site yields no
+      frame rather than a plausible one, because a backtrace naming the wrong line is worse than none.
+
+      **Attached by watermark**: `check_file` records `Diagnostics::len()` before a body and stamps
+      everything added since. Threading a frame through the checker's hundreds of `push` sites would touch
+      code that knows nothing about polymorphism and be forgotten by the next diagnostic anyone adds. One
+      new sink method rather than a public `iter_mut`, which would widen the API for every consumer so one
+      caller could stamp a field — ADR-0123's refused trade.
+
+      **A multi-level chain is still owed, and it is ADR-0120's lesson recurring.** The walk is written and
+      bounded (8 frames, like `MAX_OPT_ROUNDS`), but sites are harvested from the **first** round, so a call
+      written in a template's body is attributed to the *template's* body — whose owner is not an
+      instantiation, so the chain stops at one frame. Probed: a two-level case names `inner($T = bool)` and
+      not the enclosing `outer($U = s64)`. The fix is to harvest from the **final** round, exactly as
+      ADR-0120 did for redirects; left separate so a regression in either stays attributable.
+
+      Two rendering defects fixed on the way: a builtin binding rendered as `$T = ?` (the signatures know
+      only *declared* names), and the backtrace was glued onto the caret line because `annotate-snippets`
+      does not terminate its output.
 
 **W7 left after that** — corrected, because this list had gone stale and five of its items had shipped
 (`String`'s allocating half in ADR-0111, `Math` in ADR-0112 and ADR-0115, `Random` in ADR-0113, the dynamic
