@@ -1052,33 +1052,84 @@ impl<'a> Ctx<'a> {
     }
 
     /// Reads an enum member's explicit value, or reports why it is not usable.
+    ///
+    /// Accepts an integer literal, or a name for a constant whose initialiser is one — the same rule
+    /// ADR-0070 gave an array length, generalised here (ADR-0129 §1). The asymmetry between the two was
+    /// never a limit of the evaluator; only one of them had learnt the trick.
     fn enum_member_literal(&mut self, expr: jr_hir::ExprId, span: Span) -> Option<i64> {
         // Read straight from the top-level arena: `expr_of` lives on the checking half of
         // this context and a member value is resolved during *signatures*, which runs first.
-        if let Some(jr_hir::Expr::Literal(jr_hir::Literal::Int { value, .. }, _)) =
-            self.hir.exprs.get(expr.index())
-            && let Ok(value) = i64::try_from(*value)
-        {
-            return Some(value);
+        match self.hir.exprs.get(expr.index()) {
+            Some(jr_hir::Expr::Literal(jr_hir::Literal::Int { value, .. }, _)) => {
+                if let Ok(value) = i64::try_from(*value) {
+                    return Some(value);
+                }
+                // A literal too wide for `i64` *is* a literal, so "must be a literal" would
+                // misdescribe it. Take the named-value wording, which names the real fault.
+                self.enum_member_not_constant(true, span);
+            }
+            // **A name resolves through the same helper an array length uses**, so "what counts as a
+            // readable constant" has one definition rather than two (ADR-0129 §3).
+            //
+            // **`res` is deliberately ignored, and it is a trap.** It is `Res::Error` for *every* named
+            // member value, including one that resolves perfectly well — resolution visits these
+            // expressions and reports on them, but never writes the field back. Suppressing this
+            // diagnostic on `Res::Error` therefore silences it for the valid case too, which was
+            // measured rather than reasoned about: it made a working file compile to the wrong enum
+            // values with no error at all. That is the exact failure shape AGENTS.md names — a
+            // well-typed placeholder standing in for a missing answer — so the field is not consulted
+            // and the scope lookup below is the only authority (ADR-0129 §3).
+            Some(jr_hir::Expr::Name { name, .. }) => {
+                let name = *name;
+                match self
+                    .named_constant_int(name)
+                    .and_then(|v| i64::try_from(v).ok())
+                {
+                    Some(value) => return Some(value),
+                    None => self.enum_member_not_constant(true, span),
+                }
+            }
+            _ => self.enum_member_not_constant(false, span),
         }
-        self.diags.push(
-            Diagnostic::error(span, "an enum member's value must be an integer literal")
-                .with_code(E0237)
-                // **Not "arrives with full `#run` in wave W4".** W4 is complete and the
-                // evaluator exists, so that note described a capability the compiler has had
-                // for waves. The real constraint is *ordering*, exactly as E0233 states for an
-                // array length: signatures are typed before const-eval runs (ADR-0018 §3), so
-                // no computed value is available at this point. Note the asymmetry this leaves
-                // — ADR-0070 taught an array length to accept a **named constant**, and an enum
-                // member has not learnt the same trick, which is a generalisation owed rather
-                // than a limit of the evaluator.
-                .with_note(
-                    "an enum's members are typed with its declaration, before the compile-time \
-                     evaluator runs (ADR-0018 §3), so the value must already be a literal here",
-                )
-                .with_help("write the value as a literal, e.g. `NOT_FOUND :: 404;`"),
-        );
         None
+    }
+
+    /// Reports an enum member value that is not a usable integer (ADR-0041 §3, ADR-0129 §3).
+    ///
+    /// Splits the message the way ADR-0070 §3 split E0233's: a reader who named something learns the
+    /// *name* was not usable, and a reader who wrote arithmetic learns that evaluation is what is
+    /// missing. Telling the first reader "must be an integer literal" would be false now that a
+    /// literal-valued constant is accepted, and a reader given a rule that is no longer true cannot act
+    /// on it.
+    fn enum_member_not_constant(&mut self, was_a_name: bool, span: Span) {
+        let diag = if was_a_name {
+            Diagnostic::error(span, "this enum member's value is not a usable constant")
+                .with_code(E0237)
+                .with_note(
+                    "a member's value may be an integer literal, or a name for a constant whose \
+                     value is one — a computed constant, a `#run`, or one from another file needs \
+                     the compile-time evaluator, which sema runs before (ADR-0018 §3)",
+                )
+                .with_help("give the constant a literal value, e.g. `NOT_FOUND :: 404;`")
+        } else {
+            Diagnostic::error(
+                span,
+                "an enum member's value must be a literal or a named constant",
+            )
+            .with_code(E0237)
+            // **Not "arrives with full `#run` in wave W4".** W4 is complete and the evaluator
+            // exists, so that note described a capability the compiler has had for waves
+            // (ADR-0127 §2). The real constraint is *ordering*, exactly as E0233 states for an
+            // array length: signatures are typed before const-eval runs (ADR-0018 §3), so no
+            // computed value is available at this point.
+            .with_note(
+                "an enum's members are typed with its declaration, before the compile-time \
+                 evaluator runs (ADR-0018 §3), so an arithmetic or `#run` value is not available \
+                 here",
+            )
+            .with_help("write the value as a literal, e.g. `NOT_FOUND :: 404;`, or name a constant")
+        };
+        self.diags.push(diag);
     }
 
     /// Resolves and records the field list of the struct declared at `sid`.
@@ -1164,40 +1215,41 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// The length a name denotes, when it names a constant whose initialiser is an integer literal
-    /// (ADR-0070 §1).
+    /// The integer a name denotes, when it names a constant whose initialiser is an integer literal
+    /// (ADR-0070 §1, generalised by ADR-0129 §1).
     ///
     /// **No evaluation happens here**, which is the whole reason this is available a sub-wave before
     /// `[2 + 2]u8` is: the literal is already in the HIR, and this crate depends on neither `jr-db` nor
-    /// `jr-vm` (ADR-0039 §3a's constraint, still honoured). A length that needs a *value* — arithmetic, a
-    /// `#run`, or a constant in another file — answers `None` here and is refused.
+    /// `jr-vm` (ADR-0039 §3a's constraint, still honoured). A value that needs *computing* — arithmetic,
+    /// a `#run`, or a constant in another file — answers `None` here and is refused by the caller.
     ///
     /// One level of indirection only: `B :: A` where `A :: 4` answers `None` rather than following the
     /// chain, because a chain needs a fixpoint and a cycle check, which is the evaluation machinery this
     /// deliberately avoids (ADR-0070 §4).
-    fn constant_array_length(&self, name: Symbol) -> Option<u64> {
+    ///
+    /// Answers `i128` — the widest thing a `Literal::Int` can hold — and leaves the range check to the
+    /// caller, because the two callers disagree about range: an array length is a `u64` and rejects a
+    /// negative, while an enum member is an `i64` and accepts one (ADR-0129 §2). Returning the raw value
+    /// is what lets both share this without either inheriting the other's bounds.
+    fn named_constant_int(&self, name: Symbol) -> Option<i128> {
         // **A `$N` comptime parameter's baked value wins** (ADR-0089 §1), checked first for the reason
         // `resolve_type_name` checks `type_bindings` first: inside an instantiation, `N` *is* that
         // parameter, and a same-named file constant must not shadow it. Still no evaluation here — the
         // value was interned by the const-eval pre-pass and carried in on `FileHir::param_values`.
         if let Some(&value) = self.value_bindings.get(&name) {
             return match *self.pool.item(value) {
-                Item::IntValue { ty, bits } => {
-                    let decoded = match *self.pool.item(ty) {
-                        Item::IntType {
-                            signed,
-                            bits: width,
-                        } => IntKind {
-                            signed,
-                            bits: width,
-                        }
-                        .decode(bits),
-                        _ => i128::from(bits as i64),
-                    };
-                    // A negative length, or one past `u64`, fails exactly as a negative literal does.
-                    u64::try_from(decoded).ok()
-                }
-                // A non-integer comptime parameter is not a length; refused by the caller as E0233.
+                Item::IntValue { ty, bits } => Some(match *self.pool.item(ty) {
+                    Item::IntType {
+                        signed,
+                        bits: width,
+                    } => IntKind {
+                        signed,
+                        bits: width,
+                    }
+                    .decode(bits),
+                    _ => i128::from(bits as i64),
+                }),
+                // A non-integer comptime parameter is not an integer; refused by the caller.
                 _ => None,
             };
         }
@@ -1213,9 +1265,16 @@ impl<'a> Ctx<'a> {
         else {
             return None;
         };
-        // A negative length, or one past `u64`, fails here exactly as a negative *literal* length does —
-        // the value takes the same path once known, so ADR-0039 §3's checks are unchanged.
-        u64::try_from(*value).ok()
+        Some(*value)
+    }
+
+    /// The length a name denotes, when it names a constant whose initialiser is an integer literal
+    /// (ADR-0070 §1).
+    ///
+    /// A negative length, or one past `u64`, fails here exactly as a negative *literal* length does —
+    /// the value takes the same path once known, so ADR-0039 §3's checks are unchanged.
+    fn constant_array_length(&self, name: Symbol) -> Option<u64> {
+        u64::try_from(self.named_constant_int(name)?).ok()
     }
 
     /// Reports an array length that is not a usable integer literal (ADR-0039 §3a).

@@ -333,6 +333,10 @@ dependency chain requires it. `rust-toolchain.toml` still floats on stable.
 > ADR-0128; a multi-level *chain* is still owed), and **`Math` vec/mat/quat** (W7, still open — but ADR-0115 declared `Math` *complete*, which this row
 > contradicts). **Nested procedures and local constants** appear in no wave's scope at all, yet E0207
 > blamed W2 for them for six waves. Marked inline below as **[NOT DELIVERED]**.
+>
+> Separately, ADR-0127 §2's sweep left one **generalisation owed** rather than a broken promise: an array
+> length could name a literal-valued constant (ADR-0070) and an enum member could not. **ADR-0129
+> delivered it**, and one `named_constant_int` now answers for both callers.
 
 | Wave | Content | Notes | Est. |
 |---|---|---|---|
@@ -522,13 +526,13 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **1010 workspace tests** and **214 corpus files**, all six gates green
+waiting. Both are tracked below. **1010 workspace tests** and **216 corpus files**, all six gates green
 **locally** — no CI run has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
-> **What "214 corpus files" counts**, since this number had drifted: the `.jr` files under
-> `tests/corpus/` *outside* `tests/corpus/modules/` — 101 `valid` + 10 `invalid` + 70 `type-errors` +
-> 3 `cfg-errors` + 30 `imports` = 214. Counting the 10 module fixtures too gives 224. This section
+> **What "216 corpus files" counts**, since this number had drifted: the `.jr` files under
+> `tests/corpus/` *outside* `tests/corpus/modules/` — 102 `valid` + 10 `invalid` + 71 `type-errors` +
+> 3 `cfg-errors` + 30 `imports` = 216. Counting the 10 module fixtures too gives 226. This section
 > claimed **214** at a point when 213 was right while `AGENTS.md` claimed 213, so the sentence that
 > tells a reader to trust §7 over any other count was itself pointing at the wrong one. ADR-0125
 > reconciled the numbers and that pair slipped through, which is the argument for the definition
@@ -550,6 +554,28 @@ waiting. Both are tracked below. **1010 workspace tests** and **214 corpus files
 > libffi; and ADR-0107 §2's heap fix is complete, since the upward frame bump and downward heap each
 > bound on the other.
 >
+> [!IMPORTANT]
+> **The eight-wave programme to keep ADR-0127's promises is 2 of 8 done.** Wave 1 was ADR-0128
+> (instantiation backtraces, single frame). **Wave 2 was ADR-0129** — an enum member's value may name a
+> literal-valued constant, generalising ADR-0070 so that one `named_constant_int` answers for both
+> callers. Neither needed a design fork.
+>
+> **Remaining, in dependency order.** Waves 3 has no fork; waves 4–7 have their forks already decided:
+>
+> | # | Wave | Fork |
+> |---|---|---|
+> | 3 | `Math` vec/mat/quat | none — pure library; operator overloading exists (ADR-0048) |
+> | 4 | `it` / `it_index` | **decided:** ordinary injected locals, *not* reserved keywords |
+> | 5 | Nested procedures + local constants | **decided:** no capture, Jai-style — a file-scope proc with a scoped name |
+> | 6 | `[..]T` dynamic arrays | **decided:** compiler-known layout both engines agree on, ops in Jairs, ADR-0107's doubling |
+> | 7 | `$$T` | **decided:** `$T` inference *plus* required-constant baking (ADR-0087's `$N` mechanism) |
+> | 8 | `print(fmt, ..Any)` | **decided:** the only language gap is the variadic parameter; spill args to slots per ADR-0077 |
+>
+> Two things a fresh session should read before starting one. **Subagents return empty on this codebase**
+> — six of six dispatches did, so assessment work is done by hand. And **ADR-0129 §4 left the
+> sibling-member case undecided on purpose**: `ALSO :: OK` inside an enum is a precedence fork against a
+> same-named file constant, and it goes to the decider on its own rather than being picked inside a wave.
+
 > **Still owed from the audit.** Two security dispatches remain **unexamined**: forging an `Any` or a
 > procedure pointer through the untagged `union`, and `jr-lsp` path handling. Its *performance* findings
 > are also open and unmeasured: const-eval rebuilds the whole VM program per constant per round, every

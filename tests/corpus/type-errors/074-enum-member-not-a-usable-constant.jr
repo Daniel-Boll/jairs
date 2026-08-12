@@ -1,0 +1,45 @@
+// EXPECT: E0237 — an enum member's value that needs the compile-time evaluator (ADR-0041 §3, ADR-0129 §2)
+//
+// **This file's construct changed with ADR-0129.** A member naming a constant — `MISSING :: NOT_FOUND;`
+// — is now *legal* (`valid/102`): for a constant whose initialiser is already an integer literal there is
+// nothing to evaluate, so sema resolves the name against the file scope and reads the literal out of the
+// HIR. This is the same amendment ADR-0070 made for an array length, and it closes an asymmetry ADR-0127
+// §3 recorded as an unkept promise.
+//
+// What remains refused is a value that needs an actual **evaluation**, where ADR-0018 §3's phase order
+// still holds exactly as written: an enum's members are typed with its declaration, and const-eval runs
+// in `jr-db` afterwards, so sema cannot compute one.
+//
+// **One** refusal here, because this directory's contract is one diagnostic per file. The case shown is a
+// constant naming another constant, which is one level further than sema follows — a chain needs a
+// fixpoint and a cycle check, which is the evaluation machinery ADR-0070 §4 deliberately avoids, and the
+// enum path inherits that limit along with the mechanism. Refused identically:
+//
+//   * arithmetic (`X :: 2 + 2;`), which needs folding and therefore const-eval — and folding it here
+//     would mean a *second* constant folder beside ADR-0022's, the duplication ADR-0018 §2 refuses;
+//   * a `#run` value, which needs the evaluator by definition;
+//   * a constant from **another file**, whose value crosses through `file_consts` (ADR-0055), downstream;
+//   * a name that is not a constant at all, such as a procedure.
+//
+// The message differs between the two shapes, which is ADR-0070 §3's rule applied here: a reader who
+// *named* something is told the name was not usable, and a reader who wrote arithmetic is told that
+// evaluation is missing. "Must be an integer literal" would now be false, and a reader given a rule that
+// is no longer true cannot act on it.
+//
+// Two cases deliberately absent from this directory, both because they report **two** diagnostics and the
+// contract here is one: an unresolved name, and a member naming a **sibling** member (`ALSO :: OK;`).
+// Both raise E0201 first, since a member value is an expression and resolution visits it, unlike an array
+// length's name. ADR-0129 §4 says why that cascade is left alone.
+LITERAL :: 4;
+CHAIN :: LITERAL;
+
+E :: enum {
+    // Legal now, and here so the file shows the line rather than only one side of it.
+    OK :: LITERAL;
+
+    // E0237: the value names a constant, but not one whose own value is already a literal.
+    BAD :: CHAIN;
+}
+
+main :: () {
+}

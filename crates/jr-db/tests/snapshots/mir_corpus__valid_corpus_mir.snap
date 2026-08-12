@@ -9718,3 +9718,94 @@ proc main -> void {
     discard call extern proc1(v2)
     return
 }
+
+========================================
+102-enum-member-from-a-constant.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: [3]s64  // local 1
+  bb0(v0: *Context):
+    v1: s64 = convert 404_Status from s64
+    v2: bool = v1 == 404_s64
+    branch v2 ? bb1() : bb2()
+  bb1():
+    v3: s64 = 0_s64 + 1_s64
+    goto bb3(v3)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v6: s64):
+    v4: s64 = convert 200_Status from s64
+    v5: bool = v4 == 200_s64
+    branch v5 ? bb4() : bb5()
+  bb4():
+    v7: s64 = v6 + 2_s64
+    goto bb6(v7)
+  bb5():
+    goto bb6(v6)
+  bb6(v10: s64):
+    v8: s64 = convert 405_Status from s64
+    v9: bool = v8 == 405_s64
+    branch v9 ? bb7() : bb8()
+  bb7():
+    v11: s64 = v10 + 4_s64
+    goto bb9(v11)
+  bb8():
+    goto bb9(v10)
+  bb9(v14: s64):
+    v12: s64 = convert -1_Status from s64
+    v13: bool = v12 == -1_s64
+    branch v13 ? bb10() : bb11()
+  bb10():
+    v15: s64 = v14 + 8_s64
+    goto bb12(v15)
+  bb11():
+    goto bb12(v14)
+  bb12(v18: s64):
+    v16: s64 = convert 4_Perm from s64
+    v17: bool = v16 == 4_s64
+    branch v17 ? bb13() : bb14()
+  bb13():
+    v19: s64 = v18 + 16_s64
+    goto bb15(v19)
+  bb14():
+    goto bb15(v18)
+  bb15(v22: s64):
+    v20: s64 = convert 8_Perm from s64
+    v21: bool = v20 == 8_s64
+    branch v21 ? bb16() : bb17()
+  bb16():
+    v23: s64 = v22 + 32_s64
+    goto bb18(v23)
+  bb17():
+    goto bb18(v22)
+  bb18(v29: s64):
+    zero s0
+    v24: bool = 3_s64 == 3_s64
+    branch v24 ? bb19() : bb20()
+  bb19():
+    v26: s64 = convert 3_Status from s64
+    v27: bool = v26 == 3_s64
+    goto bb21(v27)
+  bb20():
+    goto bb21(false)
+  bb21(v25: bool):
+    branch v25 ? bb22() : bb23()
+  bb22():
+    v30: s64 = v29 + 64_s64
+    goto bb24(v30)
+  bb23():
+    goto bb24(v29)
+  bb24(v31: s64):
+    v32: bool = v31 == 127_s64
+    branch v32 ? bb25() : bb26()
+  bb25():
+    discard call extern proc1(0_s64)
+    goto bb27()
+  bb26():
+    goto bb27()
+  bb27():
+    discard call extern proc1(1_s64)
+    return
+}
