@@ -18,12 +18,27 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 1001 tests green.
+Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 1009 tests green.
 
-**The three most recent waves were driven by an audit rather than by a feature**
+**The four most recent waves were driven by an audit rather than by a feature**
 ([`docs/assessment-2026-08-07.md`](docs/assessment-2026-08-07.md)).
 
-**A declared `BUILD_OUTPUT` is now confined to the working directory** (ADR-0122). ADR-0102 let a program name
+**A foreign call's pointer span is now bounded by the VM's own check** (ADR-0126), the first of the three
+narrow security dispatches that audit said it still owed. Translating a pointer argument for libffi validated
+**one byte** — all a C signature tells you — and the `write` capture path then dereferenced the program's own
+`count` bytes through it. From an ordinary POSIX declaration, `write(1, s.data, 4_000_000)` on a two-byte
+string exited 0 having written **4,000,000 bytes**, ~3 MB past the end of the VM's memory region; a count of
+2e9 killed the compiler with **`SIGBUS`**; and the *native* build of the same program wrote 114,688 bytes, so
+the two engines disagreed. It is now a trap with a source location. The bound is the **region, not the
+buffer** — within one linear region an address is just an offset, which is the documented model — and the
+`unsafe` block was deleted rather than corrected.
+
+The same pass **verified two things sound**, which is half of what a security review is for: the comptime FFI
+gate holds structurally, so a hostile file *merely opened in an editor* cannot reach libffi and run native
+code inside the language server; and the heap/frame fix from ADR-0107 is complete. Two dispatches remain
+owed — forging an `Any` or a procedure pointer, and `jr-lsp` path handling.
+
+**A declared `BUILD_OUTPUT` is confined to the working directory** (ADR-0122). ADR-0102 let a program name
 its own artefact, and nothing checked the value — which is computed by arbitrary compile-time code *in the file
 being compiled*, so it is attacker-controlled whenever the source is, and for a compiler that is the ordinary
 case. `BUILD_OUTPUT :: "../../.git/hooks/pre-commit";` made `jr build` write an executable to a path git runs
@@ -479,7 +494,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 1008 workspace tests; six gates green on macOS arm64 — **locally**, since CI
+`print_int` (ADR-0037). 1009 workspace tests; six gates green on macOS arm64 — **locally**, since CI
 has never run — plus 166 Neovim checks that are verified rather than gated.
 
 ### What you can actually do

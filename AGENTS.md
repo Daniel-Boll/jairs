@@ -81,12 +81,17 @@ expansion fixed point, +2 corpus files) → **990** (ADR-0121, the comptime step
 (ADR-0122, `BUILD_OUTPUT` confinement — nine of the eleven are unit tests on the predicate, which is
 why a wave can move this number a long way without touching the corpus) → **1005** (ADR-0123, the
 cross-crate code check) → **1007** (ADR-0124, two latent traps) → **1008** (ADR-0125, `print_int`
-executed at last, +1 corpus file = **213**).
+executed at last, +1 corpus file = **213**) → **1009** (ADR-0126, the foreign-call pointer span — **no**
+corpus file, because the VM traps where native writes short, so a program exercising it has no home in
+`valid/`, whose whole premise is that the two engines agree; the test lives in `jr-vm` instead).
 
 **A number in this file is now partly enforced.** `crates/jr-cli/tests/codes.rs` fails when the
 "first free code" claim below rots. The test count and the corpus count are still prose, and both were
 wrong in three places each when the audit looked — which is the argument for reading §7 rather than
-trusting a count you find anywhere else.
+trusting a count you find anywhere else. **That advice has itself been wrong once**: at ADR-0126 §7 said
+"214 corpus files" while this file said 213, and 213 was right — so §7 now carries the *definition*
+(the `.jr` files under `tests/corpus/` outside `tests/corpus/modules/`; 223 counting those) rather than
+only the figure.
 
 ## House style
 
