@@ -1,7 +1,9 @@
 //! Lazy, on-demand semantic analysis: type checking, inference, const-evaluation, and polymorph instantiation.
 //!
-//! Today this crate does the first two. Const-evaluation waits for `jr-vm`
-//! (ADR-0016 §4) and polymorph instantiation for wave W5.
+//! This crate now does all four. Const-evaluation arrived with `jr-vm`
+//! (ADR-0016 §4) and polymorph instantiation with W5 (ADR-0081–0097); the sentence
+//! here said "today this crate does the first two" for many waves after both had
+//! shipped, which is the expired-deferral rot ADR-0127 swept.
 //!
 //! # Two phases, and why the split is load-bearing
 //!
@@ -85,8 +87,11 @@
 //!
 //! # What is deliberately not checked yet
 //!
-//! - **Definite assignment.** `c: s64 = ---;` declares an uninitialised local and
-//!   reading it before assignment is wave W3's job, not a typing question.
+//! - **Definite assignment.** `c: s64 = ---;` declares an uninitialised local, and
+//!   whether reading it before assignment is an error is not a typing question. It is
+//!   checked, but in `jr-mir` over the CFG rather than here — E0245, pinned by
+//!   `cfg-errors/001`. Note it is only a **warning**, so a refused body still links
+//!   (`PLAN.md` §7). This is not owed to a future wave; W3 has shipped.
 //! - **Missing `return`.** Whether every path through a non-`void` procedure
 //!   returns is control flow, and needs MIR's CFG rather than a syntax walk.
 //! - **Assignability between values of different types.** ADR-0015 left it

@@ -23,6 +23,15 @@ Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still ope
 **The four most recent waves were driven by an audit rather than by a feature**
 ([`docs/assessment-2026-08-07.md`](docs/assessment-2026-08-07.md)).
 
+**Expired deferrals have been swept out of the code** (ADR-0127), and this one was found by a user
+reading a single diagnostic rather than by a gate. `E0207` told people that nested procedures "arrive in
+wave W2" **six waves after W2 shipped** — and W2's scope never included them, so the note named a wave
+that had both passed and never owned the feature. Eleven such places now say what is *owed* instead of
+when it arrives. `E0212` also stopped claiming "`void` is not a type name in Jairs" while
+`size_of(void)` folds to 0. §2.1 of [`PLAN.md`](PLAN.md) now records **six features a completed wave
+promised and did not deliver**, including instantiation backtraces, whose machinery exists and has no
+production caller at all.
+
 **A foreign call's pointer span is now bounded by the VM's own check** (ADR-0126), the first of the three
 narrow security dispatches that audit said it still owed. Translating a pointer argument for libffi validated
 **one byte** — all a C signature tells you — and the `write` capture path then dereferenced the program's own

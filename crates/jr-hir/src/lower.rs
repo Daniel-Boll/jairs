@@ -2108,7 +2108,16 @@ impl<'a> BodyLowerCtx<'a> {
                         "declarations inside a procedure body are not supported yet",
                     )
                     .with_code(E0207)
-                    .with_note("nested procedures and local constants arrive in wave W2")
+                    // **Not "arrives in wave W2".** That note stood for six waves after W2
+                    // shipped, and it was wrong twice: W2 is complete, and §2.1's W2 row never
+                    // listed this — it is `for`, `defer`, `using`, multiple returns, named and
+                    // default arguments, and `#scope_*`. So the note named a wave that had both
+                    // passed and never owned the feature, which reads as a schedule while being
+                    // neither. Nothing owns it today, and saying so is the honest answer.
+                    .with_note(
+                        "a nested procedure and a local constant are both unimplemented, and no \
+                         wave currently owns them",
+                    )
                     .with_help("move the declaration to file scope"),
                 );
                 self.alloc_stmt(Stmt::Error(span))
@@ -2125,7 +2134,15 @@ impl<'a> BodyLowerCtx<'a> {
                 self.diags.push(
                     Diagnostic::error(span, "`#run` as a statement is not supported yet")
                         .with_code(E0207)
-                        .with_note("compile-time execution inside a body arrives in wave W4")
+                        // **Not "arrives in wave W4".** W4 is complete: ADR-0069 shipped `#run`
+                        // across files and inside a body, and `x := #run add(2, 3);` checks clean
+                        // today. Whether this arm is still reachable at all is an open question —
+                        // a bare `#run add(2, 3);` in a body also checks clean — so the note says
+                        // what is owed rather than naming a wave that has shipped.
+                        .with_note(
+                            "a `#run` in expression position works (ADR-0069); a bare `#run` \
+                             statement is owed its own decision about ordering its effects",
+                        )
                         .with_help(
                             "use a file-scope `#run` or a `::` constant initialised with `#run`",
                         ),

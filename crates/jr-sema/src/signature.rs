@@ -355,8 +355,9 @@ impl Ctx<'_> {
                     }
                     // `x: T;` and `x: T = ---;` are both "declared, not
                     // initialised here"; whether reading it first is an error is
-                    // wave W3's definite-assignment analysis, not a typing
-                    // question.
+                    // definite assignment, not a typing question. It is checked in
+                    // `jr-mir` over the CFG (E0245), not deferred to a wave — this
+                    // comment named W3 for waves after W3 shipped it.
                     (Some(annotation), None) => annotation,
                     (None, Some(expr)) => {
                         let inferred = self.check_expr(ExprScope::TopLevel, expr, None);

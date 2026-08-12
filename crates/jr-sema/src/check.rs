@@ -571,7 +571,13 @@ impl Ctx<'_> {
                                     "a `for` iterates a fixed-size array `[N]T`, a view `[]T`,                                      or a range `a..b`",
                                 )
                                 .with_help(
-                                    "a user type cannot be iterated yet — that needs the                                      iteration protocol wave W5's macros unlock",
+                                    // **Not "wave W5's macros unlock it".** W5 is complete and
+                                    // `#expand` macros ship (ADR-0090, ADR-0091), so the stated
+                                    // blocker is gone while the feature is still absent — an
+                                    // expired reason reads as a considered decision.
+                                    "a user type cannot be iterated: the macros such a protocol \
+                                     would be built on exist (ADR-0091), but no iteration \
+                                     protocol is defined and no wave owns one",
                                 ),
                             );
                         }
@@ -5354,8 +5360,8 @@ pub(crate) fn bin_op_text(op: BinOp) -> &'static str {
 /// it is a real limitation: the most negative value of a signed type cannot be
 /// written as a literal, because its magnitude is one past the positive bound.
 ///
-/// Written against `(signed, bits)` rather than against `s64` and `u8` because
-/// wave W1's full numeric tower would otherwise rewrite it.
+/// Written against `(signed, bits)` rather than against `s64` and `u8` so that W1's
+/// full numeric tower would not have to rewrite it — which it did not (ADR-0037).
 fn literal_fits(signed: bool, bits: u16, value: i128) -> bool {
     // Against the type's **range**, not its maximum magnitude. The old test compared a
     // magnitude, so `-128` was 128 tested against `s8`'s 127 and every signed minimum was
