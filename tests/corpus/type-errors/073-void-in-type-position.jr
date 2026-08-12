@@ -1,0 +1,21 @@
+// EXPECT: E0212 — `void` cannot be used in type position (ADR-0127 §1)
+//
+// **`void` is a real type that has no spelling in type position**, and the wording here is the whole point of
+// the file. `void` is `PoolId::VOID`; it is storable, so a zero-sized value still gets a distinct address
+// (`Memory`'s own docs say a zero-sized value has to have one); and `size_of(void)` folds to **0** (ADR-0106).
+//
+// So this diagnostic used to be wrong in a way that mattered. It said "unknown type name `void`" and noted
+// "`void` is not a type name in Jairs" — while `size_of(void)` measures it and answers 0, and `size_of` refuses
+// a genuinely unresolvable name with E0261. Two diagnostics contradicting each other about whether a type
+// exists is worse than either being terse, and a reader who checked would have found the compiler disagreeing
+// with itself.
+//
+// What is true is narrower, so that is all it claims now: the type exists and has no *spelling*. The help still
+// names the thing a reader actually wanted — a procedure returning nothing omits the `->` — and adds the two
+// spellings that do not exist, since `*void` is the other obvious guess. Jai's `null.*` reads zero bytes
+// because its `null` is a `*void`; in Jairs there is no `*void` to form, and address 0 is refused before its
+// size is considered, so a null dereference traps (`Memory::range`).
+
+names_void_in_a_declaration :: () {
+    x: void;
+}

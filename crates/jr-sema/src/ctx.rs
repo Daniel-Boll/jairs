@@ -1064,9 +1064,17 @@ impl<'a> Ctx<'a> {
         self.diags.push(
             Diagnostic::error(span, "an enum member's value must be an integer literal")
                 .with_code(E0237)
+                // **Not "arrives with full `#run` in wave W4".** W4 is complete and the
+                // evaluator exists, so that note described a capability the compiler has had
+                // for waves. The real constraint is *ordering*, exactly as E0233 states for an
+                // array length: signatures are typed before const-eval runs (ADR-0018 §3), so
+                // no computed value is available at this point. Note the asymmetry this leaves
+                // — ADR-0070 taught an array length to accept a **named constant**, and an enum
+                // member has not learnt the same trick, which is a generalisation owed rather
+                // than a limit of the evaluator.
                 .with_note(
-                    "a computed value needs the compile-time evaluator, which arrives with \
-                     full `#run` in wave W4",
+                    "an enum's members are typed with its declaration, before the compile-time \
+                     evaluator runs (ADR-0018 §3), so the value must already be a literal here",
                 )
                 .with_help("write the value as a literal, e.g. `NOT_FOUND :: 404;`"),
         );
@@ -1385,15 +1393,34 @@ impl<'a> Ctx<'a> {
     fn unknown_type(&mut self, sym: Symbol, span: Span) {
         let interner = self.interner;
         let name = interner.resolve(sym);
+        // `void` is the one name reaching here that denotes a type which genuinely
+        // **exists**: it is `PoolId::VOID`, it is storable (a zero-sized value still gets a
+        // distinct address, `Memory`'s own docs), and `size_of(void)` folds to 0 (ADR-0106).
+        //
+        // So the generic "unknown type name" is false for it, and the note used to go
+        // further and say "`void` is not a type name in Jairs" — which `size_of(void)`
+        // contradicts outright, while `size_of` refuses a genuinely unresolvable name with
+        // E0261. Two diagnostics disagreeing about whether a type exists is worse than
+        // either being terse. What is actually true is narrower: the type has **no spelling
+        // in type position**, so that is all this says.
+        if name == "void" {
+            self.diags.push(
+                Diagnostic::error(span, "`void` cannot be used in type position")
+                    .with_code(E0212)
+                    .with_note(
+                        "`void` is a real type and `size_of(void)` is 0, but it has no \
+                         spelling in a type annotation",
+                    )
+                    .with_help(
+                        "a procedure that returns nothing omits the `->` entirely; there is \
+                         no `x: void` and no `*void`",
+                    ),
+            );
+            return;
+        }
         let mut diag =
             Diagnostic::error(span, format!("unknown type name `{name}`")).with_code(E0212);
-        // `void` is a real type (ADR-0015 §3) that has no spelling, so the
-        // obvious guess deserves the obvious answer.
-        if name == "void" {
-            diag = diag
-                .with_note("`void` is not a type name in Jairs")
-                .with_help("a procedure that returns nothing omits the `->` entirely");
-        } else {
+        {
             // Built from `IntKind::NAMES` rather than written out, so the note cannot fall
             // behind the tower it describes (ADR-0037 §1).
             let ints = IntKind::NAMES
