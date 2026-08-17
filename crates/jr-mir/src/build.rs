@@ -2180,21 +2180,31 @@ impl Lower<'_> {
 
         // The induction variable, and it must **not** be the element variable: writing the element
         // at the top of the body would overwrite the counter, which produced an infinite loop when
-        // this was `index.unwrap_or(value)`. For a *range* they are genuinely the same variable —
-        // the index is the value — and for a sequence the counter needs its own storage.
+        // this was `index.unwrap_or(value)`. For a sequence the counter needs its own storage.
         //
         // `for x, i: buf` reuses `i`, because the user asked for the index by name and it is the
-        // counter — an ordinary local, so it is subject to the same promotion as any other and the
-        // mid-end can keep it in a register. `for x: buf` allocates a slot no name reaches, which is
-        // the unspellable-name trick ADR-0048 used for `operator+`. A *range* has no element, so the
-        // counter and the loop variable are genuinely one local.
+        // counter — an ordinary local. `for x: buf` allocates a slot no name reaches, which is
+        // the unspellable-name trick ADR-0048 used for `operator+`.
+        //
+        // For a **range**: the counter is always `value` (goes range.start..range.end), and the
+        // index — if any — is a *zero-based* local written at the top of the body as
+        // `index = value - range.start`. This is ADR-0135's fix to ADR-0133 §2, so that
+        // `for x, i: 5..10` binds x to 5..9 and i to 0..4, and so `for 0..5 { it_index }`
+        // gives 0..4 distinguishable from `it` when the range's start is non-zero.
+        let is_range = bounds.element.is_none();
         let counter = match (index, bounds.element.is_some()) {
             // A sequence with no named index: the counter is a fresh slot, distinct from `value`.
             (None, true) => self.synthetic_counter(span),
-            // A named index, or a range where the index *is* the value.
-            (Some(i), _) => Counter::Local(i),
-            (None, false) => Counter::Local(value),
+            // A named index on a sequence: the index IS the counter.
+            (Some(i), true) => Counter::Local(i),
+            // A range: the counter is the value, regardless of whether there is a named index.
+            //   With index: index = value - range.start, written at the top of the body.
+            //   Without: no index local at all.
+            (_, false) => Counter::Local(value),
         };
+        // The zero-based index local for a range, if any — kept out of `counter` so it does
+        // not become the loop's induction variable.
+        let range_zero_based_index = if is_range { index } else { None };
         let start = if reverse {
             // `len - 1`, wrapping is impossible because the loop does not run when `len` is 0 —
             // the header's `>= 0` test fails immediately.
@@ -2296,6 +2306,25 @@ impl Lower<'_> {
             let elem_ty = self.local_ty(value);
             let loaded = self.define(elem_ty, Rvalue::Load(elem_place), span);
             self.write_local(value, loaded, span);
+        }
+
+        // For a range with an index (named `for x, i: a..b` or a nameless `for a..b { it_index }`),
+        // write the zero-based index at the top of the body — ADR-0135's fix to ADR-0133 §2.
+        // `value` is the counter (running range.start..range.end); the index is `value -
+        // range.start`, so it runs 0..(end-start) and is a genuinely different quantity from
+        // `value` when the range's start is non-zero.
+        if let Some(idx_local) = range_zero_based_index {
+            let cur = self.read_counter(counter, span);
+            let zero_based = self.define(
+                PoolId::S64,
+                Rvalue::Binary {
+                    op: BinOp::Sub,
+                    lhs: cur,
+                    rhs: bounds.start,
+                },
+                span,
+            );
+            self.write_local(idx_local, zero_based, span);
         }
 
         self.stmt(body);

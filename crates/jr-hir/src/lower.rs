@@ -2525,14 +2525,11 @@ impl<'a> BodyLowerCtx<'a> {
         // Injected `it` / `it_index` on a nameless `for xs { … }` (ADR-0133). Ordinary
         // locals, so a body can shadow them by declaring `it := something_else`.
         //
-        // **`it_index` is injected only for a sequence, not a range.** A range's counter *is*
-        // the value, so `for 0..5 { it }` names the current value with `it` and has no
-        // second variable to give a distinct name to — matching the MIR shape of
-        // `for it: 0..5`. The named `for x, i: 0..5` shape is likewise unsupported today
-        // (`x` is uninitialised), and rather than fix it in this wave, `it_index` waits for
-        // whatever wave settles that gap; only the injection surface changes here.
+        // `it_index` is now injected for **both** sequences and ranges (ADR-0135's follow-up
+        // to ADR-0133 §2): MIR emits a per-iteration zero-based-index assignment for a range
+        // with a named/injected index, so `for 0..5 { it_index }` gives 0,1,2,3,4 —
+        // distinguishable from `it` when the range's start is non-zero.
         let named = f.value_name().is_some();
-        let iterating_range = matches!(f.iterable(), Some(jr_syntax::ast::Expr::Range(_)));
         let value = if named {
             self.bind_loop_local_by_name(f.value_name().as_ref(), span)
         } else {
@@ -2541,8 +2538,6 @@ impl<'a> BodyLowerCtx<'a> {
         let index = if named {
             f.index_name()
                 .map(|n| self.bind_loop_local_by_name(Some(&n), span))
-        } else if iterating_range {
-            None
         } else {
             Some(self.bind_loop_local_injected("it_index", span))
         };

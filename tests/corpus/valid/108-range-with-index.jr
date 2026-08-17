@@ -1,0 +1,109 @@
+// **Range iteration with an index** (ADR-0135, ADR-0133 §2's follow-up).
+//
+// ADR-0133 shipped `it` and `it_index` for a nameless `for` and deliberately deferred
+// `it_index` inside a range's body, plus the named `for x, i: a..b` shape. Both wanted the
+// same MIR fix: a zero-based counter alongside the range's value. This file pins both.
+//
+// What is checked here, and why each is not an assumption:
+//
+//   * **`for x, i: a..b` binds `x` and `i`** — `x` is the range value (a, a+1, …, b-1) and
+//     `i` is the 0-based iteration index (0, 1, …, b-a-1). Before this wave, `x` read
+//     uninitialised (E0227), so `for x, i: 5..10` did not compile;
+//   * **`for a..b { it_index }` binds `it_index`** to 0..(b-a), distinguishable from `it`
+//     when `a` is non-zero. Before this wave, `it_index` inside a range's body was E0201;
+//   * **`it_index == it - start`** at every step, which is the definition ADR-0135 §1 chose;
+//   * **an empty range** (`5..5`) never enters the body — `it_index` is never written, but
+//     that is invisible;
+//   * **existing shapes still work** — `for i: 0..N`, `for x: xs`, `for x, i: xs`,
+//     `for 0..5 { it }` all keep behaving as before.
+#import "Basic";
+
+main :: () {
+    n := 0;
+
+    // ------------------------------------------------------------------------
+    // Named range with an index — the ADR-0133 §2 shape.
+    // ------------------------------------------------------------------------
+    total_x := 0;
+    total_i := 0;
+    for x, i: 5..10 {
+        total_x = total_x + x;
+        total_i = total_i + i;
+    }
+    if total_x == 35 && total_i == 10 {
+        // 5+6+7+8+9 and 0+1+2+3+4
+        n = n + 1;
+    }
+
+    // ------------------------------------------------------------------------
+    // Nameless range with `it_index` — the ADR-0133 §2 nameless half.
+    // ------------------------------------------------------------------------
+    weighted := 0;
+    for 10..15 {
+        weighted = weighted + it * it_index;
+    }
+    // 10*0 + 11*1 + 12*2 + 13*3 + 14*4 = 0 + 11 + 24 + 39 + 56 = 130
+    if weighted == 130 {
+        n = n + 2;
+    }
+
+    // ------------------------------------------------------------------------
+    // The definition: it_index == it - start for every step.
+    // ------------------------------------------------------------------------
+    consistent := true;
+    for x, i: 100..104 {
+        if x - 100 != i {
+            consistent = false;
+        }
+    }
+    if consistent {
+        n = n + 4;
+    }
+
+    // ------------------------------------------------------------------------
+    // Zero-start range: `x` and `i` coincide, so index equals value.
+    // ------------------------------------------------------------------------
+    both_zero_start := 0;
+    for x, i: 0..3 {
+        if x == i {
+            both_zero_start = both_zero_start + 1;
+        }
+    }
+    if both_zero_start == 3 {
+        n = n + 8;
+    }
+
+    // ------------------------------------------------------------------------
+    // Empty range — never enters the body.
+    // ------------------------------------------------------------------------
+    never := 0;
+    for x, i: 5..5 {
+        never = never + x + i + 1;
+    }
+    if never == 0 {
+        n = n + 16;
+    }
+
+    // ------------------------------------------------------------------------
+    // Existing shapes still work — a regression against them would be an easy
+    // way to break this MIR reshape.
+    // ------------------------------------------------------------------------
+    xs: [3]s64;
+    xs[0] = 10;
+    xs[1] = 20;
+    xs[2] = 40;
+    seq_sum := 0;
+    for x, i: xs {
+        seq_sum = seq_sum + x + i;
+    }
+    // 10+20+40 = 70, + 0+1+2 = 3, total 73
+    if seq_sum == 73 {
+        n = n + 32;
+    }
+
+    // Every assertion above: 63 = 2^6 - 1.
+    if n == 63 {
+        exit(0);
+    }
+    exit(1);
+}

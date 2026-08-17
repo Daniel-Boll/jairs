@@ -98,6 +98,8 @@ and adds one = **220** — a language wave (parser + HIR) but no new Rust test, 
 the corpus program that reads `it` and `it_index` in every combination. **ADR-0134 also holds at
 1010** and adds one = **221** — another HIR-shaped wave (nested procedures + local constants) with
 its coverage in `valid/107` and a repurposed regression test in `jr-hir` guarding the flip.
+**ADR-0135 also holds at 1010** and adds one = **222** — a follow-up MIR change closing ADR-0133 §2
+(range iteration with an index), with its coverage in `valid/108`.
 
 **A number in this file is now partly enforced.** `crates/jr-cli/tests/codes.rs` fails when the
 "first free code" claim below rots. The test count and the corpus count are still prose, and both were

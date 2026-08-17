@@ -527,7 +527,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **1010 workspace tests** and **221 corpus files**, all six gates green
+waiting. Both are tracked below. **1010 workspace tests** and **222 corpus files**, all six gates green
 **locally** — no CI run has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -572,7 +572,7 @@ waiting. Both are tracked below. **1010 workspace tests** and **221 corpus files
 > | ~~3a~~ | ~~`Math` vectors~~ | **done — ADR-0130** |
 > | ~~3b~~ | ~~`Math` `Matrix4`~~ | **done — ADR-0131**, column-major and right-handed |
 > | ~~3c~~ | ~~`Math` `Quaternion`~~ | **done — ADR-0132**, `{x, y, z, w}` and no auto-normalise |
-> | ~~4~~ | ~~`it` / `it_index`~~ | **done — ADR-0133**, ordinary injected locals; `it_index` inside a range's body still owed |
+> | ~~4~~ | ~~`it` / `it_index`~~ | **done — ADR-0133** (surface) and **ADR-0135** (range with an index — `for x, i: a..b` and `for 0..5 { it_index }` both work) |
 > | ~~5~~ | ~~Nested procedures + local constants~~ | **done — ADR-0134**, no capture, `hir.scope`-hidden with sibling-scope injection |
 > | 6 | `[..]T` dynamic arrays | **decided:** compiler-known layout both engines agree on, ops in Jairs, ADR-0107's doubling |
 > | 7 | `$$T` | **decided:** `$T` inference *plus* required-constant baking (ADR-0087's `$N` mechanism) |
