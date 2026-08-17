@@ -252,6 +252,9 @@ module.exports = grammar({
         optional("$"),
         $.identifier,
         ":",
+        // `args: ..T` — a variadic parameter (ADR-0138 §1). The `..` precedes the type;
+        // the callee sees the parameter as `[]T`.
+        optional(".."),
         field("type", $._type),
         // `= 10` — a literal default (ADR-0053 §2). Any expression parses; sema refuses a
         // non-literal, with a message saying why.

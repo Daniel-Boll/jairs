@@ -145,6 +145,7 @@ fn append_one(
             ty: param.ty.map(|t| copy_type_ref(hir, t)),
             using: param.using,
             comptime: false,
+            variadic: param.variadic,
             default: param.default,
         })
         .collect();

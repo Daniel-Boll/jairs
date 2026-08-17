@@ -225,6 +225,11 @@ pub(crate) struct Ctx<'a> {
     /// with no comptime-value calls.
     pub(crate) comptime_calls:
         FxHashMap<(ExprScope, jr_hir::ExprId), (jr_hir::ProcId, Vec<jr_hir::ExprId>)>,
+    /// Each variadic call, keyed on the call expression. Recorded by `check_call` when the
+    /// callee's last parameter is `..T` and the arity is satisfied; consumed by `jr-mir` to
+    /// pack the trailing arguments into a stack view (ADR-0138 §2). Empty for a file with no
+    /// variadic calls.
+    pub(crate) variadic_calls: FxHashMap<(ExprScope, jr_hir::ExprId), crate::check::VariadicCall>,
     /// The **baked value** of each `$N` parameter of the procedure currently being resolved
     /// (ADR-0089 §1).
     ///
@@ -284,6 +289,7 @@ impl<'a> Ctx<'a> {
             type_bindings: FxHashMap::default(),
             instantiations: FxHashMap::default(),
             comptime_calls: FxHashMap::default(),
+            variadic_calls: FxHashMap::default(),
             value_bindings: FxHashMap::default(),
             comptime_param_names: FxHashSet::default(),
             poly_var_names: FxHashSet::default(),

@@ -154,6 +154,14 @@ pub struct ProcSig {
     /// per value rather than checked directly. This sub-wave (ADR-0087) recognises the template and
     /// refuses a call (E0271) pending the instantiation half; the field is what a consumer keys that on.
     pub comptime_params: Vec<bool>,
+    /// Which parameters are variadic — parallel to `params` (ADR-0138 §1).
+    ///
+    /// At most one entry is `true`, and only the *last* parameter may be variadic. A caller
+    /// with `variadic == true` on the last parameter packs its trailing arguments into a
+    /// stack view of the parameter's element type — the sig's `params` entry for a variadic
+    /// slot already holds the `[]T` type, since HIR wraps the written `..T` as `View { elem
+    /// = T }` at lowering.
+    pub variadic_params: Vec<bool>,
     /// The interned procedure type.
     pub ty: PoolId,
 }

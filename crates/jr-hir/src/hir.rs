@@ -998,6 +998,10 @@ pub struct Param {
     /// known (`s64`), so unlike `$T` the body type-checks at template time; only its *value* varies,
     /// and a procedure with one is a **template** with no concrete signature until instantiation.
     pub comptime: bool,
+    /// `true` for `args: ..T` — a variadic parameter (ADR-0138 §1). The parameter's type is
+    /// `[]T`; the caller's trailing arguments are packed into a stack-allocated array and a
+    /// view of that array is passed. Must be the **last** parameter, and there is at most one.
+    pub variadic: bool,
     /// The default value, for `b: s64 = 10` (ADR-0053 §2).
     ///
     /// Lowered as an ordinary expression so the tree stays faithful; **sema refuses anything but a

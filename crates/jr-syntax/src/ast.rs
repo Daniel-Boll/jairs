@@ -681,6 +681,13 @@ impl Param {
         child_token(&self.0, DOLLAR).is_some()
     }
 
+    /// Whether this parameter is `..T` — variadic (ADR-0138 §1). The `..` precedes the *type*
+    /// (after the `:`), and it means "the caller's trailing arguments are collected into a
+    /// `[]T` view".
+    pub fn is_variadic(&self) -> bool {
+        child_token(&self.0, DOT_DOT).is_some()
+    }
+
     /// The default value, if the parameter has one (ADR-0053 §2).
     pub fn default_value(&self) -> Option<Expr> {
         child_node(&self.0)

@@ -104,6 +104,9 @@ its coverage in `valid/107` and a repurposed regression test in `jr-hir` guardin
 another all-corpus-file wave since the coverage is what a corpus program can observe.
 **ADR-0137 also holds at 1010** and adds one = **224** — Wave 7 (`$$T`, poly + baking), whose
 coverage in `valid/110` is what a corpus program can observe.
+**ADR-0138 also holds at 1010** and adds one = **225** — Wave 8 (variadic `..T` declaration
+surface), with `valid/111` exercising the callee-view shape and explicit-view passing. The
+call-site packing sugar is deferred to a follow-up wave.
 
 **A number in this file is now partly enforced.** `crates/jr-cli/tests/codes.rs` fails when the
 "first free code" claim below rots. The test count and the corpus count are still prose, and both were
