@@ -489,16 +489,23 @@ module.exports = grammar({
         $.expr_stmt,
       ),
 
-    // `for x: iter { }`, `for x, i: iter { }`, `for < x: iter { }` (ADR-0049 §1). An optional label
-    // (`outer: for …`) precedes it. The iterable is an expression, including a `range_expr`.
+    // `for x: iter { }`, `for x, i: iter { }`, `for < x: iter { }` (ADR-0049 §1), and
+    // `for iter { }` — the nameless form where `it` and `it_index` are injected as
+    // ordinary locals in the body (ADR-0133). The nameless form has no `:` between the
+    // `for` and the iterable; the named form has one, so the two shapes are unambiguous.
+    // An optional label (`outer: for …`) precedes either form.
     for_stmt: ($) =>
       seq(
         optional(field("label", $.loop_label)),
         "for",
         optional("<"),
-        field("value", $.identifier),
-        optional(seq(",", field("index", $.identifier))),
-        ":",
+        optional(
+          seq(
+            field("value", $.identifier),
+            optional(seq(",", field("index", $.identifier))),
+            ":",
+          ),
+        ),
         field("iter", $._expr),
         field("body", $.block),
       ),

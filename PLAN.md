@@ -527,7 +527,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **1010 workspace tests** and **219 corpus files**, all six gates green
+waiting. Both are tracked below. **1010 workspace tests** and **220 corpus files**, all six gates green
 **locally** — no CI run has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -556,7 +556,7 @@ waiting. Both are tracked below. **1010 workspace tests** and **219 corpus files
 > bound on the other.
 >
 > [!IMPORTANT]
-> **The eight-wave programme to keep ADR-0127's promises is 4 of 8 done.** Wave 1 was ADR-0128
+> **The eight-wave programme to keep ADR-0127's promises is 5 of 8 done.** Wave 1 was ADR-0128
 > (instantiation backtraces, single frame). **Wave 2 was ADR-0129** — an enum member's value may name a
 > literal-valued constant, generalising ADR-0070 so that one `named_constant_int` answers for both
 > callers. **Wave 3** shipped in three sub-waves: **3a (ADR-0130)** the vectors, **3b (ADR-0131)** the
@@ -572,7 +572,7 @@ waiting. Both are tracked below. **1010 workspace tests** and **219 corpus files
 > | ~~3a~~ | ~~`Math` vectors~~ | **done — ADR-0130** |
 > | ~~3b~~ | ~~`Math` `Matrix4`~~ | **done — ADR-0131**, column-major and right-handed |
 > | ~~3c~~ | ~~`Math` `Quaternion`~~ | **done — ADR-0132**, `{x, y, z, w}` and no auto-normalise |
-> | 4 | `it` / `it_index` | **decided:** ordinary injected locals, *not* reserved keywords |
+> | ~~4~~ | ~~`it` / `it_index`~~ | **done — ADR-0133**, ordinary injected locals; `it_index` inside a range's body still owed |
 > | 5 | Nested procedures + local constants | **decided:** no capture, Jai-style — a file-scope proc with a scoped name |
 > | 6 | `[..]T` dynamic arrays | **decided:** compiler-known layout both engines agree on, ops in Jairs, ADR-0107's doubling |
 > | 7 | `$$T` | **decided:** `$T` inference *plus* required-constant baking (ADR-0087's `$N` mechanism) |
@@ -1537,14 +1537,14 @@ refused pending its specialisation). The project defines **107** codes, one of t
 
 ### The next wave
 
-**Wave 3 is complete** — vectors (ADR-0130), Matrix4 (ADR-0131) and Quaternion (ADR-0132) all
-shipped. **Wave 4 is next: `it` / `it_index`** — ordinary injected locals in a `for` body, not
-reserved keywords. `for xs { it }` currently does not parse (E0122's "arrives in wave W2" is
-another expired-deferral case ADR-0127 already caught in prose, and this wave keeps the promise).
-Decision made in PLAN §7's table: injected as ordinary locals so that shadowing works and reads
-cleanly under `defer` and inside a nested `for`. No fork put to the decider.
+**Waves 3 and 4 are complete** — vectors (ADR-0130), Matrix4 (ADR-0131), Quaternion (ADR-0132) and
+`it`/`it_index` (ADR-0133). **Wave 5 is next: nested procedures + local constants** — a Jai-style
+file-scope procedure declared inside another, with the outer's scope for name lookup but *no
+closure over locals*. The decision is already in PLAN §7's table (no capture; a nested proc reads a
+file-scope name, not an enclosing local), and E0207 has told users this was "arriving in wave W2"
+for six waves — another of ADR-0127 §3's expired-deferral cases.
 
-**After 4, the remaining owed work is dispatches 2 and 3 of the security second pass** — kept
+**After 5, the remaining owed work is dispatches 2 and 3 of the security second pass** — kept
 because the audit's own §7 asks for three and only one has been discharged (ADR-0126). Then W6/W7.
 Both dispatches are read-only assessment first, so the forks come *out* of them rather than being
 owed before them.

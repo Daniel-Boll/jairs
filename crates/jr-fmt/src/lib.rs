@@ -1415,13 +1415,17 @@ impl Formatter {
             self.emit("< ");
         }
         let names: Vec<SyntaxNode> = node.children().filter(|n| n.kind() == NAME).collect();
+        // A nameless `for xs { … }` has no NAME children — inject nothing, and skip the `:`
+        // (ADR-0133). The named form still emits `name : iter`.
         for (i, name) in names.iter().enumerate() {
             if i > 0 {
                 self.emit(", ");
             }
             self.emit(name.text().to_string().trim());
         }
-        self.emit(": ");
+        if !names.is_empty() {
+            self.emit(": ");
+        }
         if let Some(iterable) = node.children().find(|n| is_expr_kind(n.kind())) {
             self.format_expr(&iterable);
         }
