@@ -527,7 +527,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **1010 workspace tests** and **223 corpus files**, all six gates green
+waiting. Both are tracked below. **1010 workspace tests** and **224 corpus files**, all six gates green
 **locally** — no CI run has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -556,7 +556,7 @@ waiting. Both are tracked below. **1010 workspace tests** and **223 corpus files
 > bound on the other.
 >
 > [!IMPORTANT]
-> **The eight-wave programme to keep ADR-0127's promises is 7 of 8 done.** Wave 1 was ADR-0128
+> **The eight-wave programme to keep ADR-0127's promises is 7 of 8 done — wave 8 (`print(fmt, ..Any)`) remains.** Wave 1 was ADR-0128
 > (instantiation backtraces, single frame). **Wave 2 was ADR-0129** — an enum member's value may name a
 > literal-valued constant, generalising ADR-0070 so that one `named_constant_int` answers for both
 > callers. **Wave 3** shipped in three sub-waves: **3a (ADR-0130)** the vectors, **3b (ADR-0131)** the
@@ -575,7 +575,7 @@ waiting. Both are tracked below. **1010 workspace tests** and **223 corpus files
 > | ~~4~~ | ~~`it` / `it_index`~~ | **done — ADR-0133** (surface) and **ADR-0135** (range with an index — `for x, i: a..b` and `for 0..5 { it_index }` both work) |
 > | ~~5~~ | ~~Nested procedures + local constants~~ | **done — ADR-0134**, no capture, `hir.scope`-hidden with sibling-scope injection |
 > | ~~6~~ | ~~`[..]T` dynamic arrays~~ | **done — ADR-0136**, compiler-known `{data, count, capacity}` layout; ops in Jairs (owed to a follow-up) |
-> | 7 | `$$T` | **decided:** `$T` inference *plus* required-constant baking (ADR-0087's `$N` mechanism) |
+> | ~~7~~ | ~~`$$T`~~ | **done — ADR-0137**, mixed `$T` inference + `$N` baking, one signature |
 > | 8 | `print(fmt, ..Any)` | **decided:** the only language gap is the variadic parameter; spill args to slots per ADR-0077 |
 >
 > Two things a fresh session should read before starting one. **Subagents return empty on this codebase**
@@ -1537,17 +1537,16 @@ refused pending its specialisation). The project defines **107** codes, one of t
 
 ### The next wave
 
-**Waves 3–6 are complete** — vectors (ADR-0130), Matrix4 (ADR-0131), Quaternion (ADR-0132),
+**Waves 3–7 are complete** — vectors (ADR-0130), Matrix4 (ADR-0131), Quaternion (ADR-0132),
 `it`/`it_index` (ADR-0133), nested procedures + local constants (ADR-0134), range-with-index
-follow-up (ADR-0135), `[..]T` syntax (ADR-0136). **Wave 7 is next: `$$T`** — `$T` inference
-*plus* required-constant baking (ADR-0087's `$N` mechanism). The decision was made in PLAN §7's
-table and no fork is owed.
+follow-up (ADR-0135), `[..]T` syntax (ADR-0136), `$$T` (ADR-0137). **Wave 8 is next: `print(fmt,
+..Any)`** — the only language gap is the variadic parameter (spill args to slots per ADR-0077).
 
-**After 7, the last programme wave is 8 (`print(fmt, ..Any)`), then dispatches 2 and 3 of the
-security second pass** — kept because the audit's own §7 asks for three and only one has been
-discharged (ADR-0126). Then W6's remaining metaprogram work and W7's remaining modules. Both
-remaining security dispatches are read-only assessment first, so the forks come *out* of them
-rather than being owed before them.
+**After 8, the programme is complete.** Remaining work then: dispatches 2 and 3 of the security
+second pass — kept because the audit's own §7 asks for three and only one has been discharged
+(ADR-0126). Then W6's remaining metaprogram work and W7's remaining modules. Both remaining
+security dispatches are read-only assessment first, so the forks come *out* of them rather than
+being owed before them.
 
 **Dispatch 2 — forging an `Any` or a procedure pointer through the untagged `union`.** Read
 `crates/jr-vm/src/value.rs` (167 lines, the representation) and `code.rs` (393, the packed proc handle) in

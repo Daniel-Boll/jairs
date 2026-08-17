@@ -4257,12 +4257,12 @@ impl Ctx<'_> {
             return None;
         };
         let sig = self.sigs.proc_sig(proc).cloned()?;
-        // A **pure** `$T` template — no `$N` parameters. A template mixing `$T` and `$N` is out of this
-        // sub-wave's scope (ADR-0088 handles a `$N`-only template); it falls through both this and
-        // `callee_comptime_template` to the ordinary path, whose `ERROR`-typed `$T` params report an
-        // honest mismatch rather than being half-instantiated by a mechanism that handles one kind.
-        let comptime = sig.comptime_params.iter().any(|&c| c);
-        (!sig.poly_vars.is_empty() && !comptime).then_some((proc, sig))
+        // A `$T` template — with or without `$N`/`$$T` comptime parameters (ADR-0137). Pure `$T`
+        // falls into `check_polymorphic_call`; a template that also has comptime params is
+        // routed there too, and it records the comptime arguments alongside the type
+        // bindings so the instantiation carries both. This is the mixed case ADR-0088
+        // deferred and PLAN §7 named as "wave 7 — `$$T`".
+        (!sig.poly_vars.is_empty()).then_some((proc, sig))
     }
 
     /// The `(proc, sig)` of a **local** procedure with a `$N` comptime-value parameter that `callee`
@@ -4508,6 +4508,27 @@ impl Ctx<'_> {
             })
             .collect();
         self.instantiations.insert((scope, id), (proc, key));
+
+        // For a **mixed** `$$T` template (ADR-0137), also record the comptime arguments so the
+        // pre-pass evaluates them and the instantiation clone bakes their values. A pure `$T`
+        // template has no comptime params and this list is empty; a mixed one records the
+        // argument at each `$N`/`$$T` position.
+        if sig.comptime_params.iter().any(|&c| c) {
+            let comptime_args: Vec<ExprId> = sig
+                .comptime_params
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &is_comptime)| {
+                    if is_comptime {
+                        args.get(index).copied()
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            self.comptime_calls
+                .insert((scope, id), (proc, comptime_args));
+        }
         ret
     }
 

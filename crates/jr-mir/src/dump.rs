@@ -466,7 +466,10 @@ impl Dumper<'_> {
                 // both the same way could not show that a view's count is a load where an
                 // array's is a constant, which is the one thing a reader checks here.
                 Projection::ViewData => text.push_str(".view_data"),
-                Projection::ViewCount | Projection::DynamicArrayData | Projection::DynamicArrayCount | Projection::DynamicArrayCapacity => text.push_str(".view_count"),
+                Projection::ViewCount
+                | Projection::DynamicArrayData
+                | Projection::DynamicArrayCount
+                | Projection::DynamicArrayCapacity => text.push_str(".view_count"),
                 Projection::VariantTag => text.push_str(".tag"),
             }
         }

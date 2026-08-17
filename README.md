@@ -20,11 +20,9 @@ error-recovering compiler written in Rust.
 
 Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 1010 tests green.
 The current work is an **eight-wave programme to keep the promises ADR-0127 found unkept** — **7 of 8
-done** (ADR-0128 through ADR-0136). Wave 3 (Math), wave 4 (nameless `for`), wave 5 (nested
-procedures) and wave 6 (`[..]T` dynamic-array syntax) are complete. E0124 — the "dynamic arrays
-`[..]T` arrive in a later wave" refusal — is retired: the compiler now owns the layout
-`{data, count, capacity}` and the three fields are readable/writable places. Growth operations
-stay in Jairs (`modules/List` today) per PLAN §7's decision.
+done** (ADR-0128 through ADR-0137). Wave 3 (Math), wave 4 (nameless `for`), wave 5 (nested
+procedures), wave 6 (`[..]T` dynamic-array syntax) and wave 7 (`$$T` — mixed `$T` inference plus
+`$N` value baking) are complete. Wave 8 (`print(fmt, ..Any)`) is the only wave left.
 
 **The four most recent waves were driven by an audit rather than by a feature**
 ([`docs/assessment-2026-08-07.md`](docs/assessment-2026-08-07.md)).

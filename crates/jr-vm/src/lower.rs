@@ -629,9 +629,7 @@ impl Compiler<'_> {
                         steps.push(PlaceStep::Offset(offset));
                     }
                     ty = self.pool.find(&Item::PointerType(elem)).ok_or_else(|| {
-                        VmError::internal(
-                            "a `[..]T`'s element pointer type was never interned",
-                        )
+                        VmError::internal("a `[..]T`'s element pointer type was never interned")
                     })?;
                 }
                 Projection::DynamicArrayCount => {

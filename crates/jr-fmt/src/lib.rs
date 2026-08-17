@@ -874,11 +874,19 @@ impl Formatter {
                     self.format_type_arguments(&args);
                 }
             }
-            // `$T` (ADR-0081 §1): a `$` then the variable name. Handled explicitly, because a
-            // formatter that dropped it would silently turn a polymorphic parameter into a bare one —
-            // the lossy-CST failure this file keeps having to guard against.
+            // `$T` (ADR-0081 §1) or `$$T` (ADR-0137, comptime-required poly): the number of `$`
+            // tokens in the node is what tells them apart. A formatter that dropped one silently
+            // turned `$$T` into `$T` and lost the comptime requirement — the lossy-CST failure
+            // this file keeps having to guard against.
             POLY_TYPE => {
-                self.emit("$");
+                let dollar_count = node
+                    .children_with_tokens()
+                    .filter_map(|e| e.into_token())
+                    .filter(|t| t.kind() == DOLLAR)
+                    .count();
+                for _ in 0..dollar_count {
+                    self.emit("$");
+                }
                 if let Some(tok) = node
                     .children_with_tokens()
                     .filter_map(|e| e.into_token())
