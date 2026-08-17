@@ -1,0 +1,127 @@
+// **Nested procedures and local constants** (ADR-0134, wave 5) — the fifth of ADR-0127 §3's
+// unkept promises to be surfaced. E0207 previously refused every `X :: <value>;` written inside
+// a procedure body, saying "no wave currently owns them"; this wave takes ownership.
+//
+// What is checked here, and why each is not an assumption:
+//
+//   * **a local constant** — `X :: 5;` inside a body binds `X` to a compile-time value that
+//     participates in ordinary arithmetic. A pre-wave version refused it with E0207;
+//   * **a nested procedure** — `helper :: () -> s64 { … }` inside a body is a real, callable
+//     procedure. Native and VM both lower it; the differential harness pins agreement;
+//   * **self-recursion** — `factorial :: (n) { … factorial(n - 1) … }` resolves against its
+//     own name via the sibling-scope injection ADR-0134 §2 does, not via file scope, which is
+//     what keeps the "scoped name" side of PLAN §7's decision true;
+//   * **siblings see each other** — `twice` calls `add` where both are nested in `main`. That
+//     is what makes an ordinary functional decomposition possible inside a body;
+//   * **no capture, Jai-style** — a nested proc reading an enclosing local is E0201 (an
+//     ordinary unresolved-name error, since the outer body's scope is not inherited into a
+//     nested body). Not tested here because this is a `valid/` file; ADR-0134 §1 records why
+//     the refusal is E0201 rather than a dedicated capture code;
+//   * **shadowing** — `helper :: () -> s64 …` in `first` and `helper :: () -> s64 …` in `second`
+//     do not collide. `hir.scope` is *not* the mechanism they resolve through, so their names
+//     are independent, matching what a reader expects from two separate blocks;
+//   * **two levels of nesting** — a nested proc's body can itself declare another nested proc.
+//     Both hoists compose because the item slot is reserved *before* its own body is lowered
+//     (ADR-0134 §2's "pre-reservation" note), so `items.len()` reflects the outer nested
+//     item's position when the inner body predicts its own ItemId.
+#import "Basic";
+
+// Two file-scope procs that each contain a same-named nested `helper`. If the compiler put
+// nested names into `hir.scope`, this file would fail to compile with a duplicate declaration.
+// It doesn't, so this file compiles and both `helper`s coexist.
+first :: () -> s64 {
+    helper :: () -> s64 {
+        return 1;
+    }
+    return helper();
+}
+
+second :: () -> s64 {
+    helper :: () -> s64 {
+        return 2;
+    }
+    return helper();
+}
+
+// Two-level nesting: `middle` is nested in `outer`; `inner` is nested in `middle`. Each
+// level's `items.len()` count is what predicts the next level's ItemId, and the reservation
+// in `lower_const_decl_with_inherited` is what keeps the predictions consistent.
+outer :: () -> s64 {
+    middle :: () -> s64 {
+        inner :: () -> s64 {
+            return 42;
+        }
+        return inner();
+    }
+    return middle();
+}
+
+main :: () {
+    n := 0;
+
+    // ------------------------------------------------------------------------
+    // Local constant — E0207 used to refuse this.
+    // ------------------------------------------------------------------------
+    LIMIT :: 10;
+    if LIMIT * 3 == 30 {
+        n = n + 1;
+    }
+
+    // ------------------------------------------------------------------------
+    // Nested procs from separate parents — same name, no collision.
+    // ------------------------------------------------------------------------
+    if first() == 1 && second() == 2 {
+        n = n + 2;
+    }
+
+    // ------------------------------------------------------------------------
+    // Self-recursion — the sibling-scope injection includes the proc itself.
+    // ------------------------------------------------------------------------
+    factorial :: (k: s64) -> s64 {
+        if k <= 1 {
+            return 1;
+        }
+        return k * factorial(k - 1);
+    }
+    if factorial(6) == 720 {
+        n = n + 4;
+    }
+
+    // ------------------------------------------------------------------------
+    // Siblings see each other — `twice` calls `add`.
+    // ------------------------------------------------------------------------
+    add :: (a: s64, b: s64) -> s64 {
+        return a + b;
+    }
+    twice :: (v: s64) -> s64 {
+        return add(v, v);
+    }
+    if twice(7) == 14 {
+        n = n + 8;
+    }
+
+    // ------------------------------------------------------------------------
+    // Two-level nesting — the deep case.
+    // ------------------------------------------------------------------------
+    if outer() == 42 {
+        n = n + 16;
+    }
+
+    // ------------------------------------------------------------------------
+    // A nested proc can *use* a local constant declared beside it.
+    // Both are hoisted-or-not per §1's split (const is a value; proc has its own body).
+    // ------------------------------------------------------------------------
+    OFFSET :: 100;
+    shifted :: (x: s64) -> s64 {
+        return x + OFFSET;
+    }
+    if shifted(5) == 105 {
+        n = n + 32;
+    }
+
+    // Every assertion above: 63 = 2^6 - 1.
+    if n == 63 {
+        exit(0);
+    }
+    exit(1);
+}

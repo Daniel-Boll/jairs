@@ -80,29 +80,53 @@ fn literal_spans_point_at_the_literal() {
 
 /// Declarations inside a procedure body used to lower to a bare `Stmt::Error`
 /// with NO diagnostic, silently deleting the declaration from the program.
-/// Silent omission becomes a miscompile once codegen exists, so it must be
-/// reported even though the feature is not implemented.
+/// ADR-0134 flipped this: nested `X :: <value>` is now supported, so the
+/// declaration is **hoisted** into the file's item arena and represented as
+/// `Stmt::Item(item_id, span)`. No diagnostic, no `Stmt::Error` — because it
+/// is not an error any more. This test still exists so a regression that
+/// re-drops the declaration silently is caught.
 #[test]
-fn declarations_inside_a_body_are_reported_not_silently_dropped() {
+fn nested_declarations_are_hoisted_not_silently_dropped() {
     let src = "outer :: () {\n    inner :: () {\n    }\n}\n";
     let (hir, diags, _interner) = lower(src);
 
+    // No E0207 any more — ADR-0134 lifted it.
     assert!(
-        !diags.is_empty(),
-        "a nested declaration must produce a diagnostic, not vanish"
-    );
-    assert!(
-        diags.iter().any(|d| d.code == Some("E0207")),
-        "expected E0207, got {:?}",
+        !diags.iter().any(|d| d.code == Some("E0207")),
+        "ADR-0134 lifted E0207 for nested constants; got: {:?}",
         diags.iter().map(|d| d.code).collect::<Vec<_>>()
     );
 
-    // And it must still appear as an Error statement so the tree stays total.
-    let has_error_stmt = hir
+    // The nested `inner` is now an ordinary hoisted item, reachable in `outer`'s
+    // body via `Stmt::Item(item_id, span)`. A `Stmt::Error` placeholder would
+    // mean silent dropping, which is precisely what this test used to catch.
+    let has_item_stmt = hir
         .bodies
         .iter()
-        .any(|b| b.stmts.iter().any(|s| matches!(s, Stmt::Error(_))));
-    assert!(has_error_stmt, "expected an Error statement placeholder");
+        .any(|b| b.stmts.iter().any(|s| matches!(s, Stmt::Item(_, _))));
+    assert!(
+        has_item_stmt,
+        "expected a Stmt::Item placeholder for the hoisted `inner`; \
+         a Stmt::Error here would mean silent dropping"
+    );
+
+    // Two procs — `outer` and the hoisted `inner`.
+    let proc_items = hir
+        .items
+        .iter()
+        .filter(|it| {
+            matches!(
+                it.kind,
+                jr_hir::ItemKind::Const {
+                    value: jr_hir::ConstValue::Proc(_),
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        proc_items, 2,
+        "expected two proc items (outer + hoisted inner), got {proc_items}"
+    );
 }
 
 /// `#import` is a file-scope construct; inside a body it is a scope error, not

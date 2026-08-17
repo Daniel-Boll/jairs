@@ -11297,3 +11297,155 @@ proc main -> void {
     discard call extern proc1(1_s64)
     return
 }
+
+========================================
+107-nested-procs-and-local-consts.jr
+========================================
+proc helper -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    return 1_s64
+}
+proc first -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call proc0(v0)
+    return v1
+}
+proc helper -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    return 2_s64
+}
+proc second -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call proc2(v0)
+    return v1
+}
+proc inner -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    return 42_s64
+}
+proc middle -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call proc4(v0)
+    return v1
+}
+proc outer -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call proc5(v0)
+    return v1
+}
+proc factorial -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: bool = v1 <= 1_s64
+    branch v2 ? bb1() : bb2()
+  bb1():
+    return 1_s64
+  bb2():
+    goto bb3()
+  bb3():
+    v3: s64 = v1 - 1_s64
+    v4: s64 = call proc7(v0, v3)
+    v5: s64 = v1 * v4
+    return v5
+}
+proc add -> s64 {
+  params: v0: *Context, v1: s64, v2: s64
+  bb0(v0: *Context, v1: s64, v2: s64):
+    v3: s64 = v1 + v2
+    return v3
+}
+proc twice -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: s64 = call proc8(v0, v1, v1)
+    return v2
+}
+proc shifted -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: s64 = v1 + 100_s64
+    return v2
+}
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = 10_s64 * 3_s64
+    v2: bool = v1 == 30_s64
+    branch v2 ? bb1() : bb2()
+  bb1():
+    v3: s64 = 0_s64 + 1_s64
+    goto bb3(v3)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v10: s64):
+    v4: s64 = call proc1(v0)
+    v5: bool = v4 == 1_s64
+    branch v5 ? bb4() : bb5()
+  bb4():
+    v7: s64 = call proc3(v0)
+    v8: bool = v7 == 2_s64
+    goto bb6(v8)
+  bb5():
+    goto bb6(false)
+  bb6(v6: bool):
+    branch v6 ? bb7() : bb8()
+  bb7():
+    v11: s64 = v10 + 2_s64
+    goto bb9(v11)
+  bb8():
+    goto bb9(v10)
+  bb9(v14: s64):
+    v12: s64 = call proc7(v0, 6_s64)
+    v13: bool = v12 == 720_s64
+    branch v13 ? bb10() : bb11()
+  bb10():
+    v15: s64 = v14 + 4_s64
+    goto bb12(v15)
+  bb11():
+    goto bb12(v14)
+  bb12(v18: s64):
+    v16: s64 = call proc9(v0, 7_s64)
+    v17: bool = v16 == 14_s64
+    branch v17 ? bb13() : bb14()
+  bb13():
+    v19: s64 = v18 + 8_s64
+    goto bb15(v19)
+  bb14():
+    goto bb15(v18)
+  bb15(v22: s64):
+    v20: s64 = call proc6(v0)
+    v21: bool = v20 == 42_s64
+    branch v21 ? bb16() : bb17()
+  bb16():
+    v23: s64 = v22 + 16_s64
+    goto bb18(v23)
+  bb17():
+    goto bb18(v22)
+  bb18(v26: s64):
+    v24: s64 = call proc10(v0, 5_s64)
+    v25: bool = v24 == 105_s64
+    branch v25 ? bb19() : bb20()
+  bb19():
+    v27: s64 = v26 + 32_s64
+    goto bb21(v27)
+  bb20():
+    goto bb21(v26)
+  bb21(v28: s64):
+    v29: bool = v28 == 63_s64
+    branch v29 ? bb22() : bb23()
+  bb22():
+    discard call extern proc1(0_s64)
+    goto bb24()
+  bb23():
+    goto bb24()
+  bb24():
+    discard call extern proc1(1_s64)
+    return
+}

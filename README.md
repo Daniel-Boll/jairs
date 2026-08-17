@@ -19,12 +19,13 @@ error-recovering compiler written in Rust.
 ## Status, honestly
 
 Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 1010 tests green.
-The current work is an **eight-wave programme to keep the promises ADR-0127 found unkept** — **5 of 8
+The current work is an **eight-wave programme to keep the promises ADR-0127 found unkept** — **6 of 8
 done** (ADR-0128 instantiation backtraces, ADR-0129 an enum member from a constant, ADR-0130 `Math`'s
 vectors, ADR-0131 `Math`'s `Matrix4`, ADR-0132 `Math`'s `Quaternion`, ADR-0133 `it`/`it_index` in a
-nameless `for`). Wave 3 (Math) and wave 4 (nameless for) are complete. `for xs { it }` now parses
-and lowers as ordinary injected locals — no reserved-keyword carve-out, so a body may shadow `it`
-by declaring one.
+nameless `for`, ADR-0134 nested procedures + local constants). Wave 3 (Math), wave 4 (nameless
+`for`) and wave 5 (nested procedures) are complete. E0207 — the "declarations inside a body are
+not supported" refusal — is retired: `X :: <value>;` inside a body now lowers, and nested procs
+recurse, see their siblings, and stay hidden from callers outside their enclosing body.
 
 **The four most recent waves were driven by an audit rather than by a feature**
 ([`docs/assessment-2026-08-07.md`](docs/assessment-2026-08-07.md)).

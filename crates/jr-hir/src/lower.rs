@@ -108,6 +108,11 @@ const FILE_SCOPE_ONLY_DIRECTIVES: &[&str] = &["import", "load"];
 enum ScopeEntry {
     Local(LocalId),
     Param(ParamId),
+    /// A **nested** item declared inside a body — a local constant or a nested procedure
+    /// (ADR-0134). The item is hoisted to the file's item arena but **not** added to
+    /// `hir.scope`, so it is visible only through this scope frame. That is the "no capture,
+    /// scoped-name" shape §7's table decided against a real closure.
+    Item(ItemId),
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +451,14 @@ impl<'a> LowerCtx<'a> {
     // ---- procedures --------------------------------------------------------
 
     fn lower_proc(&mut self, ast_proc: &AstProc) -> ProcId {
+        self.lower_proc_with_inherited(ast_proc, &[])
+    }
+
+    fn lower_proc_with_inherited(
+        &mut self,
+        ast_proc: &AstProc,
+        inherited_items: &[(Symbol, ItemId)],
+    ) -> ProcId {
         let span = self.span_of_node(ast_proc.syntax());
 
         // Parameters
@@ -544,6 +557,7 @@ impl<'a> LowerCtx<'a> {
             self.items.push(Item {
                 name: Some(synthetic),
                 exported: false,
+                nested: false,
                 span: pred_span,
                 name_span: pred_span,
                 kind: ItemKind::Const {
@@ -564,7 +578,7 @@ impl<'a> LowerCtx<'a> {
 
         let is_macro = ast_proc.is_expand();
         let body = ast_proc.body().filter(|_| !is_macro).map(|b| {
-            let body = self.lower_body(&b, &params);
+            let body = self.lower_body_inner(&b, &params, inherited_items);
             self.alloc_body(body)
         });
 
@@ -608,7 +622,43 @@ impl<'a> LowerCtx<'a> {
     // ---- bodies ------------------------------------------------------------
 
     fn lower_body(&mut self, block: &Block, params: &[Param]) -> Body {
-        let mut bctx = BodyLowerCtx::new(self.file, self.interner, self.operands, &self.macros);
+        self.lower_body_inner(block, params, &[])
+    }
+
+    fn lower_body_inner(
+        &mut self,
+        block: &Block,
+        params: &[Param],
+        inherited_items: &[(Symbol, ItemId)],
+    ) -> Body {
+        // Nested-item hoisting (ADR-0134): every nested `X :: <value>;` declaration the body
+        // encounters reserves a slot in the file's item arena counted from *this* point, and
+        // then `LowerCtx::lower_body_inner` allocates those items in the same order after the body
+        // finishes. The invariant that no other item is allocated between now and the drain
+        // makes the predicted `ItemId` and the allocated one match by construction, which is
+        // what lets the scope stack refer to items that do not yet exist.
+        let first_pending_item = self.items.len();
+        let mut bctx = BodyLowerCtx::new(
+            self.file,
+            self.interner,
+            self.operands,
+            &self.macros,
+            first_pending_item,
+        );
+
+        // Register inherited nested items (ADR-0134 §2). These are siblings of the current
+        // procedure — nested items declared in the enclosing block — plus the current
+        // procedure itself. They are pushed *before* the parameters so a parameter that
+        // happens to share a name with a sibling shadows it (ordinary shadowing rules), and so
+        // recursion through the current procedure's own name works: for a nested
+        // `factorial :: (n: s64) -> s64 { … factorial(n - 1) … }` the enclosing block's drain
+        // passes `factorial` as one of the inherited entries, so its own body can reach it.
+        for (name, item_id) in inherited_items {
+            bctx.scope_stack
+                .last_mut()
+                .unwrap()
+                .push((*name, ScopeEntry::Item(*item_id)));
+        }
 
         // Register parameters in the outermost scope
         for (i, param) in params.iter().enumerate() {
@@ -625,14 +675,66 @@ impl<'a> LowerCtx<'a> {
         // Drain body diagnostics into the file diagnostics
         self.diags.extend(bctx.diags.into_vec());
 
-        Body {
+        // Take the pending hoists out so the borrow ends before we start lowering them —
+        // `lower_hoisted_const` reaches back into `self` and would clash with `bctx` still
+        // holding fields we read here.
+        let pending = std::mem::take(&mut bctx.pending_hoists);
+
+        let body = Body {
             exprs: bctx.exprs,
             expr_spans: bctx.expr_spans,
             stmts: bctx.stmts,
             locals: bctx.locals,
             type_refs: bctx.type_refs,
             root,
+        };
+
+        // The drain. `self.items.len()` must still equal `first_pending_item` here — nothing
+        // between construction of `bctx` and this point allocates a file-level item, because
+        // `BodyLowerCtx` methods only touch body arenas. The assert is the invariant made
+        // executable.
+        assert_eq!(
+            self.items.len(),
+            first_pending_item,
+            "an item was allocated during body lowering; the ADR-0134 hoist prediction is broken",
+        );
+        // Sibling inheritance: every nested proc drained here sees all *its own siblings*
+        // (including itself, for recursion). Collected once from the pending list before we
+        // start draining, since the drain adds items to `self.items` and this is the last
+        // moment when each pending hoist's name is easy to reach.
+        let siblings: Vec<(Symbol, ItemId)> = pending
+            .iter()
+            .filter_map(|h| {
+                h.ast
+                    .name()
+                    .and_then(|n| n.text())
+                    .map(|t| (t, h.predicted_id))
+            })
+            .map(|(t, id)| (self.intern(&t), id))
+            .collect();
+        for hoist in pending {
+            let allocated = self.lower_hoisted_const(&hoist.ast, &siblings);
+            assert_eq!(
+                allocated, hoist.predicted_id,
+                "ADR-0134: predicted item id did not match allocation order",
+            );
         }
+
+        body
+    }
+
+    /// Lowers a nested `X :: <value>;` declaration into the file's item arena (ADR-0134).
+    ///
+    /// Called by `lower_body_inner` on each pending hoist collected during body lowering. The item
+    /// is allocated exactly as an ordinary file-scope constant is, **except that its name is
+    /// not inserted into `hir.scope`** — visibility is via the enclosing body's scope stack
+    /// only, plus the sibling-scope injection every nested proc's body receives (ADR-0134 §2).
+    ///
+    /// `siblings` are the (name, ItemId) pairs of *every* sibling nested item in the same
+    /// enclosing block (including this one). They are injected into the nested body's outer
+    /// scope so `factorial` can recurse and so `twice` can call its sibling `add`.
+    fn lower_hoisted_const(&mut self, cd: &ConstDecl, siblings: &[(Symbol, ItemId)]) -> ItemId {
+        self.lower_const_decl_with_inherited(cd, /* insert_in_scope */ false, siblings)
     }
 
     // ---- top-level expressions ---------------------------------------------
@@ -933,6 +1035,7 @@ impl<'a> LowerCtx<'a> {
         let name = self.intern(&format!("operator{}", token.text()));
         self.items.push(Item {
             exported: self.exporting,
+            nested: false,
             name: Some(name),
             span,
             name_span,
@@ -1105,6 +1208,18 @@ impl<'a> LowerCtx<'a> {
     }
 
     fn lower_const_decl(&mut self, cd: &ConstDecl) {
+        // The file-scope entry point — see [`Self::lower_const_decl_with_inherited`] for the
+        // parameters that make hoisted-nested constants (ADR-0134) share the same code path
+        // without leaking their name into `hir.scope` and while carrying sibling scope.
+        self.lower_const_decl_with_inherited(cd, /* insert_in_scope */ true, &[]);
+    }
+
+    fn lower_const_decl_with_inherited(
+        &mut self,
+        cd: &ConstDecl,
+        insert_in_scope: bool,
+        inherited_items: &[(Symbol, ItemId)],
+    ) -> ItemId {
         let span = self.span_of_node(cd.syntax());
         let name_node = cd.name();
         let name = name_node
@@ -1116,8 +1231,48 @@ impl<'a> LowerCtx<'a> {
             .map(|n| self.span_of_node(n.syntax()))
             .unwrap_or(span);
 
+        // **Reserve the item slot up front** (ADR-0134). Nested items count `items.len()` at
+        // the start of every body they enter to predict their own ItemIds. If the enclosing
+        // item's slot is not allocated until *after* its value is lowered, a nested-in-nested
+        // proc's body would see a count that does not include the outer nested item — so the
+        // inner predictions would collide with the outer's actual position. Reserving first
+        // gives every nested predictor the position count it is entitled to. The placeholder
+        // kind is `ItemKind::Var { ty: None, init: None, uninit: false }` because it needs no
+        // ExprId — a `ConstValue::Expr(err)` would spuriously allocate a top-level expression
+        // and shift every top expr's index one, which is what
+        // `resolve_map_does_not_collide_top_level_and_body_expression_ids` probes.
+        let reserved_id = if insert_in_scope {
+            self.alloc_item(Item {
+                exported: self.exporting,
+                nested: false,
+                name,
+                span,
+                name_span,
+                kind: ItemKind::Var {
+                    ty: None,
+                    init: None,
+                    uninit: false,
+                },
+            })
+        } else {
+            let id = ItemId::from_usize(self.items.len());
+            self.items.push(Item {
+                exported: false,
+                nested: true,
+                name,
+                span,
+                name_span,
+                kind: ItemKind::Var {
+                    ty: None,
+                    init: None,
+                    uninit: false,
+                },
+            });
+            id
+        };
+
         let kind = if let Some(proc) = cd.proc() {
-            let proc_id = self.lower_proc(&proc);
+            let proc_id = self.lower_proc_with_inherited(&proc, inherited_items);
             ItemKind::Const {
                 value: ConstValue::Proc(proc_id),
             }
@@ -1172,13 +1327,10 @@ impl<'a> LowerCtx<'a> {
             }
         };
 
-        self.alloc_item(Item {
-            exported: self.exporting,
-            name,
-            span,
-            name_span,
-            kind,
-        });
+        // Patch the reserved slot with the real `kind`. Every other field is already correct
+        // from the reservation above.
+        self.items[reserved_id.index()].kind = kind;
+        reserved_id
     }
 
     fn lower_var_decl_item(&mut self, vd: &VarDecl) {
@@ -1202,6 +1354,7 @@ impl<'a> LowerCtx<'a> {
 
         self.alloc_item(Item {
             exported: self.exporting,
+            nested: false,
             name,
             span,
             name_span,
@@ -1219,6 +1372,7 @@ impl<'a> LowerCtx<'a> {
 
         self.alloc_item(Item {
             exported: self.exporting,
+            nested: false,
             name: None,
             span,
             name_span: span,
@@ -1235,6 +1389,7 @@ impl<'a> LowerCtx<'a> {
 
         self.alloc_item(Item {
             exported: self.exporting,
+            nested: false,
             name: None,
             span,
             name_span: span,
@@ -1329,6 +1484,31 @@ struct BodyLowerCtx<'a> {
     /// operand can produce one means the guard exists *when* the feature does, rather than after the
     /// first hang.
     insert_depth: u32,
+
+    /// The `ItemId` `pending_hoists` will start numbering from (ADR-0134). Set from
+    /// `LowerCtx::items.len()` when `BodyLowerCtx` is constructed. Guarded by the invariant
+    /// that no other item is allocated between then and `LowerCtx::lower_body` draining these
+    /// pending hoists — so a predicted `ItemId` is guaranteed to match the one allocated on
+    /// drain.
+    first_pending_item: usize,
+
+    /// Nested `X :: <value>;` declarations discovered inside this body, in encounter order.
+    /// Each was assigned an `ItemId` when it was seen — `ItemId::from_usize(first_pending_item
+    /// + i)` — and registered as `ScopeEntry::Item(id)` in the enclosing scope. After the
+    /// body finishes, `LowerCtx::lower_body` drains this list and lowers each one **in the
+    /// same order**, producing the same `ItemId`s the body already resolved against.
+    pending_hoists: Vec<PendingHoist>,
+}
+
+/// A nested `X :: <value>;` declaration discovered inside a body, waiting to be lowered into
+/// the file's item arena after the body finishes (ADR-0134).
+struct PendingHoist {
+    /// The `AstItem::Const` node — carries all of name, value, spans.
+    ast: jr_syntax::ast::ConstDecl,
+    /// The `ItemId` this hoist was already promised in the body's scope stack. When
+    /// `LowerCtx::lower_body` drains, `self.items.len()` must equal this at the point of
+    /// drain — an assertion pins the invariant.
+    predicted_id: ItemId,
 }
 
 impl<'a> BodyLowerCtx<'a> {
@@ -1337,6 +1517,7 @@ impl<'a> BodyLowerCtx<'a> {
         interner: &'a Interner,
         operands: &'a InsertOperands,
         macros: &'a MacroBodies,
+        first_pending_item: usize,
     ) -> Self {
         Self {
             file,
@@ -1354,6 +1535,8 @@ impl<'a> BodyLowerCtx<'a> {
             scope_stack: vec![Vec::new()],
             span_override: None,
             insert_depth: 0,
+            first_pending_item,
+            pending_hoists: Vec::new(),
         }
     }
 
@@ -2093,35 +2276,34 @@ impl<'a> BodyLowerCtx<'a> {
                 self.define_local(name, local_id);
                 self.alloc_stmt(Stmt::Local(local_id, vd_span))
             }
-            // Declarations inside a procedure body.
-            //
-            // The parser accepts these because a block may contain a
-            // declaration statement, but they are NOT part of the Jairs-0
-            // subset, and `BodyLowerCtx` has no access to the file-level item
-            // arena to lower them into. What matters is that we say so: an
-            // earlier version emitted a bare `Stmt::Error` with no diagnostic,
-            // which silently dropped the declaration from the program. Once
-            // codegen exists that is a miscompile, not an inconvenience.
-            AstItem::Const(_) => {
-                self.diags.push(
-                    Diagnostic::error(
-                        span,
-                        "declarations inside a procedure body are not supported yet",
-                    )
-                    .with_code(E0207)
-                    // **Not "arrives in wave W2".** That note stood for six waves after W2
-                    // shipped, and it was wrong twice: W2 is complete, and §2.1's W2 row never
-                    // listed this — it is `for`, `defer`, `using`, multiple returns, named and
-                    // default arguments, and `#scope_*`. So the note named a wave that had both
-                    // passed and never owned the feature, which reads as a schedule while being
-                    // neither. Nothing owns it today, and saying so is the honest answer.
-                    .with_note(
-                        "a nested procedure and a local constant are both unimplemented, and no \
-                         wave currently owns them",
-                    )
-                    .with_help("move the declaration to file scope"),
-                );
-                self.alloc_stmt(Stmt::Error(span))
+            // **Nested `X :: <value>;` declarations** — nested procedures and local constants,
+            // ADR-0134. The body records a pending hoist and registers the name in its scope
+            // stack; `LowerCtx::lower_body` drains the pending list after the body finishes and
+            // allocates each item into the file's arena, in the same order the predictions were
+            // made. That is the "no capture, file-scope proc with a scoped name" shape §7 of
+            // PLAN.md decided against a real closure.
+            AstItem::Const(cd) => {
+                let name = cd
+                    .name()
+                    .as_ref()
+                    .and_then(|n| n.text())
+                    .map(|t| self.intern(&t));
+                let predicted_id =
+                    ItemId::from_usize(self.first_pending_item + self.pending_hoists.len());
+                if let Some(name_sym) = name {
+                    // Register in the current (innermost) scope. The frame is a Vec of
+                    // (Symbol, ScopeEntry) pairs — `lookup_scope` walks it inside-out so the
+                    // most recently pushed entry wins, giving ordinary shadow semantics.
+                    self.scope_stack
+                        .last_mut()
+                        .unwrap()
+                        .push((name_sym, ScopeEntry::Item(predicted_id)));
+                }
+                self.pending_hoists.push(PendingHoist {
+                    ast: cd.clone(),
+                    predicted_id,
+                });
+                self.alloc_stmt(Stmt::Item(predicted_id, span))
             }
             AstItem::Import(_) => {
                 self.diags.push(
@@ -2208,6 +2390,7 @@ impl<'a> BodyLowerCtx<'a> {
                         .map(|e| match e {
                             ScopeEntry::Local(id) => Res::Local(id),
                             ScopeEntry::Param(id) => Res::Param(id),
+                            ScopeEntry::Item(id) => Res::Item(id),
                         })
                         .unwrap_or(Res::Error);
                     let expr = self.alloc_expr(
@@ -2512,6 +2695,7 @@ impl<'a> BodyLowerCtx<'a> {
                     .map(|e| match e {
                         ScopeEntry::Local(id) => Res::Local(id),
                         ScopeEntry::Param(id) => Res::Param(id),
+                        ScopeEntry::Item(id) => Res::Item(id),
                     })
                     .unwrap_or(Res::Error);
                 self.alloc_expr(Expr::Name { name, span, res }, span)

@@ -849,6 +849,15 @@ impl<'a> ResolveCtx<'a> {
             ) {
                 continue;
             }
+            // **A nested-hoisted item is exempt** — ADR-0134. A hoisted `X :: <value>` from
+            // inside a body sits in `items` (so it gets checked, lowered, linked like any
+            // other item) but its name is *not* in `hir.scope` because scoping is via the
+            // enclosing body's scope stack. Two nested items sharing a name across different
+            // enclosing procs are legal by construction, and the `nested` flag on `Item` is
+            // what distinguishes them from a real user-visible duplicate.
+            if item.nested {
+                continue;
+            }
             let item_id = ItemId::from_usize(i);
             if let Some((_orig_id, orig_span)) = seen.get(&name) {
                 let name_text = self.interner.resolve(name);
