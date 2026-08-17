@@ -11036,8 +11036,8 @@ proc main -> void {
   params: v0: *Context
   slots:
     s0: [4]s64  // local 1
-    s1: [2]s64  // local 23
-    s2: [3]s64  // local 24
+    s1: [2]s64  // local 25
+    s2: [3]s64  // local 26
     s3: s64  // temporary
   bb0(v0: *Context):
     zero s0
@@ -11118,95 +11118,97 @@ proc main -> void {
     goto bb24(v33)
   bb23():
     goto bb24(v32)
-  bb24(v42: s64):
+  bb24(v43: s64):
     goto bb25(0_s64, 0_s64)
-  bb25(v34: s64, v36: s64):
+  bb25(v34: s64, v37: s64):
     v35: bool = v34 < 5_s64
     branch v35 ? bb26() : bb28()
   bb26():
-    v37: s64 = v36 + v34
+    v36: s64 = v34 - 0_s64
+    v38: s64 = v37 + v34
     goto bb27()
   bb27():
-    v39: s64 = v34 + 1_s64
-    goto bb25(v39, v37)
+    v40: s64 = v34 + 1_s64
+    goto bb25(v40, v38)
   bb28():
     goto bb29()
   bb29():
-    v40: bool = v36 == 10_s64
-    branch v40 ? bb30() : bb31()
+    v41: bool = v37 == 10_s64
+    branch v41 ? bb30() : bb31()
   bb30():
-    v43: s64 = v42 + 8_s64
-    goto bb32(v43)
+    v44: s64 = v43 + 8_s64
+    goto bb32(v44)
   bb31():
-    goto bb32(v42)
-  bb32(v52: s64):
+    goto bb32(v43)
+  bb32(v54: s64):
     goto bb33(10_s64, 0_s64)
-  bb33(v44: s64, v46: s64):
-    v45: bool = v44 < 15_s64
-    branch v45 ? bb34() : bb36()
+  bb33(v45: s64, v48: s64):
+    v46: bool = v45 < 15_s64
+    branch v46 ? bb34() : bb36()
   bb34():
-    v47: s64 = v46 + v44
+    v47: s64 = v45 - 10_s64
+    v49: s64 = v48 + v45
     goto bb35()
   bb35():
-    v49: s64 = v44 + 1_s64
-    goto bb33(v49, v47)
+    v51: s64 = v45 + 1_s64
+    goto bb33(v51, v49)
   bb36():
     goto bb37()
   bb37():
-    v50: bool = v46 == 60_s64
-    branch v50 ? bb38() : bb39()
+    v52: bool = v48 == 60_s64
+    branch v52 ? bb38() : bb39()
   bb38():
-    v53: s64 = v52 + 16_s64
-    goto bb40(v53)
+    v55: s64 = v54 + 16_s64
+    goto bb40(v55)
   bb39():
-    goto bb40(v52)
-  bb40(v63: s64):
+    goto bb40(v54)
+  bb40(v65: s64):
     goto bb41(0_s64, 0_s64)
-  bb41(v54: s64, v57: s64):
-    v55: bool = v54 < 4_s64
-    branch v55 ? bb42() : bb44()
+  bb41(v56: s64, v59: s64):
+    v57: bool = v56 < 4_s64
+    branch v57 ? bb42() : bb44()
   bb42():
-    bounds_check v54 < 4_s64
-    v56: s64 = load s0[v54]
-    v58: s64 = v57 + 3_s64
+    bounds_check v56 < 4_s64
+    v58: s64 = load s0[v56]
+    v60: s64 = v59 + 3_s64
     goto bb43()
   bb43():
-    v60: s64 = v54 + 1_s64
-    goto bb41(v60, v58)
+    v62: s64 = v56 + 1_s64
+    goto bb41(v62, v60)
   bb44():
     goto bb45()
   bb45():
-    v61: bool = v57 == 12_s64
-    branch v61 ? bb46() : bb47()
+    v63: bool = v59 == 12_s64
+    branch v63 ? bb46() : bb47()
   bb46():
-    v64: s64 = v63 + 32_s64
-    goto bb48(v64)
+    v66: s64 = v65 + 32_s64
+    goto bb48(v66)
   bb47():
-    goto bb48(v63)
-  bb48(v74: s64):
+    goto bb48(v65)
+  bb48(v76: s64):
     goto bb49(0_s64, 0_s64)
-  bb49(v65: s64, v68: s64):
-    v66: bool = v65 < 4_s64
-    branch v66 ? bb50() : bb52()
+  bb49(v67: s64, v70: s64):
+    v68: bool = v67 < 4_s64
+    branch v68 ? bb50() : bb52()
   bb50():
-    bounds_check v65 < 4_s64
-    v67: s64 = load s0[v65]
-    v69: s64 = v68 + 100_s64
+    bounds_check v67 < 4_s64
+    v69: s64 = load s0[v67]
+    v71: s64 = v70 + 100_s64
     goto bb51()
   bb51():
-    v71: s64 = v65 + 1_s64
-    goto bb49(v71, v69)
+    v73: s64 = v67 + 1_s64
+    goto bb49(v73, v71)
   bb52():
     goto bb53()
   bb53():
-    v72: bool = v68 == 400_s64
-    branch v72 ? bb54() : bb55()
+    v74: bool = v70 == 400_s64
+    branch v74 ? bb54() : bb55()
   bb54():
-    v75: s64 = v74 + 64_s64
-    goto bb56(v75)
+    v77: s64 = v76 + 64_s64
+    goto bb56(v77)
   bb55():
-    goto bb56(v74)
-  bb56(v96: s64):
+    goto bb56(v76)
+  bb56(v98: s64):
     zero s1
     bounds_check 0_s64 < 2_s64
     store s1[0_s64] <- 1_s64
@@ -11220,74 +11222,74 @@ proc main -> void {
     bounds_check 2_s64 < 3_s64
     store s2[2_s64] <- 40_s64
     goto bb57(0_s64, 0_s64)
-  bb57(v76: s64, v88: s64):
-    v77: bool = v76 < 2_s64
-    branch v77 ? bb58() : bb60()
+  bb57(v78: s64, v90: s64):
+    v79: bool = v78 < 2_s64
+    branch v79 ? bb58() : bb60()
   bb58():
-    bounds_check v76 < 2_s64
-    v78: s64 = load s1[v76]
-    goto bb62(0_s64, v88)
-  bb62(v79: s64, v82: s64):
-    v80: bool = v79 < 3_s64
-    branch v80 ? bb63() : bb65()
+    bounds_check v78 < 2_s64
+    v80: s64 = load s1[v78]
+    goto bb62(0_s64, v90)
+  bb62(v81: s64, v84: s64):
+    v82: bool = v81 < 3_s64
+    branch v82 ? bb63() : bb65()
   bb63():
-    bounds_check v79 < 3_s64
-    v81: s64 = load s2[v79]
-    v84: s64 = v78 * v81
-    v85: s64 = v82 + v84
+    bounds_check v81 < 3_s64
+    v83: s64 = load s2[v81]
+    v86: s64 = v80 * v83
+    v87: s64 = v84 + v86
     goto bb64()
   bb64():
-    v87: s64 = v79 + 1_s64
-    goto bb62(v87, v85)
+    v89: s64 = v81 + 1_s64
+    goto bb62(v89, v87)
   bb65():
     goto bb66()
   bb66():
-    v90: s64 = v82 + v78
+    v92: s64 = v84 + v80
     goto bb59()
   bb59():
-    v92: s64 = v76 + 1_s64
-    goto bb57(v92, v90)
+    v94: s64 = v78 + 1_s64
+    goto bb57(v94, v92)
   bb60():
     goto bb61()
   bb61():
-    v94: bool = v88 == 213_s64
-    branch v94 ? bb67() : bb68()
+    v96: bool = v90 == 213_s64
+    branch v96 ? bb67() : bb68()
   bb67():
-    v98: s64 = v96 + 128_s64
-    goto bb69(v98)
+    v100: s64 = v98 + 128_s64
+    goto bb69(v100)
   bb68():
-    goto bb69(v96)
-  bb69(v109: s64):
+    goto bb69(v98)
+  bb69(v111: s64):
     store s3 <- 0_s64
     goto bb70(0_s64)
-  bb70(v103: s64):
-    v99: s64 = load s3
-    v100: bool = v99 < 4_s64
-    branch v100 ? bb71() : bb73()
-  bb71():
+  bb70(v105: s64):
     v101: s64 = load s3
-    bounds_check v101 < 4_s64
-    v102: s64 = load s0[v101]
-    v104: s64 = v103 + v102
+    v102: bool = v101 < 4_s64
+    branch v102 ? bb71() : bb73()
+  bb71():
+    v103: s64 = load s3
+    bounds_check v103 < 4_s64
+    v104: s64 = load s0[v103]
+    v106: s64 = v105 + v104
     goto bb72()
   bb72():
-    v105: s64 = load s3
-    v106: s64 = v105 + 1_s64
-    store s3 <- v106
-    goto bb70(v104)
+    v107: s64 = load s3
+    v108: s64 = v107 + 1_s64
+    store s3 <- v108
+    goto bb70(v106)
   bb73():
     goto bb74()
   bb74():
-    v107: bool = v103 == 150_s64
-    branch v107 ? bb75() : bb76()
+    v109: bool = v105 == 150_s64
+    branch v109 ? bb75() : bb76()
   bb75():
-    v110: s64 = v109 + 256_s64
-    goto bb77(v110)
+    v112: s64 = v111 + 256_s64
+    goto bb77(v112)
   bb76():
-    goto bb77(v109)
-  bb77(v111: s64):
-    v112: bool = v111 == 511_s64
-    branch v112 ? bb78() : bb79()
+    goto bb77(v111)
+  bb77(v113: s64):
+    v114: bool = v113 == 511_s64
+    branch v114 ? bb78() : bb79()
   bb78():
     discard call extern proc1(0_s64)
     goto bb80()
@@ -11446,6 +11448,191 @@ proc main -> void {
   bb23():
     goto bb24()
   bb24():
+    discard call extern proc1(1_s64)
+    return
+}
+
+========================================
+108-range-with-index.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: [3]s64  // local 17
+  bb0(v0: *Context):
+    goto bb1(5_s64, 0_s64, 0_s64)
+  bb1(v1: s64, v4: s64, v6: s64):
+    v2: bool = v1 < 10_s64
+    branch v2 ? bb2() : bb4()
+  bb2():
+    v3: s64 = v1 - 5_s64
+    v5: s64 = v4 + v1
+    v7: s64 = v6 + v3
+    goto bb3()
+  bb3():
+    v9: s64 = v1 + 1_s64
+    goto bb1(v9, v5, v7)
+  bb4():
+    goto bb5()
+  bb5():
+    v10: bool = v4 == 35_s64
+    branch v10 ? bb6() : bb7()
+  bb6():
+    v12: bool = v6 == 10_s64
+    goto bb8(v12)
+  bb7():
+    goto bb8(false)
+  bb8(v11: bool):
+    branch v11 ? bb9() : bb10()
+  bb9():
+    v15: s64 = 0_s64 + 1_s64
+    goto bb11(v15)
+  bb10():
+    goto bb11(0_s64)
+  bb11(v26: s64):
+    goto bb12(10_s64, 0_s64)
+  bb12(v16: s64, v19: s64):
+    v17: bool = v16 < 15_s64
+    branch v17 ? bb13() : bb15()
+  bb13():
+    v18: s64 = v16 - 10_s64
+    v20: s64 = v16 * v18
+    v21: s64 = v19 + v20
+    goto bb14()
+  bb14():
+    v23: s64 = v16 + 1_s64
+    goto bb12(v23, v21)
+  bb15():
+    goto bb16()
+  bb16():
+    v24: bool = v19 == 130_s64
+    branch v24 ? bb17() : bb18()
+  bb17():
+    v27: s64 = v26 + 2_s64
+    goto bb19(v27)
+  bb18():
+    goto bb19(v26)
+  bb19(v39: s64):
+    goto bb20(100_s64, true)
+  bb20(v28: s64, v36: bool):
+    v29: bool = v28 < 104_s64
+    branch v29 ? bb21() : bb23()
+  bb21():
+    v30: s64 = v28 - 100_s64
+    v31: s64 = v28 - 100_s64
+    v32: bool = v31 != v30
+    branch v32 ? bb25() : bb26()
+  bb25():
+    goto bb27(false)
+  bb26():
+    goto bb27(v36)
+  bb27(v37: bool):
+    goto bb22()
+  bb22():
+    v34: s64 = v28 + 1_s64
+    goto bb20(v34, v37)
+  bb23():
+    goto bb24()
+  bb24():
+    branch v36 ? bb28() : bb29()
+  bb28():
+    v41: s64 = v39 + 4_s64
+    goto bb30(v41)
+  bb29():
+    goto bb30(v39)
+  bb30(v54: s64):
+    goto bb31(0_s64, 0_s64)
+  bb31(v42: s64, v46: s64):
+    v43: bool = v42 < 3_s64
+    branch v43 ? bb32() : bb34()
+  bb32():
+    v44: s64 = v42 - 0_s64
+    v45: bool = v42 == v44
+    branch v45 ? bb36() : bb37()
+  bb36():
+    v47: s64 = v46 + 1_s64
+    goto bb38(v47)
+  bb37():
+    goto bb38(v46)
+  bb38(v51: s64):
+    goto bb33()
+  bb33():
+    v49: s64 = v42 + 1_s64
+    goto bb31(v49, v51)
+  bb34():
+    goto bb35()
+  bb35():
+    v52: bool = v46 == 3_s64
+    branch v52 ? bb39() : bb40()
+  bb39():
+    v56: s64 = v54 + 8_s64
+    goto bb41(v56)
+  bb40():
+    goto bb41(v54)
+  bb41(v68: s64):
+    goto bb42(5_s64, 0_s64)
+  bb42(v57: s64, v60: s64):
+    v58: bool = v57 < 5_s64
+    branch v58 ? bb43() : bb45()
+  bb43():
+    v59: s64 = v57 - 5_s64
+    v61: s64 = v60 + v57
+    v62: s64 = v61 + v59
+    v63: s64 = v62 + 1_s64
+    goto bb44()
+  bb44():
+    v65: s64 = v57 + 1_s64
+    goto bb42(v65, v63)
+  bb45():
+    goto bb46()
+  bb46():
+    v66: bool = v60 == 0_s64
+    branch v66 ? bb47() : bb48()
+  bb47():
+    v69: s64 = v68 + 16_s64
+    goto bb49(v69)
+  bb48():
+    goto bb49(v68)
+  bb49(v80: s64):
+    zero s0
+    bounds_check 0_s64 < 3_s64
+    store s0[0_s64] <- 10_s64
+    bounds_check 1_s64 < 3_s64
+    store s0[1_s64] <- 20_s64
+    bounds_check 2_s64 < 3_s64
+    store s0[2_s64] <- 40_s64
+    goto bb50(0_s64, 0_s64)
+  bb50(v70: s64, v73: s64):
+    v71: bool = v70 < 3_s64
+    branch v71 ? bb51() : bb53()
+  bb51():
+    bounds_check v70 < 3_s64
+    v72: s64 = load s0[v70]
+    v74: s64 = v73 + v72
+    v75: s64 = v74 + v70
+    goto bb52()
+  bb52():
+    v77: s64 = v70 + 1_s64
+    goto bb50(v77, v75)
+  bb53():
+    goto bb54()
+  bb54():
+    v78: bool = v73 == 73_s64
+    branch v78 ? bb55() : bb56()
+  bb55():
+    v81: s64 = v80 + 32_s64
+    goto bb57(v81)
+  bb56():
+    goto bb57(v80)
+  bb57(v82: s64):
+    v83: bool = v82 == 63_s64
+    branch v83 ? bb58() : bb59()
+  bb58():
+    discard call extern proc1(0_s64)
+    goto bb60()
+  bb59():
+    goto bb60()
+  bb60():
     discard call extern proc1(1_s64)
     return
 }
