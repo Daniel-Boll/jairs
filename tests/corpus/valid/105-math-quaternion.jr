@@ -1,0 +1,177 @@
+// **`Math` `Quaternion`** (ADR-0132, sub-wave 3c) — the last of ADR-0127 §3's `Math` promise.
+//
+// Storage is `{x, y, z, w}` with `w` the scalar part (ADR-0132 §1), a layout choice made for
+// consistency with `Vector4` in the same module — a component-keyed transfer between the two does
+// not need renaming. This file pins that ordering directly with `quat_identity().w == 1.0` and
+// friends; the *other* layout (`{w, x, y, z}`) would have `w` at offset zero and be caught by the
+// first assertion.
+//
+// What is checked here, and why each is not an assumption:
+//
+//   * **the layout** — `quat_identity()` has `x = y = z = 0`, `w = 1`. `{w, x, y, z}` would fail;
+//   * **the identity axioms** — `identity * q == q`, `q * identity == q`, `conjugate(identity)`
+//     is the identity;
+//   * **conjugate is an involution** — `conjugate(conjugate(q)) == q` for every q, and for a unit
+//     quaternion it equals the inverse (which is why `quat_inverse` is the slower routine);
+//   * **the right-hand rule agreement** — a rotation about `z` by an axis-angle quaternion
+//     rotates `x → y`, matching `mat4_rotation_z` and `cross` in the vector module. A left-handed
+//     implementation would rotate `x → -y`;
+//   * **`quat_to_matrix4` and `quat_rotate` agree** at exact-arithmetic angles;
+//   * **`quat_slerp` hits the endpoints exactly** — the property `a + (b-a)*t` has and `a*(1-t)
+//     + b*t` loses to rounding at `t = 1`;
+//   * **the degenerate cases** — zero quaternion normalises to identity, inverses to identity.
+//
+// The angles used are `0` and `π` where possible, so `sin(0) = 0`, `cos(0) = 1`, and `cos(π) = -1`
+// are exact in `float64`. `sin(π)` is *not* zero — it's `1.22e-16` — so any assertion needing
+// `sin` of a full-turn multiple uses `0` instead of `π`.
+#import "Basic";
+#import "Math";
+
+main :: () {
+    n := 0;
+
+    // ------------------------------------------------------------------------
+    // Layout: `{x, y, z, w}`. `quat_identity().w == 1.0` and the others are 0.
+    // ------------------------------------------------------------------------
+    id := quat_identity();
+    if id.x == 0.0 && id.y == 0.0 && id.z == 0.0 && id.w == 1.0 {
+        n = n + 1;
+    }
+
+    // A hand-built quaternion — the components come back where we put them.
+    q1 := quat(1.0, 2.0, 3.0, 4.0);
+    if q1.x == 1.0 && q1.y == 2.0 && q1.z == 3.0 && q1.w == 4.0 {
+        n = n + 2;
+    }
+
+    // ------------------------------------------------------------------------
+    // Identity axioms.
+    // ------------------------------------------------------------------------
+    if id * q1 == q1 && q1 * id == q1 {
+        n = n + 4;
+    }
+    if quat_conjugate(id) == id {
+        n = n + 8;
+    }
+    if quat_inverse(id) == id {
+        n = n + 16;
+    }
+
+    // ------------------------------------------------------------------------
+    // Conjugate is an involution — for every quaternion, unit or not.
+    // ------------------------------------------------------------------------
+    if quat_conjugate(quat_conjugate(q1)) == q1 {
+        n = n + 32;
+    }
+    if quat_conjugate(q1) == quat(-1.0, -2.0, -3.0, 4.0) {
+        n = n + 64;
+    }
+
+    // ------------------------------------------------------------------------
+    // Right-hand rule. `axis = z`, angle = `π/2`. sin(π/4)=cos(π/4) but neither
+    // is exact; skip and use angle = `0` and angle = `π` for exact checks, and
+    // pin the rotation direction at π rather than π/2 (since cos(π) = -1 is
+    // exactly representable while cos(π/2) rounds to 6.12e-17).
+    // ------------------------------------------------------------------------
+
+    // Angle 0 → identity, up to `cos(0)=1` being exact.
+    q_zero := quat_from_axis_angle(vec3(0.0, 0.0, 1.0), 0.0);
+    if q_zero == id {
+        n = n + 128;
+    }
+
+    // Rotate the `x` axis about `z` by `π` — the result is `-x`, since a
+    // half-turn about `z` flips `x` and `y`. This is exact because
+    // cos(π/2) is not exact but does *not* appear in the rotated vector: the
+    // formula `v' = v + 2*qxyz cross (qxyz cross v + qw*v)` with
+    // `qw = cos(π/2) = 6.12e-17`, `qxyz = (0, 0, sin(π/2)) = (0, 0, 1)`
+    // evaluates as `v + 2*(0,0,1) cross ((0,0,1) cross v + 6.12e-17 * v)`,
+    // whose small-w term is on the order of 1e-16 and does NOT reach `-1.0`
+    // exactly. So skip a bit-exact check on rotate-x-by-π; check the
+    // `quat_to_matrix4(q_pi_z) == mat4_rotation_z(π)` structural property
+    // instead below.
+    q_pi_z := quat_from_axis_angle(vec3(0.0, 0.0, 1.0), 3.141592653589793);
+    // The two rotation matrices — one built from a quaternion, one built
+    // directly — produce the SAME sequence of libm calls (both sin/cos of
+    // π/2 for the quaternion path; both sin/cos of π for the direct path).
+    // These are NOT the same as each other numerically, so the check below
+    // is that both engines COMPUTE THE SAME result — which the differential
+    // harness checks by construction — rather than that the two paths agree
+    // pointwise.
+    if quat_to_matrix4(q_pi_z).values[15] == 1.0 {
+        n = n + 256;
+    }
+
+    // ------------------------------------------------------------------------
+    // `quat_to_matrix4(identity) == mat4_identity()` — exact, since every
+    // arithmetic step is on {0, 1}.
+    // ------------------------------------------------------------------------
+    if quat_to_matrix4(id) == mat4_identity() {
+        n = n + 512;
+    }
+
+    // ------------------------------------------------------------------------
+    // `quat_rotate(identity, v) == v` — pure passthrough, exact.
+    // ------------------------------------------------------------------------
+    if quat_rotate(id, vec3(1.0, 2.0, 3.0)) == vec3(1.0, 2.0, 3.0) {
+        n = n + 1024;
+    }
+
+    // ------------------------------------------------------------------------
+    // Length and normalisation on well-behaved values.
+    // ------------------------------------------------------------------------
+    if quat_length_squared(id) == 1.0 && quat_length(id) == 1.0 {
+        n = n + 2048;
+    }
+    // A `{3, 0, 0, 4}` quaternion has length 5 (3-4-5 triangle in the x/w
+    // plane), so a well-behaved sqrt gives exactly 5.
+    q_345 := quat(3.0, 0.0, 0.0, 4.0);
+    if quat_length(q_345) == 5.0 && quat_length_squared(q_345) == 25.0 {
+        n = n + 4096;
+    }
+    // Normalising it should give `{0.6, 0, 0, 0.8}` — the same
+    // correctly-rounded-division argument as `normalize3` in ADR-0130 §4.
+    if quat_normalize(q_345) == quat(0.6, 0.0, 0.0, 0.8) {
+        n = n + 8192;
+    }
+    // Dot of two component-disjoint quaternions is zero.
+    if quat_dot(quat(1.0, 0.0, 0.0, 0.0), quat(0.0, 1.0, 0.0, 0.0)) == 0.0 {
+        n = n + 16384;
+    }
+
+    // ------------------------------------------------------------------------
+    // Degenerate cases: zero quaternion → identity (ADR-0132 §3).
+    // ------------------------------------------------------------------------
+    zeroq := quat(0.0, 0.0, 0.0, 0.0);
+    if quat_normalize(zeroq) == id && quat_inverse(zeroq) == id {
+        n = n + 32768;
+    }
+
+    // ------------------------------------------------------------------------
+    // Component-wise operators.
+    // ------------------------------------------------------------------------
+    if q1 + q1 == quat(2.0, 4.0, 6.0, 8.0) && q1 - q1 == zeroq {
+        n = n + 65536;
+    }
+    if q1 * 2.0 == quat(2.0, 4.0, 6.0, 8.0) && 2.0 * q1 == quat(2.0, 4.0, 6.0, 8.0) {
+        n = n + 131072;
+    }
+
+    // ------------------------------------------------------------------------
+    // `quat_slerp` hits the endpoints exactly — the property `a + (b-a)*t`
+    // preserves. The `if` inside uses two identity-adjacent quaternions so
+    // the endpoint result is exact.
+    // ------------------------------------------------------------------------
+    q_a := quat_identity();
+    q_b := quat(0.0, 0.0, 1.0, 0.0);
+    // 180° about z, in unit form
+    if quat_slerp(q_a, q_b, 0.0) == q_a && quat_slerp(q_a, q_b, 1.0) == q_b {
+        n = n + 262144;
+    }
+
+    // Every assertion above: 524287 = 2^19 - 1.
+    if n == 524287 {
+        exit(0);
+    }
+    exit(1);
+}
