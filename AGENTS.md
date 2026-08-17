@@ -90,6 +90,9 @@ and `type-errors/073` is iterated by the existing harness rather than adding a t
 two corpus files = **216** — both are iterated by harnesses that already exist, which is the clearest case
 yet for tracking the corpus count separately from the test count. ADR-0130 **also holds at 1010** and adds
 one = **217**: an all-library wave, where the only new coverage a corpus file can carry is a corpus file.
+**ADR-0131 also holds at 1010** and adds one = **218** — the same pattern for the same reason, since
+Matrix4 like Vector4 is exercised by the differential and snapshot harnesses rather than by a Rust unit
+test.
 
 **A number in this file is now partly enforced.** `crates/jr-cli/tests/codes.rs` fails when the
 "first free code" claim below rots. The test count and the corpus count are still prose, and both were

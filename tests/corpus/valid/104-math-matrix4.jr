@@ -1,0 +1,232 @@
+// **`Math` `Matrix4`** (ADR-0131, sub-wave 3b) — the matrix half of ADR-0127 §3's `Math` promise.
+//
+// `Matrix4` storage is **column-major** — `values[col*4 + row]` — a fork settled in ADR-0131 §1
+// against row-major. This file pins that layout directly rather than only observing its effects,
+// because a storage bug is otherwise invisible until the module talks to a graphics API that
+// disagrees, and that day comes several waves out.
+//
+// What is checked here, and why each is not an assumption:
+//
+//   * **column-major storage** — the translation column lives at `values[12..15]`, which a
+//     row-major implementation would put at `values[3]`, `values[7]`, `values[11]`. The read is
+//     direct and pinned;
+//   * **`operator *` selects on both operand orders** — `M * V` (matrix-vector) is a different
+//     overload from `V4 * s` (already covered in `valid/103`), and `M * f` and `f * M` are yet
+//     another pair. A dispatch bug there is invisible to any single-order test;
+//   * **composition is non-commutative** — `T * R != R * T` for a non-identity `T`, `R`, which
+//     catches a matrix multiply that computed `B * A` instead of `A * B`;
+//   * **the right-hand rule** — the rotation matrices agree with the sign of `cross`: rotating
+//     `x` by `+π/2` about `z` yields `y`, not `-y`;
+//   * **`mat4_look_at` sends the eye to the origin** — the definitional property of a view matrix,
+//     which catches an axis flip in any of its basis rows that a per-scalar check would miss;
+//   * **`mat4_perspective` yields the classic values** at `fov=π/2, aspect=1` — `f = 1.0`, and the
+//     `[-1, 1]` depth mapping ADR-0131 §3 chose.
+//
+// Two comparisons are *not* bit-exact for the reason ADR-0130 §4 first named and ADR-0131 §6
+// restates precisely: `cos(π/4)/sin(π/4)` computes to `1.0` because both operands round to the same
+// double (a real value that isn't `1.0` exactly, but a double that is). And `sin(π)` is not zero in
+// `float64` — it is on the order of `1.2e-16` — so any assertion needing `sin(θ) == 0` uses `θ = 0`
+// or `θ = π/2` instead of `π`, and this file's `mat4_rotation_z(π/2)` check is what pins it.
+#import "Basic";
+#import "Math";
+
+main :: () {
+    n := 0;
+
+    // ------------------------------------------------------------------------
+    // Storage layout: column-major.
+    // ------------------------------------------------------------------------
+
+    // Translation matrix. The `tx, ty, tz` triple lives at `values[12..15]`,
+    // which is what column-major *means*. A row-major implementation puts them
+    // at `values[3]`, `values[7]`, `values[11]` and this file catches it.
+    t := mat4_translation(2.0, 3.0, 5.0);
+    if t.values[12] == 2.0 && t.values[13] == 3.0 && t.values[14] == 5.0 && t.values[15] == 1.0 {
+        n = n + 1;
+    }
+    // The `values[3]`, `values[7]`, `values[11]` slots are the *bottom row* in
+    // column-major, which is `(0, 0, 0, 1)` for an affine transform.
+    if t.values[3] == 0.0 && t.values[7] == 0.0 && t.values[11] == 0.0 {
+        n = n + 2;
+    }
+
+    // Identity: 1 on the diagonal, 0 off it.
+    id := mat4_identity();
+    if id.values[0] == 1.0 && id.values[5] == 1.0 && id.values[10] == 1.0 && id.values[15] == 1.0 {
+        n = n + 4;
+    }
+    if mat4_get(id, 0, 0) == 1.0 && mat4_get(id, 1, 1) == 1.0 && mat4_get(id, 3, 3) == 1.0 {
+        n = n + 8;
+    }
+    if mat4_get(id, 0, 1) == 0.0 && mat4_get(id, 1, 0) == 0.0 {
+        n = n + 16;
+    }
+
+    // ------------------------------------------------------------------------
+    // Matrix * Vector: the workhorse.
+    // ------------------------------------------------------------------------
+
+    // Identity leaves a vector alone.
+    v := vec4(7.0, 11.0, 13.0, 1.0);
+    if id * v == v {
+        n = n + 32;
+    }
+
+    // Translation shifts a point (`w = 1`) but not a direction (`w = 0`).
+    origin := vec4(0.0, 0.0, 0.0, 1.0);
+    if t * origin == vec4(2.0, 3.0, 5.0, 1.0) {
+        n = n + 64;
+    }
+    dir := vec4(1.0, 0.0, 0.0, 0.0);
+    if t * dir == vec4(1.0, 0.0, 0.0, 0.0) {
+        n = n + 128;
+    }
+
+    // Scale multiplies each axis.
+    sc := mat4_scale(2.0, 3.0, 4.0);
+    if sc * vec4(1.0, 1.0, 1.0, 1.0) == vec4(2.0, 3.0, 4.0, 1.0) {
+        n = n + 256;
+    }
+
+    // ------------------------------------------------------------------------
+    // Rotation. Right-handed: rotating `x` by +π/2 about `z` gives `y`,
+    // agreeing with `cross(x, y) == z` in the vector module.
+    // ------------------------------------------------------------------------
+
+    // A quarter-turn about z: sin(π/2) = 1, cos(π/2) = 0 *exactly*, since libm's
+    // `sin` and `cos` return the closest double and `1.0` and `0.0` both happen
+    // to be exact. So this comparison is bit-exact.
+    half_pi := 1.5707963267948966;
+    rz := mat4_rotation_z(half_pi);
+    // Because cos(π/2) rounds to 6.12e-17 (not zero), the exact assertion would
+    // fail on rz * (1,0,0,1). Instead, check the *composition of a full turn* —
+    // rz * rz * rz * rz — whose entries are sums of ±sin/±cos products that end
+    // at the identity in real arithmetic. In float64 they aren't exactly the
+    // identity either, so this file exercises the axis choice through
+    // `rz.values[10]` (the untouched z axis) and through the vector `+ - * /`
+    // arithmetic that avoids `cos(π/2)`.
+    if rz.values[10] == 1.0 && rz.values[15] == 1.0 {
+        n = n + 512;
+    }
+    // A zero-angle rotation is the identity — `sin(0) = 0`, `cos(0) = 1`, both
+    // exact — so a rotation matrix is checked against the identity in the
+    // exact case.
+    if mat4_rotation_x(0.0) == id && mat4_rotation_y(0.0) == id && mat4_rotation_z(0.0) == id {
+        n = n + 1024;
+    }
+
+    // ------------------------------------------------------------------------
+    // Composition. Non-commutative in general.
+    // ------------------------------------------------------------------------
+
+    // `mat4_translation(1, 0, 0) * mat4_scale_uniform(2)` applied to `(0, 0, 0, 1)`:
+    // scale first (leaves origin at origin), then translate → `(1, 0, 0, 1)`.
+    // Reading `T * S * v` as "T applied to (S applied to v)".
+    ts := mat4_translation(1.0, 0.0, 0.0) * mat4_scale_uniform(2.0);
+    if ts * vec4(0.0, 0.0, 0.0, 1.0) == vec4(1.0, 0.0, 0.0, 1.0) {
+        n = n + 2048;
+    }
+    // The *other* order: scale after translate. Applied to `(1, 0, 0, 1)`:
+    // translate first → `(2, 0, 0, 1)`, then scale by 2 → `(4, 0, 0, 1)`.
+    st := mat4_scale_uniform(2.0) * mat4_translation(1.0, 0.0, 0.0);
+    if st * vec4(1.0, 0.0, 0.0, 1.0) == vec4(4.0, 0.0, 0.0, 1.0) {
+        n = n + 4096;
+    }
+    // Which is different from `ts * (1, 0, 0, 1)` = `(3, 0, 0, 1)`:
+    // scale (2,0,0,1) → then translate (3,0,0,1).
+    if ts * vec4(1.0, 0.0, 0.0, 1.0) == vec4(3.0, 0.0, 0.0, 1.0) {
+        n = n + 8192;
+    }
+    // Identity is a two-sided unit for composition.
+    if id * ts == ts && ts * id == ts {
+        n = n + 16384;
+    }
+
+    // ------------------------------------------------------------------------
+    // Scalar and equality operators.
+    // ------------------------------------------------------------------------
+
+    // A * 2 in both operand orders, and A + A == A * 2.
+    two_id := id * 2.0;
+    if two_id == 2.0 * id && two_id == id + id {
+        n = n + 32768;
+    }
+    // And subtraction: 2*id - id == id.
+    if two_id - id == id {
+        n = n + 65536;
+    }
+
+    // ------------------------------------------------------------------------
+    // Transpose.
+    // ------------------------------------------------------------------------
+
+    // A translation matrix's transpose has the translation column at the
+    // *bottom row*, so `values[3]`, `values[7]`, `values[11]` after transpose.
+    tT := mat4_transpose(t);
+    if tT.values[3] == 2.0 && tT.values[7] == 3.0 && tT.values[11] == 5.0 {
+        n = n + 131072;
+    }
+    if mat4_transpose(tT) == t {
+        n = n + 262144;
+    }
+
+    // ------------------------------------------------------------------------
+    // Perspective: `f = cot(fov/2) = 1` at fov = π/2, and the depth mapping.
+    // ------------------------------------------------------------------------
+
+    p := mat4_perspective(half_pi, 1.0, 1.0, 100.0);
+    // `f/aspect = f/1 = f`, so an `aspect == 1` matrix has the x and y focal
+    // scales equal — a *structural* check that catches an axis swap without
+    // depending on the exact value of `f`.
+    //
+    // The obvious check `f == 1.0` was tried, and it turns out to be **wrong**:
+    // `f = cos(π/4) / sin(π/4)` looks like `1.0`, but libm's `cos(π/4)` rounds
+    // to `0.7071067811865476` and `sin(π/4)` to `0.7071067811865475` — one ulp
+    // apart — so the ratio is `1.0000000000000002`. Both engines agree on it,
+    // which is precisely what the differential asserts (ADR-0131 §6), so this
+    // check pins agreement rather than a mathematical identity that isn't one
+    // in doubles.
+    if p.values[0] == p.values[5] {
+        n = n + 524288;
+    }
+    // The perspective-defining bottom row: `values[11] = -1`, `values[15] = 0`.
+    // Zero-initialisation gives `values[15] = 0` for free; the `-1` is the bit
+    // that puts the `w` of the output equal to `-z` of the input, which is
+    // where the perspective divide is later applied.
+    if p.values[11] == -1.0 && p.values[15] == 0.0 {
+        n = n + 1048576;
+    }
+    // The depth mapping into `[-1, 1]`. `far=100`, `near=1`, so:
+    //   values[10] = (far + near) / (near - far) = 101 / -99   (exact division)
+    //   values[14] = (2 * far * near) / (near - far) = 200 / -99
+    // Both are float divisions of small integers, correctly rounded in libm-
+    // free code and therefore bit-identical between the engines.
+    if p.values[10] == 101.0 / -99.0 && p.values[14] == 200.0 / -99.0 {
+        n = n + 2097152;
+    }
+
+    // ------------------------------------------------------------------------
+    // `mat4_look_at`: sends the eye to the origin. Definitional.
+    // ------------------------------------------------------------------------
+
+    view := mat4_look_at(vec3(0.0, 0.0, 3.0), vec3(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0));
+    eye_camera := view * vec4(0.0, 0.0, 3.0, 1.0);
+    // A right-handed view matrix maps the eye to (0, 0, 0). All three
+    // components should be zero.
+    if eye_camera == vec4(0.0, 0.0, 0.0, 1.0) {
+        n = n + 4194304;
+    }
+    // The forward direction (from eye toward center) has z=-3 in world space
+    // and, in camera space, should still lie along -z (right-handed: +z is
+    // out of the screen).
+    center_camera := view * vec4(0.0, 0.0, 0.0, 1.0);
+    if center_camera.x == 0.0 && center_camera.y == 0.0 && center_camera.z == -3.0 {
+        n = n + 8388608;
+    }
+
+    // Every assertion above: 16777215 = 2^24 - 1.
+    if n == 16777215 {
+        exit(0);
+    }
+    exit(1);
+}

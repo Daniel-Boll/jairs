@@ -331,7 +331,7 @@ dependency chain requires it. `rust-toolchain.toml` still floats on stable.
 > type, ADR-0107), **`it`/`it_index`** (W2 — `for xs { it }` does not parse; only `for x: xs` works),
 > **`$$T`** (W5 — E0107), **instantiation backtraces** (W5 — **now delivered** as a single frame by
 > ADR-0128; a multi-level *chain* is still owed), and **`Math` vec/mat/quat** (W7, **partly delivered**: ADR-0130 shipped the
-> vectors, and matrices and quaternions remain sub-waves 3b/3c — ADR-0115 declared `Math` *complete*, which
+> vectors and ADR-0131 shipped `Matrix4`; the quaternion remains sub-wave 3c — ADR-0115 declared `Math` *complete*, which
 > this row contradicted). **Nested procedures and local constants** appear in no wave's scope at all, yet E0207
 > blamed W2 for them for six waves. Marked inline below as **[NOT DELIVERED]**.
 >
@@ -348,7 +348,7 @@ dependency chain requires it. `rust-toolchain.toml` still floats on stable.
 | **W4.5 — Pattern matching** | `switch` with exhaustiveness checking, a bare `.RED` as a case (ADR-0041 §2 step 5), and a **tagged** variant type beside `union` (ADR-0045 §1) | **Was missing from this table entirely.** Two accepted ADRs deferred decisions to it while no wave scheduled it — found while closing W2 (ADR-0054's handoff). **Reordered before W4 by ADR-0067 §0.** This row used to say "placed after W4 because exhaustiveness diagnostics want comptime type info" — a *want*, not a need, and checking disproved it: `Pool::enum_members` is populated during checking (ADR-0041 §4), and `c == .GREEN` already worked, so `switch` and exhaustiveness needed nothing from W4. A wave order justified by a dependency that does not exist is §5's "plans that contradict themselves". Still before W5, because a polymorph over a variant type needs the variant | 4–6 wks |
 | **W5 — Polymorphism** | `$T`, `$$T` **[NOT DELIVERED — E0107]**, `#modify`, `#bake_arguments`, `#expand` macros + hygiene, instantiation caching, **instantiation backtraces** in diagnostics **[single frame DELIVERED by ADR-0128; multi-level chain still owed]** | Depends on W4's InternPool value identity | 8–12 wks |
 | **W6 — Metaprogram** | Workspaces, compiler message loop, `#run build()` build scripts replacing makefiles, plugin hooks, `@note` attributes | The Jai superpower. Build scripts become the build system. | 6–8 wks |
-| **W7 — Stdlib** | In Jairs: `Basic`, `String`, dynamic array / hash table / bucket array, `Sort`, `Math` (vec/mat/quat **[vectors DELIVERED by ADR-0130; mat/quat still owed as sub-waves 3b/3c — ADR-0115 declared `Math` complete without any of them]**), `Random`, `File`, `File_Utilities`, `Process`, `Thread` + atomics, `Time`, `Socket`, `JSON`, `Compiler` | Runs partly in parallel with W5/W6; each module is a wave-acceptance test | 14–18 wks |
+| **W7 — Stdlib** | In Jairs: `Basic`, `String`, dynamic array / hash table / bucket array, `Sort`, `Math` (vec/mat/quat **[vectors DELIVERED by ADR-0130 and `Matrix4` by ADR-0131; the quaternion still owed as sub-wave 3c — ADR-0115 declared `Math` complete without any of them]**), `Random`, `File`, `File_Utilities`, `Process`, `Thread` + atomics, `Time`, `Socket`, `JSON`, `Compiler` | Runs partly in parallel with W5/W6; each module is a wave-acceptance test | 14–18 wks |
 | **W8 — Performance** | LLVM backend via `inkwell` (`--release`), inliner maturity, `#soa`, SIMD vectors, `#align`/`#place`, parallel Sema + parallel codegen, published compile-throughput number | Three-way differential testing: VM ≡ Cranelift ≡ LLVM | 10–14 wks |
 | **W9 — Tooling depth** | Full LSP surface (completion, refs, rename, signature help, semantic tokens, **inlay type hints**, code actions), richer DWARF (locals, struct layouts) for lldb, Neovim packaging (VS Code descoped by ADR-0036; any LSP client works unpackaged) | Incremental all along; this is the "make it excellent" pass | 8–10 wks |
 | **W10 — Graphics, in Jairs** | `Window_Creation` (Cocoa via `#foreign`), GPU layer (Metal, then Vulkan), immediate-mode 2D renderer, image decode, immediate-mode UI, audio (CoreAudio/ALSA) | All *library* work, written in Jairs — no compiler changes. Gated on W5+W7. | 6+ months |
@@ -527,7 +527,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **1010 workspace tests** and **217 corpus files**, all six gates green
+waiting. Both are tracked below. **1010 workspace tests** and **218 corpus files**, all six gates green
 **locally** — no CI run has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -556,19 +556,22 @@ waiting. Both are tracked below. **1010 workspace tests** and **217 corpus files
 > bound on the other.
 >
 > [!IMPORTANT]
-> **The eight-wave programme to keep ADR-0127's promises is 3 of 8 started, 2 complete plus one part.** Wave 1 was ADR-0128
+> **The eight-wave programme to keep ADR-0127's promises is 4 of 8 started, 3 complete plus one part.** Wave 1 was ADR-0128
 > (instantiation backtraces, single frame). **Wave 2 was ADR-0129** — an enum member's value may name a
 > literal-valued constant, generalising ADR-0070 so that one `named_constant_int` answers for both
 > callers. **Wave 3a was ADR-0130** — `Math`'s `Vector2/3/4`, whose operators are now known to cross the
-> module boundary. None of the three needed a design fork; sub-wave 3b does.
+> module boundary. **Wave 3b is ADR-0131** — `Math`'s `Matrix4`, column-major and right-handed to match
+> `cross`; sub-wave 3b's three forks (§1 storage, §2 `operator *` coverage, §3 handedness) each had one
+> answer forced by existing decisions rather than a real preference, so the rejected alternatives are
+> recorded at their point of decision and none was put to the decider.
 >
-> **Remaining, in dependency order.** Sub-wave 3b carries a fork of its own; waves 4–7 have theirs decided:
+> **Remaining, in dependency order.** Waves 4–7 have their forks decided; 3c has none:
 >
 > | # | Wave | Fork |
 > |---|---|---|
 > | ~~3a~~ | ~~`Math` vectors~~ | **done — ADR-0130** |
-> | 3b | `Math` `Matrix4` | **fork:** row- or column-major storage; whether `operator *` also carries matrix×vector; handedness of the projection helpers |
-> | 3c | `Math` `Quaternion` | follows 3b — needs a matrix to convert to |
+> | ~~3b~~ | ~~`Math` `Matrix4`~~ | **done — ADR-0131**, column-major and right-handed |
+> | 3c | `Math` `Quaternion` | none — has `Matrix4` to convert to now, and the handedness is pinned by ADR-0131 §3 |
 > | 4 | `it` / `it_index` | **decided:** ordinary injected locals, *not* reserved keywords |
 > | 5 | Nested procedures + local constants | **decided:** no capture, Jai-style — a file-scope proc with a scoped name |
 > | 6 | `[..]T` dynamic arrays | **decided:** compiler-known layout both engines agree on, ops in Jairs, ADR-0107's doubling |
@@ -1534,10 +1537,17 @@ refused pending its specialisation). The project defines **107** codes, one of t
 
 ### The next wave
 
-**Dispatches 2 and 3 of the security second pass**, then back to W6 or W7. ADR-0126 discharged dispatch 1
-and the audit's §7 asks for three; taking the other two next keeps the audit's own ordering rather than
-leaving two known-unexamined surfaces behind a feature wave. Both are read-only assessment first, so the
-forks come *out* of them rather than being owed before them.
+**Sub-wave 3c — `Math`'s `Quaternion`** is next in the ADR-0127-promise queue, and now has a matrix
+to convert to. `Matrix4` is column-major and right-handed (ADR-0131), so a quaternion's
+`to_matrix4` chooses no convention this queue has not already made. `Quaternion` needs `float64`
+components (same reason as vectors, ADR-0130 §1), a scalar/vector layout — `{w, x, y, z}` or
+`{x, y, z, w}` — and a normalisation convention on multiplication; those are ordinary decisions
+each recorded as they are made, none large enough to be a fork put in front of the decider.
+
+**After 3c, the remaining owed work is dispatches 2 and 3 of the security second pass** — kept
+because the audit's own §7 asks for three and only one has been discharged (ADR-0126). Then W6/W7.
+Both dispatches are read-only assessment first, so the forks come *out* of them rather than being
+owed before them.
 
 **Dispatch 2 — forging an `Any` or a procedure pointer through the untagged `union`.** Read
 `crates/jr-vm/src/value.rs` (167 lines, the representation) and `code.rs` (393, the packed proc handle) in
