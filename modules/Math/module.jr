@@ -481,3 +481,274 @@ lerp3 :: (a: Vector3, b: Vector3, t: float64) -> Vector3 {
 lerp4 :: (a: Vector4, b: Vector4, t: float64) -> Vector4 {
     return a + (b - a) * t;
 }
+
+// ============================================================================
+// Matrix4 (ADR-0131, sub-wave 3b)
+// ============================================================================
+//
+// A 4×4 matrix of `float64`, the natural companion to [`Vector4`]. Storage is
+// **column-major** — `values[col*4 + row]` — which is the layout GLSL and
+// OpenGL use, and the layout the mathematical convention `M * v` reads: the
+// four `float64` at `values[c*4 ..= c*4+3]` are the c-th column of `M`, so
+// `values[12..15]` is the translation column. See ADR-0131 for why the fork
+// went that way.
+//
+// The **right-hand rule** is already pinned by [`cross`] (ADR-0130 §4), so the
+// projection helpers and [`mat4_look_at`] are right-handed to match: choosing
+// left-handed here would make the sign of `cross` a lie one file over.
+
+/// A 4×4 matrix of `float64`, stored **column-major**: `values[col*4 + row]`.
+/// The `values[12..15]` slice is the translation column, matching GLSL.
+Matrix4 :: struct {
+    /// The 16 components in column-major order.
+    values: [16]float64;
+}
+
+/// Reads the element at `row`, `col`. A convenience over `m.values[col*4 + row]`
+/// that hides the column-major storage from every caller — swapping the layout
+/// would then be a change to this module rather than a rewrite of every use.
+mat4_get :: (m: Matrix4, row: s64, col: s64) -> float64 {
+    return m.values[col * 4 + row];
+}
+
+/// Writes the element at `row`, `col`. The mirror of [`mat4_get`].
+mat4_set :: (m: *Matrix4, row: s64, col: s64, value: float64) {
+    m.values[col * 4 + row] = value;
+}
+
+/// The identity matrix — `M * v == v` for every [`Vector4`] `v`.
+mat4_identity :: () -> Matrix4 {
+    r: Matrix4;
+    r.values[0] = 1.0;
+    r.values[5] = 1.0;
+    r.values[10] = 1.0;
+    r.values[15] = 1.0;
+    return r;
+}
+
+/// The zero matrix. A declaration already zero-initialises (ADR-0039 §4), so
+/// this is named for symmetry with [`mat4_identity`] rather than out of need.
+mat4_zero :: () -> Matrix4 {
+    r: Matrix4;
+    return r;
+}
+
+/// A translation matrix. Applied to `(x, y, z, 1)` it shifts by `(tx, ty, tz)`;
+/// applied to a **direction** vector `(x, y, z, 0)` it leaves the direction
+/// unchanged — which is why the `w` component is what makes `Vector4` more than
+/// a redundant `Vector3` (ADR-0130 on `Vector4`).
+mat4_translation :: (tx: float64, ty: float64, tz: float64) -> Matrix4 {
+    r := mat4_identity();
+    r.values[12] = tx;
+    r.values[13] = ty;
+    r.values[14] = tz;
+    return r;
+}
+
+/// A non-uniform scale matrix.
+mat4_scale :: (sx: float64, sy: float64, sz: float64) -> Matrix4 {
+    r: Matrix4;
+    r.values[0] = sx;
+    r.values[5] = sy;
+    r.values[10] = sz;
+    r.values[15] = 1.0;
+    return r;
+}
+
+/// A uniform scale matrix — every axis by the same factor.
+mat4_scale_uniform :: (s: float64) -> Matrix4 {
+    return mat4_scale(s, s, s);
+}
+
+/// Rotation about the x axis by `radians`. Right-handed: `y` rotates toward `z`.
+mat4_rotation_x :: (radians: float64) -> Matrix4 {
+    c := cos(radians);
+    s := sin(radians);
+    r: Matrix4;
+    r.values[0] = 1.0;
+    r.values[5] = c;
+    r.values[6] = s;
+    r.values[9] = -s;
+    r.values[10] = c;
+    r.values[15] = 1.0;
+    return r;
+}
+
+/// Rotation about the y axis by `radians`. Right-handed: `z` rotates toward `x`.
+mat4_rotation_y :: (radians: float64) -> Matrix4 {
+    c := cos(radians);
+    s := sin(radians);
+    r: Matrix4;
+    r.values[0] = c;
+    r.values[2] = -s;
+    r.values[5] = 1.0;
+    r.values[8] = s;
+    r.values[10] = c;
+    r.values[15] = 1.0;
+    return r;
+}
+
+/// Rotation about the z axis by `radians`. Right-handed: `x` rotates toward `y`.
+mat4_rotation_z :: (radians: float64) -> Matrix4 {
+    c := cos(radians);
+    s := sin(radians);
+    r: Matrix4;
+    r.values[0] = c;
+    r.values[1] = s;
+    r.values[4] = -s;
+    r.values[5] = c;
+    r.values[10] = 1.0;
+    r.values[15] = 1.0;
+    return r;
+}
+
+/// The transpose — `result[r,c] = m[c,r]`.
+mat4_transpose :: (m: Matrix4) -> Matrix4 {
+    r: Matrix4;
+    row := 0;
+    while row < 4 {
+        col := 0;
+        while col < 4 {
+            r.values[col * 4 + row] = m.values[row * 4 + col];
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+    return r;
+}
+
+operator + :: (a: Matrix4, b: Matrix4) -> Matrix4 {
+    r: Matrix4;
+    i := 0;
+    while i < 16 {
+        r.values[i] = a.values[i] + b.values[i];
+        i = i + 1;
+    }
+    return r;
+}
+
+operator - :: (a: Matrix4, b: Matrix4) -> Matrix4 {
+    r: Matrix4;
+    i := 0;
+    while i < 16 {
+        r.values[i] = a.values[i] - b.values[i];
+        i = i + 1;
+    }
+    return r;
+}
+
+/// Matrix composition: `(A * B) * v == A * (B * v)`. Non-commutative in general.
+operator * :: (a: Matrix4, b: Matrix4) -> Matrix4 {
+    r: Matrix4;
+    col := 0;
+    while col < 4 {
+        row := 0;
+        while row < 4 {
+            sum := 0.0;
+            k := 0;
+            while k < 4 {
+                sum = sum + a.values[k * 4 + row] * b.values[col * 4 + k];
+                k = k + 1;
+            }
+            r.values[col * 4 + row] = sum;
+            row = row + 1;
+        }
+        col = col + 1;
+    }
+    return r;
+}
+
+/// Applies the matrix to a homogeneous [`Vector4`]. This is the workhorse: a
+/// point is `(x, y, z, 1)` and a direction is `(x, y, z, 0)`, so translation
+/// affects the first and not the second — the reason the `w` component exists.
+operator * :: (m: Matrix4, v: Vector4) -> Vector4 {
+    return vec4(m.values[0] * v.x + m.values[4] * v.y + m.values[8] * v.z + m.values[12] * v.w, m.values[1] * v.x + m.values[5] * v.y + m.values[9] * v.z + m.values[13] * v.w, m.values[2] * v.x + m.values[6] * v.y + m.values[10] * v.z + m.values[14] * v.w, m.values[3] * v.x + m.values[7] * v.y + m.values[11] * v.z + m.values[15] * v.w);
+}
+
+operator * :: (m: Matrix4, s: float64) -> Matrix4 {
+    r: Matrix4;
+    i := 0;
+    while i < 16 {
+        r.values[i] = m.values[i] * s;
+        i = i + 1;
+    }
+    return r;
+}
+
+operator * :: (s: float64, m: Matrix4) -> Matrix4 {
+    return m * s;
+}
+
+operator == :: (a: Matrix4, b: Matrix4) -> bool {
+    i := 0;
+    while i < 16 {
+        if a.values[i] != b.values[i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/// A right-handed perspective projection into the OpenGL-style clip space
+/// `z ∈ [-1, 1]`. `fov_y_radians` is the **full** vertical field of view;
+/// `aspect` is width/height; `near` and `far` are positive distances.
+///
+/// **Right-handed and `[-1, 1]` depth** to match `Math`'s cross product and the
+/// GL/GLSL convention Jairs will eventually target; ADR-0131 §3 records the
+/// rejected alternatives and why an unpinned handedness is exactly what drifts.
+mat4_perspective :: (fov_y_radians: float64, aspect: float64, near: float64, far: float64) -> Matrix4 {
+    // `f = cot(fov_y/2) = cos / sin`. One rounding rather than two — `1 / (sin/cos)`
+    // is mathematically the same and rounds twice, which the differential noticed
+    // in ADR-0116 §2's neighbourhood.
+    f := cos(fov_y_radians * 0.5) / sin(fov_y_radians * 0.5);
+    r: Matrix4;
+    r.values[0] = f / aspect;
+    r.values[5] = f;
+    r.values[10] = (far + near) / (near - far);
+    r.values[11] = -1.0;
+    r.values[14] = (2.0 * far * near) / (near - far);
+    return r;
+}
+
+/// A right-handed orthographic projection into the OpenGL-style clip space
+/// `z ∈ [-1, 1]`. `left`, `right`, `bottom`, `top` bound the view rectangle;
+/// `near` and `far` are the near and far clipping distances.
+mat4_orthographic :: (left: float64, right: float64, bottom: float64, top: float64, near: float64, far: float64) -> Matrix4 {
+    r: Matrix4;
+    r.values[0] = 2.0 / (right - left);
+    r.values[5] = 2.0 / (top - bottom);
+    r.values[10] = -2.0 / (far - near);
+    r.values[12] = -(right + left) / (right - left);
+    r.values[13] = -(top + bottom) / (top - bottom);
+    r.values[14] = -(far + near) / (far - near);
+    r.values[15] = 1.0;
+    return r;
+}
+
+/// A right-handed view matrix — the world seen from `eye`, looking toward
+/// `center`, with `up` as the notion of "up" (need not be perpendicular to the
+/// view direction). Applied to a world-space point it gives a camera-space point.
+mat4_look_at :: (eye: Vector3, center: Vector3, up: Vector3) -> Matrix4 {
+    // Right-handed: the camera's `z` axis is *out of* the screen, so `eye -
+    // center` (not `center - eye`) is the +z direction of the view frame.
+    z_axis := normalize3(eye - center);
+    x_axis := normalize3(cross(up, z_axis));
+    y_axis := cross(z_axis, x_axis);
+
+    r: Matrix4;
+    r.values[0] = x_axis.x;
+    r.values[1] = y_axis.x;
+    r.values[2] = z_axis.x;
+    r.values[4] = x_axis.y;
+    r.values[5] = y_axis.y;
+    r.values[6] = z_axis.y;
+    r.values[8] = x_axis.z;
+    r.values[9] = y_axis.z;
+    r.values[10] = z_axis.z;
+    r.values[12] = -dot3(x_axis, eye);
+    r.values[13] = -dot3(y_axis, eye);
+    r.values[14] = -dot3(z_axis, eye);
+    r.values[15] = 1.0;
+    return r;
+}

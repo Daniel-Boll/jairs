@@ -19,9 +19,9 @@ error-recovering compiler written in Rust.
 ## Status, honestly
 
 Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 1010 tests green.
-The current work is an **eight-wave programme to keep the promises ADR-0127 found unkept** — 2 done and one
+The current work is an **eight-wave programme to keep the promises ADR-0127 found unkept** — 3 done and one
 part (ADR-0128 instantiation backtraces, ADR-0129 an enum member from a constant, ADR-0130 `Math`'s
-vectors; matrices and quaternions still owed).
+vectors, ADR-0131 `Math`'s `Matrix4`; quaternions still owed and now have a matrix to convert to).
 
 **The four most recent waves were driven by an audit rather than by a feature**
 ([`docs/assessment-2026-08-07.md`](docs/assessment-2026-08-07.md)).
@@ -259,7 +259,9 @@ bit-identical in the VM and native code, the exactness an in-language approximat
 three-sub-wave arc worth noting: a library named a language feature it needed, the language delivered it, and
 the library collected. **`Math` is not complete, and ADR-0115 wrongly said it was** — the `vec/mat/quat`
 W7 promised were all absent, which ADR-0127 §3 caught. ADR-0130 has since added `Vector2/3/4` with real
-operators; `Matrix4` and `Quaternion` are still owed.
+operators, and ADR-0131 has added `Matrix4` — column-major, right-handed, with `operator *` for
+matrix×matrix, matrix×vector and matrix×scalar. `Quaternion` is still owed, and now has a matrix to
+convert to.
 
 **And a hash table** (ADR-0116): `Int_Map`, `s64 -> s64`, open-addressed with linear probing and tombstone
 deletion, grown at 3/4 load — a heap array of structs, the module that most exercises typed allocation and
