@@ -1890,9 +1890,18 @@ impl<'src> Parser<'src> {
         self.start_node(FOR_STMT);
         self.bump(); // `for`
         self.eat(LT); // the optional `<` reverse marker
-        // One or two names, then `:`. The names are `NAME` nodes so that a consumer reads them
-        // the same way it reads any other binding.
-        if self.at(IDENT) {
+        // One or two names then `:`, **or none at all** — the third form is `for xs { body }`,
+        // where lowering injects `it` and `it_index` as ordinary locals inside the body
+        // (ADR-0133). The three shapes are disambiguated by lookahead:
+        //   * `IDENT : …`           — named element, no index
+        //   * `IDENT , IDENT : …`   — named element and index
+        //   * anything else         — nameless, the iterable starts here
+        // The nameless form is what makes `for xs { it }` parse. A `for` with a name has to
+        // have a `:` before the iterable, so the two forms never collide.
+        let is_named = self.at(IDENT)
+            && (self.nth(1) == COLON
+                || (self.nth(1) == COMMA && self.nth(2) == IDENT && self.nth(3) == COLON));
+        if is_named {
             self.parse_name();
             if self.eat(COMMA) {
                 if self.at(IDENT) {
@@ -1902,11 +1911,8 @@ impl<'src> Parser<'src> {
                     self.error(span, "expected an index name after `,`", E0127);
                 }
             }
-        } else {
-            let span = self.current_span();
-            self.error(span, "expected a loop variable name after `for`", E0127);
+            self.expect(COLON);
         }
-        self.expect(COLON);
         self.parse_for_iterable();
         self.parse_body();
         self.finish_node();
@@ -3101,7 +3107,11 @@ mod tests {
 
     #[test]
     fn reserved_keyword_for_is_rejected() {
-        check_has_errors("f :: () { for x { } }");
+        // `for` is a reserved keyword, so a *bare* `for;` cannot be an expression
+        // statement — it dispatches to `parse_for_stmt` and errors on the missing
+        // iterable. ADR-0133 lifted the older `for x { }` shape (a nameless for over
+        // the iterable `x`), so this test now uses the shape that is still an error.
+        check_has_errors("f :: () { for; }");
     }
 
     // ---- tree snapshot for hello.jr ----------------------------------------

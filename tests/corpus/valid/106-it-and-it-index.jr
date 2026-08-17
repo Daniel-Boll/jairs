@@ -1,0 +1,153 @@
+// **`it` and `it_index` in a nameless `for`** (ADR-0133, wave 4) — closes E0122's expired-deferral
+// note that said "arrives in wave W2" six waves after W2 shipped, ADR-0127 §3's fifth-of-six
+// promise.
+//
+// What is checked here, and why each is not an assumption:
+//
+//   * **the nameless form parses at all** — `for xs { it }` was a parse error until this wave;
+//   * **`it` binds the current element** for a sequence, and the current value for a range;
+//   * **`it_index` is available beside `it`** for a **sequence** — 0-based, indexes the element;
+//   * **`it_index` is *not* available for a range** — the "would need MIR" note in ADR-0133 §2
+//     records why. `for 0..5 { it_index }` is E0201 today, on purpose;
+//   * **shadowing works** — `it := 5` inside a nameless for declares a fresh local that shadows
+//     the injection. That is a mechanical consequence of the injection being an ordinary binding;
+//   * **nested nameless `for`s rebind `it` and `it_index`** independently — an inner loop sees
+//     the inner element, and the outer names are back after the inner scope closes.
+#import "Basic";
+
+main :: () {
+    n := 0;
+
+    // ------------------------------------------------------------------------
+    // A sequence: `it` and `it_index` both injected.
+    // ------------------------------------------------------------------------
+    xs: [4]s64;
+    xs[0] = 10;
+    xs[1] = 20;
+    xs[2] = 40;
+    xs[3] = 80;
+
+    total := 0;
+    for xs {
+        total = total + it;
+    }
+    if total == 150 {
+        n = n + 1;
+    }
+
+    idx_sum := 0;
+    for xs {
+        idx_sum = idx_sum + it_index;
+    }
+    if idx_sum == 6 {
+        // 0 + 1 + 2 + 3
+        n = n + 2;
+    }
+
+    // Both together — a pattern common enough to be worth pinning.
+    weighted := 0;
+    for xs {
+        weighted = weighted + it * it_index;
+    }
+    if weighted == 340 {
+        // 10*0 + 20*1 + 40*2 + 80*3 = 0+20+80+240
+        n = n + 4;
+    }
+
+    // ------------------------------------------------------------------------
+    // A range: only `it` is injected. `it_index` for a range is E0201 today
+    // (ADR-0133 §2), and there is a type-errors corpus file that pins that.
+    // ------------------------------------------------------------------------
+    r_sum := 0;
+    for 0..5 {
+        r_sum = r_sum + it;
+    }
+    if r_sum == 10 {
+        // 0 + 1 + 2 + 3 + 4
+        n = n + 8;
+    }
+
+    r_off := 0;
+    for 10..15 {
+        r_off = r_off + it;
+    }
+    if r_off == 60 {
+        // 10 + 11 + 12 + 13 + 14
+        n = n + 16;
+    }
+
+    // ------------------------------------------------------------------------
+    // Shadowing: an ordinary local `it :=` declared in the body shadows the
+    // injection. This is what "ordinary injected locals, not reserved keywords"
+    // means in ADR-0133 §1.
+    // ------------------------------------------------------------------------
+    shadowed := 0;
+    for xs {
+        it := 3;
+        shadowed = shadowed + it;
+    }
+    if shadowed == 12 {
+        // 3 * 4 elements
+        n = n + 32;
+    }
+
+    // A shadowed `it_index` — same argument, and it exercises the injection of
+    // the second local as much as of the first.
+    shadowed_index := 0;
+    for xs {
+        it_index := 100;
+        shadowed_index = shadowed_index + it_index;
+    }
+    if shadowed_index == 400 {
+        // 100 * 4
+        n = n + 64;
+    }
+
+    // ------------------------------------------------------------------------
+    // Nested nameless `for`s — the inner rebinds `it`, and after the inner
+    // scope closes the outer's `it` is back.
+    // ------------------------------------------------------------------------
+    ys: [2]s64;
+    ys[0] = 1;
+    ys[1] = 2;
+    zs: [3]s64;
+    zs[0] = 10;
+    zs[1] = 20;
+    zs[2] = 40;
+
+    nested := 0;
+    for ys {
+        outer := it;
+        // save the outer `it` before the inner rebinds it
+        for zs {
+            nested = nested + outer * it;
+        }
+        // After the inner scope, `it` is back to the outer element. Add it
+        // once per outer iteration to prove.
+        nested = nested + it;
+    }
+    // Inner sums: for ys[0]=1: 1*(10+20+40)=70; for ys[1]=2: 2*70=140. Total inner=210.
+    // Outer `it` after inner: 1 + 2 = 3. Grand total = 213.
+    if nested == 213 {
+        n = n + 128;
+    }
+
+    // ------------------------------------------------------------------------
+    // Named-form still works — this wave lifted the *nameless* refusal without
+    // touching the named form, and a regression in the named form is worth
+    // catching alongside.
+    // ------------------------------------------------------------------------
+    named := 0;
+    for x: xs {
+        named = named + x;
+    }
+    if named == 150 {
+        n = n + 256;
+    }
+
+    // Every assertion above: 511 = 2^9 - 1.
+    if n == 511 {
+        exit(0);
+    }
+    exit(1);
+}

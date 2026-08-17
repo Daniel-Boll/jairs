@@ -93,7 +93,9 @@ one = **217**: an all-library wave, where the only new coverage a corpus file ca
 **ADR-0131 also holds at 1010** and adds one = **218** — the same pattern for the same reason, since
 Matrix4 like Vector4 is exercised by the differential and snapshot harnesses rather than by a Rust unit
 test. **ADR-0132 also holds at 1010** and adds one = **219**, closing sub-wave 3 with a Quaternion —
-the third all-library wave in a row to move only the corpus count.
+the third all-library wave in a row to move only the corpus count. **ADR-0133 also holds at 1010**
+and adds one = **220** — a language wave (parser + HIR) but no new Rust test, since the coverage is
+the corpus program that reads `it` and `it_index` in every combination.
 
 **A number in this file is now partly enforced.** `crates/jr-cli/tests/codes.rs` fails when the
 "first free code" claim below rots. The test count and the corpus count are still prose, and both were

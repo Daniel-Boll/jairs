@@ -2339,8 +2339,30 @@ impl<'a> BodyLowerCtx<'a> {
         let iterable = self.lower_for_iterable(f, span);
 
         self.push_scope();
-        let value = self.bind_loop_local(f.value_name().as_ref(), span);
-        let index = f.index_name().map(|n| self.bind_loop_local(Some(&n), span));
+        // Injected `it` / `it_index` on a nameless `for xs { … }` (ADR-0133). Ordinary
+        // locals, so a body can shadow them by declaring `it := something_else`.
+        //
+        // **`it_index` is injected only for a sequence, not a range.** A range's counter *is*
+        // the value, so `for 0..5 { it }` names the current value with `it` and has no
+        // second variable to give a distinct name to — matching the MIR shape of
+        // `for it: 0..5`. The named `for x, i: 0..5` shape is likewise unsupported today
+        // (`x` is uninitialised), and rather than fix it in this wave, `it_index` waits for
+        // whatever wave settles that gap; only the injection surface changes here.
+        let named = f.value_name().is_some();
+        let iterating_range = matches!(f.iterable(), Some(jr_syntax::ast::Expr::Range(_)));
+        let value = if named {
+            self.bind_loop_local_by_name(f.value_name().as_ref(), span)
+        } else {
+            self.bind_loop_local_injected("it", span)
+        };
+        let index = if named {
+            f.index_name()
+                .map(|n| self.bind_loop_local_by_name(Some(&n), span))
+        } else if iterating_range {
+            None
+        } else {
+            Some(self.bind_loop_local_injected("it_index", span))
+        };
         let body = f
             .body()
             .map(|b| self.lower_control_body(&b))
@@ -2358,13 +2380,17 @@ impl<'a> BodyLowerCtx<'a> {
         })
     }
 
-    /// Allocates and binds one `for` loop variable.
+    /// Allocates and binds one `for` loop variable named in the source.
     ///
     /// It has no annotation and no initialiser: its type comes from the iterable (`jr-sema`'s job)
     /// and its value from the loop (`jr-mir`'s). `uninit` is **false**, because a loop variable is
     /// assigned on every iteration that runs — marking it uninitialised would make the
     /// definite-assignment pass report a variable the loop guarantees.
-    fn bind_loop_local(&mut self, name: Option<&jr_syntax::ast::Name>, span: Span) -> LocalId {
+    fn bind_loop_local_by_name(
+        &mut self,
+        name: Option<&jr_syntax::ast::Name>,
+        span: Span,
+    ) -> LocalId {
         let (sym, name_span) = match name {
             Some(n) => {
                 let text = n.text().unwrap_or_else(|| String::from("<error>"));
@@ -2372,6 +2398,21 @@ impl<'a> BodyLowerCtx<'a> {
             }
             None => (self.intern("<error>"), span),
         };
+        self.alloc_and_define_loop_local(sym, name_span, span)
+    }
+
+    /// Allocates and binds an injected `it` or `it_index` on a nameless `for`.
+    ///
+    /// The span of the binding is the `for` keyword's span — a name that has no source
+    /// location cannot point at one — and the injected locals are **ordinary**, so a body that
+    /// declares `it := …` shadows them exactly as it would any local (ADR-0133 §1). That is
+    /// the point: injection reads as a *default*, not a reservation of a keyword.
+    fn bind_loop_local_injected(&mut self, name: &str, span: Span) -> LocalId {
+        let sym = self.intern(name);
+        self.alloc_and_define_loop_local(sym, span, span)
+    }
+
+    fn alloc_and_define_loop_local(&mut self, sym: Symbol, name_span: Span, span: Span) -> LocalId {
         let id = self.alloc_local(Local {
             name: sym,
             name_span,
