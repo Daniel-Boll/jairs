@@ -285,6 +285,7 @@ module.exports = grammar({
         $.pointer_type,
         $.array_type,
         $.view_type,
+        $.dynamic_array_type,
         $.name_type,
         $.poly_type,
         $.struct_type,
@@ -333,6 +334,12 @@ module.exports = grammar({
     // two indistinguishable in a query and would let a malformed `[]` inside an array parse
     // as a view.
     view_type: ($) => seq("[", "]", field("element", $._type)),
+
+    // `[..]T` — a growable dynamic array (ADR-0136 §1). Its own rule rather than an
+    // `array_type` with a `..` length, because the length is *not* an expression here — the
+    // `..` is a fixed marker — and sharing would let a malformed array with an out-of-range
+    // literal parse as a dynamic array by mistake.
+    dynamic_array_type: ($) => seq("[", "..", "]", field("element", $._type)),
 
     // s64, bool, Point, ... — a bare name, or a name applied to type arguments: `Box(s64)`
     // (ADR-0085 §3). The argument list is optional so an ordinary name stays a `name_type` with no

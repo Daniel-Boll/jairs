@@ -272,6 +272,7 @@ impl Pool {
             | Item::PointerType(_)
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
+            | Item::DynamicArrayType { .. }
             | Item::ResultsType { .. }
             | Item::ContextType
             | Item::EnumType { .. }
@@ -323,6 +324,11 @@ impl Pool {
     /// runtime data, so `[]s64` is one type however many elements any particular view has.
     pub fn view_of(&mut self, elem: PoolId) -> PoolId {
         self.intern(Item::ViewType { elem })
+    }
+
+    /// Interns `[..]elem` — a growable dynamic array (ADR-0136).
+    pub fn dynamic_array_of(&mut self, elem: PoolId) -> PoolId {
+        self.intern(Item::DynamicArrayType { elem })
     }
 
     /// Interns the implicit context's struct type (ADR-0057 §1).
@@ -639,6 +645,7 @@ impl Pool {
             | Item::ContextType
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
+            | Item::DynamicArrayType { .. }
             | Item::EnumType { .. }
             | Item::StructType { .. }
             | Item::UnionType { .. }

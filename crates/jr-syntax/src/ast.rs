@@ -118,6 +118,7 @@ ast_node!(PolyType, POLY_TYPE);
 ast_node!(PointerType, POINTER_TYPE);
 ast_node!(ArrayType, ARRAY_TYPE);
 ast_node!(ViewType, VIEW_TYPE);
+ast_node!(DynamicArrayType, DYNAMIC_ARRAY_TYPE);
 ast_node!(ProcType, PROC_TYPE);
 ast_node!(ProcTypeParams, PROC_TYPE_PARAMS);
 ast_node!(TypeArguments, TYPE_ARGUMENTS);
@@ -234,6 +235,8 @@ pub enum TypeExpr {
     Array(ArrayType),
     /// `[]T` (ADR-0044 §1)
     View(ViewType),
+    /// `[..]T` — a growable dynamic array (ADR-0136)
+    DynamicArray(DynamicArrayType),
     /// `(T, T) -> T` (ADR-0059 §3)
     Proc(ProcType),
     /// `Ident`
@@ -257,6 +260,7 @@ impl AstNode for TypeExpr {
             POINTER_TYPE
                 | ARRAY_TYPE
                 | VIEW_TYPE
+                | DYNAMIC_ARRAY_TYPE
                 | PROC_TYPE
                 | NAME_TYPE
                 | POLY_TYPE
@@ -272,6 +276,7 @@ impl AstNode for TypeExpr {
             POINTER_TYPE => Some(Self::Pointer(PointerType(node))),
             ARRAY_TYPE => Some(Self::Array(ArrayType(node))),
             VIEW_TYPE => Some(Self::View(ViewType(node))),
+            DYNAMIC_ARRAY_TYPE => Some(Self::DynamicArray(DynamicArrayType(node))),
             PROC_TYPE => Some(Self::Proc(ProcType(node))),
             NAME_TYPE => Some(Self::Name(NameType(node))),
             POLY_TYPE => Some(Self::Poly(PolyType(node))),
@@ -288,6 +293,7 @@ impl AstNode for TypeExpr {
             Self::Pointer(n) => n.syntax(),
             Self::Array(n) => n.syntax(),
             Self::View(n) => n.syntax(),
+            Self::DynamicArray(n) => n.syntax(),
             Self::Proc(n) => n.syntax(),
             Self::Name(n) => n.syntax(),
             Self::Poly(n) => n.syntax(),
@@ -822,6 +828,12 @@ impl ViewType {
     ///
     /// There is deliberately no `len()`: a view's length is runtime data, which is the whole
     /// difference from [`ArrayType`] (ADR-0044 §1).
+    pub fn elem(&self) -> Option<TypeExpr> {
+        child_node(&self.0)
+    }
+}
+impl DynamicArrayType {
+    /// The element type, `T` in `[..]T` (ADR-0136).
     pub fn elem(&self) -> Option<TypeExpr> {
         child_node(&self.0)
     }

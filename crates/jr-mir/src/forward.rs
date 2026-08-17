@@ -352,7 +352,7 @@ fn step_type(ty: PoolId, step: &Projection, pool: &Pool) -> PoolId {
         // A `Deref` never reaches here: `participating_slot` refuses a place containing one.
         Projection::Deref => PoolId::ERROR,
         Projection::StringData | Projection::ViewData => PoolId::ERROR,
-        Projection::StringCount | Projection::ViewCount => PoolId::S64,
+        Projection::StringCount | Projection::ViewCount | Projection::DynamicArrayData | Projection::DynamicArrayCount | Projection::DynamicArrayCapacity => PoolId::S64,
         // The tag is a `u8` and is not a case, so a path through it lands on neither (ADR-0068 §3).
         Projection::VariantTag => PoolId::U8,
     }

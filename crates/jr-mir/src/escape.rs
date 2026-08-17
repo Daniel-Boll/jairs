@@ -161,6 +161,7 @@ pub(crate) fn is_register_representable(pool: &Pool, ty: PoolId) -> bool {
         // A view is two words, so it is no more register-representable than the `string` it
         // shares a layout with (ADR-0044 §1).
         | Item::ViewType { .. }
+            | Item::DynamicArrayType { .. }
         | Item::ResultsType { .. }
         | Item::ContextType
         | Item::StructType { .. }

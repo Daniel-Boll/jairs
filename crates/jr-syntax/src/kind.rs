@@ -350,6 +350,13 @@ pub enum SyntaxKind {
     /// `TypeRef::Array`'s `len: None` already means "the length was not a usable literal"
     /// (ADR-0039 §3a) — so a shared node would make a view indistinguishable from that error.
     VIEW_TYPE,
+    /// `[..]T` — a growable dynamic array (ADR-0136).
+    ///
+    /// A compiler-known layout `{data: *T, count: s64, capacity: s64}` — the same shape
+    /// `List(s64)` uses in `modules/List/module.jr`, lifted to native syntax so the compiler
+    /// owns the storage rather than delegating to a library type. Its own kind rather than a
+    /// `[..]` child of `ARRAY_TYPE`, following the same reasoning `VIEW_TYPE` gives.
+    DYNAMIC_ARRAY_TYPE,
     /// `(T, T) -> T` — a procedure-pointer type (ADR-0059 §3).
     ///
     /// Holds a `PROC_TYPE_PARAMS` node then the return type. Distinct from a `RESULT_LIST`, which is

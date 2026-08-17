@@ -304,6 +304,20 @@ pub enum Item {
         /// The element type.
         elem: PoolId,
     },
+    /// `[..]T` — a growable dynamic array (ADR-0136).
+    ///
+    /// **Structural**, like [`Item::ViewType`] and [`Item::PointerType`]: the element is the whole
+    /// identity, so `[..]s64` interns to one `PoolId` however many files write it. The layout is
+    /// `{data: *T, count: s64, capacity: s64}` — three words instead of `ViewType`'s two — because a
+    /// dynamic array owns its heap block and knows how much it has, while a view merely borrows a run
+    /// (ADR-0136 §1). Kept separate from `Item::StructType` for the same reason `Item::StringType` is
+    /// (ADR-0004): a user-written struct with the same three fields is a *different* type and never
+    /// coerces to this one — dynamic arrays are indexable and views are not-writable-through, and
+    /// merging the identities would blur both properties.
+    DynamicArrayType {
+        /// The element type.
+        elem: PoolId,
+    },
     /// The implicit context's struct type (ADR-0057 §1).
     ///
     /// **Compiler-declared**, so it has no `DeclId` from any file — which is why it is its own
@@ -540,6 +554,7 @@ impl Item {
             | Self::PointerType(_)
             | Self::ArrayType { .. }
             | Self::ViewType { .. }
+            | Self::DynamicArrayType { .. }
             | Self::EnumType { .. }
             | Self::StructType { .. }
             | Self::UnionType { .. }

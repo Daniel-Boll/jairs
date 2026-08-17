@@ -459,6 +459,9 @@ impl Splice {
                     | Projection::StringCount
                     | Projection::ViewData
                     | Projection::ViewCount
+                    | Projection::DynamicArrayData
+                    | Projection::DynamicArrayCount
+                    | Projection::DynamicArrayCapacity
                     | Projection::VariantTag => *step,
                 })
                 .collect(),

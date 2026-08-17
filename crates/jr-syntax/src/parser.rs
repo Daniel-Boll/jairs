@@ -1361,24 +1361,32 @@ impl<'src> Parser<'src> {
                 self.finish_node();
             }
             L_BRACK => {
-                // `[N]T` (ADR-0039 §3). `[..]T` is a later wave, and it is refused here
-                // rather than parsed-then-rejected: a dynamic array has no representation
-                // to lower to, so accepting the syntax would mean inventing one.
-                self.start_node(ARRAY_TYPE);
-                self.bump(); // `[`
-                if self.at(DOT_DOT) {
-                    let span = self.current_span();
-                    self.error(span, "dynamic arrays `[..]T` arrive in a later wave", E0124);
+                // Three shapes share the `[` prefix: `[N]T` (fixed array, ADR-0039 §3),
+                // `[]T` (view — handled above with `L_BRACK R_BRACK` lookahead), and
+                // `[..]T` (dynamic array, ADR-0136). The nameless `[..]` path lands its own
+                // node kind so a `TypeRef::DynamicArray` doesn't overlap with the "bad
+                // length" case an `ARRAY_TYPE` with no length child would signal
+                // (ADR-0039 §3a's E0233).
+                if self.nth(1) == DOT_DOT {
+                    self.start_node(DYNAMIC_ARRAY_TYPE);
+                    self.bump(); // `[`
                     self.bump(); // `..`
-                } else if self.at_set(EXPR_START) {
-                    self.parse_expr();
+                    self.expect(R_BRACK);
+                    self.parse_type();
+                    self.finish_node();
                 } else {
-                    let span = self.current_span();
-                    self.error(span, "expected an array length after `[`", E0124);
+                    self.start_node(ARRAY_TYPE);
+                    self.bump(); // `[`
+                    if self.at_set(EXPR_START) {
+                        self.parse_expr();
+                    } else {
+                        let span = self.current_span();
+                        self.error(span, "expected an array length after `[`", E0124);
+                    }
+                    self.expect(R_BRACK);
+                    self.parse_type();
+                    self.finish_node();
                 }
-                self.expect(R_BRACK);
-                self.parse_type();
-                self.finish_node();
             }
             STRUCT_KW => {
                 self.parse_struct_type();

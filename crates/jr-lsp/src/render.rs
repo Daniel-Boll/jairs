@@ -352,6 +352,7 @@ impl Decl<'_> {
             // the narrowness this function's doc comment claims.
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
+            | Item::DynamicArrayType { .. }
             | Item::EnumType { .. }
             | Item::StructType { .. }
         | Item::UnionType { .. }
@@ -440,6 +441,7 @@ pub fn type_name(pool: &Pool, signatures: &FileSignatures, ty: PoolId) -> String
             format!("[{len}]{}", type_name(pool, signatures, *elem))
         }
         Item::ViewType { elem } => format!("[]{}", type_name(pool, signatures, *elem)),
+        Item::DynamicArrayType { elem } => format!("[..]{}", type_name(pool, signatures, *elem)),
         // Spelled as written, so hovering a multi-result procedure shows `-> (s64, bool)` rather
         // than a name the user never typed (ADR-0052 §1).
         Item::ContextType => "Context".to_owned(),

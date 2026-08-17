@@ -366,6 +366,9 @@ impl Verifier<'_> {
                 | Projection::StringCount
                 | Projection::ViewData
                 | Projection::ViewCount
+                | Projection::DynamicArrayData
+                | Projection::DynamicArrayCount
+                | Projection::DynamicArrayCapacity
                 | Projection::VariantTag => {}
             }
         }
@@ -616,6 +619,7 @@ impl Verifier<'_> {
             | Item::ForeignLibraryType
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
+            | Item::DynamicArrayType { .. }
             | Item::ResultsType { .. }
             | Item::ContextType
             | Item::FloatType { .. }
@@ -672,6 +676,7 @@ impl Verifier<'_> {
             | Item::PointerType(_)
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
+            | Item::DynamicArrayType { .. }
             | Item::ResultsType { .. }
             | Item::ContextType
             | Item::FloatType { .. }
@@ -1006,6 +1011,9 @@ fn mark_place(place: &Place, used: &mut [bool]) {
             | Projection::StringCount
             | Projection::ViewData
             | Projection::ViewCount
+            | Projection::DynamicArrayData
+            | Projection::DynamicArrayCount
+            | Projection::DynamicArrayCapacity
             | Projection::VariantTag => {}
         }
     }

@@ -571,6 +571,16 @@ fn fmt_type_ref_impl(
             };
             format!("[]{elem_tr}")
         }
+        TypeRef::DynamicArray { elem } => {
+            let elem_tr = if is_top {
+                format!("type#{}", elem.index())
+            } else if let Some(b) = body {
+                fmt_type_ref_impl(&b.type_refs[elem.index()], interner, false, Some(b))
+            } else {
+                format!("type#{}", elem.index())
+            };
+            format!("[..]{elem_tr}")
+        }
         // Printed by *arity*, like `Results` above and for the same reason: the parameter and
         // return `TypeRefId`s index an arena this function may not have, and a snapshot must not
         // carry an index that load order can renumber.

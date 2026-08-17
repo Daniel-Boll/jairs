@@ -308,6 +308,14 @@ impl<'a> LowerCtx<'a> {
                 };
                 self.alloc_top_type_ref(TypeRef::View { elem })
             }
+            TypeExpr::DynamicArray(d) => {
+                let elem = if let Some(e) = d.elem() {
+                    self.lower_type_expr_top(&e)
+                } else {
+                    self.alloc_top_type_ref(TypeRef::Error)
+                };
+                self.alloc_top_type_ref(TypeRef::DynamicArray { elem })
+            }
             TypeExpr::Proc(p) => {
                 let params: Vec<TypeRefId> =
                     p.params().map(|t| self.lower_type_expr_top(&t)).collect();
@@ -1662,6 +1670,14 @@ impl<'a> BodyLowerCtx<'a> {
                     self.alloc_type_ref(TypeRef::Error)
                 };
                 self.alloc_type_ref(TypeRef::View { elem })
+            }
+            TypeExpr::DynamicArray(d) => {
+                let elem = if let Some(e) = d.elem() {
+                    self.lower_type_expr(&e)
+                } else {
+                    self.alloc_type_ref(TypeRef::Error)
+                };
+                self.alloc_type_ref(TypeRef::DynamicArray { elem })
             }
             TypeExpr::Proc(p) => {
                 let params: Vec<TypeRefId> = p.params().map(|t| self.lower_type_expr(&t)).collect();
@@ -3613,7 +3629,11 @@ fn poly_var_names_of(params: &[Param], arena: &[TypeRef]) -> Vec<Symbol> {
                 }
             }
             Some(TypeRef::Pointer(inner)) => walk(*inner, arena, out),
-            Some(TypeRef::Array { elem, .. } | TypeRef::View { elem }) => walk(*elem, arena, out),
+            Some(
+                TypeRef::Array { elem, .. }
+                | TypeRef::View { elem }
+                | TypeRef::DynamicArray { elem },
+            ) => walk(*elem, arena, out),
             _ => {}
         }
     }

@@ -228,6 +228,9 @@ fn note_place(place: &Place, used: &mut FxHashSet<ValueId>) {
             | Projection::StringCount
             | Projection::ViewData
             | Projection::ViewCount
+            | Projection::DynamicArrayData
+            | Projection::DynamicArrayCount
+            | Projection::DynamicArrayCapacity
             | Projection::VariantTag => {}
         }
     }

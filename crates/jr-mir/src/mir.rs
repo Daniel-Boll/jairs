@@ -468,6 +468,16 @@ pub enum Projection {
     /// (ADR-0039 §5). That difference is the whole point of a view, which is why it needs a
     /// projection at all.
     ViewCount,
+    /// A dynamic array's `.data`, of type `*T` (ADR-0136 §1). Same byte offset as
+    /// [`Projection::ViewData`] but its own projection, because both engines derive a place's
+    /// type from the projection alone — sharing a variant would either type every dynamic
+    /// array's data as a view element (which is technically the same `*T`, but the two
+    /// receiver *types* differ and diagnostics would blur) or require a caller-side hack.
+    DynamicArrayData,
+    /// A dynamic array's `.count`, of type `s64` (ADR-0136 §1).
+    DynamicArrayCount,
+    /// A dynamic array's `.capacity`, of type `s64` — the one field a view does not have.
+    DynamicArrayCapacity,
     /// A `variant`'s tag byte, of type `u8` (ADR-0068 §3).
     ///
     /// Its own projection rather than `Field(n)`, because the tag is **not a case**: no source
@@ -1437,6 +1447,9 @@ fn remap_place_slots(place: &mut Place, remap: &[Option<SlotId>]) {
             | Projection::StringCount
             | Projection::ViewData
             | Projection::ViewCount
+            | Projection::DynamicArrayData
+            | Projection::DynamicArrayCount
+            | Projection::DynamicArrayCapacity
             | Projection::VariantTag => {}
         }
     }

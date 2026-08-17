@@ -519,6 +519,9 @@ fn substitute_place(place: &mut Place, subst: &impl Fn(&mut Operand)) {
             | Projection::StringCount
             | Projection::ViewData
             | Projection::ViewCount
+            | Projection::DynamicArrayData
+            | Projection::DynamicArrayCount
+            | Projection::DynamicArrayCapacity
             | Projection::VariantTag => {}
         }
     }
