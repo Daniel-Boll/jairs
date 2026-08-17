@@ -330,9 +330,14 @@ dependency chain requires it. `rust-toolchain.toml` still floats on stable.
 > **`[..]T` dynamic arrays** (W1 — E0124; the growable array that exists is the `List($T)` *library*
 > type, ADR-0107), **`it`/`it_index`** (W2 — `for xs { it }` does not parse; only `for x: xs` works),
 > **`$$T`** (W5 — E0107), **instantiation backtraces** (W5 — **now delivered** as a single frame by
-> ADR-0128; a multi-level *chain* is still owed), and **`Math` vec/mat/quat** (W7, still open — but ADR-0115 declared `Math` *complete*, which this row
-> contradicts). **Nested procedures and local constants** appear in no wave's scope at all, yet E0207
+> ADR-0128; a multi-level *chain* is still owed), and **`Math` vec/mat/quat** (W7, **partly delivered**: ADR-0130 shipped the
+> vectors, and matrices and quaternions remain sub-waves 3b/3c — ADR-0115 declared `Math` *complete*, which
+> this row contradicted). **Nested procedures and local constants** appear in no wave's scope at all, yet E0207
 > blamed W2 for them for six waves. Marked inline below as **[NOT DELIVERED]**.
+>
+> Separately, ADR-0127 §2's sweep left one **generalisation owed** rather than a broken promise: an array
+> length could name a literal-valued constant (ADR-0070) and an enum member could not. **ADR-0129
+> delivered it**, and one `named_constant_int` now answers for both callers.
 
 | Wave | Content | Notes | Est. |
 |---|---|---|---|
@@ -343,7 +348,7 @@ dependency chain requires it. `rust-toolchain.toml` still floats on stable.
 | **W4.5 — Pattern matching** | `switch` with exhaustiveness checking, a bare `.RED` as a case (ADR-0041 §2 step 5), and a **tagged** variant type beside `union` (ADR-0045 §1) | **Was missing from this table entirely.** Two accepted ADRs deferred decisions to it while no wave scheduled it — found while closing W2 (ADR-0054's handoff). **Reordered before W4 by ADR-0067 §0.** This row used to say "placed after W4 because exhaustiveness diagnostics want comptime type info" — a *want*, not a need, and checking disproved it: `Pool::enum_members` is populated during checking (ADR-0041 §4), and `c == .GREEN` already worked, so `switch` and exhaustiveness needed nothing from W4. A wave order justified by a dependency that does not exist is §5's "plans that contradict themselves". Still before W5, because a polymorph over a variant type needs the variant | 4–6 wks |
 | **W5 — Polymorphism** | `$T`, `$$T` **[NOT DELIVERED — E0107]**, `#modify`, `#bake_arguments`, `#expand` macros + hygiene, instantiation caching, **instantiation backtraces** in diagnostics **[single frame DELIVERED by ADR-0128; multi-level chain still owed]** | Depends on W4's InternPool value identity | 8–12 wks |
 | **W6 — Metaprogram** | Workspaces, compiler message loop, `#run build()` build scripts replacing makefiles, plugin hooks, `@note` attributes | The Jai superpower. Build scripts become the build system. | 6–8 wks |
-| **W7 — Stdlib** | In Jairs: `Basic`, `String`, dynamic array / hash table / bucket array, `Sort`, `Math` (vec/mat/quat **[NOT DELIVERED — ADR-0115 declared `Math` complete without them]**), `Random`, `File`, `File_Utilities`, `Process`, `Thread` + atomics, `Time`, `Socket`, `JSON`, `Compiler` | Runs partly in parallel with W5/W6; each module is a wave-acceptance test | 14–18 wks |
+| **W7 — Stdlib** | In Jairs: `Basic`, `String`, dynamic array / hash table / bucket array, `Sort`, `Math` (vec/mat/quat **[vectors DELIVERED by ADR-0130; mat/quat still owed as sub-waves 3b/3c — ADR-0115 declared `Math` complete without any of them]**), `Random`, `File`, `File_Utilities`, `Process`, `Thread` + atomics, `Time`, `Socket`, `JSON`, `Compiler` | Runs partly in parallel with W5/W6; each module is a wave-acceptance test | 14–18 wks |
 | **W8 — Performance** | LLVM backend via `inkwell` (`--release`), inliner maturity, `#soa`, SIMD vectors, `#align`/`#place`, parallel Sema + parallel codegen, published compile-throughput number | Three-way differential testing: VM ≡ Cranelift ≡ LLVM | 10–14 wks |
 | **W9 — Tooling depth** | Full LSP surface (completion, refs, rename, signature help, semantic tokens, **inlay type hints**, code actions), richer DWARF (locals, struct layouts) for lldb, Neovim packaging (VS Code descoped by ADR-0036; any LSP client works unpackaged) | Incremental all along; this is the "make it excellent" pass | 8–10 wks |
 | **W10 — Graphics, in Jairs** | `Window_Creation` (Cocoa via `#foreign`), GPU layer (Metal, then Vulkan), immediate-mode 2D renderer, image decode, immediate-mode UI, audio (CoreAudio/ALSA) | All *library* work, written in Jairs — no compiler changes. Gated on W5+W7. | 6+ months |
@@ -522,13 +527,13 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **1010 workspace tests** and **214 corpus files**, all six gates green
+waiting. Both are tracked below. **1010 workspace tests** and **217 corpus files**, all six gates green
 **locally** — no CI run has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
-> **What "214 corpus files" counts**, since this number had drifted: the `.jr` files under
-> `tests/corpus/` *outside* `tests/corpus/modules/` — 101 `valid` + 10 `invalid` + 70 `type-errors` +
-> 3 `cfg-errors` + 30 `imports` = 214. Counting the 10 module fixtures too gives 224. This section
+> **What "217 corpus files" counts**, since this number had drifted: the `.jr` files under
+> `tests/corpus/` *outside* `tests/corpus/modules/` — 103 `valid` + 10 `invalid` + 71 `type-errors` +
+> 3 `cfg-errors` + 30 `imports` = 217. Counting the 10 module fixtures too gives 227. This section
 > claimed **214** at a point when 213 was right while `AGENTS.md` claimed 213, so the sentence that
 > tells a reader to trust §7 over any other count was itself pointing at the wrong one. ADR-0125
 > reconciled the numbers and that pair slipped through, which is the argument for the definition
@@ -550,6 +555,31 @@ waiting. Both are tracked below. **1010 workspace tests** and **214 corpus files
 > libffi; and ADR-0107 §2's heap fix is complete, since the upward frame bump and downward heap each
 > bound on the other.
 >
+> [!IMPORTANT]
+> **The eight-wave programme to keep ADR-0127's promises is 3 of 8 started, 2 complete plus one part.** Wave 1 was ADR-0128
+> (instantiation backtraces, single frame). **Wave 2 was ADR-0129** — an enum member's value may name a
+> literal-valued constant, generalising ADR-0070 so that one `named_constant_int` answers for both
+> callers. **Wave 3a was ADR-0130** — `Math`'s `Vector2/3/4`, whose operators are now known to cross the
+> module boundary. None of the three needed a design fork; sub-wave 3b does.
+>
+> **Remaining, in dependency order.** Sub-wave 3b carries a fork of its own; waves 4–7 have theirs decided:
+>
+> | # | Wave | Fork |
+> |---|---|---|
+> | ~~3a~~ | ~~`Math` vectors~~ | **done — ADR-0130** |
+> | 3b | `Math` `Matrix4` | **fork:** row- or column-major storage; whether `operator *` also carries matrix×vector; handedness of the projection helpers |
+> | 3c | `Math` `Quaternion` | follows 3b — needs a matrix to convert to |
+> | 4 | `it` / `it_index` | **decided:** ordinary injected locals, *not* reserved keywords |
+> | 5 | Nested procedures + local constants | **decided:** no capture, Jai-style — a file-scope proc with a scoped name |
+> | 6 | `[..]T` dynamic arrays | **decided:** compiler-known layout both engines agree on, ops in Jairs, ADR-0107's doubling |
+> | 7 | `$$T` | **decided:** `$T` inference *plus* required-constant baking (ADR-0087's `$N` mechanism) |
+> | 8 | `print(fmt, ..Any)` | **decided:** the only language gap is the variadic parameter; spill args to slots per ADR-0077 |
+>
+> Two things a fresh session should read before starting one. **Subagents return empty on this codebase**
+> — six of six dispatches did, so assessment work is done by hand. And **ADR-0129 §4 left the
+> sibling-member case undecided on purpose**: `ALSO :: OK` inside an enum is a precedence fork against a
+> same-named file constant, and it goes to the decider on its own rather than being picked inside a wave.
+
 > **Still owed from the audit.** Two security dispatches remain **unexamined**: forging an `Any` or a
 > procedure pointer through the untagged `union`, and `jr-lsp` path handling. Its *performance* findings
 > are also open and unmeasured: const-eval rebuilds the whole VM program per constant per round, every

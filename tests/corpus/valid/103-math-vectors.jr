@@ -1,0 +1,124 @@
+// **`Math` vectors** (ADR-0130, sub-wave 3a) — the part of ADR-0127 §3's `Math` promise that needs no
+// language change.
+//
+// ADR-0115 declared `Math` *complete* while `vec/mat/quat` were absent, which is why this file exists at
+// all: the promise was recorded in `PLAN.md` §2.1 as unkept, and a capability with no corpus file is one
+// both engines could break with all six gates green. `modules/Basic` hid a bug for a whole wave for
+// exactly that reason.
+//
+// What is checked here, and why each is not an assumption:
+//
+//   * **an operator overload crosses the module boundary** — `a + b` on an imported `Vector3` resolves
+//     to `Math`'s overload. This is the fact the whole design rests on; a library type whose operators
+//     only worked inside its own file would be useless, so it was probed before anything was written;
+//   * `+ - * /` and `==` on all three widths, with `*` in **both** operand orders, since
+//     `2.0 * v` and `v * 2.0` are separate overloads and only one of them being wired is invisible;
+//   * `cross` obeys the right-hand rule — `x cross y = z`, which a sign error in any of its six terms
+//     breaks, and which no amount of length checking would catch;
+//   * `dot` of perpendicular vectors is zero, and of a vector with itself is its squared length;
+//   * `normalize` of a **zero** vector is the zero vector rather than a NaN — the degenerate case
+//     ADR-0130 §3 had to choose an answer for, so the choice is pinned rather than left to drift;
+//   * `lerp` at `t = 0` and `t = 1` returns the endpoints **exactly**, which is the property a naive
+//     `a*(1-t) + b*t` loses to rounding at `t = 1` and `a + (b-a)*t` keeps;
+//   * `length` reaches libm through `sqrt`, so the value is bit-identical in both engines (ADR-0115).
+//
+// Most comparisons here use values exactly representable in binary floating point — 3-4-5 triangles,
+// halves, small integers — so this file asserts on **equality** rather than a tolerance. A tolerance
+// would weaken the differential harness, whose entire premise is that the two engines agree bit for bit.
+//
+// `normalize3` is the exception worth stating precisely, because "exactly representable" is **false** of
+// its expected components: 0.6 and 0.8 have no finite binary expansion. The comparison is still exact,
+// for a different reason — IEEE-754 division is *correctly rounded*, so `3.0 / 5.0` yields the double
+// nearest to 0.6, which is precisely what the literal `0.6` parses to. Equality holds because both sides
+// round to the same double, not because either is exact.
+#import "Basic";
+#import "Math";
+
+main :: () {
+    n := 0;
+
+    // Construction and field access.
+    a := vec3(1.0, 2.0, 3.0);
+    if a.x == 1.0 && a.y == 2.0 && a.z == 3.0 {
+        n = n + 1;
+    }
+
+    // **The imported operator.** Addition and subtraction on Vector3.
+    b := vec3(4.0, 5.0, 6.0);
+    if a + b == vec3(5.0, 7.0, 9.0) {
+        n = n + 2;
+    }
+    if b - a == vec3(3.0, 3.0, 3.0) {
+        n = n + 4;
+    }
+
+    // Scalar multiply in **both** orders, and division.
+    if a * 2.0 == vec3(2.0, 4.0, 6.0) && 2.0 * a == vec3(2.0, 4.0, 6.0) {
+        n = n + 8;
+    }
+    if vec3(2.0, 4.0, 6.0) / 2.0 == a {
+        n = n + 16;
+    }
+
+    // Dot: perpendicular is zero, self is the squared length.
+    if dot3(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0)) == 0.0 {
+        n = n + 32;
+    }
+    if dot3(a, a) == length_squared3(a) && length_squared3(a) == 14.0 {
+        n = n + 64;
+    }
+
+    // **The right-hand rule**: x cross y is z, and y cross x is -z.
+    if cross(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0)) == vec3(0.0, 0.0, 1.0) {
+        n = n + 128;
+    }
+    if cross(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0)) == vec3(0.0, 0.0, -1.0) {
+        n = n + 256;
+    }
+
+    // A 3-4-5 triangle, so the root is exact and `==` is legitimate.
+    if length3(vec3(3.0, 4.0, 0.0)) == 5.0 {
+        n = n + 512;
+    }
+    if distance3(vec3(1.0, 1.0, 0.0), vec3(4.0, 5.0, 0.0)) == 5.0 {
+        n = n + 1024;
+    }
+
+    // Normalising a 3-4-5 vector. 0.6 and 0.8 are *not* exactly representable; equality holds because
+    // correctly-rounded division lands on the same double the literal does.
+    if normalize3(vec3(0.0, 3.0, 4.0)) == vec3(0.0, 0.6, 0.8) {
+        n = n + 2048;
+    }
+
+    // **The degenerate case**: no direction, so no unit vector — zero rather than NaN.
+    if normalize3(vec3(0.0, 0.0, 0.0)) == vec3(0.0, 0.0, 0.0) {
+        n = n + 4096;
+    }
+
+    // `lerp` hits both endpoints exactly, and the midpoint.
+    if lerp3(a, b, 0.0) == a && lerp3(a, b, 1.0) == b {
+        n = n + 8192;
+    }
+    if lerp3(vec3(0.0, 0.0, 0.0), vec3(2.0, 4.0, 8.0), 0.5) == vec3(1.0, 2.0, 4.0) {
+        n = n + 16384;
+    }
+
+    // Negation is a procedure, not `operator -`: a unary overload is out of scope.
+    if negate3(a) == vec3(-1.0, -2.0, -3.0) {
+        n = n + 32768;
+    }
+
+    // Vector2 and Vector4 carry the same operators, so a width wired only for Vector3 is visible.
+    if vec2(1.0, 2.0) + vec2(3.0, 4.0) == vec2(4.0, 6.0) && length2(vec2(3.0, 4.0)) == 5.0 {
+        n = n + 65536;
+    }
+    if vec4(1.0, 2.0, 3.0, 4.0) * 2.0 == vec4(2.0, 4.0, 6.0, 8.0) && dot4(vec4(1.0, 0.0, 0.0, 0.0), vec4(0.0, 1.0, 0.0, 0.0)) == 0.0 {
+        n = n + 131072;
+    }
+
+    // Every assertion: 262143.
+    if n == 262143 {
+        exit(0);
+    }
+    exit(1);
+}

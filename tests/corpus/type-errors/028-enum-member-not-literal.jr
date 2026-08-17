@@ -1,11 +1,30 @@
-// EXPECT: E0237 — an enum member's value must be an integer literal (ADR-0041 §3)
-// Same reason an array length must be one (ADR-0039 §3a): evaluating a constant expression
-// needs the compile-time evaluator, which ADR-0018 §3 puts in `jr-db` over the bytecode VM —
-// downstream of where a type is resolved.
+// EXPECT: E0237 — an enum member's value that needs evaluation (ADR-0041 §3, ADR-0129 §2)
+//
+// **This file's construct changed with ADR-0129**, the same way `023-array-length-not-literal` changed
+// with ADR-0070 and for the same reason. It used to be `COUNT :: 3;` with `X :: COUNT;`, which is now
+// *legal*: for a constant whose initialiser is already an integer literal there is nothing to evaluate, so
+// sema resolves the name against the file scope it already consults and reads the literal out of the HIR.
+// No `jr-db`, no `jr-vm`, no inversion of ADR-0018 §3's phase order — `jr-sema` still depends on neither.
+//
+// The asymmetry that closed was recorded by ADR-0127 §3 as a promise a completed wave had not kept, and
+// E0237's own note admitted it: an array length had learnt this trick and an enum member had not.
+//
+// What remains refused is a value that needs an actual **evaluation**, which is where ADR-0041 §3's
+// argument still holds exactly as written. Folding `SUM` here would mean a *second* constant folder beside
+// ADR-0022's, which is the duplication ADR-0018 §2 refuses for layout and ADR-0020 §2 for trap messages.
+//
+// **This file pins the wording for a value that is not a name at all.** Its pair,
+// `074-enum-member-not-a-usable-constant`, pins the other branch — a value that *is* a name but not a
+// usable one. ADR-0070 §3's rule is why there are two: a reader who named something and a reader who wrote
+// arithmetic need different advice, and one message cannot be true for both.
 COUNT :: 3;
 
 Bad :: enum {
-    X :: COUNT;
+    // Legal now, and here so the file shows the line rather than only one side of it.
+    OK :: COUNT;
+
+    // E0237: arithmetic needs the evaluator, which runs after an enum's members are typed.
+    X :: 2 + 2;
 }
 
 main :: () {

@@ -86,7 +86,10 @@ corpus file, because the VM traps where native writes short, so a program exerci
 `valid/`, whose whole premise is that the two engines agree; the test lives in `jr-vm` instead).
 ADR-0127 holds at **1009** and adds one corpus file = **214**: a wording sweep changes no behaviour,
 and `type-errors/073` is iterated by the existing harness rather than adding a test case. ADR-0128 reaches
-**1010** (the instantiation-backtrace test) with no new corpus file.
+**1010** (the instantiation-backtrace test) with no new corpus file. ADR-0129 **holds at 1010** and adds
+two corpus files = **216** — both are iterated by harnesses that already exist, which is the clearest case
+yet for tracking the corpus count separately from the test count. ADR-0130 **also holds at 1010** and adds
+one = **217**: an all-library wave, where the only new coverage a corpus file can carry is a corpus file.
 
 **A number in this file is now partly enforced.** `crates/jr-cli/tests/codes.rs` fails when the
 "first free code" claim below rots. The test count and the corpus count are still prose, and both were
