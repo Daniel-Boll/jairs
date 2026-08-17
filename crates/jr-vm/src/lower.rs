@@ -615,6 +615,39 @@ impl Compiler<'_> {
                     }
                     ty = PoolId::S64;
                 }
+                // A dynamic array's three projections (ADR-0136 §1). `.data` at pair_data;
+                // `.count` at pair_count; `.capacity` at triple_capacity.
+                Projection::DynamicArrayData => {
+                    let Item::DynamicArrayType { elem } = self.pool.item(ty) else {
+                        return Err(VmError::internal(
+                            "a `[..]T` data projection of a non-`[..]T`",
+                        ));
+                    };
+                    let elem = *elem;
+                    let (offset, _) = jr_pool::pair_data(self.target);
+                    if offset != 0 {
+                        steps.push(PlaceStep::Offset(offset));
+                    }
+                    ty = self.pool.find(&Item::PointerType(elem)).ok_or_else(|| {
+                        VmError::internal(
+                            "a `[..]T`'s element pointer type was never interned",
+                        )
+                    })?;
+                }
+                Projection::DynamicArrayCount => {
+                    let (offset, _) = jr_pool::pair_count(self.target);
+                    if offset != 0 {
+                        steps.push(PlaceStep::Offset(offset));
+                    }
+                    ty = PoolId::S64;
+                }
+                Projection::DynamicArrayCapacity => {
+                    let (offset, _) = jr_pool::triple_capacity(self.target);
+                    if offset != 0 {
+                        steps.push(PlaceStep::Offset(offset));
+                    }
+                    ty = PoolId::S64;
+                }
                 // A variant's tag is at offset 0 — it is the *leading* field (ADR-0068 §3), which is
                 // why nothing has to be computed here. The type becomes `u8`, so a load through this
                 // reads one byte rather than a case's width.
@@ -688,6 +721,7 @@ impl Compiler<'_> {
             Item::StringType
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
+            | Item::DynamicArrayType { .. }
             | Item::StructType { .. }
         | Item::UnionType { .. }
         | Item::VariantType { .. }

@@ -466,7 +466,7 @@ impl Dumper<'_> {
                 // both the same way could not show that a view's count is a load where an
                 // array's is a constant, which is the one thing a reader checks here.
                 Projection::ViewData => text.push_str(".view_data"),
-                Projection::ViewCount => text.push_str(".view_count"),
+                Projection::ViewCount | Projection::DynamicArrayData | Projection::DynamicArrayCount | Projection::DynamicArrayCapacity => text.push_str(".view_count"),
                 Projection::VariantTag => text.push_str(".tag"),
             }
         }
@@ -631,6 +631,7 @@ impl Dumper<'_> {
             | Item::BoolType
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
+            | Item::DynamicArrayType { .. }
             | Item::ResultsType { .. }
             | Item::ContextType
             | Item::FloatType { .. }
@@ -685,6 +686,7 @@ impl Dumper<'_> {
             },
             Item::ArrayType { elem, len } => format!("[{len}]{}", self.ty(*elem)),
             Item::ViewType { elem } => format!("[]{}", self.ty(*elem)),
+            Item::DynamicArrayType { elem } => format!("[..]{}", self.ty(*elem)),
             // Spelled as the source spells it, so a snapshot shows `(s64, bool)` rather than an
             // opaque name — and, per `AGENTS.md`, carries no `FileId` or index that load order
             // could renumber.

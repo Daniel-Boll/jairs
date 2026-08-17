@@ -903,6 +903,15 @@ impl Formatter {
                     self.format_type(&elem);
                 }
             }
+            DYNAMIC_ARRAY_TYPE => {
+                // `[..]T` (ADR-0136 §1). No length or capacity child; the `..` is a marker
+                // token rather than an expression, so it does not need re-emitting from a
+                // child.
+                self.emit("[..]");
+                if let Some(elem) = node.children().find(|n| is_type_kind(n.kind())) {
+                    self.format_type(&elem);
+                }
+            }
             ARRAY_TYPE => {
                 self.emit("[");
                 // The length is an *expression* child (ADR-0039 §3), so it is formatted as
@@ -1820,6 +1829,7 @@ fn is_type_kind(kind: SyntaxKind) -> bool {
             | VARIANT_TYPE
             | ARRAY_TYPE
             | VIEW_TYPE
+            | DYNAMIC_ARRAY_TYPE
             | ENUM_TYPE
             | PROC_TYPE
     )

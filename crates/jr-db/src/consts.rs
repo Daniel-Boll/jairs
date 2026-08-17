@@ -1159,6 +1159,12 @@ fn type_info_kind_name(pool: &Pool, ty: PoolId) -> Option<&'static str> {
         jr_pool::Item::PointerType(..) => Some("POINTER"),
         jr_pool::Item::ArrayType { .. } => Some("ARRAY"),
         jr_pool::Item::ViewType { .. } => Some("VIEW"),
+        // A dynamic array reports as its own kind so a `type_info(...).kind ==
+        // Type_Info_Kind.DYNAMIC_ARRAY` reads. The `Type_Info_Kind` enum in
+        // `modules/Basic` will need this member added for the reflection to work; it
+        // reports `Some` here so a program *can* be written that reads the kind, without
+        // making the pool report a plausible-but-wrong `VIEW` instead.
+        jr_pool::Item::DynamicArrayType { .. } => Some("DYNAMIC_ARRAY"),
         jr_pool::Item::StructType { .. } => Some("STRUCT"),
         jr_pool::Item::UnionType { .. } => Some("UNION"),
         jr_pool::Item::VariantType { .. } => Some("VARIANT"),
@@ -1400,6 +1406,10 @@ fn reduce_element(
         )),
         jr_pool::Item::ViewType { .. } => Err(VmError::unsupported_public(
             "a compile-time aggregate holding a view has no runtime meaning: the view's data pointer is \
+             the compile-time evaluator's, not the program's",
+        )),
+        jr_pool::Item::DynamicArrayType { .. } => Err(VmError::unsupported_public(
+            "a compile-time aggregate holding a `[..]T` has no runtime meaning: its data pointer is \
              the compile-time evaluator's, not the program's",
         )),
         // Every remaining shape is a scalar held in the element's own bytes.

@@ -970,6 +970,7 @@ impl Lower<'_> {
             | Item::ForeignLibraryType
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
+            | Item::DynamicArrayType { .. }
             | Item::ResultsType { .. }
             | Item::ContextType
             | Item::EnumType { .. }
@@ -1485,6 +1486,7 @@ impl Lower<'_> {
             // nothing because every index fails the bounds check against a count of 0.
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
+            | Item::DynamicArrayType { .. }
             | Item::ResultsType { .. }
             | Item::ContextType
             | Item::StructType { .. }
@@ -4118,6 +4120,25 @@ impl Lower<'_> {
             let text = self.interner.resolve(name);
             return match text {
                 "count" => Some((place.project(Projection::ViewCount), PoolId::S64)),
+                _ => None,
+            };
+        }
+
+        // A dynamic array `[..]T` exposes three fields — `.data: *T`, `.count: s64`,
+        // `.capacity: s64` (ADR-0136 §1). All are places (loads), so `xs.count = 5` writes
+        // through the second word exactly as a struct field assignment would.
+        if let Item::DynamicArrayType { elem } = *self.pool.item(ty) {
+            let text = self.interner.resolve(name);
+            return match text {
+                "data" => {
+                    let ptr_ty = self.pool.pointer_to(elem);
+                    Some((place.project(Projection::DynamicArrayData), ptr_ty))
+                }
+                "count" => Some((place.project(Projection::DynamicArrayCount), PoolId::S64)),
+                "capacity" => Some((
+                    place.project(Projection::DynamicArrayCapacity),
+                    PoolId::S64,
+                )),
                 _ => None,
             };
         }

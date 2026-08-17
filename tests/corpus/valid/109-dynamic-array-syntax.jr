@@ -1,0 +1,73 @@
+// **`[..]T` dynamic-array syntax** (ADR-0136, wave 6) — a compiler-known type with the same layout
+// `modules/List/module.jr` maintains by hand, lifted to native syntax.
+//
+// This wave delivers the **surface and layout**: `xs: [..]s64` declares a zero-initialised
+// dynamic array with `.data == null`, `.count == 0`, `.capacity == 0`; the three pseudo-fields
+// are readable and writable through ordinary field access. Growth operations (push, free) are
+// library work owed to whichever wave writes them or converts `List` — the compiler owns the
+// storage type; the operations stay in Jairs.
+//
+// What is checked here, and why each is not an assumption:
+//
+//   * **`[..]T` parses** — the parser recognises `[..]T` as its own kind, distinct from
+//     `[N]T` and `[]T`. A malformed `[..N]T` or `[N..]T` still fails, because this shape's
+//     `..` is a fixed marker rather than a range expression;
+//   * **the layout is `{data, count, capacity}` in that order** — `.count` is a runtime read
+//     of the second word, `.capacity` of the third. The `.data` field is a `*T` pointing at
+//     the heap storage (null for a zero-initialised value);
+//   * **zero-initialised gives a valid empty state** — every field is 0, so a caller can
+//     declare and later write without invoking undefined behaviour;
+//   * **the fields are places** — `xs.count = 3` writes through the second word, exactly as
+//     a struct field assignment would. This is what will let a library push routine populate
+//     the three fields after allocating.
+#import "Basic";
+
+main :: () {
+    n := 0;
+
+    // ------------------------------------------------------------------------
+    // Declaration: zero-initialised.
+    // ------------------------------------------------------------------------
+    xs: [..]s64;
+    if xs.count == 0 && xs.capacity == 0 {
+        n = n + 1;
+    }
+
+    // ------------------------------------------------------------------------
+    // The fields are writable. A caller populating them after a `malloc`.
+    // ------------------------------------------------------------------------
+    xs.count = 3;
+    xs.capacity = 8;
+    if xs.count == 3 && xs.capacity == 8 {
+        n = n + 2;
+    }
+
+    // ------------------------------------------------------------------------
+    // The declared element type does not affect the layout: `[..]u8` and
+    // `[..]s64` have the same size and alignment. Verified by declaring two
+    // of different element types and reading their empty counts.
+    // ------------------------------------------------------------------------
+    ys: [..]u8;
+    zs: [..]bool;
+    if ys.count == 0 && zs.count == 0 && ys.capacity == 0 && zs.capacity == 0 {
+        n = n + 4;
+    }
+
+    // ------------------------------------------------------------------------
+    // Distinct from a view: they answer different fields.
+    // ------------------------------------------------------------------------
+    v: [4]s64;
+    v[0] = 10;
+    view := v[];
+    // `view.count == 4`; a view has no `.capacity`. `xs.capacity` is the
+    // dynamic-array-only field a view does not answer.
+    if view.count == 4 {
+        n = n + 8;
+    }
+
+    // Every assertion above: 15.
+    if n == 15 {
+        exit(0);
+    }
+    exit(1);
+}

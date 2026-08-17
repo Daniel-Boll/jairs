@@ -492,6 +492,14 @@ impl<'a> Ctx<'a> {
                     self.pool.view_of(element)
                 }
             }
+            TypeRef::DynamicArray { elem } => {
+                let element = self.resolve_type(scope, elem, span);
+                if element == PoolId::ERROR {
+                    PoolId::ERROR
+                } else {
+                    self.pool.dynamic_array_of(element)
+                }
+            }
             // `-> (s64, bool)` (ADR-0052 §1). Interned structurally, and normalised: a one-element
             // list becomes the element itself, so `-> (T)` and `-> T` are one type.
             //
@@ -1340,6 +1348,7 @@ impl<'a> Ctx<'a> {
             Item::PointerType(inner) => format!("*{}", self.describe(*inner)),
             Item::ArrayType { elem, len } => format!("[{len}]{}", self.describe(*elem)),
             Item::ViewType { elem } => format!("[]{}", self.describe(*elem)),
+            Item::DynamicArrayType { elem } => format!("[..]{}", self.describe(*elem)),
             // Spelled the way the source spells it (ADR-0052 §1), so an arity diagnostic can say
             // "`(s64, bool)` returns 2 values" rather than naming an internal type nobody wrote.
             Item::ContextType => "Context".to_owned(),

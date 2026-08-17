@@ -541,7 +541,9 @@ impl Ctx<'_> {
                 }
             }
             TypeRef::Pointer(inner) => self.collect_poly_in_type(scope, inner, vars),
-            TypeRef::Array { elem, .. } | TypeRef::View { elem } => {
+            TypeRef::Array { elem, .. }
+            | TypeRef::View { elem }
+            | TypeRef::DynamicArray { elem } => {
                 self.collect_poly_in_type(scope, elem, vars);
             }
             // A `$T` inside a proc-pointer or results type is not part of this sub-wave's one-`$T` slice;

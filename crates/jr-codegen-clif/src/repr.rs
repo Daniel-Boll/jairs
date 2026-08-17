@@ -146,7 +146,10 @@ impl Repr {
             // A context is an aggregate — but note that what a call actually passes is a
             // *pointer* to one (ADR-0057 §2), which is a scalar. This arm is for the pointee.
             | Item::ContextType
-            | Item::ViewType { .. } => {
+            | Item::ViewType { .. }
+            // A dynamic array is a view + a capacity word — three fields living in memory,
+            // passed by copy exactly as a view is (ADR-0136 §1).
+            | Item::DynamicArrayType { .. } => {
                 let layout = layout_of(pool, target, ty)
                     .map_err(|reason| CodegenError::NoLayout { ty, reason })?;
                 Ok(Self::Aggregate {

@@ -1480,6 +1480,7 @@ impl Ctx<'_> {
             | Item::VariantType { .. }
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
+            | Item::DynamicArrayType { .. }
             | Item::ResultsType { .. }
             // A context is a struct in every way that matters here (ADR-0057), so comparing two is the
             // same unanswerable question.
@@ -4542,6 +4543,11 @@ impl Ctx<'_> {
                     self.infer_var_in(elem, arg_elem, bindings);
                 }
             }
+            TypeRef::DynamicArray { elem } => {
+                if let Item::DynamicArrayType { elem: arg_elem } = *self.pool.item(arg_ty) {
+                    self.infer_var_in(elem, arg_elem, bindings);
+                }
+            }
             // Any other shape (a name, an array — whose length is part of its identity and not matched
             // here — a struct, a proc type) contains no directly-bindable variable in this sub-wave's
             // model, so it contributes no binding. A later sub-wave that wants `[$N]$T` inference adds
@@ -4712,6 +4718,13 @@ impl Ctx<'_> {
             Item::ContextType => ReceiverKind::Context,
             Item::ArrayType { .. } => ReceiverKind::Array,
             Item::ViewType { .. } => ReceiverKind::View,
+            Item::DynamicArrayType { elem } => {
+                // The pointer type is `*elem`, which needs its own interning — the pool has
+                // one canonical `*s64` and looking it up here is what makes `xs.data` typed
+                // as that canonical pointer rather than something new every call.
+                let ptr_ty = self.pool.pointer_to(*elem);
+                ReceiverKind::DynamicArray(ptr_ty)
+            }
             // `Colour.RED`: the *receiver* is the enum type used as a value, so its type is
             // `type` and the enum it denotes has to come from the receiver expression rather
             // than from `ty` (ADR-0041 §1).
@@ -4751,6 +4764,19 @@ impl Ctx<'_> {
             // out an unbounded `*T` with no pointer arithmetic to use it with.
             ReceiverKind::View => match field {
                 "count" => PoolId::S64,
+                _ => {
+                    self.no_such_field(ty, field, name_span);
+                    PoolId::ERROR
+                }
+            },
+            // `[..]T` exposes three pseudo-fields — `.data: *T`, `.count: s64`,
+            // `.capacity: s64` (ADR-0136 §1). Unlike a view, `.data` is exposed because a
+            // dynamic array *owns* its data; a caller who wants to inspect or free it must
+            // reach the pointer.
+            ReceiverKind::DynamicArray(ptr_ty) => match field {
+                "data" => ptr_ty,
+                "count" => PoolId::S64,
+                "capacity" => PoolId::S64,
                 _ => {
                     self.no_such_field(ty, field, name_span);
                     PoolId::ERROR
@@ -5079,6 +5105,13 @@ impl Ctx<'_> {
             // Only `count`. Listing `data` would suggest a pseudo-field arrays do not have
             // (ADR-0039 §5), which is worse than no suggestion.
             Item::ArrayType { .. } | Item::ViewType { .. } => vec![String::from("count")],
+            // A `[..]T` exposes three (ADR-0136 §1); listing them helps the suggestion pick
+            // the right one for a near miss like `xs.cout`.
+            Item::DynamicArrayType { .. } => vec![
+                String::from("data"),
+                String::from("count"),
+                String::from("capacity"),
+            ],
             Item::StructType { decl, .. }
             | Item::UnionType { decl, .. }
             | Item::VariantType { decl, .. } => self
@@ -5345,6 +5378,12 @@ enum ReceiverKind {
     /// the type and a view's is a load. MIR needs that difference and a shared variant would
     /// hide it.
     View,
+    /// A dynamic array `[..]T`, whose pseudo-fields are `.data: *T`, `.count: s64`,
+    /// `.capacity: s64` — all loaded from the value (ADR-0136 §1). Distinct from
+    /// [`ReceiverKind::View`] because the field layout is one word longer and `.data` is
+    /// exposed here — a dynamic array *owns* its data and a caller who wants to inspect the
+    /// pointer must be able to.
+    DynamicArray(PoolId),
     /// An enum type used as a receiver, whose "fields" are its members (ADR-0041 §1).
     ///
     /// Carries `flags` as well as the declaration, because rebuilding the type needs it

@@ -581,6 +581,10 @@ impl<'a> ResolveCtx<'a> {
                 crate::hir::TypeRef::Pointer(inner) => ty = *inner,
                 crate::hir::TypeRef::Array { .. }
                 | crate::hir::TypeRef::View { .. }
+                // A `using xs: [..]T` would promote nothing: a dynamic array has compiler-
+                // known fields (`data`, `count`, `capacity`) but they are storage housekeeping,
+                // not fields of the element type. Same answer as a view.
+                | crate::hir::TypeRef::DynamicArray { .. }
                 // A `using` of a results list is unreachable — ADR-0052 §4 keeps one out of every
                 // position but a return type — so this names no struct.
                 | crate::hir::TypeRef::Results(_)

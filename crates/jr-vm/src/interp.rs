@@ -616,6 +616,7 @@ impl<'a> Vm<'a> {
             | Item::PointerType(_)
             | Item::ArrayType { .. }
             | Item::ViewType { .. }
+            | Item::DynamicArrayType { .. }
             | Item::StructType { .. }
             | Item::UnionType { .. }
             | Item::VariantType { .. }

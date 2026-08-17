@@ -297,6 +297,36 @@ pub const fn pair_layout(target: TargetLayout) -> Layout {
     }
 }
 
+/// The offset and layout of a `{data, count, capacity}` triple's `.capacity` field — a
+/// dynamic array (ADR-0136 §1). The capacity is an `s64` alongside `count`, both after
+/// `data: *T`, so this is `pair_data + 2 * s64.size` in the ordinary case where
+/// `pointer_size == 8`.
+#[must_use]
+pub const fn triple_capacity(target: TargetLayout) -> (u64, Layout) {
+    let (data_offset, _) = pair_data(target);
+    let s64_layout = Layout::scalar(8);
+    let count_offset = align_up(data_offset + target.pointer_size as u64, s64_layout.align);
+    let capacity_offset = align_up(count_offset + s64_layout.size, s64_layout.align);
+    (capacity_offset, s64_layout)
+}
+
+/// The layout of a `{data, count, capacity}` triple — the compiler-known layout of `[..]T`
+/// (ADR-0136 §1). One pointer plus two `s64`s.
+#[must_use]
+pub const fn triple_layout(target: TargetLayout) -> Layout {
+    let (capacity_offset, capacity) = triple_capacity(target);
+    let pair = pair_layout(target);
+    let align = if target.pointer_align > pair.align {
+        target.pointer_align
+    } else {
+        pair.align
+    };
+    Layout {
+        size: align_up(capacity_offset + capacity.size, align),
+        align,
+    }
+}
+
 /// The offset and layout of `string`'s `.data` field (ADR-0004).
 #[must_use]
 pub const fn string_data(target: TargetLayout) -> (u64, Layout) {
@@ -403,6 +433,11 @@ fn layout_at_depth(
         // not enter the layout at all: a view of a `[100]u8` and a view of a `u8` are both
         // one pointer and one count. That is what makes `[]T` passable where `[N]T` is not.
         Item::ViewType { .. } => Ok(pair_layout(target)),
+
+        // A dynamic array is a view *plus* a capacity — three words instead of two (ADR-0136 §1).
+        // Like a view, the element type does not enter the layout, so `[..]s64` and `[..]u8`
+        // have the same size and alignment.
+        Item::DynamicArrayType { .. } => Ok(triple_layout(target)),
 
         // An enum's layout **is** its backing type's (ADR-0041 §3), which is `s64` for every
         // enum this wave has. Delegating rather than repeating `Layout::scalar(8)` is what

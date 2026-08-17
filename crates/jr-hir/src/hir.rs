@@ -133,6 +133,17 @@ pub enum TypeRef {
         /// The element type.
         elem: TypeRefId,
     },
+    /// A dynamic-array type `[..]T` — a growable heap-backed sequence (ADR-0136).
+    ///
+    /// A compiler-known layout `{data: *T, count: s64, capacity: s64}` — 24 bytes on a 64-bit
+    /// target — lifted to native syntax from `modules/List`. Its own variant rather than a
+    /// [`TypeRef::View`] with an added capacity: the two types differ in *ownership* (a view
+    /// borrows a run of elements; a dynamic array owns its heap block and its length is
+    /// mutable), and merging them at the type level would make every view an owner-in-hiding.
+    DynamicArray {
+        /// The element type.
+        elem: TypeRefId,
+    },
     /// The result list of a procedure returning several values: `(s64, bool)` (ADR-0052 §1).
     ///
     /// Reachable **only** as a return type — ADR-0052 §4 keeps it unspellable elsewhere, so a

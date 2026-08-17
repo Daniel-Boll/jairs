@@ -1361,6 +1361,33 @@ impl Translator<'_, '_> {
                     address = self.offset(address, offset);
                     ty = PoolId::S64;
                 }
+                // A dynamic array's three projections (ADR-0136 §1). Same layout offsets as
+                // a view for `.data`/`.count`, plus a `.capacity` at the triple offset.
+                Projection::DynamicArrayData => {
+                    let elem = self.dynamic_array_elem(ty)?;
+                    let (offset, _) = jr_pool::pair_data(self.ctx.target);
+                    address = self.offset(address, offset);
+                    ty = self
+                        .ctx
+                        .pool
+                        .find(&Item::PointerType(elem))
+                        .ok_or_else(|| {
+                            CodegenError::Internal(
+                                "a `[..]T`'s element pointer type was never interned"
+                                    .to_owned(),
+                            )
+                        })?;
+                }
+                Projection::DynamicArrayCount => {
+                    let (offset, _) = jr_pool::pair_count(self.ctx.target);
+                    address = self.offset(address, offset);
+                    ty = PoolId::S64;
+                }
+                Projection::DynamicArrayCapacity => {
+                    let (offset, _) = jr_pool::triple_capacity(self.ctx.target);
+                    address = self.offset(address, offset);
+                    ty = PoolId::S64;
+                }
                 // The tag is the leading field, so its offset is 0 and the address is unchanged
                 // (ADR-0068 §3). Only the type moves, to `u8`, so a load reads one byte.
                 Projection::VariantTag => {
@@ -1407,6 +1434,20 @@ impl Translator<'_, '_> {
                         })?
                 }
                 Projection::ViewCount => PoolId::S64,
+                Projection::DynamicArrayData => {
+                    let elem = self.dynamic_array_elem(ty)?;
+                    self.ctx
+                        .pool
+                        .find(&Item::PointerType(elem))
+                        .ok_or_else(|| {
+                            CodegenError::Internal(
+                                "a `[..]T`'s element pointer type was never interned"
+                                    .to_owned(),
+                            )
+                        })?
+                }
+                Projection::DynamicArrayCount => PoolId::S64,
+                Projection::DynamicArrayCapacity => PoolId::S64,
                 Projection::VariantTag => PoolId::U8,
             };
         }
@@ -1520,6 +1561,16 @@ impl Translator<'_, '_> {
             Item::ViewType { elem } => Ok(*elem),
             _ => Err(CodegenError::Internal(
                 "a view projection on a non-view type".to_owned(),
+            )),
+        }
+    }
+
+    /// The element type of `[..]T`. See [`Self::view_elem`] for the split.
+    fn dynamic_array_elem(&self, ty: PoolId) -> Result<PoolId, CodegenError> {
+        match self.ctx.pool.item(ty) {
+            Item::DynamicArrayType { elem } => Ok(*elem),
+            _ => Err(CodegenError::Internal(
+                "a `[..]T` projection on a non-`[..]T` type".to_owned(),
             )),
         }
     }
