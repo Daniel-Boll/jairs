@@ -579,6 +579,7 @@ mod tests {
             ty: None,
             using: false,
             comptime: false,
+            variadic: false,
             default: None,
         };
         let params = vec![param("a"), param("b")];

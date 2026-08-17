@@ -1145,6 +1145,11 @@ impl<'src> Parser<'src> {
         if self.at(IDENT) {
             self.bump(); // param name
             self.expect(COLON);
+            // `args: ..Any` — a variadic parameter (ADR-0138). The `..` before the type marks
+            // the parameter as collecting the caller's trailing arguments into a `[]T` view of
+            // the element type that follows. Bumped as a child token of `PARAM`, so the AST
+            // reads the marker separately from the element type.
+            let _ = self.eat(DOT_DOT);
             if self.at_set(TYPE_START) {
                 self.parse_type();
             } else {

@@ -165,6 +165,10 @@ pub struct ConstValues {
     /// argument: `true` means "drop, this is a comptime argument baked into the callee". Absent for a `$T`
     /// call (which keeps every argument).
     comptime_arg_mask: FxHashMap<(ExprScope, ExprId), Vec<bool>>,
+    /// Per variadic call (ADR-0138 §2), the number of *fixed* arguments and the element type
+    /// of the trailing view. MIR packs `args[fixed..]` into a stack array of `element_ty` and
+    /// passes a view over it as the last parameter.
+    variadic_calls: FxHashMap<(ExprScope, ExprId), (usize, PoolId)>,
 }
 
 /// How the MIR builder should lower one `any_of`/`any_as` call (ADR-0076).
@@ -335,6 +339,24 @@ impl ConstValues {
         self.comptime_arg_mask
             .get(&(scope, expr))
             .map(Vec::as_slice)
+    }
+
+    /// Records a variadic call's fixed-arg count and element type (ADR-0138 §2).
+    pub fn set_variadic_call(
+        &mut self,
+        scope: ExprScope,
+        expr: ExprId,
+        fixed: usize,
+        element_ty: PoolId,
+    ) {
+        self.variadic_calls
+            .insert((scope, expr), (fixed, element_ty));
+    }
+
+    /// The variadic-call info for a call, if it is one.
+    #[must_use]
+    pub fn variadic_call(&self, scope: ExprScope, expr: ExprId) -> Option<(usize, PoolId)> {
+        self.variadic_calls.get(&(scope, expr)).copied()
     }
 
     /// The number of recorded values.

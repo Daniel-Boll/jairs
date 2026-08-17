@@ -226,6 +226,28 @@ pub struct CheckOutput {
     /// the instantiation pass appends a clone with those values baked in. Empty for a program with no
     /// comptime-value calls.
     pub comptime_calls: FxHashMap<(ExprScope, ExprId), (jr_hir::ProcId, Vec<jr_hir::ExprId>)>,
+    /// Each variadic call, keyed on the call expression (ADR-0138 §2). `fixed_arg_count`
+    /// tells MIR how many trailing arguments to pack into a stack view; `element_ty` is the
+    /// view's element type — what each trailing argument was checked against. Empty for a
+    /// program with no variadic calls.
+    pub variadic_calls: FxHashMap<(ExprScope, ExprId), VariadicCall>,
+}
+
+/// The information a variadic call needs so MIR can pack the trailing arguments (ADR-0138 §2).
+#[derive(Debug, Clone, Copy)]
+pub struct VariadicCall {
+    /// The number of *fixed* arguments — those that consume the callee's non-variadic
+    /// parameters. Trailing args (arg[fixed_arg_count..]) are packed.
+    pub fixed_arg_count: usize,
+    /// The element type of the variadic view. `PoolId::ERROR` in a poisoned signature.
+    pub element_ty: PoolId,
+}
+
+/// The last entry of `variadic_params`, if any, is the variadic parameter — the check
+/// spelled inline here so callers do not have to re-derive the "only the last is variadic"
+/// invariant (ADR-0138 §1).
+fn variadic_last_param(variadic_params: &[bool]) -> bool {
+    variadic_params.last().copied().unwrap_or(false)
 }
 
 /// Which `Any` intrinsic a call is (ADR-0076).
@@ -413,6 +435,7 @@ pub fn check_file(
         any_calls: ctx.any_calls,
         instantiations: ctx.instantiations,
         comptime_calls: ctx.comptime_calls,
+        variadic_calls: ctx.variadic_calls,
     }
 }
 
@@ -2923,7 +2946,47 @@ impl Ctx<'_> {
             return PoolId::ERROR;
         }
 
-        if args.len() != params.len() {
+        // A variadic last parameter (ADR-0138) accepts *any number* of trailing arguments.
+        // This wave delivers the **declaration surface**: `args: ..T` parses, and the callee
+        // sees the parameter as `[]T` — so a caller can *pass a view explicitly* — but
+        // calling a variadic procedure with a raw list of extra arguments (the sugar
+        // `print(fmt, a, b, c)` reduces to) is refused pending the MIR packing pass. The
+        // full sugar is a follow-up ADR that turns the trailing args into a stack view.
+        let callee_sig_v = self.callee_sig(scope, callee);
+        let last_variadic = callee_sig_v
+            .as_ref()
+            .map(|s| variadic_last_param(&s.variadic_params))
+            .unwrap_or(false);
+        let fixed_arg_count = if last_variadic {
+            params.len() - 1
+        } else {
+            params.len()
+        };
+        let want_exact = last_variadic && args.len() != params.len();
+        if last_variadic && want_exact {
+            // A caller may still pass an explicit `[]T` view for the variadic slot; the sugar
+            // is what's deferred. So a call with `args.len() != params.len()` is where the
+            // sugar would be needed, and that's what this refusal catches.
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    "packing trailing arguments into a variadic `..T` parameter is not implemented yet",
+                )
+                .with_code(E0216)
+                .with_note(
+                    "the declaration surface is delivered by ADR-0138; automatic packing is a follow-up wave",
+                )
+                .with_help(
+                    "pass an explicit `[]T` view for the variadic slot (e.g. build a `[N]T` and take a view)",
+                ),
+            );
+            return PoolId::ERROR;
+        }
+
+        if !last_variadic && args.len() != params.len() {
             self.diags.push(
                 Diagnostic::error(
                     span,
@@ -2943,7 +3006,7 @@ impl Ctx<'_> {
             let want = params.get(index).copied();
             self.check_arg(scope, *arg, want);
         }
-
+        let _ = fixed_arg_count;
         ret
     }
 

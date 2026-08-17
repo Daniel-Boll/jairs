@@ -747,6 +747,7 @@ impl Ctx<'_> {
         }
 
         let mut comptime_params = Vec::with_capacity(declaration.params.len());
+        let mut variadic_params = Vec::with_capacity(declaration.params.len());
         for param in &declaration.params {
             let ty = match param.ty {
                 // Parameter types live in `FileHir::type_refs`, not in
@@ -759,6 +760,7 @@ impl Ctx<'_> {
             // A `$N` parameter's *type* is ordinary and resolved above; the mark only affects when its
             // value is known (ADR-0087 §1), so its `ty` is real — which is what lets the body check.
             comptime_params.push(param.comptime);
+            variadic_params.push(param.variadic);
             params.push(ty);
         }
 
@@ -828,6 +830,7 @@ impl Ctx<'_> {
             ret,
             poly_vars,
             comptime_params,
+            variadic_params,
             ty,
         };
         self.sigs.insert_proc(proc, sig.clone());

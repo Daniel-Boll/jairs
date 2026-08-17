@@ -588,6 +588,17 @@ impl Formatter {
             self.emit(name_tok.text());
         }
         self.emit(": ");
+        // `args: ..T` — a variadic parameter (ADR-0138). The `..` precedes the type; a
+        // formatter that dropped it would silently turn a variadic parameter into a
+        // one-view-shaped ordinary one, the seventh consecutive lossy-CST trap this file
+        // has to guard against.
+        if node
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .any(|t| t.kind() == DOT_DOT)
+        {
+            self.emit("..");
+        }
         if let Some(ty) = node.children().find(|n| is_type_kind(n.kind())) {
             self.format_type(&ty);
         }

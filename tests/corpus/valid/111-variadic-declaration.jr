@@ -1,0 +1,63 @@
+// **`..T` variadic parameter surface** (ADR-0138, wave 8) — the declaration side of
+// `print(fmt, ..Any)`. This wave delivers the *parameter shape*: the callee sees `args` as
+// `[]T`, so an explicit view can be passed today. Automatic packing of trailing arguments
+// (`print(fmt, a, b, c)` reduces to a stack view built at the call site) is deferred to a
+// follow-up ADR.
+//
+// What is checked here, and why each is not an assumption:
+//
+//   * **`args: ..s64` parses** as a variadic parameter with element type `s64`;
+//   * **inside the callee, `args` is a `[]s64` view** — provable by passing it to a
+//     view-taking helper, whose ordinary type-check pins the shape;
+//   * **a caller passing an explicit `[]T` view works** — the parameter type is a view, so
+//     nothing about the call is special once the view exists;
+//   * **the sugar `sum(1, 2, 3)` is refused** with a specific message pointing at the
+//     follow-up (pinned by `type-errors/*` in another wave; this file only exercises what
+//     works).
+#import "Basic";
+
+sum_view :: (xs: []s64) -> s64 {
+    total := 0;
+    for x: xs {
+        total = total + x;
+    }
+    return total;
+}
+
+// The variadic parameter's type is `[]s64` in HIR, wrapped from the written `..s64` at
+// lowering. Inside the body, `args` is an ordinary view.
+sum :: (args: ..s64) -> s64 {
+    return sum_view(args);
+}
+
+main :: () {
+    n := 0;
+
+    // Passing an explicit view.
+    buf: [3]s64;
+    buf[0] = 1;
+    buf[1] = 2;
+    buf[2] = 4;
+    if sum(buf[]) == 7 {
+        n = n + 1;
+    }
+
+    // A different view — the callee sees it as an ordinary `[]s64`.
+    buf2: [2]s64;
+    buf2[0] = 10;
+    buf2[1] = 20;
+    if sum(buf2[]) == 30 {
+        n = n + 2;
+    }
+
+    // An empty view — the loop runs zero times.
+    empty: [0]s64;
+    if sum(empty[]) == 0 {
+        n = n + 4;
+    }
+
+    if n == 7 {
+        exit(0);
+    }
+    exit(1);
+}

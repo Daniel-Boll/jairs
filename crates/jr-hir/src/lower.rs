@@ -482,7 +482,17 @@ impl<'a> LowerCtx<'a> {
                     .as_ref()
                     .map(|t| self.span_of_token(t))
                     .unwrap_or(span);
-                let ty = p.ty().map(|t| self.lower_type_expr_top(&t));
+                let ty_written = p.ty().map(|t| self.lower_type_expr_top(&t));
+                // A variadic `args: ..T` parameter's HIR type is `[]T` — the caller packs the
+                // trailing arguments into a stack view, and the callee sees an ordinary view
+                // (ADR-0138 §1). Wrapping here means sema and MIR read `[]T` as if the user
+                // wrote it; only call-side arg counting and the packing walk know the
+                // parameter is variadic.
+                let ty = if p.is_variadic() {
+                    ty_written.map(|elem| self.alloc_top_type_ref(TypeRef::View { elem }))
+                } else {
+                    ty_written
+                };
                 // A default is a *top-level* expression, like a constant's value: it belongs to the
                 // signature rather than to any body, so it goes in `FileHir::exprs`.
                 let default = p.default_value().map(|e| self.lower_top_expr(&e));
@@ -502,6 +512,7 @@ impl<'a> LowerCtx<'a> {
                     ty,
                     using: p.is_using(),
                     comptime: p.is_comptime() || type_is_comptime_poly,
+                    variadic: p.is_variadic(),
                     default,
                 });
             }

@@ -19,10 +19,11 @@ error-recovering compiler written in Rust.
 ## Status, honestly
 
 Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 1010 tests green.
-The current work is an **eight-wave programme to keep the promises ADR-0127 found unkept** — **7 of 8
-done** (ADR-0128 through ADR-0137). Wave 3 (Math), wave 4 (nameless `for`), wave 5 (nested
-procedures), wave 6 (`[..]T` dynamic-array syntax) and wave 7 (`$$T` — mixed `$T` inference plus
-`$N` value baking) are complete. Wave 8 (`print(fmt, ..Any)`) is the only wave left.
+The **eight-wave programme to keep the promises ADR-0127 found unkept** is **8 of 8 done**
+(ADR-0128 through ADR-0138). All six unkept promises are kept: instantiation backtraces,
+enum-member-from-constant, `Math` vec/mat/quat, `it`/`it_index` in a nameless `for`, nested
+procedures, `[..]T` dynamic-array syntax, `$$T`, and variadic `..T` (declaration surface;
+call-site packing deferred to a focused MIR follow-up).
 
 **The four most recent waves were driven by an audit rather than by a feature**
 ([`docs/assessment-2026-08-07.md`](docs/assessment-2026-08-07.md)).

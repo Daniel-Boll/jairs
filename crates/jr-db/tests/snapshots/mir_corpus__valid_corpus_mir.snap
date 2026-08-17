@@ -11856,3 +11856,122 @@ proc $inst5 -> s64 {
   bb3():
     return 0_s64
 }
+
+========================================
+111-variadic-declaration.jr
+========================================
+proc sum_view -> s64 {
+  params: v0: *Context, v1: []s64
+  slots:
+    s0: []s64  // temporary
+    s1: s64  // temporary
+  bb0(v0: *Context, v1: []s64):
+    store s0 <- v1
+    v2: s64 = load s0.view_count
+    store s1 <- 0_s64
+    goto bb1(0_s64)
+  bb1(v7: s64):
+    v3: s64 = load s1
+    v4: bool = v3 < v2
+    branch v4 ? bb2() : bb4()
+  bb2():
+    v5: s64 = load s1
+    bounds_check v5 < v2
+    v6: s64 = load s0.view_data[v5]
+    v8: s64 = v7 + v6
+    goto bb3()
+  bb3():
+    v9: s64 = load s1
+    v10: s64 = v9 + 1_s64
+    store s1 <- v10
+    goto bb1(v8)
+  bb4():
+    goto bb5()
+  bb5():
+    return v7
+}
+proc sum -> s64 {
+  params: v0: *Context, v1: []s64
+  slots:
+    s0: []s64  // temporary
+  bb0(v0: *Context, v1: []s64):
+    store s0 <- v1
+    v2: s64 = call proc0(v0, v1)
+    return v2
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: [3]s64  // local 1
+    s1: []s64  // temporary
+    s2: [2]s64  // local 2
+    s3: []s64  // temporary
+    s4: [0]s64  // local 3
+    s5: []s64  // temporary
+  bb0(v0: *Context):
+    zero s0
+    bounds_check 0_s64 < 3_s64
+    store s0[0_s64] <- 1_s64
+    bounds_check 1_s64 < 3_s64
+    store s0[1_s64] <- 2_s64
+    bounds_check 2_s64 < 3_s64
+    store s0[2_s64] <- 4_s64
+    v1: *s64 = addr s0[0_s64]
+    zero s1
+    store s1.view_data <- v1
+    store s1.view_count <- 3_s64
+    v2: []s64 = load s1
+    v3: s64 = call proc1(v0, v2)
+    v4: bool = v3 == 7_s64
+    branch v4 ? bb1() : bb2()
+  bb1():
+    v5: s64 = 0_s64 + 1_s64
+    goto bb3(v5)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v10: s64):
+    zero s2
+    bounds_check 0_s64 < 2_s64
+    store s2[0_s64] <- 10_s64
+    bounds_check 1_s64 < 2_s64
+    store s2[1_s64] <- 20_s64
+    v6: *s64 = addr s2[0_s64]
+    zero s3
+    store s3.view_data <- v6
+    store s3.view_count <- 2_s64
+    v7: []s64 = load s3
+    v8: s64 = call proc1(v0, v7)
+    v9: bool = v8 == 30_s64
+    branch v9 ? bb4() : bb5()
+  bb4():
+    v11: s64 = v10 + 2_s64
+    goto bb6(v11)
+  bb5():
+    goto bb6(v10)
+  bb6(v16: s64):
+    zero s4
+    v12: *s64 = addr s4[0_s64]
+    zero s5
+    store s5.view_data <- v12
+    store s5.view_count <- 0_s64
+    v13: []s64 = load s5
+    v14: s64 = call proc1(v0, v13)
+    v15: bool = v14 == 0_s64
+    branch v15 ? bb7() : bb8()
+  bb7():
+    v17: s64 = v16 + 4_s64
+    goto bb9(v17)
+  bb8():
+    goto bb9(v16)
+  bb9(v18: s64):
+    v19: bool = v18 == 7_s64
+    branch v19 ? bb10() : bb11()
+  bb10():
+    discard call extern proc1(0_s64)
+    goto bb12()
+  bb11():
+    goto bb12()
+  bb12():
+    discard call extern proc1(1_s64)
+    return
+}
