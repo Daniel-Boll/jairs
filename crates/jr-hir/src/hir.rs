@@ -1199,6 +1199,13 @@ pub struct Item {
     /// The declaring file's own scope is *never* filtered by this, so a hidden name resolves,
     /// type-checks and answers hover inside its own file exactly as before.
     pub exported: bool,
+    /// **A nested-hoisted item** (ADR-0134): `X :: <value>;` written inside a procedure body.
+    /// The item lives in `items` — so it is checked, lowered and linked like any other — but
+    /// its name is **not** in `hir.scope`. Visibility is via the enclosing body's scope stack
+    /// plus the sibling-scope injection every nested proc's body receives. Two nested items
+    /// sharing a name across different enclosing procs are legal by construction, which is
+    /// what this flag lets `check_duplicates` distinguish from a real user-visible collision.
+    pub nested: bool,
     /// Span of the whole item.
     pub span: Span,
     /// Span of the name token, if any.

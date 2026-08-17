@@ -235,6 +235,7 @@ fn append_one(
     hir.items.push(Item {
         name: Some(synthetic),
         exported: false,
+        nested: false,
         span: template.span,
         name_span: template.span,
         kind: ItemKind::Const {
@@ -385,6 +386,7 @@ fn clone_predicate(
     hir.items.push(Item {
         name: Some(synthetic),
         exported: false,
+        nested: false,
         span: template.span,
         name_span: template.span,
         kind: ItemKind::Const {

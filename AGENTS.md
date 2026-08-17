@@ -95,7 +95,9 @@ Matrix4 like Vector4 is exercised by the differential and snapshot harnesses rat
 test. **ADR-0132 also holds at 1010** and adds one = **219**, closing sub-wave 3 with a Quaternion —
 the third all-library wave in a row to move only the corpus count. **ADR-0133 also holds at 1010**
 and adds one = **220** — a language wave (parser + HIR) but no new Rust test, since the coverage is
-the corpus program that reads `it` and `it_index` in every combination.
+the corpus program that reads `it` and `it_index` in every combination. **ADR-0134 also holds at
+1010** and adds one = **221** — another HIR-shaped wave (nested procedures + local constants) with
+its coverage in `valid/107` and a repurposed regression test in `jr-hir` guarding the flip.
 
 **A number in this file is now partly enforced.** `crates/jr-cli/tests/codes.rs` fails when the
 "first free code" claim below rots. The test count and the corpus count are still prose, and both were
