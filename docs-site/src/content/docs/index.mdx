@@ -1,0 +1,109 @@
+---
+title: Jairs
+description: A Jai-inspired systems language with compile-time execution, explicit allocators, and no GC, RAII or exceptions — compiled by a hand-written Rust compiler.
+template: splash
+hero:
+  tagline: A Jai-inspired systems language with compile-time execution, explicit allocators, and no GC, RAII or exceptions — built by a hand-written, error-recovering compiler in Rust.
+  image:
+    dark: ../../assets/logo-dark.svg
+    light: ../../assets/logo-light.svg
+  actions:
+    - text: Read the Language book
+      link: /language/introduction/
+      icon: right-arrow
+      variant: primary
+    - text: Jairs by Example
+      link: /by-example/
+      icon: open-book
+      variant: secondary
+    - text: See real programs
+      link: /in-practice/
+      icon: rocket
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## Three books, one language
+
+This documentation is organised as three books that build on each other. Read them in
+order, or jump straight to whichever matches how you learn.
+
+<CardGrid>
+  <LinkCard
+    title="Book I · The Jairs Language"
+    href="/language/introduction/"
+    description="A guided, narrative tour — in the spirit of the Rust Book. Start at the beginning and finish knowing the whole language, one concept at a time."
+  />
+  <LinkCard
+    title="Book II · Jairs by Example"
+    href="/by-example/"
+    description="Every feature as a small, annotated, runnable program. A reference you scan when you know what you want and need the exact spelling."
+  />
+  <LinkCard
+    title="Book III · Jairs in Practice"
+    href="/in-practice/"
+    description="Complete programs that do real work — a word counter, a hash-map cache, a vector-math sketch, a serialiser written with the metaprogram loop."
+  />
+</CardGrid>
+
+## What Jairs is
+
+```jr
+#import "Basic";
+
+Point :: struct { x: s64; y: s64; }
+
+add :: (a: s64, b: s64) -> s64 {
+    return a + b;
+}
+
+MESSAGE  :: "hello from Jairs\n";
+COMPUTED :: #run add(2, 3);          // runs at compile time
+
+main :: () {
+    p: Point;
+    p.x = 4;
+    p.y = COMPUTED;
+
+    sum := add(p.x, p.y);
+    if sum > 5  print(MESSAGE);
+
+    ptr := *sum;                     // prefix * takes an address
+    print_int(ptr.*);                // postfix .* dereferences
+    print("\n");
+}
+```
+
+<CardGrid stagger>
+  <Card title="No GC, no RAII, no exceptions" icon="setting">
+    Memory is explicit and allocator-driven. Cleanup is `defer`. Errors are ordinary
+    values — the model is Jai's multiple return values.
+  </Card>
+  <Card title="Compile-time execution" icon="rocket">
+    Ordinary code runs at compile time through `#run`, `#insert` and `#code`. The
+    compile-time VM and the native back end execute the **same** MIR, so comptime and
+    runtime cannot silently disagree.
+  </Card>
+  <Card title="Overflow is an error" icon="warning">
+    Integer overflow always traps — never wraps silently, never differs between debug and
+    release. Explicit `+% -% *%` exist for the code that wants modular arithmetic.
+  </Card>
+  <Card title="Two engines, held equal" icon="approve-check">
+    A program runs in the bytecode VM (`jr run`) and as a native binary (`jr build`), and a
+    differential test asserts they agree byte for byte — including where a trap happened.
+  </Card>
+</CardGrid>
+
+## A note on honesty
+
+Jairs is **pre-alpha**, and this documentation describes the language *as it exists today*,
+not as it is planned. Where a feature is absent, the text says so and names the wave that
+adds it. The ground truth for every syntax shown here is the compiler's own corpus of
+example programs; if the docs and the compiler ever disagree, the compiler is right.
+
+<div class="jairs-callout">
+Everything documented as working is implemented end to end — parsed, formatted,
+type-checked, lowered, run in the VM, compiled natively, and asserted equal in both
+engines.
+</div>

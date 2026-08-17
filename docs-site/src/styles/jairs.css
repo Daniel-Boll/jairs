@@ -1,0 +1,83 @@
+/* Jairs docs theme.
+   A warm copper accent over a cool neutral gray — distinct from Rust's orange
+   and the default Starlight blue, and legible in both color schemes. */
+
+:root {
+  --sl-color-accent-low: #2b1a10;
+  --sl-color-accent: #c26a2b;
+  --sl-color-accent-high: #f0c39a;
+
+  --sl-color-white: #ffffff;
+  --sl-color-gray-1: #e9e6e2;
+  --sl-color-gray-2: #c4bfb8;
+  --sl-color-gray-3: #928b80;
+  --sl-color-gray-4: #5f584e;
+  --sl-color-gray-5: #3d3831;
+  --sl-color-gray-6: #262320;
+  --sl-color-black: #17150f;
+
+  --jairs-font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code',
+    Menlo, Consolas, monospace;
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #f3e3d4;
+  --sl-color-accent: #a4531d;
+  --sl-color-accent-high: #4a2609;
+
+  --sl-color-white: #17150f;
+  --sl-color-gray-1: #262320;
+  --sl-color-gray-2: #3d3831;
+  --sl-color-gray-3: #6b6459;
+  --sl-color-gray-4: #928b80;
+  --sl-color-gray-5: #c4bfb8;
+  --sl-color-gray-6: #ece9e4;
+  --sl-color-gray-7: #f5f3ef;
+  --sl-color-black: #ffffff;
+}
+
+/* The hero tagline reads better a touch tighter. */
+.hero h1 {
+  letter-spacing: -0.02em;
+}
+
+/* Inline code and code blocks in the site's mono stack. */
+.sl-markdown-content code:not(:where(.not-content *)) {
+  font-family: var(--jairs-font-mono);
+  font-size: 0.9em;
+}
+
+/* Small pill used in prose to flag implementation status. */
+.jairs-status {
+  display: inline-block;
+  padding: 0.05em 0.5em;
+  border-radius: 999px;
+  font-size: 0.75em;
+  font-weight: 600;
+  line-height: 1.6;
+  vertical-align: middle;
+  border: 1px solid var(--sl-color-gray-5);
+}
+.jairs-status.works {
+  color: #1a7f52;
+  border-color: #1a7f5255;
+  background: #1a7f5215;
+}
+.jairs-status.absent {
+  color: #b4531d;
+  border-color: #b4531d55;
+  background: #b4531d15;
+}
+.jairs-status.refused {
+  color: #a12f2f;
+  border-color: #a12f2f55;
+  background: #a12f2f15;
+}
+
+/* A note about the honesty of the docs — used on the landing pages. */
+.jairs-callout {
+  border-left: 3px solid var(--sl-color-accent);
+  padding: 0.2em 0 0.2em 1em;
+  margin: 1.2em 0;
+  color: var(--sl-color-gray-2);
+}
