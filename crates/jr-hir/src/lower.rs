@@ -486,12 +486,22 @@ impl<'a> LowerCtx<'a> {
                 // A default is a *top-level* expression, like a constant's value: it belongs to the
                 // signature rather than to any body, so it goes in `FileHir::exprs`.
                 let default = p.default_value().map(|e| self.lower_top_expr(&e));
+                // Comptime is either an explicit `$N: T` mark on the parameter name (ADR-0087)
+                // or a `$$T` mark on the parameter's *type* (ADR-0137). Both make the argument
+                // a compile-time constant, so both feed one `Param::comptime` flag.
+                let type_is_comptime_poly = p
+                    .ty()
+                    .and_then(|t| match t {
+                        jr_syntax::ast::TypeExpr::Poly(pt) => Some(pt.is_comptime()),
+                        _ => None,
+                    })
+                    .unwrap_or(false);
                 params.push(Param {
                     name,
                     name_span,
                     ty,
                     using: p.is_using(),
-                    comptime: p.is_comptime(),
+                    comptime: p.is_comptime() || type_is_comptime_poly,
                     default,
                 });
             }

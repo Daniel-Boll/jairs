@@ -1335,8 +1335,13 @@ impl<'src> Parser<'src> {
             // leading `$`, because it *binds* a variable rather than naming an existing type — sema
             // treats the two differently, and the parser making them distinct is what lets it.
             DOLLAR => {
+                // `$T` binds a type variable (ADR-0081 §1); `$$T` additionally requires the
+                // argument to be a compile-time constant, baked into the instantiation like a
+                // `$N` value parameter (ADR-0137). Both parse into `POLY_TYPE`; the AST reads
+                // whether a *second* `$` follows the first to tell them apart.
                 self.start_node(POLY_TYPE);
                 self.bump(); // `$`
+                self.eat(DOLLAR); // an optional second `$` — the `$$T` shape
                 if self.at(IDENT) {
                     self.bump(); // the variable's name
                 } else {

@@ -355,7 +355,7 @@ module.exports = grammar({
 
     // $T — a polymorphic type variable (ADR-0081 §1). Its own rule, not a `name_type` with a leading
     // `$`, because it binds a variable rather than naming an existing type.
-    poly_type: ($) => seq("$", $.identifier),
+    poly_type: ($) => seq("$", optional("$"), $.identifier),
 
     // enum { RED; GREEN :: 5; } (ADR-0041).
     //

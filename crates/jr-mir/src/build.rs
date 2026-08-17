@@ -4135,10 +4135,7 @@ impl Lower<'_> {
                     Some((place.project(Projection::DynamicArrayData), ptr_ty))
                 }
                 "count" => Some((place.project(Projection::DynamicArrayCount), PoolId::S64)),
-                "capacity" => Some((
-                    place.project(Projection::DynamicArrayCapacity),
-                    PoolId::S64,
-                )),
+                "capacity" => Some((place.project(Projection::DynamicArrayCapacity), PoolId::S64)),
                 _ => None,
             };
         }

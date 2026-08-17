@@ -1373,8 +1373,7 @@ impl Translator<'_, '_> {
                         .find(&Item::PointerType(elem))
                         .ok_or_else(|| {
                             CodegenError::Internal(
-                                "a `[..]T`'s element pointer type was never interned"
-                                    .to_owned(),
+                                "a `[..]T`'s element pointer type was never interned".to_owned(),
                             )
                         })?;
                 }
@@ -1441,8 +1440,7 @@ impl Translator<'_, '_> {
                         .find(&Item::PointerType(elem))
                         .ok_or_else(|| {
                             CodegenError::Internal(
-                                "a `[..]T`'s element pointer type was never interned"
-                                    .to_owned(),
+                                "a `[..]T`'s element pointer type was never interned".to_owned(),
                             )
                         })?
                 }

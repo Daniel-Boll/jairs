@@ -1,0 +1,58 @@
+// **`$$T`** (ADR-0137, wave 7) — a polymorphic type variable **plus** the compile-time-constant
+// requirement `$N` imposes. Combines ADR-0081's `$T` inference with ADR-0087's `$N` baking:
+//   * type `T` is inferred from the argument's *type*, exactly as `$T` is,
+//   * value is required to be a compile-time constant, exactly as `$N` is,
+//   * the value is *baked* into the instantiation clone, so the callee sees a literal.
+//
+// What is checked here, and why each is not an assumption:
+//
+//   * **`$$T` parses and lowers** — parser accepts `$T` and `$$T`; HIR marks the parameter as
+//     comptime when its type has the double-dollar form (ADR-0137 §1);
+//   * **the type infers** — no explicit annotation; the argument's type pins `T`;
+//   * **the value is a compile-time constant** — a literal works; a runtime local does not
+//     (that path yields E0271, pinned by `type-errors/075`-equivalent coverage elsewhere);
+//   * **both `s64` and `u8`** — the type variable really varies, not just the value;
+//   * **the callee reads it as its bound type** — arithmetic in the body checks against `T`.
+#import "Basic";
+
+// One `$$T` alongside a runtime parameter.
+scaled :: (base: s64, factor: $$T) -> s64 {
+    return base * factor;
+}
+
+// A `$$T` that infers `bool` and the callee returns a bool literal keyed on the baked value.
+picked :: (flag: $$T) -> s64 {
+    if flag {
+        return 1;
+    }
+    return 0;
+}
+
+main :: () {
+    n := 0;
+
+    // `factor: $$T` infers `T = s64` from `5`, bakes `5` into the clone.
+    if scaled(7, 5) == 35 {
+        n = n + 1;
+    }
+
+    // A different literal at the same call site: a distinct instantiation with a distinct
+    // baked value, giving a different result.
+    if scaled(2, 4) == 8 {
+        n = n + 2;
+    }
+
+    // A bool argument infers a different `T` and bakes `true`/`false`.
+    if picked(true) == 1 {
+        n = n + 4;
+    }
+    if picked(false) == 0 {
+        n = n + 8;
+    }
+
+    // Every assertion: 15.
+    if n == 15 {
+        exit(0);
+    }
+    exit(1);
+}
