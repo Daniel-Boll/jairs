@@ -527,7 +527,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **1010 workspace tests** and **225 corpus files**, all six gates green
+waiting. Both are tracked below. **1010 workspace tests** and **226 corpus files**, all six gates green
 **locally** — no CI run has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -576,7 +576,7 @@ waiting. Both are tracked below. **1010 workspace tests** and **225 corpus files
 > | ~~5~~ | ~~Nested procedures + local constants~~ | **done — ADR-0134**, no capture, `hir.scope`-hidden with sibling-scope injection |
 > | ~~6~~ | ~~`[..]T` dynamic arrays~~ | **done — ADR-0136**, compiler-known `{data, count, capacity}` layout; ops in Jairs (owed to a follow-up) |
 > | ~~7~~ | ~~`$$T`~~ | **done — ADR-0137**, mixed `$T` inference + `$N` baking, one signature |
-> | ~~8~~ | ~~`print(fmt, ..Any)`~~ | **done — ADR-0138** (declaration surface); call-site packing deferred to a follow-up MIR change |
+> | ~~8~~ | ~~`print(fmt, ..Any)`~~ | **done — ADR-0138** (declaration surface) and **ADR-0139** (call-site packing sugar) |
 >
 > Two things a fresh session should read before starting one. **Subagents return empty on this codebase**
 > — six of six dispatches did, so assessment work is done by hand. And **ADR-0129 §4 left the
@@ -1544,11 +1544,11 @@ surface (ADR-0138). **The eight-wave programme is complete.**
 
 **Owed follow-ups** from the programme, in order of ease:
 
-- The **variadic packing sugar** (ADR-0138 §1's deferral). Scaffolding is in place — sema records
-  variadic calls, `ConstValues::variadic_call` reads out. The follow-up allocates a stack `[N]T`
-  in MIR, stores each trailing arg, builds a view.
 - The `[..]T` library **operations** — a `push` on `[..]T`, and a plan for converting `modules/List`
   to operate on it or keep both.
+- A `..Any` variadic — an ADR-0076-style pointer→Any coercion at the variadic slot, so
+  `print(fmt, a, b, c)` can take arguments of arbitrary types. ADR-0139 delivered variadic
+  packing for a *concrete* element type; the `Any` coercion is a small extension.
 - Dispatches 2 and 3 of the **security second pass** — kept because the audit's own §7 asks for
   three and only one has been discharged (ADR-0126). Both are read-only assessment first.
 
