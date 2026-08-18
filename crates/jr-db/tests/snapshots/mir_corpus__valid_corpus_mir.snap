@@ -12466,3 +12466,332 @@ proc $inst1 -> enum {
     v2: enum = load s1.1
     return v2
 }
+
+========================================
+114-any-variadic.jr
+========================================
+proc sum_any -> s64 {
+  params: v0: *Context, v1: []Any
+  slots:
+    s0: []Any  // temporary
+    s1: Type_Info  // temporary
+    s2: *s64  // temporary
+    s3: Type_Info  // temporary
+    s4: Point  // local 2
+    s5: *Point  // temporary
+    s6: Type_Info  // temporary
+    s7: *bool  // temporary
+  bb0(v0: *Context, v1: []Any):
+    store s0 <- v1
+    goto bb1(0_s64, 0_s64)
+  bb1(v2: s64, v10: s64):
+    v3: s64 = load s0.view_count
+    v4: bool = v2 < v3
+    branch v4 ? bb2() : bb3()
+  bb2():
+    v5: s64 = load s0.view_count
+    bounds_check v2 < v5
+    v6: *Type_Info = load s0.view_data[v2].0
+    v7: s64 = load (v6).*.0
+    store s1 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
+    v8: s64 = load s1.0
+    v9: bool = v7 == v8
+    branch v9 ? bb5() : bb6()
+  bb5():
+    v11: s64 = load s0.view_count
+    bounds_check v2 < v11
+    v12: *Type_Info = load s0.view_data[v2].0
+    v13: s64 = load (v12).*.0
+    v14: bool = v13 == 2_s64
+    branch v14 ? bb8() : bb9()
+  bb8():
+    v15: *s64 = load s0.view_data[v2].1
+    store s2 <- v15
+    v16: *s64 = load s2
+    v17: s64 = load (v16).*
+    v18: s64 = v10 + v17
+    goto bb7(v18)
+  bb9():
+    unreachable // trap
+  bb6():
+    goto bb7(v10)
+  bb7(v32: s64):
+    v19: s64 = load s0.view_count
+    bounds_check v2 < v19
+    v21: *Type_Info = load s0.view_data[v2].0
+    v22: s64 = load (v21).*.0
+    store s3 <- {#id, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64}
+    v23: s64 = load s3.0
+    v24: bool = v22 == v23
+    branch v24 ? bb10() : bb11()
+  bb10():
+    v25: s64 = load s0.view_count
+    bounds_check v2 < v25
+    v26: *Type_Info = load s0.view_data[v2].0
+    v27: s64 = load (v26).*.0
+    v28: bool = v27 == 686_s64
+    branch v28 ? bb13() : bb14()
+  bb13():
+    v29: *Point = load s0.view_data[v2].1
+    store s5 <- v29
+    v30: *Point = load s5
+    v31: Point = load (v30).*
+    store s4 <- v31
+    v33: s64 = load s4.0
+    v34: s64 = v32 + v33
+    v35: s64 = load s4.1
+    v36: s64 = v34 + v35
+    goto bb12(v36)
+  bb14():
+    unreachable // trap
+  bb11():
+    goto bb12(v32)
+  bb12(v50: s64):
+    v37: s64 = load s0.view_count
+    bounds_check v2 < v37
+    v39: *Type_Info = load s0.view_data[v2].0
+    v40: s64 = load (v39).*.0
+    store s6 <- {#id, 1_enum, "bool", 1_s64, 1_s64, 0_s64, 0_s64}
+    v41: s64 = load s6.0
+    v42: bool = v40 == v41
+    branch v42 ? bb15() : bb16()
+  bb15():
+    v43: s64 = load s0.view_count
+    bounds_check v2 < v43
+    v44: *Type_Info = load s0.view_data[v2].0
+    v45: s64 = load (v44).*.0
+    v46: bool = v45 == 1_s64
+    branch v46 ? bb18() : bb19()
+  bb18():
+    v47: *bool = load s0.view_data[v2].1
+    store s7 <- v47
+    v48: *bool = load s7
+    v49: bool = load (v48).*
+    branch v49 ? bb20() : bb21()
+  bb20():
+    v51: s64 = v50 + 1_s64
+    goto bb22(v51)
+  bb21():
+    goto bb22(v50)
+  bb22(v56: s64):
+    goto bb17(v56)
+  bb19():
+    unreachable // trap
+  bb16():
+    goto bb17(v50)
+  bb17(v55: s64):
+    v54: s64 = v2 + 1_s64
+    goto bb1(v54, v55)
+  bb3():
+    goto bb4()
+  bb4():
+    return v10
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: [0]Any  // temporary
+    s1: []Any  // temporary
+    s2: s64  // local 1
+    s3: Type_Info  // temporary
+    s4: Any  // temporary
+    s5: [1]Any  // temporary
+    s6: []Any  // temporary
+    s7: s64  // local 2
+    s8: s64  // local 3
+    s9: s64  // local 4
+    s10: Type_Info  // temporary
+    s11: Any  // temporary
+    s12: Type_Info  // temporary
+    s13: Any  // temporary
+    s14: Type_Info  // temporary
+    s15: Any  // temporary
+    s16: [3]Any  // temporary
+    s17: []Any  // temporary
+    s18: s64  // local 5
+    s19: Point  // local 6
+    s20: bool  // local 7
+    s21: Type_Info  // temporary
+    s22: Any  // temporary
+    s23: Type_Info  // temporary
+    s24: Any  // temporary
+    s25: Type_Info  // temporary
+    s26: Any  // temporary
+    s27: [3]Any  // temporary
+    s28: []Any  // temporary
+    s29: [2]Any  // local 8
+    s30: Type_Info  // temporary
+    s31: Any  // temporary
+    s32: Type_Info  // temporary
+    s33: Any  // temporary
+    s34: []Any  // temporary
+  bb0(v0: *Context):
+    zero s0
+    v1: *Any = addr s0[0_s64]
+    zero s1
+    store s1.view_data <- v1
+    store s1.view_count <- 0_s64
+    v2: []Any = load s1
+    v3: s64 = call proc0(v0, v2)
+    v4: bool = v3 == 0_s64
+    branch v4 ? bb1() : bb2()
+  bb1():
+    v5: s64 = 0_s64 + 1_s64
+    goto bb3(v5)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v13: s64):
+    store s2 <- 42_s64
+    v6: *s64 = addr s2
+    store s3 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
+    v7: *Type_Info = addr s3
+    zero s4
+    store s4.0 <- v7
+    store s4.1 <- v6
+    v8: Any = load s4
+    zero s5
+    store s5[0_s64] <- v8
+    v9: *Any = addr s5[0_s64]
+    zero s6
+    store s6.view_data <- v9
+    store s6.view_count <- 1_s64
+    v10: []Any = load s6
+    v11: s64 = call proc0(v0, v10)
+    v12: bool = v11 == 42_s64
+    branch v12 ? bb4() : bb5()
+  bb4():
+    v14: s64 = v13 + 2_s64
+    goto bb6(v14)
+  bb5():
+    goto bb6(v13)
+  bb6(v28: s64):
+    store s7 <- 10_s64
+    store s8 <- 20_s64
+    store s9 <- 30_s64
+    v15: *s64 = addr s7
+    store s10 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
+    v16: *Type_Info = addr s10
+    zero s11
+    store s11.0 <- v16
+    store s11.1 <- v15
+    v17: Any = load s11
+    v18: *s64 = addr s8
+    store s12 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
+    v19: *Type_Info = addr s12
+    zero s13
+    store s13.0 <- v19
+    store s13.1 <- v18
+    v20: Any = load s13
+    v21: *s64 = addr s9
+    store s14 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
+    v22: *Type_Info = addr s14
+    zero s15
+    store s15.0 <- v22
+    store s15.1 <- v21
+    v23: Any = load s15
+    zero s16
+    store s16[0_s64] <- v17
+    store s16[1_s64] <- v20
+    store s16[2_s64] <- v23
+    v24: *Any = addr s16[0_s64]
+    zero s17
+    store s17.view_data <- v24
+    store s17.view_count <- 3_s64
+    v25: []Any = load s17
+    v26: s64 = call proc0(v0, v25)
+    v27: bool = v26 == 60_s64
+    branch v27 ? bb7() : bb8()
+  bb7():
+    v29: s64 = v28 + 4_s64
+    goto bb9(v29)
+  bb8():
+    goto bb9(v28)
+  bb9(v43: s64):
+    store s18 <- 100_s64
+    zero s19
+    store s19.0 <- 3_s64
+    store s19.1 <- 5_s64
+    store s20 <- true
+    v30: *s64 = addr s18
+    store s21 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
+    v31: *Type_Info = addr s21
+    zero s22
+    store s22.0 <- v31
+    store s22.1 <- v30
+    v32: Any = load s22
+    v33: *Point = addr s19
+    store s23 <- {#id, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64}
+    v34: *Type_Info = addr s23
+    zero s24
+    store s24.0 <- v34
+    store s24.1 <- v33
+    v35: Any = load s24
+    v36: *bool = addr s20
+    store s25 <- {#id, 1_enum, "bool", 1_s64, 1_s64, 0_s64, 0_s64}
+    v37: *Type_Info = addr s25
+    zero s26
+    store s26.0 <- v37
+    store s26.1 <- v36
+    v38: Any = load s26
+    zero s27
+    store s27[0_s64] <- v32
+    store s27[1_s64] <- v35
+    store s27[2_s64] <- v38
+    v39: *Any = addr s27[0_s64]
+    zero s28
+    store s28.view_data <- v39
+    store s28.view_count <- 3_s64
+    v40: []Any = load s28
+    v41: s64 = call proc0(v0, v40)
+    v42: bool = v41 == 109_s64
+    branch v42 ? bb10() : bb11()
+  bb10():
+    v44: s64 = v43 + 8_s64
+    goto bb12(v44)
+  bb11():
+    goto bb12(v43)
+  bb12(v55: s64):
+    zero s29
+    bounds_check 0_s64 < 2_s64
+    v45: *s64 = addr s7
+    store s30 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
+    v46: *Type_Info = addr s30
+    zero s31
+    store s31.0 <- v46
+    store s31.1 <- v45
+    v47: Any = load s31
+    store s29[0_s64] <- v47
+    bounds_check 1_s64 < 2_s64
+    v48: *s64 = addr s8
+    store s32 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
+    v49: *Type_Info = addr s32
+    zero s33
+    store s33.0 <- v49
+    store s33.1 <- v48
+    v50: Any = load s33
+    store s29[1_s64] <- v50
+    v51: *Any = addr s29[0_s64]
+    zero s34
+    store s34.view_data <- v51
+    store s34.view_count <- 2_s64
+    v52: []Any = load s34
+    v53: s64 = call proc0(v0, v52)
+    v54: bool = v53 == 30_s64
+    branch v54 ? bb13() : bb14()
+  bb13():
+    v56: s64 = v55 + 16_s64
+    goto bb15(v56)
+  bb14():
+    goto bb15(v55)
+  bb15(v57: s64):
+    v58: bool = v57 == 31_s64
+    branch v58 ? bb16() : bb17()
+  bb16():
+    discard call extern proc1(0_s64)
+    goto bb18()
+  bb17():
+    goto bb18()
+  bb18():
+    discard call extern proc1(1_s64)
+    return
+}

@@ -527,13 +527,13 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **1010 workspace tests** and **227 corpus files**, all six gates green
+waiting. Both are tracked below. **1010 workspace tests** and **228 corpus files**, all six gates green
 **locally** — no CI run has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
-> **What "227 corpus files" counts**, since this number had drifted: the `.jr` files under
-> `tests/corpus/` *outside* `tests/corpus/modules/` — 113 `valid` + 10 `invalid` + 71 `type-errors` +
-> 3 `cfg-errors` + 30 `imports` = 227. Counting the 10 module fixtures too gives 237. This section
+> **What "228 corpus files" counts**, since this number had drifted: the `.jr` files under
+> `tests/corpus/` *outside* `tests/corpus/modules/` — 114 `valid` + 10 `invalid` + 71 `type-errors` +
+> 3 `cfg-errors` + 30 `imports` = 228. Counting the 10 module fixtures too gives 238. This section
 > claimed **214** at a point when 213 was right while `AGENTS.md` claimed 213, so the sentence that
 > tells a reader to trust §7 over any other count was itself pointing at the wrong one. ADR-0125
 > reconciled the numbers and that pair slipped through, which is the argument for the definition
@@ -1550,9 +1550,12 @@ surface (ADR-0138). **The eight-wave programme is complete.**
   `Type_Info_Kind.DYNAMIC_ARRAY` added to `Basic`. Rejected: keep both struct and native module, and a
   `List(s64)` compatibility name (not expressible — a same-shape struct never coerces and there is no
   alias). Found and fixed a dump defect: a `[..]T`'s three projections all printed `.view_count`.
-- A `..Any` variadic — an ADR-0076-style pointer→Any coercion at the variadic slot, so
-  `print(fmt, a, b, c)` can take arguments of arbitrary types. ADR-0139 delivered variadic
-  packing for a *concrete* element type; the `Any` coercion is a small extension.
+- ~~A `..Any` variadic — an ADR-0076-style pointer→Any coercion at the variadic slot~~ **done —
+  ADR-0141.** Probed and found already composing: `f(*a, *b, *c)` erases each pointer and packs a
+  `[]Any` with no new compiler code. One `jr-sema` gap fixed (the exactly-one-trailing disambiguation
+  bypassed the coercion). Arguments are **pointers**; bare values (`f(42)`) stay E0214, which is
+  ADR-0076 §4's still-deferred bare-value→`Any` (now cheap to implement — packing allocates the stack
+  storage it lacked — but its own fork about implicit temporaries).
 - Dispatches 2 and 3 of the **security second pass** — kept because the audit's own §7 asks for
   three and only one has been discharged (ADR-0126). Both are read-only assessment first.
 
