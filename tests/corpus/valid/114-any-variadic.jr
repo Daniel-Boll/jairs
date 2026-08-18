@@ -1,0 +1,104 @@
+// **A `..Any` variadic** (ADR-0141) — the `print(fmt, a, b, c)` shape, where the trailing arguments
+// have *genuinely different types* and the callee discriminates them at run time. This is what a
+// formatting routine needs: one call, mixed argument types, each recovered by its own type.
+//
+// **Probed before a line was written, and it already worked.** ADR-0139 packs a variadic call's
+// trailing arguments into a stack `[N]T` view, checking each against the element type `T`. When `T`
+// is `Any`, the per-argument check is ADR-0076 §1's `*U`→`Any` coercion — which already fires at any
+// argument position — so `f(*a, *b, *c)` erases each pointer to an `Any` and packs the three into a
+// `[]Any`. The two features composed without a new line of compiler code; this file is the coverage
+// that pins the composition, since nothing in the corpus exercised a `..Any` before.
+//
+// **The arguments are pointers**, `*n` rather than `n`. A bare value (`sum_any(42)`) has no address
+// for the `Any`'s `data` word to point at, and coercing one is ADR-0076 §4's deferred bare-value→`Any`
+// — declined there because a literal has no place. Passing `*n` is the same discipline `any_of(*x)`
+// and every `Any`-taking procedure already use.
+//
+// What is pinned, each an independent bit:
+//
+//   * **the empty variadic** — `sum_any()` packs a zero-length `[]Any`, iterated by `while i < count`;
+//   * **a single pointer argument** — one element, coerced and read back;
+//   * **several arguments of one type** — three `*s64`, all recovered;
+//   * **genuinely mixed types in one call** — an `s64`, a `Point` and a `bool`, each discriminated by
+//     `args[i].type.id` and read with the matching `any_as`, which is the `print` use case exactly;
+//   * **the pass-through** — an explicit `[]Any` view (built element by element) passed straight
+//     through, not packed, exactly as `valid/112` pins for a concrete element type.
+//
+// Both engines build each `Any` identically (a spilled `Type_Info`, a `*u8` data word) and the
+// differential harness pins their agreement. The exit code is **31**, five independent bits.
+#import "Basic";
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+// Sums its arguments by kind: an `s64` adds its value, a `Point` adds `x + y`, a `bool` adds 1 if
+// true. The `print(fmt, ..)` shape — one variadic, arguments discriminated at run time by type.
+sum_any :: (args: ..Any) -> s64 {
+    total := 0;
+    i := 0;
+    while i < args.count {
+        if args[i].type.id == type_info(s64).id {
+            total = total + any_as(args[i], s64);
+        }
+        if args[i].type.id == type_info(Point).id {
+            p := any_as(args[i], Point);
+            total = total + p.x + p.y;
+        }
+        if args[i].type.id == type_info(bool).id {
+            if any_as(args[i], bool) {
+                total = total + 1;
+            }
+        }
+        i = i + 1;
+    }
+    return total;
+}
+
+main :: () {
+    n := 0;
+
+    // Zero trailing arguments — an empty `[]Any`, never indexed.
+    if sum_any() == 0 {
+        n = n + 1;
+    }
+
+    // A single pointer argument, coerced and summed.
+    a := 42;
+    if sum_any(*a) == 42 {
+        n = n + 2;
+    }
+
+    // Several arguments of one type.
+    b := 10;
+    c := 20;
+    d := 30;
+    if sum_any(*b, *c, *d) == 60 {
+        n = n + 4;
+    }
+
+    // Genuinely mixed types in one call: an `s64`, a `Point` (3 + 5), a `true` bool.
+    e := 100;
+    pt: Point;
+    pt.x = 3;
+    pt.y = 5;
+    flag := true;
+    if sum_any(*e, *pt, *flag) == 109 {
+        n = n + 8;
+    }
+
+    // Pass-through: an explicit `[]Any` view, built element by element, passed straight through
+    // rather than packed. Each element is an `Any` erasing a pointer, exactly as the packing builds.
+    store: [2]Any;
+    store[0] = any_of(*b);
+    store[1] = any_of(*c);
+    if sum_any(store[]) == 30 {
+        n = n + 16;
+    }
+
+    if n == 31 {
+        exit(0);
+    }
+    exit(1);
+}

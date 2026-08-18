@@ -3032,8 +3032,11 @@ impl Ctx<'_> {
                         continue;
                     }
                     pack_this_call = true;
-                    // Enforce the element type — a mismatch here is the honest error.
+                    // Enforce the element type — a mismatch here is the honest error. A `*U` into a
+                    // `..Any` coerces exactly as the multi-argument path's `check_arg` does (ADR-0141),
+                    // reusing the type already computed above so the argument is not re-checked.
                     if let Some(elem) = variadic_elem
+                        && !self.record_any_coercion(scope, *arg, elem, natural)
                         && natural != PoolId::ERROR
                         && natural != elem
                     {
@@ -3096,18 +3099,8 @@ impl Ctx<'_> {
             && self.is_any_struct(want_ty)
         {
             let arg_ty = self.check_expr(scope, arg, None);
-            if let Item::PointerType(pointee) = *self.pool.item(arg_ty) {
-                // The pointee must have a layout, as `any_of` requires — the same E0266 the explicit
-                // form raises, reused so the two paths agree.
-                if jr_pool::layout_of(self.pool, jr_pool::TargetLayout::LP64, pointee).is_ok() {
-                    self.any_calls.insert((scope, arg), (AnyOp::Of, pointee));
-                    // The argument keeps its **pointer** type in the `TypeMap`, so `jr-mir`'s coercion
-                    // wrapper can lower the pointer through the ordinary value path (`expr_inner`) and
-                    // then wrap the result into an `Any`. The wrapper's *return* is the `Any` the call
-                    // consumes; the map type is only ever used to lower the pointer, so it must stay the
-                    // pointer type.
-                    return;
-                }
+            if self.record_any_coercion(scope, arg, want_ty, arg_ty) {
+                return;
             }
             // Not a coercible pointer: fall through to an ordinary mismatch against `Any`, which is the
             // honest error (`expected Any, found …`).
@@ -3116,6 +3109,37 @@ impl Ctx<'_> {
             return;
         }
         self.check_expr(scope, arg, want);
+    }
+
+    /// Records the `*U`→`Any` coercion for `arg` when `want_ty` is `Any` and its already-computed type
+    /// `arg_ty` is a pointer with a laid-out pointee (ADR-0076 §1). Returns whether it recorded one.
+    ///
+    /// Factored out of [`Self::check_arg`] so the **variadic single-argument** disambiguation (ADR-0141)
+    /// reuses the identical decision: that path types the one trailing argument with no target to tell a
+    /// pass-through view from a packed element, and must then apply the same coercion the multi-argument
+    /// path gets from `check_arg` — otherwise `f(*x)` into a `..Any` reported a mismatch while `f(*x, *y)`
+    /// coerced. Taking `arg_ty` as a parameter is what lets the caller reuse the type it already computed,
+    /// so the argument is not checked twice and a malformed one is not diagnosed twice.
+    ///
+    /// The argument keeps its **pointer** type in the `TypeMap`, so `jr-mir`'s coercion wrapper lowers the
+    /// pointer through the ordinary value path (`expr_inner`) and then wraps the result into an `Any`.
+    fn record_any_coercion(
+        &mut self,
+        scope: ExprScope,
+        arg: ExprId,
+        want_ty: PoolId,
+        arg_ty: PoolId,
+    ) -> bool {
+        if self.is_any_struct(want_ty)
+            && let Item::PointerType(pointee) = *self.pool.item(arg_ty)
+            // The pointee must have a layout, as `any_of` requires — the same E0266 the explicit form
+            // raises, reused so the two paths agree.
+            && jr_pool::layout_of(self.pool, jr_pool::TargetLayout::LP64, pointee).is_ok()
+        {
+            self.any_calls.insert((scope, arg), (AnyOp::Of, pointee));
+            return true;
+        }
+        false
     }
 
     /// Whether a type is the standard library's `Any` (ADR-0076 §3).

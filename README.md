@@ -22,7 +22,8 @@ Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still ope
 The **eight-wave programme to keep the promises ADR-0127 found unkept** is **fully done**
 (ADR-0128 through ADR-0139), and its owed follow-ups have begun: **ADR-0140** converted
 `modules/List` to operate on the native `[..]s64` (the hand-rolled `List :: struct($T)` deleted) and
-added `Type_Info_Kind.DYNAMIC_ARRAY`. All six unkept promises are kept: instantiation backtraces,
+added `Type_Info_Kind.DYNAMIC_ARRAY`, and **ADR-0141** landed a `..Any` variadic — `f(*a, *b, *c)`
+packs arguments of arbitrary types into a `[]Any` (`print(fmt, ..)`). All six unkept promises are kept: instantiation backtraces,
 enum-member-from-constant, `Math` vec/mat/quat, `it`/`it_index` in a nameless `for`, nested
 procedures, `[..]T` dynamic-array syntax, `$$T`, and `..T` variadic parameters — including the
 call-site packing sugar (`sum(1, 2, 3)` packs a stack view).

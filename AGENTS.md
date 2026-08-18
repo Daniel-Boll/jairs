@@ -117,6 +117,12 @@ fixed (a `[..]T`'s `.data`/`.count`/`.capacity` all printed `.view_count`, so th
 not tell them apart). `valid/113` exercises the converted operations and the reflection; `valid/088`
 and `089` now declare `[..]s64` with their exit codes unchanged — the one wave here that touched a
 crate (`jr-mir`'s dump) and still moved only the corpus count, because the fix is display-only.
+**ADR-0141 also holds at 1010** and adds one = **228** — the second owed follow-up, a `..Any` variadic,
+probed and found already composing (ADR-0138's callee view ∘ ADR-0139's packing ∘ ADR-0076 §1's
+`*U`→`Any` coercion). One gap fixed in `jr-sema` (the exactly-one-trailing disambiguation bypassed the
+coercion, so `f(*a)` errored while `f(*a, *b)` worked); the decision is now shared by one helper. No new
+code, no MIR change. `valid/114` pins mixed-type `..Any` (the `print(fmt, ..)` shape); bare values stay
+E0214 (ADR-0076 §4's deferred bare-value→`Any`).
 
 **A number in this file is now partly enforced.** `crates/jr-cli/tests/codes.rs` fails when the
 "first free code" claim below rots. The test count and the corpus count are still prose, and both were
