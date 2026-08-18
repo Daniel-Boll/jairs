@@ -3516,12 +3516,78 @@ impl Lower<'_> {
                 .collect(),
             None => operands,
         };
+
+        // **A variadic call packs its trailing arguments** (ADR-0139 §3). Sema recorded a
+        // `(fixed_arg_count, element_ty)` for this call; MIR allocates a stack `[N]T` and a
+        // view slot, stores each trailing operand into the array, and loads the resulting view
+        // as the single last operand.
+        let operands: Vec<Operand> = match self.consts.variadic_call(self.scope(), call) {
+            Some((fixed, elem_ty)) => self.pack_variadic(call, operands, fixed, elem_ty),
+            None => operands,
+        };
+
         let mut args = leading;
         args.extend(operands);
         Some(Rvalue::Call {
             callee: Callee::Direct(target),
             args,
         })
+    }
+
+    /// Builds a `[]T` view over `operands[fixed..]` by materialising a stack array and storing
+    /// each trailing operand into it (ADR-0139 §3). Returns the operand list rewritten with
+    /// the trailing operands replaced by the single view.
+    fn pack_variadic(
+        &mut self,
+        call: ExprId,
+        operands: Vec<Operand>,
+        fixed: usize,
+        elem_ty: PoolId,
+    ) -> Vec<Operand> {
+        let span = self.span(call);
+        let trailing_count = operands.len().saturating_sub(fixed);
+        let array_ty = self.pool.array_of(elem_ty, trailing_count as u64);
+        let array_slot = self.mir.push_slot(array_ty, None, span);
+        let array_place = Place::slot(array_slot);
+        self.emit(Statement::Zero {
+            place: array_place.clone(),
+            span,
+        });
+        for (i, op) in operands.iter().skip(fixed).enumerate() {
+            let idx = Operand::Constant(self.pool.int_value(PoolId::S64, i as u64));
+            self.emit(Statement::Store {
+                place: array_place.clone().project(Projection::Index(idx)),
+                value: *op,
+                span,
+            });
+        }
+        // Build the view: data = &array[0], count = N.
+        let zero = Operand::Constant(self.pool.int_value(PoolId::S64, 0));
+        let first = array_place.project(Projection::Index(zero));
+        let elem_ptr = self.pool.pointer_to(elem_ty);
+        let data = self.define(elem_ptr, Rvalue::Address(first), span);
+        let view_ty = self.pool.view_of(elem_ty);
+        let view_slot = self.mir.push_slot(view_ty, None, span);
+        let view = Place::slot(view_slot);
+        self.emit(Statement::Zero {
+            place: view.clone(),
+            span,
+        });
+        self.emit(Statement::Store {
+            place: view.clone().project(Projection::ViewData),
+            value: data,
+            span,
+        });
+        let count = Operand::Constant(self.pool.int_value(PoolId::S64, trailing_count as u64));
+        self.emit(Statement::Store {
+            place: view.clone().project(Projection::ViewCount),
+            value: count,
+            span,
+        });
+        let packed = self.define(view_ty, Rvalue::Load(view), span);
+        let mut rewritten: Vec<Operand> = operands.into_iter().take(fixed).collect();
+        rewritten.push(packed);
+        rewritten
     }
 
     /// Lowers a call whose callee is a *value* of procedure-pointer type (ADR-0059 §1).

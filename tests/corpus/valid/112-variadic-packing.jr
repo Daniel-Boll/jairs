@@ -1,0 +1,81 @@
+// **Variadic packing sugar** (ADR-0139, follow-up to ADR-0138). The declaration surface
+// (`args: ..T`) shipped in wave 8; this wave delivers the call-site sugar: `sum(1, 2, 3)`
+// packs the trailing args into a stack `[N]T` and passes a `[]T` view.
+//
+// Two shapes at the call site, both pinned here:
+//
+//   * **the sugar** — trailing arguments of the element type get packed into a fresh stack
+//     array and view. `sum()` packs an empty view (N=0); `sum(1, 2, 3)` packs three;
+//   * **the pass-through** — an explicit `[]T` view (a `buf[]` slice) is passed straight
+//     through. Sema distinguishes at the exactly-one-trailing case: a view type is the
+//     pass-through, the element type is the pack.
+//
+// Both engines pack identically (a stack slot for the array, three stores, a view slot with
+// data/count) — the differential harness pins agreement.
+#import "Basic";
+
+// Pure variadic — no fixed parameters.
+sum :: (args: ..s64) -> s64 {
+    total := 0;
+    for x: args {
+        total = total + x;
+    }
+    return total;
+}
+
+// Fixed prefix + variadic — the mixed shape `printf(fmt, ..)` uses.
+max_of :: (init: s64, args: ..s64) -> s64 {
+    best := init;
+    for x: args {
+        if x > best {
+            best = x;
+        }
+    }
+    return best;
+}
+
+main :: () {
+    n := 0;
+
+    // Zero trailing args — the empty view.
+    if sum() == 0 {
+        n = n + 1;
+    }
+
+    // One trailing arg — a single-element pack (not a pass-through: the arg is an
+    // integer literal, not a `[]s64`).
+    if sum(42) == 42 {
+        n = n + 2;
+    }
+
+    // Several trailing args.
+    if sum(1, 2, 3, 4, 5) == 15 {
+        n = n + 4;
+    }
+
+    // Fixed + variadic mix.
+    if max_of(10, 3, 7, 25, 4) == 25 {
+        n = n + 8;
+    }
+
+    // Pass-through: explicit `[]s64` view. Not a pack — MIR reads the natural type as the
+    // view type and forwards the operand.
+    buf: [3]s64;
+    buf[0] = 100;
+    buf[1] = 200;
+    buf[2] = 400;
+    if sum(buf[]) == 700 {
+        n = n + 16;
+    }
+
+    // Two consecutive packs at *different* call sites — each gets its own stack storage,
+    // so the second does not observe the first's array.
+    if sum(1, 2) + sum(10, 20) == 33 {
+        n = n + 32;
+    }
+
+    if n == 63 {
+        exit(0);
+    }
+    exit(1);
+}

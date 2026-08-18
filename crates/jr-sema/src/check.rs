@@ -2946,54 +2946,64 @@ impl Ctx<'_> {
             return PoolId::ERROR;
         }
 
-        // A variadic last parameter (ADR-0138) accepts *any number* of trailing arguments.
-        // This wave delivers the **declaration surface**: `args: ..T` parses, and the callee
-        // sees the parameter as `[]T` — so a caller can *pass a view explicitly* — but
-        // calling a variadic procedure with a raw list of extra arguments (the sugar
-        // `print(fmt, a, b, c)` reduces to) is refused pending the MIR packing pass. The
-        // full sugar is a follow-up ADR that turns the trailing args into a stack view.
+        // A variadic last parameter (ADR-0138 §1) accepts *any number* of trailing arguments,
+        // and MIR packs them into a stack `[N]T` view (ADR-0139 §1). Two shapes reach here:
+        //
+        //  * `args.len() == params.len()` — the caller supplied *exactly one* value for the
+        //    variadic slot. That is either the packing case with N=1, or a caller passing
+        //    an explicit `[]T` view. Sema cannot tell them apart from types alone (a `[]T`
+        //    argument to a `[]T` parameter is legal without packing), so the record-vs-pack
+        //    decision lives in MIR: it treats a single arg whose type is already the view
+        //    type as pass-through, and any other one arg as N=1 packing;
+        //  * `args.len() != params.len()` — the fixed prefix plus a run of trailing args.
+        //    Packing is unavoidable.
+        //
+        // The trailing args are typed against the **element type** — the view's `elem` —
+        // rather than against the parameter's `[]T`. That is what makes `sum(1, 2, 3)`
+        // type-check with `..s64`: each `1`, `2`, `3` is checked against `s64`, not against
+        // `[]s64`.
         let callee_sig_v = self.callee_sig(scope, callee);
         let last_variadic = callee_sig_v
             .as_ref()
             .map(|s| variadic_last_param(&s.variadic_params))
             .unwrap_or(false);
-        let fixed_arg_count = if last_variadic {
-            params.len() - 1
+        let (fixed_arg_count, variadic_view_ty, variadic_elem) = if last_variadic {
+            let last_ty = *params.last().unwrap();
+            let elem = match self.pool.item(last_ty) {
+                jr_pool::Item::ViewType { elem } => Some(*elem),
+                _ => None,
+            };
+            (params.len() - 1, Some(last_ty), elem)
         } else {
-            params.len()
+            (params.len(), None, None)
         };
-        let want_exact = last_variadic && args.len() != params.len();
-        if last_variadic && want_exact {
-            // A caller may still pass an explicit `[]T` view for the variadic slot; the sugar
-            // is what's deferred. So a call with `args.len() != params.len()` is where the
-            // sugar would be needed, and that's what this refusal catches.
-            for arg in args {
-                self.check_expr(scope, *arg, None);
-            }
-            self.diags.push(
-                Diagnostic::error(
-                    span,
-                    "packing trailing arguments into a variadic `..T` parameter is not implemented yet",
-                )
-                .with_code(E0216)
-                .with_note(
-                    "the declaration surface is delivered by ADR-0138; automatic packing is a follow-up wave",
-                )
-                .with_help(
-                    "pass an explicit `[]T` view for the variadic slot (e.g. build a `[N]T` and take a view)",
-                ),
-            );
-            return PoolId::ERROR;
-        }
 
-        if !last_variadic && args.len() != params.len() {
+        let arity_ok = if last_variadic {
+            args.len() >= fixed_arg_count
+        } else {
+            args.len() == params.len()
+        };
+        if !arity_ok {
             self.diags.push(
                 Diagnostic::error(
                     span,
                     format!(
-                        "this procedure takes {} argument{}, but {} {} supplied",
-                        params.len(),
-                        if params.len() == 1 { "" } else { "s" },
+                        "this procedure takes {}{} argument{}, but {} {} supplied",
+                        if last_variadic { "at least " } else { "" },
+                        if last_variadic {
+                            fixed_arg_count
+                        } else {
+                            params.len()
+                        },
+                        if (if last_variadic {
+                            fixed_arg_count
+                        } else {
+                            params.len()
+                        }) == 1 {
+                            ""
+                        } else {
+                            "s"
+                        },
                         args.len(),
                         if args.len() == 1 { "was" } else { "were" }
                     ),
@@ -3002,11 +3012,71 @@ impl Ctx<'_> {
             );
         }
 
+        // For a variadic call: check the fixed args against their parameters; the trailing
+        // args are either (a) a single explicit `[]T` view — pass-through — or (b) a run of
+        // one-or-more `T` values, packed into a stack view by MIR (ADR-0139 §1). The two
+        // shapes overlap at "exactly one trailing arg", where the natural type distinguishes
+        // them: a view type means pass-through, anything else means pack.
+        let pack_all_trailing = last_variadic && arity_ok;
+        let mut pack_this_call = false;
         for (index, arg) in args.iter().enumerate() {
+            if pack_all_trailing && index >= fixed_arg_count {
+                let trailing = args.len() - fixed_arg_count;
+                if trailing == 1 {
+                    // Type with no target so mismatches do not fire against either candidate;
+                    // then decide pass-through vs pack based on the natural type.
+                    let natural = self.check_expr(scope, *arg, None);
+                    if variadic_view_ty.map(|v| v == natural).unwrap_or(false) {
+                        // Pass-through: the single arg is the view. No packing.
+                        continue;
+                    }
+                    pack_this_call = true;
+                    // Enforce the element type — a mismatch here is the honest error.
+                    if let Some(elem) = variadic_elem
+                        && natural != PoolId::ERROR
+                        && natural != elem
+                    {
+                        let arg_desc = self.describe(natural);
+                        let elem_desc = self.describe(elem);
+                        let view_desc = variadic_view_ty
+                            .map(|v| self.describe(v))
+                            .unwrap_or_else(|| String::from("[]T"));
+                        self.diags.push(
+                            Diagnostic::error(
+                                span,
+                                format!(
+                                    "variadic argument expected `{elem_desc}` (element) or `{view_desc}` (explicit view), found `{arg_desc}`"
+                                ),
+                            )
+                            .with_code(E0214),
+                        );
+                    }
+                    continue;
+                }
+                // Multiple trailing args: definitely packing, and each must match the
+                // element type.
+                pack_this_call = true;
+                self.check_arg(scope, *arg, variadic_elem);
+                continue;
+            }
             let want = params.get(index).copied();
             self.check_arg(scope, *arg, want);
         }
-        let _ = fixed_arg_count;
+
+        // Record the packing info if any of the trailing args need packing (ADR-0139 §2).
+        // The variadic sink for a zero-trailing call is empty but still recorded so MIR's
+        // `variadic_call` lookup sees it and packs an empty view — otherwise a call to
+        // `sum()` would arity-mismatch, the callee's parameter list expecting one view.
+        if pack_all_trailing && (pack_this_call || args.len() == fixed_arg_count) {
+            self.variadic_calls.insert(
+                (scope, id),
+                VariadicCall {
+                    fixed_arg_count,
+                    element_ty: variadic_elem.unwrap_or(PoolId::ERROR),
+                },
+            );
+        }
+
         ret
     }
 

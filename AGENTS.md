@@ -107,6 +107,9 @@ coverage in `valid/110` is what a corpus program can observe.
 **ADR-0138 also holds at 1010** and adds one = **225** — Wave 8 (variadic `..T` declaration
 surface), with `valid/111` exercising the callee-view shape and explicit-view passing. The
 call-site packing sugar is deferred to a follow-up wave.
+**ADR-0139 also holds at 1010** and adds one = **226** — the follow-up completing Wave 8: MIR
+packs trailing arguments into a stack `[N]T` view. `valid/112` exercises the sugar (zero,
+one, several trailing args; fixed+variadic mix; pass-through view).
 
 **A number in this file is now partly enforced.** `crates/jr-cli/tests/codes.rs` fails when the
 "first free code" claim below rots. The test count and the corpus count are still prose, and both were

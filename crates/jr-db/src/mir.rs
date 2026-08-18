@@ -438,6 +438,22 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
             }
             None => base,
         };
+
+        // **Thread the variadic-call table into `ConstValues`** (ADR-0139 §2). MIR's
+        // `call_rvalue` reads this to know which trailing arguments to pack into a stack
+        // array + view before making the call. The base map already carries the same info
+        // for the ordinary (non-expanded) path — its records were built by `file_consts` from
+        // the same `checked_file` this function reads — but the *expanded* path builds a
+        // fresh `values` above, so we re-thread here from whichever `checked_file` we picked
+        // in `checked_file` above. `expanded`'s check overrides the base, matching the same
+        // priority `folded_calls` above uses.
+        let base = {
+            let mut values = (*base).clone();
+            for ((scope, expr), info) in checked_file.variadic_calls.iter() {
+                values.set_variadic_call(*scope, *expr, info.fixed_arg_count, info.element_ty);
+            }
+            Arc::new(values)
+        };
         match &instantiated {
             Some(inst) => {
                 let mut values = (*base).clone();

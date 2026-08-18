@@ -87,6 +87,11 @@ pub type ComptimeCalls = rustc_hash::FxHashMap<
     (jr_hir::ProcId, Vec<jr_hir::ExprId>),
 >;
 
+/// Each variadic call and the packing information MIR needs (ADR-0139 §2). Same shape as sema's
+/// own `variadic_calls` field, re-exported through the query layer.
+pub type VariadicCalls =
+    rustc_hash::FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), jr_sema::VariadicCall>;
+
 /// Each comptime-value call and the tuple of interned argument *values* — the structural key an
 /// instantiation is built for (ADR-0088 §3). Same shape as [`Instantiations`] once const-eval has run.
 pub type ComptimeCallValues = rustc_hash::FxHashMap<
@@ -163,6 +168,10 @@ pub struct CheckResult {
     /// `instantiated()` (which keys an instantiation on the tuple of resulting values and appends a clone
     /// with those values baked in). Empty for a program with no comptime-value calls.
     pub comptime_calls: Arc<ComptimeCalls>,
+    /// Each variadic call's packing info (ADR-0139 §2), read by `jr-db`'s `mir` query and
+    /// threaded into `ConstValues::set_variadic_call` so `call_rvalue` knows which trailing
+    /// arguments to pack into a stack view. Empty for programs with no variadic calls.
+    pub variadic_calls: Arc<VariadicCalls>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,6 +1087,7 @@ fn translate_check_output(
         any_calls: Arc::new(output.any_calls),
         instantiations: Arc::new(output.instantiations),
         comptime_calls: Arc::new(output.comptime_calls),
+        variadic_calls: Arc::new(output.variadic_calls),
     }
 }
 
