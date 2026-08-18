@@ -1,6 +1,8 @@
-// **A genuinely growable array** (ADR-0107): `List(s64)`, heap-backed, doubling. W7's fifth sub-wave, the fifth
-// module, and the one `Array` could not be — ADR-0105 shipped a fixed-capacity buffer and named three refusals
-// as the reason, and ADR-0106's typed allocation lifted the first of them.
+// **A genuinely growable array** (ADR-0107): a `[..]s64` grown by the `List` module, heap-backed, doubling.
+// W7's fifth sub-wave, the fifth module, and the one `Array` could not be — ADR-0105 shipped a fixed-capacity
+// buffer and named three refusals as the reason, and ADR-0106's typed allocation lifted the first of them. The
+// list *type* was a hand-rolled `List :: struct($T)` when this shipped; ADR-0140 deleted the struct in favour
+// of the native `[..]s64` (ADR-0136) and this program now declares one, exercising the converted operations.
 //
 // **Why this is a new module rather than a rewrite of `Array`.** The two have genuinely different contracts, and
 // collapsing them would hide that. An `Array(s64)` needs **no cleanup** — its storage is inline, so a caller can
@@ -59,12 +61,10 @@
 main :: () {
     n := 0;
 
-    l: List(s64);
-    l.data = null;
-    l.count = 0;
-    l.capacity = 0;
+    l: [..]s64;
 
-    // A fresh list allocates nothing, so it is free to declare and safe to free.
+    // A fresh list allocates nothing, so it is free to declare and safe to free. A `[..]s64` is
+    // zero-initialised (ADR-0136) — `.data == null`, both counts 0 — so no manual reset is needed.
     if is_empty(*l) && l.capacity == 0 && l.data == null {
         n = n + 1;
     }
@@ -128,10 +128,7 @@ main :: () {
         free_data(*l);
         // Safe twice, and safe on a list that never grew.
         free_data(*l);
-        fresh: List(s64);
-        fresh.data = null;
-        fresh.count = 0;
-        fresh.capacity = 0;
+        fresh: [..]s64;
         free_data(*fresh);
         if l.data == null && l.capacity == 0 {
             n = n + 128;

@@ -1,0 +1,96 @@
+// **Dynamic-array operations on a native `[..]s64`** (ADR-0140, the follow-up ADR-0136 §4 owed).
+// ADR-0136 lifted `[..]T` to native syntax and gave it a compiler-known `{data, count, capacity}`
+// layout with the three fields as places, but shipped no *operations*: the growth policy stays in a
+// library. ADR-0140 converts `modules/List` to operate on the native type — its `push`/`pop`/`get`/
+// `set`/`clear`/`elements`/`free_data`/`is_empty` now take `*[..]s64` instead of a hand-rolled
+// `*List(s64)` struct — so this program declares `xs: [..]s64` and grows it through that module.
+//
+// Two things are pinned here, and both were unreachable before this wave:
+//
+//   * **the operations compose on the native type** — a `push` past the first capacity reallocates
+//     (the `List` module's doubling from 4), the elements survive the copy, and `elements(*xs)` hands
+//     the used prefix to `Sort` as a `[]s64` view. This is the same behaviour `valid/088`/`089` pin
+//     for the converted module; here it is exercised through the native declaration end to end;
+//   * **`type_info` discriminates a dynamic array from a view** — `Type_Info_Kind.DYNAMIC_ARRAY`
+//     (added to `modules/Basic` this wave) is what the compiler already emitted by name for a `[..]T`
+//     (ADR-0136), and before the member existed `type_info` of one was a hard const-eval error. The
+//     shape is reflected through a `$T` procedure bound to the array, because `type_info`'s argument
+//     is an *expression* and `[..]s64` is not one — a bound type variable is how source reaches it.
+//
+// The exit code is **63**, six independent bits, so a routine returning a constant could not pass.
+#import "Basic";
+#import "List";
+#import "Sort";
+
+// Reflect the shape of whatever it is instantiated with. `T` binds to the argument's type, so
+// `kind_of(xs)` for `xs: [..]s64` reflects a dynamic array — the only source path to a `[..]T`'s
+// `type_info`, since the intrinsic takes an expression and `[..]s64` is a type, not one.
+kind_of :: (x: $T) -> Type_Info_Kind {
+    return type_info(T).kind;
+}
+
+main :: () {
+    n := 0;
+
+    // A zero-initialised native dynamic array: no allocation, empty, safe to free.
+    xs: [..]s64;
+    if is_empty(*xs) && xs.count == 0 && xs.capacity == 0 && xs.data == null {
+        n = n + 1;
+    }
+
+    // Eight pushes through a 4-element first allocation: growth happens once, and the capacity ends
+    // above the first. Every element must survive the reallocation's copy.
+    pushed := true;
+    i := 0;
+    while i < 8 {
+        if !push(*xs, i * 2) {
+            pushed = false;
+        }
+        i = i + 1;
+    }
+    if pushed && xs.count == 8 && xs.capacity >= 8 && xs.capacity > FIRST_CAPACITY {
+        n = n + 2;
+    }
+
+    // Every element readable after growth — what a broken copy loop would break.
+    survived := true;
+    j := 0;
+    while j < 8 {
+        v, ok := get(*xs, j);
+        if !ok || v != j * 2 {
+            survived = false;
+        }
+        j = j + 1;
+    }
+    if survived {
+        n = n + 4;
+    }
+
+    // `pop` shortens the list; `set` refuses an index past `count`; `elements` composes with `Sort`.
+    last, last_ok := pop(*xs);
+    if last_ok && last == 14 && xs.count == 7 && set(*xs, 0, 99) && !set(*xs, 7, 1) {
+        n = n + 8;
+    }
+
+    // Sort the used prefix in place through the view `elements` hands out.
+    // After the pop and the `set(0, 99)` the used prefix is {99, 2, 4, 6, 8, 10, 12}; sorted ascending
+    // it is {2, 4, 6, 8, 10, 12, 99}, so the smallest is 2 and the largest (index 6) is 99.
+    sort_ints(elements(*xs));
+    first, _ := get(*xs, 0);
+    top, _ := get(*xs, 6);
+    if first == 2 && top == 99 && ints_sorted(elements(*xs)) {
+        n = n + 16;
+    }
+
+    // `type_info` tells a dynamic array from a view. Both reflected through a bound `$T`, and the two
+    // kinds must differ — a `[..]T` owns storage and carries a capacity a view has not got.
+    scratch: [4]s64;
+    if kind_of(xs) == Type_Info_Kind.DYNAMIC_ARRAY && kind_of(scratch[]) == Type_Info_Kind.VIEW && kind_of(xs) != kind_of(scratch[]) {
+        n = n + 32;
+    }
+
+    // The caller owns the storage; nothing else frees it.
+    free_data(*xs);
+
+    exit(n);
+}

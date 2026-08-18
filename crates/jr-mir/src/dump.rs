@@ -466,10 +466,16 @@ impl Dumper<'_> {
                 // both the same way could not show that a view's count is a load where an
                 // array's is a constant, which is the one thing a reader checks here.
                 Projection::ViewData => text.push_str(".view_data"),
-                Projection::ViewCount
-                | Projection::DynamicArrayData
-                | Projection::DynamicArrayCount
-                | Projection::DynamicArrayCapacity => text.push_str(".view_count"),
+                Projection::ViewCount => text.push_str(".view_count"),
+                // A dynamic array's three words are their own projections (ADR-0136 §2) and each
+                // must render distinctly (ADR-0140): they previously all printed `.view_count`, so
+                // a snapshot could not tell a `.data` load from a `.capacity` one — and a miscompile
+                // swapping them would have been invisible, which is the trap this dump exists to
+                // catch. The result type differs (`*T` for data, `s64` for the counts), but a reader
+                // types a place from the projection alone, exactly as both engines do.
+                Projection::DynamicArrayData => text.push_str(".dyn_data"),
+                Projection::DynamicArrayCount => text.push_str(".dyn_count"),
+                Projection::DynamicArrayCapacity => text.push_str(".dyn_capacity"),
                 Projection::VariantTag => text.push_str(".tag"),
             }
         }

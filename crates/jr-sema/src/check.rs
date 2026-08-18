@@ -2999,7 +2999,8 @@ impl Ctx<'_> {
                             fixed_arg_count
                         } else {
                             params.len()
-                        }) == 1 {
+                        }) == 1
+                        {
                             ""
                         } else {
                             "s"

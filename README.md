@@ -20,7 +20,9 @@ error-recovering compiler written in Rust.
 
 Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 1010 tests green.
 The **eight-wave programme to keep the promises ADR-0127 found unkept** is **fully done**
-(ADR-0128 through ADR-0139). All six unkept promises are kept: instantiation backtraces,
+(ADR-0128 through ADR-0139), and its owed follow-ups have begun: **ADR-0140** converted
+`modules/List` to operate on the native `[..]s64` (the hand-rolled `List :: struct($T)` deleted) and
+added `Type_Info_Kind.DYNAMIC_ARRAY`. All six unkept promises are kept: instantiation backtraces,
 enum-member-from-constant, `Math` vec/mat/quat, `it`/`it_index` in a nameless `for`, nested
 procedures, `[..]T` dynamic-array syntax, `$$T`, and `..T` variadic parameters — including the
 call-site packing sugar (`sum(1, 2, 3)` packs a stack view).
@@ -168,9 +170,11 @@ by the optimized-MIR snapshot, which is precisely the job a snapshot has, since 
 happening is invisible to every other check.
 
 **And `List`** (ADR-0107) is the genuinely growable array typed allocation unblocked: heap storage, doubling from
-four, `push`/`pop`/`free_data`. It is a **new module rather than a rewrite of `Array`**, because the two have
-different contracts — an `Int_Array` needs no cleanup while an `Int_List` **owns** memory a caller must free, and
-with no destructors in the language that is something read in a type's name or never learnt.
+four, `push`/`pop`/`free_data`. It is a **separate module rather than a rewrite of `Array`**, because the two have
+different contracts — an `Int_Array` needs no cleanup while a growable list **owns** memory a caller must free, and
+with no destructors in the language that is something read in a type's name or never learnt. As of **ADR-0140** the
+list *type* is the native `[..]s64` (ADR-0136): the hand-rolled `List :: struct($T)` is gone and the module is now
+the operations over the compiler's own dynamic array — a caller declares `xs: [..]s64` and calls `push(*xs, v)`.
 
 **Writing it produced the corpus differential's first real catch.** The test exited 247 in the bytecode VM and
 255 natively, and bisecting gave thirteen lines: a callee that allocates, writes, and hands the pointer back,
@@ -268,7 +272,7 @@ closed by three consecutive all-library sub-waves.
 
 **And a hash table** (ADR-0116): `Int_Map`, `s64 -> s64`, open-addressed with linear probing and tombstone
 deletion, grown at 3/4 load — a heap array of structs, the module that most exercises typed allocation and
-`List`-style growth. Concrete, for the same cross-file-generics reason `Array` and `List` are. Its hash is
+`List`-style growth. Concrete, for the same cross-file-generics reason `Array` is. Its hash is
 FFI-free `u64` arithmetic, so both engines compute the same bucket — and writing it caught the project's
 **second** engine divergence: the wrapping operators (`*%` and friends) decoded their operands to `i128` and
 computed `wrap(a * b)`, and two large `u64`s overflowed `i128` *itself*, panicking the compile-time evaluator
@@ -278,8 +282,10 @@ the VM modelled it in Rust, where the model was subtly off. Fixed to wrap on the
 is what `*%` always promised.
 
 **And a parameterised struct can now cross a module boundary** (ADR-0117) — the biggest language unblocker the
-wave had left, named by *three* library sub-waves: `Array`, `List` and `Map` are concrete `Int_*` types only
-because a `struct($T)` declared in a module was unusable by every importer.
+wave had left, named by *three* library sub-waves: `Array` and `Map` are concrete `Int_*` types only
+because a `struct($T)` declared in a module was unusable by every importer (`List` was too until ADR-0140
+moved it onto the native `[..]s64`, whose routines stay concrete `s64` for a *different* reason — an imported
+polymorphic procedure is still refused, E0268).
 
 It was not a lookup change. A parameterised struct's fields are resolved *per instance, under the caller's type
 arguments*, and its own file cannot do that — it does not know what an importer will supply. So the **importer**

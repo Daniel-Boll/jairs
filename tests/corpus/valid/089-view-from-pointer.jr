@@ -84,11 +84,9 @@ main :: () {
     }
     free(untyped(ps));
 
-    // **The point of the sub-wave**: a growable list's contents, sorted in place by another module.
-    l: List(s64);
-    l.data = null;
-    l.count = 0;
-    l.capacity = 0;
+    // **The point of the sub-wave**: a growable list's contents, sorted in place by another module. The list is
+    // a native `[..]s64` (ADR-0136/0140), zero-initialised, so it declares without a manual reset.
+    l: [..]s64;
 
     // A zero-count view over an empty list is well-formed — nothing indexes it.
     if elements(*l).count == 0 {
