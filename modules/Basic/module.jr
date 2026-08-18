@@ -123,6 +123,14 @@ Type_Info_Kind :: enum {
     VARIANT;
     ENUM;
     PROCEDURE;
+    /// A `[..]T` dynamic array (ADR-0136, member added ADR-0140). Distinct from `VIEW`: a dynamic
+    /// array owns its heap storage and carries a `capacity`, so a program reflecting on one must be
+    /// able to tell the two apart — before this member `type_info([..]T)` was a hard const-eval
+    /// error, because the compiler names the shape and found no member to bind. **Appended** rather
+    /// than placed beside `VIEW` so no existing member's value moves: the compiler reads this member
+    /// by name (`jr-db`'s `type_info_kind_name`), but a snapshot or a caller comparing raw ordinals
+    /// would see every later shape renumber if it were inserted mid-list.
+    DYNAMIC_ARRAY;
 }
 
 /// What the compiler knows about a type at run time (ADR-0075 §3, ADR-0077).

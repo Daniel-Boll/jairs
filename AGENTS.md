@@ -110,6 +110,13 @@ call-site packing sugar is deferred to a follow-up wave.
 **ADR-0139 also holds at 1010** and adds one = **226** — the follow-up completing Wave 8: MIR
 packs trailing arguments into a stack `[N]T` view. `valid/112` exercises the sugar (zero,
 one, several trailing args; fixed+variadic mix; pass-through view).
+**ADR-0140 also holds at 1010** and adds one = **227** — the first of the programme's owed
+follow-ups: `modules/List` converted to operate on the native `[..]s64` (the hand-rolled
+`List :: struct($T)` deleted), `Type_Info_Kind.DYNAMIC_ARRAY` added to `Basic`, and a dump defect
+fixed (a `[..]T`'s `.data`/`.count`/`.capacity` all printed `.view_count`, so the mir snapshot could
+not tell them apart). `valid/113` exercises the converted operations and the reflection; `valid/088`
+and `089` now declare `[..]s64` with their exit codes unchanged — the one wave here that touched a
+crate (`jr-mir`'s dump) and still moved only the corpus count, because the fix is display-only.
 
 **A number in this file is now partly enforced.** `crates/jr-cli/tests/codes.rs` fails when the
 "first free code" claim below rots. The test count and the corpus count are still prose, and both were

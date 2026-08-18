@@ -527,13 +527,13 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 **W7 — Stdlib is OPEN**, and **W6 — Metaprogram is open too**: its remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's first module had a caller already
-waiting. Both are tracked below. **1010 workspace tests** and **226 corpus files**, all six gates green
+waiting. Both are tracked below. **1010 workspace tests** and **227 corpus files**, all six gates green
 **locally** — no CI run has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
-> **What "217 corpus files" counts**, since this number had drifted: the `.jr` files under
-> `tests/corpus/` *outside* `tests/corpus/modules/` — 103 `valid` + 10 `invalid` + 71 `type-errors` +
-> 3 `cfg-errors` + 30 `imports` = 217. Counting the 10 module fixtures too gives 227. This section
+> **What "227 corpus files" counts**, since this number had drifted: the `.jr` files under
+> `tests/corpus/` *outside* `tests/corpus/modules/` — 113 `valid` + 10 `invalid` + 71 `type-errors` +
+> 3 `cfg-errors` + 30 `imports` = 227. Counting the 10 module fixtures too gives 237. This section
 > claimed **214** at a point when 213 was right while `AGENTS.md` claimed 213, so the sentence that
 > tells a reader to trust §7 over any other count was itself pointing at the wrong one. ADR-0125
 > reconciled the numbers and that pair slipped through, which is the argument for the definition
@@ -1544,8 +1544,12 @@ surface (ADR-0138). **The eight-wave programme is complete.**
 
 **Owed follow-ups** from the programme, in order of ease:
 
-- The `[..]T` library **operations** — a `push` on `[..]T`, and a plan for converting `modules/List`
-  to operate on it or keep both.
+- ~~The `[..]T` library **operations** — a `push` on `[..]T`, and a plan for converting `modules/List`~~
+  **done — ADR-0140.** `modules/List`'s hand-rolled `List :: struct($T)` is deleted and its operations
+  now take `*[..]s64` (routines stay concrete `s64`: an imported *template* is still refused, E0268).
+  `Type_Info_Kind.DYNAMIC_ARRAY` added to `Basic`. Rejected: keep both struct and native module, and a
+  `List(s64)` compatibility name (not expressible — a same-shape struct never coerces and there is no
+  alias). Found and fixed a dump defect: a `[..]T`'s three projections all printed `.view_count`.
 - A `..Any` variadic — an ADR-0076-style pointer→Any coercion at the variadic slot, so
   `print(fmt, a, b, c)` can take arguments of arbitrary types. ADR-0139 delivered variadic
   packing for a *concrete* element type; the `Any` coercion is a small extension.
