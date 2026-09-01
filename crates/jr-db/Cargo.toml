@@ -10,6 +10,13 @@ authors.workspace = true
 [lints]
 workspace = true
 
+# Forwarded to `jr-codegen-llvm`, whose LLVM dependency is optional and off by default
+# (ADR-0143 §1). `jr build --backend llvm` refuses with a message naming this feature when
+# it is off, rather than reporting an unknown argument.
+[features]
+default = []
+llvm = ["dep:jr-codegen-llvm", "jr-codegen-llvm/llvm"]
+
 [dependencies]
 jr-base.workspace = true
 jr-diag.workspace = true
@@ -21,6 +28,7 @@ jr-mir.workspace = true
 jr-vm.workspace = true
 jr-codegen.workspace = true
 jr-codegen-clif.workspace = true
+jr-codegen-llvm = { workspace = true, optional = true }
 salsa.workspace = true
 rustc-hash.workspace = true
 

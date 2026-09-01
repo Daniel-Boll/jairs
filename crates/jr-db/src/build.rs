@@ -36,6 +36,25 @@ pub struct BuildOutput {
     pub libraries: Vec<String>,
 }
 
+/// Which code generator turns MIR into machine code (ADR-0143 §2).
+///
+/// **Not a [`BuildConfig`] field.** The choice changes no query result — `optimized_file_mir`
+/// is upstream of code generation — so making it a salsa input would invalidate every MIR
+/// memo when it changed, for nothing. That is ADR-0058 §2's reasoning applied in the other
+/// direction: an input is for configuration a *query* must see.
+///
+/// Both variants exist whatever features are compiled in, so that a build without LLVM
+/// support refuses [`BackendChoice::Llvm`] with a message naming the feature rather than
+/// reporting an unknown argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackendChoice {
+    /// Cranelift, the verified back end and the default (ADR-0009).
+    #[default]
+    Cranelift,
+    /// LLVM through `inkwell`, available when `jr-codegen-llvm`'s `llvm` feature is on.
+    Llvm,
+}
+
 /// Compiles every reachable file into one native object.
 ///
 /// The caller is responsible for having checked the file first, exactly as with
@@ -52,6 +71,7 @@ pub fn build_object(
     root: SourceFile,
     search_paths: ModuleSearchPaths,
     config: BuildConfig,
+    choice: BackendChoice,
 ) -> Result<BuildOutput, String> {
     let entry = main_of(db, root).ok_or_else(|| "the file declares no `main`".to_owned())?;
 
@@ -82,58 +102,84 @@ pub fn build_object(
     // two are the same number today only because the slice cross-compiles nowhere
     // (ADR-0018 §2).
     let layout = TargetLayout::LP64;
-    let mut backend = ClifBackend::new(&pool, "jairs").map_err(|e| e.to_string())?;
-
-    // Phase 1: declare everything, so a cross-file call has a symbol to reference.
-    for (file_id, hir, _, signatures) in &inputs {
-        // The source name of every procedure this file binds, for a backtrace frame (ADR-0066 §3).
-        // Built here because resolving a `Symbol` needs the interner, which `jr-codegen` has no
-        // database to ask — the same reason a trap's *location* is resolved on this side (ADR-0020 §3).
-        let names = proc_names(db, hir.as_ref());
-        let input = FileInput {
-            file: *file_id,
-            hir: hir.as_ref(),
-            signatures: signatures.as_ref(),
-            names: &names,
-        };
-        let own_entry = (*file_id == entry.file).then_some(entry.proc);
-        for decl in declarations(&input, &pool, own_entry) {
-            backend
-                .declare(&decl, &pool, layout)
-                .map_err(|e| e.to_string())?;
-        }
-    }
-
-    // Phase 2: define every body MIR produced. A body MIR refused is skipped rather
-    // than reported: the refusal is ADR-0017 §4 working, and something upstream
-    // already reported the cause.
     let map = db.source_map();
-    for (file_id, hir, mir, _) in &inputs {
-        for (proc, outcome) in mir.iter() {
-            let Ok(body) = outcome else { continue };
-            let reference = jr_mir::ProcRef::new(*file_id, proc);
-            // The back end holds a `MirSpan` at every trap site and can resolve
-            // none of them: that needs the file's HIR and a source map, neither of
-            // which ADR-0009 lets it see. So the resolution happens here and arrives
-            // as text (ADR-0020 §3).
-            let locations = BodyLocations {
-                hir: hir.as_ref(),
-                map: &map,
-                body: hir
-                    .procs
-                    .get(proc.index())
-                    .and_then(|data| data.body)
-                    .and_then(|id| hir.bodies.get(id.index())),
-            };
-            backend
-                .define(reference, body, &pool, layout, &locations)
-                .map_err(|e| e.to_string())?;
-        }
-    }
 
-    let libraries = backend.libraries().to_vec();
-    let object = Box::new(backend).finalise().map_err(|e| e.to_string())?;
-    Ok(BuildOutput { object, libraries })
+    // ADR-0019 §1's two phases, over `&mut dyn Backend` so that one loop feeds either back
+    // end (ADR-0143 §2). Duplicating it per back end would be two chances to declare a
+    // different set of procedures than the one whose bodies are defined — "defined without
+    // being declared", the failure the phase split exists to prevent.
+    let drive = |backend: &mut dyn Backend| -> Result<(), String> {
+        // Phase 1: declare everything, so a cross-file call has a symbol to reference.
+        for (file_id, hir, _, signatures) in &inputs {
+            // The source name of every procedure this file binds, for a backtrace frame
+            // (ADR-0066 §3). Built here because resolving a `Symbol` needs the interner, which
+            // `jr-codegen` has no database to ask — the same reason a trap's *location* is
+            // resolved on this side (ADR-0020 §3).
+            let names = proc_names(db, hir.as_ref());
+            let input = FileInput {
+                file: *file_id,
+                hir: hir.as_ref(),
+                signatures: signatures.as_ref(),
+                names: &names,
+            };
+            let own_entry = (*file_id == entry.file).then_some(entry.proc);
+            for decl in declarations(&input, &pool, own_entry) {
+                backend
+                    .declare(&decl, &pool, layout)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+
+        // Phase 2: define every body MIR produced. A body MIR refused is skipped rather
+        // than reported: the refusal is ADR-0017 §4 working, and something upstream
+        // already reported the cause.
+        for (file_id, hir, mir, _) in &inputs {
+            for (proc, outcome) in mir.iter() {
+                let Ok(body) = outcome else { continue };
+                let reference = jr_mir::ProcRef::new(*file_id, proc);
+                // The back end holds a `MirSpan` at every trap site and can resolve
+                // none of them: that needs the file's HIR and a source map, neither of
+                // which ADR-0009 lets it see. So the resolution happens here and arrives
+                // as text (ADR-0020 §3).
+                let locations = BodyLocations {
+                    hir: hir.as_ref(),
+                    map: &map,
+                    body: hir
+                        .procs
+                        .get(proc.index())
+                        .and_then(|data| data.body)
+                        .and_then(|id| hir.bodies.get(id.index())),
+                };
+                backend
+                    .define(reference, body, &pool, layout, &locations)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    };
+
+    match choice {
+        BackendChoice::Cranelift => {
+            let mut backend = ClifBackend::new(&pool, "jairs").map_err(|e| e.to_string())?;
+            drive(&mut backend)?;
+            let libraries = backend.libraries().to_vec();
+            let object = Box::new(backend).finalise().map_err(|e| e.to_string())?;
+            Ok(BuildOutput { object, libraries })
+        }
+        // The LLVM back end's values borrow an `inkwell::Context`, and naming one here would
+        // put an `inkwell` type in this crate — which ADR-0009's confinement forbids. So the
+        // back end's own crate owns the context and takes the loop (ADR-0143 §2).
+        #[cfg(feature = "llvm")]
+        BackendChoice::Llvm => {
+            let (object, libraries) = jr_codegen_llvm::build(&pool, layout, "jairs", &drive)?;
+            Ok(BuildOutput { object, libraries })
+        }
+        #[cfg(not(feature = "llvm"))]
+        BackendChoice::Llvm => Err(
+            "this compiler was built without LLVM support; rebuild with `--features llvm`"
+                .to_owned(),
+        ),
+    }
 }
 
 /// The `main` procedure's own [`ProcId`], for a caller that needs it separately.

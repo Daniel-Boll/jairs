@@ -43,6 +43,10 @@ version bump breaks compilation without warning.
 
 - All Cranelift API contact **must stay inside `jr-codegen-clif`** behind the
   `Backend` trait. No other crate may import a `cranelift-*` crate directly.
+- The same rule holds for LLVM: every `inkwell` reference lives in `jr-codegen-llvm`,
+  behind that crate's default-off `llvm` feature. The driver never names an
+  `inkwell::Context` — it hands the declare/define loop to `jr_codegen_llvm::build`,
+  which owns the context its values borrow (ADR-0143 §2).
 - `salsa` is similarly confined to `jr-db`.
 
 When bumping either, update the pin in `[workspace.dependencies]`, verify the

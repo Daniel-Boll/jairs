@@ -18,6 +18,11 @@ path = "src/lib.rs"
 [lints]
 workspace = true
 
+# Selects the LLVM back end; see `jr-codegen-llvm` and ADR-0143 §1.
+[features]
+default = []
+llvm = ["jr-db/llvm"]
+
 [dependencies]
 jr-base.workspace = true
 jr-diag.workspace = true
