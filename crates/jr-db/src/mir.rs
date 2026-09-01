@@ -637,7 +637,9 @@ fn render(db: &dyn Db, result: MirResult) -> String {
 // optimized_file_mir — tracked query
 // ---------------------------------------------------------------------------
 
-/// A file's MIR with every eligible call inlined (ADR-0021 §1).
+/// A file's MIR with every eligible call inlined (ADR-0021 §1), unless the config's
+/// [`OptLevel`](crate::OptLevel) is `Off`, in which case every body is passed through
+/// exactly as [`file_mir`] built it (ADR-0142 §2).
 ///
 /// This is the staged half ADR-0017 §3 described and deferred: [`file_mir`] stays
 /// the unstaged query with no cross-body dependencies, and this one — which reads
@@ -733,7 +735,14 @@ pub fn optimized_file_mir(
                 if !config.bounds_checks(db) {
                     jr_mir::strip_bounds_checks(&mut body);
                 }
-                jr_mir::optimize(&mut body, &callees, &mut pool);
+                // The one place the level is read (ADR-0142 §2). Exhaustive, so a new
+                // level cannot be added without deciding here what it runs.
+                match config.opt_level(db) {
+                    crate::OptLevel::Off => {}
+                    crate::OptLevel::Standard => {
+                        jr_mir::optimize(&mut body, &callees, &mut pool);
+                    }
+                }
                 out.push(proc, Ok(body));
             }
             // A frozen body and a refused one are both passed through unchanged, for

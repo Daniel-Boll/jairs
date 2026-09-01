@@ -124,6 +124,15 @@ coercion, so `f(*a)` errored while `f(*a, *b)` worked); the decision is now shar
 code, no MIR change. `valid/114` pins mixed-type `..Any` (the `print(fmt, ..)` shape); bare values stay
 E0214 (ADR-0076 §4's deferred bare-value→`Any`).
 
+**ADR-0142 reaches 1018** and adds **no** corpus file (228 unchanged) — **W8 sub-wave 1**, the
+optimisation level. The clearest case yet of a wave whose deliverable no `.jr` file can carry: `-O0`
+is a *build setting*, and its proof is a sweep over the 114 programs that already exist. Four of the
+eight tests are `jr-db`'s (the level is a byte-identity, it invalidates as a salsa input, it is
+independent of the bounds check), three are the differential harness's (the corpus sweep at both
+levels, the native path, the backtrace difference) and one is the clap surface — which is a test
+because refusing `-O2` is a *decision*, so the day a level is added something must record that the
+surface used to be closed.
+
 **A number in this file is now partly enforced.** `crates/jr-cli/tests/codes.rs` fails when the
 "first free code" claim below rots. The test count and the corpus count are still prose, and both were
 wrong in three places each when the audit looked — which is the argument for reading §7 rather than

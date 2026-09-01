@@ -66,6 +66,7 @@ pub mod workspace;
 // the generated code rather than for the whole crate.
 #[allow(missing_docs)]
 mod input {
+    use crate::OptLevel;
     use std::sync::Arc;
 
     /// A salsa input representing one source file.
@@ -98,9 +99,10 @@ mod input {
     /// MIR optimisation, and changing this would invalidate module lookup. Neither
     /// is visible until somebody measures (ADR-0058 §2).
     ///
-    /// **One field, deliberately.** `--release` and an `opt_level` are W8's, and a
-    /// surface designed around a single boolean would have to be redesigned when
-    /// they arrive.
+    /// **Two fields.** ADR-0058 §6 deferred the optimisation level to W8 and said why:
+    /// a surface designed around a single boolean would have to be redesigned. ADR-0142
+    /// designed it, and it is a second field here rather than a parameter for the same
+    /// invalidation reason.
     #[salsa::input]
     pub struct BuildConfig {
         /// Whether array indexing emits a bounds check.
@@ -113,7 +115,45 @@ mod input {
         /// is a property of a procedure and holds whatever the build says
         /// (ADR-0058 §3).
         pub bounds_checks: bool,
+
+        /// How much the mid-end may rewrite a body before a back end sees it.
+        ///
+        /// [`OptLevel::Standard`] is the default and what every build did before
+        /// ADR-0142; [`OptLevel::Off`] makes `optimized_file_mir` pass `file_mir`'s
+        /// bodies through untouched.
+        ///
+        /// Separate from `bounds_checks` in both directions: `--no-bounds-check`
+        /// changes what the program *means* and is honoured at every level, while a
+        /// level may not change an answer at all (ADR-0142 §2, §3).
+        pub opt_level: OptLevel,
     }
+}
+
+/// How much the mid-end may rewrite a body before a back end sees it (ADR-0142 §1).
+///
+/// An enum rather than a `u8`, so that every consumer's match is exhaustive and adding a
+/// level is a compile error at each site that has to decide what the new level means. The
+/// project's house style, and the reason it gives: it has caught real bugs.
+///
+/// **Two variants, because there are two behaviours.** ADR-0058 §6 warned against a
+/// surface invented ahead of what is behind it, and a third level running the same four
+/// passes would be a name with no content. A W8 sub-wave that adds a pass worth opting
+/// into adds a variant here and a `--opt-level` value at the same time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum OptLevel {
+    /// No mid-end pass runs: the back end receives exactly what `jr_mir::lower_file`
+    /// produced, which is also the MIR that `jr check`'s diagnostics and the `mir` dump
+    /// describe.
+    ///
+    /// What it is *for* is attribution: a wrong answer that survives `-O0` is not the
+    /// mid-end's, and this project has had miscompiles on both sides of that line.
+    Off,
+    /// The pipeline: inline, forward stores, const-prop, DCE, to a bounded fixed point
+    /// (ADR-0022 §3).
+    ///
+    /// The default, and what every build did before the level existed.
+    #[default]
+    Standard,
 }
 
 pub use input::{BuildConfig, SourceFile};
@@ -456,7 +496,7 @@ impl JairsDatabase {
     /// `workspace_files` records: a fresh input each time would orphan the dependencies
     /// of the old one, so nothing would be invalidated and the change would appear to
     /// have no effect.
-    pub fn set_build_config(&mut self, bounds_checks: bool) -> BuildConfig {
+    pub fn set_build_config(&mut self, bounds_checks: bool, opt_level: OptLevel) -> BuildConfig {
         let existing = {
             let guard = self
                 .build_config
@@ -466,9 +506,10 @@ impl JairsDatabase {
         };
         if let Some(existing) = existing {
             existing.set_bounds_checks(self).to(bounds_checks);
+            existing.set_opt_level(self).to(opt_level);
             existing
         } else {
-            let config = BuildConfig::new(self, bounds_checks);
+            let config = BuildConfig::new(self, bounds_checks, opt_level);
             let mut guard = self
                 .build_config
                 .lock()
@@ -478,11 +519,13 @@ impl JairsDatabase {
         }
     }
 
-    /// The build settings, creating them with bounds checks **on** if unset.
+    /// The build settings, creating them with bounds checks **on** and the mid-end
+    /// **on** if unset.
     ///
-    /// The default is checks-on, which is what every consumer that does not care should
-    /// get: an editor, a test harness and `jr check` all want the program as written.
-    /// ADR-0058 §2 is explicit that only `jr run` and `jr build` take the flag.
+    /// The default is checks-on and optimised, which is what every consumer that does not
+    /// care should get: an editor, a test harness and `jr check` all want the program as
+    /// written. ADR-0058 §2 is explicit that only `jr run` and `jr build` take the
+    /// bounds-check flag, and ADR-0142 §1 gives the optimisation level the same rule.
     pub fn build_config(&mut self) -> BuildConfig {
         let existing = {
             let guard = self
@@ -491,7 +534,7 @@ impl JairsDatabase {
                 .expect("build_config lock poisoned");
             *guard
         };
-        existing.unwrap_or_else(|| self.set_build_config(true))
+        existing.unwrap_or_else(|| self.set_build_config(true, OptLevel::Standard))
     }
 
     /// Walks `roots` and records the result as the workspace file list.

@@ -66,11 +66,18 @@ struct Behaviour {
     status: i32,
 }
 
-/// Runs a program in the bytecode VM.
+/// Runs a program in the bytecode VM at the default optimisation level.
 fn run_in_vm(program: &Path) -> Behaviour {
+    run_in_vm_at(program, "1")
+}
+
+/// Runs a program in the bytecode VM at a named `--opt-level` (ADR-0142 §3).
+fn run_in_vm_at(program: &Path, level: &str) -> Behaviour {
     let output = Command::new(jr())
         .arg("run")
         .arg(program)
+        .arg("--opt-level")
+        .arg(level)
         .arg("-I")
         .arg(workspace_root().join("modules"))
         .output()
@@ -2176,5 +2183,181 @@ fn calling_a_null_procedure_pointer_traps_in_both_engines() {
     assert_eq!(
         vm, native,
         "the two engines disagree about the null-call trap"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0142: the optimisation level
+// ---------------------------------------------------------------------------
+
+/// **Every corpus program computes the same answer at `-O0` and `-O1`** (ADR-0142 §3).
+///
+/// The check the mid-end has never had. Four passes rewrite every body on the way to both back
+/// ends, and until this test nothing said the rewriting preserves meaning: the optimized-MIR
+/// snapshot pins the result's *shape* — which is how ADR-0106 §2's too-broad forwarding fix was
+/// caught — but a snapshot cannot say the new shape computes the same thing, and the harness's
+/// five hand-written pass tests cover five programs rather than the corpus.
+///
+/// **The VM only, and that is not a shortcut.** The mid-end runs upstream of both back ends on
+/// shared MIR, so "did optimisation change the answer" is one question rather than one per
+/// engine; `every_corpus_program_behaves_identically_in_both_engines` answers the orthogonal one
+/// at the default level. Sweeping both engines at both levels would be four native compiles per
+/// program for a property that lives before code generation.
+///
+/// **The whole corpus rather than named files**, which is the opposite call to ADR-0058 §5's
+/// three-file list and for a stated reason: the bounds-check property lives where an index is,
+/// and this one lives wherever a pass can fire — every program with a call, a constant or a
+/// branch. `modules/Basic` hid a miscompile for a whole wave because nothing executed it.
+///
+/// Full `Behaviour` equality, stderr included. Every program in `valid/` exits 0 and traps
+/// nowhere, so the one legitimate difference between the levels — an inlined leaf's trap
+/// location, pinned by the test below — cannot arise here.
+#[test]
+fn every_corpus_program_computes_the_same_answer_at_both_levels() {
+    let mut checked = Vec::new();
+    let mut divergences = Vec::new();
+
+    for program in executable_programs() {
+        let optimised = run_in_vm_at(&program, "1");
+        let unoptimised = run_in_vm_at(&program, "0");
+        let name = program
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if optimised == unoptimised {
+            checked.push(name);
+        } else {
+            divergences.push(format!(
+                "{name}:\n  -O1: out {:?} err {:?} exit {}\n  -O0: out {:?} err {:?} exit {}",
+                optimised.stdout,
+                optimised.stderr,
+                optimised.status,
+                unoptimised.stdout,
+                unoptimised.stderr,
+                unoptimised.status
+            ));
+        }
+    }
+
+    assert!(
+        divergences.is_empty(),
+        "optimisation changed the answer for {} of {} programs, which is a miscompile:\n{}",
+        divergences.len(),
+        checked.len() + divergences.len(),
+        divergences.join("\n"),
+    );
+}
+
+/// `-O0` must reach the native back end too, and agree with the VM there (ADR-0142 §3).
+///
+/// The sweep above runs one engine, deliberately. This is the assertion that the *other* engine
+/// receives unoptimised MIR at all — a level that only the VM path honoured would leave
+/// `jr build -O0` quietly optimised, and nothing else here would notice. One program, because the
+/// property is "the flag is plumbed", not "the passes are sound".
+#[test]
+fn the_level_reaches_the_native_back_end() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/024-hello.jr");
+    let binary = dir.path().join("hello-o0");
+    let built = Command::new(jr())
+        .arg("build")
+        .arg(&program)
+        .arg("-o")
+        .arg(&binary)
+        .arg("--opt-level")
+        .arg("0")
+        .arg("-I")
+        .arg(workspace_root().join("modules"))
+        .output()
+        .expect("jr build should be executable");
+    assert!(
+        built.status.success(),
+        "`jr build --opt-level 0` failed:\n{}",
+        String::from_utf8_lossy(&built.stderr),
+    );
+    let output = Command::new(&binary)
+        .output()
+        .unwrap_or_else(|e| panic!("cannot run {}: {e}", binary.display()));
+    let native = Behaviour {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        status: output.status.code().unwrap_or(-1),
+    };
+    assert_eq!(
+        native,
+        run_in_vm_at(&program, "0"),
+        "the two engines disagree at `-O0`"
+    );
+    assert_eq!(
+        native,
+        run_in_vm_at(&program, "1"),
+        "`-O0` changed what the slice exit criterion does"
+    );
+}
+
+/// **`-O0` reports the leaf's own line; `-O1` reports the call site** (ADR-0142 §4).
+///
+/// The one thing an optimisation level may change, pinned as a fact rather than excluded from a
+/// comparison. ADR-0021 §3 gives an inlined callee's trap the *call site*'s span, because after a
+/// splice the callee's frame does not exist; ADR-0066 §2 lists the live frames. At `-O0` nothing
+/// is inlined, so the trap names the line inside `leaf` and the frame list has `leaf` in it.
+///
+/// This is also what makes `-O0` worth having for a second reason: it is how a reader gets an
+/// honest backtrace out of a program whose callee was inlined away.
+///
+/// Both directions are asserted. A test that only checked `-O0` would pass if inlining had
+/// silently stopped happening, which is the mistake ADR-0058 §5 records making once.
+#[test]
+fn the_level_changes_a_backtrace_and_nothing_else() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = concat!(
+        "leaf :: (a: s64) -> s64 {\n",
+        "    return a + 9223372036854775807;\n",
+        "}\n\n",
+        "main :: () {\n",
+        "    n := 1;\n",
+        "    m := leaf(n);\n",
+        "    if m == 0 {\n",
+        "        return;\n",
+        "    }\n",
+        "}\n",
+    );
+    let path = dir.path().join("frames.jr");
+    std::fs::write(&path, source).expect("the source must be writable");
+
+    let optimised = run_in_vm_at(&path, "1");
+    let unoptimised = run_in_vm_at(&path, "0");
+
+    // The trap itself is a property of the program, not of the build (ADR-0002).
+    assert_eq!(optimised.status, 4, "the overflow must trap at `-O1`");
+    assert_eq!(unoptimised.status, 4, "the overflow must trap at `-O0`");
+    assert_eq!(
+        optimised.stdout, unoptimised.stdout,
+        "a level may not change what a program writes"
+    );
+
+    // `-O1`: `leaf` was spliced into `main`, so there is no `leaf` frame to report and the
+    // location is the call.
+    assert!(
+        optimised.stderr.contains("frames.jr:7"),
+        "at `-O1` the trap must name the call site: {}",
+        optimised.stderr
+    );
+    assert!(
+        !optimised.stderr.contains("in leaf"),
+        "an inlined callee has no frame to report: {}",
+        optimised.stderr
+    );
+
+    // `-O0`: nothing was inlined, so the trap is where it is written and `leaf` is live.
+    assert!(
+        unoptimised.stderr.contains("frames.jr:2"),
+        "at `-O0` the trap must name the leaf's own line: {}",
+        unoptimised.stderr
+    );
+    assert!(
+        unoptimised.stderr.contains("in leaf"),
+        "at `-O0` the leaf's frame must be listed: {}",
+        unoptimised.stderr
     );
 }

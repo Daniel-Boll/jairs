@@ -123,6 +123,32 @@ pub enum Command {
     Parse(ParseArgs),
 }
 
+/// The `--opt-level` values, as the command line spells them (ADR-0142 §2).
+///
+/// A separate type from [`jr_db::OptLevel`] because `clap::ValueEnum` is a foreign trait
+/// and `jr_db::OptLevel` a foreign type, so `jr-cli` cannot implement one for the other —
+/// and `jr-db` must not depend on `clap` to hand the driver a value type. One `From`
+/// bridges them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum OptLevelArg {
+    /// `-O0`: no mid-end pass runs.
+    #[value(name = "0")]
+    Off,
+    /// `-O1`: the pipeline. The default, and what every build did before the flag.
+    #[value(name = "1")]
+    #[default]
+    Standard,
+}
+
+impl From<OptLevelArg> for jr_db::OptLevel {
+    fn from(arg: OptLevelArg) -> Self {
+        match arg {
+            OptLevelArg::Off => Self::Off,
+            OptLevelArg::Standard => Self::Standard,
+        }
+    }
+}
+
 /// Arguments for `jr check`.
 #[derive(Debug, Args)]
 pub struct CheckArgs {
@@ -155,6 +181,19 @@ pub struct RunArgs {
     /// behaviour — so `#run f(9)` on an eight-element array is still an error (ADR-0058 §4).
     #[arg(long = "no-bounds-check")]
     pub no_bounds_check: bool,
+
+    /// How much the mid-end may optimise before the back end sees the code (ADR-0142 §1).
+    ///
+    /// `1`, the default, runs the pipeline: inline, forward stores, const-prop, DCE.
+    /// `0` runs none of them, so the code executed is exactly what lowering produced.
+    ///
+    /// A level may not change what a program computes — ADR-0002 makes a trap a fact
+    /// about the program rather than about the build — and the differential harness sweeps
+    /// the corpus at both levels to check it. The one thing `0` does change is a
+    /// backtrace: nothing is inlined, so a trap inside a leaf names the leaf's own line
+    /// and lists its frame, where `1` names the call site (ADR-0021 §3).
+    #[arg(short = 'O', long = "opt-level", value_enum, default_value_t)]
+    pub opt_level: OptLevelArg,
 
     /// Directory to search for imported modules. May be repeated; searched in
     /// the order given, before the bundled module directory (ADR-0014).
@@ -193,6 +232,18 @@ pub struct BuildArgs {
     /// behaviour — so `#run f(9)` on an eight-element array is still an error (ADR-0058 §4).
     #[arg(long = "no-bounds-check")]
     pub no_bounds_check: bool,
+
+    /// How much the mid-end may optimise before the back end sees the code (ADR-0142 §1).
+    ///
+    /// `1`, the default, runs the pipeline: inline, forward stores, const-prop, DCE.
+    /// `0` runs none of them, so the compiled code is exactly what lowering produced —
+    /// which is what makes a wrong answer attributable to lowering rather than to a pass.
+    ///
+    /// A level may not change what a program computes (ADR-0002, ADR-0142 §3). The one
+    /// thing `0` does change is a backtrace: nothing is inlined, so a trap inside a leaf
+    /// names the leaf's own line and lists its frame (ADR-0021 §3).
+    #[arg(short = 'O', long = "opt-level", value_enum, default_value_t)]
+    pub opt_level: OptLevelArg,
 
     /// Directory to search for imported modules. May be repeated; searched in
     /// the order given, before the bundled module directory (ADR-0014).

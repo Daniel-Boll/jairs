@@ -33,3 +33,9 @@
 # The tree-sitter parser Neovim loads, built by editors/nvim/build.sh from the
 # git-ignored generated parser.c. Regenerate rather than commit a binary.
 /editors/nvim/parser/*.so
+
+# A test artefact: `jr build` resolves a declared `BUILD_OUTPUT` against the
+# compiler process working directory (ADR-0122), which for `cargo test` is the
+# crate directory. The test removes it, and this is the guard against a binary
+# being committed again — one was.
+/crates/jr-cli/named_by_script
