@@ -428,3 +428,17 @@ pub(crate) const E0282: &str = "E0282";
 /// Its own code beside E0282 rather than one shared "bad layout attribute", because the two have
 /// different rules and a reader filtering by code wants to know which attribute they got wrong.
 pub(crate) const E0283: &str = "E0283";
+
+/// An `#soa` struct used in a way it has no meaning for (ADR-0147).
+///
+/// Three shapes: a count that is not a usable positive array length, a `using` field inside an
+/// `#soa` struct (§3), and an index into one that is **not** the receiver of a field access (§2).
+///
+/// One code because each is "this is not how an `#soa` struct is used", and the *message* says
+/// which — the reasoning E0129, E0130 and E0282 already use.
+///
+/// The third is the interesting one. `e[i]` has no type of its own by design: the alternative is
+/// Jai's synthesised struct-of-pointers, which is a real design and a much larger one — it needs a
+/// type that exists only as an intermediate, and pointers into N arrays kept consistent. Refusing
+/// leaves that available rather than foreclosing it.
+pub(crate) const E0284: &str = "E0284";

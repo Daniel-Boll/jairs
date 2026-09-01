@@ -1,0 +1,55 @@
+// ADR-0147: `#soa` — a struct stored as arrays.
+//
+// `Entities :: struct #soa(4) { … }` lays out as one array per field, and `e[i].x` means `e.x[i]`.
+// The whole feature is a sema change — each field's resolved type is wrapped in `[N]T` before layout
+// runs, and the access is a recorded place-order rewrite — so **no engine learned a line**, which is
+// what the three-way differential is here to confirm.
+//
+// The exit status is a checksum of both halves, because each fails silently on its own:
+//
+//   size_of(Entities)   [4]s64 (32) + [4]u8 (4) -> end 36, align 8 -> 40
+//   x values            0 + 10 + 20 + 30                          = 60
+//   hp values           0 + 1 + 2 + 3                              = 6
+//   the two spellings   `e[2].x` and `e.x[2]` must be the same     = 20
+//
+// 40 + 60 + 6 + 20 = 126.
+#import "Basic";
+
+// A named count, which is `named_constant_int`'s fourth caller (ADR-0070 wrote it, ADR-0129
+// generalised it, ADR-0144 §2 was the third) and again needed no change to serve one.
+COUNT :: 4;
+
+Entities :: struct #soa(COUNT) {
+    x: s64;
+    hp: u8;
+}
+
+main :: () {
+    e: Entities;
+
+    // The sugar as a *write* target, which is the half a read-only test would miss: the place is
+    // built the same way, so a rewrite that only fired on reads would produce a program that
+    // compiled and stored nothing where it was told to.
+    i := 0;
+    while i < COUNT {
+        e[i].x = i * 10;
+        e[i].hp = cast(u8, i);
+        i = i + 1;
+    }
+
+    total := size_of(Entities);
+    j := 0;
+    while j < COUNT {
+        total = total + e[j].x + cast(s64, e[j].hp);
+        j = j + 1;
+    }
+
+    // **The two spellings must agree**, which is the claim that makes the sugar sugar: a reader who
+    // does not know about `e[i].x` can still read every program, because the field genuinely is an
+    // array and `e.x[i]` is an ordinary index. If these ever differ, one of them is a wrong address.
+    if e[2].x == e.x[2] {
+        total = total + 20;
+    }
+
+    exit(total);
+}

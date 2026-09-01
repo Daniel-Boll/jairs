@@ -172,6 +172,11 @@ exits 114, a checksum of offsets and sizes) and two refusals in `type-errors/`. 
 registry earned its keep here**: `crates/jr-cli/tests/codes.rs` failed the moment E0283 was declared
 while this file still claimed E0282 was free, which is exactly the rot it was written to catch.
 
+**ADR-0147 reaches 1032** (1033 under gate 7) and adds two corpus files = **235** — W8 sub-wave 6,
+`#soa`. Two new tests are the formatter's (survival *and* canonicalisation, because dropping the
+attribute changes the program's *layout* rather than its formatting) and the corpus files are
+`valid/118` and a `type-errors` refusal. The enforced code registry moved again, from E0284 to E0285.
+
 **ADR-0146 reaches 1031** (1032 under gate 7) and adds one corpus file = **233** — W8 sub-wave 5,
 the compile-throughput number and `heap_sort`. One new test is the throughput mode's (asserting the
 mode runs *and* that an empty input set is an error, which is the interesting half — a rate over no
@@ -324,7 +329,7 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0284 is the first free code**; E0133 is the first free *parser* code. E0282 and E0283 are `#align`'s and `#place`'s refusals (ADR-0144), one per attribute because the two have different rules, and E0132 is `jr-syntax`'s for either attribute written with no value at all. E0280 refuses an
+**E0285 is the first free code**; E0133 is the first free *parser* code. E0284 is `#soa`'s single refusal (ADR-0147) — an unusable count, a `using` field, or an index that is not a field receiver — one code because each is "this is not how an `#soa` struct is used". E0282 and E0283 are `#align`'s and `#place`'s refusals (ADR-0144), one per attribute because the two have different rules, and E0132 is `jr-syntax`'s for either attribute written with no value at all. E0280 refuses an
 instantiation family that never settles and E0281 a `$N` call in a file whose `#insert`
 operand is computed (both ADR-0120, **owned by `jr-db`**). E0231 is `jr-db`'s
 unused-import warning — the first code in this project that is a *warning* rather than an

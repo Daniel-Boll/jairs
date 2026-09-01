@@ -1162,6 +1162,16 @@ impl Member {
     }
 }
 
+impl StructType {
+    /// The `#soa(N)` count, if the struct carries the attribute (ADR-0147 §1).
+    ///
+    /// The *expression*, not a number, for [`Field::align_value`]'s reason: whether it is a usable
+    /// count is a semantic judgement rather than a syntactic one.
+    pub fn soa_count(&self) -> Option<Expr> {
+        attr_value(&self.0, SOA_ATTR)
+    }
+}
+
 impl FieldList {
     /// All fields.
     pub fn fields(&self) -> impl Iterator<Item = Field> + '_ {

@@ -299,6 +299,12 @@ impl ProcAttr {
     }
 }
 
+/// The directive that marks a struct as structure-of-arrays (ADR-0147 §1).
+///
+/// A `const` rather than a literal at the one site that matches it, so that a reader grepping for
+/// `#soa` finds the spelling in one place — the same reason `FOREIGN_DIRECTIVE` is one.
+const SOA_DIRECTIVE: &str = "#soa";
+
 /// A layout attribute on a struct field (ADR-0144 §1).
 ///
 /// An enum for the reason [`ProcAttr`] is one: the loop that consumes them matches
@@ -1534,6 +1540,30 @@ impl<'src> Parser<'src> {
         // so an ordinary `struct { … }` is unchanged; when present each parameter is a `$T`.
         if self.at(L_PAREN) {
             self.parse_struct_type_params();
+        }
+        // `struct #soa(N) { … }` — one array per field (ADR-0147 §1). After the parameter list, so
+        // `struct($T) #soa(4) { … }` reads in the order the two things are decided: what the type is
+        // parameterised over, then how it is stored.
+        if self.at(DIRECTIVE) && self.current_directive_text() == SOA_DIRECTIVE {
+            self.start_node(SOA_ATTR);
+            self.bump(); // `#soa`
+            if self.eat(L_PAREN) {
+                if self.at_set(EXPR_START) {
+                    self.parse_expr();
+                } else {
+                    let span = self.current_span();
+                    self.error(span, "expected a count after `#soa(`", E0132);
+                }
+                self.expect(R_PAREN);
+            } else {
+                let span = self.current_span();
+                self.error(
+                    span,
+                    "`#soa` needs a count in parentheses, as in `#soa(4)`",
+                    E0132,
+                );
+            }
+            self.finish_node();
         }
         self.start_node(FIELD_LIST);
         self.expect(L_BRACE);

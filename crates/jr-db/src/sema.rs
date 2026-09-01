@@ -92,6 +92,12 @@ pub type ComptimeCalls = rustc_hash::FxHashMap<
 pub type VariadicCalls =
     rustc_hash::FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), jr_sema::VariadicCall>;
 
+/// Each `#soa` field access, keyed on the index expression that is its receiver (ADR-0147 §2).
+///
+/// The value is the field's position, which is what `jr-mir` needs to build `Field(n)` then
+/// `Index(i)` — the place order the HIR nests the other way round.
+pub type SoaFields = rustc_hash::FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), u32>;
+
 /// Each comptime-value call and the tuple of interned argument *values* — the structural key an
 /// instantiation is built for (ADR-0088 §3). Same shape as [`Instantiations`] once const-eval has run.
 pub type ComptimeCallValues = rustc_hash::FxHashMap<
@@ -172,6 +178,11 @@ pub struct CheckResult {
     /// threaded into `ConstValues::set_variadic_call` so `call_rvalue` knows which trailing
     /// arguments to pack into a stack view. Empty for programs with no variadic calls.
     pub variadic_calls: Arc<VariadicCalls>,
+    /// Each `#soa` field access, keyed on the index expression that is its receiver, holding the
+    /// field's position (ADR-0147 §2). Read by the `mir` query and threaded into
+    /// `ConstValues::set_soa_field`, so lowering builds the place in the order sema decided rather
+    /// than recognising the pattern a second time. Empty for programs with no `#soa` accesses.
+    pub soa_fields: Arc<SoaFields>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1088,6 +1099,7 @@ fn translate_check_output(
         instantiations: Arc::new(output.instantiations),
         comptime_calls: Arc::new(output.comptime_calls),
         variadic_calls: Arc::new(output.variadic_calls),
+        soa_fields: Arc::new(output.soa_fields),
     }
 }
 

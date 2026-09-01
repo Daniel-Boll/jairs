@@ -39,7 +39,9 @@ use jr_hir::{
 use jr_pool::{ContextKind, DeclId, IntKind, Item, Pool, PoolId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::code::{E0211, E0212, E0213, E0214, E0233, E0237, E0240, E0269, E0270, E0282, E0283};
+use crate::code::{
+    E0211, E0212, E0213, E0214, E0233, E0237, E0240, E0269, E0270, E0282, E0283, E0284,
+};
 use crate::map::TypeMap;
 use crate::sigs::{FileSignatures, SigEntry, SigKind};
 
@@ -237,6 +239,12 @@ pub(crate) struct Ctx<'a> {
     /// pack the trailing arguments into a stack view (ADR-0138 §2). Empty for a file with no
     /// variadic calls.
     pub(crate) variadic_calls: FxHashMap<(ExprScope, jr_hir::ExprId), crate::check::VariadicCall>,
+    /// Each `#soa` field access, keyed on the **index** expression that is its receiver, holding the
+    /// field's position (ADR-0147 §2).
+    ///
+    /// `jr-mir` reads this to build `Field(position)` then `Index(i)` for a place whose HIR says
+    /// `Index` then `Field` — the one place the two crates must agree, so one of them decides.
+    pub(crate) soa_fields: FxHashMap<(ExprScope, jr_hir::ExprId), u32>,
     /// The **baked value** of each `$N` parameter of the procedure currently being resolved
     /// (ADR-0089 §1).
     ///
@@ -297,6 +305,7 @@ impl<'a> Ctx<'a> {
             instantiations: FxHashMap::default(),
             comptime_calls: FxHashMap::default(),
             variadic_calls: FxHashMap::default(),
+            soa_fields: FxHashMap::default(),
             value_bindings: FxHashMap::default(),
             comptime_param_names: FxHashSet::default(),
             poly_var_names: FxHashSet::default(),
@@ -1266,15 +1275,87 @@ impl<'a> Ctx<'a> {
         Some(align)
     }
 
+    /// The `#soa(N)` count of the struct declared at `sid`, if it has one (ADR-0147 §1).
+    ///
+    /// `None` for an ordinary struct *and* for one whose count is unusable, the second having
+    /// reported E0284 — so a bad count degrades to an ordinary struct rather than to a struct of
+    /// zero-length arrays, which would lay out as nothing and read as a wrong answer.
+    ///
+    /// Read through `named_constant_int`, its **fourth** caller (ADR-0070 wrote it, ADR-0129
+    /// generalised it, ADR-0144 §2 was the third) and again needing no change to serve one.
+    pub(crate) fn soa_count(&mut self, sid: StructId) -> Option<u64> {
+        let expr = self.hir.struct_def(sid).soa?;
+        let span = self.hir.struct_def(sid).span;
+        let value = match self.hir.exprs.get(expr.index()) {
+            Some(jr_hir::Expr::Literal(jr_hir::Literal::Int { value, .. }, _)) => Some(*value),
+            Some(jr_hir::Expr::Name { name, .. }) => {
+                let name = *name;
+                self.named_constant_int(name)
+            }
+            _ => None,
+        };
+        match value.and_then(|v| u64::try_from(v).ok()) {
+            // Zero is refused rather than accepted as an empty struct: `#soa(0)` is far more
+            // likely a mistake than an intent, and a struct of zero-length arrays lays out as
+            // nothing while every access is out of range.
+            Some(count) if count > 0 => Some(count),
+            _ => {
+                self.diags.push(
+                    Diagnostic::error(span, "this `#soa` count is not a usable array length")
+                        .with_code(E0284)
+                        .with_note(
+                            "a struct's fields are laid out with its declaration, before the \
+                             compile-time evaluator runs (ADR-0018 §3), so an arithmetic or `#run` \
+                             value is not available here",
+                        )
+                        .with_help(
+                            "write a positive integer literal, as in `#soa(64)`, or name a \
+                             constant whose value is one",
+                        ),
+                );
+                None
+            }
+        }
+    }
+
     /// Resolves and records the field list of the struct declared at `sid`.
     pub(crate) fn resolve_struct_body(&mut self, sid: StructId, ty: PoolId, span: Span) {
         let hir = self.hir;
         let fields = hir.struct_def(sid).fields.clone();
+        // **The `#soa` transformation happens here, before layout** (ADR-0147 §1): each field's
+        // resolved type is wrapped in `[N]T`, so every consumer downstream — layout, field offsets,
+        // `type_info`, the VM and both back ends — sees an ordinary struct of arrays and needed no
+        // change at all. That is the same leverage ADR-0144 took from the layout fold, one level up.
+        let soa = self.soa_count(sid);
         let mut resolved = Vec::with_capacity(fields.len());
         for field in &fields {
             let field_ty = match field.ty {
                 Some(id) => self.resolve_type(ExprScope::TopLevel, id, field.name_span),
                 None => PoolId::ERROR,
+            };
+            // `using` inside an `#soa` struct is refused (ADR-0147 §3): promotion is a *lookup*
+            // feature, and under `#soa` the promoted names would have to mean "the array of that
+            // subfield" — a second transformation with no spelling for the index.
+            let field_ty = match soa {
+                Some(count) if field.using => {
+                    self.diags.push(
+                        Diagnostic::error(
+                            field.name_span,
+                            "a `using` field is not allowed in an `#soa` struct",
+                        )
+                        .with_code(E0284)
+                        .with_note(
+                            "`using` promotes a field's own fields for lookup, and under `#soa` \
+                             each of those would be an array — a second transformation with no \
+                             spelling for the index",
+                        )
+                        .with_help("drop the `using`, or drop the `#soa`"),
+                    );
+                    let _ = count;
+                    field_ty
+                }
+                Some(count) => self.pool.array_of(field_ty, count),
+                None => field_ty,
             };
             // The `using` flag travels with the field so that *field lookup* can follow an
             // embedded base (ADR-0050 §4). It changes no offset: `field_offset` never reads it.
@@ -1292,6 +1373,11 @@ impl<'a> Ctx<'a> {
             );
         }
         let decl = DeclId::new(self.file, sid.as_u32());
+        // Recorded beside the fields, because the two facts belong together: the fields are already
+        // `[N]T` by now, and this records *why* rather than a fact anything recomputes (ADR-0147 §1).
+        if let Some(count) = soa {
+            self.pool.set_soa_count(decl, count);
+        }
         self.pool.set_struct_fields(decl, resolved.clone());
         self.sigs.insert_struct_body(decl, resolved);
         // `span` is unused for well-formed input; keeping the parameter means a
