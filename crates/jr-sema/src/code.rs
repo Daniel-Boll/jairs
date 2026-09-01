@@ -442,3 +442,17 @@ pub(crate) const E0283: &str = "E0283";
 /// type that exists only as an intermediate, and pointers into N arrays kept consistent. Refusing
 /// leaves that available rather than foreclosing it.
 pub(crate) const E0284: &str = "E0284";
+
+/// A `#simd` type or operation that a vector cannot have (ADR-0148 §2, §3).
+///
+/// Three shapes: a total width that is not exactly sixteen bytes, an element that is not a numeric
+/// scalar, and integer division. One code, because each is "this is not how a vector works" and the
+/// *message* names which — the reasoning E0284 uses for `#soa`'s three, and E0132 for a field
+/// attribute's two.
+///
+/// The width refusal is a **machine fact in the language**, deliberately: a vector operation compiles
+/// at exactly 128 bits and nowhere else, which is what probing found before ADR-0148 was written. A
+/// portable-looking wider vector would have to be split or scalarised, and ADR-0058 §3's rule — a
+/// directive silently ignored is worse than one rejected — applies with unusual force to a construct
+/// chosen for speed.
+pub(crate) const E0285: &str = "E0285";

@@ -349,8 +349,10 @@ impl Decl<'_> {
             | Item::ForeignLibraryType
             | Item::PointerType(_)
             // An array constant would need the layout rules to print, which is exactly
-            // the narrowness this function's doc comment claims.
+            // the narrowness this function's doc comment claims. A vector's is the same bytes and
+            // the same narrowness.
             | Item::ArrayType { .. }
+            | Item::VectorType { .. }
             | Item::ViewType { .. }
             | Item::DynamicArrayType { .. }
             | Item::EnumType { .. }
@@ -439,6 +441,12 @@ pub fn type_name(pool: &Pool, signatures: &FileSignatures, ty: PoolId) -> String
         Item::PointerType(pointee) => format!("*{}", type_name(pool, signatures, *pointee)),
         Item::ArrayType { elem, len } => {
             format!("[{len}]{}", type_name(pool, signatures, *elem))
+        }
+        // `#simd` included, for the same reason sema's `describe` and the MIR dump both spell it: a
+        // hover card that said `[4]s32` would name a type the program does not have, and the one
+        // difference between the two is the whole reason the vector exists (ADR-0148 §1).
+        Item::VectorType { elem, lanes } => {
+            format!("#simd [{lanes}]{}", type_name(pool, signatures, *elem))
         }
         Item::ViewType { elem } => format!("[]{}", type_name(pool, signatures, *elem)),
         Item::DynamicArrayType { elem } => format!("[..]{}", type_name(pool, signatures, *elem)),

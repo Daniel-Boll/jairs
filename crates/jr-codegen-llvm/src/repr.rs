@@ -24,7 +24,9 @@
 //! [`super::body`] converts at those boundaries and nowhere else.
 
 use inkwell::context::Context;
-use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum, FloatType, FunctionType, IntType};
+use inkwell::types::{
+    BasicMetadataTypeEnum, BasicTypeEnum, FloatType, FunctionType, IntType, VectorType,
+};
 use jr_codegen::CodegenError;
 use jr_pool::{Item, Pool, PoolId, TargetLayout, layout_of};
 
@@ -52,6 +54,20 @@ pub enum Repr<'ctx> {
         size: u64,
         /// Alignment in bytes, from [`jr_pool::layout_of`].
         align: u32,
+    },
+    /// Fits one *vector* register: `#simd [N]T` (ADR-0148 §1).
+    ///
+    /// Its own case for the reason `jr-codegen-clif`'s is: an aggregate is carried as a pointer and
+    /// copied, a vector is loaded into a register and operated on with one instruction. LLVM would
+    /// in fact accept any lane count and split wide vectors for us — but Cranelift cannot, and
+    /// ADR-0148 §2 refused letting the two engines legalise by different amounts, since the
+    /// differential harness would then be comparing two different programs.
+    Vector {
+        /// The LLVM vector type: `<4 x i32>`, `<2 x double>`, and so on.
+        ty: VectorType<'ctx>,
+        /// `true` for a signed integer element. Meaningless for a float element and recorded
+        /// `true`, matching the scalar float case.
+        signed: bool,
     },
 }
 
@@ -127,6 +143,24 @@ impl<'ctx> Repr<'ctx> {
                 ty: pointer_int(context, target),
                 signed: false,
             })),
+            // A vector: `<N x T>`, with the lane type from the element (ADR-0148 §1). The
+            // element's own `Repr` is asked for rather than re-deriving the LLVM type, so a change
+            // to how an `s32` is represented cannot make the scalar and the lane disagree.
+            Item::VectorType { elem, lanes } => {
+                let Self::Scalar(scalar) = Self::of(context, pool, target, *elem)? else {
+                    return Err(CodegenError::Internal(format!(
+                        "a vector of a non-scalar element {}",
+                        elem.index()
+                    )));
+                };
+                let lanes = u32::try_from(*lanes)
+                    .map_err(|_| CodegenError::Internal(format!("a vector of {lanes} lanes")))?;
+                let (vector, signed) = match scalar {
+                    ScalarRepr::Int { ty, signed } => (ty.vec_type(lanes), signed),
+                    ScalarRepr::Float(ty) => (ty.vec_type(lanes), true),
+                };
+                Ok(Self::Vector { ty: vector, signed })
+            }
             Item::StringType
             | Item::StructType { .. }
             | Item::UnionType { .. }
@@ -181,6 +215,8 @@ impl<'ctx> Repr<'ctx> {
             Self::Scalar(ScalarRepr::Float(ty)) => Some(ty.into()),
             // An aggregate travels as a pointer to its bytes, held as an integer.
             Self::Aggregate { .. } => Some(pointer_int(context, target).into()),
+            // A vector travels as itself, in a vector register (ADR-0148 §1).
+            Self::Vector { ty, .. } => Some(ty.into()),
         }
     }
 
@@ -275,7 +311,10 @@ pub fn function_type<'ctx>(
     for param in params {
         match Repr::of(context, pool, target, *param)? {
             Repr::Void => {}
-            Repr::Scalar(_) => {
+            // A vector parameter is passed like a scalar — by value, in a register — which is the
+            // one place a vector's `Repr` being separate from `Aggregate` pays off at a boundary:
+            // sixteen bytes in `v0` rather than a pointer to a copy (ADR-0148 §1).
+            Repr::Scalar(_) | Repr::Vector { .. } => {
                 let ty = Repr::of(context, pool, target, *param)?
                     .llvm_type(context, target)
                     .ok_or_else(|| describe("a parameter with no register representation"))?;
@@ -295,6 +334,7 @@ pub fn function_type<'ctx>(
         Repr::Void | Repr::Aggregate { .. } => context.void_type().fn_type(&arguments, false),
         Repr::Scalar(ScalarRepr::Int { ty, .. }) => ty.fn_type(&arguments, false),
         Repr::Scalar(ScalarRepr::Float(ty)) => ty.fn_type(&arguments, false),
+        Repr::Vector { ty, .. } => ty.fn_type(&arguments, false),
     })
 }
 

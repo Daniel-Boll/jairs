@@ -429,6 +429,32 @@ fn layout_at_depth(
             })
         }
 
+        // A vector is the *same bytes* as the array of its element type (ADR-0148 §1): sixteen of
+        // them, contiguous. This arm therefore deliberately duplicates no arithmetic — it defers to
+        // the array computation above by doing the same two lines, and the alignment is the whole
+        // vector's rather than the element's, because a machine vector load wants its register
+        // width. Sema has already refused every width but 16 (E0285), so the multiply cannot
+        // overflow and no `ArrayTooLarge` is reachable here.
+        Item::VectorType { elem, lanes } => {
+            if depth >= MAX_DEPTH {
+                return Err(LayoutError::Depth);
+            }
+            let elem_layout = layout_at_depth(pool, target, *elem, depth + 1)?;
+            let size = elem_layout.size.checked_mul(*lanes).ok_or(
+                LayoutError::ArrayTooLarge {
+                    elem: *elem,
+                    len: *lanes,
+                },
+            )?;
+            Ok(Layout {
+                size,
+                // 16 by construction, and written as the size rather than the literal so that a
+                // future width (a 256-bit vector, if a back end ever carries one) needs no edit
+                // here — the constraint lives in sema, which is where it can produce a message.
+                align: u32::try_from(size).unwrap_or(16),
+            })
+        }
+
         // A view is the same two words `string` is (ADR-0044 §1), and the element type does
         // not enter the layout at all: a view of a `[100]u8` and a view of a `u8` are both
         // one pointer and one count. That is what makes `[]T` passable where `[N]T` is not.

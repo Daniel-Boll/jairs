@@ -19,7 +19,16 @@ error-recovering compiler written in Rust.
 ## Status, honestly
 
 Last updated with **wave W8 — Performance open** (W7 — Stdlib and W6 — Metaprogram are still open
-too), 1032 tests green — 1033 with the LLVM back end compiled in.
+too), 1033 tests green — 1034 with the LLVM back end compiled in.
+
+**There is a vector type, at the width the machine actually has.** `v: #simd [4]s32` is one register,
+and `a +% b` adds four lanes at once (ADR-0148) — one instruction natively, a loop in the VM, and the
+differential harness asserts the three agree byte for byte. The legal shapes are exactly the six a
+128-bit register holds, and that is a deliberate machine fact in the language: a wider vector would
+have to be split or quietly turned into a loop, and a directive that is silently ignored is worse than
+one that is refused. Integer division is refused for the same reason, because no machine has one.
+Integer lanes take the *wrapping* operators, because no vector add can trap and one spelling should not
+mean two things.
 
 **A struct can be stored as arrays.** `Entities :: struct #soa(4) { x: s64; hp: u8; }` lays out as one
 array per field, and `e[i].x` means `e.x[i]` (ADR-0147) — so a loop over one field is contiguous
@@ -639,6 +648,7 @@ The authoritative version of this list is
 | `s8 s16 s32 s64`, `u8 u16 u32 u64`, `bool`, `string`, `*T`, `null` | pointer *difference* `p - q`; unchecked, so past-end is UB |
 | `float32`, `float64` — plain IEEE-754, no traps | `%` on floats, `is_nan`, math intrinsics (**W7**) |
 | `cast(T, x)` between any two numeric types, and `xx` where the context gives the type | pointer conversions — `xx` is no more powerful than `cast` |
+| `#simd [N]T` — a vector at one of the six register widths, with elementwise `+% -% *%` (integers) and `+ - * /` (floats), lane indexing and `.count` | wider or narrower than one register; integer `/`; comparisons, which need a mask type; swizzles |
 | `struct { … }`, one level, nominal, with `#soa(N)` for one-array-per-field storage and `e[i].x` access (ADR-0147), and per-field `#align N` (a minimum, power of two up to 4096) and `#place N` (an exact byte offset, may overlap and may be unaligned) — ADR-0144 | a struct-level `#align`; any packing form; `#align` on a local or a procedure; an operand needing evaluation; a bare `e[i]` on an `#soa` struct, and `using` inside one |
 | `union { … }`, nominal, **untagged** — every field at offset 0, so a cross-field read reinterprets | |
 | `variant { … }` — a tagged union: a write sets the tag, reading another case **traps**, `switch` destructures it (ADR-0068) | a recursive variant; one in a `#foreign` signature; eliding the check inside a matching arm |

@@ -1,0 +1,116 @@
+// ADR-0148: `#simd` — a vector type, at the width the hardware actually has.
+//
+// `#simd [4]s32` is one machine register: four lanes of `s32`, sixteen bytes. `a +% b` adds every
+// lane at once — one instruction in Cranelift and in LLVM, and a **loop** in the VM, which is the
+// first time in this project two engines have executed a different *number* of operations for the
+// same MIR (§4). That the three still agree byte for byte is what this file exists to assert.
+//
+// The exit status is a checksum of every half, because each fails silently on its own:
+//
+//   integer lanes, `+%`           (1+10) + (2+20) + (3+30) + (4+40)               = 110
+//   integer lanes, `*%` and `-%`  lane 0 only: 1*10 -% 1 = 9, minus 1             = 8
+//   wrap-around at the boundary   S32_MAX +% 1 is S32_MIN, so lane 0 + 1 is 0     = 0
+//   float lanes, `+ - * /`        5.5 + 25.0 + 4.0 - 7.5 + 2.5 - 1.0, truncated   = 28
+//   a vector through a call       the register claim, not just the arithmetic     = 20
+//   lane count as `.count`        a constant from the type, like an array's       = 4
+//
+// 110 + 8 + 0 + 28 + 20 + 4 = 170.
+//
+// **`size_of(#simd [4]s32)` is deliberately absent**, and it is not a gap this wave opened: a
+// *structural* type argument does not parse at all — `type_info([4]s64)` does not either — which is
+// ADR-0071 §5's deferred fixpoint, standing since W5. A named alias would work if this language had
+// type aliases, which is the same deferral. So the width is asserted where it can be, in the
+// `type-errors` file that refuses every other one.
+#import "Basic";
+
+// A named lane count, which is `named_constant_int`'s fifth caller — ADR-0070 wrote it, ADR-0129
+// generalised it, ADR-0144 §2 and ADR-0147 §1 were the next two, and again it needed no change.
+LANES :: 4;
+
+// **A vector crosses a call boundary in a register**, not through a hidden pointer: `Repr::Vector` is
+// deliberately not an aggregate, so `returns_via_sret` says no and sixteen bytes travel in `v0`
+// (ADR-0148 §1). A test that only did arithmetic in one body would not notice if that were wrong.
+doubled :: (v: #simd [LANES]s32) -> #simd [LANES]s32 {
+    return v +% v;
+}
+
+main :: () {
+    total := 0;
+
+    a: #simd [LANES]s32;
+    a[0] = 1;
+    a[1] = 2;
+    a[2] = 3;
+    a[3] = 4;
+
+    b: #simd [LANES]s32;
+    b[0] = 10;
+    b[1] = 20;
+    b[2] = 30;
+    b[3] = 40;
+
+    // The wrapping spelling, which is the language's decision rather than a limitation (§6): no
+    // target has a per-lane overflow flag, so a trapping vector add would need a compare and a
+    // branch for every lane — and letting `+` wrap *only* on a vector would give one spelling two
+    // meanings. `+ - *` on an integer vector are E0285, and name these.
+    sum := a +% b;
+    total = total + cast(s64, sum[0]) + cast(s64, sum[1]) + cast(s64, sum[2]) + cast(s64, sum[3]);
+
+    // `*%` and `-%`: the product is `[10, 40, 90, 160]` and `less` is `[9, 39, 89, 159]`. **Only
+    // lane 0 is read**, on purpose — a back end that wrote a correct result to the *wrong lane* would
+    // change this answer, while summing every lane would hide exactly that mistake.
+    one: #simd [LANES]s32;
+    one[0] = 1;
+    one[1] = 1;
+    one[2] = 1;
+    one[3] = 1;
+    product := a *% b;
+    less := product -% one;
+    total = total + cast(s64, less[0]) - 1;
+
+    // **Wrap-around at the boundary, asserted rather than assumed.** This is the one lane whose
+    // answer distinguishes a real wrapping add from a saturating or trapping one, and it must be
+    // identical in a VM loop, a NEON instruction and whatever LLVM picks. `S32_MAX +% 1` is
+    // `S32_MIN`, and `S32_MIN + S32_MAX + 1` is 0 — so a saturating engine would give 1 here and a
+    // trapping one would not finish.
+    edge: #simd [LANES]s32;
+    edge[0] = 2147483647;
+    edge[1] = 0;
+    edge[2] = 0;
+    edge[3] = 0;
+    wrapped := edge +% one;
+    total = total + cast(s64, wrapped[0]) + 2147483647 + 1;
+
+    // Float lanes get `+ - * /`, exactly as a scalar float does: nothing traps, so there is no
+    // wrapping question and no reason to require a second spelling (§6). Two lanes of `float64` are
+    // the same sixteen bytes.
+    //
+    //   fsum = f + g = [5.5, 12.5]      fmul = f * g = [6.0, 25.0]
+    //   fdiv = g / f = [2.666…, 4.0]    fsub = g - f = [2.5, 7.5]
+    //
+    // and the sum below reads `fsum[0] + fmul[1] + fdiv[1] - fsub[1] + fsub[0] - 1.0`, which is
+    // 5.5 + 25.0 + 4.0 - 7.5 + 2.5 - 1.0 = 28.5, truncated by the cast to 28. **`fdiv[1]` is the
+    // load-bearing one**: an exact 4.0 from 10.0/2.5, so a lane that divided the wrong pair would
+    // not land on an integer boundary and the truncation would move.
+    f: #simd [2]float64;
+    f[0] = 1.5;
+    f[1] = 2.5;
+    g: #simd [2]float64;
+    g[0] = 4.0;
+    g[1] = 10.0;
+    fsum := f + g;
+    fmul := f * g;
+    fdiv := g / f;
+    fsub := g - f;
+    total = total + cast(s64, fsum[0] + fmul[1] + fdiv[1] - fsub[1] + fsub[0] - 1.0);
+
+    // The call, whose answer is 2+4+6+8 = 20.
+    d := doubled(a);
+    total = total + cast(s64, d[0] + d[1] + d[2] + d[3]);
+
+    // `.count` folds to a constant from the type, exactly as an array's does — nothing is loaded,
+    // because the lane count lives in the type (ADR-0039 §5, reused unchanged).
+    total = total + a.count;
+
+    exit(total);
+}

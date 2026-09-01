@@ -158,6 +158,13 @@ pub(crate) fn is_register_representable(pool: &Pool, ty: PoolId) -> bool {
         | Item::ErrorType
         | Item::ForeignLibraryType
         | Item::ArrayType { .. }
+        // **A vector is not register-representable here, even though it is one machine register.**
+        // This predicate decides whether MIR may promote a local to an SSA value, and an SSA value
+        // is a `jr-vm` `Value` — one scalar (ADR-0148 §4). The VM has no vector register and will
+        // not grow one, so a promoted vector local would have nowhere to live in the engine that
+        // must agree with the other two. It stays in a slot; the native back ends load it into a
+        // vector register for the operation and store it back, which is where the register lives.
+        | Item::VectorType { .. }
         // A view is two words, so it is no more register-representable than the `string` it
         // shares a layout with (ADR-0044 §1).
         | Item::ViewType { .. }

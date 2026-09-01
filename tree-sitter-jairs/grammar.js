@@ -287,6 +287,7 @@ module.exports = grammar({
       choice(
         $.pointer_type,
         $.array_type,
+        $.vector_type,
         $.view_type,
         $.dynamic_array_type,
         $.name_type,
@@ -330,6 +331,21 @@ module.exports = grammar({
     // rejects.
     array_type: ($) =>
       seq("[", field("length", $._expr), "]", field("element", $._type)),
+
+    // #simd [N]T — a vector, one machine register wide (ADR-0148 §1).
+    //
+    // Its own rule rather than an `array_type` with an optional `#simd`, for the reason the view has
+    // its own: the two would be indistinguishable in a query, and they are *different types* whose
+    // only visible difference is this token. A highlight or a fold that could not tell them apart
+    // would be showing a reader the wrong type.
+    vector_type: ($) =>
+      seq(
+        field("directive", "#simd"),
+        "[",
+        field("lanes", $._expr),
+        "]",
+        field("element", $._type),
+      ),
 
     // []T — a view (ADR-0044 §1).
     //

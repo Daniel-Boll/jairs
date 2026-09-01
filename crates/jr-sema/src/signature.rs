@@ -542,6 +542,10 @@ impl Ctx<'_> {
             }
             TypeRef::Pointer(inner) => self.collect_poly_in_type(scope, inner, vars),
             TypeRef::Array { elem, .. }
+            // A `#simd [4]$T` collects its `$T` exactly as `[4]$T` does — the vector's lane type is
+            // an ordinary type position (ADR-0148 §1). Whether the *inferred* element then makes a
+            // legal width is `check_vector_shape`'s answer at instantiation, not this function's.
+            | TypeRef::Vector { elem, .. }
             | TypeRef::View { elem }
             | TypeRef::DynamicArray { elem } => {
                 self.collect_poly_in_type(scope, elem, vars);

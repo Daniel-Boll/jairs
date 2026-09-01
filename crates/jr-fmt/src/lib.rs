@@ -961,6 +961,20 @@ impl Formatter {
                     self.format_type(&elem);
                 }
             }
+            // `#simd [N]T` (ADR-0148 §1). **Dropping the attribute would change the type**, not the
+            // formatting: the program would keep compiling as a plain array right up to its first
+            // arithmetic, and then say `+%` is not defined — a construct-losing failure this file has
+            // met in most of the waves that added a node kind, with a worse-than-usual symptom.
+            VECTOR_TYPE => {
+                self.emit("#simd [");
+                if let Some(lanes) = node.children().find(|n| is_expr_kind(n.kind())) {
+                    self.format_expr(&lanes);
+                }
+                self.emit("]");
+                if let Some(elem) = node.children().find(|n| is_type_kind(n.kind())) {
+                    self.format_type(&elem);
+                }
+            }
             ARRAY_TYPE => {
                 self.emit("[");
                 // The length is an *expression* child (ADR-0039 §3), so it is formatted as
@@ -1877,6 +1891,10 @@ fn is_type_kind(kind: SyntaxKind) -> bool {
             | UNION_TYPE
             | VARIANT_TYPE
             | ARRAY_TYPE
+            // `VECTOR_TYPE` for exactly the reason the note above gives, and the failure it caused
+            // was the note's own example one type over: `v: #simd [4]s32;` formatted to `v: ;`
+            // (ADR-0148 §1). Two lists, one question — which is why the note exists.
+            | VECTOR_TYPE
             | VIEW_TYPE
             | DYNAMIC_ARRAY_TYPE
             | ENUM_TYPE
@@ -2567,6 +2585,42 @@ mod tests {
         );
         assert_idempotent(both);
         assert_parses(&out);
+    }
+
+    /// `#simd [N]T` (ADR-0148 §1), asserted to *survive* and to be canonicalised.
+    ///
+    /// **Dropping the attribute changes the type**, so a round-trip and an idempotence assertion do
+    /// not catch it on their own: `[4]s32` formats and parses perfectly and is a different type. The
+    /// spacing assertion is what says the construct is emitted rather than echoed.
+    #[test]
+    fn the_simd_attribute_survives_and_is_canonicalised() {
+        let src = "main :: () {\n    v: #simd [4]s32;\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("v: #simd [4]s32;"),
+            "`#simd` must survive in type position: {out}"
+        );
+        assert_idempotent(src);
+        assert_parses(&out);
+
+        // Untidy spacing normalised, and a named lane count kept.
+        let named = "N :: 2;\n\nmain :: () {\n    v:  #simd   [  N  ]  float64;\n}\n";
+        let out = fmt(named);
+        assert!(
+            out.contains("v: #simd [N]float64;"),
+            "spacing must be canonicalised and a named count kept: {out}"
+        );
+        assert_parses(&out);
+
+        // And in the two positions a *type* has to survive that a declaration attribute would not:
+        // a parameter and a return type (ADR-0148 §1's reason for parsing it here).
+        let sig = "f :: (v: #simd [2]s64) -> #simd [2]s64 {\n    return v;\n}\n";
+        let out = fmt(sig);
+        assert!(
+            out.contains("(v: #simd [2]s64) -> #simd [2]s64"),
+            "`#simd` must survive in a signature: {out}"
+        );
+        assert_idempotent(sig);
     }
 
     /// `#soa(N)` on a struct (ADR-0147 §1), asserted to *survive* and to be canonicalised.

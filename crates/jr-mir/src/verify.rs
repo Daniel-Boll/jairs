@@ -618,6 +618,7 @@ impl Verifier<'_> {
             | Item::ErrorType
             | Item::ForeignLibraryType
             | Item::ArrayType { .. }
+            | Item::VectorType { .. }
             | Item::ViewType { .. }
             | Item::DynamicArrayType { .. }
             | Item::ResultsType { .. }
@@ -675,6 +676,7 @@ impl Verifier<'_> {
             | Item::ForeignLibraryType
             | Item::PointerType(_)
             | Item::ArrayType { .. }
+            | Item::VectorType { .. }
             | Item::ViewType { .. }
             | Item::DynamicArrayType { .. }
             | Item::ResultsType { .. }

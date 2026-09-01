@@ -545,6 +545,11 @@ impl Compiler<'_> {
                     // are scaled by the same stride computation and cannot drift.
                     let elem = match self.pool.item(ty) {
                         Item::ArrayType { elem, .. } => *elem,
+                        // A vector lane, indexed exactly as an array element is: the layouts are
+                        // identical, so the same stride computation below is the right one
+                        // (ADR-0148 §1). In the VM a vector *is* those bytes in memory (§4), so
+                        // there is nothing else it could be.
+                        Item::VectorType { elem, .. } => *elem,
                         Item::PointerType(pointee) => {
                             let pointee = *pointee;
                             steps.push(PlaceStep::Indirect {
@@ -718,6 +723,12 @@ impl Compiler<'_> {
             // `StringType` gets, and for the same reason (ADR-0044 §1).
             Item::StringType
             | Item::ArrayType { .. }
+            // **A vector reads as an aggregate**, which is the whole shape of ADR-0148 §4: the VM's
+            // `Value` is one scalar, so sixteen bytes live in memory and an elementwise operation is
+            // a loop over them. That is deliberately a *different number of operations* from the one
+            // instruction the native engines emit, and it is what the three-way differential is
+            // there to hold together.
+            | Item::VectorType { .. }
             | Item::ViewType { .. }
             | Item::DynamicArrayType { .. }
             | Item::StructType { .. }

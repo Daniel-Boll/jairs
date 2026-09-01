@@ -639,6 +639,7 @@ impl Dumper<'_> {
             Item::VoidType
             | Item::BoolType
             | Item::ArrayType { .. }
+            | Item::VectorType { .. }
             | Item::ViewType { .. }
             | Item::DynamicArrayType { .. }
             | Item::ResultsType { .. }
@@ -694,6 +695,10 @@ impl Dumper<'_> {
                 None => String::from("enum"),
             },
             Item::ArrayType { elem, len } => format!("[{len}]{}", self.ty(*elem)),
+            // `#simd` included, for the reason `jr-sema`'s `describe` gives: a dump that printed
+            // `[4]s32` for a vector would make the snapshot unable to tell the two apart, which is
+            // exactly the defect ADR-0140 fixed for a `[..]T`'s three pseudo-fields.
+            Item::VectorType { elem, lanes } => format!("#simd [{lanes}]{}", self.ty(*elem)),
             Item::ViewType { elem } => format!("[]{}", self.ty(*elem)),
             Item::DynamicArrayType { elem } => format!("[..]{}", self.ty(*elem)),
             // Spelled as the source spells it, so a snapshot shows `(s64, bool)` rather than an

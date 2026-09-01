@@ -546,6 +546,21 @@ fn fmt_type_ref_impl(
             };
             format!("*{inner_tr}")
         }
+        // `#simd` included: a dump that spelled a vector `[4]s32` would make the two types
+        // indistinguishable in a snapshot, which is the whole reason they are separate (ADR-0148 §1).
+        TypeRef::Vector { elem, lanes, .. } => {
+            let elem_tr = if is_top {
+                format!("type#{}", elem.index())
+            } else if let Some(b) = body {
+                fmt_type_ref_impl(&b.type_refs[elem.index()], interner, false, Some(b))
+            } else {
+                format!("type#{}", elem.index())
+            };
+            match lanes {
+                Some(n) => format!("#simd [{n}]{elem_tr}"),
+                None => format!("#simd [?]{elem_tr}"),
+            }
+        }
         TypeRef::Array { elem, len, .. } => {
             let elem_tr = if is_top {
                 format!("type#{}", elem.index())

@@ -13095,3 +13095,177 @@ proc main -> void {
     discard call extern proc1(v19)
     return
 }
+
+========================================
+119-simd.jr
+========================================
+proc doubled -> #simd [4]s32 {
+  params: v0: *Context, v1: #simd [4]s32
+  slots:
+    s0: #simd [4]s32  // temporary
+  bb0(v0: *Context, v1: #simd [4]s32):
+    store s0 <- v1
+    v2: #simd [4]s32 = v1 +% v1
+    return v2
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: #simd [4]s32  // local 1
+    s1: #simd [4]s32  // local 2
+    s2: #simd [4]s32  // local 3
+    s3: #simd [4]s32  // local 4
+    s4: #simd [4]s32  // local 5
+    s5: #simd [4]s32  // local 6
+    s6: #simd [4]s32  // local 7
+    s7: #simd [4]s32  // local 8
+    s8: #simd [2]float64  // local 9
+    s9: #simd [2]float64  // local 10
+    s10: #simd [2]float64  // local 11
+    s11: #simd [2]float64  // local 12
+    s12: #simd [2]float64  // local 13
+    s13: #simd [2]float64  // local 14
+    s14: #simd [4]s32  // local 15
+  bb0(v0: *Context):
+    zero s0
+    bounds_check 0_s64 < 4_s64
+    store s0[0_s64] <- 1_s32
+    bounds_check 1_s64 < 4_s64
+    store s0[1_s64] <- 2_s32
+    bounds_check 2_s64 < 4_s64
+    store s0[2_s64] <- 3_s32
+    bounds_check 3_s64 < 4_s64
+    store s0[3_s64] <- 4_s32
+    zero s1
+    bounds_check 0_s64 < 4_s64
+    store s1[0_s64] <- 10_s32
+    bounds_check 1_s64 < 4_s64
+    store s1[1_s64] <- 20_s32
+    bounds_check 2_s64 < 4_s64
+    store s1[2_s64] <- 30_s32
+    bounds_check 3_s64 < 4_s64
+    store s1[3_s64] <- 40_s32
+    v1: #simd [4]s32 = load s0
+    v2: #simd [4]s32 = load s1
+    v3: #simd [4]s32 = v1 +% v2
+    store s2 <- v3
+    bounds_check 0_s64 < 4_s64
+    v4: s32 = load s2[0_s64]
+    v5: s64 = convert v4 from s32
+    v6: s64 = 0_s64 + v5
+    bounds_check 1_s64 < 4_s64
+    v7: s32 = load s2[1_s64]
+    v8: s64 = convert v7 from s32
+    v9: s64 = v6 + v8
+    bounds_check 2_s64 < 4_s64
+    v10: s32 = load s2[2_s64]
+    v11: s64 = convert v10 from s32
+    v12: s64 = v9 + v11
+    bounds_check 3_s64 < 4_s64
+    v13: s32 = load s2[3_s64]
+    v14: s64 = convert v13 from s32
+    v15: s64 = v12 + v14
+    zero s3
+    bounds_check 0_s64 < 4_s64
+    store s3[0_s64] <- 1_s32
+    bounds_check 1_s64 < 4_s64
+    store s3[1_s64] <- 1_s32
+    bounds_check 2_s64 < 4_s64
+    store s3[2_s64] <- 1_s32
+    bounds_check 3_s64 < 4_s64
+    store s3[3_s64] <- 1_s32
+    v16: #simd [4]s32 = load s0
+    v17: #simd [4]s32 = load s1
+    v18: #simd [4]s32 = v16 *% v17
+    store s4 <- v18
+    v19: #simd [4]s32 = load s4
+    v20: #simd [4]s32 = load s3
+    v21: #simd [4]s32 = v19 -% v20
+    store s5 <- v21
+    bounds_check 0_s64 < 4_s64
+    v22: s32 = load s5[0_s64]
+    v23: s64 = convert v22 from s32
+    v24: s64 = v15 + v23
+    v25: s64 = v24 - 1_s64
+    zero s6
+    bounds_check 0_s64 < 4_s64
+    store s6[0_s64] <- 2147483647_s32
+    bounds_check 1_s64 < 4_s64
+    store s6[1_s64] <- 0_s32
+    bounds_check 2_s64 < 4_s64
+    store s6[2_s64] <- 0_s32
+    bounds_check 3_s64 < 4_s64
+    store s6[3_s64] <- 0_s32
+    v26: #simd [4]s32 = load s6
+    v27: #simd [4]s32 = load s3
+    v28: #simd [4]s32 = v26 +% v27
+    store s7 <- v28
+    bounds_check 0_s64 < 4_s64
+    v29: s32 = load s7[0_s64]
+    v30: s64 = convert v29 from s32
+    v31: s64 = v25 + v30
+    v32: s64 = v31 + 2147483647_s64
+    v33: s64 = v32 + 1_s64
+    zero s8
+    bounds_check 0_s64 < 2_s64
+    store s8[0_s64] <- 1.5_float64
+    bounds_check 1_s64 < 2_s64
+    store s8[1_s64] <- 2.5_float64
+    zero s9
+    bounds_check 0_s64 < 2_s64
+    store s9[0_s64] <- 4.0_float64
+    bounds_check 1_s64 < 2_s64
+    store s9[1_s64] <- 10.0_float64
+    v34: #simd [2]float64 = load s8
+    v35: #simd [2]float64 = load s9
+    v36: #simd [2]float64 = v34 + v35
+    store s10 <- v36
+    v37: #simd [2]float64 = load s8
+    v38: #simd [2]float64 = load s9
+    v39: #simd [2]float64 = v37 * v38
+    store s11 <- v39
+    v40: #simd [2]float64 = load s9
+    v41: #simd [2]float64 = load s8
+    v42: #simd [2]float64 = v40 / v41
+    store s12 <- v42
+    v43: #simd [2]float64 = load s9
+    v44: #simd [2]float64 = load s8
+    v45: #simd [2]float64 = v43 - v44
+    store s13 <- v45
+    bounds_check 0_s64 < 2_s64
+    v46: float64 = load s10[0_s64]
+    bounds_check 1_s64 < 2_s64
+    v47: float64 = load s11[1_s64]
+    v48: float64 = v46 + v47
+    bounds_check 1_s64 < 2_s64
+    v49: float64 = load s12[1_s64]
+    v50: float64 = v48 + v49
+    bounds_check 1_s64 < 2_s64
+    v51: float64 = load s13[1_s64]
+    v52: float64 = v50 - v51
+    bounds_check 0_s64 < 2_s64
+    v53: float64 = load s13[0_s64]
+    v54: float64 = v52 + v53
+    v55: float64 = v54 - 1.0_float64
+    v56: s64 = convert v55 from float64
+    v57: s64 = v33 + v56
+    v58: #simd [4]s32 = load s0
+    v59: #simd [4]s32 = call proc0(v0, v58)
+    store s14 <- v59
+    bounds_check 0_s64 < 4_s64
+    v60: s32 = load s14[0_s64]
+    bounds_check 1_s64 < 4_s64
+    v61: s32 = load s14[1_s64]
+    v62: s32 = v60 + v61
+    bounds_check 2_s64 < 4_s64
+    v63: s32 = load s14[2_s64]
+    v64: s32 = v62 + v63
+    bounds_check 3_s64 < 4_s64
+    v65: s32 = load s14[3_s64]
+    v66: s32 = v64 + v65
+    v67: s64 = convert v66 from s32
+    v68: s64 = v57 + v67
+    v69: s64 = v68 + 4_s64
+    discard call extern proc1(v69)
+    return
+}

@@ -22,10 +22,10 @@ use jr_syntax::{
     SyntaxKind::*,
     SyntaxNode, SyntaxToken,
     ast::{
-        ArrayType, AssignStmt, AstNode, BinaryExpr, Block, ConstDecl, ControlBody, DeclStmt,
-        ElseBranch, EnumType, Expr as AstExpr, ForStmt, IfStmt, ImportDecl, Item as AstItem,
-        LiteralExpr, Proc as AstProc, RunDecl, SourceFile, Stmt as AstStmt, StructType, TypeExpr,
-        UnaryExpr, VarDecl, WhileStmt,
+        AssignStmt, AstNode, BinaryExpr, Block, ConstDecl, ControlBody, DeclStmt, ElseBranch,
+        EnumType, Expr as AstExpr, ForStmt, IfStmt, ImportDecl, Item as AstItem, LiteralExpr,
+        Proc as AstProc, RunDecl, SourceFile, Stmt as AstStmt, StructType, TypeExpr, UnaryExpr,
+        VarDecl, WhileStmt,
     },
 };
 
@@ -282,12 +282,33 @@ impl<'a> LowerCtx<'a> {
                 };
                 self.alloc_top_type_ref(TypeRef::Pointer(inner))
             }
+            // `#simd [N]T` — the same shape as the array below, sharing its length helpers rather
+            // than copying them (ADR-0148 §1). Placed before the array arm so the two read in the
+            // order a reader meets them in the grammar.
+            TypeExpr::Vector(v) => {
+                let lanes_span = v.lanes().map_or_else(
+                    || self.span_of_node(v.syntax()),
+                    |e| self.span_of_node(e.syntax()),
+                );
+                let lanes = lower_array_len(v.lanes(), lanes_span, self.interner, &mut self.diags);
+                let elem = if let Some(e) = v.elem() {
+                    self.lower_type_expr_top(&e)
+                } else {
+                    self.alloc_top_type_ref(TypeRef::Error)
+                };
+                self.alloc_top_type_ref(TypeRef::Vector {
+                    elem,
+                    lanes,
+                    lanes_name: lower_array_len_name(v.lanes(), self.interner),
+                    lanes_span,
+                })
+            }
             TypeExpr::Array(a) => {
                 let len_span = a.len().map_or_else(
                     || self.span_of_node(a.syntax()),
                     |e| self.span_of_node(e.syntax()),
                 );
-                let len = lower_array_len(a, len_span, self.interner, &mut self.diags);
+                let len = lower_array_len(a.len(), len_span, self.interner, &mut self.diags);
                 let elem = if let Some(e) = a.elem() {
                     self.lower_type_expr_top(&e)
                 } else {
@@ -296,7 +317,7 @@ impl<'a> LowerCtx<'a> {
                 self.alloc_top_type_ref(TypeRef::Array {
                     elem,
                     len,
-                    len_name: lower_array_len_name(a, self.interner),
+                    len_name: lower_array_len_name(a.len(), self.interner),
                     len_span,
                 })
             }
@@ -1684,12 +1705,33 @@ impl<'a> BodyLowerCtx<'a> {
                 };
                 self.alloc_type_ref(TypeRef::Pointer(inner))
             }
+            // `#simd [N]T` — the same shape as the array below, sharing its length helpers rather
+            // than copying them (ADR-0148 §1). Placed before the array arm so the two read in the
+            // order a reader meets them in the grammar.
+            TypeExpr::Vector(v) => {
+                let lanes_span = v.lanes().map_or_else(
+                    || self.span_of_node(v.syntax()),
+                    |e| self.span_of_node(e.syntax()),
+                );
+                let lanes = lower_array_len(v.lanes(), lanes_span, self.interner, &mut self.diags);
+                let elem = if let Some(e) = v.elem() {
+                    self.lower_type_expr(&e)
+                } else {
+                    self.alloc_type_ref(TypeRef::Error)
+                };
+                self.alloc_type_ref(TypeRef::Vector {
+                    elem,
+                    lanes,
+                    lanes_name: lower_array_len_name(v.lanes(), self.interner),
+                    lanes_span,
+                })
+            }
             TypeExpr::Array(a) => {
                 let len_span = a.len().map_or_else(
                     || self.span_of_node(a.syntax()),
                     |e| self.span_of_node(e.syntax()),
                 );
-                let len = lower_array_len(a, len_span, self.interner, &mut self.diags);
+                let len = lower_array_len(a.len(), len_span, self.interner, &mut self.diags);
                 let elem = if let Some(e) = a.elem() {
                     self.lower_type_expr(&e)
                 } else {
@@ -1698,7 +1740,7 @@ impl<'a> BodyLowerCtx<'a> {
                 self.alloc_type_ref(TypeRef::Array {
                     elem,
                     len,
-                    len_name: lower_array_len_name(a, self.interner),
+                    len_name: lower_array_len_name(a.len(), self.interner),
                     len_span,
                 })
             }
@@ -3066,20 +3108,25 @@ fn lower_assign_op(kind: SyntaxKind) -> AssignOp {
 ///
 /// Lowering only *reads* the name; whether it resolves to a usable constant is a semantic judgement and
 /// therefore sema's, which is the same split ADR-0039 §3a drew for the literal.
-fn lower_array_len_name(ty: &ArrayType, interner: &Interner) -> Option<Symbol> {
-    let AstExpr::Name(name) = ty.len()? else {
+/// Takes the length *expression* rather than the array node, so that `#simd [N]T`'s lane count reuses
+/// this rather than copying it (ADR-0148 §1). A vector's count is the same question an array's is —
+/// literal, or a name to resolve — and two implementations would be two chances to disagree about
+/// which spellings are accepted.
+fn lower_array_len_name(len: Option<AstExpr>, interner: &Interner) -> Option<Symbol> {
+    let AstExpr::Name(name) = len? else {
         return None;
     };
     Some(interner.intern(name.name_token()?.text()))
 }
 
+/// Takes the length *expression*, for the reason [`lower_array_len_name`] above does.
 fn lower_array_len(
-    ty: &ArrayType,
+    len: Option<AstExpr>,
     len_span: Span,
     interner: &Interner,
     diags: &mut Diagnostics,
 ) -> Option<u64> {
-    let AstExpr::Literal(lit) = ty.len()? else {
+    let AstExpr::Literal(lit) = len? else {
         return None;
     };
     // The literal is a signed `i128` since ADR-0038, so a negative length and one too

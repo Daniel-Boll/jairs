@@ -552,6 +552,87 @@ impl<'a> Vm<'a> {
         }
     }
 
+    /// One elementwise vector operation, lane by lane (ADR-0148 §4).
+    ///
+    /// The VM's `Value` is one scalar, so a vector lives in memory and this reads each lane out,
+    /// applies the *scalar* operation, and writes the result back — which is what makes the answer
+    /// bit-identical to the native engines' single instruction by construction rather than by
+    /// coincidence: the arithmetic is `jr_pool::int_binary` and `float_binary`, the very functions
+    /// the scalar path uses, so wrap-around and rounding cannot differ.
+    ///
+    /// # Errors
+    /// [`VmError::unsupported`] for an operator sema should have refused (E0285) — integer division,
+    /// or a trapping integer add. Reaching one means sema and the VM disagree about what was
+    /// checked, which is worth an error rather than an answer.
+    fn vector_binary(
+        &mut self,
+        op: BinOp,
+        elem: PoolId,
+        lanes: u64,
+        left: &Value,
+        right: &Value,
+    ) -> Result<Value, VmError> {
+        let layout = jr_pool::layout_of(self.pool, self.program.target, elem)
+            .map_err(|e| VmError::internal(format!("a vector lane: {e}")))?;
+        let stride = usize::try_from(layout.size.next_multiple_of(layout.align.into()))
+            .map_err(|_| VmError::internal("a vector lane wider than a usize"))?;
+        let a = left.aggregate()?;
+        let b = right.aggregate()?;
+        let lanes = usize::try_from(lanes)
+            .map_err(|_| VmError::internal("more vector lanes than a usize"))?;
+        let mut out = vec![0u8; stride * lanes];
+
+        let float = jr_pool::FloatKind::of(self.pool, elem);
+        let int = IntKind::of(self.pool, elem);
+
+        for lane in 0..lanes {
+            let at = lane * stride;
+            // A short operand is an internal error, not a zero: reading past the end would give a
+            // plausible wrong lane rather than a failure.
+            let (Some(a_bytes), Some(b_bytes), Some(o_bytes)) = (
+                a.get(at..at + stride),
+                b.get(at..at + stride),
+                out.get_mut(at..at + stride),
+            ) else {
+                return Err(VmError::internal("a vector operand shorter than its type"));
+            };
+            let a_bits = le_bits(a_bytes);
+            let b_bits = le_bits(b_bytes);
+
+            let result = if let Some(float) = float {
+                let Some(arith) = op.as_float_op() else {
+                    return Err(VmError::unsupported(format!(
+                        "{op:?} is not defined on a float vector"
+                    )));
+                };
+                jr_pool::float_binary(arith, float, float.decode(a_bits), float.decode(b_bits))
+            } else {
+                let Some(kind) = int else {
+                    return Err(VmError::internal("a vector of a non-numeric element"));
+                };
+                let Some(arith) = op.as_int_op() else {
+                    return Err(VmError::unsupported(format!(
+                        "{op:?} is not defined on an integer vector"
+                    )));
+                };
+                // `int_binary` — the *same* function the scalar path uses, which is what makes the
+                // wrap-around bit-identical rather than merely intended. Sema accepts only the
+                // wrapping operators on an integer vector (§6), and those cannot trap, so an
+                // `IntTrap` here means sema let a trapping form through: an error, not an answer.
+                jr_pool::int_binary(arith, kind, kind.decode(a_bits), kind.decode(b_bits)).map_err(
+                    |_| {
+                        VmError::unsupported(format!(
+                            "{op:?} overflowed a vector lane, which no vector operation can report"
+                        ))
+                    },
+                )?
+            };
+            o_bytes.copy_from_slice(&result.to_le_bytes()[..stride]);
+        }
+
+        Ok(Value::Aggregate(out))
+    }
+
     /// Turns an interned constant into a runtime value.
     fn constant(&mut self, id: PoolId) -> Result<Value, VmError> {
         match *self.pool.item(id) {
@@ -615,6 +696,7 @@ impl<'a> Vm<'a> {
             | Item::ForeignLibraryType
             | Item::PointerType(_)
             | Item::ArrayType { .. }
+            | Item::VectorType { .. }
             | Item::ViewType { .. }
             | Item::DynamicArrayType { .. }
             | Item::StructType { .. }
@@ -746,6 +828,20 @@ impl<'a> Vm<'a> {
             .get(dest.index())
             .copied()
             .unwrap_or(PoolId::ERROR);
+
+        // **A vector before everything else** (ADR-0148 §4). Its operands are `Value::Aggregate`s —
+        // the VM has no vector register and will not grow one — so an elementwise operation is a
+        // *loop*, and the two native engines emit a single instruction for the same MIR. That the
+        // three then agree byte for byte is the strongest claim the differential harness makes.
+        //
+        // Placed first because every test below asks about the *operand type* as a scalar, and a
+        // vector answers none of them: `FloatKind::of` says `None` for a vector of floats, so a
+        // float vector would fall through to the integer path and then to a bit compare — the
+        // plausible-wrong-answer failure mode the float ordering above exists to prevent, one type
+        // wider.
+        if let Item::VectorType { elem, lanes } = *self.pool.item(operand_ty) {
+            return self.vector_binary(op, elem, lanes, &left, &right);
+        }
 
         // **Floats first, before the bit-compare fallback below.** That ordering is the
         // whole hazard ADR-0040's Consequences names: the fallback answers `==` with a raw
@@ -1051,4 +1147,17 @@ const fn trap_of(trap: jr_pool::IntTrap) -> VmError {
         jr_pool::IntTrap::ShiftOutOfRange => VmError::Trap(Trap::ShiftOutOfRange),
         jr_pool::IntTrap::DivideByZero => VmError::Trap(Trap::DivideByZero),
     }
+}
+
+/// The little-endian integer a lane's bytes hold, zero-extended to 64 bits.
+///
+/// Little-endian unconditionally, matching every other byte-level read in this crate: the VM's
+/// memory image *is* the target layout (ADR-0015), and both supported targets are little-endian. A
+/// slice longer than eight bytes takes its low eight, which no vector lane is — the widest is a
+/// `s64` at exactly eight.
+fn le_bits(bytes: &[u8]) -> u64 {
+    let mut buffer = [0u8; 8];
+    let take = bytes.len().min(8);
+    buffer[..take].copy_from_slice(&bytes[..take]);
+    u64::from_le_bytes(buffer)
 }
