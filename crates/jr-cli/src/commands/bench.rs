@@ -27,6 +27,18 @@
 //! No threshold, no assertion, no pass or fail (§4). A timing assertion on a shared machine
 //! fails for reasons unrelated to the code, and this project's gates are meant to be
 //! believable. `jr bench` is verified rather than gated, like `editors/nvim/verify.lua`.
+//!
+//! # Why compile throughput is a *mode* of this subcommand
+//!
+//! ADR-0146 §1. It is the same activity under the same contract — measure, report, never judge
+//! — so a second subcommand would be a second place for that contract to be stated and a
+//! second place for someone to add a threshold to it.
+//!
+//! It is the opposite *shape*, though, and the docs above are why: latency is one file in three
+//! cache regimes, and throughput is one cold pass over many files. There is no warm throughput
+//! at all, because a compiler run is a process and the second run starts with an empty database
+//! by construction — so a warm figure here would measure a memo table, which is exactly the
+//! misleading answer §1 above was written to avoid.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -102,6 +114,9 @@ impl Row {
 /// Exits 0 whenever the measurement completed. There is no threshold to fail (ADR-0033 §4);
 /// a non-zero exit here would mean the harness itself could not run.
 pub fn run(args: BenchArgs, global: &GlobalArgs) -> Result<i32> {
+    if args.throughput {
+        return throughput(&args, global);
+    }
     let path = args
         .file
         .canonicalize()
@@ -447,4 +462,179 @@ fn report(
 /// is comparing rows to each other and a column with mixed units defeats that.
 fn millis(duration: Duration) -> String {
     format!("{:.3}ms", duration.as_secs_f64() * 1000.0)
+}
+
+// ---------------------------------------------------------------------------
+// Compile throughput (ADR-0146)
+// ---------------------------------------------------------------------------
+
+/// One operation's throughput over a file set.
+struct Throughput {
+    /// What was measured: `check` or `build`.
+    operation: &'static str,
+    /// Every sample, one per iteration over the whole set.
+    samples: Vec<Duration>,
+    /// How many files were compiled, so a reader can see the set was not empty.
+    files: usize,
+    /// How many source lines, and how many bytes — see ADR-0146 §1 on why both.
+    lines: usize,
+    /// Total bytes of source.
+    bytes: usize,
+}
+
+impl Throughput {
+    /// The fastest pass over the set: the closest thing to the cost with no interference.
+    ///
+    /// The *minimum* rather than the median, unlike the latency table, and for a different
+    /// reason than taste: a throughput figure is quoted as a capability ("this compiler does
+    /// N lines a second"), so the honest version of that claim is the best the machine
+    /// managed rather than the middle of a distribution that includes other processes.
+    fn best(&self) -> Duration {
+        self.samples.iter().copied().min().unwrap_or_default()
+    }
+
+    /// Lines per second at [`Self::best`].
+    fn lines_per_second(&self) -> f64 {
+        let seconds = self.best().as_secs_f64();
+        if seconds <= 0.0 {
+            return 0.0;
+        }
+        self.lines as f64 / seconds
+    }
+
+    /// Bytes per second at [`Self::best`].
+    fn bytes_per_second(&self) -> f64 {
+        let seconds = self.best().as_secs_f64();
+        if seconds <= 0.0 {
+            return 0.0;
+        }
+        self.bytes as f64 / seconds
+    }
+}
+
+/// Measures compile throughput over `args`'s paths (ADR-0146 §1).
+///
+/// # Errors
+/// When a path cannot be read or expands to no `.jr` file at all — the second being an error
+/// rather than a zero, because a throughput number over nothing is the most misleading output
+/// this subcommand could produce.
+fn throughput(args: &BenchArgs, global: &GlobalArgs) -> Result<i32> {
+    let mut roots = vec![args.file.clone()];
+    roots.extend(args.paths.iter().cloned());
+    let files = crate::files::expand_paths(&roots)?;
+    if files.is_empty() {
+        anyhow::bail!("no `.jr` files to measure");
+    }
+
+    let mut sources = Vec::with_capacity(files.len());
+    let mut lines = 0usize;
+    let mut bytes = 0usize;
+    for path in &files {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
+        lines += text.lines().count();
+        bytes += text.len();
+        sources.push((path.clone(), text));
+    }
+
+    let mut search_paths = args.module_paths.clone();
+    search_paths.push(bundled_module_dir());
+
+    let iterations = args.iterations.max(1);
+    let mut rows = Vec::new();
+
+    // **A fresh database per iteration, for both operations.** Not an optimisation to skip:
+    // reusing one would make every iteration after the first a memo hit, which is the
+    // measurement ADR-0033 §1 exists to refuse.
+    for (operation, compile) in [
+        (
+            "check",
+            check_all as fn(&mut JairsDatabase, &[(PathBuf, String)], ModuleSearchPaths),
+        ),
+        ("build", build_all),
+    ] {
+        let mut samples = Vec::with_capacity(iterations);
+        for _ in 0..iterations {
+            let mut db = JairsDatabase::default();
+            let input = db.set_module_search_paths(search_paths.clone());
+            // Registering the text is *setup*, not compilation: a real command reads its
+            // files before it starts, so the clock starts after.
+            for (path, text) in &sources {
+                let _ = db.set_file_text(path.to_string_lossy().into_owned(), text.clone());
+            }
+            let start = Instant::now();
+            compile(&mut db, &sources, input);
+            samples.push(start.elapsed());
+        }
+        rows.push(Throughput {
+            operation,
+            samples,
+            files: files.len(),
+            lines,
+            bytes,
+        });
+    }
+
+    report_throughput(&rows, iterations, global.quiet);
+    Ok(0)
+}
+
+/// Every diagnostic for every file, which is `jr check`'s work (ADR-0146 §1).
+fn check_all(db: &mut JairsDatabase, sources: &[(PathBuf, String)], input: ModuleSearchPaths) {
+    for (path, _) in sources {
+        let Some(file) = db.source_file(&path.to_string_lossy()) else {
+            continue;
+        };
+        db.load_modules_transitively(file);
+        let _ = jr_db::file_diagnostics(db, file, input);
+    }
+}
+
+/// Through MIR and a back end into an object, which is `jr build`'s work minus the link.
+///
+/// The link is excluded because it is `cc` rather than this compiler (ADR-0146 §1). A file
+/// with no `main` contributes its *check* cost and no object, which is honest: `build_object`
+/// refuses it, and skipping the refusal would be measuring a different program.
+fn build_all(db: &mut JairsDatabase, sources: &[(PathBuf, String)], input: ModuleSearchPaths) {
+    let config = db.build_config();
+    for (path, _) in sources {
+        let Some(file) = db.source_file(&path.to_string_lossy()) else {
+            continue;
+        };
+        db.load_modules_transitively(file);
+        let _ = jr_db::file_diagnostics(db, file, input);
+        let _ = jr_db::build_object(db, file, input, config, jr_db::BackendChoice::Cranelift);
+    }
+}
+
+/// Prints the throughput table.
+fn report_throughput(rows: &[Throughput], iterations: usize, quiet: bool) {
+    if let Some(first) = rows.first()
+        && !quiet
+    {
+        println!(
+            "compile throughput — {} files, {} lines, {} bytes, {iterations} iterations",
+            first.files, first.lines, first.bytes
+        );
+        println!(
+            "\n{:<10} {:>12} {:>16} {:>16}",
+            "operation", "best", "lines/s", "bytes/s"
+        );
+    }
+    for row in rows {
+        println!(
+            "{:<10} {:>12} {:>16.0} {:>16.0}",
+            row.operation,
+            millis(row.best()),
+            row.lines_per_second(),
+            row.bytes_per_second(),
+        );
+    }
+    if !quiet {
+        println!(
+            "\nNo thresholds: this reports, it does not judge (ADR-0033 §4, ADR-0146 §2).\n\
+             Cold only — a compiler is a process, so there is no warm throughput to report.\n\
+             `build` excludes the link, which is `cc` rather than this compiler."
+        );
+    }
 }

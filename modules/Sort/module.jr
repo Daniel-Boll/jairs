@@ -34,8 +34,35 @@
 //! the first sorting routine in a language whose test suite compares two independent engines against each
 //! other.
 //!
-//! A faster algorithm is a later decision with a benchmark behind it. W8 owns performance, and guessing now
-//! would be choosing an algorithm without the measurement that justifies one.
+//! # And why `heap_sort` sits beside it rather than replacing it
+//!
+//! ADR-0146 §3 kept that promise: `heap_sort` is `O(n log n)` always, needs no storage, and is short — the
+//! same three criteria, with the asymptotics moved from third place to first. It is **unstable**, and that is
+//! why it is a second name rather than a faster `sort`.
+//!
+//! **Stability is observable behaviour, not an implementation quality.** With equal keys a stable and an
+//! unstable sort produce different permutations, and a program that sorts by one field after sorting by
+//! another depends on which it got. Swapping the algorithm silently would change what an existing program
+//! computes, so the caller states which property they need — the same split Rust's `sort` and `sort_unstable`
+//! make.
+//!
+//! Not a **hybrid** either (insertion below a threshold, heapsort above), which is what a production sort
+//! does: it would make stability depend on the *input size*, so a program would work on small inputs and
+//! silently reorder equal keys on large ones. Not a **merge sort**, which needs scratch storage and would
+//! reopen the allocation decision ADR-0103 §3 declined to take. Not **quicksort**, whose worst case is
+//! `O(n²)` on adversarial input and which needs a pivot argument.
+//!
+//! # Why every sorting routine counts its comparisons
+//!
+//! `comparisons: *s64` is not instrumentation bolted on: it is how the *choice between the two algorithms is
+//! proved* (ADR-0146 §4). A comparison count is deterministic, machine-independent and identical in all three
+//! engines, so `valid/117` asserting that heapsort makes strictly fewer comparisons than insertion sort on a
+//! reversed input is a **test** that runs in the differential harness — where a wall-clock timing would be a
+//! number needing a footnote about the machine it was taken on. It also measures the thing the decision rests
+//! on, which is the asymptotics rather than the constant factor.
+//!
+//! Mandatory rather than optional, so there is no null check in the comparison loop and no second copy of
+//! either algorithm. The `_ints` wrappers discard it, so the common case is unchanged.
 //!
 //! # Why there are `_ints` wrappers
 //!
@@ -60,7 +87,7 @@
 ///
 /// The comparison is called `O(n²)` times in the worst case. That is a property of insertion sort, chosen for
 /// stability and for needing no storage rather than for speed — see the module docs.
-sort :: (xs: []$T, less: (T, T) -> bool) {
+sort :: (xs: []$T, less: (T, T) -> bool, comparisons: *s64) {
     // Insertion sort. `i` walks the boundary between the sorted prefix and the rest; each iteration takes one
     // element and moves it left past everything that should follow it.
     i := 1;
@@ -75,6 +102,7 @@ sort :: (xs: []$T, less: (T, T) -> bool) {
             if j == 0 {
                 keep_going = false;
             } else {
+                comparisons.* = comparisons.* + 1;
                 if less(current, xs[j - 1]) {
                     xs[j] = xs[j - 1];
                     j = j - 1;
@@ -96,7 +124,102 @@ sort :: (xs: []$T, less: (T, T) -> bool) {
 /// use `<` itself — see the module docs — and a caller writing `sort(xs, less_int)` for every integer sort
 /// would be paying for a language limitation in every call.
 sort_ints :: (xs: []s64) {
-    sort(xs, less_int);
+    n := 0;
+    sort(xs, less_int, *n);
+}
+
+/// Sorts a view of `s64` ascending and reports how many comparisons it took.
+///
+/// Exists because **cross-file instantiation is deferred** (ADR-0104 §5): an importer cannot instantiate
+/// `sort`, so a caller who wants the count can only get it from a wrapper this module instantiated. It is the
+/// counted form of `sort_ints` and nothing else.
+sort_ints_counting :: (xs: []s64, comparisons: *s64) {
+    sort(xs, less_int, comparisons);
+}
+
+/// Sorts `xs` in place by `less`, in `O(n log n)` comparisons, **unstably**.
+///
+/// Heapsort: build a max-heap over the whole view, then repeatedly swap the root to the end and sift the new
+/// root down through the shrinking heap. In place, no allocation, and `O(n log n)` in the *worst* case rather
+/// than on average — see the module docs for why those are the criteria and why this does not replace `sort`.
+///
+/// **Not stable.** Equal elements may be reordered, because sifting moves an element past others of equal key.
+/// A caller who needs stability wants `sort`.
+///
+/// `comparisons` is incremented once per call to `less`, which is what `valid/117` compares against
+/// insertion sort's count (ADR-0146 §4).
+heap_sort :: (xs: []$T, less: (T, T) -> bool, comparisons: *s64) {
+    // **One loop, and one sift site, deliberately.** The textbook form is two phases — heapify, then
+    // repeatedly extract — each calling a `sift_down` helper. That helper cannot exist here: a `$T`
+    // template calling another `$T` template does not infer, even with the variable already bound
+    // (`sift_down(xs, ...)` where `xs: []T` is E0268), which is a language limitation this module found
+    // and PLAN §7 records. Writing the sift twice was the alternative and it is the duplication this
+    // project keeps recording as a source of silent divergence, so the two phases are merged instead.
+    //
+    // `start` counts the heapify phase down from the last parent; once it reaches 0 the heap is built and
+    // `end` counts the extraction phase down instead. Both phases then sift one root within `[0, end)`,
+    // which is why there is one sift and not two.
+    start := xs.count / 2;
+    end := xs.count;
+    while end > 1 {
+        root := 0;
+        if start > 0 {
+            // Heapify: sift the next parent up the array, over the whole heap.
+            start = start - 1;
+            root = start;
+        } else {
+            // Extract: the root is the maximum, so swap it to the end and shrink the heap. The element
+            // at `end` is then final and must not be touched again — which is what makes `end` the sift's
+            // bound rather than `xs.count`.
+            end = end - 1;
+            top := xs[0];
+            xs[0] = xs[end];
+            xs[end] = top;
+        }
+
+        // Sift `root` down until both its children are no greater than it.
+        parent := root;
+        sifting := true;
+        while sifting {
+            child := parent * 2 + 1;
+            if child >= end {
+                // No children inside the heap, so the property holds here.
+                sifting = false;
+            } else {
+                // The larger of the two children, so the parent ends up above both.
+                largest := child;
+                right := child + 1;
+                if right < end {
+                    comparisons.* = comparisons.* + 1;
+                    if less(xs[largest], xs[right]) {
+                        largest = right;
+                    }
+                }
+                comparisons.* = comparisons.* + 1;
+                if less(xs[parent], xs[largest]) {
+                    held := xs[parent];
+                    xs[parent] = xs[largest];
+                    xs[largest] = held;
+                    parent = largest;
+                } else {
+                    sifting = false;
+                }
+            }
+        }
+    }
+}
+
+/// Sorts a view of `s64` ascending with `heap_sort`.
+///
+/// The wrapper exists for `sort_ints`' reason, unchanged (ADR-0104 §5).
+heap_sort_ints :: (xs: []s64) {
+    n := 0;
+    heap_sort(xs, less_int, *n);
+}
+
+/// Sorts a view of `s64` ascending with `heap_sort`, reporting the comparison count.
+heap_sort_ints_counting :: (xs: []s64, comparisons: *s64) {
+    heap_sort(xs, less_int, comparisons);
 }
 
 /// Whether a view of `s64` is ordered ascending.

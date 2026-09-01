@@ -172,6 +172,14 @@ exits 114, a checksum of offsets and sizes) and two refusals in `type-errors/`. 
 registry earned its keep here**: `crates/jr-cli/tests/codes.rs` failed the moment E0283 was declared
 while this file still claimed E0282 was free, which is exactly the rot it was written to catch.
 
+**ADR-0146 reaches 1031** (1032 under gate 7) and adds one corpus file = **233** — W8 sub-wave 5,
+the compile-throughput number and `heap_sort`. One new test is the throughput mode's (asserting the
+mode runs *and* that an empty input set is an error, which is the interesting half — a rate over no
+files reads as "infinitely slow" rather than "you gave me nothing") and `valid/117` is the sort
+comparison. **Two findings were recorded rather than fixed**, both from writing `heap_sort`: a `$T`
+template cannot call another `$T` template even with the variable bound (E0268), and a file-level
+mutable variable leaks an internal error — the **eighth** of that shape. Both are in PLAN §7.
+
 **ADR-0145 reaches 1030** (1031 under gate 7) and adds one corpus file = **232** — W8 sub-wave 4,
 inliner maturity. Three of the new tests are the inliner's own eligibility rules and one is
 `valid/116`. **Two existing differential tests failed and only one of them was a test to update**:
@@ -265,6 +273,11 @@ picking a side quietly.
   failure is silent: highlighting simply stops. `tree-sitter query` exits 1 with
   `Invalid node type`, which is why gate 6 now runs it over all four query files
   (ADR-0025 §4).
+- **Compile throughput is verified, not gated** (ADR-0146): `jr bench --throughput
+  tests/corpus/valid --module-path modules --iterations 10`, with a `--release` compiler for the
+  published figure. It reports and never judges, so there is nothing to fail — a timing assertion on
+  a shared machine fails for reasons unrelated to the code (ADR-0033 §4). The published number lives
+  in the README with the machine beside it.
 - Editor integration is **verified, not gated**:
   `nvim --headless -u NONE -l editors/nvim/verify.lua` (166 checks, non-zero on failure).
   Neovim is not a build dependency, so it is not one of the six — but run it after

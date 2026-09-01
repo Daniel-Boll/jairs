@@ -337,11 +337,31 @@ pub struct LspArgs {
 /// Arguments for `jr bench`.
 #[derive(Debug, Args)]
 pub struct BenchArgs {
-    /// The `.jr` file to measure requests against.
+    /// The `.jr` file to measure requests against, or the paths to measure throughput over.
     ///
-    /// One file rather than a set: the measurement is per-request latency, and the question
-    /// ADR-0033 exists to answer is what one request costs.
+    /// One file rather than a set for the latency measurement: that is per-request, and the
+    /// question ADR-0033 exists to answer is what one request costs. With `--throughput` the
+    /// remaining paths join it, and a directory expands to `**/*.jr` as `jr check`'s do.
     pub file: std::path::PathBuf,
+
+    /// Further paths, used only with `--throughput` (ADR-0146 §1).
+    #[arg(value_name = "PATH")]
+    pub paths: Vec<std::path::PathBuf>,
+
+    /// Measure **compile throughput** over the given paths instead of request latency
+    /// (ADR-0146 §1).
+    ///
+    /// Reports lines and bytes per second for `check` (every diagnostic for every reachable
+    /// file) and for `build` (through MIR and a back end into an object, excluding the link,
+    /// which is `cc` rather than this compiler).
+    ///
+    /// **Cold only**, unlike the latency measurement's three regimes: a compiler is a
+    /// process, so the number a user experiences is always the cold one and a warm figure
+    /// would be measuring a memo table.
+    ///
+    /// Reports, never judges — there is no threshold and no failure (ADR-0033 §4).
+    #[arg(long = "throughput")]
+    pub throughput: bool,
 
     /// How many times to run each operation in each cache state.
     ///
