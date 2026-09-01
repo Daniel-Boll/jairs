@@ -172,6 +172,15 @@ exits 114, a checksum of offsets and sizes) and two refusals in `type-errors/`. 
 registry earned its keep here**: `crates/jr-cli/tests/codes.rs` failed the moment E0283 was declared
 while this file still claimed E0282 was free, which is exactly the rot it was written to catch.
 
+**ADR-0145 reaches 1030** (1031 under gate 7) and adds one corpus file = **232** — W8 sub-wave 4,
+inliner maturity. Three of the new tests are the inliner's own eligibility rules and one is
+`valid/116`. **Two existing differential tests failed and only one of them was a test to update**:
+the recursive-backtrace test caught the draft's decision to unroll recursion, which flattens frames a
+diagnostic cannot get back, so the *decision* changed rather than the test. The other pinned "a
+callee that was not inlined names its own line" and only its *premise* had expired — it made the
+callee ineligible by having it call something, which is no longer a reason — so it now makes it
+recursive instead. Telling those two apart is the whole skill in a wave that changes a pass.
+
 **A number in this file is now partly enforced.** `crates/jr-cli/tests/codes.rs` fails when the
 "first free code" claim below rots. The test count and the corpus count are still prose, and both were
 wrong in three places each when the audit looked — which is the argument for reading §7 rather than

@@ -19,7 +19,19 @@ error-recovering compiler written in Rust.
 ## Status, honestly
 
 Last updated with **wave W8 — Performance open** (W7 — Stdlib and W6 — Metaprogram are still open
-too), 1027 tests green — 1028 with the LLVM back end compiled in.
+too), 1030 tests green — 1031 with the LLVM back end compiled in.
+
+**The inliner takes a non-leaf callee**, so the `sort_ints` → `sort` → `less_int` shape a standard
+library is full of collapses instead of stopping at one level (ADR-0145). `024-hello.jr`'s optimized
+MIR shows it: `print_line` is inlined *two levels*, through `print` to the `write` call. Store-to-load
+forwarding also crosses blocks now, along a single-predecessor chain — sound because one predecessor
+both ran first and dominates the load.
+
+**A recursive callee is refused, and a test decided that rather than a review.** The first version
+unrolled recursion three levels, which is correct, and it broke the four-frame backtrace test: an
+inlined callee has no frame, inline-provenance backtraces are deferred, and in a recursive trap the
+*depth* is the message — so flattening three of four frames is a backtrace that lies about what
+happened. A plausible optimisation traded against a documented promise, caught by the corpus.
 
 **A struct can control its own layout.** `x: s64 #align 16;` raises a field's alignment and
 `y: s64 #place 32;` puts one at an exact byte, so an overlay of several fields on the same bytes —
@@ -667,7 +679,7 @@ ignoring the flag a compile error, is owed its own ADR. There is no GC and no RA
 | InternPool (types, comptime values, layout, arithmetic) | **Works** | One layout computation and one integer evaluator, shared (ADR-0018 §2, ADR-0022 §2) |
 | Sema (signatures, checking, inference) | **Works** | E0212–E0279; a union's diagnostics are a struct's unchanged, deliberately, and a bare `.RED`'s "no such member" is the qualified form's; no const-eval here — ADR-0018 §3 puts it in the VM, which is why an array length must be a literal. Float literals are context-typed with **no** fit check, because IEEE-754 saturates (ADR-0040 §5) |
 | MIR (typed SSA, Braun construction) | **Works** | Block parameters, not phis (ADR-0017); CFG diagnostics E0227–E0229, the last of which now also reports a `break`/`continue` naming an unknown label (ADR-0049 §2); an explicit `bounds_check` statement and an explicit `zero`, both ADR-0039. `for` reuses the `while` shape with a synthesised induction variable and needs no new node; `defer`'s statements appear once per exit path |
-| Mid-end | **Four passes** | Inliner, store-to-load forwarding, const-prop, DCE, to a bounded fixed point (ADR-0021 – ADR-0023), and all four are skipped at `-O0` (ADR-0142). Forwarding is block-local, so a value read across a loop stays in memory, and it refuses two unequal array indices as possibly-aliasing; no SROA; the SSA value arena is never compacted |
+| Mid-end | **Four passes** | Inliner, store-to-load forwarding, const-prop, DCE, to a bounded fixed point (ADR-0021 – ADR-0023), and all four are skipped at `-O0` (ADR-0142). The inliner takes **non-leaf** callees and refuses recursive ones so their backtraces survive (ADR-0145); forwarding follows a **single-predecessor chain** across blocks, but a join still ends it, so a value read across a loop stays in memory. It refuses two unequal array indices as possibly-aliasing. No SROA — that needs a new `Rvalue` extracting a field from an operand, not a pass; the SSA value arena is never compacted |
 | Bytecode VM + libffi | **Works** | Per-instruction spans, so a trap names its line. Floats need no new value variant, but are dispatched *before* the bit-compare fallback that would answer `NaN == NaN` and `-0.0 == 0.0` backwards. No JIT |
 | Cranelift back end + linker | **Works** | Returns an aggregate through a caller-allocated `sret` pointer, uniform by size (ADR-0051) — a register fast path is W8's, because the size threshold and field classification are platform-specific and a wrong guess is garbage with no diagnostic. Carries the context as a second hidden parameter, after `sret` and before the declared ones, so one shared predicate computes an offset of 0, 1 or 2 (ADR-0057 §4). Calls through a procedure pointer with `func_addr` + `call_indirect` (ADR-0059 §4). Still refuses an aggregate crossing a `#foreign` boundary in either direction |
 | salsa incremental database | **Works** | Built *and* optimized MIR staged (ADR-0021 §1); invalidation is at file grain |

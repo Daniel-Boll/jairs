@@ -1,0 +1,61 @@
+// ADR-0145: inliner maturity — a non-leaf callee, and forwarding across a straight line.
+//
+// This file is the *behavioural* half of that wave: the mid-end changes are invisible to a
+// program by construction, so what a corpus file can contribute is a program whose answer
+// must not move. ADR-0142's sweep runs it at `-O0` and `-O1` and requires the whole
+// observable behaviour to match, which is the check that says the passes preserve meaning;
+// the three-way differential runs it in all three engines.
+//
+// Every construct here is one the old pipeline could *not* flatten, so a wrong answer after
+// this wave is attributable to it:
+//
+//   * a three-level wrapper chain (`outer` → `middle` → `inner`), refused entirely by the
+//     leaf rule because `outer` and `middle` each contain a call;
+//   * a store and its load one block apart, which block-local forwarding could not see:
+//     `total` is written before an `if` with no `else` and read after it;
+//   * a recursive procedure, which must still be *refused* so that its frames survive — and
+//     which therefore still computes its answer through real calls.
+//
+// 6 + 30 + 10 + 55 = 101.
+#import "Basic";
+
+inner :: (a: s64) -> s64 {
+    return a + 1;
+}
+
+middle :: (a: s64) -> s64 {
+    return inner(a) * 2;
+}
+
+outer :: (a: s64) -> s64 {
+    return middle(a) + inner(a);
+}
+
+// Reaches itself, so ADR-0145 §1 refuses it: an inlined callee has no frame, and in a
+// recursive trap the depth is the message.
+sum_to :: (n: s64) -> s64 {
+    if n <= 0 {
+        return 0;
+    }
+    return n + sum_to(n - 1);
+}
+
+main :: () {
+    // Three levels: (1 + 1) * 2 + (1 + 1) = 6.
+    a := outer(1);
+
+    // A store before a branch and a load after it — one block apart, with the store in a
+    // block that is the load's *single* predecessor's predecessor.
+    total := 0;
+    total = a + 4;
+    if a > 0 {
+        total = total + 20;
+    }
+
+    // Two of those chains nested, so six levels of call in one expression — deeper than the
+    // round budget. The answer must be right whether or not every level was flattened, which
+    // is the point of the bound being a *performance* knob and not a semantic one.
+    b := outer(outer(1));
+
+    exit(a + total + b + sum_to(10));
+}

@@ -404,11 +404,64 @@ fn print_line_loses_the_spill_slot_it_never_reads() {
         1,
         "lowering still spills the parameter; if this changes, the test below proves nothing"
     );
-    assert_eq!(
-        after.slot_count(),
-        0,
-        "a slot that is only ever written must not reach either engine"
+    assert!(
+        write_only_slots(before) > 0,
+        "the built body's spill slot is written and never read; if that stops being true, \
+         the assertion below proves nothing"
     );
+    // **The property, not the count** (ADR-0145 §1). This used to assert `slot_count() == 0`,
+    // which was the same thing while `print_line`'s only slot was its own write-only spill.
+    // Non-leaf inlining changed the arithmetic rather than the property: `print_line` now
+    // absorbs `print`, twice, and each copy brings a `string` temporary that *is* read — so
+    // the optimized body legitimately has slots, and what must still hold is that none of
+    // them is dead.
+    assert_eq!(
+        write_only_slots(after),
+        0,
+        "a slot that is only ever written must not reach any engine"
+    );
+}
+
+/// How many slots a body stores to and never loads from.
+///
+/// Counted through places rather than through `Statement::Store` alone, because a load can
+/// reach a slot by any projection path and a slot read through `s0.data` is read.
+fn write_only_slots(body: &jr_mir::MirBody) -> usize {
+    use rustc_hash::FxHashSet;
+    let mut written: FxHashSet<jr_mir::SlotId> = FxHashSet::default();
+    let mut read: FxHashSet<jr_mir::SlotId> = FxHashSet::default();
+    let note = |place: &jr_mir::Place, set: &mut FxHashSet<jr_mir::SlotId>| {
+        if let jr_mir::PlaceBase::Slot(slot) = place.base {
+            set.insert(slot);
+        }
+    };
+    for block in body.blocks() {
+        for stmt in &block.stmts {
+            match stmt {
+                jr_mir::Statement::Store { place, .. } | jr_mir::Statement::Zero { place, .. } => {
+                    note(place, &mut written);
+                }
+                jr_mir::Statement::Assign { rvalue, .. }
+                | jr_mir::Statement::Discard { rvalue, .. } => match rvalue {
+                    // An `Address` counts as a read: the slot escapes, so something may read
+                    // it through the pointer and nothing here can prove otherwise.
+                    jr_mir::Rvalue::Load(place) | jr_mir::Rvalue::Address(place) => {
+                        note(place, &mut read);
+                    }
+                    jr_mir::Rvalue::Use(_)
+                    | jr_mir::Rvalue::Binary { .. }
+                    | jr_mir::Rvalue::Unary { .. }
+                    | jr_mir::Rvalue::Convert { .. }
+                    | jr_mir::Rvalue::Call { .. }
+                    | jr_mir::Rvalue::Undef => {}
+                },
+                jr_mir::Statement::BoundsCheck { .. }
+                | jr_mir::Statement::TagCheck { .. }
+                | jr_mir::Statement::Nop => {}
+            }
+        }
+    }
+    written.difference(&read).count()
 }
 
 // ---------------------------------------------------------------------------

@@ -12830,3 +12830,65 @@ proc main -> void {
     discard call extern proc1(v11)
     return
 }
+
+========================================
+116-inliner-maturity.jr
+========================================
+proc inner -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: s64 = v1 + 1_s64
+    return v2
+}
+proc middle -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: s64 = call proc0(v0, v1)
+    v3: s64 = v2 * 2_s64
+    return v3
+}
+proc outer -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: s64 = call proc1(v0, v1)
+    v3: s64 = call proc0(v0, v1)
+    v4: s64 = v2 + v3
+    return v4
+}
+proc sum_to -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: bool = v1 <= 0_s64
+    branch v2 ? bb1() : bb2()
+  bb1():
+    return 0_s64
+  bb2():
+    goto bb3()
+  bb3():
+    v3: s64 = v1 - 1_s64
+    v4: s64 = call proc3(v0, v3)
+    v5: s64 = v1 + v4
+    return v5
+}
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call proc2(v0, 1_s64)
+    v2: s64 = v1 + 4_s64
+    v3: bool = v1 > 0_s64
+    branch v3 ? bb1() : bb2()
+  bb1():
+    v4: s64 = v2 + 20_s64
+    goto bb3(v4)
+  bb2():
+    goto bb3(v2)
+  bb3(v8: s64):
+    v5: s64 = call proc2(v0, 1_s64)
+    v6: s64 = call proc2(v0, v5)
+    v9: s64 = v1 + v8
+    v10: s64 = v9 + v6
+    v11: s64 = call proc3(v0, 10_s64)
+    v12: s64 = v10 + v11
+    discard call extern proc1(v12)
+    return
+}

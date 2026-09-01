@@ -12,6 +12,9 @@ proc main -> void {
   params: v0: *Context
   slots:
     s0: s64  // local 1
+    s1: string  // temporary
+    s2: string  // temporary
+    s3: string  // temporary
   bb0(v0: *Context):
     goto bb11(v0)
   bb11(v12: *Context):
@@ -20,7 +23,14 @@ proc main -> void {
     store s0 <- 9_s64
     goto bb1()
   bb1():
-    discard call extern proc6(v0, "hello from Jairs\n")
+    goto bb13(v0)
+  bb13(v16: *Context):
+    store s1 <- "hello from Jairs\n"
+    v18: *u8 = load s1.data
+    v19: s64 = load s1.count
+    discard call extern proc0(1_s64, v18, v19)
+    goto bb12()
+  bb12():
     goto bb2()
   bb2():
     goto bb3(0_s64)
@@ -38,7 +48,26 @@ proc main -> void {
     v11: bool = v10 == 9_s64
     branch v11 ? bb7() : bb8()
   bb7():
-    discard call extern proc8(v0, "arithmetic and pointers agree")
+    goto bb15(v0)
+  bb15(v20: *Context):
+    goto bb17(v20)
+  bb17(v22: *Context):
+    store s2 <- "arithmetic and pointers agree"
+    v24: *u8 = load s2.data
+    v25: s64 = load s2.count
+    discard call extern proc0(1_s64, v24, v25)
+    goto bb16()
+  bb16():
+    goto bb19(v20)
+  bb19(v26: *Context):
+    store s3 <- "\n"
+    v28: *u8 = load s3.data
+    v29: s64 = load s3.count
+    discard call extern proc0(1_s64, v28, v29)
+    goto bb18()
+  bb18():
+    goto bb14()
+  bb14():
     goto bb9()
   bb8():
     goto bb9()

@@ -75,7 +75,10 @@ pub use constprop::const_prop;
 pub use dce::{dce, is_pure};
 pub use dump::{dump_body, dump_body_spans, dump_file};
 pub use forward::forward_stores;
-pub use inline::{Callees, MAX_INLINE_STATEMENTS, inline_body, is_inlinable};
+pub use inline::{
+    Callees, MAX_INLINE_ROUNDS, MAX_INLINE_STATEMENTS, MAX_INLINED_STATEMENTS, inline_body,
+    is_inlinable,
+};
 pub use inputs::{
     AnyLowering, ConstValues, FilledArg, FilledArgs, ImportedProc, ImportedProcs, ImportedValues,
     OperatorCalls,

@@ -15,7 +15,7 @@
 use jr_base::{FileId, Interner};
 use jr_diag::Diagnostics;
 use jr_hir::{ConstValue, FileHir, ItemId, ItemKind, ProcId, ResolveMap};
-use jr_mir::{ConstValues, FileMir, ImportedProcs, MirBody, Poisoned};
+use jr_mir::{ConstValues, FileMir, ImportedProcs, MirBody, Poisoned, ProcRef};
 use jr_pool::Pool;
 use jr_sema::{FileSignatures, TypeMap};
 
@@ -87,6 +87,17 @@ impl Lowered {
             Ok(body) => body,
             Err(poison) => panic!("expected `{name}` to lower, but it was refused: {poison:?}"),
         }
+    }
+
+    /// The [`ProcRef`] of a named procedure, in file 0.
+    ///
+    /// The harness lowers one file, so the file id is always 0 — which is why this can be a
+    /// lookup rather than a parameter. Added when `is_inlinable` began needing the callee's
+    /// *identity* as well as its body, so that it can ask whether the callee reaches itself
+    /// (ADR-0145 §1).
+    pub fn proc_ref(&self, interner: &Interner, name: &str) -> ProcRef {
+        let proc = self.proc_id(interner, name).expect("no such procedure");
+        ProcRef::new(FileId::from_usize(0), proc)
     }
 
     /// Why a named procedure was refused, asserting it was.

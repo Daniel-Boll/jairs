@@ -1283,10 +1283,16 @@ fn a_trap_inside_an_inlined_leaf_names_the_call_in_both_engines() {
 
 #[test]
 fn a_trap_inside_a_callee_that_was_not_inlined_names_its_own_line() {
-    // The negative control for the test above, and the thing that makes it mean
-    // something: the same program with a callee that calls `print` is not a leaf, so
-    // ADR-0021 §4 refuses to inline it, and the trap names line 7 inside `bump`. If
-    // the two tests ever agree on a line, one of them has stopped testing inlining.
+    // The negative control for the test above, and the thing that makes it mean something:
+    // if the two tests ever agree on a line, one of them has stopped testing inlining.
+    //
+    // **The way this callee is made ineligible changed with ADR-0145.** It used to call
+    // `print`, and the leaf rule refused any callee containing a call. That rule is gone, so
+    // the callee is now made ineligible by *reaching itself*: a recursive callee is refused
+    // so that a recursive trap keeps its frames, since an inlined callee has none
+    // (ADR-0021 §3) and ADR-0066 §4 defers inline-provenance backtraces. The recursion here
+    // never fires — `a` is `MAX` — so the program still traps on the addition, which keeps
+    // this test about the *line* rather than about recursion.
     let dir = TempDir::new().expect("a temporary directory");
     let path = dir.path().join("nolinline.jr");
     let source = "#import \"Basic\";\n\
@@ -1294,7 +1300,9 @@ fn a_trap_inside_a_callee_that_was_not_inlined_names_its_own_line() {
                   MAX :: 9223372036854775807;\n\
                   \n\
                   bump :: (a: s64) -> s64 {\n\
-                  \x20   print(\"\");\n\
+                  \x20   if a < 0 {\n\
+                  \x20       return bump(a + 1);\n\
+                  \x20   }\n\
                   \x20   return a + 1;\n\
                   }\n\
                   \n\
@@ -1310,7 +1318,7 @@ fn a_trap_inside_a_callee_that_was_not_inlined_names_its_own_line() {
     // `main` — the negative control for the inlined case, now visible in the backtrace
     // as well as in the line number (ADR-0066 §4).
     let expected = format!(
-        "error: addition overflowed\n  --> {}:7:12\n  in bump\n  in main\n",
+        "error: addition overflowed\n  --> {}:9:12\n  in bump\n  in main\n",
         path.display()
     );
     assert_eq!(vm.stderr, expected);
