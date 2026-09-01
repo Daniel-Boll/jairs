@@ -208,6 +208,13 @@ pub(crate) const E0130: &str = "E0130";
 /// block rather than the two-shape `ControlBody`.
 pub(crate) const E0131: &str = "E0131";
 
+/// A field layout attribute with no value (ADR-0144 §1).
+///
+/// `x: s64 #align;` and `y: s64 #place;`. One code for both, because each is "the attribute has
+/// nothing after it" and the *message* names which one — the reasoning E0129 and E0130 already
+/// use.
+pub(crate) const E0132: &str = "E0132";
+
 /// Input nested more deeply than the parser's depth limit.
 ///
 /// Deliberately at the top of the parser's range rather than in sequence: it is a
@@ -255,6 +262,7 @@ mod tests {
         ("E0129", "malformed result or target list"),
         ("E0130", "malformed named argument or default"),
         ("E0131", "`#code` without a braced body"),
+        ("E0132", "a field layout attribute with no value"),
         ("E0199", "nesting depth limit"),
     ];
 

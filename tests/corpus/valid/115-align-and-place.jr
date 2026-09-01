@@ -1,0 +1,67 @@
+// ADR-0144: `#align` and `#place` — layout control.
+//
+// The whole feature is a change to `jr-pool`'s layout fold plus the syntax to reach it, and no
+// engine learned a line — so what this file really exercises is ADR-0018 §2's claim that one
+// shared layout computation means a layout feature is written once. The three-way differential
+// (ADR-0143) is what gives that teeth: three independently written engines agree on these offsets
+// only because all three read the same numbers from the same place.
+//
+// The exit status is a checksum of *offsets and sizes*, so a wrong offset changes the number
+// rather than only the shape:
+//
+//   size_of(Aligned)  tag at 0, value #align 16 at 16 (+8) -> end 24, align 16 -> 32
+//   size_of(Overlay)  header 0..8, lo at 8, hi at 9, both at 8..16 -> end 16, align 8 -> 16
+//   size_of(Odd)      pad at 0, value #place 3 -> 3..11, align 8 -> 16
+//   lo + hi * 10      3 + 40 = 43, which is what says the overlay overlays
+//   odd.value         7, read back through a deliberately unaligned field
+//
+// 32 + 16 + 16 + 43 + 7 = 114.
+#import "Basic";
+
+// A named constant as the operand, which is `named_constant_int`'s third caller (ADR-0144 §2) —
+// the helper ADR-0070 wrote for an array length and ADR-0129 generalised.
+ALIGNMENT :: 16;
+
+Aligned :: struct {
+    tag: u8;
+    value: s64 #align ALIGNMENT;
+}
+
+// Three fields over the same eight bytes. This is what a `union` cannot say: `header` does *not*
+// overlap, and only the last three do (ADR-0144 §4).
+Overlay :: struct {
+    header: s64;
+    lo: u8 #place 8;
+    hi: u8 #place 9;
+    both: s64 #place 8;
+}
+
+// A deliberately unaligned field: 3 is not a multiple of 8. Nothing refuses it, and all three
+// engines read it back correctly because each computes its own addresses — the LLVM back end
+// claims `align 1` on every access for exactly this reason.
+Odd :: struct {
+    pad: u8;
+    value: s64 #place 3;
+}
+
+main :: () {
+    a: Aligned;
+    a.tag = 1;
+    a.value = 2;
+
+    o: Overlay;
+    // Clearing through the wide field first, so the two bytes read below are the ones written
+    // after it rather than whatever the zeroing left.
+    o.both = 0;
+    o.lo = 3;
+    o.hi = 4;
+
+    d: Odd;
+    d.value = 7;
+    d.pad = 1;
+
+    total := cast(s64, o.lo) + cast(s64, o.hi) * 10;
+    total = total + size_of(Aligned) + size_of(Overlay) + size_of(Odd);
+    total = total + d.value;
+    exit(total);
+}

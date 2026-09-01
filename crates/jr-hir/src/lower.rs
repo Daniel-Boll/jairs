@@ -400,11 +400,17 @@ impl<'a> LowerCtx<'a> {
                     .map(|t| self.span_of_token(t))
                     .unwrap_or(span);
                 let ty = f.ty().map(|t| self.lower_type_expr_top(&t));
+                // The operands are lowered as ordinary expressions, so a name in one is resolved
+                // and reported exactly as a name anywhere else is (ADR-0144 §2).
+                let align = f.align_value().map(|e| self.lower_top_expr(&e));
+                let place = f.place_value().map(|e| self.lower_top_expr(&e));
                 fields.push(Field {
                     name,
                     name_span,
                     ty,
                     using: f.is_using(),
+                    align,
+                    place,
                 });
             }
         }

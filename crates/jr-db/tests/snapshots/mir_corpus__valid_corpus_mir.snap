@@ -12795,3 +12795,38 @@ proc main -> void {
     discard call extern proc1(1_s64)
     return
 }
+
+========================================
+115-align-and-place.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: Aligned  // local 0
+    s1: Overlay  // local 1
+    s2: Odd  // local 2
+  bb0(v0: *Context):
+    zero s0
+    store s0.0 <- 1_u8
+    store s0.1 <- 2_s64
+    zero s1
+    store s1.3 <- 0_s64
+    store s1.1 <- 3_u8
+    store s1.2 <- 4_u8
+    zero s2
+    store s2.1 <- 7_s64
+    store s2.0 <- 1_u8
+    v1: u8 = load s1.1
+    v2: s64 = convert v1 from u8
+    v3: u8 = load s1.2
+    v4: s64 = convert v3 from u8
+    v5: s64 = v4 * 10_s64
+    v6: s64 = v2 + v5
+    v7: s64 = v6 + 32_s64
+    v8: s64 = v7 + 16_s64
+    v9: s64 = v8 + 16_s64
+    v10: s64 = load s2.1
+    v11: s64 = v9 + v10
+    discard call extern proc1(v11)
+    return
+}

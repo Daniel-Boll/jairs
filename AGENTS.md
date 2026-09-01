@@ -165,6 +165,13 @@ replaces it with two (the three-way corpus sweep and a trap compared byte for by
 included). A test that is `#[cfg]`-ed out of existence is better than one that passes vacuously,
 which is why the LLVM axis is not a run-time skip.
 
+**ADR-0144 reaches 1027** (1028 under gate 7) and adds three corpus files = **231** — W8 sub-wave 3,
+`#align` and `#place`. Six of the eight new tests are `jr-pool`'s, on the layout fold, because that
+is where the whole feature lives: no engine changed for it. The corpus files are `valid/115` (which
+exits 114, a checksum of offsets and sizes) and two refusals in `type-errors/`. **The enforced code
+registry earned its keep here**: `crates/jr-cli/tests/codes.rs` failed the moment E0283 was declared
+while this file still claimed E0282 was free, which is exactly the rot it was written to catch.
+
 **A number in this file is now partly enforced.** `crates/jr-cli/tests/codes.rs` fails when the
 "first free code" claim below rots. The test count and the corpus count are still prose, and both were
 wrong in three places each when the audit looked — which is the argument for reading §7 rather than
@@ -295,7 +302,7 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0282 is the first free code**; E0132 is the first free *parser* code. E0280 refuses an
+**E0284 is the first free code**; E0133 is the first free *parser* code. E0282 and E0283 are `#align`'s and `#place`'s refusals (ADR-0144), one per attribute because the two have different rules, and E0132 is `jr-syntax`'s for either attribute written with no value at all. E0280 refuses an
 instantiation family that never settles and E0281 a `$N` call in a file whose `#insert`
 operand is computed (both ADR-0120, **owned by `jr-db`**). E0231 is `jr-db`'s
 unused-import warning — the first code in this project that is a *warning* rather than an

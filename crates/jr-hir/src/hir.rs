@@ -1131,6 +1131,15 @@ pub struct Field {
     /// The field stays a **real field** at a real offset, so `jr-pool` needs nothing: `using`
     /// is purely a resolution feature (ADR-0050 §4).
     pub using: bool,
+    /// The `#align N` operand, when the field carries one (ADR-0144 §3).
+    ///
+    /// An [`ExprId`] rather than a number: the operand may be an integer literal or a name that
+    /// resolves to a literal-valued constant, and deciding which is a semantic judgement — the
+    /// same split an array length uses (ADR-0070 §1), so `jr-hir` records the expression and
+    /// `jr-sema` reads it.
+    pub align: Option<ExprId>,
+    /// The `#place N` operand, when the field carries one (ADR-0144 §4).
+    pub place: Option<ExprId>,
 }
 
 // ---------------------------------------------------------------------------

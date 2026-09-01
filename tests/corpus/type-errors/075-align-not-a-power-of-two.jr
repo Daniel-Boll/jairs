@@ -1,0 +1,31 @@
+// EXPECT: E0282 — an `#align` that is not a usable alignment (ADR-0144 §3)
+//
+// **One** refusal here, because this directory's contract is one diagnostic per file. The case shown
+// is a value that is not a power of two, which is the mistake a reader actually makes: 12 looks like
+// a size, and a size is what a field's alignment is *not*.
+//
+// Refused identically, and each for its own stated reason:
+//
+//   * zero, which is not an alignment at all — every address is 0-aligned, so the request means
+//     nothing;
+//   * a value above 4096, one page, because past it a stack slot cannot promise the alignment it was
+//     asked for and a request silently not met is worse than a refusal;
+//   * an operand that needs evaluation (`#align 8 * 2`, or a `#run`), for ADR-0018 §3's ordering
+//     reason: a struct's fields are laid out with its declaration, before the compile-time
+//     evaluator runs. That is the same limit an array length has, and a literal-valued *constant*
+//     is accepted through the same helper (`valid/115`), so the line here is evaluation and not
+//     literalness.
+//
+// **What is deliberately not refused** is a value *below* the type's own alignment. `#align` is a
+// minimum, so `#align 1` on an `s64` is already satisfied. That was decided while building: a
+// field's natural alignment is not always knowable while signatures are being resolved — a field
+// whose type is a struct resolved later has no layout yet — so a "must not lower" rule would be
+// enforced sometimes, and a rule enforced sometimes is worse than a rule stated exactly.
+Misaligned :: struct {
+    value: s64 #align 12;
+}
+
+main :: () {
+    m: Misaligned;
+    m.value = 1;
+}

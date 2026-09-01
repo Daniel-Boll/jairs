@@ -2559,3 +2559,40 @@ fn the_llvm_backend_is_refused_with_a_message_naming_the_feature() {
         "the refusal must name the feature: {rendered}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0144: `#align` and `#place`
+// ---------------------------------------------------------------------------
+
+/// **A struct with `#align` and `#place` lays out identically in both engines, and exits 114**
+/// (ADR-0144 §5).
+///
+/// The value matters more than the agreement, and unusually so: the exit status is a checksum of
+/// *offsets and sizes*, so a wrong offset changes the number. And every failure mode here is
+/// silent — a `#place` ignored, an `#align` applied to the wrong field, a struct sized from the
+/// running sum rather than the maximum end — and each would give both engines the same consistent
+/// wrong answer, which is precisely what an agreement-only test cannot see.
+///
+/// It also stands for the claim that made the wave cheap: **no engine learned a line.** The feature
+/// is `jr-pool`'s fold plus the syntax to reach it, and three independently written engines agree
+/// on these offsets only because all three read the same numbers from the same place (ADR-0018 §2).
+/// Under gate 7 the three-way sweep covers the LLVM back end too.
+#[test]
+fn align_and_place_lay_out_identically_in_both_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/115-align-and-place.jr");
+    let vm = run_in_vm(&program);
+    let native = run_natively(&program, dir.path());
+
+    assert_eq!(
+        vm.status, 114,
+        "the VM's layout checksum changed: {} {}",
+        vm.stdout, vm.stderr
+    );
+    assert_eq!(
+        native.status, 114,
+        "the native layout checksum changed: {} {}",
+        native.stdout, native.stderr
+    );
+    assert_eq!(vm, native, "the two engines disagree about a placed field");
+}

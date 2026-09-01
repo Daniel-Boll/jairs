@@ -29,7 +29,7 @@ use rowan::{Checkpoint, GreenNode, GreenNodeBuilder};
 use crate::code::{
     E0100, E0101, E0102, E0103, E0104, E0105, E0106, E0107, E0108, E0109, E0110, E0111, E0112,
     E0113, E0114, E0115, E0116, E0117, E0118, E0119, E0121, E0123, E0124, E0125, E0126, E0127,
-    E0128, E0129, E0130, E0131, E0199,
+    E0128, E0129, E0130, E0131, E0132, E0199,
 };
 use crate::kind::{SyntaxKind, SyntaxKind::*, SyntaxNode};
 use crate::lexer::{Token, lex};
@@ -290,6 +290,46 @@ impl ProcAttr {
             Self::NoAbc => "#no_abc",
             Self::Expand => "#expand",
             Self::Modify => "#modify",
+        }
+    }
+
+    /// The attribute `text` names, or `None` for any other directive.
+    fn from_text(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|attr| attr.text() == text)
+    }
+}
+
+/// A layout attribute on a struct field (ADR-0144 §1).
+///
+/// An enum for the reason [`ProcAttr`] is one: the loop that consumes them matches
+/// exhaustively, so adding a variant is a compile error at the site that must learn it. A
+/// string match cannot be made exhaustive, and this project has recorded seven bugs from an
+/// attribute list that was written out twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldAttr {
+    /// `#align N` — raise this field's alignment (ADR-0144 §3).
+    Align,
+    /// `#place N` — put this field at exactly byte `N` (ADR-0144 §4).
+    Place,
+}
+
+impl FieldAttr {
+    /// Every attribute, so a test can check that each is accepted.
+    const ALL: [Self; 2] = [Self::Align, Self::Place];
+
+    /// The directive text that names this attribute.
+    const fn text(self) -> &'static str {
+        match self {
+            Self::Align => "#align",
+            Self::Place => "#place",
+        }
+    }
+
+    /// The node kind this attribute becomes.
+    const fn kind(self) -> SyntaxKind {
+        match self {
+            Self::Align => ALIGN_ATTR,
+            Self::Place => PLACE_ATTR,
         }
     }
 
@@ -1681,6 +1721,29 @@ impl<'src> Parser<'src> {
         } else {
             let span = self.current_span();
             self.error(span, "expected a type for field", E0113);
+        }
+        // Layout attributes between the type and the `;` (ADR-0144 §1), in the position
+        // `#c_call` and `#no_abc` occupy on a procedure. A loop rather than one optional
+        // attribute, so `x: s64 #align 16 #place 32;` works and the order does not matter —
+        // an ordering rule no reader could predict is what ADR-0058's proc-attribute loop
+        // avoided by looping too.
+        while self.at(DIRECTIVE) {
+            let Some(attr) = FieldAttr::from_text(self.current_directive_text()) else {
+                break;
+            };
+            self.start_node(attr.kind());
+            self.bump(); // the directive
+            if self.at_set(EXPR_START) {
+                self.parse_expr();
+            } else {
+                let span = self.current_span();
+                self.error(
+                    span,
+                    format!("expected a value after `{}`", attr.text()),
+                    E0132,
+                );
+            }
+            self.finish_node();
         }
         self.expect(SEMICOLON);
         self.finish_node();

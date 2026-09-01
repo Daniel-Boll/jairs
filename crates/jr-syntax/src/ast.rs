@@ -97,6 +97,18 @@ fn nth_child_node<N: AstNode>(parent: &SyntaxNode, n: usize) -> Option<N> {
     parent.children().filter_map(N::cast).nth(n)
 }
 
+/// Returns the operand expression inside the first child node of `kind`.
+///
+/// For a field's layout attributes (ADR-0144 §1), whose node holds the directive token and one
+/// expression. Shared by both accessors so that `#align` and `#place` cannot come to disagree
+/// about where their operand lives.
+fn attr_value(parent: &SyntaxNode, kind: SyntaxKind) -> Option<Expr> {
+    parent
+        .children()
+        .find(|node| node.kind() == kind)
+        .and_then(|node| node.children().find_map(Expr::cast))
+}
+
 // ---------------------------------------------------------------------------
 // Node types
 // ---------------------------------------------------------------------------
@@ -1171,6 +1183,20 @@ impl Field {
     /// Whether this field is `using`-embedded, promoting its type's fields (ADR-0050 §1).
     pub fn is_using(&self) -> bool {
         child_token(&self.0, USING_KW).is_some()
+    }
+
+    /// The `#align N` operand, if the field carries one (ADR-0144 §3).
+    ///
+    /// The *expression*, not a number: it may be an integer literal or a name that resolves to
+    /// a literal-valued constant, and deciding which is `jr-sema`'s judgement rather than the
+    /// syntax's — the same split an array length uses (ADR-0070).
+    pub fn align_value(&self) -> Option<Expr> {
+        attr_value(&self.0, ALIGN_ATTR)
+    }
+
+    /// The `#place N` operand, if the field carries one (ADR-0144 §4).
+    pub fn place_value(&self) -> Option<Expr> {
+        attr_value(&self.0, PLACE_ATTR)
     }
 }
 

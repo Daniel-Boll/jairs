@@ -122,6 +122,13 @@
 ; missing one.
 (no_abc_attr) @keyword.directive
 
+; And the two field layout attributes (ADR-0144 §1), for the same reason again — `#align` and
+; `#place` are literal tokens inside their nodes, so nothing else colours them. Only the directive
+; token is captured, because the operand is an ordinary expression and colouring it as a keyword
+; would make `#align ALIGNMENT` read as two keywords.
+(align_attr "#align" @keyword.directive)
+(place_attr "#place" @keyword.directive)
+
 ; A visibility marker (ADR-0054 §1). Captured as `@keyword.directive` like every other directive,
 ; because that is what it is — the scope rule is semantic and nothing about it is visible in colour.
 (scope_decl) @keyword.directive

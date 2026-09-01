@@ -19,7 +19,21 @@ error-recovering compiler written in Rust.
 ## Status, honestly
 
 Last updated with **wave W8 — Performance open** (W7 — Stdlib and W6 — Metaprogram are still open
-too), 1019 tests green — 1020 with the LLVM back end compiled in.
+too), 1027 tests green — 1028 with the LLVM back end compiled in.
+
+**A struct can control its own layout.** `x: s64 #align 16;` raises a field's alignment and
+`y: s64 #place 32;` puts one at an exact byte, so an overlay of several fields on the same bytes —
+the hardware-register and file-format case a `union` cannot express when only *some* fields overlap
+— is now spellable (ADR-0144). The whole feature is a change to the one place layout is computed
+plus the syntax to reach it: **no engine changed for it**, and three independently written engines
+agree on the resulting offsets because all three read the same numbers from the same place.
+
+Building it decided two things the plan had wrong. `#align` is a **minimum** rather than a rule that
+refuses a lowering value, because a field's natural alignment is not always knowable while
+signatures are being resolved — so the refusal would have been enforced only sometimes. And probing
+for a "misaligned `#place`" refusal found something worse than the case it was meant to prevent: the
+LLVM back end was already promising `align 8` on addresses it computes itself and has proved nothing
+about. It now claims `align 1` everywhere but an `alloca`, which is sound for every field and free.
 
 **There is a third execution engine.** `jr build --backend llvm` compiles through LLVM 21 via
 `inkwell` (ADR-0143), so the differential harness now holds **VM ≡ Cranelift ≡ LLVM**. All 114
@@ -559,6 +573,7 @@ has never run — plus 166 Neovim checks that are verified rather than gated.
 | You can | How | Caveat |
 |---|---|---|
 | Compile and run a program in the comptime VM | `jr run file.jr` | Register bytecode interpreter, no JIT tier |
+| Control a struct's layout | `x: s64 #align 16;`, `y: s64 #place 32;` | Raise a field's alignment, or put it at an exact byte offset (ADR-0144). `#align` is a *minimum*, a power of two up to 4096; `#place` takes any non-negative offset, may be unaligned, and **may overlap another field** — that is the point, and nothing checks for it, exactly as an untagged `union` reinterprets bits. A placed field never moves the ones after it. The operand is a literal or a named constant; arithmetic needs the compile-time evaluator, which runs after a struct is laid out |
 | Choose a code generator | `jr build file.jr --backend llvm` | Cranelift by default and LLVM 21 on request (ADR-0143). The LLVM path needs a compiler built with `--features llvm`; without it the flag is refused with a message naming the feature, rather than reported as unknown. The three engines are held to agreement by the differential harness — all 114 corpus programs and every hand-tried trap matched the VM on the first run |
 | Compile to a native executable | `jr build file.jr -o out` | arm64 macOS verified. x86-64 Linux is **configured in CI and has never run** — the workflow exists, and no CI run has ever happened on this repository, so Linux is entirely unverified. A declared `BUILD_OUTPUT` is confined to the working directory (ADR-0122) |
 | Build without bounds checks | `jr build file.jr --no-bounds-check`, or `jr run` | ADR-0003's build setting, finally wired (ADR-0058). An out-of-range index is then undefined behaviour, which is the trade. `#no_abc` on a procedure does the same locally, whatever the build says; compile-time execution checks regardless |
@@ -587,7 +602,7 @@ The authoritative version of this list is
 | `s8 s16 s32 s64`, `u8 u16 u32 u64`, `bool`, `string`, `*T`, `null` | pointer *difference* `p - q`; unchecked, so past-end is UB |
 | `float32`, `float64` — plain IEEE-754, no traps | `%` on floats, `is_nan`, math intrinsics (**W7**) |
 | `cast(T, x)` between any two numeric types, and `xx` where the context gives the type | pointer conversions — `xx` is no more powerful than `cast` |
-| `struct { … }`, one level, nominal | |
+| `struct { … }`, one level, nominal, with per-field `#align N` (a minimum, power of two up to 4096) and `#place N` (an exact byte offset, may overlap and may be unaligned) — ADR-0144 | a struct-level `#align`; any packing form; `#align` on a local or a procedure; an operand needing evaluation |
 | `union { … }`, nominal, **untagged** — every field at offset 0, so a cross-field read reinterprets | |
 | `variant { … }` — a tagged union: a write sets the tag, reading another case **traps**, `switch` destructures it (ADR-0068) | a recursive variant; one in a `#foreign` signature; eliding the check inside a matching arm |
 | `enum { RED; GREEN :: 5; }`, nominal, namespaced members, and bare `.RED` from context — including as a `switch` case (ADR-0067). A member's value may **name a constant** whose initialiser is a literal, and auto-numbering continues from it (ADR-0129) | a value needing evaluation (`2 + 2`, a `#run`, another file's constant); a member naming a **sibling** member |

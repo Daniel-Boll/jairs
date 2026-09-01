@@ -33,15 +33,22 @@
 use jr_base::{FileId, Interner, Span, Symbol};
 use jr_diag::{Diagnostic, Diagnostics};
 use jr_hir::{
-    BodyId, ConstValue, ExprScope, FileHir, ItemId, ItemKind, LocalId, ResolveMap, StructId,
-    TypeRef, TypeRefId,
+    BodyId, ConstValue, ExprId, ExprScope, FileHir, ItemId, ItemKind, LocalId, ResolveMap,
+    StructId, TypeRef, TypeRefId,
 };
 use jr_pool::{ContextKind, DeclId, IntKind, Item, Pool, PoolId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::code::{E0211, E0212, E0213, E0214, E0233, E0237, E0240, E0269, E0270};
+use crate::code::{E0211, E0212, E0213, E0214, E0233, E0237, E0240, E0269, E0270, E0282, E0283};
 use crate::map::TypeMap;
 use crate::sigs::{FileSignatures, SigEntry, SigKind};
+
+/// The largest alignment `#align` may request, in bytes (ADR-0144 §3).
+///
+/// One page. Past it a stack slot cannot promise the alignment it was asked for, and a request
+/// silently not met is worse than a refusal — so the ceiling is where the promise stops being
+/// keepable rather than an arbitrary round number.
+const MAX_FIELD_ALIGN: u32 = 4096;
 
 // ---------------------------------------------------------------------------
 // Mode
@@ -857,11 +864,17 @@ impl<'a> Ctx<'a> {
                 Some(id) => self.resolve_type(ExprScope::TopLevel, id, field.name_span),
                 None => PoolId::ERROR,
             };
-            resolved.push(if field.using {
-                jr_pool::Field::embedded(field.name, field_ty)
-            } else {
-                jr_pool::Field::new(field.name, field_ty)
-            });
+            // The layout attributes travel with the field so that `jr-pool`'s fold can apply
+            // them (ADR-0144 §5). Read through the *same* helper the ordinary struct body uses.
+            let (align, place) = self.field_placement(field);
+            resolved.push(
+                if field.using {
+                    jr_pool::Field::embedded(field.name, field_ty)
+                } else {
+                    jr_pool::Field::new(field.name, field_ty)
+                }
+                .placed(align, place),
+            );
         }
         resolved
     }
@@ -1146,6 +1159,113 @@ impl<'a> Ctx<'a> {
         self.diags.push(diag);
     }
 
+    /// Resolves a field's `#align` and `#place` operands, reporting what is unusable (ADR-0144).
+    ///
+    /// **One helper for both field-resolution sites** — an ordinary struct body and a
+    /// parameterised instance's — because a placement read one way in one and another way in the
+    /// other would be a *wrong offset* in exactly one of them, which no verifier catches. That is
+    /// the same argument `named_constant_int` itself is shared under (ADR-0129 §3).
+    ///
+    /// The operands are read through `named_constant_int`, so `#align ALIGNMENT` works exactly as
+    /// `[N]s64` with a named `N` does. This is that helper's **third** caller and it needed no
+    /// change to serve one, which is the return on ADR-0129's generalisation.
+    fn field_placement(&mut self, field: &jr_hir::Field) -> (Option<u32>, Option<u64>) {
+        let align = field
+            .align
+            .and_then(|expr| self.layout_attr_value(expr, field.name_span, true))
+            .and_then(|value| self.checked_align(value, field.name_span));
+        let place = field
+            .place
+            .and_then(|expr| self.layout_attr_value(expr, field.name_span, false))
+            .and_then(|value| match u64::try_from(value) {
+                Ok(offset) => Some(offset),
+                Err(_) => {
+                    self.diags.push(
+                        Diagnostic::error(field.name_span, "a `#place` offset cannot be negative")
+                            .with_code(E0283)
+                            .with_help(
+                                "a field's offset is measured in bytes from the start of \
+                                        its aggregate, so the smallest is `#place 0`",
+                            ),
+                    );
+                    None
+                }
+            });
+        (align, place)
+    }
+
+    /// The integer a layout attribute's operand denotes, or `None` with a diagnostic.
+    ///
+    /// `is_align` picks the code and the wording only: the *reading* is identical, which is why one
+    /// function does both. A literal or a name that resolves to a literal-valued constant, through
+    /// the same helper an array length uses — arithmetic is refused for ADR-0018 §3's ordering
+    /// reason, since signatures are typed before the compile-time evaluator runs.
+    fn layout_attr_value(&mut self, expr: ExprId, span: Span, is_align: bool) -> Option<i128> {
+        let value = match self.hir.exprs.get(expr.index()) {
+            Some(jr_hir::Expr::Literal(jr_hir::Literal::Int { value, .. }, _)) => Some(*value),
+            Some(jr_hir::Expr::Name { name, .. }) => {
+                let name = *name;
+                self.named_constant_int(name)
+            }
+            _ => None,
+        };
+        if value.is_none() {
+            let (code, what) = if is_align {
+                (E0282, "an `#align`")
+            } else {
+                (E0283, "a `#place`")
+            };
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("{what} value must be an integer literal or a named constant"),
+                )
+                .with_code(code)
+                .with_note(
+                    "a struct's fields are laid out with its declaration, before the compile-time \
+                     evaluator runs (ADR-0018 §3), so an arithmetic or `#run` value is not \
+                     available here",
+                ),
+            );
+        }
+        value
+    }
+
+    /// Checks that an `#align` value is a usable alignment (ADR-0144 §3).
+    fn checked_align(&mut self, value: i128, span: Span) -> Option<u32> {
+        let refuse = |ctx: &mut Self, message: &str, help: &str| {
+            ctx.diags.push(
+                Diagnostic::error(span, message)
+                    .with_code(E0282)
+                    .with_help(help.to_owned()),
+            );
+            None
+        };
+        let Ok(align) = u32::try_from(value) else {
+            return refuse(
+                self,
+                "this `#align` value is not a usable alignment",
+                "an alignment is a power of two between 1 and 4096",
+            );
+        };
+        if align == 0 || !align.is_power_of_two() {
+            return refuse(
+                self,
+                "an `#align` value must be a power of two",
+                "write 1, 2, 4, 8, 16, 32 and so on up to 4096",
+            );
+        }
+        if align > MAX_FIELD_ALIGN {
+            return refuse(
+                self,
+                "this `#align` value is larger than the compiler can honour",
+                "the maximum is 4096, one page: past that a stack slot cannot promise the \
+                 alignment, and a request silently not met is worse than a refusal",
+            );
+        }
+        Some(align)
+    }
+
     /// Resolves and records the field list of the struct declared at `sid`.
     pub(crate) fn resolve_struct_body(&mut self, sid: StructId, ty: PoolId, span: Span) {
         let hir = self.hir;
@@ -1158,11 +1278,18 @@ impl<'a> Ctx<'a> {
             };
             // The `using` flag travels with the field so that *field lookup* can follow an
             // embedded base (ADR-0050 §4). It changes no offset: `field_offset` never reads it.
-            resolved.push(if field.using {
-                jr_pool::Field::embedded(field.name, field_ty)
-            } else {
-                jr_pool::Field::new(field.name, field_ty)
-            });
+            // `#align` and `#place` (ADR-0144), read here and applied by `jr-pool`'s fold —
+            // nothing else in the compiler computes an offset, which is why a layout feature is
+            // one change (ADR-0018 §2).
+            let (align, place) = self.field_placement(field);
+            resolved.push(
+                if field.using {
+                    jr_pool::Field::embedded(field.name, field_ty)
+                } else {
+                    jr_pool::Field::new(field.name, field_ty)
+                }
+                .placed(align, place),
+            );
         }
         let decl = DeclId::new(self.file, sid.as_u32());
         self.pool.set_struct_fields(decl, resolved.clone());

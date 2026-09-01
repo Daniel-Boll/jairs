@@ -402,3 +402,29 @@ pub(crate) const E0278: &str = "E0278";
 /// One code for both, because they are one boundary's two directions and a reader who hits either needs the
 /// same page — the argument ADR-0099 made for E0277 covering two refusals.
 pub(crate) const E0279: &str = "E0279";
+
+/// An `#align` on a struct field that is not a usable alignment (ADR-0144 §3).
+///
+/// Four shapes: an operand that is not an integer literal or a literal-valued constant, zero, a
+/// value that is not a power of two, and a value above 4096. One code because each is "this is not
+/// an alignment", and the *message* says which — the reasoning E0129 and E0130 already use.
+///
+/// `#align` is a **minimum**, so a value *below* the type's own alignment is not an error: it is
+/// already satisfied. That was a decision found while building (ADR-0144 §3): the field's natural
+/// alignment is not always knowable while signatures are being resolved — a field whose type is a
+/// struct resolved later has no layout yet — so a "must not lower" rule would be enforced sometimes,
+/// and a rule enforced sometimes is worse than a rule stated exactly.
+///
+/// 4096 is a page, and it is the ceiling because a stack slot must be able to honour the request. A
+/// request silently not met is worse than a refusal.
+pub(crate) const E0282: &str = "E0282";
+
+/// A `#place` on a struct field that is not a usable offset (ADR-0144 §4).
+///
+/// Two shapes: an operand that is not an integer literal or a literal-valued constant, and a negative
+/// value. **Overlap is not an error** and neither is a misaligned offset — the first is the point of
+/// the attribute, and the second is handled by every engine because each computes its own addresses.
+///
+/// Its own code beside E0282 rather than one shared "bad layout attribute", because the two have
+/// different rules and a reader filtering by code wants to know which attribute they got wrong.
+pub(crate) const E0283: &str = "E0283";
