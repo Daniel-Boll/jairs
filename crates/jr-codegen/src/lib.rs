@@ -154,12 +154,43 @@ pub trait Backend {
 /// silently loses its location, which is the class of quiet degradation this project
 /// keeps being bitten by.
 pub trait TrapLocations {
-    /// The location of `span`, rendered as `path:line:col`.
+    /// Where `span` is, as a path plus a one-based line and column.
     ///
     /// `None` when there is nothing to point at — a compiler-invented value, where
     /// [`jr_mir::MirSpan::Synthetic`] is the honest answer. A back end must then
     /// report without a location rather than substituting a nearby one.
-    fn location(&self, span: jr_mir::MirSpan) -> Option<String>;
+    ///
+    /// **The structured form is the one implementors define**, and [`location`](TrapLocations::location)
+    /// formats it. Debug info needs the pieces — a DWARF line program stores a file index and a line
+    /// number, not a rendered string — and having the two come from one method is what keeps a trap
+    /// message and a `.debug_line` row from ever disagreeing about where a statement is. That is
+    /// ADR-0020 §2's argument for a single trap-message formatter, applied one level down.
+    fn position(&self, span: jr_mir::MirSpan) -> Option<SourcePosition>;
+
+    /// The location of `span`, rendered as `path:line:col`.
+    ///
+    /// A provided method over [`position`](TrapLocations::position), so an implementor cannot supply one
+    /// without the other and the rendering exists once.
+    fn location(&self, span: jr_mir::MirSpan) -> Option<String> {
+        let at = self.position(span)?;
+        Some(format!("{}:{}:{}", at.path, at.line, at.column))
+    }
+}
+
+/// Where something is in a source file: a path, and a one-based line and column.
+///
+/// Owned `String` rather than a borrowed path, because the only implementor builds it from a
+/// `SourceMap` behind a database and the lifetime would leak salsa into this crate's signature — the
+/// confinement the trait's own docs exist to protect. A location is asked for once per trap site and
+/// once per instruction with a new span, so the allocation is not on any hot path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourcePosition {
+    /// The file's path, as the source map records it.
+    pub path: String,
+    /// The line, counting from 1 — which is what both a diagnostic and DWARF want.
+    pub line: u32,
+    /// The column, counting from 1.
+    pub column: u32,
 }
 
 /// A [`TrapLocations`] that never knows a location.
@@ -170,7 +201,7 @@ pub trait TrapLocations {
 pub struct NoLocations;
 
 impl TrapLocations for NoLocations {
-    fn location(&self, _span: jr_mir::MirSpan) -> Option<String> {
+    fn position(&self, _span: jr_mir::MirSpan) -> Option<SourcePosition> {
         None
     }
 }

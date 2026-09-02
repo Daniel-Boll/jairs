@@ -234,9 +234,15 @@ struct BodyLocations<'a> {
 }
 
 impl jr_codegen::TrapLocations for BodyLocations<'_> {
-    fn location(&self, span: jr_mir::MirSpan) -> Option<String> {
+    fn position(&self, span: jr_mir::MirSpan) -> Option<jr_codegen::SourcePosition> {
         let span = jr_mir::resolve_span(self.hir, self.body, span)?;
-        Some(jr_base::render_location(self.map, span))
+        let file = self.map.file(span.file);
+        let at = file.line_col(span.start());
+        Some(jr_codegen::SourcePosition {
+            path: file.path().display().to_string(),
+            line: at.line,
+            column: at.col,
+        })
     }
 }
 

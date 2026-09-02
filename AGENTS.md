@@ -212,6 +212,35 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0169 reaches 1064** (1065 under gate 7) and **holds at 254** corpus files — no corpus file, because its
+subject is a *section of an object file* and no `.jr` program can observe one. **W12's first item**, and the first
+debug information this compiler has ever produced: a built object now carries a valid DWARF `.debug_line` whose
+rows name real statements.
+
+**The decision to carry forward is §2.** `TrapLocations` already resolved a `MirSpan` for trap messages, as a
+*formatted string*, which DWARF cannot use. So the trait now defines `position()` returning a structured
+path/line/column and **`location()` became a provided method that formats it** — an implementor cannot supply one
+without the other. That is ADR-0020 §2's one-formatter rule applied to two *consumers* rather than two engines,
+and it is what stops a `.debug_line` row saying line 41 while the trap says 40, which is a bug nobody finds
+quickly.
+
+**Two wrong results before the right one, both one string, both now comments in the code.** Mach-O spells the
+section `__debug_line`, not `.debug_line` — the wrong name produces a section `dwarfdump` silently ignores, which
+is indistinguishable from emitting nothing. And a Mach-O debug section outside the `__DWARF` segment **fails the
+link**: `ld: pointer not aligned`, because `ld` lays it out among the pointers. Each looked exactly like "the
+feature does not work".
+
+**Verified by parsing, not by grepping `dwarfdump`** — a macOS tool whose output is not a contract, and a grep
+would have passed on both wrong results. The test asserts rows name lines that *are* statements (a `return`, a
+`while`, an `if`, spread through the file so one wrong constant cannot satisfy all three), that not every row is
+the same line, and that the file table holds **both** files since the program imports `modules/Basic`.
+
+**Two things a later wave needs to know.** `gimli` is pinned to **0.33**, matching what `cranelift-object` already
+pulls, so there is exactly one DWARF library in the tree — the workspace had declared 0.34 and never used it. And
+**`ld` on macOS leaves DWARF in the object**: `jr build` deletes the object after a successful link, so a linked
+binary carries none today while `--emit-object` carries all of it. A `dsymutil` step is owed and is a *driver*
+decision, not a back-end one.
+
 **ADR-0168 holds at 1059** and adds one corpus file = **254**. Not a wave: a defect found by auditing this file
 and `PLAN.md` against each other at W10's close, and the most instructive entry here for a reader who wants to
 know how much to trust a document.

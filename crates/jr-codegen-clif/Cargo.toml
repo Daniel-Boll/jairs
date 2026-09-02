@@ -22,4 +22,6 @@ cranelift-frontend.workspace = true
 cranelift-module.workspace = true
 cranelift-native.workspace = true
 cranelift-object.workspace = true
+gimli.workspace = true
+object.workspace = true
 rustc-hash.workspace = true

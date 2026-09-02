@@ -18,9 +18,26 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
+**A native binary can now name a source line** — the first debug information this compiler has ever produced. A
+built object carries a real DWARF line table, and its rows point at actual statements rather than at the top of
+the file. The plan had claimed line tables already existed; checking found none at all, so this started from
+nothing.
+
+The part worth describing is not the DWARF. Trap messages already knew how to turn an internal location into
+`file:line:column`, but only as finished text — and a line table needs the pieces. So rather than writing a second
+lookup, the existing one was split: it now returns the pieces and the text is formatted from them. A trap and a
+debugger therefore cannot disagree about where a statement is, because there is one answer and two renderings of
+it. The same reasoning had been applied once before to keep two compilers from drifting; this applies it to two
+consumers of one fact.
+
+Two false starts are recorded, and both were a single string. On macOS the section is called `__debug_line`, not
+`.debug_line` — get that wrong and the tools silently ignore it, which looks exactly like producing nothing. And a
+debug section placed outside the segment reserved for it does not merely get ignored: it breaks the link, because
+the linker lays it out among real pointers.
+
 Last updated with **W10 — Graphics DONE** (W6 — Metaprogram, W7 — Stdlib, W8 — Performance and W9 — Tooling
-depth were already), 1059 tests green — 1060 with the LLVM back end compiled in, and nineteen library modules.
-**Two waves remain: W11 — Concurrency and W12 — Debug info.**
+depth were already), 1064 tests green — 1065 with the LLVM back end compiled in, and nineteen library modules.
+**Two waves remain: W11 — Concurrency, and W12 — Debug info, which is now under way.**
 
 Graphics arrived in four steps, on a foundation the plan had wrong: a window and a 2D renderer, an event loop,
 an immediate-mode UI, and image loading. It rests on SDL2's C API rather than on Cocoa, because every Cocoa call
