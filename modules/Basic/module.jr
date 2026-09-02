@@ -144,6 +144,22 @@ Type_Info_Kind :: enum {
 /// versus a comptime-built table) which is its own decision. `size` and `alignment` are enough to be
 /// useful — they are what `size_of` would give, which this language does not otherwise have — and the
 /// shape extends by adding fields, which does not break a reader that names only these four.
+/// One declaration a metaprogram found by note, as `noted_declarations` reports it (ADR-0153 §1).
+///
+/// This is W6's headline claim made real: a metaprogram can *iterate* the declarations carrying a note,
+/// in an ordinary `for`, instead of unrolling `noted_name(tag, 0)`, `noted_name(tag, 1)`, … to a bound it
+/// guessed. ADR-0100 §2 stated that limit honestly and named what it was waiting for — a compiler-emitted
+/// table — which ADR-0152 then built.
+Declaration :: struct {
+    /// The declared name, as written.
+    name: string;
+    /// The note's value — `@requires "x"` gives `"x"` — or `""` for a bare note like `@deprecated`.
+    ///
+    /// `""` rather than an absent marker, because a bare note genuinely has no value and a script that
+    /// wants to know whether one was written can compare against `""` without a second field.
+    note_value: string;
+}
+
 /// One field of a struct, union or variant, as reflection reports it (ADR-0152 §3).
 ///
 /// This is the **variable-length** member ADR-0078 §3 deferred, and what it was waiting for was a way

@@ -1,0 +1,70 @@
+// ADR-0153: the compiler message loop — a metaprogram that iterates rather than unrolls.
+//
+// This is **W6's headline claim** made real. `noted_count` and `noted_name` (ADR-0100) let a script
+// *unroll*: ask the count, then ask for name 0, name 1, … up to a bound written into the script. ADR-0100
+// §2 recorded that as the boundary of folding itself rather than a spelling problem — a fold is answered
+// while checking, and a `for` variable does not exist then — and named exactly what it was waiting for: a
+// compiler-emitted table. ADR-0152 built one.
+//
+// So `noted_declarations("route")` hands back a `[]Declaration` over a table the compiler emitted, and a
+// metaprogram writes an ordinary loop over it. The count is the table's, not a number anyone guessed.
+//
+// The exit status is a checksum, because each half fails silently on its own:
+//
+//   the count               two of the three declarations carry @route      = 2
+//   the note values         "/health" is 7 bytes, "/users" is 6            = 13
+//   a name read back        "users" is 5 bytes, through the view's string   = 5
+//   the note that is bare   @deprecated has value "", which is 0 bytes      = 0
+//   selection is real       @deprecated is NOT in the @route table          = 1
+//
+// 2 + 13 + 5 + 0 + 1 = 21.
+#import "Basic";
+
+health :: () -> s64 @route "/health" {
+    return 1;
+}
+
+users :: () -> s64 @route "/users" {
+    return 2;
+}
+
+// Carries a *different* note, so the table below must not contain it. That is the half a count-only test
+// would miss: a table containing every declaration would still have the right length here if the counts
+// happened to match, which is why the name is read back too.
+old_thing :: () -> s64 @deprecated {
+    return 3;
+}
+
+main :: () {
+    routes := noted_declarations("route");
+    total := routes.count;
+
+    // **An ordinary loop over a compiler-emitted table**, which is the whole point: the bound is
+    // `routes.count`, not a literal the script chose, so adding a fourth `@route` declaration changes this
+    // program's answer without touching it.
+    i := 0;
+    while i < routes.count {
+        total = total + routes[i].note_value.count;
+        i = i + 1;
+    }
+
+    // A name read back through the view's `string`, which proves the table's pointers reach real bytes in
+    // whichever engine is running — the term that caught both native back ends emitting a zero pointer
+    // (ADR-0152 §2).
+    total = total + routes[1].name.count;
+
+    // The bare note's value is `""` — a real answer rather than an absent marker, so a script can ask
+    // whether a payload was written by comparing the count against 0.
+    bare := noted_declarations("deprecated");
+    total = total + bare[0].note_value.count;
+
+    // **Selection is real.** `@deprecated` is not in the `@route` table, so the two tables differ, and a
+    // query that returned every declaration regardless of note would fail here.
+    if bare.count == 1 {
+        if routes.count == 2 {
+            total = total + 1;
+        }
+    }
+
+    exit(total);
+}
