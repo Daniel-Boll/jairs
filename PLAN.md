@@ -553,6 +553,50 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 ## 7. Immediate next actions
 
+> [!IMPORTANT]
+> **Ten of twelve waves are done. Two remain: W11 — Concurrency and W12 — Debug info.**
+>
+> **Start with W12.** It has **no blocker at all**, which is what makes it the one to reach for; W11 needs a
+> design decision first (below). That is the role W9 played twice in this programme.
+
+**W11 — Concurrency** is `Thread`, atomics, and **the memory model that says what they mean**. It was split out
+of W7 by §8.3 because it is not a stdlib module: it needs a **per-thread stack in the runtime**, atomics as
+*language* operations rather than library calls, and a rule for what comptime does when a `#run` spawns a
+thread. That last one is the fork to settle **before** writing code, and it is genuinely open — the comptime VM
+is single-threaded by construction (ADR-0021 §2 freezes the bodies it can reach), so "a `#run` that spawns"
+either is refused, is serialised, or means the VM grows a scheduler. Three answers, three different languages.
+
+**W12 — Debug info** is a DWARF writer: `.debug_line` from `MirSpan`, type and struct-layout DIEs from the
+pool, and locals through Cranelift's value labels. §8.4 claimed "line tables exist" and ADR-0159 found there is
+**no DWARF at all** — `dwarfdump` reports no sections on a built binary — so this wave starts from zero rather
+than from extension. `gimli` is already a workspace dependency and unused, which was anticipated. The one thing
+worth knowing before starting: `value_labels_ranges` exists on Cranelift's `CompiledCode` but the back end
+emits **no `ValueLabel`s**, so locals need the emission *and* the consumption, and the LLVM back end needs its
+own path since it shares nothing here.
+
+**Two language items are owed**, both found by building on the library rather than by design review, and neither
+blocking: a **typed constant** (`QUIT : u32 : 256` does not parse; `modules/Window` wants nine of them, and every
+comparison against a C-width field casts instead), and **qualified imports** (`Window.Event` does not parse, so
+`#import` is flat — `modules/Image` written with short names produced four E0211 ambiguous-name errors at once,
+and every module must now prefix its exports as though the namespace were its own). ADR-0167 §4 deliberately did
+*not* build the second one mid-wave, on the grounds that a feature designed by an inconvenience is the wrong
+feature.
+
+**A third is owed and is smaller than it looks**: `size_of` of an **imported** struct is not reachable from a
+file-scope constant (E0230), so `Socket`, `Window` and `Image` all moved the same ABI size-check into a
+procedure. Three callers is enough to say the gap is real.
+
+**The habit that keeps catching false schedules — confirm a wave's premise by *writing* the thing before
+planning around it — is now eight for eight**, and its last two catches were the most valuable. ADR-0165 caught
+**this project's own accepted ADR from the same session** (ADR-0164 §5 declared an event loop impossible on a
+premise it never wrote), and ADR-0168 caught **this document disagreeing with `AGENTS.md`**, which turned out to
+be hiding a leaked ICE in a position nobody had written. Both cost one probe. Neither would have been found by
+reading.
+
+---
+
+**Historical, kept because the reasoning is still load-bearing:**
+
 **W8 — Performance is DONE**, eight sub-waves (ADR-0142, the optimisation level; ADR-0143, the LLVM back
 end; ADR-0144, `#align`/`#place`; ADR-0145, inliner maturity; ADR-0146, the throughput number and
 `heap_sort`; ADR-0147, `#soa`; ADR-0148, `#simd`; ADR-0149, parallel sema **measured and refused**).
@@ -562,8 +606,9 @@ architecture. ADR-0149 names the two blockers, neither of them a driver change.
 
 **W6 — Metaprogram is DONE too** (ADR-0152 the static-data table, ADR-0153 the message loop, ADR-0154 a
 second build option plus two declines). **W7 — Stdlib is DONE too** (ADR-0158 closed it: nine of nine
-modules, with `Compiler` delivered inside W6 and `Thread` split out to W11). **So the waves still open are
-W9 — Tooling depth, W10 — Graphics, and W11 — Concurrency.**
+modules, with `Compiler` delivered inside W6 and `Thread` split out to W11). **W9 — Tooling depth is DONE**
+(ADR-0159, re-scoped: semantic tokens shipped, DWARF moved to W12). **W10 — Graphics is DONE** (ADR-0163
+… ADR-0167, on SDL2 rather than Cocoa).
 **§8 is the completion plan** — read it before picking anything up, because the thing that decides the
 order is not the per-wave item lists but three cross-cutting blockers.
 
