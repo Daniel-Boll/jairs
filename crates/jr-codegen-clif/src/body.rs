@@ -55,7 +55,7 @@ use jr_pool::{
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::repr::{self, Repr, pointer_type};
-use crate::trap::TrapKind;
+use jr_codegen::TrapKind;
 
 /// What a translated MIR value is, once `void` is accounted for.
 ///

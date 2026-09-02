@@ -10,4 +10,21 @@ authors.workspace = true
 [lints]
 workspace = true
 
+# The LLVM dependency is optional and off by default (ADR-0143 §1). `llvm-sys`'s build
+# script needs an LLVM 21 installation it can find — an `llvm-config` on `PATH`, or
+# `LLVM_SYS_211_PREFIX` — and homebrew's `llvm@21` is keg-only, so neither holds by default.
+# An unconditional dependency would put that wall in front of the whole compiler for a back
+# end that is not the default one. Gate 7 in `AGENTS.md` is what covers this code instead.
+[features]
+default = []
+llvm = ["dep:inkwell", "dep:rustc-hash"]
+
 [dependencies]
+jr-base = { workspace = true }
+jr-codegen = { workspace = true }
+jr-hir = { workspace = true }
+jr-mir = { workspace = true }
+jr-pool = { workspace = true }
+
+inkwell = { workspace = true, features = ["llvm21-1"], optional = true }
+rustc-hash = { workspace = true, optional = true }

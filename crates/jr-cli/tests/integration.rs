@@ -789,6 +789,7 @@ fn run_build(path: PathBuf, output: Option<PathBuf>) -> i32 {
             path,
             output,
             emit_object: false,
+            backend: jr_cli::cli::BackendArg::Cranelift,
             no_bounds_check: false,
             opt_level: jr_cli::cli::OptLevelArg::Standard,
             module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],

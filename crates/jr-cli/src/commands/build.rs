@@ -162,7 +162,7 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
         return Ok(1);
     }
 
-    let built = match build_object(&db, root, search, config) {
+    let built = match build_object(&db, root, search, config, args.backend.into()) {
         Ok(built) => built,
         Err(message) => {
             crate::report::error(&message);

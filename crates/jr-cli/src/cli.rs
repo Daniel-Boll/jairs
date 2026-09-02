@@ -149,6 +149,33 @@ impl From<OptLevelArg> for jr_db::OptLevel {
     }
 }
 
+/// Which code generator `jr build` uses (ADR-0143 §2).
+///
+/// A separate type from [`jr_db::BackendChoice`] for the reason [`OptLevelArg`] is separate
+/// from `jr_db::OptLevel`: `clap::ValueEnum` is a foreign trait and that a foreign type.
+///
+/// **Both values exist even in a build with no LLVM support.** A flag that appeared and
+/// disappeared with a compile-time feature would make "unknown argument" the diagnostic for a
+/// missing capability, which tells a reader the wrong thing; instead the driver refuses with a
+/// message naming the feature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum BackendArg {
+    /// Cranelift, the verified back end and the default (ADR-0009).
+    #[default]
+    Cranelift,
+    /// LLVM through `inkwell`, when the compiler was built with `--features llvm`.
+    Llvm,
+}
+
+impl From<BackendArg> for jr_db::BackendChoice {
+    fn from(arg: BackendArg) -> Self {
+        match arg {
+            BackendArg::Cranelift => Self::Cranelift,
+            BackendArg::Llvm => Self::Llvm,
+        }
+    }
+}
+
 /// Arguments for `jr check`.
 #[derive(Debug, Args)]
 pub struct CheckArgs {
@@ -244,6 +271,19 @@ pub struct BuildArgs {
     /// names the leaf's own line and lists its frame (ADR-0021 §3).
     #[arg(short = 'O', long = "opt-level", value_enum, default_value_t)]
     pub opt_level: OptLevelArg,
+
+    /// Which code generator to use (ADR-0143 §2).
+    ///
+    /// `cranelift` is the default and the verified one. `llvm` needs a compiler built with
+    /// `--features llvm`; without it this refuses and says so, rather than silently using the
+    /// other back end.
+    ///
+    /// The choice does **not** change what the program computes — the three engines are held
+    /// to agreement by the differential harness — and it does not change the optimisation
+    /// level, which selects how much the mid-end rewrites MIR (ADR-0142) and reaches no back
+    /// end.
+    #[arg(long = "backend", value_enum, default_value_t)]
+    pub backend: BackendArg,
 
     /// Directory to search for imported modules. May be repeated; searched in
     /// the order given, before the bundled module directory (ADR-0014).

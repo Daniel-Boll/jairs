@@ -2361,3 +2361,201 @@ fn the_level_changes_a_backtrace_and_nothing_else() {
         unoptimised.stderr
     );
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0143: the third engine
+// ---------------------------------------------------------------------------
+
+/// Compiles a program with the LLVM back end and runs the result.
+///
+/// `#[cfg]`-ed rather than skipped at run time, so a default `cargo test` does not appear to
+/// run a test it silently passes: without the feature these tests do not exist, and gate 7 is
+/// what runs them (ADR-0143 §1).
+#[cfg(feature = "llvm")]
+fn run_with_llvm(program: &Path, dir: &Path, name: &str) -> Behaviour {
+    let binary = dir.join(name);
+    let built = Command::new(jr())
+        .arg("build")
+        .arg(program)
+        .arg("-o")
+        .arg(&binary)
+        .arg("--backend")
+        .arg("llvm")
+        .arg("-I")
+        .arg(workspace_root().join("modules"))
+        .output()
+        .expect("jr build should be executable");
+    assert!(
+        built.status.success(),
+        "`jr build --backend llvm {}` failed ({}):\n{}{}",
+        program.display(),
+        built.status,
+        String::from_utf8_lossy(&built.stderr),
+        String::from_utf8_lossy(&built.stdout),
+    );
+    let output = Command::new(&binary)
+        .output()
+        .unwrap_or_else(|e| panic!("cannot run {}: {e}", binary.display()));
+    Behaviour {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        status: output.status.code().unwrap_or(-1),
+    }
+}
+
+/// **Every corpus program behaves identically in all three engines** (ADR-0143 §8).
+///
+/// The two-way sweep above compares the VM against Cranelift and asserts exit codes rather
+/// than mere agreement, because two engines agreeing is not two engines being right. A third
+/// independent lowering is the strongest available check on what all three *share* — MIR, the
+/// pool's layout, and `jr_base::trap_message` — and it gives a bug in either existing engine's
+/// own reading of MIR two witnesses instead of one.
+///
+/// The LLVM back end is compared against the **VM** rather than against Cranelift, and the
+/// choice matters: the VM is the engine that does not generate code at all, so a disagreement
+/// between it and a back end is a code-generation fault, where a disagreement between two back
+/// ends could be either one. The existing sweep already ties the VM to Cranelift, so agreement
+/// with the VM ties all three together transitively.
+#[cfg(feature = "llvm")]
+#[test]
+fn every_corpus_program_behaves_identically_in_all_three_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let mut checked = Vec::new();
+    let mut disagreements = Vec::new();
+
+    for program in executable_programs() {
+        let name = program
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let vm = run_in_vm(&program);
+        let llvm = run_with_llvm(&program, dir.path(), "llvm-out");
+        if vm == llvm {
+            checked.push(name);
+        } else {
+            disagreements.push(format!(
+                "{name}:\n     VM: out {:?} err {:?} exit {}\n  LLVM: out {:?} err {:?} exit {}",
+                vm.stdout, vm.stderr, vm.status, llvm.stdout, llvm.stderr, llvm.status
+            ));
+        }
+    }
+
+    assert!(
+        disagreements.is_empty(),
+        "the VM and the LLVM back end disagree about {} of {} programs:\n{}",
+        disagreements.len(),
+        checked.len() + disagreements.len(),
+        disagreements.join("\n"),
+    );
+}
+
+/// **A trap reads identically from all three engines, backtrace included** (ADR-0143 §7).
+///
+/// The corpus sweep cannot check this, because every program in `valid/` exits 0 — so the one
+/// part of a *failing* program's behaviour is exactly what it never exercises. It is also the
+/// part with the most machinery behind it: the reason and location are compile-time constants
+/// from `jr_base::trap_message`, but the frame chain is written at run time by walking a
+/// shadow call stack this back end has its own copy of, with its own globals, stride and
+/// capacity.
+///
+/// So a wrong stride, a missing push, an off-by-one in the descending walk, or a `write` given
+/// the wrong length would each change these bytes and nothing else would notice. Two frames,
+/// because a one-frame chain cannot tell a walk that stops too early from one that never
+/// started.
+#[cfg(feature = "llvm")]
+#[test]
+fn a_trap_reads_identically_in_all_three_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = concat!(
+        "leaf :: (a: s64) -> s64 {\n",
+        "    return a + 9223372036854775807;\n",
+        "}\n\n",
+        "main :: () {\n",
+        "    n := 1;\n",
+        "    m := leaf(n);\n",
+        "    if m == 0 {\n",
+        "        return;\n",
+        "    }\n",
+        "}\n",
+    );
+    let path = dir.path().join("trap.jr");
+    std::fs::write(&path, source).expect("the source must be writable");
+
+    // At `-O0`, so `leaf` is not inlined and there is a chain to compare (ADR-0142 §4).
+    let vm = run_in_vm_at(&path, "0");
+    let llvm = {
+        let binary = dir.path().join("trap-llvm");
+        let built = Command::new(jr())
+            .arg("build")
+            .arg(&path)
+            .arg("-o")
+            .arg(&binary)
+            .arg("--backend")
+            .arg("llvm")
+            .arg("--opt-level")
+            .arg("0")
+            .arg("-I")
+            .arg(workspace_root().join("modules"))
+            .output()
+            .expect("jr build should be executable");
+        assert!(
+            built.status.success(),
+            "`jr build --backend llvm` failed:\n{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let output = Command::new(&binary)
+            .output()
+            .unwrap_or_else(|e| panic!("cannot run {}: {e}", binary.display()));
+        Behaviour {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            status: output.status.code().unwrap_or(-1),
+        }
+    };
+
+    assert_eq!(vm.status, 4, "the overflow must trap in the VM");
+    assert_eq!(llvm.status, 4, "the overflow must trap in LLVM-built code");
+    assert!(
+        vm.stderr.contains("in leaf") && vm.stderr.contains("in main"),
+        "the VM must report both frames: {}",
+        vm.stderr
+    );
+    assert_eq!(
+        vm, llvm,
+        "the VM and the LLVM back end disagree about a trap"
+    );
+}
+
+/// **`--backend llvm` is refused rather than unknown when LLVM support is absent**
+/// (ADR-0143 §2).
+///
+/// The mirror of the test above, and the only one of the pair that runs in a default build. A
+/// flag that appeared and disappeared with a compile-time feature would make "unknown
+/// argument" the diagnostic for a missing capability, which tells a reader the wrong thing —
+/// so the flag exists either way and the driver says what is missing.
+#[cfg(not(feature = "llvm"))]
+#[test]
+fn the_llvm_backend_is_refused_with_a_message_naming_the_feature() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = workspace_root().join("tests/corpus/valid/024-hello.jr");
+    let output = Command::new(jr())
+        .arg("build")
+        .arg(&program)
+        .arg("-o")
+        .arg(dir.path().join("nope"))
+        .arg("--backend")
+        .arg("llvm")
+        .arg("-I")
+        .arg(workspace_root().join("modules"))
+        .output()
+        .expect("jr build should be executable");
+    assert!(
+        !output.status.success(),
+        "a build with no LLVM support must not silently use the other back end"
+    );
+    let rendered = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        rendered.contains("llvm"),
+        "the refusal must name the feature: {rendered}"
+    );
+}

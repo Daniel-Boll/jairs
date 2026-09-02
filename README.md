@@ -19,12 +19,31 @@ error-recovering compiler written in Rust.
 ## Status, honestly
 
 Last updated with **wave W8 — Performance open** (W7 — Stdlib and W6 — Metaprogram are still open
-too), 1018 tests green. **W8 has begun with an optimisation level** (ADR-0142): `-O0` and `-O1` on
-`jr run` and `jr build`, closing the deferral ADR-0058 §6 handed this wave. The level's real payload
-is a check the mid-end never had — **every corpus program's whole observable behaviour is now
-asserted identical at both levels**, so "optimisation preserves meaning" is a test rather than an
-argument. The one legitimate difference is a backtrace: at `-O1` an inlined leaf's trap names the
-call site, at `-O0` it names the leaf's own line, and both halves are pinned.
+too), 1019 tests green — 1020 with the LLVM back end compiled in.
+
+**There is a third execution engine.** `jr build --backend llvm` compiles through LLVM 21 via
+`inkwell` (ADR-0143), so the differential harness now holds **VM ≡ Cranelift ≡ LLVM**. All 114
+executable corpus programs, and every trap tried by hand, agreed with the VM on the *first* run —
+reason, location and two-frame backtrace, byte for byte. That is the return on two old decisions
+being decisions rather than habits: a back end that computes no layout of its own (ADR-0018 §2) and
+consumes SSA it did not build (ADR-0017) has almost nothing left to disagree about. It is also worth
+saying that agreeing immediately means the third engine has *found* nothing — its value is
+prospective, a second witness for every future change to MIR or layout.
+
+It is behind a **default-off cargo feature and a seventh gate**, because `llvm-sys` needs an LLVM 21
+installation it can find and an unconditional dependency would wall off the whole compiler for a
+back end that is not the default. Three things in it differ from the Cranelift translation, each
+forced by LLVM: a block parameter becomes a `phi`, every offset is a byte `getelementptr` with **no
+Jairs aggregate ever acquiring an LLVM struct type** (which would put LLVM's padding rules in charge
+of where a field sits), and poison has to be *avoided* — a shift past the width, a division by zero
+and an out-of-range `fptosi` are all undefined in LLVM where Jairs traps or saturates.
+
+**W8 opened with an optimisation level** (ADR-0142): `-O0` and `-O1` on `jr run` and `jr build`,
+closing the deferral ADR-0058 §6 handed this wave. The level's real payload is a check the mid-end
+never had — **every corpus program's whole observable behaviour is now asserted identical at both
+levels**, so "optimisation preserves meaning" is a test rather than an argument. The one legitimate
+difference is a backtrace: at `-O1` an inlined leaf's trap names the call site, at `-O0` it names the
+leaf's own line, and both halves are pinned.
 
 The **eight-wave programme to keep the promises ADR-0127 found unkept** is **fully done**
 (ADR-0128 through ADR-0139), and both of its owed follow-ups have landed: **ADR-0140** converted
@@ -540,6 +559,7 @@ has never run — plus 166 Neovim checks that are verified rather than gated.
 | You can | How | Caveat |
 |---|---|---|
 | Compile and run a program in the comptime VM | `jr run file.jr` | Register bytecode interpreter, no JIT tier |
+| Choose a code generator | `jr build file.jr --backend llvm` | Cranelift by default and LLVM 21 on request (ADR-0143). The LLVM path needs a compiler built with `--features llvm`; without it the flag is refused with a message naming the feature, rather than reported as unknown. The three engines are held to agreement by the differential harness — all 114 corpus programs and every hand-tried trap matched the VM on the first run |
 | Compile to a native executable | `jr build file.jr -o out` | arm64 macOS verified. x86-64 Linux is **configured in CI and has never run** — the workflow exists, and no CI run has ever happened on this repository, so Linux is entirely unverified. A declared `BUILD_OUTPUT` is confined to the working directory (ADR-0122) |
 | Build without bounds checks | `jr build file.jr --no-bounds-check`, or `jr run` | ADR-0003's build setting, finally wired (ADR-0058). An out-of-range index is then undefined behaviour, which is the trade. `#no_abc` on a procedure does the same locally, whatever the build says; compile-time execution checks regardless |
 | Choose an optimisation level | `jr build file.jr -O0`, or `jr run -O0` | Two levels, `0` and `1` (the default, and what every build did before the flag). `-O0` runs no mid-end pass, so the code executed is exactly what lowering produced — which is how a wrong answer becomes attributable to lowering rather than to a pass. A level may **not** change what a program computes, and the differential harness now sweeps every corpus program at both levels to check it (ADR-0142). The one thing `-O0` does change is a backtrace: nothing is inlined, so a trap inside a leaf names the leaf's own line. There is no `-O2` yet and no `--release` — deliberately, since a level with no pass behind it is a promise rather than a flag |
@@ -636,8 +656,8 @@ ignoring the flag a compile error, is owed its own ADR. There is no GC and no RA
 | Bytecode VM + libffi | **Works** | Per-instruction spans, so a trap names its line. Floats need no new value variant, but are dispatched *before* the bit-compare fallback that would answer `NaN == NaN` and `-0.0 == 0.0` backwards. No JIT |
 | Cranelift back end + linker | **Works** | Returns an aggregate through a caller-allocated `sret` pointer, uniform by size (ADR-0051) — a register fast path is W8's, because the size threshold and field classification are platform-specific and a wrong guess is garbage with no diagnostic. Carries the context as a second hidden parameter, after `sret` and before the declared ones, so one shared predicate computes an offset of 0, 1 or 2 (ADR-0057 §4). Calls through a procedure pointer with `func_addr` + `call_indirect` (ADR-0059 §4). Still refuses an aggregate crossing a `#foreign` boundary in either direction |
 | salsa incremental database | **Works** | Built *and* optimized MIR staged (ADR-0021 §1); invalidation is at file grain |
-| Differential harness | **Works** | Compares stdout, stderr and exit status of both engines as subprocesses, and now also each corpus program against **itself** at both optimisation levels — the check that says the mid-end preserves meaning (ADR-0142 §3) |
-| LLVM back end | **Not started** | Wave W8 |
+| Differential harness | **Works** | Compares stdout, stderr and exit status of the engines as subprocesses; each corpus program against **itself** at both optimisation levels — the check that says the mid-end preserves meaning (ADR-0142 §3) — and, under gate 7, **three-way**: VM ≡ Cranelift ≡ LLVM (ADR-0143 §8) |
+| LLVM back end | **Works** | `jr build --backend llvm` (ADR-0143), behind a default-off `llvm` cargo feature and gate 7. MIR → LLVM IR directly: block parameters become `phi`s, every offset is a byte GEP so no Jairs aggregate gets an LLVM struct type, and overflow/shift/division/float→int all go through checks or saturating intrinsics because LLVM's plain operators are poison or UB where Jairs traps. No LLVM optimisation passes: `-O` selects the mid-end only |
 | Language server | **Works** | `jr lsp`, twelve capabilities: diagnostics, hover, goto-definition, completion + resolve, references, documentHighlight, rename (workspace-wide, refuses rather than half-renaming), documentSymbol, workspaceSymbol, code actions, `signatureHelp`, inlay hints (ADR-0024, ADR-0028, ADR-0030, ADR-0031). Dispatches a read only after every write, because the reverse silently lost `didOpen`'s diagnostics (ADR-0032). No semantic tokens |
 | Neovim integration | **Works** | `editors/nvim/` (ADR-0025), verified against the real editor by a **166**-check script — **not** by CI, which has no Neovim |
 | VS Code integration | **Will not be built** | ADR-0036: the maintainer does not use it, and a packaging target for an unused editor rots. `jr lsp` is editor-agnostic, so any LSP client works |
@@ -994,7 +1014,7 @@ bit-identical in each.
 | `jr-vm` | Bytecode compile-time execution engine: lowering from MIR, interpreter, comptime FFI bridge |
 | `jr-codegen` | `Backend` trait and lowering helpers shared by every native backend |
 | `jr-codegen-clif` | Cranelift backend — all Cranelift API contact is confined here (ADR-0009) |
-| `jr-codegen-llvm` | LLVM backend for optimised release builds — feature-gated, lands in wave W8 |
+| `jr-codegen-llvm` | LLVM back end via `inkwell`, behind a default-off `llvm` cargo feature and gate 7 (ADR-0143). The third execution engine the differential harness compares |
 | `jr-link` | Object-file emission and system linker driver, including macOS ad-hoc codesigning |
 | `jr-db` | salsa query database — single source of truth shared by the batch driver and the LSP |
 | `jr-driver` | Compilation orchestration: workspaces, compiler message queue, build metaprograms |

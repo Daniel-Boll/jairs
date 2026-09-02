@@ -54,9 +54,11 @@ use jr_sema::FileSignatures;
 
 mod error;
 mod plan;
+mod trap;
 
 pub use error::CodegenError;
 pub use plan::{ForeignSymbol, ProcDecl, ProcKind, declarations, symbol_for};
+pub use trap::{TRAP_HELPER, TrapKind};
 
 /// One native back end.
 ///
@@ -124,6 +126,18 @@ pub trait Backend {
     /// [`CodegenError`] when the module cannot be emitted, which at this point is a
     /// back end or target configuration fault rather than a program one.
     fn finalise(self: Box<Self>) -> Result<Vec<u8>, CodegenError>;
+
+    /// Every library a `#foreign` declaration named, for the link line.
+    ///
+    /// On the trait rather than on an implementation, because it is a question every back
+    /// end must answer — a `#foreign` declaration names a library whatever generates the
+    /// code — and because a driver that has to name a concrete back end to ask it can only
+    /// ever drive one (ADR-0143 §6). It was an inherent method on `ClifBackend` until the
+    /// second back end made that impossible.
+    ///
+    /// Collected during the declare phase, so this is meaningful from then on and complete
+    /// once every file has been declared.
+    fn libraries(&self) -> &[String];
 }
 
 /// How a back end learns where a trap is, without seeing the front end.

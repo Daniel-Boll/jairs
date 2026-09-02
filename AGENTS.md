@@ -48,6 +48,9 @@ same five steps every time:
 
 ## The six gates
 
+Six, plus a seventh that needs an LLVM installation. The six are the ones a contributor with
+no LLVM can make green, which is why they stayed six (ADR-0143 §1).
+
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -66,6 +69,28 @@ cd tree-sitter-jairs && npx --yes tree-sitter-cli@0.26.11 generate \
          ../tests/corpus/valid/024-hello.jr > /dev/null || exit 1; \
      done
 ```
+
+### Gate 7 — the LLVM back end
+
+`jr-codegen-llvm`'s dependency is behind a default-off `llvm` feature, because `llvm-sys` needs
+an LLVM 21 it can find and homebrew's `llvm@21` is keg-only (ADR-0143 §1). So the six gates do
+not compile that crate at all, and this one does:
+
+```sh
+export LLVM_SYS_211_PREFIX=$(brew --prefix llvm@21)
+cargo clippy --workspace --all-targets --features jr-cli/llvm -- -D warnings
+cargo test --workspace --features jr-cli/llvm
+```
+
+It is a *gate* and not a suggestion because of what the ungated Neovim checks cost: editor
+integration rotted while nobody ran them, which is why `verify.lua` exists. There is a
+precedent for a gate that shells out to a tool the workspace does not depend on — gate 6 uses
+`npx tree-sitter-cli` — so needing an external toolchain does not make a check optional.
+
+The three-way differential (VM ≡ Cranelift ≡ LLVM) lives in `crates/jr-cli/tests/differential.rs`
+behind `#[cfg(feature = "llvm")]`, so a default `cargo test` does not appear to run a test it
+silently skips. **Run gate 7 in any wave that touches MIR, `jr-pool`'s layout, `jr-codegen`, or
+either back end** — those are exactly the places where a third engine has something to say.
 
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
 visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
@@ -132,6 +157,13 @@ independent of the bounds check), three are the differential harness's (the corp
 levels, the native path, the backtrace difference) and one is the clap surface — which is a test
 because refusing `-O2` is a *decision*, so the day a level is added something must record that the
 surface used to be closed.
+
+**ADR-0143 reaches 1019** by default and **1020 under gate 7**, and adds no corpus file (228
+unchanged) — **W8 sub-wave 2**, the LLVM back end. The split count is the point: the default build
+gains one test (that `--backend llvm` is *refused* with a message naming the feature), and gate 7
+replaces it with two (the three-way corpus sweep and a trap compared byte for byte, backtrace
+included). A test that is `#[cfg]`-ed out of existence is better than one that passes vacuously,
+which is why the LLVM axis is not a run-time skip.
 
 **A number in this file is now partly enforced.** `crates/jr-cli/tests/codes.rs` fails when the
 "first free code" claim below rots. The test count and the corpus count are still prose, and both were

@@ -29,9 +29,12 @@
 
 mod body;
 mod repr;
-mod trap;
 
-pub use trap::{TRAP_HELPER, TrapKind};
+// `TrapKind` and `TRAP_HELPER` live in `jr-codegen` (ADR-0143 §6): they are the *words* a
+// trapping program prints, paired with `jr_base::trap_message`, and a second copy in the
+// LLVM back end would be a second chance to drift from the bytes the differential harness
+// compares. Re-exported here because this crate's own consumers named them here first.
+pub use jr_codegen::{TRAP_HELPER, TrapKind};
 
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::condcodes::IntCC;
@@ -170,16 +173,6 @@ impl ClifBackend {
         backend.emit_strings(pool)?;
         backend.define_trap_helper()?;
         Ok(backend)
-    }
-
-    /// The libraries every `#foreign` declaration named, deduplicated.
-    ///
-    /// `jr-link` needs these for the link line. They are collected during the declare
-    /// phase rather than rediscovered, because ADR-0019 §4 made the resolution happen
-    /// exactly once and this is the third consumer reading it.
-    #[must_use]
-    pub fn libraries(&self) -> &[String] {
-        &self.libraries
     }
 
     /// The two literals a backtrace line is built from, as `(prefix, prefix_len, newline, 1)`.
@@ -678,6 +671,17 @@ impl Backend for ClifBackend {
             .finish()
             .emit()
             .map_err(|e| CodegenError::Internal(format!("cannot emit an object: {e}")))
+    }
+
+    /// The libraries every `#foreign` declaration named, deduplicated.
+    ///
+    /// `jr-link` needs these for the link line. They are collected during the declare
+    /// phase rather than rediscovered, because ADR-0019 §4 made the resolution happen
+    /// exactly once and this is the third consumer reading it. On the trait since
+    /// ADR-0143 §6, because a driver that names a concrete back end to ask can drive
+    /// only one.
+    fn libraries(&self) -> &[String] {
+        &self.libraries
     }
 }
 
