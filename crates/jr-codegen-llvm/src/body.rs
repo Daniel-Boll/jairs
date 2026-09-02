@@ -53,7 +53,7 @@ use inkwell::values::{
     PhiValue, PointerValue,
 };
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
-use jr_codegen::{CodegenError, TrapKind, TrapLocations};
+use jr_codegen::{CodegenError, SourceInfo, TrapKind};
 use jr_mir::{
     BinOp, BlockId, Callee, MirBody, MirSpan, NumKind, Operand, Place, PlaceBase, ProcRef,
     Projection, Rvalue, Statement, Target, Terminator, UnOp, Unreachable, ValueId,
@@ -130,7 +130,7 @@ pub struct Shared<'ctx, 'a> {
     /// The runtime helper a trap calls, `jr_trap(message, length)`.
     pub trap_helper: FunctionValue<'ctx>,
     /// How to render a trap's source location (ADR-0020 §3).
-    pub locations: &'a dyn TrapLocations,
+    pub locations: &'a dyn SourceInfo,
     /// The shadow call stack the trap helper walks (ADR-0066 §1), and its live depth.
     pub shadow: (GlobalValue<'ctx>, GlobalValue<'ctx>),
     /// The read-only name global and its length for each procedure, for a backtrace frame.

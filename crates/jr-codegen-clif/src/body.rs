@@ -44,7 +44,7 @@ use cranelift_codegen::ir::{
 };
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataDescription, DataId, Linkage, Module};
-use jr_codegen::{CodegenError, TrapLocations};
+use jr_codegen::{CodegenError, SourceInfo};
 use jr_mir::{
     BinOp, BlockId, Callee, MirBody, MirSpan, NumKind, Operand, Place, PlaceBase, ProcRef,
     Projection, Rvalue, Statement, Target, Terminator, UnOp, Unreachable, ValueId,
@@ -80,7 +80,7 @@ pub struct Context<'a> {
     /// The runtime helper a trap calls, `jr_trap(message, length)`.
     pub trap_helper: FuncRef,
     /// How to render a trap's source location (ADR-0020 §3).
-    pub locations: &'a dyn TrapLocations,
+    pub locations: &'a dyn SourceInfo,
     /// The shadow call stack the trap helper walks (ADR-0066 §1), and its live depth.
     ///
     /// A caller writes `(name, len)` for its callee at the depth's index and increments; the callee's

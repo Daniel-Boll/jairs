@@ -212,6 +212,38 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0171 holds at 1064** (**1067** under gate 7 — two new `llvm`-gated tests) and holds at **254** corpus
+files. W12's second item for LLVM: a struct's layout now reaches DWARF with source field names and real offsets.
+
+**The offsets come from `jr_pool::field_offset`** — the same function both engines use to *compile* a field
+access — so a debugger cannot disagree with the code about where `p.y` is. Hand-computing them would be a second
+layout implementation, which is the thing ADR-0009 exists to prevent.
+
+**§3 is the finding, and it corrects the plan.** The struct mapping was written, it was correct, and `dwarfdump`
+showed base types and **no struct at all** — which looks exactly like the mapping being broken. It was not:
+**LLVM prunes a type nothing *declares*.** A `DISubroutineType` listing a struct is a *signature*, not a
+declaration, and signatures are metadata LLVM will drop. What retains a type is a variable *of* it. So each
+parameter gets a `DILocalVariable`, and **W12's items 2 and 3 are coupled** where PLAN had them as separate
+lines: a type DIE with nothing declaring it is not emitted, and a declared parameter with no type DIE has
+nothing to point at.
+
+**Two smaller rules worth carrying.** Holes are kept in the parameter DIE list — a `filter_map` would silently
+shift every later parameter's name onto the wrong type, producing debug info that is *confidently wrong* rather
+than absent, which is this project's least favourite failure mode. And a `None` type propagates: a struct with
+one undescribable field gets **no** DIE, because a struct listing *some* of its members shows a type whose
+fields do not add up to its size.
+
+**`TrapLocations` is now `SourceInfo`.** It gained `symbol(Symbol) -> Option<String>`, because a struct's members
+need field names and a back end has no interner — the same wall `FileInput::names` hit. Renamed rather than
+extended under the old name: a trait called `TrapLocations` with a `symbol()` method teaches a reader the wrong
+thing about where the next driver-supplied lookup belongs. Clean cutover, no alias.
+
+**Two honest gaps.** The struct DIE is **anonymous**, because the pool records no *declared* name — it carries a
+`DeclId` and the name lives on the HIR item, which a back end cannot see. Faking one from the `DeclId` would
+print a number no reader recognises, so DWARF's unnamed-struct form is used and `lldb` shows the members, which
+is where the value is. And **Cranelift still has no `.debug_info`** — only the line table — so its types must be
+written by hand with `gimli`, exactly the split ADR-0170 predicted.
+
 **ADR-0170 holds at 1064** (**1066** under gate 7, since its one new test is `llvm`-gated) and holds at **254**
 corpus files. It completes W12's first item by giving the **LLVM** back end a line table, and the useful lesson is
 how little was shared.

@@ -14,7 +14,7 @@
 //!
 //! So the `u32` is an index into a [`LineVocabulary`] — a deduplicated list of `(path, line)` pairs. A
 //! statement's span is resolved **once**, when the instruction is emitted, through the same
-//! [`jr_codegen::TrapLocations`] a trap message uses. That is the decision that keeps a `.debug_line` row and
+//! [`jr_codegen::SourceInfo`] a trap message uses. That is the decision that keeps a `.debug_line` row and
 //! a trap's `--> file:line:col` from ever disagreeing: they are the same lookup, and ADR-0169 §2 argues it at
 //! length.
 //!
@@ -281,7 +281,7 @@ pub fn emit(
             // The column is deliberately not set. A DWARF row's column is optional, this compiler's spans are
             // per-statement rather than per-expression, and a column that is always the statement's first byte
             // is worse than none: a consumer would render a caret under the wrong token with full confidence.
-            // `TrapLocations::position` carries the column for the trap *message*, which renders it as text
+            // `SourceInfo::position` carries the column for the trap *message*, which renders it as text
             // where its precision is visible.
             program.generate_row();
         }
