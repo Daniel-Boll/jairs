@@ -1978,3 +1978,138 @@ main :: () {
     exit_now(total % 251);
 }
 "#;
+
+/// A built object carries a DWARF line table whose rows name real statements (ADR-0169).
+///
+/// # Why this parses the DWARF instead of shelling out to `dwarfdump`
+///
+/// `dwarfdump` is a macOS tool, its output format is not a contract, and a test that greps it would pass on a
+/// section a debugger cannot read. `gimli` parses the bytes the way `lldb` does, so what this asserts is that
+/// the section is *valid*, not that a formatter printed something.
+///
+/// # What it asserts, and why each part matters
+///
+/// PLAN §8.4 claimed line tables existed and ADR-0159 found **no DWARF at all** — an empty `.debug_line` and no
+/// debug section. So the first assertion is simply that the section is there and parses.
+///
+/// Then: a row must point at a line that **is** a statement in the source. A line table whose every row said
+/// line 1 would parse perfectly and be useless, and that is the failure mode a "section exists" check misses.
+/// The chosen lines are a `return`, a `while` and an `if` in `valid/024-hello.jr`, spread through the file so a
+/// single wrong constant cannot satisfy all three.
+///
+/// And the file table must hold **both** files, because the program imports `modules/Basic` and a table with one
+/// entry would mean every row was attributed to whichever file happened to be first.
+#[test]
+fn a_built_object_carries_a_dwarf_line_table() {
+    use gimli::EndianSlice;
+    use object::{Object as _, ObjectSection as _};
+
+    let dir = TempDir::new().unwrap();
+    let object_path = dir.path().join("hello.o");
+    let source = corpus_path("valid/024-hello.jr");
+    let code = run_build_emit_object(source, object_path.clone());
+    assert_eq!(code, 0, "the object must be emitted");
+
+    let bytes = fs::read(&object_path).expect("the object should exist");
+    let file = object::File::parse(&*bytes).expect("the object should parse");
+
+    let section = file
+        .sections()
+        .find(|s| {
+            matches!(
+                s.name(),
+                // Mach-O spells it `__debug_line` in the `__DWARF` segment, ELF `.debug_line`.
+                Ok("__debug_line" | ".debug_line")
+            )
+        })
+        .expect("a built object must carry a .debug_line section");
+    let line_data = section.data().expect("the section should have data");
+    assert!(
+        line_data.len() > 64,
+        "a line table with real rows is not a handful of bytes; got {}",
+        line_data.len()
+    );
+
+    let endian = if file.is_little_endian() {
+        gimli::RunTimeEndian::Little
+    } else {
+        gimli::RunTimeEndian::Big
+    };
+    let load = |id: gimli::SectionId| -> Result<EndianSlice<'_, gimli::RunTimeEndian>, ()> {
+        let name = id.name();
+        let macho = format!("__{}", name.trim_start_matches('.'));
+        let data = file
+            .sections()
+            .find(|s| matches!(s.name(), Ok(n) if n == name || n == macho.as_str()))
+            .and_then(|s| s.data().ok())
+            .unwrap_or(&[]);
+        Ok(EndianSlice::new(data, endian))
+    };
+    let dwarf = gimli::Dwarf::load(load).expect("the DWARF should load");
+
+    let mut units = dwarf.units();
+    let header = units
+        .next()
+        .expect("the DWARF should parse")
+        .expect("a built object must carry one compilation unit");
+    let unit = dwarf.unit(header).expect("the unit should parse");
+    let program = unit
+        .line_program
+        .clone()
+        .expect("the unit must have a line program");
+
+    let mut file_names = Vec::new();
+    for entry in program.header().file_names() {
+        if let gimli::AttributeValue::String(name) = entry.path_name() {
+            file_names.push(String::from_utf8_lossy(name.slice()).into_owned());
+        }
+    }
+    assert!(
+        file_names.iter().any(|f| f.ends_with("024-hello.jr")),
+        "the file table must name the program; got {file_names:?}"
+    );
+    assert!(
+        file_names.iter().any(|f| f.ends_with("Basic/module.jr")),
+        "the file table must name the imported module too, or every row is attributed to one file; \
+         got {file_names:?}"
+    );
+
+    let mut lines = Vec::new();
+    let mut rows = program.rows();
+    while let Some((_, row)) = rows.next_row().expect("rows should parse") {
+        if let Some(line) = row.line() {
+            lines.push(line.get());
+        }
+    }
+    assert!(!lines.is_empty(), "the line program must produce rows");
+
+    // Real statements in valid/024-hello.jr, spread through the file: a `return`, a `while` and an `if`.
+    for expected in [21u64, 35, 40] {
+        assert!(
+            lines.contains(&expected),
+            "line {expected} is a statement in the program and must appear in the table; got {lines:?}"
+        );
+    }
+    assert!(
+        lines.iter().any(|l| *l != lines[0]),
+        "a table whose every row is the same line would parse and be useless"
+    );
+}
+
+/// `jr build --emit-object`, for a test that wants the object rather than an executable.
+fn run_build_emit_object(path: PathBuf, output: PathBuf) -> i32 {
+    jr_cli::commands::build::run(
+        jr_cli::cli::BuildArgs {
+            path,
+            output: Some(output),
+            emit_object: true,
+            backend: jr_cli::cli::BackendArg::Cranelift,
+            no_bounds_check: false,
+            opt_level: None,
+            module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
+            library_paths: Vec::new(),
+        },
+        &quiet_global(),
+    )
+    .unwrap_or(1)
+}

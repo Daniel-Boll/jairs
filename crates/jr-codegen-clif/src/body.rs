@@ -39,8 +39,8 @@
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
-    Block, BlockArg, FuncRef, InstBuilder, MemFlagsData, StackSlotData, StackSlotKind, TrapCode,
-    Type, Value as ClifValue,
+    Block, BlockArg, FuncRef, InstBuilder, MemFlagsData, SourceLoc, StackSlotData, StackSlotKind,
+    TrapCode, Type, Value as ClifValue,
 };
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataDescription, DataId, Linkage, Module};
@@ -112,6 +112,7 @@ pub fn translate(
     ctx: &Context<'_>,
     proc: ProcRef,
     body: &MirBody,
+    lines: &mut crate::debug::LineVocabulary,
 ) -> Result<(), CodegenError> {
     let mut translator = Translator {
         builder,
@@ -126,6 +127,7 @@ pub fn translate(
         current: MirSpan::Synthetic,
         messages: FxHashMap::default(),
         sret: None,
+        lines,
     };
     translator.run()
 }
@@ -135,6 +137,11 @@ struct Translator<'a, 'b> {
     builder: &'a mut FunctionBuilder<'b>,
     module: &'a mut dyn Module,
     ctx: &'a Context<'a>,
+    /// The module-wide `(path, line)` table this body's instructions index into (ADR-0169 §1).
+    ///
+    /// Mutable and shared across bodies, because a line seen in one procedure must reuse its index in the
+    /// next — the deduplication is the whole reason a Cranelift `SourceLoc` can be a `u32`.
+    lines: &'a mut crate::debug::LineVocabulary,
     proc: ProcRef,
     body: &'a MirBody,
     blocks: FxHashMap<BlockId, Block>,
@@ -214,9 +221,11 @@ impl Translator<'_, '_> {
             let data = self.body.block(*id);
             for stmt in &data.stmts {
                 self.current = statement_span(stmt);
+                self.mark_line();
                 self.statement(stmt)?;
             }
             self.current = self.terminator_span(&data.term);
+            self.mark_line();
             self.terminator(&data.term)?;
         }
 
@@ -2254,7 +2263,7 @@ fn int_of_size(size: u64, fallback: Type) -> Type {
 }
 
 /// The span a statement's instructions belong to.
-fn statement_span(stmt: &Statement) -> MirSpan {
+pub(crate) fn statement_span(stmt: &Statement) -> MirSpan {
     match stmt {
         Statement::Assign { span, .. }
         | Statement::Store { span, .. }
@@ -2281,6 +2290,30 @@ impl Translator<'_, '_> {
                 MirSpan::Synthetic
             }
         }
+    }
+
+    /// Attaches the current span's `(path, line)` to every instruction emitted from here on.
+    ///
+    /// Called once per statement and once per terminator, which is the granularity a line table wants: a
+    /// debugger steps by statement, and a row per *instruction* would inflate the section without telling a
+    /// reader anything new.
+    ///
+    /// A span with no position — [`MirSpan::Synthetic`], a compiler-invented value — leaves the Cranelift
+    /// default in place, which is that crate's own "unknown". So a synthetic instruction produces no row
+    /// rather than inheriting the previous statement's line, and inheriting is the wrong answer: a stepping
+    /// debugger would show the cursor sitting on a line whose code has already run.
+    fn mark_line(&mut self) {
+        let Some(at) = self.ctx.locations.position(self.current) else {
+            self.builder.set_srcloc(SourceLoc::default());
+            return;
+        };
+        let Some(index) = self.lines.intern(&at.path, at.line) else {
+            // The vocabulary is full, which needs `u32::MAX` distinct source lines. Degrade the line table
+            // rather than the program.
+            self.builder.set_srcloc(SourceLoc::default());
+            return;
+        };
+        self.builder.set_srcloc(SourceLoc::new(index));
     }
 
     /// The span of the value an operand names, if it names one.

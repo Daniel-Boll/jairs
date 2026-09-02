@@ -28,6 +28,7 @@
 //! calculates.
 
 mod body;
+mod debug;
 mod repr;
 
 // `TrapKind` and `TRAP_HELPER` live in `jr-codegen` (ADR-0143 §6): they are the *words* a
@@ -52,9 +53,36 @@ use jr_mir::{MirBody, ProcRef};
 use jr_pool::{Item, Layout, Pool, PoolId, StrId, TargetLayout, layout_of};
 use rustc_hash::FxHashMap;
 
+/// One defined function's line-table rows, before its `FuncId` becomes an object symbol.
+///
+/// A named struct rather than a tuple, because the `FuncId` cannot be resolved to a `SymbolId` until
+/// `ObjectModule::finish` has run — so these three fields travel together across that boundary and a bare
+/// `(FuncId, u64, Vec<(u32, u32)>)` gives a reader no way to tell the length from the offsets.
+struct PendingLines {
+    /// The function the rows belong to.
+    id: FuncId,
+    /// Its code length in bytes, which ends the line program's sequence.
+    length: u64,
+    /// `(code offset from the function's start, line-vocabulary index)`, ascending by offset.
+    rows: Vec<(u32, u32)>,
+}
+
 /// The Cranelift implementation of [`Backend`].
 pub struct ClifBackend {
     module: ObjectModule,
+    /// The module-wide `(path, line)` table every instruction's `SourceLoc` indexes into (ADR-0169 §1).
+    lines: debug::LineVocabulary,
+    /// Each defined function's code length and `(offset, line index)` rows.
+    ///
+    /// Collected in `define` because that is the only place the compiled buffer exists — `finalise` has the
+    /// object but not the per-function `CompiledCode` it came from.
+    function_lines: Vec<PendingLines>,
+    /// The compilation directory and primary source file the line program names.
+    ///
+    /// Set from the first body defined, which is the root file's: DWARF wants one primary file per unit, and
+    /// this back end emits one unit. A multi-unit design is the right answer eventually and is not needed to
+    /// make a backtrace name a line.
+    unit: Option<(String, String)>,
     /// The Cranelift id of every declared procedure.
     ids: FxHashMap<ProcRef, FuncId>,
     /// Whether a declared procedure is `#foreign`, which decides its call
@@ -178,6 +206,9 @@ impl ClifBackend {
             shadow_depth,
             names: FxHashMap::default(),
             target,
+            lines: debug::LineVocabulary::default(),
+            function_lines: Vec::new(),
+            unit: None,
         };
         backend.emit_strings(pool)?;
         backend.define_trap_helper()?;
@@ -737,20 +768,107 @@ impl Backend for ClifBackend {
             names: &self.names,
             foreign: &self.foreign,
         };
-        body::translate(&mut builder, &mut self.module, &ctx, proc, mir)?;
+        body::translate(
+            &mut builder,
+            &mut self.module,
+            &ctx,
+            proc,
+            mir,
+            &mut self.lines,
+        )?;
         builder.finalize(self.module.target_config());
 
         let mut context = Context::for_function(function);
         self.module
             .define_function(id, &mut context)
             .map_err(|e| CodegenError::Internal(format!("cannot define a body: {e:?}")))?;
+
+        // The compiled buffer's source locations, for this function's line-table rows (ADR-0169 §1). Read
+        // here because `finalise` has the object but not the per-function `CompiledCode` it came from.
+        //
+        // `get_srclocs_sorted` returns ascending, non-overlapping ranges, which is what a DWARF line program
+        // needs — a row's line holds until the next row, so an unsorted list would silently attribute code to
+        // the wrong statement.
+        if let Some(compiled) = context.compiled_code() {
+            let mut rows = Vec::new();
+            for loc in compiled.buffer.get_srclocs_sorted() {
+                if loc.loc.is_default() {
+                    // A synthetic instruction: no row, rather than inheriting the previous line.
+                    continue;
+                }
+                rows.push((loc.start, loc.loc.bits()));
+            }
+            if !rows.is_empty() {
+                self.function_lines.push(PendingLines {
+                    id,
+                    length: u64::from(compiled.buffer.total_size()),
+                    rows,
+                });
+            }
+        }
+
+        // The unit's primary file is the first one any body reported, which is the root file's.
+        if self.unit.is_none()
+            && let Some(at) = mir
+                .blocks()
+                .iter()
+                .flat_map(|block| block.stmts.iter().map(body::statement_span))
+                .find_map(|span| locations.position(span))
+        {
+            let path = std::path::PathBuf::from(&at.path);
+            let dir = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map_or_else(
+                    || {
+                        std::env::current_dir()
+                            .unwrap_or_default()
+                            .display()
+                            .to_string()
+                    },
+                    |p| p.display().to_string(),
+                );
+            self.unit = Some((dir, at.path));
+        }
         Ok(())
     }
 
     fn finalise(mut self: Box<Self>) -> Result<Vec<u8>, CodegenError> {
         self.define_entry_shim()?;
-        self.module
-            .finish()
+        let endian = if self.module.isa().endianness() == cranelift_codegen::ir::Endianness::Little
+        {
+            gimli::RunTimeEndian::Little
+        } else {
+            gimli::RunTimeEndian::Big
+        };
+        let lines = std::mem::take(&mut self.lines);
+        let function_lines = std::mem::take(&mut self.function_lines);
+        let unit = self.unit.take();
+        let mut product = self.module.finish();
+
+        // The line table, added to the object before it is emitted (ADR-0169). A `FuncId` becomes the
+        // `SymbolId` a relocation names only here, because `ObjectProduct` is what holds the mapping.
+        if let Some((comp_dir, primary)) = unit {
+            let functions: Vec<debug::FunctionLines> = function_lines
+                .into_iter()
+                .map(|pending| debug::FunctionLines {
+                    symbol: product.function_symbol(pending.id),
+                    length: pending.length,
+                    rows: pending.rows,
+                })
+                .collect();
+            debug::emit(
+                &mut product.object,
+                &lines,
+                &functions,
+                &comp_dir,
+                &primary,
+                endian,
+            )
+            .map_err(|e| CodegenError::Internal(format!("cannot write debug info: {e}")))?;
+        }
+
+        product
             .emit()
             .map_err(|e| CodegenError::Internal(format!("cannot emit an object: {e}")))
     }

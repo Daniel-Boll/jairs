@@ -258,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0168. See [`docs/adr/README.md`](docs/adr/README.md). (This line
+Accepted ADRs: 0001–0169. See [`docs/adr/README.md`](docs/adr/README.md). (This line
 said 0001–0128 for thirteen ADRs, which is the argument §7 makes for its own count
 being the one to trust.)
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
@@ -556,8 +556,8 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 > [!IMPORTANT]
 > **Ten of twelve waves are done. Two remain: W11 — Concurrency and W12 — Debug info.**
 >
-> **Start with W12.** It has **no blocker at all**, which is what makes it the one to reach for; W11 needs a
-> design decision first (below). That is the role W9 played twice in this programme.
+> **W12 is under way** — one of its three items done (ADR-0169) — and it was the right one to start with: no
+> blocker at all, where W11 still needs a design decision first (below). That is the role W9 played twice.
 
 **W11 — Concurrency** is `Thread`, atomics, and **the memory model that says what they mean**. It was split out
 of W7 by §8.3 because it is not a stdlib module: it needs a **per-thread stack in the runtime**, atomics as
@@ -566,13 +566,23 @@ thread. That last one is the fork to settle **before** writing code, and it is g
 is single-threaded by construction (ADR-0021 §2 freezes the bodies it can reach), so "a `#run` that spawns"
 either is refused, is serialised, or means the VM grows a scheduler. Three answers, three different languages.
 
-**W12 — Debug info** is a DWARF writer: `.debug_line` from `MirSpan`, type and struct-layout DIEs from the
-pool, and locals through Cranelift's value labels. §8.4 claimed "line tables exist" and ADR-0159 found there is
-**no DWARF at all** — `dwarfdump` reports no sections on a built binary — so this wave starts from zero rather
-than from extension. `gimli` is already a workspace dependency and unused, which was anticipated. The one thing
-worth knowing before starting: `value_labels_ranges` exists on Cranelift's `CompiledCode` but the back end
-emits **no `ValueLabel`s**, so locals need the emission *and* the consumption, and the LLVM back end needs its
-own path since it shares nothing here.
+**W12 — Debug info is OPEN, one of three items done.** ADR-0169 delivered **`.debug_line` for the Cranelift back
+end**: a built object now carries a valid DWARF line table whose rows name real statements, verified by parsing
+the section with `gimli` the way `lldb` does rather than by grepping `dwarfdump`. §8.4 claimed "line tables
+exist" and there were none, so this started from zero. `gimli` is now pinned to **0.33** to match what
+`cranelift-object` already pulls, so there is exactly one DWARF library in the tree.
+
+**The decision worth carrying into the rest of the wave** is ADR-0169 §2: `TrapLocations` gained a *structured*
+`position()` and `location()` became a provided method formatting it, so a `.debug_line` row and a trap's
+`--> file:line:col` come from one resolution. That is ADR-0020 §2's one-formatter rule applied to two consumers
+rather than two engines, and it is what stops a line table saying 41 while the trap says 40.
+
+**Remaining:** type and struct-layout DIEs from the pool; locals through Cranelift's value labels — and note that
+`value_labels_ranges` exists on `CompiledCode` while the back end emits **no `ValueLabel`s**, so locals need the
+emission *and* the consumption; **the LLVM back end's own line table**, since it shares nothing with Cranelift
+here; and a **`dsymutil` step**, which is a *driver* decision — `ld` on macOS leaves DWARF in the object and
+`jr build` deletes it after a successful link, so a linked binary carries none today while `--emit-object`
+carries all of it.
 
 **Two language items are owed**, both found by building on the library rather than by design review, and neither
 blocking: a **typed constant** (`QUIT : u32 : 256` does not parse; `modules/Window` wants nine of them, and every
@@ -769,7 +779,7 @@ crossing the `#foreign` boundary — which is also W10's hard gate, so one chang
 an `Any` or a procedure handle through `jr-vm`'s untagged `union`; `jr-lsp` path handling — URI
 decoding, `..`, symlinks), which must be done **by hand** because six subagent dispatches returned
 empty; and `tree-sitter test` added to gate 6, which today catches grammar *drift* but not a broken
-grammar *rule*. **1059 workspace tests** (1060 under gate 7) and **254 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
+grammar *rule*. **1064 workspace tests** (1065 under gate 7) and **254 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
 has ever happened — plus **170** Neovim checks. See §1.5.
 
 > [!NOTE]
