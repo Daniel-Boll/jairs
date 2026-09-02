@@ -63,12 +63,14 @@
 //! `jr-hir`.
 
 mod arith;
+mod cabi;
 mod float;
 mod item;
 mod layout;
 mod pool;
 
 pub use arith::{IntCmp, IntKind, IntOp, IntTrap, int_binary, int_compare, int_negate, int_not};
+pub use cabi::{Class, classify};
 pub use float::{
     FloatCmp, FloatKind, FloatOp, float_binary, float_compare, float_negate, float_to_int,
     int_to_float,
