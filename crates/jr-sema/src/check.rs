@@ -5533,7 +5533,10 @@ impl Ctx<'_> {
             // Inferring `$T` through a parameterised struct — `(b: Box($T))` binding `T` from a
             // `Box(s64)` argument — is nested inference through a nominal type, deferred with the rest
             // of that step (ADR-0085 §5). So `Apply` binds nothing here this sub-wave.
+            // A qualified name is a *name*: it binds nothing, exactly as a bare one does, and for
+            // the same reason (ADR-0179 §5).
             TypeRef::Name(_)
+            | TypeRef::Qualified { .. }
             | TypeRef::Array { .. }
             | TypeRef::Results(_)
             | TypeRef::Proc { .. }

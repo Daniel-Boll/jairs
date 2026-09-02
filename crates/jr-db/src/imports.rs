@@ -168,10 +168,12 @@ pub fn unused_imports(
 
     let own_path = file.path(db);
     let mut imports = Vec::new();
-    let mut seen: FxHashSet<&str> = FxHashSet::default();
+    // Keyed on `(path, alias)`: a bare and an aliased import of one module are two different
+    // requests (ADR-0179 §2), so neither makes the other redundant.
+    let mut seen: FxHashSet<(&str, Option<jr_base::Symbol>)> = FxHashSet::default();
 
     for (index, item) in hir.items.iter().enumerate() {
-        let ItemKind::Import { path, .. } = &item.kind else {
+        let ItemKind::Import { path, alias, .. } = &item.kind else {
             continue;
         };
         let id = jr_hir::ItemId::from_usize(index);
@@ -180,7 +182,7 @@ pub fn unused_imports(
         // can ever carry a resolution — the import index dedupes by module name before
         // recording one. So a second `#import "Colors";` is reported whether or not the
         // name is used, which is right: it is the line that does nothing.
-        let duplicate = !seen.insert(path.as_str());
+        let duplicate = !seen.insert((path.as_str(), *alias));
 
         // A module that does not resolve is E0210's business, not this query's.
         let lookup = crate::module_loader::module_file(db, search_paths, Arc::from(path.as_str()));

@@ -912,12 +912,21 @@ impl Formatter {
     fn format_type(&mut self, node: &SyntaxNode) {
         match node.kind() {
             NAME_TYPE => {
-                if let Some(tok) = node
+                // Every `IDENT` of the node, dot-separated: a qualified `Window.Event` carries two
+                // (ADR-0179 §5). Emitting only the first turned it into a bare `Window` — the same
+                // lossy-CST failure this file guards against, and the *unsound* direction, because the
+                // reformatted file names a module where a type belongs and no longer type-checks.
+                let mut first = true;
+                for tok in node
                     .children_with_tokens()
                     .filter_map(|e| e.into_token())
-                    .find(|t| t.kind() == IDENT)
+                    .filter(|t| t.kind() == IDENT)
                 {
+                    if !first {
+                        self.emit(".");
+                    }
                     self.emit(tok.text());
+                    first = false;
                 }
                 // `Box(s64)` — the type arguments, when present, follow the name with no space
                 // (ADR-0085 §3). Dropping them would turn `Box(s64)` into a bare `Box`, the lossy-CST

@@ -398,8 +398,16 @@ module.exports = grammar({
     // `arguments` child, and a parameterised reference carries the applied types — the type-position
     // mirror of a call expression, and it reuses `_type` for each argument because a type argument
     // *is* a type (ADR-0071).
+    //
+    // The optional `. identifier` is a qualified name — `Window.Event` (ADR-0179 §5). Inside the same
+    // `name_type` rather than a rule of its own, matching the hand-written parser, which keeps both
+    // identifiers in one `NAME_TYPE` so no consumer meets a new node kind.
     name_type: ($) =>
-      seq($.identifier, optional(field("arguments", $.type_arguments))),
+      seq(
+        $.identifier,
+        optional(seq(".", field("member", $.identifier))),
+        optional(field("arguments", $.type_arguments)),
+      ),
 
     // (s64) or (s64, bool) after a type name — the arguments of a parameterised type.
     type_arguments: ($) =>

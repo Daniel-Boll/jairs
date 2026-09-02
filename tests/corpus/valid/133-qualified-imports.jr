@@ -1,0 +1,64 @@
+// **Qualified imports** (ADR-0179) — `Alias :: #import "M";` then `Alias.name`, as Jai spells it.
+//
+// This is the *running* half of the wave's coverage; `tests/corpus/imports/valid/019-qualified-imports.jr`
+// is the checking half, and it is the one that pins the **collision**: `Colors` and `Palette` both
+// export `blend`, so with two bare `#import`s naming it is E0211 and that file is unwritable. It cannot
+// run, because its modules directory (`tests/corpus/modules/`) has no `Basic`.
+//
+// This file stays away from `Window`, deliberately: a program importing it links `-lSDL2`, and this
+// directory's harnesses build with no `-L`. That is a property of the *harness*, so it belongs in a
+// comment rather than in a skip.
+//
+// What is pinned, each an independent bit of the exit code:
+//
+//   * **a qualified value in a body** — `String.byte_at`, resolved to `Res::Imported` by `jr-hir`;
+//   * **a qualified constant** — `File.READ_WRITE`, resolved through the same path a procedure is;
+//   * **a qualified type in a signature** — `File.File`, resolved by `jr-sema` against that module's
+//     signatures rather than through the flat merge, which is what makes a type reachable in a module
+//     that merged nothing. The doubled name is the honest case, not a contrivance: a module named after
+//     its principal type is what `File` is;
+//   * **a qualified type as a local's annotation**, whose field is then read;
+//   * **one type, two spellings** — `File.File` here and the bare `File` inside its own module intern to
+//     the same `PoolId`, which is the whole reason `descriptor_of` below can be handed this local, and
+//     `File.is_open` can be handed the same pointer.
+//
+// The exit code is the sum, 31, so a single failing bit names itself.
+#import "Basic";
+String :: #import "String";
+File :: #import "File";
+
+// A qualified type in a parameter. The argument is a local declared `File.File` in `main`.
+descriptor_of :: (f: *File.File) -> s64 {
+    return f.fd;
+}
+
+main :: () {
+    n := 0;
+
+    // A qualified value, in a call. `byte_at("abc", 2)` is `c`, 99.
+    if String.byte_at("abc", 2) == 99 {
+        n = n + 1;
+    }
+    if String.starts_with("hello", "he") {
+        n = n + 2;
+    }
+    // A qualified constant.
+    if File.READ_WRITE == 2 {
+        n = n + 4;
+    }
+
+    // A qualified type as a local's annotation. `-1` is what `File`'s own docs call a closed handle,
+    // so this is a legal value of the type and needs no filesystem.
+    f: File.File;
+    f.fd = -1;
+    if descriptor_of(*f) == -1 {
+        n = n + 8;
+    }
+    // The same pointer handed to the module's own procedure, whose parameter is spelled `*File` inside
+    // its own file. Two spellings, one type.
+    if !File.is_open(*f) {
+        n = n + 16;
+    }
+
+    exit(n);
+}

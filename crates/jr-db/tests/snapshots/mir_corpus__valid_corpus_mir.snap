@@ -15294,3 +15294,68 @@ proc main -> void {
     discard call extern proc1(v58)
     return
 }
+
+========================================
+133-qualified-imports.jr
+========================================
+proc descriptor_of -> s64 {
+  params: v0: *Context, v1: *struct
+  bb0(v0: *Context, v1: *struct):
+    v2: s64 = load (v1).*.0
+    return v2
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: struct  // local 1
+  bb0(v0: *Context):
+    v1: s64 = call extern proc0(v0, "abc", 2_s64)
+    v2: bool = v1 == 99_s64
+    branch v2 ? bb1() : bb2()
+  bb1():
+    v3: s64 = 0_s64 + 1_s64
+    goto bb3(v3)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v5: s64):
+    v4: bool = call extern proc4(v0, "hello", "he")
+    branch v4 ? bb4() : bb5()
+  bb4():
+    v6: s64 = v5 + 2_s64
+    goto bb6(v6)
+  bb5():
+    goto bb6(v5)
+  bb6(v8: s64):
+    v7: bool = 2_s64 == 2_s64
+    branch v7 ? bb7() : bb8()
+  bb7():
+    v9: s64 = v8 + 4_s64
+    goto bb9(v9)
+  bb8():
+    goto bb9(v8)
+  bb9(v13: s64):
+    zero s0
+    store s0.0 <- -1_s64
+    v10: *struct = addr s0
+    v11: s64 = call proc0(v0, v10)
+    v12: bool = v11 == -1_s64
+    branch v12 ? bb10() : bb11()
+  bb10():
+    v14: s64 = v13 + 8_s64
+    goto bb12(v14)
+  bb11():
+    goto bb12(v13)
+  bb12(v18: s64):
+    v15: *struct = addr s0
+    v16: bool = call extern proc12(v0, v15)
+    v17: bool = !v16
+    branch v17 ? bb13() : bb14()
+  bb13():
+    v19: s64 = v18 + 16_s64
+    goto bb15(v19)
+  bb14():
+    goto bb15(v18)
+  bb15(v20: s64):
+    discard call extern proc1(v20)
+    return
+}

@@ -393,10 +393,8 @@ pub(crate) fn checked_expanded(
             )
         })
         .collect();
-    let scope_refs: Vec<(&str, &jr_hir::ItemScope)> = export_scopes
-        .iter()
-        .map(|(name, scope)| (name.as_ref(), scope.as_ref()))
-        .collect();
+    // One entry per `#import` item, so an alias is carried (ADR-0179 §3).
+    let scope_refs = crate::module_loader::imported_modules_for_resolve(expanded, &export_scopes);
     let (resolve_map, resolve_diags) = jr_hir::resolve(expanded, &scope_refs, interner);
 
     let imported: Vec<(Arc<str>, SignatureResult)> = modules
@@ -938,10 +936,9 @@ fn expand_round(
             )
         })
         .collect();
-    let scope_refs: Vec<(&str, &jr_hir::ItemScope)> = export_scopes
-        .iter()
-        .map(|(name, scope)| (name.as_ref(), scope.as_ref()))
-        .collect();
+    // One entry per `#import` item, so an alias is carried (ADR-0179 §3).
+    let scope_refs =
+        crate::module_loader::imported_modules_for_resolve(hir.as_ref(), &export_scopes);
     let (resolve_map, resolve_diags) = jr_hir::resolve(hir.as_ref(), &scope_refs, interner);
     let resolve_map = Arc::new(resolve_map);
 

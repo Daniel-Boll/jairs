@@ -440,6 +440,12 @@ impl<'a> Ctx<'a> {
         match self.type_ref(scope, id) {
             TypeRef::Error => PoolId::ERROR,
             TypeRef::Name(sym) => self.resolve_type_name(sym, span),
+            // `Window.Event` (ADR-0179 §5) — looked up in one module's signatures rather than in the
+            // flat merge of every bare import, so it cannot be ambiguous and reaches a module that
+            // merged nothing.
+            TypeRef::Qualified { module, name } => {
+                self.resolve_qualified_type_name(module, name, span)
+            }
             // `$T` (ADR-0081 §1). When `T` is already bound — this is an instantiation, or a later `$T`
             // for the same variable — resolve to the bound type. Otherwise the variable is being
             // introduced: without an instantiation there is no type yet, so it resolves to `ERROR`, which
@@ -941,6 +947,81 @@ impl<'a> Ctx<'a> {
             );
         }
         resolved
+    }
+
+    /// Resolves `Alias.Name` against the one module the alias names (ADR-0179 §5).
+    ///
+    /// Deliberately **not** a path through [`Self::resolve_type_name`]: none of the earlier steps that
+    /// function takes apply. A qualified name is never a builtin, never a bound `$T`, and never a
+    /// file-level declaration — the alias says which scope to look in, and that is the whole lookup.
+    /// It reaches the same `FileSignatures` the bare form does, so `Window.Event` and a bare `Event`
+    /// from the same module intern to one `PoolId` rather than two.
+    ///
+    /// The refusal is E0212, sema's unknown-type code, rather than resolution's E0292: the two
+    /// positions are answered by different crates — a type annotation is invisible to `ResolveMap`
+    /// (see `jr-db`'s `imports` module docs) — so this is the same asymmetry the unused-import warning
+    /// already lives with, not a second answer to one question.
+    pub(crate) fn resolve_qualified_type_name(
+        &mut self,
+        module: Symbol,
+        name: Symbol,
+        span: Span,
+    ) -> PoolId {
+        let Some(path) = self.module_path_of_alias(module) else {
+            // The alias names no import in this file. Either E0210 already reported that the module
+            // could not be found, or the receiver is not an alias at all — in which case lowering
+            // would not have produced a qualified type ref. Silent, so one mistake is one message.
+            return PoolId::ERROR;
+        };
+        let Some(sigs) = self
+            .imports
+            .iter()
+            .find(|(n, _)| *n == path.as_str())
+            .map(|(_, sigs)| *sigs)
+        else {
+            return PoolId::ERROR;
+        };
+        let Some(entry) = sigs.lookup(name) else {
+            let text = self.interner.resolve(name);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("no exported type `{text}` in module `{path}`"),
+                )
+                .with_code(E0212)
+                .with_help("check the spelling, or the module's exports"),
+            );
+            return PoolId::ERROR;
+        };
+        match entry.type_value {
+            Some(ty) => {
+                // Recorded for the same reason the bare path records it (ADR-0031 §2): a module used
+                // *only* for a type would otherwise read as unused, and the quick fix beside that
+                // warning would break the build.
+                self.sigs.insert_type_name_import(name, path.as_str());
+                ty
+            }
+            None => {
+                self.not_a_type(name, entry.kind, span);
+                PoolId::ERROR
+            }
+        }
+    }
+
+    /// The module path an aliased `#import` binds to `alias` (ADR-0179 §5).
+    ///
+    /// Read from the file's own `#import` items, which is the only place the alias exists: the
+    /// signature tables this context holds are keyed by module *path*, because that is what the
+    /// module loader can answer.
+    fn module_path_of_alias(&self, alias: Symbol) -> Option<String> {
+        self.hir.items.iter().find_map(|item| match &item.kind {
+            jr_hir::ItemKind::Import {
+                path,
+                alias: Some(bound),
+                ..
+            } if *bound == alias => Some(path.clone()),
+            _ => None,
+        })
     }
 
     /// Resolves a named type: builtins, then this file, then imports.

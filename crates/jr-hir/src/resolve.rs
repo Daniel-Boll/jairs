@@ -63,6 +63,12 @@
 //! | E0211 | Ambiguous name provided by two or more imported modules |
 //! | E0250 | A `using` on a non-struct, or a name promoted by two `using`s |
 //! | E0253 | A name an imported module declares but does not export (ADR-0054 §2) |
+//! | E0292 | `Alias.name` where the aliased module exports no such name (ADR-0179 §4) |
+//!
+//! There is deliberately **no** code for "the alias names something that is not an import": a local
+//! or parameter of the alias's name makes the access an ordinary field of a value (ADR-0014 §3's
+//! shadowing rule, applied by where lowering checks), and an alias colliding with a file-scope
+//! declaration is already E0200.
 //!
 //! Note: E0200 (duplicate declaration) is detected here rather than in
 //! lowering because we need to see all items before we can detect duplicates.
@@ -102,6 +108,12 @@ const E0250: &str = "E0250";
 /// mistake when the actual answer is that the module's author put the declaration behind
 /// `#scope_module`.
 const E0253: &str = "E0253";
+/// A qualified name whose module exports nothing by that name (ADR-0179 §4).
+///
+/// Distinct from E0253 by which question is unanswerable: E0253 is "the module declares it and hides
+/// it", this is "the module has no such name at all". Sharing one code would send a reader looking
+/// for a `#scope_module` line that does not exist.
+const E0292: &str = "E0292";
 
 /// Whether a name is a compiler intrinsic, which has no declaration to resolve to.
 ///
@@ -212,17 +224,55 @@ impl ResolveMap {
 // Import index
 // ---------------------------------------------------------------------------
 
+/// One `#import` as resolution sees it (ADR-0179 §3).
+///
+/// A named struct rather than a widened tuple: a three-tuple of two `&str`-ish things invites a
+/// swap at the one call site, and the two mean opposite things — `path` is what was imported,
+/// `alias` is the name it answers to.
+pub struct ImportedModule<'a> {
+    /// The module path as written, `"Simp"` for `#import "Simp";`.
+    pub path: &'a str,
+    /// The name the import is bound to, when it is aliased (ADR-0179 §1).
+    pub alias: Option<Symbol>,
+    /// The module's exported scope.
+    pub scope: &'a ItemScope,
+}
+
+impl<'a> ImportedModule<'a> {
+    /// A bare `#import "path";`, whose names merge into file scope (ADR-0014 §2).
+    pub fn bare(path: &'a str, scope: &'a ItemScope) -> Self {
+        Self {
+            path,
+            alias: None,
+            scope,
+        }
+    }
+}
+
+/// An aliased import, as the index needs it to answer `Simp.thing`.
+struct AliasedImport<'a> {
+    /// The `#import` item in the *importing* file, for [`Res::Imported`].
+    import: ItemId,
+    /// The module path, for a diagnostic that has to name the module.
+    path: &'a str,
+    /// The module's exported scope, which a member lookup hits directly.
+    scope: &'a ItemScope,
+}
+
 /// A pre-built index of the imports in the current file.
 ///
-/// For each name that appears in at least one imported scope, records the
+/// For each name that appears in at least one **bare** imported scope, records the
 /// list of distinct modules that provide it. "Distinct" means distinct by
-/// module name (the `&str` key in the `imports` slice): importing the same
-/// module twice is idempotent (ADR-0014 §6).
+/// module name: importing the same module twice is idempotent (ADR-0014 §6).
 ///
 /// Each entry is `(module_name, import_item_id)` where `import_item_id` is
 /// the `#import` item in the *importing* file.
+///
+/// An **aliased** import contributes nothing to `by_name` (ADR-0179 §2). That is the whole of what
+/// makes two modules exporting one name usable together: the ambiguity E0211 reports never arises,
+/// because only one spelling — `Alias.name` — can reach the aliased module's scope.
 struct ImportIndex<'a> {
-    /// Maps name → list of (module_name, import_item_id) for distinct modules.
+    /// Maps name → list of (module_name, import_item_id) for distinct bare modules.
     ///
     /// If a name maps to exactly one entry, it is unambiguous. If it maps to
     /// two or more, it is ambiguous (E0211 at the use site).
@@ -234,6 +284,8 @@ struct ImportIndex<'a> {
     /// turns "unresolved name" into "not exported by `Shapes`", which is the difference between
     /// sending a reader after a typo and telling them the truth.
     hidden: FxHashMap<Symbol, &'a str>,
+    /// The aliased imports, by the name each binds (ADR-0179 §2).
+    aliases: FxHashMap<Symbol, AliasedImport<'a>>,
 }
 
 /// The result of looking up a name in the import index.
@@ -243,31 +295,42 @@ struct ImportIndex<'a> {
 ///   (ambiguous; E0211 should be emitted at the use site).
 type ImportLookup<'a> = Result<(ItemId, Symbol), Vec<(&'a str, ItemId)>>;
 
+/// What a qualified name `Alias.member` resolves to (ADR-0179 §4).
+pub(crate) enum QualifiedLookup<'a> {
+    /// The module exports it: `Res::Imported(import, member)`.
+    Found(ItemId, Symbol),
+    /// The module declares it behind `#scope_module` — E0253's case, kept distinct so
+    /// "exists but is not exported" never renders as "no such name".
+    Hidden(&'a str),
+    /// The module has no such name at all — E0292.
+    Missing(&'a str),
+}
+
 impl<'a> ImportIndex<'a> {
     /// Builds the index from the `imports` slice and the file's item list.
     ///
-    /// `imports` is `(module_name, scope)` pairs. The module name is the
-    /// canonical key used for deduplication: two entries with the same name
-    /// are the same module (ADR-0014 §6).
-    fn build(hir: &FileHir, imports: &'a [(&'a str, &'a ItemScope)], interner: &Interner) -> Self {
-        // Deduplicate imports by module name: keep only the first occurrence
-        // of each module name. This implements ADR-0014 §6 (duplicate import
-        // is idempotent).
-        let mut seen_modules: FxHashMap<&str, ()> = FxHashMap::default();
-        let mut deduped: Vec<(&str, &ItemScope, ItemId)> = Vec::new();
+    /// The deduplication key is `(path, alias)` rather than the path alone, because a bare and an
+    /// aliased import of one module are **not** idempotent with each other: they ask for two
+    /// different things, and only the bare one merges (ADR-0179 §2).
+    fn build(hir: &FileHir, imports: &'a [ImportedModule<'a>], interner: &Interner) -> Self {
+        // Deduplicate imports as above. This implements ADR-0014 §6 (duplicate import
+        // is idempotent) for the bare form, and extends it per alias.
+        let mut seen_modules: FxHashMap<(&str, Option<Symbol>), ()> = FxHashMap::default();
+        let mut deduped: Vec<(&'a ImportedModule<'a>, ItemId)> = Vec::new();
 
-        for (mod_name, scope) in imports {
-            if seen_modules.contains_key(mod_name) {
-                // Same module imported again — skip.
+        for imported in imports {
+            let key = (imported.path, imported.alias);
+            if seen_modules.contains_key(&key) {
+                // Same module imported the same way again — skip.
                 continue;
             }
-            seen_modules.insert(mod_name, ());
+            seen_modules.insert(key, ());
 
-            // Find the first `#import` item in the file whose path matches
-            // this module name.
+            // Find the first `#import` item in the file whose path *and* alias match.
             let import_item_id = hir.items.iter().enumerate().find_map(|(i, item)| {
-                if let ItemKind::Import { path, .. } = &item.kind
-                    && path == mod_name
+                if let ItemKind::Import { path, alias, .. } = &item.kind
+                    && path == imported.path
+                    && *alias == imported.alias
                 {
                     return Some(ItemId::from_usize(i));
                 }
@@ -275,7 +338,7 @@ impl<'a> ImportIndex<'a> {
             });
 
             if let Some(import_id) = import_item_id {
-                deduped.push((mod_name, scope, import_id));
+                deduped.push((imported, import_id));
             }
             // If no matching #import item is found (shouldn't happen in
             // well-formed input), skip silently — the caller is responsible
@@ -285,36 +348,70 @@ impl<'a> ImportIndex<'a> {
         // Build the by-name index.
         let mut by_name: FxHashMap<Symbol, Vec<(&'a str, ItemId)>> = FxHashMap::default();
         let mut hidden: FxHashMap<Symbol, &'a str> = FxHashMap::default();
-        for (mod_name, scope, import_id) in &deduped {
-            for &sym in scope.names.keys() {
+        let mut aliases: FxHashMap<Symbol, AliasedImport<'a>> = FxHashMap::default();
+        for (imported, import_id) in &deduped {
+            // An aliased import is reachable *only* through its alias, so it neither merges its
+            // names nor contributes to `hidden` — a bare `name` it happens to declare is not a
+            // name this file could have meant.
+            if let Some(alias) = imported.alias {
+                aliases.entry(alias).or_insert(AliasedImport {
+                    import: *import_id,
+                    path: imported.path,
+                    scope: imported.scope,
+                });
+                continue;
+            }
+            for &sym in imported.scope.names.keys() {
                 // Skip names that are shadowed by a file-level declaration.
                 // We check this here so the index only contains names that
                 // are actually reachable via imports.
                 if hir.scope.get(sym).is_some() {
                     continue;
                 }
-                by_name.entry(sym).or_default().push((mod_name, *import_id));
+                by_name
+                    .entry(sym)
+                    .or_default()
+                    .push((imported.path, *import_id));
             }
             // Names the module declares behind `#scope_module` (ADR-0054 §2). Recorded so a use of
             // one is reported as "not exported" rather than as an unresolved name — and *not*
             // inserted into `by_name`, because a hidden name genuinely does not resolve.
-            for &sym in &scope.hidden {
+            for &sym in &imported.scope.hidden {
                 if hir.scope.get(sym).is_some() {
                     continue;
                 }
-                hidden.entry(sym).or_insert(mod_name);
+                hidden.entry(sym).or_insert(imported.path);
             }
         }
 
         // Suppress unused-variable warning for interner when no names exist.
         let _ = interner;
 
-        Self { by_name, hidden }
+        Self {
+            by_name,
+            hidden,
+            aliases,
+        }
     }
 
     /// The module that declares `name` behind `#scope_module`, if one does (ADR-0054 §2).
     fn hidden_by(&self, name: Symbol) -> Option<&'a str> {
         self.hidden.get(&name).copied()
+    }
+
+    /// Looks `member` up in the module `alias` names, or `None` if `alias` names no import.
+    ///
+    /// The single lookup helper both value position (A4) and type position (A5) use, so the two
+    /// spellings of a qualified name cannot disagree about what a module exports.
+    fn lookup_qualified(&self, alias: Symbol, member: Symbol) -> Option<QualifiedLookup<'a>> {
+        let aliased = self.aliases.get(&alias)?;
+        if aliased.scope.get(member).is_some() {
+            return Some(QualifiedLookup::Found(aliased.import, member));
+        }
+        if aliased.scope.hidden.contains(&member) {
+            return Some(QualifiedLookup::Hidden(aliased.path));
+        }
+        Some(QualifiedLookup::Missing(aliased.path))
     }
 
     /// Looks up a name in the import index.
@@ -402,11 +499,7 @@ struct ResolveCtx<'a> {
 }
 
 impl<'a> ResolveCtx<'a> {
-    fn new(
-        hir: &'a FileHir,
-        imports: &'a [(&'a str, &'a ItemScope)],
-        interner: &'a Interner,
-    ) -> Self {
+    fn new(hir: &'a FileHir, imports: &'a [ImportedModule<'a>], interner: &'a Interner) -> Self {
         let import_index = ImportIndex::build(hir, imports, interner);
         Self {
             hir,
@@ -587,6 +680,11 @@ impl<'a> ResolveCtx<'a> {
         loop {
             match arena.get(ty.index())? {
                 crate::hir::TypeRef::Name(sym) => return Some(*sym),
+                // A `using p: Window.Point` promotes nothing **yet**: this returns the name a
+                // struct is looked up by in *this file's* scope, and a qualified name is not one.
+                // Returning the member alone would find a same-named local struct and promote the
+                // wrong fields, which is worse than promoting none (ADR-0179 §5).
+                crate::hir::TypeRef::Qualified { .. } => return None,
                 crate::hir::TypeRef::Pointer(inner) => ty = *inner,
                 crate::hir::TypeRef::Array { .. }
                 // A `using v: #simd [4]s32` promotes nothing either: a vector's lanes are indexed,
@@ -678,6 +776,50 @@ impl<'a> ResolveCtx<'a> {
             return false;
         };
         is_intrinsic_name(self.interner.resolve(*name)) && self.hir.scope.get(*name).is_none()
+    }
+
+    /// Resolves `Alias.member` against the module the alias names (ADR-0179 §4).
+    ///
+    /// The whole qualified spelling arrives as one [`Expr::Name`] carrying its module, so there is no
+    /// receiver to resolve and no scope to search: the answer is one hit in the module's exported
+    /// scope. That is why a qualified name can never be ambiguous — E0211 has nothing to compare.
+    fn resolve_qualified_name(&mut self, alias: Symbol, member: Symbol, span: Span) -> Res {
+        let member_text = self.interner.resolve(member);
+        match self.import_index.lookup_qualified(alias, member) {
+            Some(QualifiedLookup::Found(import, sym)) => Res::Imported(import, sym),
+            // The same distinction the bare path draws (ADR-0054 §2), reached by the same helper so
+            // the two spellings cannot disagree about what a module exports.
+            Some(QualifiedLookup::Hidden(module)) => {
+                self.diags.push(
+                    Diagnostic::error(
+                        span,
+                        format!("`{member_text}` is not exported by `{module}`"),
+                    )
+                    .with_code(E0253)
+                    .with_note("it is declared behind `#scope_module`")
+                    .with_help("remove the `#scope_module`, or move the declaration above it"),
+                );
+                Res::Error
+            }
+            Some(QualifiedLookup::Missing(module)) => {
+                self.diags.push(
+                    Diagnostic::error(
+                        span,
+                        format!("no exported name `{member_text}` in module `{module}`"),
+                    )
+                    .with_code(E0292)
+                    .with_label(Label::with_message(
+                        span,
+                        format!("`{module}` declares nothing by this name"),
+                    ))
+                    .with_help("check the spelling, or the module's exports"),
+                );
+                Res::Error
+            }
+            // The alias binds an import whose module could not be loaded. E0210 already says so, and
+            // a second complaint about one problem is the wrong one for a reader to act on.
+            None => Res::Error,
+        }
     }
 
     /// Resolve a name to a `Res`, checking file scope then imports.
@@ -897,10 +1039,18 @@ impl<'a> ResolveCtx<'a> {
         // We need to clone to avoid borrow issues
         let expr = self.hir.exprs[id.index()].clone();
         match &expr {
-            Expr::Name { name, span, res } => {
+            Expr::Name {
+                name,
+                module,
+                span,
+                res,
+            } => {
                 if matches!(res, Res::Error) {
                     let (name, span) = (*name, *span);
-                    let resolved = self.resolve_name(name, span);
+                    let resolved = match module {
+                        Some(alias) => self.resolve_qualified_name(*alias, name, span),
+                        None => self.resolve_name(name, span),
+                    };
                     self.map.insert(ExprScope::TopLevel, id, resolved);
                 } else {
                     self.map.insert(ExprScope::TopLevel, id, res.clone());
@@ -1144,13 +1294,21 @@ impl<'a> ResolveCtx<'a> {
     fn resolve_body_expr(&mut self, body_id: BodyId, expr_id: ExprId) {
         let expr = self.hir.bodies[body_id.index()].exprs[expr_id.index()].clone();
         match expr {
-            Expr::Name { name, span, res } => {
+            Expr::Name {
+                name,
+                module,
+                span,
+                res,
+            } => {
                 // If already resolved to a local/param during lowering, keep it.
                 // Otherwise try file-level and import resolution.
                 let final_res = if !matches!(res, Res::Error) {
                     res
                 } else {
-                    self.resolve_name(name, span)
+                    match module {
+                        Some(alias) => self.resolve_qualified_name(alias, name, span),
+                        None => self.resolve_name(name, span),
+                    }
                 };
                 self.map
                     .insert(ExprScope::Body(body_id), expr_id, final_res);
@@ -1218,10 +1376,9 @@ impl<'a> ResolveCtx<'a> {
 /// returns a [`ResolveMap`] mapping expression IDs to their resolutions,
 /// plus any diagnostics.
 ///
-/// `imports` is a slice of `(module_name, scope)` pairs for modules that
-/// have been imported via `#import`. The module name must match the string
-/// in the `#import` directive (e.g. `"Colors"` for `#import "Colors";`).
-/// Pass an empty slice if no imports have been resolved yet; unresolved
+/// `imports` is a slice of [`ImportedModule`]s for modules that have been imported via
+/// `#import`. Each `path` must match the string in the `#import` directive (e.g. `"Colors"` for
+/// `#import "Colors";`). Pass an empty slice if no imports have been resolved yet; unresolved
 /// names will be reported as E0201 errors.
 ///
 /// ## Lookup order (ADR-0014 §3, spec §03)
@@ -1229,12 +1386,14 @@ impl<'a> ResolveCtx<'a> {
 /// 1. Block locals (already resolved during lowering)
 /// 2. Parameters (already resolved during lowering)
 /// 3. File-scope items (silently shadow imported names of the same name)
-/// 4. Imported scopes (flat merge, ADR-0014 §2)
+/// 4. Imported scopes (flat merge for a bare `#import`, ADR-0014 §2; an aliased
+///    `Alias :: #import "M";` merges nothing and is reached only as `Alias.name`, ADR-0179 §2)
 ///
 /// ## Duplicate imports (ADR-0014 §6)
 ///
 /// Importing the same module twice is idempotent. Entries in `imports` with
-/// the same module name are deduplicated before the ambiguity check.
+/// the same module name *and the same alias* are deduplicated before the ambiguity check. A bare
+/// and an aliased import of one module are two different requests and both stand.
 ///
 /// ## Ambiguity (ADR-0014 §3)
 ///
@@ -1255,7 +1414,7 @@ impl<'a> ResolveCtx<'a> {
 /// (already handled during lowering).
 pub fn resolve(
     file: &FileHir,
-    imports: &[(&str, &ItemScope)],
+    imports: &[ImportedModule<'_>],
     interner: &Interner,
 ) -> (ResolveMap, Diagnostics) {
     let mut ctx = ResolveCtx::new(file, imports, interner);

@@ -107,9 +107,9 @@ impl Program {
             .iter()
             .map(|(name, _, module_hir, _)| (*name, module_hir.export_scope()))
             .collect();
-        let exports: Vec<(&str, &ItemScope)> = owned_exports
+        let exports: Vec<jr_hir::ImportedModule<'_>> = owned_exports
             .iter()
-            .map(|(name, scope)| (*name, scope))
+            .map(|(name, scope)| jr_hir::ImportedModule::bare(name, scope))
             .collect();
         let (resolve, resolve_diags) = jr_hir::resolve(&hir, &exports, &self.interner);
         earlier.extend(resolve_diags.iter().cloned());

@@ -1,0 +1,21 @@
+// EXPECT: E0292 at the USE of `Colors.mix`, naming the module that has no such export.
+// RECOVER: `Colors.BLACK` must still resolve; one absent qualified name must not poison the rest.
+//
+// A qualified name the module does not export — E0292 (ADR-0179 §4).
+//
+// Filed here rather than under `type-errors/` for the stage reason `011` and `014` are: E0292 comes out
+// of **resolution**, and `type-errors/`' contract is that its files resolve cleanly and are refused by
+// *sema*. Reaching the case also needs the import resolved, which is this directory's other reason.
+//
+// The distinction worth pinning is between this and E0253. `Private.jr` hides `hidden_helper` behind
+// `#scope_module`, and `imports/invalid/009-not-exported.jr` reports that as "not exported by
+// `Private`" — a reader acts on it by moving the declaration. E0292 is the *other* answer: the module
+// has no such name at all, so there is no `#scope_module` line to go looking for. Sharing one code
+// would send every reader of one message hunting the other's cause.
+Colors :: #import "Colors";
+
+main :: () {
+    // `Colors` exports `BLACK`, `WHITE` and `blend`. It has never had a `mix`.
+    bad := Colors.mix(1, 2);
+    ok := Colors.BLACK;
+}

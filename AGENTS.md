@@ -915,7 +915,15 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0292 is the first free code**; E0134 is the first free *parser* code. **E0290** refuses `$$` in a **return**
+**E0293 is the first free code**; E0134 is the first free *parser* code. **E0292** refuses a qualified name
+`Alias.member` whose module exports nothing by that name (ADR-0179 §4) — **owned by `jr-hir`**, continuing its
+block, because it is raised in resolution beside E0253, which answers the neighbouring question ("the module
+declares it and hides it"). The two are deliberately separate codes: sharing one would send a reader looking
+for a `#scope_module` line that does not exist. Group A allocated **no** second code, and the reason is worth
+keeping — a candidate refusal for "the alias names something that is not an import" turned out to have *no
+reachable condition*: a local or parameter of the alias's name makes the access an ordinary field of a value
+(ADR-0014 §3's shadowing rule, enforced by where lowering checks), and an alias colliding with a file-scope
+declaration is already E0200. A code with no condition is worse than no code. **E0290** refuses `$$` in a **return**
 type — **owned by `jr-hir`**, continuing its block, because the validity of a type decoration at a declaration
 site is judged where the signature is built. It was a leaked internal error until an audit of PLAN's wave table
 probed it: that table said `$$T` was "NOT DELIVERED — E0107" while this file said ADR-0137 delivered it, and both
