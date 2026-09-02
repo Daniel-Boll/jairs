@@ -258,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0167. See [`docs/adr/README.md`](docs/adr/README.md). (This line
+Accepted ADRs: 0001–0168. See [`docs/adr/README.md`](docs/adr/README.md). (This line
 said 0001–0128 for thirteen ADRs, which is the argument §7 makes for its own count
 being the one to trust.)
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
@@ -345,18 +345,26 @@ dependency chain requires it. `rust-toolchain.toml` still floats on stable.
 > this row contradicted). **Nested procedures and local constants** appear in no wave's scope at all, yet E0207
 > blamed W2 for them for six waves. Marked inline below as **[NOT DELIVERED]**.
 >
+> **Three of those markers were themselves stale by the W10-close audit**, which is the same rot one
+> level up: `it`/`it_index` (ADR-0133/0135), `[..]T` (ADR-0136/0140) and `$$T` (ADR-0137) had all
+> shipped. Each was re-verified by *probe* rather than by trusting either this file or `AGENTS.md`,
+> because the two disagreed — and probing `$$T` found a **leaked internal error** in return position
+> that neither document knew about, now E0290 (ADR-0168). The remaining two markers are honest: W1's
+> `[..]T` entry is struck through above, and W8's parallel codegen was *measured and refused*
+> (ADR-0149), which is a result rather than an omission.
+>
 > Separately, ADR-0127 §2's sweep left one **generalisation owed** rather than a broken promise: an array
 > length could name a literal-valued constant (ADR-0070) and an enum member could not. **ADR-0129
 > delivered it**, and one `named_constant_int` now answers for both callers.
 
 | Wave | Content | Notes | Est. |
 |---|---|---|---|
-| **W1 — Data** | Full numeric tower (`s8..s64`, `u8..u64`, `float32/64`), wrapping ops `+% -% *%`, `enum`, `enum_flags`, `union`, `[N]T`, `[]T` views, `[..]T` dynamic arrays **[NOT DELIVERED — E0124; see ADR-0107's library `List($T)`]**, `cast()`, `xx` autocast, operator overloading | Dynamic arrays need allocators → pulls `context` forward | 8–10 wks |
-| **W2 — Flow & scope** | `for` with `it`/`it_index` **[`it`/`it_index` NOT DELIVERED — only `for x: xs`]**, `for <`, labeled `break`/`continue`, `defer`, `using` (namespace + field promotion), multiple return values, named/default args, `#scope_*` visibility | `using` is the first genuinely hard resolution problem. **Never included nested procedures or local constants**, which E0207 nonetheless attributed here | 6–8 wks |
+| **W1 — Data** | Full numeric tower (`s8..s64`, `u8..u64`, `float32/64`), wrapping ops `+% -% *%`, `enum`, `enum_flags`, `union`, `[N]T`, `[]T` views, `[..]T` dynamic arrays ~~**[NOT DELIVERED — E0124; see ADR-0107's library `List($T)`]**~~ **delivered — ADR-0136 the syntax, ADR-0140 the operations, which *deleted* ADR-0107's hand-rolled `List($T)`; exercised by `valid/113`, verified by probe during the W10-close audit**, `cast()`, `xx` autocast, operator overloading | Dynamic arrays need allocators → pulls `context` forward | 8–10 wks |
+| **W2 — Flow & scope** | `for` with `it`/`it_index` ~~**[`it`/`it_index` NOT DELIVERED — only `for x: xs`]**~~ **delivered — ADR-0133, and ADR-0135 for a range with an index; verified by probe during the W10-close audit**, `for <`, labeled `break`/`continue`, `defer`, `using` (namespace + field promotion), multiple return values, named/default args, `#scope_*` visibility | `using` is the first genuinely hard resolution problem. **Never included nested procedures or local constants**, which E0207 nonetheless attributed here | 6–8 wks |
 | **W3 — Runtime core** | `context` (hidden param, `#c_call` opt-out), allocators, temporary storage, bounds-check build config, panics/traps with backtraces | Unlocks a real stdlib | 6–8 wks |
 | **W4 — Comptime** | Full `#run` (arbitrary code), aggressive const folding, RTTI (`Type` values, `type_info()`, `Any`), `#insert`, `#code`, the `Code` type | **Hardest wave.** Sema ↔ VM become mutually recursive; cycle detection with readable errors is the deliverable. **Delivered in sub-waves** (ADR-0069 §0), because a wave five times the size of any other cannot be verified the way the others were: **all ten shipped**: (1) `#run` across files and in a body (ADR-0069); (2) an array length from a constant (ADR-0070), which *replaced* "aggressive const folding" after ADR-0070 §0 found ADR-0022's const-prop had already delivered it; (3) a type as a compile-time value (ADR-0071); (4) `#insert` of a literal operand (ADR-0072); (5) of a **computed** operand (ADR-0073) — the mutual recursion this row calls the hardest part, broken by an acyclic pre-pass rather than salsa's fixed-point recovery; (6) aggregate constants (ADR-0074); (7) `type_info()` and a constant holding a string (ADR-0075); (8) `Any` with a checked read, plus `Type_Info`'s stable `id` the check needed (ADR-0076, ADR-0077); (9) `Type_Info`'s fixed-size per-kind facts (ADR-0078); (10) `#code` (ADR-0080), with a shipped silent miscompile refused on the way (ADR-0079). **Out of scope, each with a recorded reason**: `Type_Info`'s variable-length field list (owed its own wave — it needs a declared static-data mechanism, ADR-0079 §1); a `Code` *value* (**declined** until something can inspect a tree, ADR-0080 §3); a `#run` reading another file's constant (ADR-0073 §4, now reporting itself rather than an ICE) | 10–14 wks |
 | **W4.5 — Pattern matching** | `switch` with exhaustiveness checking, a bare `.RED` as a case (ADR-0041 §2 step 5), and a **tagged** variant type beside `union` (ADR-0045 §1) | **Was missing from this table entirely.** Two accepted ADRs deferred decisions to it while no wave scheduled it — found while closing W2 (ADR-0054's handoff). **Reordered before W4 by ADR-0067 §0.** This row used to say "placed after W4 because exhaustiveness diagnostics want comptime type info" — a *want*, not a need, and checking disproved it: `Pool::enum_members` is populated during checking (ADR-0041 §4), and `c == .GREEN` already worked, so `switch` and exhaustiveness needed nothing from W4. A wave order justified by a dependency that does not exist is §5's "plans that contradict themselves". Still before W5, because a polymorph over a variant type needs the variant | 4–6 wks |
-| **W5 — Polymorphism** | `$T`, `$$T` **[NOT DELIVERED — E0107]**, `#modify`, `#bake_arguments`, `#expand` macros + hygiene, instantiation caching, **instantiation backtraces** in diagnostics **[single frame DELIVERED by ADR-0128; multi-level chain still owed]** | Depends on W4's InternPool value identity | 8–12 wks |
+| **W5 — Polymorphism** | `$T`, `$$T` ~~**[NOT DELIVERED — E0107]**~~ **delivered as a *parameter* — ADR-0137, exercised by `valid/110`; a `$$T` **return** is now E0290, ADR-0168, since `$$` marks an argument and a return has none**, `#modify`, `#bake_arguments`, `#expand` macros + hygiene, instantiation caching, **instantiation backtraces** in diagnostics **[single frame DELIVERED by ADR-0128; multi-level chain still owed]** | Depends on W4's InternPool value identity | 8–12 wks |
 | **W6 — Metaprogram** | ~~Workspaces~~ **[DECLINED — ADR-0154 §4: a Jai workspace is the *poll* model, and the file-set half already exists as `reachable_files`]**, compiler message loop, `#run build()` build scripts replacing makefiles, ~~plugin hooks~~ **[DECLINED — ADR-0154 §3: a hook is a poll, and ADR-0153 §1 rejected the poll because its behaviour would depend on compilation order, which salsa makes unstable]**, `@note` attributes | **DONE** (ADR-0098 … ADR-0154). The headline claim is met: a metaprogram finds declarations by note and *iterates* them (ADR-0153), on the compiler-emitted table ADR-0152 built — which delivered `Type_Info.fields` at the same time, owed since ADR-0078. Build scripts name the artefact and choose the optimisation. Two items declined with reasons rather than left ambiguous | 6–8 wks |
 | **W7 — Stdlib** ✔ **DONE — ADR-0158** | In Jairs: `Basic`, `String`, dynamic array / hash table / bucket array, `Sort`, `Math` (vec/mat/quat **DELIVERED — vectors by ADR-0130, `Matrix4` by ADR-0131, `Quaternion` by ADR-0132; ADR-0115 declared `Math` complete when none of the three existed**), `Random`, `File`, `File_Utilities`, `Process`, ~~`Thread` + atomics~~ **[MOVED OUT to W11 by §8.3 — there is no thread support anywhere in the runtime, and delivering one needs a per-thread VM stack, atomics as language operations, a memory model, and a rule for comptime; that is a wave comparable to W4, not one item in a list]**, `Time`, `Socket`, `JSON`, ~~`Compiler`~~ **[MOVED to W6 by §8.3 — that module *is* the message loop's surface]** | Runs partly in parallel with W5/W6; each module is a wave-acceptance test. **Nine modules shipped; §8.3 orders the remaining seven by what blocks what**, and five of them wait on the error model (§8.1.1) | 14–18 wks |
 | **W8 — Performance** | LLVM backend via `inkwell` (`--release`), inliner maturity, `#soa`, SIMD vectors, `#align`/`#place`, parallel Sema + parallel codegen **[NOT DELIVERED — measured and refused; see ADR-0149]**, published compile-throughput number | Three-way differential testing: VM ≡ Cranelift ≡ LLVM. **DONE in eight sub-waves** (ADR-0142 the optimisation level, ADR-0143 the LLVM back end, ADR-0144 `#align`/`#place`, ADR-0145 inliner maturity, ADR-0146 the throughput number + `heap_sort`, ADR-0147 `#soa`, ADR-0148 `#simd`, ADR-0149 the parallelism measurement). Seven shipped a feature; the eighth shipped a number and a revert — 1.20x against a 2.5x ceiling, because 40% of a check runs inside the pool's exclusive critical sections | 10–14 wks |
@@ -653,6 +661,15 @@ errors at once** (`fill`, `destroy`, `free`, `layout_is_sdl2`). Every export is 
 imports are owed** — promoted from ADR-0166 §7's note by four real collisions, and deliberately *not* built
 mid-wave, since a feature designed by an inconvenience is the wrong feature.
 
+**And the close audit found a defect** — ADR-0168. Checking the wave table turned up **three stale
+`[NOT DELIVERED]` markers** (`it`/`it_index`, `[..]T`, `$$T`), which is this file's own rot one level up: those
+markers were *added* to correct a different rot and then went stale themselves. Each was re-verified by **probe**
+rather than by trusting this file or `AGENTS.md`, because the two **disagreed** — and probing `$$T` found a
+**leaked internal error**: the *parameter* form works (`valid/110`), the **return** form checked clean and the
+call died with `no routine for file 0 proc 3`. The tenth instance of that shape, in a position nobody had ever
+written. It is now **E0290**, refused rather than implemented, because `$$` is `$` plus "the argument is a
+compile-time constant" and a return has no argument — the construct is *meaningless*, not unimplemented.
+
 **So W10 — Graphics is DONE**, four waves: `Window` (ADR-0164), its event loop (ADR-0165), `UI` (ADR-0166) and
 `Image` (ADR-0167). §8.5's one remaining entry is **audio**, which is not graphics and is ordinary library work
 whenever a caller wants it. Two language items are **owed** from these two waves: a
@@ -707,7 +724,7 @@ crossing the `#foreign` boundary — which is also W10's hard gate, so one chang
 an `Any` or a procedure handle through `jr-vm`'s untagged `union`; `jr-lsp` path handling — URI
 decoding, `..`, symlinks), which must be done **by hand** because six subagent dispatches returned
 empty; and `tree-sitter test` added to gate 6, which today catches grammar *drift* but not a broken
-grammar *rule*. **1059 workspace tests** (1060 under gate 7) and **253 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
+grammar *rule*. **1059 workspace tests** (1060 under gate 7) and **254 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
 has ever happened — plus **170** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -719,13 +736,19 @@ has ever happened — plus **170** Neovim checks. See §1.5.
 > one is the clap surface.
 
 > [!NOTE]
-> **What "253 corpus files" counts**, since this number had drifted: the `.jr` files under
+> **What "254 corpus files" counts**, since this number had drifted: the `.jr` files under
 > `tests/corpus/` *outside* `tests/corpus/modules/` — 131 `valid` + 10 `invalid` + 79 `type-errors` +
-> 3 `cfg-errors` + 30 `imports` = 253. Counting the 10 module fixtures too gives 263. This section
+> 3 `cfg-errors` + 31 `imports` = 254. Counting the 10 module fixtures too gives 264. This section
 > claimed **214** at a point when 213 was right while `AGENTS.md` claimed 213, so the sentence that
 > tells a reader to trust §7 over any other count was itself pointing at the wrong one. ADR-0125
 > reconciled the numbers and that pair slipped through, which is the argument for the definition
 > rather than the bare figure.
+>
+> **And it happened again at ADR-0168**, which is why the definition is worth more than the figure: that
+> wave's note in `AGENTS.md` said "holds at 253", reasoning that its fixture *moved* from `type-errors/`
+> to `imports/invalid/` so the total was unchanged. The move was real but happened inside one session, so
+> `type-errors/` never actually lost a file and the total went 253 → 254. Plausible reasoning, wrong count,
+> caught by running the count — one screen after an ADR arguing exactly that.
 
 > [!IMPORTANT]
 > **An audit was run at `354d900`** and is recorded in
@@ -1668,7 +1691,9 @@ check); `String.split`, which wants a `List(string)`; and `File`, `File_Utilitie
 
 ### W6 — Metaprogram, **done** (ADR-0098 … ADR-0154)
 
-**W6 — Metaprogram is OPEN**, five sub-waves in. Its headline claim is met — **a metaprogram can find
+**W6 — Metaprogram is DONE** (ADR-0152, ADR-0153, ADR-0154), eight sub-waves in — this sentence said
+"is OPEN, five sub-waves in" for three waves after the heading above was corrected, which is the argument for
+reading §7 rather than a section body. Its headline claim is met — **a metaprogram can find
 declarations by note and generate code for each one** (ADR-0101) — and a **build script can now name its own
 artefact** (ADR-0102), the first time anything in a Jairs file has influenced the build rather than the
 program. A declaration can carry `@name`/`@name "payload"` metadata
@@ -2510,7 +2535,7 @@ project defines 94 codes", frozen roughly fifteen waves back.)
 
 ---
 
-## 8. Finishing the programme: ~~W6~~, W7, W9, W10
+## 8. Finishing the programme: ~~W6~~, ~~W7~~, ~~W9~~, ~~W10~~ — **all four done**
 
 W8 closed on 1 September 2026 and **W6 closed the same day** (ADR-0152 … ADR-0154), so what remains is
 three waves: **W7 — Stdlib** (now **done**, ADR-0158), then **W9 — Tooling depth** and **W10 — Graphics**,
@@ -2526,7 +2551,7 @@ small number of **cross-cutting blockers**, and three of them block more than on
 > writing this changed the plan, and one of them found a live defect (§8.1.3). A completion plan whose
 > prerequisites were guessed is the same self-contradicting artefact §5 warns about, one level up.
 
-### 8.1 The three blockers that decide the order
+### 8.1 The three blockers that decide the order — **all three closed**
 
 Nothing below is a new *feature request*. Each is a thing already deferred, which several remaining
 items independently turn out to need.
@@ -2540,6 +2565,18 @@ a sentinel return the caller may ignore silently.
 **What this blocks:** `File`, `File_Utilities`, `Process`, `Socket`, and the useful half of `JSON` —
 five of W7's nine remaining modules. Every one of them has operations that fail *for reasons the caller
 must handle*, and "return −1 and set nothing" is the C answer this language exists to improve on.
+
+> [!IMPORTANT]
+> **Closed — ADR-0151.** `#must` filled ADR-0008's reserved slot: a declaration marks that its result carries a
+> success flag the caller must receive, and E0245 refuses a call that drops it. The five modules named above all
+> shipped on it (ADR-0156 `JSON`, ADR-0157 `File`/`File_Utilities`, ADR-0158 `Process`/`Socket`), and the
+> graphics modules use it too — every failable routine in `Window`, `UI` and `Image` carries the marker, and the
+> ones that deliberately do not (`present`, `stop`) say why: the C function they wrap returns `void`, so there
+> is no failure to report and inventing one would misdescribe the library.
+>
+> **Not** the full effect row ADR-0008 sketched. A single marker on a declaration turned out to carry the whole
+> weight the five modules needed, which is the argument for filling a reserved slot with the smallest thing that
+> discharges its callers rather than the design the slot was reserved for.
 
 **Why it cannot be dodged.** The multiple-return half already exists, so `open` *can* return
 `(fd: s64, ok: bool)`. What is missing is any way to make ignoring `ok` an error — which is exactly
@@ -2622,7 +2659,7 @@ fires before lowering, with the note that a pointer is the workaround.
 §8.1.2 from a crash into a stated limitation — which is the difference between a language with a
 missing feature and one that looks broken.
 
-### 8.2 W6 — Metaprogram: one decision, then two small items
+### 8.2 W6 — Metaprogram: **done** — one decision, then two small items
 
 Four items remain, and they are not four waves — the middle one is the whole wave and the others fall
 out of it.
@@ -2646,7 +2683,7 @@ independently — so the two owed things become one, and ADR-0078's deferral is 
 work. Rejected: the poll, because it would make the metaprogram's observable behaviour depend on
 compilation order, which is exactly what salsa's re-execution makes unstable.
 
-### 8.3 W7 — Stdlib: nine modules, in dependency order
+### 8.3 W7 — Stdlib: **done** — nine modules, in dependency order
 
 Present: `Basic`, `String`, `Sort`, `Array`, `List`, `Map`, `Math`, `Random`, `Generic_Types`. §2.1's
 list still wants nine more. They are **not** equally reachable, and the order below is by what blocks
@@ -2706,7 +2743,7 @@ quietly dropped or quietly become a quarter of work.
 **W9 was deliberately last-but-one and could be done at any time.** It had no blocker in §8.1, which made it
 the wave to reach for while a decision above was pending — and that is exactly how it was picked up.
 
-### 8.5 W10 — Graphics: **unblocked, on a different foundation than this section planned** (ADR-0163)
+### 8.5 W10 — Graphics: **DONE, on a different foundation than this section planned** (ADR-0163 … ADR-0167)
 
 §2.1 describes it as **all library work written in Jairs, no compiler changes**. That was wrong, and this
 section's own correction was wrong in turn — both are recorded, because the second error is the more
@@ -2767,6 +2804,22 @@ SDL2 does. SDL2's own renderer covers the 2D items, so the question waits for wh
 Steps 1, 2 and 3 are the ones that change what the language *is*; 4, 5 and 7 are then mostly library
 and tooling work. That shape is the argument for this order: the decisions come first, and each one is
 made because something concrete is waiting on it rather than in the abstract.
+
+> [!IMPORTANT]
+> **All seven steps are done, in this order, and the order held.** Step 1 ADR-0150, step 2 ADR-0151, step 3
+> ADR-0152/0153/0154, step 4 ADR-0155 … ADR-0158, step 5 ADR-0159, step 6 ADR-0160/0161/0162, step 7
+> ADR-0163 … ADR-0167.
+>
+> **Two of the seven were mis-described here and both were caught by writing rather than planning.** Step 6's
+> C-variadic half turned out to be blocked *upstream* — Cranelift has no variadic signature — so it became a
+> marker plus a refusal (ADR-0162) rather than a capability, which then invalidated step 7's stated foundation
+> and forced ADR-0163's substitution of SDL2 for Cocoa. Step 5 was re-scoped for the opposite reason: §8.4
+> claimed "line tables exist" and probing found **no DWARF at all**, so its debug-info half moved to W12
+> (ADR-0159).
+>
+> That is the section's own thesis holding up: naming which wave each blocker gates made the order defensible,
+> and the two places the *content* was wrong were both found the moment someone wrote the thing instead of
+> planning around it.
 
 > [!NOTE]
 > **What this section deliberately does not do.** It does not estimate. §4's timeline is already the

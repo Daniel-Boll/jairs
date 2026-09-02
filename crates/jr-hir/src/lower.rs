@@ -61,6 +61,17 @@ const E0264: &str = "E0264";
 /// is built here, and it is here that "the rewrite would fall through" is knowable. Its number continues
 /// `jr-hir`'s block (E0262-E0264 are `#insert`'s) rather than joining `jr-sema`'s.
 const E0273: &str = "E0273";
+/// `$$T` in **return** position, which cannot mean anything (ADR-0168 §1).
+///
+/// `$$` is `$` plus "and the argument is a compile-time constant" (ADR-0137 §1) — so it marks a *parameter*,
+/// whose argument there is something to bake. A return has no argument, so the second `$` has nothing to say
+/// and `-> $$T` is `-> $T` with a typo in front of it.
+///
+/// Refused in **lowering** for the reason E0276 is: the validity of a type *decoration* at a declaration site
+/// is judged where the signature is built. Before this code the declaration lowered and the *call* died with
+/// `internal compiler error: no routine for file 0 proc N` — the leaked-internal-error shape `AGENTS.md`
+/// records as this project's most frequent, and this is its tenth instance.
+const E0290: &str = "E0290";
 /// `#bake_arguments` — a partial application, whose specialisation is not yet built (ADR-0096 §3).
 ///
 /// `#bake_arguments add(a = 5)` produces a *specialised procedure* with some arguments built in. The surface
@@ -575,6 +586,42 @@ impl<'a> LowerCtx<'a> {
             }
             rt.ty().map(|t| self.lower_type_expr_top(&t))
         });
+
+        // `$$T` in return position is refused rather than lowered (ADR-0168 §1). Checked here, after the
+        // return type is built, so a `(s64, $$T)` result list is caught too — the walk is over every
+        // `TypeExpr` the return position holds, not only a bare one.
+        //
+        // A `$$T` *parameter* is legal and common; this is only about the return.
+        if let Some(rt) = ast_proc.ret_type() {
+            let node = rt.syntax();
+            let written: Vec<jr_syntax::ast::TypeExpr> = if let Some(list) = node
+                .children()
+                .find(|n| n.kind() == jr_syntax::SyntaxKind::RESULT_LIST)
+            {
+                list.children()
+                    .filter_map(jr_syntax::ast::TypeExpr::cast)
+                    .collect()
+            } else {
+                rt.ty().into_iter().collect()
+            };
+            for t in written {
+                let jr_syntax::ast::TypeExpr::Poly(pt) = &t else {
+                    continue;
+                };
+                if !pt.is_comptime() {
+                    continue;
+                }
+                self.diags.push(
+                    Diagnostic::error(
+                        self.span_of_node(t.syntax()),
+                        "`$$` cannot appear in a return type: the second `$` marks an argument as a \
+                         compile-time constant, and a return has no argument",
+                    )
+                    .with_code(E0290)
+                    .with_help("write `$T` — a return type is inferred from the call either way"),
+                );
+            }
+        }
 
         // Foreign attribute
         let foreign = ast_proc.foreign_attr().map(|fa| {
