@@ -42,6 +42,7 @@ mod repr;
 
 use inkwell::OptimizationLevel;
 use inkwell::context::Context;
+use inkwell::debug_info::AsDIScope as _;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
@@ -84,6 +85,21 @@ pub struct LlvmBackend<'ctx> {
     static_arrays: FxHashMap<PoolId, GlobalValue<'ctx>>,
     /// The runtime helper a trap calls.
     trap_helper: FunctionValue<'ctx>,
+    /// The module's debug-info builder and compilation unit, once a body has told us the file (ADR-0170).
+    ///
+    /// Lazy because a compilation unit names a file and a directory, and this back end learns those from the
+    /// first body that reports a position — the same reason the Cranelift back end's `unit` is an `Option`
+    /// (ADR-0169 §1). A build with no positions gets no debug info at all rather than a unit naming nothing.
+    debug: Option<(
+        inkwell::debug_info::DebugInfoBuilder<'ctx>,
+        inkwell::debug_info::DICompileUnit<'ctx>,
+    )>,
+    /// A `DIFile` per source path, so a body from an imported module names *its* file.
+    ///
+    /// Without this every subprogram hangs off the compilation unit's file and DWARF attributes an imported
+    /// module's statements to the root program — which was this wave's first wrong result: the file table had
+    /// one entry and `modules/Basic`'s lines were blamed on `024-hello.jr`.
+    debug_files: FxHashMap<String, inkwell::debug_info::DIFile<'ctx>>,
     /// Every library a `#foreign` declaration named, for the link line.
     libraries: Vec<String>,
     /// The Jairs procedure the `main` shim calls, its return type, and whether it takes a
@@ -160,10 +176,52 @@ impl<'ctx> LlvmBackend<'ctx> {
             shadow: (stack, depth),
             names: FxHashMap::default(),
             messages: FxHashMap::default(),
+            debug: None,
+            debug_files: FxHashMap::default(),
         };
         backend.emit_strings(pool)?;
         backend.define_trap_helper()?;
         Ok(backend)
+    }
+
+    /// Creates the module's debug-info builder and compilation unit for `path`.
+    ///
+    /// **`DWARFEmissionKind::Full` and `debug_info_version` handled by inkwell.** LLVM strips every `!dbg`
+    /// from a module whose `llvm.module.flags` lacks `"Debug Info Version"`, silently — a module that
+    /// verifies, emits, and carries no line table. `create_debug_info_builder` sets the flag, which is the
+    /// one good reason to use it rather than the raw C API.
+    ///
+    /// `DWARFSourceLanguage::C` because there is no `DW_LANG_Jairs` and inventing a number would make every
+    /// consumer fall back to a default anyway. C is the closest honest answer for a language with C's
+    /// pointers, C's integers and C's calling convention.
+    fn create_unit(
+        &self,
+        path: &str,
+    ) -> (
+        inkwell::debug_info::DebugInfoBuilder<'ctx>,
+        inkwell::debug_info::DICompileUnit<'ctx>,
+    ) {
+        let (name, directory) = split_path(path);
+        self.module.create_debug_info_builder(
+            // Allow unresolved: a subprogram is created before its body's instructions exist, so forward
+            // references are the normal case rather than an error.
+            true,
+            inkwell::debug_info::DWARFSourceLanguage::C,
+            &name,
+            &directory,
+            "jairs",
+            // Not optimised — see the subprogram's own flag for why.
+            false,
+            "",
+            0,
+            "",
+            inkwell::debug_info::DWARFEmissionKind::Full,
+            0,
+            false,
+            false,
+            "",
+            "",
+        )
     }
 
     /// The LLVM IR of the module so far, for a test or a `-Z` flag to read.
@@ -686,6 +744,67 @@ impl<'ctx> Backend for LlvmBackend<'ctx> {
             ));
         }
 
+        // The first position this body reports, which names both the compilation unit's file and the
+        // subprogram's line. Computed once: walking the blocks twice for the same answer would be the kind
+        // of quiet duplication that drifts when one copy is edited.
+        let first = mir
+            .blocks()
+            .iter()
+            .flat_map(|block| block.stmts.iter().map(body::statement_span))
+            .find_map(|span| locations.position(span));
+
+        // The compilation unit, created from the first body that reports a position (ADR-0170 §1).
+        if self.debug.is_none()
+            && let Some(at) = &first
+        {
+            self.debug = Some(self.create_unit(&at.path));
+        }
+
+        // This function's subprogram. LLVM rejects a location whose scope is not the enclosing function's,
+        // so one is minted per body and attached before any instruction carries a location.
+        // The `DIFile` for this body's own path, created once per path.
+        if let Some((info, _)) = &self.debug
+            && let Some(at) = &first
+            && !self.debug_files.contains_key(&at.path)
+        {
+            let (name, directory) = split_path(&at.path);
+            let file = info.create_file(&name, &directory);
+            self.debug_files.insert(at.path.clone(), file);
+        }
+        let body_file = first
+            .as_ref()
+            .and_then(|at| self.debug_files.get(&at.path).copied());
+
+        let scope = self.debug.as_ref().map(|(info, unit)| {
+            // This body's own file, falling back to the unit's when the body reported no position — a body
+            // with no positions gets no locations either, so the fallback is never what a row points at.
+            let file = body_file.unwrap_or_else(|| unit.get_file());
+            let subroutine = info.create_subroutine_type(file, None, &[], 0);
+            // The LLVM function's own symbol, rather than a name looked up elsewhere: `self.names` holds the
+            // *global* carrying a backtrace string, not a `String`, and a debugger wants the linkage name it
+            // will see in the symbol table anyway.
+            let name = function.get_name().to_string_lossy().into_owned();
+            let line = first.as_ref().map_or(1, |at| at.line);
+            let subprogram = info.create_function(
+                unit.as_debug_info_scope(),
+                &name,
+                None,
+                file,
+                line,
+                subroutine,
+                // Not local to the unit, and *is* a definition: this is the body, not a declaration.
+                false,
+                true,
+                line,
+                0,
+                // Not optimised. ADR-0142's `-O` reaches the mid-end and never LLVM, and claiming otherwise
+                // would make a debugger warn about variables it can in fact see.
+                false,
+            );
+            function.set_subprogram(subprogram);
+            body::DebugScope { info, subprogram }
+        });
+
         let shared = body::Shared {
             pool,
             target: layout,
@@ -698,6 +817,7 @@ impl<'ctx> Backend for LlvmBackend<'ctx> {
             names: &self.names,
             foreign: &self.foreign,
             shadow_capacity: SHADOW_CAPACITY,
+            debug: scope,
         };
         body::translate(
             self.context,
@@ -712,6 +832,15 @@ impl<'ctx> Backend for LlvmBackend<'ctx> {
 
     fn finalise(mut self: Box<Self>) -> Result<Vec<u8>, CodegenError> {
         self.define_entry_shim()?;
+
+        // **Finalise the debug info before verifying.** An unfinalised `DIBuilder` leaves temporary metadata
+        // nodes in the module, and LLVM's verifier rejects them — with a message about a malformed node
+        // rather than about a missing call, which is a bad half-hour. This is also why the entry shim above
+        // carries no location: it is emitted after every body, has no source of its own, and giving it one
+        // would attribute the program's exit to whichever line came last.
+        if let Some((info, _)) = &self.debug {
+            info.finalize();
+        }
 
         // **Verified before it is emitted.** LLVM's verifier catches a malformed module — a
         // `phi` missing a predecessor, a value of the wrong class — and its message names the
@@ -778,4 +907,29 @@ pub fn build(
     let libraries = backend.libraries().to_vec();
     let object = Box::new(backend).finalise().map_err(|e| e.to_string())?;
     Ok((object, libraries))
+}
+
+/// Splits a source path into the file name and directory a DWARF file entry wants.
+///
+/// A free function because both the compilation unit and every per-body `DIFile` need it, and two copies of
+/// "what counts as this file's directory" is exactly the kind of duplication that drifts — one copy gaining a
+/// `current_dir` fallback the other lacks would make the unit and a file disagree about where source lives.
+fn split_path(path: &str) -> (String, String) {
+    let file = std::path::Path::new(path);
+    let name = file
+        .file_name()
+        .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned());
+    let directory = file
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map_or_else(
+            || {
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .display()
+                    .to_string()
+            },
+            |p| p.display().to_string(),
+        );
+    (name, directory)
 }

@@ -18,6 +18,19 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
+**Both compilers can name a source line, and they agree** — which took two entirely separate implementations. One
+back end's line table is written by hand, byte by byte, including the relocations that let a linker fill in
+function addresses. The other back end's is written by LLVM itself, from metadata attached to each instruction.
+The two share exactly one thing: the single lookup that turns an internal position into a file, a line and a
+column. That they then agree about which lines exist is the property worth having, and it is why each has its own
+test rather than one shared one — a shared test would only check the part they have in common.
+
+One mistake is worth recording. At first every function's debug scope pointed at the main source file, so
+statements from an imported library were attributed to the program that imported it. A line table naming the
+wrong file is worse than no line table: it sends a reader to a line that has different code on it. A test that
+only checked the main file would have passed it, so both tests now check that the imported module has its own
+entry too.
+
 **A native binary can now name a source line** — the first debug information this compiler has ever produced. A
 built object carries a real DWARF line table, and its rows point at actual statements rather than at the top of
 the file. The plan had claimed line tables already existed; checking found none at all, so this started from
@@ -36,7 +49,7 @@ debug section placed outside the segment reserved for it does not merely get ign
 the linker lays it out among real pointers.
 
 Last updated with **W10 — Graphics DONE** (W6 — Metaprogram, W7 — Stdlib, W8 — Performance and W9 — Tooling
-depth were already), 1064 tests green — 1065 with the LLVM back end compiled in, and nineteen library modules.
+depth were already), 1064 tests green — 1066 with the LLVM back end compiled in, and nineteen library modules.
 **Two waves remain: W11 — Concurrency, and W12 — Debug info, which is now under way.**
 
 Graphics arrived in four steps, on a foundation the plan had wrong: a window and a 2D renderer, an event loop,
