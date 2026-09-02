@@ -18,8 +18,16 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated with **wave W8 — Performance open** (W7 — Stdlib and W6 — Metaprogram are still open
-too), 1033 tests green — 1034 with the LLVM back end compiled in.
+Last updated with **wave W8 — Performance DONE** (W7 — Stdlib and W6 — Metaprogram are still open),
+1033 tests green — 1034 with the LLVM back end compiled in.
+
+**One of W8's eight sub-waves shipped a measurement instead of a feature, on purpose.** Parallel
+semantic analysis was written, produced byte-identical output at every thread count, and was then
+measured: 1.20x on a clean 119-file tree and 1.01x on one with errors, against a ceiling of 2.5x set by
+the 40% of a check that runs inside the type pool's exclusive critical sections (ADR-0149). It was
+reverted. A 1.2x speedup is not worth a deadlock mode that appears only under threads, and the honest
+deliverable of a performance wave is the number — including when the number says no. The blockers are
+recorded and neither is a scheduling change.
 
 **There is a vector type, at the width the machine actually has.** `v: #simd [4]s32` is one register,
 and `a +% b` adds four lanes at once (ADR-0148) — one instruction natively, a loop in the VM, and the
@@ -1079,7 +1087,7 @@ bit-identical in each.
 | `jr-codegen-clif` | Cranelift backend — all Cranelift API contact is confined here (ADR-0009) |
 | `jr-codegen-llvm` | LLVM back end via `inkwell`, behind a default-off `llvm` cargo feature and gate 7 (ADR-0143). The third execution engine the differential harness compares |
 | `jr-link` | Object-file emission and system linker driver, including macOS ad-hoc codesigning |
-| `jr-db` | salsa query database — single source of truth shared by the batch driver and the LSP |
+| `jr-db` | salsa query database — single source of truth shared by the batch driver and the LSP; the type pool is an `RwLock` whose read half is `Db::read_pool` (ADR-0149 §1) |
 | `jr-driver` | Compilation orchestration: workspaces, compiler message queue, build metaprograms |
 | `jr-lsp` | Language server — a consumer of `jr-db` queries, never a second frontend |
 | `jr-cli` | The `jr` binary (`jr build`, `jr run`, `jr fmt`, `jr check`) |

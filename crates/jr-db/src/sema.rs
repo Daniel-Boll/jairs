@@ -840,7 +840,7 @@ fn expand_round(
     // Held only while the backtrace descriptions are rendered, and dropped before
     // `expand_instantiations` takes its own lock: the pool mutex is **not reentrant**, so the two must
     // not overlap (the ordering `run_main` also observes).
-    let pool_for_names = crate::sema::lock_pool(db);
+    let pool_for_names = crate::sema::read_pool(db);
     let mut instantiations: Vec<jr_hir::Instantiation> = keys
         .iter()
         .enumerate()
@@ -1113,9 +1113,37 @@ fn translate_check_output(
 /// append-only and every entry is fully written before its id is handed out, so
 /// the worst a panic can leave behind is a value nobody references — recovering
 /// is sound, and refusing to would turn one panic into a dead database.
-pub(crate) fn lock_pool(db: &dyn Db) -> std::sync::MutexGuard<'_, Pool> {
-    match db.pool().lock() {
+/// An **exclusive** handle on the pool, with a poisoned lock recovered.
+///
+/// # Why this is the write half of a `RwLock` rather than a `Mutex`
+///
+/// The pool is append-only and idempotent, so *reading* it needs no exclusion at all (ADR-0149 §1).
+/// Splitting the two makes which sites intern a fact the type system carries: `let pool` versus
+/// `let mut pool` already told a reader, and now it tells the compiler.
+///
+/// **This did not make anything measurably faster**, and that is recorded rather than glossed:
+/// `jr check`'s parallel speedup is the same before and after, because check's pool use is dominated
+/// by interning — a write. What it bought is the eight hand-rolled
+/// `pool().lock().unwrap_or_else(|e| e.into_inner())` sites in `jr-lsp` collapsing into
+/// [`Db::read_pool`], which is the duplication `run.rs`'s module docs already warned about.
+///
+/// # The obligation
+///
+/// A `std::sync::RwLock` is **not reentrant and not upgradable**: a thread holding either guard that
+/// asks for another deadlocks. That is the same rule the `Mutex` carried — never hold a pool guard
+/// across a nested query call — and `run.rs`'s comment records the hang that taught it.
+pub(crate) fn lock_pool(db: &dyn Db) -> std::sync::RwLockWriteGuard<'_, Pool> {
+    match db.pool().write() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }
+}
+
+/// A **shared** handle on the pool, for a site that only reads it (ADR-0149 §1).
+///
+/// Six sites inside this crate take this rather than [`lock_pool`], and Rust identified all six: they
+/// were already spelled `let pool` rather than `let mut pool`, so the read/write split was a fact the
+/// code stated and the type did not.
+pub(crate) fn read_pool(db: &dyn Db) -> std::sync::RwLockReadGuard<'_, Pool> {
+    db.read_pool()
 }

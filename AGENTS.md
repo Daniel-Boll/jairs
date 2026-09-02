@@ -172,6 +172,12 @@ exits 114, a checksum of offsets and sizes) and two refusals in `type-errors/`. 
 registry earned its keep here**: `crates/jr-cli/tests/codes.rs` failed the moment E0283 was declared
 while this file still claimed E0282 was free, which is exactly the rot it was written to catch.
 
+**ADR-0149 holds at 1033** (1034 under gate 7) and adds **no** corpus file = still **237** — W8
+sub-wave 8, which closes W8 by *measuring* parallel sema and refusing it. A wave whose deliverable is a
+measurement and a revert adds no test and no corpus file, and that is the honest shape for one: the
+evidence lives in the ADR, and the code change that lands (`Mutex<Pool>` → `RwLock<Pool>`) is a
+refactor the existing suite already covers.
+
 **ADR-0148 reaches 1033** (1034 under gate 7) and adds two corpus files = **237** — W8 sub-wave 7,
 `#simd`. Only **one** new Rust test (the formatter's survival-and-canonicalisation assertion), which is
 the pattern by now: the coverage a vector needs is a corpus program the three engines must agree on,

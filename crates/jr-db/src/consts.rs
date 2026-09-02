@@ -762,7 +762,7 @@ pub fn insert_operands(
     // Re-walk the same targets `file_consts` evaluated, keeping only the insert operands — each carries
     // the directive span this map is keyed by. The value is in `consts.values` under the operand's
     // `(Body, ExprId)` key, exactly where `record` put it.
-    let pool = crate::sema::lock_pool(db);
+    let pool = crate::sema::read_pool(db);
     for target in wanted(
         hir.as_ref(),
         signatures.signatures.as_ref(),

@@ -185,7 +185,7 @@ fn fields_at(
         return Vec::new();
     };
     let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
-    let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+    let pool = db.read_pool();
 
     // Auto-deref, exactly as the checker does.
     while let Item::PointerType(pointee) = pool.item(ty) {
@@ -240,7 +240,7 @@ fn names_at(
     let imported = imported_completions(db, hir.as_ref(), search_paths);
 
     {
-        let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+        let pool = db.read_pool();
 
         // Locals and parameters of the body the cursor is in, first: the nearest
         // binding is the likeliest completion.
@@ -420,7 +420,7 @@ fn imported_completions(
         let sigs = jr_db::file_signatures(db, module, search_paths).signatures;
         let docs = jr_db::file_docs(db, module);
         let container = container_of(found.to_string_lossy().as_ref());
-        let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+        let pool = db.read_pool();
         let decl = Decl {
             hir: other.as_ref(),
             sigs: sigs.as_ref(),
@@ -487,7 +487,7 @@ pub fn resolve_completion(
     let sigs = jr_db::file_signatures(db, target, search_paths).signatures;
     let docs = jr_db::file_docs(db, target);
     let container = container_of(target.path(db).as_ref());
-    let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+    let pool = db.read_pool();
 
     let card = Decl {
         hir: hir.as_ref(),
