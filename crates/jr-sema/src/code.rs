@@ -508,3 +508,24 @@ pub(crate) const E0289: &str = "E0289";
 /// Owned by `jr-sema`, continuing this crate's block, because what is wrong is an operand's *type* and a
 /// type judgement belongs to the checker.
 pub(crate) const E0291: &str = "E0291";
+
+/// A `#system_library` declaration that names no linkable library (ADR-0180 §5).
+///
+/// Two conditions, one code, because each is one way of the same thing being unaskable: **which library**
+/// is this. `#system_library` with no operand, and `#library "x"` — a directive the parser accepts and
+/// nothing links, because `foreign_library_of` compares the directive's name against `"system_library"`
+/// and returns `None` for anything else.
+///
+/// **Both type-checked clean and emitted no `-l`.** A symbol then failed at link time with nothing
+/// pointing at the cause: `ld: symbol not found`, from a declaration a reader has no reason to doubt. That
+/// is a silent-failure shape rather than a wrong answer, and refusing it is the same trade ADR-0289 made
+/// for a `#c_variadic` call.
+///
+/// **E0293, not E0294.** The plan that owed this code assumed Group A would spend E0292 *and* E0293; it
+/// spent only E0292, because the second refusal it drafted had no reachable condition (ADR-0179 §4). The
+/// number here is what `AGENTS.md`'s table says is free, and `jr-cli`'s `codes.rs` is what makes that
+/// claim checkable.
+///
+/// Owned by `jr-sema`, continuing this crate's block, and raised at the **declaration** rather than at a
+/// use: a `#library` nobody calls is still wrong, and reporting per use would say it once per binding.
+pub(crate) const E0293: &str = "E0293";

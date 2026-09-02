@@ -448,6 +448,12 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     if targets.is_empty()
         && checked_file.type_info_calls.is_empty()
         && checked_file.folded_calls.is_empty()
+        // **The signature phase's folds count too** (ADR-0180 §3). A file whose only compile-time work
+        // is `HERE :: os();` has no `wanted` target and nothing in the *check* phase's maps, because a
+        // named declaration's initialiser is typed by the signature phase and the check phase does not
+        // revisit it. This is the **fourth** entry the list above has needed for the third distinct
+        // reason, and it still enforces nothing.
+        && signatures.folded_calls.is_empty()
         && checked_file.any_calls.is_empty()
         && checked_file.pointer_views.is_empty()
         && checked_file.atomics.is_empty()
@@ -512,6 +518,14 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     // same reason — `jr-mir` already replaces a `run`-keyed call with its constant and never emits the
     // callee, so a second channel would be a second thing to keep in step.
     for ((scope, expr), value) in checked_file.folded_calls.iter() {
+        values.set_run(*scope, *expr, *value);
+    }
+
+    // **And the signature phase's folds** (ADR-0180 §3), into the same channel. Two loops rather than
+    // one merged map, because the two phases are two salsa queries and merging them would mean building
+    // a third map only to iterate it once. A key can only appear in one of them: an expression is typed
+    // by exactly one phase.
+    for ((scope, expr), value) in signatures.folded_calls.iter() {
         values.set_run(*scope, *expr, *value);
     }
 

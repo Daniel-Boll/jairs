@@ -97,6 +97,66 @@ impl TargetLayout {
     }
 }
 
+/// Which operating system a program is being compiled for (ADR-0180 §2).
+///
+/// Beside [`TargetLayout`] because this is the compiler's notion of a target, and until this existed
+/// that notion was two numbers: there was no OS anywhere in the type system or in the salsa inputs.
+/// The consequence was recorded in the library rather than in the compiler — `modules/Time` carries a
+/// comment about `CLOCK_MONOTONIC :: 6` being a macOS-only value it cannot guard.
+///
+/// An enum rather than a string, so a consumer's match is exhaustive and adding a host is a compile
+/// error at each site that has to decide what the new one means — the house rule, for the reason it
+/// gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TargetOs {
+    /// Apple's, `cfg!(target_os = "macos")`.
+    MacOs,
+    /// Linux.
+    Linux,
+    /// Windows.
+    Windows,
+}
+
+impl TargetOs {
+    /// The operating system this compiler is running on, and therefore the one it targets.
+    ///
+    /// **The two are the same by construction, not by luck.** `jr-link` shells out to the host's `cc`
+    /// and emits only `-L` and `-l`, and `jr-vm` resolves a foreign symbol out of the compiler's own
+    /// process image — so a cross-compile is not merely unimplemented, it has no path through the
+    /// driver. A `--target` flag is what would separate them, and that is the day this becomes a
+    /// `BuildConfig` field: ADR-0180 §2 records the measurement that kept it out for now.
+    ///
+    /// An unrecognised host is [`Self::Linux`], because every remaining `target_os` this compiler could
+    /// plausibly be built for is a Unix, and a Unix's `clock_gettime` and `open` flags are Linux's far
+    /// more often than they are macOS's. Deliberately not a panic: a compiler that refuses to start on a
+    /// platform nobody has tried is worse than one that guesses the common case and is corrected by a
+    /// member and an arm.
+    #[must_use]
+    pub const fn host() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else if cfg!(target_os = "windows") {
+            Self::Windows
+        } else {
+            Self::Linux
+        }
+    }
+
+    /// The `Basic.Operating_System` member this names (ADR-0180 §1).
+    ///
+    /// A **name**, not an ordinal, for the reason `jr-db`'s `type_info_kind_name` is one: the member
+    /// values are the enum declaration's, so a reordering in `modules/Basic` changes the numbers and a
+    /// lookup by name follows it while a lookup by index would silently read the wrong member.
+    #[must_use]
+    pub const fn member_name(self) -> &'static str {
+        match self {
+            Self::MacOs => "MACOS",
+            Self::Linux => "LINUX",
+            Self::Windows => "WINDOWS",
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The result
 // ---------------------------------------------------------------------------

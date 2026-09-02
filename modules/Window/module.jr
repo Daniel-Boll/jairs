@@ -171,17 +171,15 @@ Event :: struct {
 
 /// Whether `Event` is the 56 bytes SDL2 writes through the pointer.
 ///
-/// **A procedure and not a file-scope constant**, and the reason is a compiler limitation this module hit for
-/// the second time in the standard library: `size_of` of an *imported* struct is not reachable from a
-/// file-scope constant (E0230, "a name failed to resolve at file scope"), because a file constant is evaluated
-/// before the imported layout exists. `Socket` moved the same check into a procedure for the same reason
-/// (ADR-0158 §4). Recorded rather than worked around silently: it is a real gap, and it is owed.
+/// **A file-scope constant at last** (ADR-0180 §3). It was a *procedure*, and the comment here recorded
+/// why: `size_of` of a struct was unreachable from a file-scope constant — E0230, "a name failed to
+/// resolve at file scope" — because the signature phase folded the call and then threw the value away,
+/// so `jr-mir`'s thunk found no value and resolved `size_of` as a name. `Socket` had moved the same
+/// check into a procedure for the same reason (ADR-0158 §4).
 ///
-/// An overlay is a claim about somebody else's ABI, so the claim is checkable. A caller who wants the check to
-/// be fatal calls it and exits; a caller who does not can ignore it, which is why this is not `#must`.
-layout_is_sdl2 :: () -> bool {
-    return size_of(Event) == 56;
-}
+/// An overlay is a claim about somebody else's ABI, so the claim is checkable. A caller who wants the
+/// check to be fatal reads it and exits; a caller who does not can ignore it.
+LAYOUT_IS_SDL2 :: size_of(Event) == 56;
 
 /// An `SDL_Rect`: four C `int`s.
 ///

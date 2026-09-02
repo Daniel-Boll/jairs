@@ -1,0 +1,14 @@
+// EXPECT: E0293 — a `#system_library` declaration that names no linkable library (ADR-0180 §5)
+//
+// The second of the pair; `082-system-library-wrong-directive.jr` argues the shared reasoning.
+//
+// **`#system_library` with no operand.** The checker accepted `arg: None` while the resolver that turns a
+// declaration into a `-l` bailed on exactly that, so the two disagreed *silently* about whether the
+// declaration was usable — and the disagreement surfaced as a missing symbol at link time.
+//
+// One code with two messages rather than two codes, because each is a way of the same question being
+// unanswerable: which library is this.
+no_operand :: #system_library;
+
+main :: () {
+}

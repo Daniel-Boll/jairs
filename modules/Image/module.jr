@@ -117,17 +117,16 @@ FORMAT_RGBA8888 :: 373694468;
 
 /// Whether `Surface_Data` is the 96 bytes SDL2 allocates.
 ///
-/// A procedure and not a file-scope constant, for the reason ADR-0165 §7 records: `size_of` of an imported
-/// struct is not reachable from file scope (E0230), and `Socket` and `Window` both moved the same check.
+/// **A file-scope constant at last** (ADR-0180 §3). It was a procedure for the reason ADR-0165 §7
+/// recorded: `size_of` of a struct was not reachable from file scope (E0230), and `Socket` and `Window`
+/// had both moved the same check into one.
 ///
-/// **Named `surface_layout_is_sdl2` and not `layout_is_sdl2`**, which is what it was first called: `Window` has
-/// a `layout_is_sdl2` too, and a file importing both got **E0211, ambiguous name** — the flat-namespace hazard
-/// ADR-0166 §7 recorded, arriving for real one wave later. The compiler catches it, which is the good outcome;
-/// the lesson is that a module must prefix the names it exports as though the namespace were its own, because
-/// there is no qualification to fall back on.
-surface_layout_is_sdl2 :: () -> bool {
-    return size_of(Surface_Data) == 96;
-}
+/// **Named `SURFACE_LAYOUT_IS_SDL2` and not `LAYOUT_IS_SDL2`**, which is what its procedure form was
+/// first called: `Window` has one too, and a file importing both got **E0211, ambiguous name** — the
+/// flat-namespace hazard ADR-0166 §7 recorded, arriving for real one wave later. ADR-0179 makes a
+/// qualified import the answer, and the prefix stays anyway: a module's exported name is a claim on
+/// every importer that spells it bare.
+SURFACE_LAYOUT_IS_SDL2 :: size_of(Surface_Data) == 96;
 
 /// Loads a BMP file into a surface.
 ///

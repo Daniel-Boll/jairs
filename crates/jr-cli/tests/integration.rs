@@ -1642,7 +1642,7 @@ main :: () {
     total := 0;
 
     // 1 — the overlay is the 56 bytes SDL writes. Everything after this is meaningless if it is not.
-    if layout_is_sdl2() { total = total + 1; }
+    if LAYOUT_IS_SDL2 { total = total + 1; }
 
     if !start() { exit_now(90); }
     title := "Events ";
@@ -1926,7 +1926,7 @@ remove_file :: (path: *u8) -> s64 #foreign libc "remove";
 
 main :: () {
     total := 0;
-    if surface_layout_is_sdl2() { total = total + 1; }
+    if SURFACE_LAYOUT_IS_SDL2 { total = total + 1; }
     if !start() { exit_now(90); }
     t := "Img\0";
     w, ok := open(t.data, 200, 200, HIDDEN);
