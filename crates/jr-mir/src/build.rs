@@ -986,6 +986,7 @@ impl Lower<'_> {
             | Item::BoolValue(_)
             | Item::IntValue { .. }
             | Item::FloatValue { .. }
+            | Item::StaticArray { .. }
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
@@ -1502,6 +1503,7 @@ impl Lower<'_> {
             | Item::BoolValue(_)
             | Item::IntValue { .. }
             | Item::FloatValue { .. }
+            | Item::StaticArray { .. }
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }

@@ -104,6 +104,8 @@ pub struct Shared<'ctx, 'a> {
     /// The global holding each string constant's bytes, keyed by the pool's own [`StrId`] so
     /// that deduplication matches the VM's `intern_strings` and the Cranelift back end's.
     pub strings: &'a FxHashMap<StrId, GlobalValue<'ctx>>,
+    /// The constant global holding each compiler-emitted table's bytes (ADR-0152 §1).
+    pub static_arrays: &'a FxHashMap<jr_pool::PoolId, GlobalValue<'ctx>>,
     /// The runtime helper a trap calls, `jr_trap(message, length)`.
     pub trap_helper: FunctionValue<'ctx>,
     /// How to render a trap's source location (ADR-0020 §3).
@@ -563,6 +565,12 @@ impl<'ctx> Translator<'ctx, '_> {
                 Ok(Some(value.into()))
             }
             Item::StrValue(str_id) => self.string_constant(str_id).map(Some),
+            // A compiler-emitted table materialises as a `{data, count}` view over its global
+            // (ADR-0152 §1) — the same two-word build a string gets, over a different global.
+            Item::StaticArray { values, .. } => {
+                let count = values.len() as u64;
+                self.static_array_constant(id, count).map(Some)
+            }
             // A **procedure value** is the address of its target (ADR-0059 §4), as an
             // integer like every other pointer here. Native code uses a real code address —
             // unlike the VM's encoded handle — and nothing observes the bits, so the two
@@ -705,6 +713,37 @@ impl<'ctx> Translator<'ctx, '_> {
         let count_place = self.offset(base, count_offset, "scp")?;
         self.store_int(count_place, pointer_ty.const_int(count, false), "sc")?;
         Ok(self.address_int(base, "str_addr")?.into())
+    }
+
+    /// Builds a `{data, count}` view over a compiler-emitted table (ADR-0152 §1).
+    ///
+    /// Deliberately the same shape as [`Translator::string_constant`] above: bytes in a constant global,
+    /// a two-word descriptor built where it is used, and the `count` taken from the pool's element list
+    /// rather than from the bytes so the two cannot disagree.
+    fn static_array_constant(
+        &mut self,
+        id: jr_pool::PoolId,
+        count: u64,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let global = *self.shared.static_arrays.get(&id).ok_or_else(|| {
+            CodegenError::Internal("a table constant was not given a global".to_owned())
+        })?;
+
+        let layout = jr_pool::pair_layout(self.shared.target);
+        let (data_offset, _) = jr_pool::pair_data(self.shared.target);
+        let (count_offset, _) = jr_pool::pair_count(self.shared.target);
+
+        let size = u32::try_from(layout.size)
+            .map_err(|_| CodegenError::Internal("a view larger than a u32".to_owned()))?;
+        let base = self.alloca(size.max(1), layout.align, "tbl")?;
+
+        let pointer_ty = pointer_int(self.context, self.shared.target);
+        let data = self.address_int(global.as_pointer_value(), "tdata")?;
+        let data_place = self.offset(base, data_offset, "tdp")?;
+        self.store_int(data_place, data, "td")?;
+        let count_place = self.offset(base, count_offset, "tcp")?;
+        self.store_int(count_place, pointer_ty.const_int(count, false), "tc")?;
+        Ok(self.address_int(base, "tbl_addr")?.into())
     }
 
     // -----------------------------------------------------------------------

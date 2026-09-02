@@ -80,6 +80,8 @@ pub struct LlvmBackend<'ctx> {
     foreign: FxHashMap<ProcRef, bool>,
     /// The global holding each string constant's bytes.
     strings: FxHashMap<StrId, GlobalValue<'ctx>>,
+    /// The constant global holding each compiler-emitted table's bytes (ADR-0152 §1).
+    static_arrays: FxHashMap<PoolId, GlobalValue<'ctx>>,
     /// The runtime helper a trap calls.
     trap_helper: FunctionValue<'ctx>,
     /// Every library a `#foreign` declaration named, for the link line.
@@ -150,6 +152,7 @@ impl<'ctx> LlvmBackend<'ctx> {
             funcs: FxHashMap::default(),
             foreign: FxHashMap::default(),
             strings: FxHashMap::default(),
+            static_arrays: FxHashMap::default(),
             trap_helper,
             libraries: Vec::new(),
             entry: None,
@@ -202,6 +205,85 @@ impl<'ctx> LlvmBackend<'ctx> {
             global.set_constant(true);
             global.set_linkage(Linkage::Internal);
             self.strings.insert(str_id, global);
+        }
+        self.emit_static_arrays(pool)?;
+        Ok(())
+    }
+
+    /// Emits every compiler-emitted table as an internal constant global (ADR-0152 §1).
+    ///
+    /// Runs after the string pass because a table may contain a `string`, whose `data` word is a
+    /// pointer to one of those globals — and LLVM lets that be expressed *directly*, as a constant
+    /// expression referring to the other global, which is why this back end needs no relocation
+    /// bookkeeping of its own.
+    fn emit_static_arrays(&mut self, pool: &Pool) -> Result<(), CodegenError> {
+        for index in 0..pool.len() {
+            let id = PoolId::from_usize(index);
+            if self.static_arrays.contains_key(&id) {
+                continue;
+            }
+            let Some(values) = pool.static_array_values(id).map(<[PoolId]>::to_vec) else {
+                continue;
+            };
+            let elem = pool.view_elem(pool.type_of(id)).ok_or_else(|| {
+                CodegenError::Internal("a static table with no element".to_owned())
+            })?;
+
+            // **A string's pointer is a constant expression, not a byte.** LLVM has no
+            // post-hoc relocation API on a byte initialiser, so the global is built as a *packed
+            // struct of chunks*: the bytes before each pointer, then the pointer as a
+            // `ptrtoint` of the string's own global, then the bytes after. LLVM emits the
+            // relocation for that itself.
+            //
+            // The chunk offsets come from the pool's image walk, so the layout is still the one
+            // shared computation — this back end differs only in how it *expresses* an address it
+            // cannot know yet, which is the same thing Cranelift's `write_data_addr` does.
+            let mut patches: Vec<(u64, StrId)> = Vec::new();
+            let bytes = {
+                let mut resolve = |str_id: StrId, at: u64| {
+                    patches.push((at, str_id));
+                    0
+                };
+                jr_pool::static_image(pool, self.target, elem, &values, &mut resolve)
+                    .map_err(|reason| CodegenError::NoLayout { ty: elem, reason })?
+            };
+            let bytes = if bytes.is_empty() { vec![0u8] } else { bytes };
+            patches.sort_unstable_by_key(|(at, _)| *at);
+
+            let pointer_width = usize::try_from(self.target.pointer_size).unwrap_or(8);
+            let symbol = format!("jr$table${}", id.index());
+            let mut chunks: Vec<inkwell::values::BasicValueEnum<'ctx>> = Vec::new();
+            let mut cursor = 0usize;
+            for (at, str_id) in &patches {
+                let at = usize::try_from(*at).unwrap_or(0);
+                if at > cursor && at <= bytes.len() {
+                    chunks.push(self.context.const_string(&bytes[cursor..at], false).into());
+                }
+                let string_global = *self.strings.get(str_id).ok_or_else(|| {
+                    CodegenError::Internal("a table names a string with no global".to_owned())
+                })?;
+                let pointer_int_ty = pointer_int(self.context, self.target);
+                chunks.push(
+                    string_global
+                        .as_pointer_value()
+                        .const_to_int(pointer_int_ty)
+                        .into(),
+                );
+                cursor = at + pointer_width;
+            }
+            if cursor < bytes.len() {
+                chunks.push(self.context.const_string(&bytes[cursor..], false).into());
+            }
+
+            // Packed, so LLVM inserts no padding of its own: the pool already placed every byte.
+            let initializer = self.context.const_struct(&chunks, true);
+            let global = self
+                .module
+                .add_global(initializer.get_type(), None, &symbol);
+            global.set_initializer(&initializer);
+            global.set_constant(true);
+            global.set_linkage(Linkage::Internal);
+            self.static_arrays.insert(id, global);
         }
         Ok(())
     }
@@ -609,6 +691,7 @@ impl<'ctx> Backend for LlvmBackend<'ctx> {
             target: layout,
             funcs: &self.funcs,
             strings: &self.strings,
+            static_arrays: &self.static_arrays,
             trap_helper: self.trap_helper,
             locations,
             shadow: self.shadow,

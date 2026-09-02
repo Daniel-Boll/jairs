@@ -1114,6 +1114,11 @@ pub(crate) fn type_info_value(
         _ => (0, 0),
     };
 
+    // **The field list** (ADR-0152 §3), the variable-length member ADR-0078 §3 deferred. It is a view
+    // over a compiler-emitted read-only table rather than a member of the interned aggregate, because a
+    // view *inside* an interned value would mean interning a pointer — the ADR-0074 defect.
+    let field_table = type_info_field_table(pool, interner, signatures, described)?;
+
     let elements = vec![
         pool.int_value(PoolId::S64, id),
         pool.int_value(kind_ty, kind_value),
@@ -1122,8 +1127,49 @@ pub(crate) fn type_info_value(
         pool.int_value(PoolId::S64, u64::from(layout.align)),
         pool.int_value(PoolId::S64, count),
         pool.int_value(PoolId::S64, element),
+        field_table,
     ];
     Ok(pool.aggregate_value(info_ty, elements))
+}
+
+/// The `[]Type_Info_Field` table for `described`, emitted once and shared (ADR-0152 §3).
+///
+/// Empty for every kind without fields, which is a real answer rather than a sentinel — a scalar has no
+/// fields. The offsets come from `jr_pool::field_offset`, the same fold every engine reads, so a
+/// reflected offset and a compiled one cannot disagree.
+fn type_info_field_table(
+    pool: &mut Pool,
+    interner: &jr_base::Interner,
+    signatures: &[&jr_sema::FileSignatures],
+    described: PoolId,
+) -> Result<PoolId, String> {
+    let target = jr_pool::TargetLayout::LP64;
+    let field_ty = type_info_field_struct_type(interner, signatures)
+        .ok_or_else(|| "the standard library's `Type_Info_Field` is not usable".to_owned())?;
+
+    let fields: Vec<(jr_base::Symbol, PoolId)> = match *pool.item(described) {
+        jr_pool::Item::StructType { .. }
+        | jr_pool::Item::UnionType { .. }
+        | jr_pool::Item::VariantType { .. } => pool
+            .fields_of(described)
+            .map(|fs| fs.iter().map(|f| (f.name, f.ty)).collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+
+    let mut entries = Vec::with_capacity(fields.len());
+    for (index, (name, ty)) in fields.iter().enumerate() {
+        let offset =
+            jr_pool::field_offset(pool, target, described, u32::try_from(index).unwrap_or(0))
+                .map(|(offset, _)| offset)
+                .unwrap_or(0);
+        let text = interner.resolve(*name).to_owned();
+        let name_value = pool.str_value(&text);
+        let ty_value = pool.int_value(PoolId::S64, u64::from(ty.as_u32()));
+        let offset_value = pool.int_value(PoolId::S64, offset);
+        entries.push(pool.aggregate_value(field_ty, vec![name_value, ty_value, offset_value]));
+    }
+    Ok(pool.static_array(field_ty, entries))
 }
 
 /// The source spelling of a **builtin** type, which has no declaration to have recorded a name.
@@ -1163,6 +1209,8 @@ fn type_info_kind_name(pool: &Pool, ty: PoolId) -> Option<&'static str> {
         // arithmetic is legal and division is not — the distinction ADR-0148 §1 put in the identity
         // would be erased at exactly the layer whose job is to report it.
         jr_pool::Item::VectorType { .. } => Some("VECTOR"),
+        // A compiler-emitted table is a *value* (ADR-0152 §1), so it is not a type to reflect on.
+        jr_pool::Item::StaticArray { .. } => None,
         jr_pool::Item::ViewType { .. } => Some("VIEW"),
         // A dynamic array reports as its own kind so a `type_info(...).kind ==
         // Type_Info_Kind.DYNAMIC_ARRAY` reads. The `Type_Info_Kind` enum in
@@ -1198,6 +1246,22 @@ fn type_info_kind_name(pool: &Pool, ty: PoolId) -> Option<&'static str> {
 ///
 /// The validation lives in `jr-sema`, which reports E0265 — this runs after that check has passed, so a
 /// `None` here means the same thing and is reported as a const-eval failure.
+/// `Basic`'s `Type_Info_Field` struct type, looked up by name (ADR-0152 §3).
+///
+/// Looked up rather than named as a constant for the reason `Type_Info` itself is: a declared type's
+/// `PoolId` depends on its declaration site, so the compiler cannot know it in advance. Sema has already
+/// validated the shape (E0265) by the time this runs.
+fn type_info_field_struct_type(
+    interner: &jr_base::Interner,
+    signatures: &[&jr_sema::FileSignatures],
+) -> Option<PoolId> {
+    let name = interner.intern("Type_Info_Field");
+    signatures
+        .iter()
+        .find_map(|sigs| sigs.lookup(name))
+        .and_then(|entry| entry.type_value)
+}
+
 fn type_info_struct_type(
     interner: &jr_base::Interner,
     signatures: &[&jr_sema::FileSignatures],
@@ -1393,6 +1457,12 @@ fn reduce_element(
         | jr_pool::Item::UnionType { .. }
         | jr_pool::Item::VariantType { .. } => reduce(vm, pool, value, ty, is_float),
         jr_pool::Item::VoidType => Ok(Raw::Void),
+        // A compiler-emitted table cannot be *returned* from a `#run`: its bytes live in the engine
+        // that emitted them, so interning the descriptor would intern that engine's address — the exact
+        // defect ADR-0074 found and the reason the pool holds contents rather than pointers.
+        jr_pool::Item::StaticArray { .. } => Err(VmError::unsupported_public(
+            "a `#run` cannot return a compiler-emitted table".to_owned(),
+        )),
         // **A pointer or a view element is refused** rather than interned as a scalar.
         //
         // This arm exists because the scalar fallback below silently accepted both, and the result was a

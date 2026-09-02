@@ -5675,12 +5675,12 @@ proc same -> bool {
 proc main -> void {
   params: v0: *Context
   slots:
-    s0: Type_Info  // local 1
-    s1: Type_Info  // local 2
-    s2: Type_Info  // local 3
-    s3: Type_Info  // local 4
+    s0: struct  // local 1
+    s1: struct  // local 2
+    s2: struct  // local 3
+    s3: struct  // local 4
   bb0(v0: *Context):
-    store s0 <- {#id, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64}
+    store s0 <- {373_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2]}
     v1: string = load s0.2
     v2: bool = call proc0(v0, v1, "Point")
     branch v2 ? bb1() : bb2()
@@ -5717,7 +5717,7 @@ proc main -> void {
   bb11():
     goto bb12(v14)
   bb12(v18: s64):
-    store s1 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
+    store s1 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
     v16: string = load s1.2
     v17: bool = call proc0(v0, v16, "s64")
     branch v17 ? bb13() : bb14()
@@ -5736,7 +5736,7 @@ proc main -> void {
   bb17():
     goto bb18(v22)
   bb18(v26: s64):
-    store s2 <- {#id, 11_enum, "Colour", 8_s64, 8_s64, 0_s64, 0_s64}
+    store s2 <- {374_s64, 11_enum, "Colour", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
     v24: enum = load s2.1
     v25: bool = v24 == 11_enum
     branch v25 ? bb19() : bb20()
@@ -5746,7 +5746,7 @@ proc main -> void {
   bb20():
     goto bb21(v26)
   bb21(v31: s64):
-    v28: Type_Info = load s0
+    v28: struct = load s0
     store s3 <- v28
     v29: s64 = load s3.3
     v30: bool = v29 == 16_s64
@@ -5798,9 +5798,9 @@ proc sum_point -> s64 {
     s2: *Point  // temporary
   bb0(v0: *Context, v1: Any):
     store s0 <- v1
-    v2: *Type_Info = load s0.0
+    v2: *struct = load s0.0
     v3: s64 = load (v2).*.0
-    v4: bool = v3 == 383_s64
+    v4: bool = v3 == 392_s64
     branch v4 ? bb1() : bb2()
   bb1():
     v5: *Point = load s0.1
@@ -5820,35 +5820,35 @@ proc main -> void {
   slots:
     s0: Point  // local 1
     s1: Any  // local 2
-    s2: Type_Info  // temporary
+    s2: struct  // temporary
     s3: Any  // temporary
     s4: Point  // local 3
     s5: *Point  // temporary
-    s6: Type_Info  // temporary
+    s6: struct  // temporary
     s7: Any  // temporary
     s8: s64  // local 4
     s9: Any  // local 5
-    s10: Type_Info  // temporary
+    s10: struct  // temporary
     s11: Any  // temporary
     s12: *s64  // temporary
-    s13: Type_Info  // temporary
-    s14: Type_Info  // local 7
-    s15: Type_Info  // local 8
+    s13: struct  // temporary
+    s14: struct  // local 7
+    s15: struct  // local 8
   bb0(v0: *Context):
     zero s0
     store s0.0 <- 3_s64
     store s0.1 <- 4_s64
     v1: *Point = addr s0
-    store s2 <- {#id, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64}
-    v2: *Type_Info = addr s2
+    store s2 <- {392_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2]}
+    v2: *struct = addr s2
     zero s3
     store s3.0 <- v2
     store s3.1 <- v1
     v3: Any = load s3
     store s1 <- v3
-    v4: *Type_Info = load s1.0
+    v4: *struct = load s1.0
     v5: s64 = load (v4).*.0
-    v6: bool = v5 == 383_s64
+    v6: bool = v5 == 392_s64
     branch v6 ? bb1() : bb2()
   bb1():
     v7: *Point = load s1.1
@@ -5885,8 +5885,8 @@ proc main -> void {
     goto bb11(v20)
   bb11(v27: s64):
     v22: *Point = addr s0
-    store s6 <- {#id, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64}
-    v23: *Type_Info = addr s6
+    store s6 <- {392_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2]}
+    v23: *struct = addr s6
     zero s7
     store s7.0 <- v23
     store s7.1 <- v22
@@ -5900,7 +5900,7 @@ proc main -> void {
   bb13():
     goto bb14(v27)
   bb14(v32: s64):
-    v29: *Type_Info = load s1.0
+    v29: *struct = load s1.0
     v30: s64 = load (v29).*.3
     v31: bool = v30 == 16_s64
     branch v31 ? bb15() : bb16()
@@ -5910,7 +5910,7 @@ proc main -> void {
   bb16():
     goto bb17(v32)
   bb17(v37: s64):
-    v34: *Type_Info = load s1.0
+    v34: *struct = load s1.0
     v35: enum = load (v34).*.1
     v36: bool = v35 == 8_enum
     branch v36 ? bb18() : bb19()
@@ -5923,14 +5923,14 @@ proc main -> void {
     store s8 <- 0_s64
     store s8 <- 99_s64
     v39: *s64 = addr s8
-    store s10 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
-    v40: *Type_Info = addr s10
+    store s10 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
+    v40: *struct = addr s10
     zero s11
     store s11.0 <- v40
     store s11.1 <- v39
     v41: Any = load s11
     store s9 <- v41
-    v42: *Type_Info = load s9.0
+    v42: *struct = load s9.0
     v43: s64 = load (v42).*.0
     v44: bool = v43 == 2_s64
     branch v44 ? bb21() : bb22()
@@ -5947,9 +5947,9 @@ proc main -> void {
   bb24():
     goto bb25(v49)
   bb25(v55: s64):
-    v51: *Type_Info = load s9.0
+    v51: *struct = load s9.0
     v52: s64 = load (v51).*.0
-    store s13 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
+    store s13 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
     v53: s64 = load s13.0
     v54: bool = v52 == v53
     branch v54 ? bb26() : bb27()
@@ -5959,8 +5959,8 @@ proc main -> void {
   bb27():
     goto bb28(v55)
   bb28(v60: s64):
-    store s14 <- {#id, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64}
-    store s15 <- {#id, 8_enum, "Pair", 16_s64, 8_s64, 2_s64, 0_s64}
+    store s14 <- {392_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2]}
+    store s15 <- {393_s64, 8_enum, "Pair", 16_s64, 8_s64, 2_s64, 0_s64, static[2]}
     v57: s64 = load s14.0
     v58: s64 = load s15.0
     v59: bool = v57 != v58
@@ -6774,30 +6774,30 @@ proc main -> void {
 proc $inst0 -> s64 {
   params: v0: *Context, v1: s64
   slots:
-    s0: Type_Info  // temporary
+    s0: struct  // temporary
   bb0(v0: *Context, v1: s64):
-    store s0 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
+    store s0 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
     v2: s64 = load s0.3
     return v2
 }
 proc $inst1 -> s64 {
   params: v0: *Context, v1: u8
   slots:
-    s0: Type_Info  // temporary
+    s0: struct  // temporary
   bb0(v0: *Context, v1: u8):
-    store s0 <- {#id, 2_enum, "u8", 1_s64, 1_s64, 0_s64, 0_s64}
+    store s0 <- {3_s64, 2_enum, "u8", 1_s64, 1_s64, 0_s64, 0_s64, static[0]}
     v2: s64 = load s0.3
     return v2
 }
 proc $inst2 -> s64 {
   params: v0: *Context, v1: s64
   slots:
-    s0: Type_Info  // temporary
-    s1: Type_Info  // temporary
+    s0: struct  // temporary
+    s1: struct  // temporary
   bb0(v0: *Context, v1: s64):
-    store s0 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
+    store s0 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
     v2: s64 = load s0.0
-    store s1 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
+    store s1 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
     v3: s64 = load s1.0
     v4: bool = v2 == v3
     branch v4 ? bb1() : bb2()
@@ -6811,12 +6811,12 @@ proc $inst2 -> s64 {
 proc $inst3 -> s64 {
   params: v0: *Context, v1: u8
   slots:
-    s0: Type_Info  // temporary
-    s1: Type_Info  // temporary
+    s0: struct  // temporary
+    s1: struct  // temporary
   bb0(v0: *Context, v1: u8):
-    store s0 <- {#id, 2_enum, "u8", 1_s64, 1_s64, 0_s64, 0_s64}
+    store s0 <- {3_s64, 2_enum, "u8", 1_s64, 1_s64, 0_s64, 0_s64, static[0]}
     v2: s64 = load s0.0
-    store s1 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
+    store s1 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
     v3: s64 = load s1.0
     v4: bool = v2 == v3
     branch v4 ? bb1() : bb2()
@@ -6831,10 +6831,10 @@ proc $inst4 -> s64 {
   params: v0: *Context, v1: Pair
   slots:
     s0: Pair  // temporary
-    s1: Type_Info  // temporary
+    s1: struct  // temporary
   bb0(v0: *Context, v1: Pair):
     store s0 <- v1
-    store s1 <- {#id, 8_enum, "Pair", 16_s64, 8_s64, 2_s64, 0_s64}
+    store s1 <- {433_s64, 8_enum, "Pair", 16_s64, 8_s64, 2_s64, 0_s64, static[2]}
     v2: s64 = load s1.5
     return v2
 }
@@ -12448,10 +12448,10 @@ proc $inst0 -> enum {
   params: v0: *Context, v1: [..]s64
   slots:
     s0: [..]s64  // temporary
-    s1: Type_Info  // temporary
+    s1: struct  // temporary
   bb0(v0: *Context, v1: [..]s64):
     store s0 <- v1
-    store s1 <- {#id, 13_enum, "dynamic_array", 24_s64, 8_s64, 0_s64, 0_s64}
+    store s1 <- {488_s64, 13_enum, "dynamic_array", 24_s64, 8_s64, 0_s64, 0_s64, static[0]}
     v2: enum = load s1.1
     return v2
 }
@@ -12459,10 +12459,10 @@ proc $inst1 -> enum {
   params: v0: *Context, v1: []s64
   slots:
     s0: []s64  // temporary
-    s1: Type_Info  // temporary
+    s1: struct  // temporary
   bb0(v0: *Context, v1: []s64):
     store s0 <- v1
-    store s1 <- {#id, 7_enum, "view", 16_s64, 8_s64, 0_s64, 0_s64}
+    store s1 <- {186_s64, 7_enum, "view", 16_s64, 8_s64, 0_s64, 0_s64, static[0]}
     v2: enum = load s1.1
     return v2
 }
@@ -12474,12 +12474,12 @@ proc sum_any -> s64 {
   params: v0: *Context, v1: []Any
   slots:
     s0: []Any  // temporary
-    s1: Type_Info  // temporary
+    s1: struct  // temporary
     s2: *s64  // temporary
-    s3: Type_Info  // temporary
+    s3: struct  // temporary
     s4: Point  // local 2
     s5: *Point  // temporary
-    s6: Type_Info  // temporary
+    s6: struct  // temporary
     s7: *bool  // temporary
   bb0(v0: *Context, v1: []Any):
     store s0 <- v1
@@ -12491,16 +12491,16 @@ proc sum_any -> s64 {
   bb2():
     v5: s64 = load s0.view_count
     bounds_check v2 < v5
-    v6: *Type_Info = load s0.view_data[v2].0
+    v6: *struct = load s0.view_data[v2].0
     v7: s64 = load (v6).*.0
-    store s1 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
+    store s1 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
     v8: s64 = load s1.0
     v9: bool = v7 == v8
     branch v9 ? bb5() : bb6()
   bb5():
     v11: s64 = load s0.view_count
     bounds_check v2 < v11
-    v12: *Type_Info = load s0.view_data[v2].0
+    v12: *struct = load s0.view_data[v2].0
     v13: s64 = load (v12).*.0
     v14: bool = v13 == 2_s64
     branch v14 ? bb8() : bb9()
@@ -12518,18 +12518,18 @@ proc sum_any -> s64 {
   bb7(v32: s64):
     v19: s64 = load s0.view_count
     bounds_check v2 < v19
-    v21: *Type_Info = load s0.view_data[v2].0
+    v21: *struct = load s0.view_data[v2].0
     v22: s64 = load (v21).*.0
-    store s3 <- {#id, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64}
+    store s3 <- {698_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2]}
     v23: s64 = load s3.0
     v24: bool = v22 == v23
     branch v24 ? bb10() : bb11()
   bb10():
     v25: s64 = load s0.view_count
     bounds_check v2 < v25
-    v26: *Type_Info = load s0.view_data[v2].0
+    v26: *struct = load s0.view_data[v2].0
     v27: s64 = load (v26).*.0
-    v28: bool = v27 == 687_s64
+    v28: bool = v27 == 698_s64
     branch v28 ? bb13() : bb14()
   bb13():
     v29: *Point = load s0.view_data[v2].1
@@ -12549,16 +12549,16 @@ proc sum_any -> s64 {
   bb12(v50: s64):
     v37: s64 = load s0.view_count
     bounds_check v2 < v37
-    v39: *Type_Info = load s0.view_data[v2].0
+    v39: *struct = load s0.view_data[v2].0
     v40: s64 = load (v39).*.0
-    store s6 <- {#id, 1_enum, "bool", 1_s64, 1_s64, 0_s64, 0_s64}
+    store s6 <- {1_s64, 1_enum, "bool", 1_s64, 1_s64, 0_s64, 0_s64, static[0]}
     v41: s64 = load s6.0
     v42: bool = v40 == v41
     branch v42 ? bb15() : bb16()
   bb15():
     v43: s64 = load s0.view_count
     bounds_check v2 < v43
-    v44: *Type_Info = load s0.view_data[v2].0
+    v44: *struct = load s0.view_data[v2].0
     v45: s64 = load (v44).*.0
     v46: bool = v45 == 1_s64
     branch v46 ? bb18() : bb19()
@@ -12593,36 +12593,36 @@ proc main -> void {
     s0: [0]Any  // temporary
     s1: []Any  // temporary
     s2: s64  // local 1
-    s3: Type_Info  // temporary
+    s3: struct  // temporary
     s4: Any  // temporary
     s5: [1]Any  // temporary
     s6: []Any  // temporary
     s7: s64  // local 2
     s8: s64  // local 3
     s9: s64  // local 4
-    s10: Type_Info  // temporary
+    s10: struct  // temporary
     s11: Any  // temporary
-    s12: Type_Info  // temporary
+    s12: struct  // temporary
     s13: Any  // temporary
-    s14: Type_Info  // temporary
+    s14: struct  // temporary
     s15: Any  // temporary
     s16: [3]Any  // temporary
     s17: []Any  // temporary
     s18: s64  // local 5
     s19: Point  // local 6
     s20: bool  // local 7
-    s21: Type_Info  // temporary
+    s21: struct  // temporary
     s22: Any  // temporary
-    s23: Type_Info  // temporary
+    s23: struct  // temporary
     s24: Any  // temporary
-    s25: Type_Info  // temporary
+    s25: struct  // temporary
     s26: Any  // temporary
     s27: [3]Any  // temporary
     s28: []Any  // temporary
     s29: [2]Any  // local 8
-    s30: Type_Info  // temporary
+    s30: struct  // temporary
     s31: Any  // temporary
-    s32: Type_Info  // temporary
+    s32: struct  // temporary
     s33: Any  // temporary
     s34: []Any  // temporary
   bb0(v0: *Context):
@@ -12643,8 +12643,8 @@ proc main -> void {
   bb3(v13: s64):
     store s2 <- 42_s64
     v6: *s64 = addr s2
-    store s3 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
-    v7: *Type_Info = addr s3
+    store s3 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
+    v7: *struct = addr s3
     zero s4
     store s4.0 <- v7
     store s4.1 <- v6
@@ -12669,22 +12669,22 @@ proc main -> void {
     store s8 <- 20_s64
     store s9 <- 30_s64
     v15: *s64 = addr s7
-    store s10 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
-    v16: *Type_Info = addr s10
+    store s10 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
+    v16: *struct = addr s10
     zero s11
     store s11.0 <- v16
     store s11.1 <- v15
     v17: Any = load s11
     v18: *s64 = addr s8
-    store s12 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
-    v19: *Type_Info = addr s12
+    store s12 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
+    v19: *struct = addr s12
     zero s13
     store s13.0 <- v19
     store s13.1 <- v18
     v20: Any = load s13
     v21: *s64 = addr s9
-    store s14 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
-    v22: *Type_Info = addr s14
+    store s14 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
+    v22: *struct = addr s14
     zero s15
     store s15.0 <- v22
     store s15.1 <- v21
@@ -12713,22 +12713,22 @@ proc main -> void {
     store s19.1 <- 5_s64
     store s20 <- true
     v30: *s64 = addr s18
-    store s21 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
-    v31: *Type_Info = addr s21
+    store s21 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
+    v31: *struct = addr s21
     zero s22
     store s22.0 <- v31
     store s22.1 <- v30
     v32: Any = load s22
     v33: *Point = addr s19
-    store s23 <- {#id, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64}
-    v34: *Type_Info = addr s23
+    store s23 <- {698_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2]}
+    v34: *struct = addr s23
     zero s24
     store s24.0 <- v34
     store s24.1 <- v33
     v35: Any = load s24
     v36: *bool = addr s20
-    store s25 <- {#id, 1_enum, "bool", 1_s64, 1_s64, 0_s64, 0_s64}
-    v37: *Type_Info = addr s25
+    store s25 <- {1_s64, 1_enum, "bool", 1_s64, 1_s64, 0_s64, 0_s64, static[0]}
+    v37: *struct = addr s25
     zero s26
     store s26.0 <- v37
     store s26.1 <- v36
@@ -12754,8 +12754,8 @@ proc main -> void {
     zero s29
     bounds_check 0_s64 < 2_s64
     v45: *s64 = addr s7
-    store s30 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
-    v46: *Type_Info = addr s30
+    store s30 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
+    v46: *struct = addr s30
     zero s31
     store s31.0 <- v46
     store s31.1 <- v45
@@ -12763,8 +12763,8 @@ proc main -> void {
     store s29[0_s64] <- v47
     bounds_check 1_s64 < 2_s64
     v48: *s64 = addr s8
-    store s32 <- {#id, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64}
-    v49: *Type_Info = addr s32
+    store s32 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
+    v49: *struct = addr s32
     zero s33
     store s33.0 <- v49
     store s33.1 <- v48
@@ -13343,5 +13343,78 @@ proc main -> void {
     v13: s64 = call (v12)(v0, 10_s64)
     v14: s64 = v11 + v13
     discard call extern proc1(v14)
+    return
+}
+
+========================================
+121-static-data.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: struct  // local 1
+    s1: string  // local 3
+    s2: struct  // temporary
+    s3: struct  // local 4
+    s4: struct  // local 5
+  bb0(v0: *Context):
+    store s0 <- {739_s64, 8_enum, "Point", 24_s64, 8_s64, 3_s64, 0_s64, static[3]}
+    v1: s64 = load s0.7.view_count
+    v2: s64 = 0_s64 + v1
+    goto bb1(0_s64, v2)
+  bb1(v3: s64, v6: s64):
+    v4: s64 = load s0.7.view_count
+    v5: bool = v3 < v4
+    branch v5 ? bb2() : bb3()
+  bb2():
+    v7: s64 = load s0.7.view_count
+    bounds_check v3 < v7
+    v8: s64 = load s0.7.view_data[v3].2
+    v9: s64 = v6 + v8
+    v10: s64 = v3 + 1_s64
+    goto bb1(v10, v9)
+  bb3():
+    goto bb4()
+  bb4():
+    v11: s64 = load s0.7.view_count
+    bounds_check 1_s64 < v11
+    v12: string = load s0.7.view_data[1_s64].0
+    store s1 <- v12
+    v13: *u8 = load s1.data
+    v14: u8 = load (v13).*
+    v15: s64 = convert v14 from u8
+    v16: s64 = v6 + v15
+    v17: s64 = load s0.7.view_count
+    bounds_check 0_s64 < v17
+    v18: s64 = load s0.7.view_data[0_s64].1
+    store s2 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
+    v19: s64 = load s2.0
+    v20: bool = v18 == v19
+    branch v20 ? bb5() : bb6()
+  bb5():
+    v21: s64 = v16 + 1_s64
+    goto bb7(v21)
+  bb6():
+    goto bb7(v16)
+  bb7(v22: s64):
+    store s3 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0]}
+    v23: s64 = load s3.7.view_count
+    v24: s64 = v22 + v23
+    store s4 <- {739_s64, 8_enum, "Point", 24_s64, 8_s64, 3_s64, 0_s64, static[3]}
+    v25: s64 = load s4.7.view_count
+    bounds_check 2_s64 < v25
+    v26: s64 = load s4.7.view_data[2_s64].2
+    v27: s64 = load s0.7.view_count
+    bounds_check 2_s64 < v27
+    v28: s64 = load s0.7.view_data[2_s64].2
+    v29: bool = v26 == v28
+    branch v29 ? bb8() : bb9()
+  bb8():
+    v30: s64 = v24 + 1_s64
+    goto bb10(v30)
+  bb9():
+    goto bb10(v24)
+  bb10(v31: s64):
+    discard call extern proc1(v31)
     return
 }

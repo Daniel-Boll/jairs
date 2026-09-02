@@ -92,6 +92,10 @@ enum TypeInfoField {
     /// is: `Any::type` is a `*Type_Info`, and `Type_Info`'s own id depends on its declaration site, so the
     /// compiler cannot name it in advance without looking it up first.
     PointerToStruct,
+    /// It must be a `[]T` over *some* struct, checked by shape for the reason above:
+    /// `Type_Info.fields` is a `[]Type_Info_Field` and that struct's id depends on its declaration site
+    /// (ADR-0152 §3).
+    ViewOfStruct,
 }
 
 /// The fields the compiler expects `Basic`'s `Type_Info` to have, in order (ADR-0075 §2).
@@ -122,6 +126,10 @@ const TYPE_INFO_FIELDS: &[(&str, TypeInfoField)] = &[
     ("alignment", TypeInfoField::Exact(PoolId::S64)),
     ("count", TypeInfoField::Exact(PoolId::S64)),
     ("element", TypeInfoField::Exact(PoolId::S64)),
+    // The variable-length member ADR-0078 §3 deferred, delivered by ADR-0152 §3. `ViewOfStruct` rather
+    // than an `Exact`, because the element is a *declared* struct — `Type_Info_Field` in `Basic` — whose
+    // `PoolId` is not a constant this crate can name, exactly as `PointerToStruct` handles `Any.type`.
+    ("fields", TypeInfoField::ViewOfStruct),
 ];
 
 // ---------------------------------------------------------------------------
@@ -1280,6 +1288,7 @@ impl Ctx<'_> {
             | Item::BoolValue(_)
             | Item::IntValue { .. }
             | Item::FloatValue { .. }
+            | Item::StaticArray { .. }
             | Item::StrValue(_)
             | Item::AggregateValue { .. }
             | Item::ProcValue { .. }
@@ -1778,6 +1787,8 @@ impl Ctx<'_> {
             | Item::IntValue { .. }
             | Item::FloatValue { .. }
             | Item::BoolValue(_)
+            // A compiler-emitted table is a *value* (ADR-0152 §1), never a type asked about here.
+            | Item::StaticArray { .. }
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
@@ -4692,6 +4703,13 @@ impl Ctx<'_> {
                 TypeInfoField::PointerToStruct => match *self.pool.item(field.ty) {
                     Item::PointerType(pointee) => {
                         matches!(*self.pool.item(pointee), Item::StructType { .. })
+                    }
+                    _ => false,
+                },
+                // A `[]T` over some struct, by shape for the same reason (ADR-0152 §3).
+                TypeInfoField::ViewOfStruct => match *self.pool.item(field.ty) {
+                    Item::ViewType { elem } => {
+                        matches!(*self.pool.item(elem), Item::StructType { .. })
                     }
                     _ => false,
                 },

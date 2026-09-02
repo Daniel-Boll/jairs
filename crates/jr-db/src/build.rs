@@ -160,7 +160,8 @@ pub fn build_object(
 
     match choice {
         BackendChoice::Cranelift => {
-            let mut backend = ClifBackend::new(&pool, "jairs").map_err(|e| e.to_string())?;
+            let mut backend =
+                ClifBackend::new(&pool, layout, "jairs").map_err(|e| e.to_string())?;
             drive(&mut backend)?;
             let libraries = backend.libraries().to_vec();
             let object = Box::new(backend).finalise().map_err(|e| e.to_string())?;

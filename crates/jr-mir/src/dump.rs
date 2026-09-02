@@ -593,6 +593,10 @@ impl Dumper<'_> {
                 Some(kind) => format!("{:?}_{}", kind.decode(*bits), self.ty(*ty)),
                 None => format!("{bits}_{}", self.ty(*ty)),
             },
+            // A compiler-emitted table prints its element count rather than its contents (ADR-0152 §1):
+            // the contents are a read-only region a consumer never holds, and a dump listing every
+            // `Type_Info_Field` would bury the body it is meant to show.
+            Item::StaticArray { values, .. } => format!("static[{}]", values.len()),
             Item::StrValue(str_id) => format!("{:?}", self.pool.resolve_str(*str_id)),
             Item::TypeValue(ty) => format!("type({})", self.ty(*ty)),
             // A procedure *value* names the same `(file, proc)` a `ProcRef` does, so it prints by
@@ -754,6 +758,7 @@ impl Dumper<'_> {
             | Item::BoolValue(_)
             | Item::IntValue { .. }
             | Item::FloatValue { .. }
+            | Item::StaticArray { .. }
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }

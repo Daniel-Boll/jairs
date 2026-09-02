@@ -1,0 +1,75 @@
+// ADR-0152: compiler-emitted static data, and the field list ADR-0078 deferred.
+//
+// `type_info(T).fields` is a `[]Type_Info_Field` — a view over a **read-only table the compiler
+// emitted**, which is the mechanism W6 has owed since ADR-0078 §3 deferred the variable-length member
+// and PLAN §8.2 named it as W6's remaining wave-sized decision.
+//
+// The thing that made it hard is worth stating, because it is the same defect twice: a view inside an
+// interned value would mean interning a *pointer*, and ADR-0074 found that interning one gives the
+// **evaluator's own address** — 48 in one engine, a segfault in the other, no diagnostic. So the pool
+// holds contents and each engine supplies its own addresses, which is exactly how a `string` constant
+// has always worked. This is that solution one type wider.
+//
+// The exit status is a checksum, because each half fails silently on its own:
+//
+//   the field count            three fields on Point                          = 3
+//   the offsets                0 + 8 + 16, from the same fold codegen reads   = 24
+//   a name read back           "y" is field 1, and its first byte is 'y'      = 121
+//   a type id compared         fields[0].ty is s64's id, matching type_info   = 1
+//   an empty list is empty     a scalar has no fields, and that is an answer  = 0
+//   a second call agrees       two type_info(Point) calls read the same table  = 1
+//
+// 3 + 24 + 121 + 1 + 0 + 1 = 150.
+#import "Basic";
+
+Point :: struct {
+    x: s64;
+    y: s64;
+    tag: u8;
+}
+
+main :: () {
+    total := 0;
+
+    info := type_info(Point);
+
+    // The count, which is the thing `Type_Info.count` already reported — asserted here so a table that
+    // emitted the wrong number of elements changes the answer rather than only the shape.
+    total = total + info.fields.count;
+
+    // **The offsets**, which are the load-bearing values: they come from `jr_pool::field_offset`, the
+    // same fold both back ends read to compile a field access. A reflected offset that disagreed with a
+    // compiled one would be the worst kind of wrong — two consistent halves and one wrong answer.
+    i := 0;
+    while i < info.fields.count {
+        total = total + info.fields[i].offset;
+        i = i + 1;
+    }
+
+    // **A name read back through the view**, which proves the `string` inside the table points at real
+    // bytes in each engine's own read-only region rather than at an interned compile-time address.
+    // `'y'` is 121.
+    name := info.fields[1].name;
+    total = total + cast(s64, name.data.*);
+
+    // **A type id compared against another `type_info`**, which is what makes `ty` useful: the id is the
+    // same identity `any_as` compares, so a program can ask "is this field an `s64`?" without a name.
+    if info.fields[0].ty == type_info(s64).id {
+        total = total + 1;
+    }
+
+    // A scalar has no fields, and an empty view is a real answer rather than a sentinel.
+    scalar := type_info(s64);
+    total = total + scalar.fields.count;
+
+    // **A second `type_info(Point)` reads the same table.** The pool deduplicated by contents, so the two
+    // calls intern one table and one emission — which is what keeps a program that reflects in a loop from
+    // emitting a table per call. Compared through a *field* rather than through `.data`, because a view
+    // deliberately offers no `.data`: it would hand out an unbounded `*T` (ADR-0044 §4).
+    second := type_info(Point);
+    if second.fields[2].offset == info.fields[2].offset {
+        total = total + 1;
+    }
+
+    exit(total);
+}

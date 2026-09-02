@@ -1732,6 +1732,7 @@ impl<'a> Ctx<'a> {
             | Item::BoolValue(_)
             | Item::IntValue { .. }
             | Item::FloatValue { .. }
+            | Item::StaticArray { .. }
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
