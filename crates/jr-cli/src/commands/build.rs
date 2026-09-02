@@ -130,7 +130,15 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
     // The build setting, before any MIR query runs. ADR-0058 §2 makes it a salsa input so that
     // setting it late would still invalidate correctly — but setting it here means no query ever
     // runs under a value the user did not ask for, which is one fewer thing to reason about.
-    let config = db.set_build_config(!args.no_bounds_check, args.opt_level.into());
+    // **A bootstrap configuration first**, then the real one (ADR-0154 §1). A build script may declare
+    // `BUILD_OPT_LEVEL`, and reading a declared constant means *compiling* — so an option that affects
+    // compilation cannot be read without already having chosen one.
+    //
+    // The bootstrap is sound because of ADR-0142's check, not by assumption: every corpus program behaves
+    // identically at both optimisation levels, so a constant read at one level has the same value at the
+    // other. Without that check this would be a guess.
+    let bootstrap = db.set_build_config(!args.no_bounds_check, jr_db::OptLevel::Standard);
+    let _ = bootstrap;
 
     let text = std::fs::read_to_string(&args.path)
         .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", args.path.display()))?;
@@ -140,6 +148,16 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
         .source_file(&key)
         .ok_or_else(|| anyhow::anyhow!("internal error: {key} was not registered"))?;
     db.load_modules_transitively(root);
+
+    // **The real configuration.** A `-O` on the command line wins; otherwise a declared
+    // `BUILD_OPT_LEVEL` applies; otherwise the default. That order is ADR-0102 §2's asymmetry, unchanged:
+    // a declared name is a value the *artefact under compilation* chose, an `-O` is an instruction from
+    // the *operator* compiling it, and the operator outranks the artefact.
+    let level = match args.opt_level {
+        Some(flag) => flag.into(),
+        None => jr_db::declared_opt_level(&db, root, search).unwrap_or(jr_db::OptLevel::Standard),
+    };
+    let config = db.set_build_config(!args.no_bounds_check, level);
 
     let map: SourceMap = db.source_map();
     // **Every reachable file, not only the root** (ADR-0108 §1). `file_diagnostics` answers for one file, so a

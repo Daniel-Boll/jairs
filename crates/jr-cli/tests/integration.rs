@@ -793,12 +793,71 @@ fn run_build(path: PathBuf, output: Option<PathBuf>) -> i32 {
             emit_object: false,
             backend: jr_cli::cli::BackendArg::Cranelift,
             no_bounds_check: false,
-            opt_level: jr_cli::cli::OptLevelArg::Standard,
+            // `None` so this helper exercises the *default* path, which is now "a declared
+            // BUILD_OPT_LEVEL, else Standard" (ADR-0154 §1). A test wanting an explicit level passes the
+            // flag through the binary instead, as the opt-level test below does.
+            opt_level: None,
             module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
         },
         &quiet_global(),
     )
     .expect("build should not fail at the io layer")
+}
+
+/// `BUILD_OPT_LEVEL :: 0;` is honoured, and `-O` outranks it (ADR-0154 §1).
+///
+/// Asserted through the **backtrace**, which is the one observable difference between the levels
+/// (ADR-0142): at `-O0` nothing is inlined, so a trap inside a leaf names the leaf's own line and lists
+/// its own frame, while at `-O1` the leaf is inlined and the trap names the call site. So this test reads
+/// what the *program* printed rather than any message from the driver — the same discipline
+/// `build_output_constant_names_the_executable` uses on the file that appears.
+#[test]
+fn a_declared_opt_level_is_honoured_and_a_flag_outranks_it() {
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("lvl.jr");
+    // A trap inside a one-line leaf: at -O0 the backtrace names `boom`, at -O1 it is inlined away.
+    fs::write(
+        &source,
+        "#import \"Basic\";\nBUILD_OPT_LEVEL :: 0;\n\
+         boom :: (a: s64) -> s64 {\n    return a / 0;\n}\n\
+         main :: () {\n    exit(boom(1));\n}\n",
+    )
+    .unwrap();
+
+    let out = dir.path().join("lvl_bin");
+    assert_eq!(run_build(source.clone(), Some(out.clone())), 0);
+    let declared = std::process::Command::new(&out)
+        .output()
+        .expect("the binary should run");
+    let declared_err = String::from_utf8_lossy(&declared.stderr).into_owned();
+    assert!(
+        declared_err.contains("in boom"),
+        "a declared level of 0 should leave the leaf un-inlined, so its frame is named: {declared_err}"
+    );
+
+    // The same program built with an explicit `-O1`: the operator's instruction outranks the artefact's
+    // declaration (ADR-0102 §2's asymmetry), so the leaf is inlined and its frame is gone.
+    let out2 = dir.path().join("lvl_bin_o1");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_jr"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&out2)
+        .arg("-O")
+        .arg("1")
+        .arg("-I")
+        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules"))
+        .status()
+        .expect("build should not fail at the io layer");
+    assert!(status.success());
+    let flagged = std::process::Command::new(&out2)
+        .output()
+        .expect("the binary should run");
+    let flagged_err = String::from_utf8_lossy(&flagged.stderr).into_owned();
+    assert!(
+        !flagged_err.contains("in boom"),
+        "an explicit -O1 should outrank the declaration and inline the leaf: {flagged_err}"
+    );
 }
 
 #[test]

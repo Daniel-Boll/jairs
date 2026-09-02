@@ -277,6 +277,55 @@ pub fn declared_build_output(
     }
 }
 
+/// The optimisation level a build script declared, if any (ADR-0154 §1).
+///
+/// `BUILD_OPT_LEVEL :: 0;` — the **second** build option, and the one that makes PLAN §2.1's "a build
+/// script replaces the makefile" true of more than a filename: naming the artefact and choosing the
+/// optimisation are the two things every makefile does.
+///
+/// # Why a second constant rather than a `Build_Options` struct
+///
+/// ADR-0102 §3 deferred a struct until there were enough options to justify one, and probing while
+/// writing this wave found a harder reason to keep waiting: **this language has no struct literals**.
+/// `BUILD :: Build_Options.{ output = "app", opt_level = 1 };` does not parse — E0117, "expected a field
+/// name after `.`" — so the struct form is blocked on a language feature rather than on a judgement about
+/// how many options is enough. That is now a named blocker instead of a vague threshold (ADR-0154 §2).
+///
+/// # Errors and absent values
+///
+/// `None` when the constant is not declared, is not an integer, or is not a level this compiler has. A
+/// *wrong* value is deliberately `None` rather than an error: the same asymmetry ADR-0102 §2 established
+/// for `-o`, where an operator's instruction outranks an artefact's declaration, means a bad declaration
+/// falls back to the default rather than stopping a build the operator asked for.
+pub fn declared_opt_level(
+    db: &dyn Db,
+    root: SourceFile,
+    search_paths: ModuleSearchPaths,
+) -> Option<crate::OptLevel> {
+    let hir = crate::file_hir(db, root);
+    let name = db.interner().intern(BUILD_OPT_LEVEL);
+    let item = hir.items.iter().enumerate().find_map(|(index, item)| {
+        (item.name == Some(name) && matches!(item.kind, jr_hir::ItemKind::Const { .. }))
+            .then_some(jr_hir::ItemId::from_usize(index))
+    })?;
+    let consts = crate::consts::file_consts(db, root, search_paths);
+    let value = consts.values.item(item)?;
+    let pool = crate::sema::read_pool(db);
+    let jr_pool::Item::IntValue { bits, .. } = pool.item(value) else {
+        return None;
+    };
+    match bits {
+        0 => Some(crate::OptLevel::Off),
+        1 => Some(crate::OptLevel::Standard),
+        // Any other number names no level. `None`, so the default applies, for the reason in the doc
+        // comment: a declaration is the artefact's preference and must not stop the operator's build.
+        _ => None,
+    }
+}
+
+/// The name of the constant [`declared_opt_level`] reads.
+const BUILD_OPT_LEVEL: &str = "BUILD_OPT_LEVEL";
+
 /// The name of the constant [`declared_build_output`] reads.
 ///
 /// A screaming-case name because it *is* a constant, and one the compiler knows: a lowercase `build_output`

@@ -258,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0148. See [`docs/adr/README.md`](docs/adr/README.md). (This line
+Accepted ADRs: 0001–0154. See [`docs/adr/README.md`](docs/adr/README.md). (This line
 said 0001–0128 for thirteen ADRs, which is the argument §7 makes for its own count
 being the one to trust.)
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
@@ -357,7 +357,7 @@ dependency chain requires it. `rust-toolchain.toml` still floats on stable.
 | **W4 — Comptime** | Full `#run` (arbitrary code), aggressive const folding, RTTI (`Type` values, `type_info()`, `Any`), `#insert`, `#code`, the `Code` type | **Hardest wave.** Sema ↔ VM become mutually recursive; cycle detection with readable errors is the deliverable. **Delivered in sub-waves** (ADR-0069 §0), because a wave five times the size of any other cannot be verified the way the others were: **all ten shipped**: (1) `#run` across files and in a body (ADR-0069); (2) an array length from a constant (ADR-0070), which *replaced* "aggressive const folding" after ADR-0070 §0 found ADR-0022's const-prop had already delivered it; (3) a type as a compile-time value (ADR-0071); (4) `#insert` of a literal operand (ADR-0072); (5) of a **computed** operand (ADR-0073) — the mutual recursion this row calls the hardest part, broken by an acyclic pre-pass rather than salsa's fixed-point recovery; (6) aggregate constants (ADR-0074); (7) `type_info()` and a constant holding a string (ADR-0075); (8) `Any` with a checked read, plus `Type_Info`'s stable `id` the check needed (ADR-0076, ADR-0077); (9) `Type_Info`'s fixed-size per-kind facts (ADR-0078); (10) `#code` (ADR-0080), with a shipped silent miscompile refused on the way (ADR-0079). **Out of scope, each with a recorded reason**: `Type_Info`'s variable-length field list (owed its own wave — it needs a declared static-data mechanism, ADR-0079 §1); a `Code` *value* (**declined** until something can inspect a tree, ADR-0080 §3); a `#run` reading another file's constant (ADR-0073 §4, now reporting itself rather than an ICE) | 10–14 wks |
 | **W4.5 — Pattern matching** | `switch` with exhaustiveness checking, a bare `.RED` as a case (ADR-0041 §2 step 5), and a **tagged** variant type beside `union` (ADR-0045 §1) | **Was missing from this table entirely.** Two accepted ADRs deferred decisions to it while no wave scheduled it — found while closing W2 (ADR-0054's handoff). **Reordered before W4 by ADR-0067 §0.** This row used to say "placed after W4 because exhaustiveness diagnostics want comptime type info" — a *want*, not a need, and checking disproved it: `Pool::enum_members` is populated during checking (ADR-0041 §4), and `c == .GREEN` already worked, so `switch` and exhaustiveness needed nothing from W4. A wave order justified by a dependency that does not exist is §5's "plans that contradict themselves". Still before W5, because a polymorph over a variant type needs the variant | 4–6 wks |
 | **W5 — Polymorphism** | `$T`, `$$T` **[NOT DELIVERED — E0107]**, `#modify`, `#bake_arguments`, `#expand` macros + hygiene, instantiation caching, **instantiation backtraces** in diagnostics **[single frame DELIVERED by ADR-0128; multi-level chain still owed]** | Depends on W4's InternPool value identity | 8–12 wks |
-| **W6 — Metaprogram** | Workspaces, compiler message loop, `#run build()` build scripts replacing makefiles, plugin hooks, `@note` attributes | The Jai superpower. Build scripts become the build system. | 6–8 wks |
+| **W6 — Metaprogram** | ~~Workspaces~~ **[DECLINED — ADR-0154 §4: a Jai workspace is the *poll* model, and the file-set half already exists as `reachable_files`]**, compiler message loop, `#run build()` build scripts replacing makefiles, ~~plugin hooks~~ **[DECLINED — ADR-0154 §3: a hook is a poll, and ADR-0153 §1 rejected the poll because its behaviour would depend on compilation order, which salsa makes unstable]**, `@note` attributes | **DONE** (ADR-0098 … ADR-0154). The headline claim is met: a metaprogram finds declarations by note and *iterates* them (ADR-0153), on the compiler-emitted table ADR-0152 built — which delivered `Type_Info.fields` at the same time, owed since ADR-0078. Build scripts name the artefact and choose the optimisation. Two items declined with reasons rather than left ambiguous | 6–8 wks |
 | **W7 — Stdlib** | In Jairs: `Basic`, `String`, dynamic array / hash table / bucket array, `Sort`, `Math` (vec/mat/quat **DELIVERED — vectors by ADR-0130, `Matrix4` by ADR-0131, `Quaternion` by ADR-0132; ADR-0115 declared `Math` complete when none of the three existed**), `Random`, `File`, `File_Utilities`, `Process`, ~~`Thread` + atomics~~ **[MOVED OUT to W11 by §8.3 — there is no thread support anywhere in the runtime, and delivering one needs a per-thread VM stack, atomics as language operations, a memory model, and a rule for comptime; that is a wave comparable to W4, not one item in a list]**, `Time`, `Socket`, `JSON`, ~~`Compiler`~~ **[MOVED to W6 by §8.3 — that module *is* the message loop's surface]** | Runs partly in parallel with W5/W6; each module is a wave-acceptance test. **Nine modules shipped; §8.3 orders the remaining seven by what blocks what**, and five of them wait on the error model (§8.1.1) | 14–18 wks |
 | **W8 — Performance** | LLVM backend via `inkwell` (`--release`), inliner maturity, `#soa`, SIMD vectors, `#align`/`#place`, parallel Sema + parallel codegen **[NOT DELIVERED — measured and refused; see ADR-0149]**, published compile-throughput number | Three-way differential testing: VM ≡ Cranelift ≡ LLVM. **DONE in eight sub-waves** (ADR-0142 the optimisation level, ADR-0143 the LLVM back end, ADR-0144 `#align`/`#place`, ADR-0145 inliner maturity, ADR-0146 the throughput number + `heap_sort`, ADR-0147 `#soa`, ADR-0148 `#simd`, ADR-0149 the parallelism measurement). Seven shipped a feature; the eighth shipped a number and a revert — 1.20x against a 2.5x ceiling, because 40% of a check runs inside the pool's exclusive critical sections | 10–14 wks |
 | **W9 — Tooling depth** | Full LSP surface (completion, refs, rename, signature help, semantic tokens, **inlay type hints**, code actions), richer DWARF (locals, struct layouts) for lldb, Neovim packaging (VS Code descoped by ADR-0036; any LSP client works unpackaged) | Incremental all along; this is the "make it excellent" pass | 8–10 wks |
@@ -551,10 +551,15 @@ Seven shipped a feature and the eighth shipped a number and a revert, which is t
 a performance wave: §2.1's last item was a hypothesis, it was tested, and it did not hold on this
 architecture. ADR-0149 names the two blockers, neither of them a driver change.
 
-**So the waves still open are W6 — Metaprogram and W7 — Stdlib**, and then W9 and W10. **§8 is now the
-completion plan for all four** — read it before picking anything up, because the thing that decides the
-order is not the per-wave item lists but three cross-cutting blockers, and §8 found that two of them
-gate more than one wave and that one of the remaining items is mis-scoped by about a wave.
+**W6 — Metaprogram is DONE too** (ADR-0152 the static-data table, ADR-0153 the message loop, ADR-0154 a
+second build option plus two declines). **So the wave still open is W7 — Stdlib**, and then W9 and W10.
+**§8 is the completion plan** — read it before picking anything up, because the thing that decides the
+order is not the per-wave item lists but three cross-cutting blockers.
+
+**§8.6's first three steps are done**: E0286 (ADR-0150) turned the ninth leaked internal error into a
+diagnostic; `#must` (ADR-0151) filled ADR-0008's reserved effect-row slot and unblocked five W7 modules;
+and W6's static-data decision (ADR-0152/0153/0154) closed that wave. **Next is §8.3's module order**, whose
+first three items — `Time`, a bucket array, a stable merge sort — need nothing new.
 
 **§8's recommended first three steps**, in order: (1) **E0286**, a diagnostic for an aggregate at a
 `#foreign` boundary, which today is a *leaked internal error* in both engines — the ninth occurrence of
@@ -567,7 +572,7 @@ list at the same time.
 an `Any` or a procedure handle through `jr-vm`'s untagged `union`; `jr-lsp` path handling — URI
 decoding, `..`, symlinks), which must be done **by hand** because six subagent dispatches returned
 empty; and `tree-sitter test` added to gate 6, which today catches grammar *drift* but not a broken
-grammar *rule*. **1033 workspace tests** (1034 under gate 7) and **237 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
+grammar *rule*. **1034 workspace tests** (1035 under gate 7) and **243 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
 has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -580,8 +585,8 @@ has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
 > **What "228 corpus files" counts**, since this number had drifted: the `.jr` files under
-> `tests/corpus/` *outside* `tests/corpus/modules/` — 119 `valid` + 10 `invalid` + 75 `type-errors` +
-> 3 `cfg-errors` + 30 `imports` = 237. Counting the 10 module fixtures too gives 247. This section
+> `tests/corpus/` *outside* `tests/corpus/modules/` — 122 `valid` + 10 `invalid` + 78 `type-errors` +
+> 3 `cfg-errors` + 30 `imports` = 243. Counting the 10 module fixtures too gives 253. This section
 > claimed **214** at a point when 213 was right while `AGENTS.md` claimed 213, so the sentence that
 > tells a reader to trust §7 over any other count was itself pointing at the wrong one. ADR-0125
 > reconciled the numbers and that pair slipped through, which is the argument for the definition
@@ -1526,7 +1531,7 @@ array as `List` in ADR-0107 and the hash table as `Map` in ADR-0116): a **merge 
 check); `String.split`, which wants a `List(string)`; and `File`, `File_Utilities`, `Process`, `Thread`,
 `Time`, `Socket`, `JSON`, `Compiler`.
 
-### W6 — Metaprogram, open
+### W6 — Metaprogram, **done** (ADR-0098 … ADR-0154)
 
 **W6 — Metaprogram is OPEN**, five sub-waves in. Its headline claim is met — **a metaprogram can find
 declarations by note and generate code for each one** (ADR-0101) — and a **build script can now name its own
@@ -1629,21 +1634,44 @@ with reading verbs to hand its declarations to rather than needing to invent som
       *something* rather than true in general.
 
 **What W6 has left, in order:**
-- [ ] **More build options**, once there are enough to justify a `Build_Options` struct (ADR-0102 §3). Two is
+- [x] **A second build option** (ADR-0154 §1): `BUILD_OPT_LEVEL :: 0;` beside `BUILD_OUTPUT`, which makes
+      "a build script replaces the makefile" true of the two things every makefile does. `-O` outranks it
+      (ADR-0102 §2's asymmetry). It needed a **bootstrap rule** `BUILD_OUTPUT` did not: reading a declared
+      constant means *compiling*, so an option that affects compilation cannot be read without already
+      having chosen one — and the read is sound only because ADR-0142's check asserts that every program
+      behaves identically at both levels. A `Build_Options` **struct** is still deferred, but now on a
+      *named* blocker rather than a threshold: **this language has no struct literals** (E0117), so
+      `Build_Options.{ … }` does not parse.
+- [x] ~~**More build options**, once there are enough to justify a `Build_Options` struct (ADR-0102 §3). Two is~~
       not enough, and building the container before knowing what goes in it is the wrong order. Owed their own
       decisions: a script *adding* a module path (list-valued constant, append-or-replace); a script setting
       `--no-bounds-check` (a **safety** setting — letting a file quietly disable checks deserves the argument
       ADR-0058 §3 had about `#no_abc`).
-- [ ] **Static data, then the loop** — for **inspection** only, now that generation is done. The message loop's remaining scope is now *purely the iteration
+- [x] **Static data, then the loop** — **done** (ADR-0152, ADR-0153). `Item::StaticArray` is the
+      compiler-emitted table ADR-0078 §3 deferred, delivering `Type_Info.fields` at the same time, and
+      `noted_declarations("x")` folds to a `[]Declaration` a metaprogram *iterates*. ADR-0100 §2's honest
+      limit — a fold cannot take a `for` variable — is now a documented trade rather than a gap.
+- [x] ~~**Static data, then the loop** — for **inspection** only, now that generation is done. The message loop's remaining scope is now *purely the iteration
       mechanics*, which makes it a wave about **static data** rather than a wave about notes — a compiler-emitted
       table both back ends emit and the VM reads, plus a decision about who owns the memory. That also lifts
       `Type_Info`'s field list, deferred since ADR-0078, so the two want doing together. The fork to settle
       first: whether the table is a declared `[]Declaration` a script indexes, or a genuine poll
       (`compiler_wait_for_message()`) — and what a "message" is as a Jairs value, which is ADR-0080 §3's
       `Code`-value question in a new place.
-- [ ] **`#run build()` build scripts** — the wave's headline claim in §2.1: a build script replaces the
+- [x] **Build scripts name and configure the artefact** (ADR-0102, ADR-0154 §1) — the §2.1 claim, met by
+      two declared constants rather than by a `#run build()` entry point, because a declared constant
+      *cannot fail to run* while a call has to be reached (ADR-0102 §2's argument, unchanged).
+- [x] ~~**`#run build()` build scripts** — the wave's headline claim in §2.1: a build script replaces the
       makefile. Needs the loop, plus a way for a script to name output artefacts.
-- [ ] **Plugin hooks** and **workspaces** (§2.1's remaining two).
+- [x] **Plugin hooks** and **workspaces** — **declined, not deferred** (ADR-0154 §3–§4). Both are the
+      *poll* model: a plugin hook is a callback the compiler invokes at a phase, and a Jai workspace is a
+      compilation you poll for messages. ADR-0153 §1 rejected the poll twice over — it needs an execution
+      model this compiler lacks (now W11), and its behaviour would depend on compilation *order*, which
+      salsa's re-execution makes unstable. So there is nothing to hook into, and what a plugin would want
+      is already available in two reproducible pieces: `noted_insert` generates, `noted_declarations`
+      inspects. The *file set* half of a workspace exists too — `reachable_files`, which both the
+      diagnostics gate and the MIR assembly already walk. If revisited, the right question is a
+      compilation unit that is a **value**, not a poll, and that needs its own ADR.
 
 **Deferred, each owed its own decision:** the caller-return semantics of an early macro `return`; a
 cross-file macro splice; cross-file `#bake_arguments`; a `#modify` that *alters* a binding; two-way
@@ -2290,11 +2318,13 @@ project defines 94 codes", frozen roughly fifteen waves back.)
 
 ---
 
-## 8. Finishing the programme: W6, W7, W9, W10
+## 8. Finishing the programme: ~~W6~~, W7, W9, W10
 
-W8 closed on 1 September 2026, so what remains of the plan as written is four waves: **W6 —
-Metaprogram** and **W7 — Stdlib** (both open, both part-shipped), then **W9 — Tooling depth** and
-**W10 — Graphics**, neither started. This section is the completion plan for those four. It exists
+W8 closed on 1 September 2026 and **W6 closed the same day** (ADR-0152 … ADR-0154), so what remains is
+three waves: **W7 — Stdlib** (open, part-shipped), then **W9 — Tooling depth** and **W10 — Graphics**,
+neither started. §8.2 below is kept as written because its prediction was tested and held — the
+static-data table did discharge two owed things at once — and because §8.3's `Compiler` module still
+belongs to the mechanism it describes. This section is the completion plan for those four. It exists
 because the per-wave sections above list *items* while the thing that actually decides the order is a
 small number of **cross-cutting blockers**, and three of them block more than one wave.
 
