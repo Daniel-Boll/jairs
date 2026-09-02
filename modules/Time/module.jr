@@ -1,0 +1,142 @@
+//! The Time module: monotonic and wall-clock time, and durations that arithmetic works on.
+//!
+//! Written in Jairs. PLAN §8.3 put this first in W7's remaining order for one reason: it is the cheapest
+//! real module left — `clock_gettime` is scalars and a pointer, which is the FFI shape that already works
+//! (ADR-0150 refuses aggregates at that boundary, and nothing here needs one) — and it gives every later
+//! benchmark a clock.
+//!
+//! # Why nanoseconds, and why an `s64`
+//!
+//! One integer unit throughout, so a duration is a *number* and arithmetic on it needs no library. An
+//! `s64` of nanoseconds spans about 292 years either side of the epoch, which outlives any program this
+//! language will compile, and it is **exact** — a `float64` of seconds loses nanosecond resolution
+//! somewhere in the 2030s and would make two runs of the same benchmark differ in their last digits for
+//! no reason a reader could see.
+//!
+//! Rejected: a `Duration` struct with a seconds/nanos pair, which is what C's `timespec` is. It cannot be
+//! subtracted without a helper, cannot be compared without another, and its only advantage — range —
+//! is one this unit does not need. Rejected too: microseconds or milliseconds as the base unit, because a
+//! coarser unit cannot express what the finer one measures and every timing question here is sub-millisecond.
+//!
+//! # Why two clocks, and why the difference matters
+//!
+//! `monotonic()` never goes backwards and is the only correct thing to *measure* with: a wall clock can
+//! jump when the system clock is set or when NTP steps it, so a duration computed from two wall-clock
+//! readings can be negative or wildly wrong. `wall()` is what a *timestamp* wants — it is comparable
+//! between machines and survives a reboot.
+//!
+//! Both are offered because using the wrong one is a real and quiet bug: a benchmark on `wall()` reports a
+//! nonsense number occasionally rather than always, which is the hardest kind to notice.
+//!
+//! # What is absent, and why
+//!
+//! No formatting — no `to_string`, no strftime. Rendering a timestamp needs a calendar, and a calendar
+//! needs leap seconds, time zones and a locale, none of which this project has decided anything about.
+//! A module that offered a *wrong* rendering would be worse than one that offers none, and PLAN §2.1's
+//! `Time` entry is about measurement.
+//!
+//! No sleeping. `nanosleep` is a syscall that blocks, and a blocking call in the comptime VM would mean
+//! compilation that pauses — which is a decision about compile-time execution rather than about time
+//! (ADR-0121 gave comptime a step budget precisely so it cannot run away).
+
+#import "Basic";
+
+/// `CLOCK_MONOTONIC` on both supported targets.
+///
+/// The number differs between platforms in general; it is 6 on macOS and 1 on Linux. **This is a real
+/// portability gap and it is named rather than hidden**: the value below is macOS's, because that is the
+/// only target this project has ever run on (PLAN §1.5 records that no CI run has happened). A Linux build
+/// needs 1, and the day the CI matrix runs is the day this needs a `#if`-shaped answer — which this
+/// language does not have either.
+CLOCK_MONOTONIC :: 6;
+
+/// `CLOCK_REALTIME`, which is 0 on both macOS and Linux — so this constant, unlike the one above, is
+/// genuinely portable.
+CLOCK_REALTIME :: 0;
+
+/// A `timespec` as C lays it out: two 64-bit words on both supported targets.
+///
+/// Declared here rather than passed as two `*s64`s because `clock_gettime` takes **one** pointer to this
+/// struct, and a pointer to a Jairs struct is a pointer — which crosses the FFI boundary fine. It is the
+/// *aggregate by value* that does not (ADR-0150), and nothing here passes one.
+Timespec :: struct {
+    /// Whole seconds.
+    seconds: s64;
+    /// Nanoseconds within the second, 0 to 999_999_999.
+    nanoseconds: s64;
+}
+
+/// POSIX `clock_gettime(2)`: writes the named clock's reading into `out`.
+///
+/// Returns 0 on success and -1 on failure. It is **not** `#must`, deliberately: the only documented
+/// failures are an invalid clock id and an unwritable pointer, both of which are programming errors this
+/// module's own callers cannot make — `now` passes a constant id and the address of a local. A `#must`
+/// here would push a check onto every caller for a case that cannot arise, and ADR-0151 §2's point is that
+/// the marker means something because it is not everywhere.
+clock_gettime :: (clock: s64, out: *Timespec) -> s64 #foreign libc "clock_gettime";
+
+/// Nanoseconds since an unspecified origin, from a clock that never goes backwards.
+///
+/// The only correct thing to measure a duration with. Two readings subtract to a nanosecond count.
+monotonic :: () -> s64 {
+    return now(CLOCK_MONOTONIC);
+}
+
+/// Nanoseconds since the Unix epoch, from the wall clock.
+///
+/// Comparable between machines and across a reboot, and therefore what a *timestamp* wants — but it can
+/// jump, so a duration computed from two of these can be negative. Use `monotonic` to measure.
+wall :: () -> s64 {
+    return now(CLOCK_REALTIME);
+}
+
+/// One clock's reading, as nanoseconds.
+///
+/// Shared by the two above so the seconds-to-nanoseconds conversion exists once: getting it wrong in one
+/// of two copies would make one clock a thousand times faster than the other, which is exactly the kind of
+/// silent wrong answer a duplicated computation produces.
+///
+/// `0` when the clock cannot be read, which is unreachable for the two ids above — see `clock_gettime`.
+now :: (clock: s64) -> s64 {
+    t: Timespec;
+    if clock_gettime(clock, *t) != 0 {
+        return 0;
+    }
+    return t.seconds * NANOSECONDS_PER_SECOND + t.nanoseconds;
+}
+
+/// Nanoseconds in a second.
+NANOSECONDS_PER_SECOND :: 1000000000;
+
+/// Nanoseconds in a millisecond.
+NANOSECONDS_PER_MILLISECOND :: 1000000;
+
+/// Nanoseconds in a microsecond.
+NANOSECONDS_PER_MICROSECOND :: 1000;
+
+/// `nanoseconds` as whole milliseconds, truncating.
+///
+/// Truncating rather than rounding, and stated because the choice is invisible at the call site: a reader
+/// comparing `to_milliseconds(x) == 5` wants to know whether 5_999_999 counts. It does not.
+to_milliseconds :: (nanoseconds: s64) -> s64 {
+    return nanoseconds / NANOSECONDS_PER_MILLISECOND;
+}
+
+/// `nanoseconds` as whole microseconds, truncating.
+to_microseconds :: (nanoseconds: s64) -> s64 {
+    return nanoseconds / NANOSECONDS_PER_MICROSECOND;
+}
+
+/// `nanoseconds` as whole seconds, truncating.
+to_seconds :: (nanoseconds: s64) -> s64 {
+    return nanoseconds / NANOSECONDS_PER_SECOND;
+}
+
+/// Whether `a` is a later reading than `b` on the same clock.
+///
+/// A named comparison rather than leaving callers to write `a > b`, because on the *wall* clock the
+/// comparison is the thing that can surprise: a reading taken later can be numerically smaller. This does
+/// not fix that — nothing can — but a caller who reaches for a helper is a caller who has thought about it.
+is_after :: (a: s64, b: s64) -> bool {
+    return a > b;
+}

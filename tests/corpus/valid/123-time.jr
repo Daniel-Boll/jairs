@@ -1,0 +1,64 @@
+// ADR-0155: the Time module — monotonic and wall-clock time.
+//
+// PLAN §8.3 put this first in W7's remaining order because it is the cheapest real module left and gives
+// every later benchmark a clock: `clock_gettime` is scalars and a pointer, which is the FFI shape that
+// already works.
+//
+// The exit status is a checksum of properties that hold on *any* machine, which is the whole difficulty of
+// testing a clock: the readings themselves are not reproducible, so nothing here compares one against a
+// literal. What is asserted is the arithmetic and the invariants.
+//
+//   a monotonic reading is positive        the clock has an origin in the past    = 1
+//   it does not go backwards               two readings in order                  = 2
+//   a wall reading is after the epoch      2026 is well past 1970                 = 4
+//   the unit conversions compose           1_500_000_000 ns is 1 s and 1500 ms    = 8
+//   truncation is truncation               1_999_999 ns is 1 ms, not 2            = 16
+//   is_after agrees with the ordering      a named comparison, same answer         = 32
+//
+// 1 + 2 + 4 + 8 + 16 + 32 = 63.
+#import "Basic";
+#import "Time";
+
+main :: () {
+    total := 0;
+
+    first := monotonic();
+    if first > 0 {
+        total = total + 1;
+    }
+
+    // **Not strictly greater**: two readings can land in the same nanosecond on a fast machine, and a test
+    // that demanded strict increase would fail rarely and unreproducibly — the worst kind of flake. What
+    // the clock actually promises is that it never goes *backwards*.
+    second := monotonic();
+    if second >= first {
+        total = total + 2;
+    }
+
+    // The wall clock is past the epoch by a lot. Asserted loosely for the same reason: a tighter bound
+    // would be a date this file would eventually fail on.
+    if wall() > NANOSECONDS_PER_SECOND {
+        total = total + 4;
+    }
+
+    // The conversions, on a *constant* rather than a reading — which is what makes this part of the
+    // checksum reproducible at all.
+    one_and_a_half := 1500000000;
+    if to_seconds(one_and_a_half) == 1 {
+        if to_milliseconds(one_and_a_half) == 1500 {
+            total = total + 8;
+        }
+    }
+
+    // Truncation, stated in the module docs and asserted here because the choice is invisible at a call
+    // site: a reader comparing `to_milliseconds(x) == 2` wants to know whether 1_999_999 counts.
+    if to_milliseconds(1999999) == 1 {
+        total = total + 16;
+    }
+
+    if is_after(second, first) == (second > first) {
+        total = total + 32;
+    }
+
+    exit(total);
+}
