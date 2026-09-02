@@ -258,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0172. See [`docs/adr/README.md`](docs/adr/README.md). (This line
+Accepted ADRs: 0001–0173. See [`docs/adr/README.md`](docs/adr/README.md). (This line
 said 0001–0128 for thirteen ADRs, which is the argument §7 makes for its own count
 being the one to trust.)
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
@@ -620,9 +620,22 @@ call* with a debug **record**, and inkwell 0.9 casts the returned record to a va
 inkwell's internals and no call of ours. The raw `llvm-sys` `LLVMDIBuilderInsertDeclareRecordAtEnd` is used
 instead.
 
-**Remaining:** **Cranelift has no `.debug_info` at all**, only the line table — no types, no subprograms, no
-variables; its DIEs must be written by hand with `gimli`, exactly the split ADR-0170 predicted and this wave
-confirmed twice more; **register-resident locals** in both engines (`value_labels_ranges` exists on
+**Cranelift now has a `.debug_info` too** — ADR-0173: base, pointer and struct type DIEs with named members at
+real offsets, and a subprogram per function carrying its source name, address and length. **So both back ends
+agree about a struct's layout in DWARF, by two entirely different routes** — one is metadata LLVM writes, the
+other is bytes this project writes with `gimli`, and the test asserts the agreement rather than each emitter's
+existence.
+
+> [!NOTE]
+> **That was the prerequisite this section never listed.** "Locals through Cranelift value labels" needs a
+> variable DIE, a variable DIE needs a subprogram to live in and a type to point at, and Cranelift had neither —
+> only a line program pointing into a `.debug_info` that was not there. ADR-0173 §4 now specifies the remainder
+> exactly: a **stack** local wants `DW_OP_fbreg` plus a per-slot frame offset (`MachBufferFinalized::frame_layout`
+> exists; whether it exposes per-slot offsets is the next thing to *probe*), and a **register** local wants
+> `value_labels_ranges` plus `ValueLabel`s attached during lowering plus `enable_value_labels` in the ISA flags —
+> three pieces.
+
+**Remaining:** **register-resident locals** in both engines (`value_labels_ranges` exists on
 `CompiledCode` while Cranelift emits **no `ValueLabel`s**, so that half needs the emission *and* the
 consumption); **aggregate locals**, pending a `LocalId` on their slot; a struct's **declared name**, which the
 pool does not record; views, arrays, unions and variants, each wanting its own naming decision; and a
@@ -830,7 +843,7 @@ crossing the `#foreign` boundary — which is also W10's hard gate, so one chang
 an `Any` or a procedure handle through `jr-vm`'s untagged `union`; `jr-lsp` path handling — URI
 decoding, `..`, symlinks), which must be done **by hand** because six subagent dispatches returned
 empty; and `tree-sitter test` added to gate 6, which today catches grammar *drift* but not a broken
-grammar *rule*. **1064 workspace tests** (1068 under gate 7) and **254 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
+grammar *rule*. **1065 workspace tests** (1069 under gate 7) and **254 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
 has ever happened — plus **170** Neovim checks. See §1.5.
 
 > [!NOTE]

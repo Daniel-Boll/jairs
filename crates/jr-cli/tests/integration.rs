@@ -2526,3 +2526,168 @@ main :: () {
          assertion should be inverted; got {names:?}"
     );
 }
+
+/// The Cranelift back end emits a `.debug_info` DIE tree too — types, a struct's layout, and a subprogram per
+/// function (ADR-0173).
+///
+/// # Why this is not shared with the LLVM struct test
+///
+/// Same reason ADR-0170 kept the line-table tests apart: the two routes have nothing in common. LLVM's DIEs come
+/// from metadata LLVM writes itself; these are written by hand with `gimli`, from a `TypeDescription` built
+/// during body definition because that is the only moment a field's name can be resolved. **What matters is that
+/// two unrelated emitters agree** — the same struct, the same offsets, the same names — and a shared test would
+/// assert only their intersection.
+///
+/// # What it asserts
+///
+/// The struct's members with their real offsets, for ADR-0171 §6's reason: a tag-only check passes on a struct
+/// whose every member sits at 0. And a subprogram per procedure carrying its **source** name, since a backtrace
+/// that says `jr$0$3` is a backtrace nobody can read.
+#[test]
+fn the_cranelift_back_end_emits_a_die_tree() {
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("layout.jr");
+    fs::write(
+        &source,
+        r#"#import "Basic";
+
+Point :: struct {
+    x: s64;
+    y: s64;
+    flag: bool;
+}
+
+sum :: (p: Point) -> s64 {
+    return p.x + p.y;
+}
+
+main :: () {
+    q: Point;
+    q.x = 9;
+    q.y = 4;
+    q.flag = true;
+    exit(sum(q));
+}
+"#,
+    )
+    .unwrap();
+
+    let object_path = dir.path().join("layout.o");
+    let code = run_build_emit_object(source, object_path.clone());
+    assert_eq!(code, 0, "the object must be emitted");
+
+    let (structs, subprograms) = read_dies(&object_path);
+
+    let point = structs
+        .iter()
+        .find(|(size, members)| *size == 24 && members.len() == 3)
+        .unwrap_or_else(|| {
+            panic!("a 24-byte struct with three members must appear; got {structs:?}")
+        });
+    assert_eq!(
+        point.1,
+        vec![
+            ("x".to_owned(), 0),
+            ("y".to_owned(), 8),
+            ("flag".to_owned(), 16),
+        ],
+        "the hand-written DIEs must agree with LLVM's about names and offsets"
+    );
+
+    for expected in ["sum", "main"] {
+        assert!(
+            subprograms.iter().any(|name| name == expected),
+            "`{expected}` must have a subprogram carrying its source name, or a backtrace says `jr$0$3`; \
+             got {subprograms:?}"
+        );
+    }
+}
+
+/// One struct's DWARF layout: its byte size, and each member's name and offset.
+type StructLayout = (u64, Vec<(String, u64)>);
+
+/// Reads an object's struct layouts and subprogram names out of `.debug_info`.
+///
+/// Shared by the two back ends' DIE tests because the *parsing* is genuinely common — only the emission
+/// differs, which is what those tests are about.
+fn read_dies(path: &std::path::Path) -> (Vec<StructLayout>, Vec<String>) {
+    use gimli::EndianSlice;
+    use object::{Object as _, ObjectSection as _};
+
+    let bytes = fs::read(path).expect("the object should exist");
+    let file = object::File::parse(&*bytes).expect("the object should parse");
+    let endian = if file.is_little_endian() {
+        gimli::RunTimeEndian::Little
+    } else {
+        gimli::RunTimeEndian::Big
+    };
+    let load = |id: gimli::SectionId| -> Result<EndianSlice<'_, gimli::RunTimeEndian>, ()> {
+        let name = id.name();
+        let macho = format!("__{}", name.trim_start_matches('.'));
+        let data = file
+            .sections()
+            .find(|s| matches!(s.name(), Ok(n) if n == name || n == macho.as_str()))
+            .and_then(|s| s.data().ok())
+            .unwrap_or(&[]);
+        Ok(EndianSlice::new(data, endian))
+    };
+    let dwarf = gimli::Dwarf::load(load).expect("the DWARF should load");
+
+    let mut structs: Vec<StructLayout> = Vec::new();
+    let mut subprograms = Vec::new();
+    let mut units = dwarf.units();
+    while let Some(header) = units.next().expect("units should parse") {
+        let unit = dwarf.unit(header).expect("the unit should parse");
+        let mut entries = unit.entries();
+        let mut current: Option<StructLayout> = None;
+        while let Some(entry) = entries.next_dfs().expect("entries should walk") {
+            let name = || {
+                entry
+                    .attr(gimli::DW_AT_name)
+                    .and_then(|a| a.string_value(&dwarf.debug_str))
+                    .map(|s| String::from_utf8_lossy(s.slice()).into_owned())
+                    .unwrap_or_default()
+            };
+            match entry.tag() {
+                gimli::DW_TAG_structure_type => {
+                    if let Some(done) = current.take() {
+                        structs.push(done);
+                    }
+                    let size = entry
+                        .attr_value(gimli::DW_AT_byte_size)
+                        .and_then(|v| v.udata_value())
+                        .unwrap_or(0);
+                    current = Some((size, Vec::new()));
+                }
+                gimli::DW_TAG_member => {
+                    if let Some((_, members)) = current.as_mut() {
+                        let offset = entry
+                            .attr_value(gimli::DW_AT_data_member_location)
+                            .and_then(|v| v.udata_value())
+                            .unwrap_or(u64::MAX);
+                        members.push((name(), offset));
+                    }
+                }
+                gimli::DW_TAG_subprogram => {
+                    if let Some(done) = current.take() {
+                        structs.push(done);
+                    }
+                    let found = name();
+                    if !found.is_empty() {
+                        subprograms.push(found);
+                    }
+                }
+                // Any other tag ends the run of members belonging to the struct above it.
+                _ => {
+                    if let Some(done) = current.take() {
+                        structs.push(done);
+                    }
+                }
+            }
+        }
+        if let Some(done) = current.take() {
+            structs.push(done);
+        }
+    }
+    (structs, subprograms)
+}

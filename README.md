@@ -18,6 +18,17 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
+**Both compilers now describe a struct to a debugger, and they agree** — the same field names at the same byte
+offsets, produced by two implementations with nothing in common. One asks LLVM to write the description; the
+other writes the bytes itself. The offsets in both come from the single function the compiler uses to generate a
+field access, so neither can drift from the running code, and the test checks that the two *agree* rather than
+that each one produces something.
+
+Reaching that also uncovered a step the plan had skipped. The remaining debug-info item needs variable
+descriptions; a variable description needs a function description to live inside and a type description to point
+at; and one of the two compilers had neither — only line numbers pointing into a section that did not exist. The
+general lesson: when a plan item looks like it needs one new thing, check what that thing needs to live in.
+
 **A local variable can be printed in a debugger** — by the name the programmer wrote, with its type and its
 place on the stack. Half of that item is delivered, and the other half is now precisely described rather than
 vaguely owed: a variable that lives entirely in registers has no stack address to point at, so describing it
@@ -74,7 +85,7 @@ debug section placed outside the segment reserved for it does not merely get ign
 the linker lays it out among real pointers.
 
 Last updated with **W10 — Graphics DONE** (W6 — Metaprogram, W7 — Stdlib, W8 — Performance and W9 — Tooling
-depth were already), 1064 tests green — 1068 with the LLVM back end compiled in, and nineteen library modules.
+depth were already), 1065 tests green — 1069 with the LLVM back end compiled in, and nineteen library modules.
 **Two waves remain: W11 — Concurrency, and W12 — Debug info, which is now under way.**
 
 Graphics arrived in four steps, on a foundation the plan had wrong: a window and a 2D renderer, an event loop,

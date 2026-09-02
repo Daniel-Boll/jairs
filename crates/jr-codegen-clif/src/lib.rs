@@ -53,6 +53,23 @@ use jr_mir::{MirBody, ProcRef};
 use jr_pool::{Item, Layout, Pool, PoolId, StrId, TargetLayout, layout_of};
 use rustc_hash::FxHashMap;
 
+/// One defined function's subprogram, before its `FuncId` becomes an object symbol.
+///
+/// Separate from [`PendingLines`] because a function with no source positions still deserves a subprogram — it
+/// has a name, an address and a length, and a backtrace wants those even when no row points inside it.
+struct PendingSubprogram {
+    /// The function the subprogram describes.
+    id: FuncId,
+    /// Its code length, for `DW_AT_high_pc`.
+    length: u64,
+    /// The source name, or `None` for a procedure no item binds.
+    name: Option<String>,
+    /// The declaration line, 0 when unknown.
+    line: u32,
+    /// The return type's description index, when it has one.
+    ret: Option<usize>,
+}
+
 /// One defined function's line-table rows, before its `FuncId` becomes an object symbol.
 ///
 /// A named struct rather than a tuple, because the `FuncId` cannot be resolved to a `SymbolId` until
@@ -77,6 +94,20 @@ pub struct ClifBackend {
     /// Collected in `define` because that is the only place the compiled buffer exists — `finalise` has the
     /// object but not the per-function `CompiledCode` it came from.
     function_lines: Vec<PendingLines>,
+    /// Each declared procedure's parameter and return types, for its subprogram's DWARF signature.
+    signature_types: FxHashMap<ProcRef, (Vec<PoolId>, PoolId)>,
+    /// Each declared procedure's *source* name, for `DW_AT_name`.
+    ///
+    /// Separate from `names`, which holds the read-only data objects a backtrace frame points at rather than
+    /// the text — a DIE needs the text.
+    source_names: FxHashMap<ProcRef, String>,
+    /// Every DWARF type description the module needs (ADR-0173 §1).
+    ///
+    /// Built during `define`, where a `SourceInfo` can resolve a field's name; written at `finalise`, where the
+    /// object exists. The two cannot be the same moment, which is why a *description* exists at all.
+    debug_types: debug::TypeDescriptions,
+    /// Each defined function's subprogram description.
+    debug_subprograms: Vec<PendingSubprogram>,
     /// The compilation directory and primary source file the line program names.
     ///
     /// Set from the first body defined, which is the root file's: DWARF wants one primary file per unit, and
@@ -209,6 +240,10 @@ impl ClifBackend {
             lines: debug::LineVocabulary::default(),
             function_lines: Vec::new(),
             unit: None,
+            signature_types: FxHashMap::default(),
+            source_names: FxHashMap::default(),
+            debug_types: debug::TypeDescriptions::default(),
+            debug_subprograms: Vec::new(),
         };
         backend.emit_strings(pool)?;
         backend.define_trap_helper()?;
@@ -690,6 +725,12 @@ impl Backend for ClifBackend {
             .map_err(|e| CodegenError::Internal(format!("cannot declare {name}: {e}")))?;
         self.ids.insert(decl.proc, id);
         self.foreign.insert(decl.proc, foreign);
+        // Kept for the DWARF subprogram, which `define` builds and which has only a `ProcRef` (ADR-0173 §2).
+        self.signature_types
+            .insert(decl.proc, (decl.params.clone(), decl.ret));
+        if let Some(name) = &decl.name {
+            self.source_names.insert(decl.proc, name.clone());
+        }
         // The read-only string a backtrace frame names (ADR-0066 §3), one per procedure. The *source*
         // name, not the mangled symbol: a reader wants `countdown`, not `jr$0$3`. Emitted at declare
         // time so a call site in any body can reference it, and skipped for a procedure with no name —
@@ -807,6 +848,36 @@ impl Backend for ClifBackend {
             }
         }
 
+        // The subprogram, and the type descriptions its signature needs (ADR-0173 §1). Built here because a
+        // field's name needs the `SourceInfo` this call receives and `finalise` has none.
+        if let Some(compiled) = context.compiled_code() {
+            let (params, ret) = self
+                .signature_types
+                .get(&proc)
+                .cloned()
+                .unwrap_or_else(|| (Vec::new(), jr_pool::PoolId::VOID));
+            // Parameters are described even though nothing references them yet: a later wave adds
+            // `DW_TAG_formal_parameter`, and describing them now costs one DIE each and keeps the
+            // descriptions complete rather than signature-shaped.
+            for ty in &params {
+                self.debug_types.describe(pool, layout, *ty, locations);
+            }
+            let ret_index = self.debug_types.describe(pool, layout, ret, locations);
+            let line = mir
+                .blocks()
+                .iter()
+                .flat_map(|block| block.stmts.iter().map(body::statement_span))
+                .find_map(|span| locations.position(span))
+                .map_or(0, |at| at.line);
+            self.debug_subprograms.push(PendingSubprogram {
+                id,
+                length: u64::from(compiled.buffer.total_size()),
+                name: self.source_names.get(&proc).cloned(),
+                line,
+                ret: ret_index,
+            });
+        }
+
         // The unit's primary file is the first one any body reported, which is the root file's.
         if self.unit.is_none()
             && let Some(at) = mir
@@ -843,6 +914,8 @@ impl Backend for ClifBackend {
         };
         let lines = std::mem::take(&mut self.lines);
         let function_lines = std::mem::take(&mut self.function_lines);
+        let types = std::mem::take(&mut self.debug_types);
+        let pending_subprograms = std::mem::take(&mut self.debug_subprograms);
         let unit = self.unit.take();
         let mut product = self.module.finish();
 
@@ -857,10 +930,22 @@ impl Backend for ClifBackend {
                     rows: pending.rows,
                 })
                 .collect();
+            let subprograms: Vec<debug::FunctionSubprogram> = pending_subprograms
+                .into_iter()
+                .map(|pending| debug::FunctionSubprogram {
+                    symbol: product.function_symbol(pending.id),
+                    length: pending.length,
+                    name: pending.name,
+                    line: pending.line,
+                    ret: pending.ret,
+                })
+                .collect();
             debug::emit(
                 &mut product.object,
                 &lines,
                 &functions,
+                &types,
+                &subprograms,
                 &comp_dir,
                 &primary,
                 endian,
