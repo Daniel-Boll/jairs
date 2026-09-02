@@ -1,0 +1,321 @@
+//! The Window module: a window and a 2D drawing surface, over SDL2's C API.
+//!
+//! Written in Jairs. PLAN §8.5's first two items, on the foundation ADR-0163 chose after §8.5's own
+//! foundation turned out to be unreachable.
+//!
+//! # Why SDL2 and not Cocoa
+//!
+//! §2.1 imagined "Cocoa via `#foreign`", and every Cocoa call goes through `objc_msgSend`, which is
+//! **variadic** — and a variadic call is E0289 here because Cranelift's `Signature` has no notion of a
+//! variadic boundary (ADR-0162 §2). That blocker is upstream, so it is not a matter of doing more work in
+//! this project.
+//!
+//! SDL2 needs none of it: every routine below is a plain C function taking scalars and pointers. It also
+//! works on Linux, which §0's decision #6 makes a target and which Cocoa never was. The cost is that a
+//! drawing program needs SDL2 installed and that this module binds somebody else's library rather than the
+//! platform — stated rather than glossed, and argued at length in ADR-0163 §1.
+//!
+//! # Using it
+//!
+//! SDL2 is not in the C driver's default search path, so a build needs to be told where it is:
+//!
+//! ```text
+//! jr build my_program.jr -L /opt/homebrew/lib
+//! ```
+//!
+//! or `JR_LIBRARY_PATH=/opt/homebrew/lib`. That is a property of the machine compiling and deliberately not
+//! something a source file can say (ADR-0163 §2).
+//!
+//! **This module does not run under `jr run`.** The comptime VM resolves foreign symbols from the compiler's
+//! own process image rather than from a link line (ADR-0158 §3's mechanism), so it can reach libc and nothing
+//! else. A program that draws is a `jr build` program.
+//!
+//! # Why the handles are `*u8` and not opaque types
+//!
+//! `SDL_Window` and `SDL_Renderer` are opaque in C — a caller only ever holds a pointer. A Jairs
+//! `Window :: struct { handle: *u8; }` would add a name and one field, and the name is worth having, so that
+//! is what the two wrappers below are. The *raw* bindings take `*u8` because that is what an opaque pointer
+//! is, and because a `#foreign` signature naming a Jairs struct it never dereferences would be describing a
+//! layout SDL2 does not have.
+//!
+//! # What is absent, and why
+//!
+//! **No event loop.** `SDL_PollEvent` fills an `SDL_Event`, which is a **union** of every event type — 56
+//! bytes on this platform, and a union's layout is exactly what this language refuses to read across an FFI
+//! boundary (E0286, ADR-0160 §3: members overlap, so every C ABI treats the bytes as opaque). Reading one
+//! needs either a per-type accessor written in C or a `#place`-based overlay whose offsets this module would
+//! have to hard-code per SDL version. Both are real designs; neither is a detail. **So a window opened here
+//! cannot yet be closed by clicking its close box**, which is the honest headline of this module's state.
+//!
+//! **No texture or image loading.** `SDL_image` is a second library, and decoding in Jairs wants `File`
+//! (which exists) plus a decoder, which is its own item in §8.5.
+//!
+//! **No GPU layer.** SDL2's renderer is a 2D API and covers §8.5's first two items. Metal is Objective-C and
+//! inherits §1's refusal; Vulkan is a C API and would work the way this does. The choice waits for whichever
+//! item needs a shader (ADR-0163 §4).
+
+/// The SDL2 shared library.
+///
+/// Named `"SDL2"`, which becomes `-lSDL2`. Where it lives is the operator's business — see the module docs.
+sdl :: #system_library "SDL2";
+
+/// `SDL_INIT_VIDEO`, the only subsystem this module needs.
+///
+/// 0x20. The flags are a bitmask and stable across SDL2's lifetime, unlike the `O_*` constants `File` had to
+/// hedge about (ADR-0157 §1): SDL defines them itself rather than inheriting a platform's.
+INIT_VIDEO :: 32;
+
+/// `SDL_WINDOWPOS_CENTERED`, for a window with no preferred corner.
+///
+/// 0x2FFF0000. A magic number in the header too — SDL computes it as `SDL_WINDOWPOS_CENTERED_MASK | 0`, and
+/// the mask is what this is.
+CENTERED :: 805240832;
+
+/// `SDL_WINDOW_SHOWN` — the window is visible immediately.
+SHOWN :: 4;
+
+/// `SDL_WINDOW_HIDDEN` — created but not mapped.
+///
+/// What a test wants: it exercises the whole creation path without requiring a display, which is why the
+/// probe behind ADR-0163 §1 used it.
+HIDDEN :: 8;
+
+/// `SDL_WINDOW_RESIZABLE`.
+RESIZABLE :: 32;
+
+/// `SDL_RENDERER_ACCELERATED` — prefer a GPU-backed renderer.
+ACCELERATED :: 2;
+
+/// `SDL_RENDERER_SOFTWARE` — force the software path, which any machine has.
+SOFTWARE :: 1;
+
+/// `SDL_RENDERER_PRESENTVSYNC`.
+PRESENT_VSYNC :: 4;
+
+/// An `SDL_Rect`: four C `int`s.
+///
+/// `s32` fields, matching C's `int` on both supported targets, and **not** `s64`: SDL reads sixteen bytes
+/// through the pointer, so a wider field would make the second rectangle's worth of data land in the first's
+/// height. Passed by pointer, as SDL's own API does, so ADR-0161's aggregate-by-value work is not needed here
+/// — which is part of why SDL2 was reachable before Cocoa was.
+Rect :: struct {
+    /// Left edge, in pixels from the drawing area's left.
+    x: s32;
+    /// Top edge, in pixels from the top.
+    y: s32;
+    /// Width in pixels.
+    w: s32;
+    /// Height in pixels.
+    h: s32;
+}
+
+/// A window.
+///
+/// A named one-field struct rather than a bare pointer, for the reason `File` wraps a descriptor (ADR-0157
+/// §1): a handle and a count are both machine words, and the compiler will not confuse them once one has a
+/// name.
+Window :: struct {
+    /// The `SDL_Window *`. Null when the window is not open.
+    handle: *u8;
+}
+
+/// A 2D renderer bound to a window.
+Renderer :: struct {
+    /// The `SDL_Renderer *`. Null when the renderer is not created.
+    handle: *u8;
+}
+
+/// libc `SDL_Init`.
+sdl_init :: (flags: s64) -> s64 #foreign sdl "SDL_Init";
+
+/// libc `SDL_Quit`.
+sdl_quit :: () #foreign sdl "SDL_Quit";
+
+/// `SDL_CreateWindow(const char *title, int x, int y, int w, int h, Uint32 flags)`.
+sdl_create_window :: (title: *u8, x: s64, y: s64, w: s64, h: s64, flags: s64) -> *u8 #foreign sdl "SDL_CreateWindow";
+
+/// `SDL_DestroyWindow`.
+sdl_destroy_window :: (window: *u8) #foreign sdl "SDL_DestroyWindow";
+
+/// `SDL_CreateRenderer(SDL_Window *, int index, Uint32 flags)`.
+sdl_create_renderer :: (window: *u8, index: s64, flags: s64) -> *u8 #foreign sdl "SDL_CreateRenderer";
+
+/// `SDL_DestroyRenderer`.
+sdl_destroy_renderer :: (renderer: *u8) #foreign sdl "SDL_DestroyRenderer";
+
+/// `SDL_SetRenderDrawColor(SDL_Renderer *, Uint8 r, Uint8 g, Uint8 b, Uint8 a)`.
+sdl_set_draw_color :: (renderer: *u8, red: s64, green: s64, blue: s64, alpha: s64) -> s64 #foreign sdl "SDL_SetRenderDrawColor";
+
+/// `SDL_RenderClear`.
+sdl_render_clear :: (renderer: *u8) -> s64 #foreign sdl "SDL_RenderClear";
+
+/// `SDL_RenderFillRect(SDL_Renderer *, const SDL_Rect *)`.
+sdl_fill_rect :: (renderer: *u8, rect: *Rect) -> s64 #foreign sdl "SDL_RenderFillRect";
+
+/// `SDL_RenderDrawRect`.
+sdl_draw_rect :: (renderer: *u8, rect: *Rect) -> s64 #foreign sdl "SDL_RenderDrawRect";
+
+/// `SDL_RenderDrawLine`.
+sdl_draw_line :: (renderer: *u8, x1: s64, y1: s64, x2: s64, y2: s64) -> s64 #foreign sdl "SDL_RenderDrawLine";
+
+/// `SDL_RenderPresent`.
+sdl_render_present :: (renderer: *u8) #foreign sdl "SDL_RenderPresent";
+
+/// `SDL_GetNumVideoDrivers`.
+sdl_video_drivers :: () -> s64 #foreign sdl "SDL_GetNumVideoDrivers";
+
+/// `SDL_Delay(Uint32 ms)`.
+sdl_delay :: (milliseconds: s64) #foreign sdl "SDL_Delay";
+
+/// Starts the video subsystem.
+///
+/// `#must`: nothing else here works if this failed, and a caller who ignores the flag gets a null window and
+/// a null renderer and no idea why — the exact chain of one-level-removed failures the marker exists for
+/// (ADR-0151).
+///
+/// Idempotent in SDL, so calling it twice is defined and cheap.
+start :: () -> bool #must {
+    return sdl_init(INIT_VIDEO) == 0;
+}
+
+/// Shuts the video subsystem down. Not `#must`: there is nothing to recover from and nothing to report.
+stop :: () {
+    sdl_quit();
+}
+
+/// Opens a window `width` by `height`, centred, with `flags`.
+///
+/// `title` must be NUL-terminated, which is why it is a `*u8` and not a `string`: SDL reads to a NUL and a
+/// Jairs `string` carries a count instead. `File.nul_terminated`'s trick — a scratch copy from temporary
+/// storage — is the way to pass a computed title, and it is deliberately not done here: a window title
+/// usually outlives the call, and temporary storage does not.
+///
+/// `#must`, and the flag is the honest answer rather than a null check: SDL fails to create a window for
+/// reasons a caller can act on — no display, an unsupported flag combination — and a null handle read as
+/// "not yet" instead of "never" is how a draw loop spins forever.
+open :: (title: *u8, width: s64, height: s64, flags: s64) -> (Window, bool) #must {
+    w: Window;
+    w.handle = sdl_create_window(title, CENTERED, CENTERED, width, height, flags);
+    return w, w.handle != null;
+}
+
+/// Closes `window` and marks it closed.
+///
+/// Safe on an already-closed window, so a caller can close on every path without tracking whether they got
+/// one — the property that makes `File.close` usable where a `defer` would go (ADR-0157 §3).
+close :: (window: *Window) {
+    if window.handle != null {
+        sdl_destroy_window(window.handle);
+    }
+    window.handle = null;
+}
+
+/// Creates a renderer for `window`.
+///
+/// `SOFTWARE` rather than `ACCELERATED` as the flag a caller should reach for first, and the docs say so
+/// because the default is surprising: `ACCELERATED` *fails* on a machine with no GPU driver, where software
+/// always works. A caller who wants acceleration should ask for it and check the flag.
+///
+/// The `-1` index means "the first driver that satisfies the flags", which is what every caller wants and
+/// what a named constant would only obscure.
+renderer_for :: (window: *Window, flags: s64) -> (Renderer, bool) #must {
+    r: Renderer;
+    if window.handle == null {
+        r.handle = null;
+        return r, false;
+    }
+    r.handle = sdl_create_renderer(window.handle, -1, flags);
+    return r, r.handle != null;
+}
+
+/// Destroys `renderer`. Safe on an already-destroyed one.
+destroy :: (renderer: *Renderer) {
+    if renderer.handle != null {
+        sdl_destroy_renderer(renderer.handle);
+    }
+    renderer.handle = null;
+}
+
+/// Sets the colour subsequent drawing uses, as four 0-255 channels.
+///
+/// `#must` like every other call that can fail, and it genuinely can: a destroyed renderer returns an error
+/// rather than trapping, and a caller who ignores it draws in whatever colour was set before.
+set_color :: (renderer: *Renderer, red: s64, green: s64, blue: s64, alpha: s64) -> bool #must {
+    if renderer.handle == null {
+        return false;
+    }
+    return sdl_set_draw_color(renderer.handle, red, green, blue, alpha) == 0;
+}
+
+/// Fills the whole drawing area with the current colour.
+clear :: (renderer: *Renderer) -> bool #must {
+    if renderer.handle == null {
+        return false;
+    }
+    return sdl_render_clear(renderer.handle) == 0;
+}
+
+/// Fills `rect` with the current colour.
+fill :: (renderer: *Renderer, rect: *Rect) -> bool #must {
+    if renderer.handle == null {
+        return false;
+    }
+    return sdl_fill_rect(renderer.handle, rect) == 0;
+}
+
+/// Strokes `rect`'s outline with the current colour.
+outline :: (renderer: *Renderer, rect: *Rect) -> bool #must {
+    if renderer.handle == null {
+        return false;
+    }
+    return sdl_draw_rect(renderer.handle, rect) == 0;
+}
+
+/// Draws a line from `(x1, y1)` to `(x2, y2)`.
+line :: (renderer: *Renderer, x1: s64, y1: s64, x2: s64, y2: s64) -> bool #must {
+    if renderer.handle == null {
+        return false;
+    }
+    return sdl_draw_line(renderer.handle, x1, y1, x2, y2) == 0;
+}
+
+/// Shows everything drawn since the last present.
+///
+/// Not `#must`: SDL's own `SDL_RenderPresent` returns nothing, so there is no failure to report and inventing
+/// one would be a lie about what the library says.
+present :: (renderer: *Renderer) {
+    if renderer.handle != null {
+        sdl_render_present(renderer.handle);
+    }
+}
+
+/// Sleeps for `milliseconds`.
+///
+/// Here rather than in `Time` because `Time` deliberately has no sleep (ADR-0155 §1: a blocking call in the
+/// comptime VM would mean compilation that pauses) — and this module already cannot run in the VM at all, so
+/// the objection does not apply. A drawing program needs to yield the CPU between frames, and this is the
+/// only way it can.
+delay :: (milliseconds: s64) {
+    sdl_delay(milliseconds);
+}
+
+/// A rectangle, built from four `s64`s a caller already has.
+///
+/// A constructor because the four `cast(s32, …)`es are noise at every call site, and because narrowing is
+/// exactly where a caller would forget one and write a `s64` into a field SDL reads as two.
+rect :: (x: s64, y: s64, w: s64, h: s64) -> Rect {
+    r: Rect;
+    r.x = cast(s32, x);
+    r.y = cast(s32, y);
+    r.w = cast(s32, w);
+    r.h = cast(s32, h);
+    return r;
+}
+
+/// How many video drivers SDL was built with.
+///
+/// Not useful for drawing, and useful for a *test*: it is the cheapest call that proves the library linked
+/// and ran, with no display and no window. It is what ADR-0163 §1's first probe used.
+video_driver_count :: () -> s64 {
+    return sdl_video_drivers();
+}

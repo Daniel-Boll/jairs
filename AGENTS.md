@@ -212,6 +212,22 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0164 reaches 1056** (1057 under gate 7) and adds **no** corpus file — still **253** — for a reason worth
+recording, because it is a *new* one: `modules/Window` is the seventeenth module and **the first that `jr run`
+cannot execute at all.** The VM resolves a foreign symbol from the compiler's own process image, so it reaches
+libc and nothing else; SDL2 is unreachable by construction. A corpus file in `valid/` asserts the two engines
+agree, and here one engine cannot participate, so the test is a native-only `jr-cli` integration test — the
+same call ADR-0158 made for `Process` and against `Socket`.
+
+**And the wave's finding is more useful than the wave**: there is no event loop, because `SDL_PollEvent` fills
+an `SDL_Event`, which is a **union**, and E0286 refuses one at a `#foreign` boundary. ADR-0160 §3's reason is
+unarguable — members overlap, so every C ABI treats the bytes as opaque. That makes **four waves at one
+boundary**: `stat` (ADR-0157), `sockaddr` (ADR-0158), structs (ADR-0161, which opened it), now a union. The
+first three could route around it. This one cannot, and settling it — a C shim compiled during a build, or a
+`#place` overlay carrying per-version offsets — **also settles ADR-0163's deferred Objective-C question**,
+which reaches the same fork from the other side. Rejected on the spot: hard-coding `event.type` at offset 0,
+which is four lines and a silent break on any SDL2 point release that reorders a member.
+
 **ADR-0163 reaches 1055** (1056 under gate 7) and adds **no** corpus file — still **253** — because its
 subject is a *link line*, which no `.jr` program can observe. PLAN §8.5's correction, and the most instructive
 kind: **that section's own correction was itself wrong.**
