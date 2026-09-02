@@ -95,22 +95,24 @@
 #v(0.4em)
 #pill[7/7 gates green]
 #h(4pt)
-#pill[1071 tests]
+#pill[1073 tests]
 #h(4pt)
-#pill[ADR-0178 latest]
+#pill[ADR-0182 latest]
 #h(4pt)
 #pill(fill: rgb("#eaf5ee"), stroke: good)[ALL TWELVE WAVES DONE]
 #h(4pt)
 #pill(fill: rgb("#eaf5ee"), stroke: good)[everything merged to main]
+#h(4pt)
+#pill(fill: rgb("#fdf3e7"), stroke: warn)[per-OS: capability thin]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "1071", "workspace; 1075 with LLVM in"),
-  metric("Corpus", "255", "jr files, all three engines"),
-  metric("ADRs", "178", "0001 to 0178, immutable"),
-  metric("Diagnostics", "128", "codes, E0292 next free"),
+  metric("Tests", "1073", "workspace; 1077 with LLVM in"),
+  metric("Corpus", "262", "jr files, all three engines"),
+  metric("ADRs", "182", "0001 to 0182, immutable"),
+  metric("Diagnostics", "126", "codes, E0294 next free"),
   metric("Editor checks", "170", "Neovim, verified not gated"),
 )
 
@@ -295,7 +297,7 @@
   ("Formatter", "works", "Pure function over the CST; has lost a construct in most waves that added a node kind — #simd made it 9"),
   ("HIR, name resolution, modules", "works", "Flat import merge; cycles legal; export filtering"),
   ("InternPool: types, values, layout", "works", "One layout computation and one integer evaluator, shared. Behind an RwLock: reads share, interning excludes"),
-  ("Sema: signatures, checking", "works", "128 codes, E0292 next free, ownership enforced by a cross-crate test; no const-eval here, by design"),
+  ("Sema: signatures, checking", "works", "126 codes, E0294 next free, ownership enforced by a cross-crate test; folds size_of and os(); no const-eval here, by design"),
   ("MIR: typed SSA", "works", "Block parameters, not phis; explicit bounds check and zeroing"),
   ("Mid-end", "5 passes", "Inline (non-leaf, bounded rounds), forwarding (cross-block), const-prop, DCE, plus the bounds-check strip. -O0 skips all of it"),
   ("Const-eval", "works", "Runs MIR through the bytecode VM"),
@@ -332,7 +334,7 @@
 // Roadmap
 // ---------------------------------------------------------------------------
 
-#section[Roadmap: all twelve waves closed — see PLAN §1.5 and §7]
+#section[Roadmap: twelve waves closed, plus the Simp programme — see PLAN §1.5 and §7]
 
 #let waves = (
   (
@@ -387,6 +389,14 @@
     "W12 Debug info", "done",
     "DONE in six waves (ADR-0169 to ADR-0174), and §8.4 had claimed line tables already existed when dwarfdump on a built binary printed an empty section. So it started from zero. A .debug_line for Cranelift written by hand with gimli — a SourceLoc indexing a (path, line) vocabulary, a relocation writer for sequence addresses — and then for LLVM, where NONE of that is reusable because LLVM writes DWARF itself from !dbg metadata. Both verified by PARSING the section the way lldb does rather than grepping dwarfdump. Items 2 and 3 turned out COUPLED: a struct mapping was written, was correct, and dwarfdump showed no struct, because LLVM prunes a type nothing declares and a signature is not a declaration — what retains a type is a VARIABLE of it. One item remains and is specified rather than vague: a register-resident local, whose plan entry named an ISA flag that does not exist.",
   ),
+  (
+    "Simp programme", "done",
+    "DONE in four ADRs (ADR-0179 to ADR-0182), on top of the twelve. Qualified imports first, because the graphics restructure could not be written without them: Window and File both exported open, so a program that both drew and read a file was E0211 and unwritable. Then the target OS as a compile-time value — the compiler had NO notion of an operating system anywhere, its whole notion of a target being two numbers in TargetLayout — and one library use of it, Time's CLOCK_MONOTONIC, which had been macOS's number under a comment saying so. Then the renderer, on SDL_RenderGeometry rather than SDL_RenderFillRect: a batch opened, quads carrying their own colour, flushed — so a ROTATED quad is one call, which the old rectangle fill could not draw at any angle. Simp's own shape was verified from primary sources and SDL_Vertex's 20 bytes measured with a cc-compiled offsetof before a line of the module existed.",
+  ),
+  (
+    "Per-OS support", "partial",
+    "THIN, and named rather than glossed. os() shipped and the whole 22-module library uses it ONCE, in Time. Every #system_library is 'c' or 'SDL2' — both one name on all three targets, which is WHY the graphics stack needed no gating and got none. File's O_* flags, Socket's constants and Thread's pthread sizes are all still hedged with comments admitting they are one platform's numbers. The enabling gap is ONE parser arm: #insert is absent from the file-scope directive dispatcher, so comptime code can generate statements but not DECLARATIONS. A #run reading os() and emitting source text already works, probed. Item-level #insert would make per-OS support library code rather than compiler work — and it dissolves the 'per-OS library name is circular' claim rather than breaking it, because generated text contains a LITERAL. Separately, jr-link emits only -L and -l, so OpenGL is unreachable on macOS for a simpler reason than the plan gave: -lOpenGL does not link, -framework OpenGL does. See docs/compatibility-plan.md.",
+  ),
 )
 
 #for (name, state, note) in waves {
@@ -401,7 +411,12 @@
         // `blocked` is amber, not the grey `not started` gets: a wave that cannot be started until
         // something else lands is a different fact from one nobody has picked up, and the whole point
         // of PLAN §8.5 is that W10 is the first kind while the table used to imply the second.
-        fill: if state == "done" { good } else if state == "in progress" { accent } else if state == "blocked" { warn } else { absent },
+        //
+        // `partial` is amber too, and for a sharper reason: a capability that exists and is barely
+        // used reads as done from the outside. Per-OS support is exactly that — `os()` shipped and the
+        // library uses it once — so it gets a colour that says look here rather than the green of a
+        // closed wave or the grey of one nobody started.
+        fill: if state == "done" { good } else if state == "in progress" { accent } else if state == "blocked" or state == "partial" { warn } else { absent },
       )[#state],
       text(size: 7.1pt, fill: muted)[#note],
     )
@@ -418,12 +433,24 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[Four waves shipped; the programme closed]
+    #sub[The Simp programme, on top of twelve closed waves]
     #text(size: 7.4pt)[
-      ADR-0155 through 0178. Test count 1033 to *1071* (1075 with LLVM compiled in), corpus 237 to
-      *255* files, ADRs 149 to *178*. W7, W9, W10, W11 and W12 all closed, which means *every wave in
-      the plan is done* — and three of the five had to correct the plan's own description of them
-      before they could start.
+      ADR-0179 through 0182. Test count 1071 to *1073* (1077 with LLVM compiled in), corpus 255 to
+      *262* files, ADRs 178 to *182*. Qualified imports, the target OS as a compile-time value, a
+      per-OS clock id, and the graphics modules restructured onto `SDL_RenderGeometry`.
+    ]
+
+    #v(0.3em)
+    #text(size: 7.4pt)[
+      *Its plan was wrong in six places, and every one was found by writing the thing.* Two made items
+      unbuildable as written. The plan's design for a qualified value would have taught nineteen sites a
+      new shape; carried on the *name* instead, nothing downstream changed. It reserved a diagnostic code
+      for a condition that turns out unreachable, so the code was *refused* rather than shipped as a
+      promise nothing checks. It called for a salsa input for a value that cannot change in-process,
+      costing a parameter at ~50 call sites. It named the wrong cause for the file-scope gap — the fold
+      was computed and thrown away one phase earlier, so its proposed fix changed nothing. It assumed
+      module-level mutable state, *which this language does not have*. And it ruled OpenGL out on a
+      library-name cycle when the real first blocker is that `jr-link` cannot emit `-framework` at all.
     ]
 
     #v(0.3em)
@@ -511,8 +538,8 @@
 #text(size: 6.6pt, fill: muted)[
   Sources: PLAN.md §1.5 and §7, the ADR directory, `docs/decisions/DECISIONS.md`, and all seven gates
   run today on `main` *after* the merge, not on a branch. Every number was measured rather than carried
-  forward — the test count from a full workspace run (1071, zero failures) and a second under
-  `--features jr-cli/llvm` (1075), the corpus count from a file walk (255 `.jr` files under
+  forward — the test count from a full workspace run (1073, zero failures) and a second under
+  `--features jr-cli/llvm` (1077), the corpus count from a file walk (262 `.jr` files under
   `tests/corpus/` outside `tests/corpus/modules/`), the ADR count from `docs/adr/`, the diagnostic codes
   from the `const E0nnn` definitions across the crates — whose ownership is now enforced by
   `jr-cli/tests/codes.rs` rather than asserted in prose — and the editor-check count from a real
