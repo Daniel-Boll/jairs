@@ -212,6 +212,30 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0161 reaches 1054** (1055 under gate 7) and adds one corpus file = **251** — PLAN §8.1.2 **part 2**,
+which closes the project's highest-leverage blocker. An aggregate crosses a `#foreign` boundary now, and
+**W10 — Graphics is unblocked** along with `readdir`/`stat` and `getaddrinfo`.
+
+**Three engines, three different correct shapes.** The VM *describes* the struct to libffi and delegates — it
+consults `classify` only to bound its return buffer, because libffi implements the ABI itself. Cranelift emits
+an `AbiParam` per register and moves **whole words from the layout's start**, never per-field, since the class
+counts words from the *size*. LLVM emits **separate scalars rather than `byval`**, matching Cranelift so the
+differential harness compares like with like; its one delegation is the return, which is a struct of the
+class's pieces.
+
+**Two traps worth carrying.** The `#[repr(C, align(16))]` on the VM's return buffer is load-bearing:
+`libffi::low::call` writes into a `MaybeUninit<R>` directly once `R` is a word wide, and a returned struct is
+stored *from registers*, so a one-aligned `[u8; 32]` is undefined behaviour. And the Cranelift verifier caught
+an early `return` in the signature builder that pushed the results and dropped every parameter —
+"mismatched argument count: got 2, expected 0" at the first call site. A builder with more to append must not
+return early.
+
+**The verification is the point.** A test calling a Jairs `#c_call` procedure passes with both sides wrong,
+because one classification emits the call *and* reads it. So: libc's `ldiv` (a real sixteen-byte struct return)
+in all three engines, checking quotient and remainder **separately** so a register swap shows; plus a
+`cc`-compiled shim at `-O1` for the argument direction, a field-swapping return, and a nested four-`double`
+HFA. When testing an ABI, link against something a C compiler produced.
+
 **ADR-0160 reaches 1053** (1054 under gate 7) and adds **no** corpus file — still **250** — because it adds no
 language behaviour at all. PLAN §8.1.2 **part 1 of 2**: the C ABI classification for an aggregate, in
 `jr-pool` beside the layout computation, so that the VM, Cranelift and LLVM *ask* instead of each deciding.

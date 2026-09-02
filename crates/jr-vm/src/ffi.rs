@@ -197,41 +197,117 @@ fn is_pointer_return(vm: &Vm<'_>, foreign: &ForeignProc) -> bool {
     matches!(vm.pool().item(foreign.ret), Item::PointerType(_))
 }
 
-/// One argument, reduced to the machine word the C ABI passes.
+/// One argument, ready for libffi.
 ///
-/// Every type the slice's `#foreign` declarations use — `s64`, `*u8` — is one word,
-/// so a `u64` per argument is the whole marshalling story. An aggregate argument is
-/// refused rather than flattened: the arm64 and x86-64 rules for passing a struct by
-/// value differ from each other and from the naive "one word per field", so guessing
-/// would produce a call that works on one platform and corrupts the stack on the
-/// other. `to_c_string()` and by-value aggregates are **still absent, and wave W3 has
-/// shipped** — this comment named W3 for several waves after that, so it described a
-/// schedule rather than a plan. Neither is owned by a wave today.
-fn marshal(vm: &Vm<'_>, value: &Value, ty: PoolId) -> Result<u64, VmError> {
+/// Two shapes rather than one word, because an **aggregate passed by value** is its bytes and not an address
+/// (ADR-0160 part 2). Keeping them apart in the type means `dispatch` cannot accidentally hand libffi a
+/// pointer where the C signature says struct — which is the shape of mistake that produces a call that works
+/// on one platform and corrupts the stack on the other.
+#[derive(Debug, Clone)]
+enum Marshalled {
+    /// A scalar: an integer, a `bool`, a pointer, or a float's bits.
+    Word(u64),
+    /// An aggregate's bytes, in target layout. Owned, because libffi borrows the address across the call.
+    Bytes(Vec<u8>),
+}
+
+/// The libffi description of `ty`, faithful field by field.
+///
+/// # Why this describes the struct rather than consulting `jr_pool::classify`
+///
+/// **libffi implements the C ABI itself.** Given a true description of the struct it places the pieces
+/// correctly, including the mixed-register cases `Class::Memory` refuses — so the VM's correct move is to
+/// describe and delegate, not to classify and then act on the classification. The two native back ends have
+/// no such helper and *must* consult `classify`, which is why that function exists; this engine gets the same
+/// answer for free and would keep getting it if the refusal were ever relaxed.
+///
+/// Faithful means the real widths: a `u8` field is `Type::u8()`, not a word. Describing every field as a word
+/// would give libffi the wrong size and alignment for the struct, and on a `{u8, u8}` it would claim eight
+/// bytes where C says two.
+///
+/// `None` for a type libffi cannot be told about — a `void` field, a procedure type — which the caller turns
+/// into the same refusal an unsupported scalar gets.
+fn ffi_type_of(pool: &jr_pool::Pool, ty: PoolId) -> Option<Type> {
+    match pool.item(ty) {
+        Item::BoolType => Some(Type::u8()),
+        Item::PointerType(_) => Some(Type::pointer()),
+        Item::IntType { bits, .. } => match bits {
+            8 => Some(Type::u8()),
+            16 => Some(Type::u16()),
+            32 => Some(Type::u32()),
+            _ => Some(Type::u64()),
+        },
+        Item::FloatType { bits: 32 } => Some(Type::f32()),
+        Item::FloatType { .. } => Some(Type::f64()),
+        Item::StructType { .. } => {
+            let fields = pool.fields_of(ty)?;
+            let types: Vec<PoolId> = fields.iter().map(|field| field.ty).collect();
+            let described: Option<Vec<Type>> = types
+                .iter()
+                .map(|field| ffi_type_of(pool, *field))
+                .collect();
+            Some(Type::structure(described?))
+        }
+        Item::ArrayType { elem, len } => {
+            // An array is a struct of `len` identical members to a C ABI — which is what makes `float64[4]`
+            // an HFA exactly as a four-field struct is (ADR-0160 §2).
+            let elem = *elem;
+            let len = usize::try_from(*len).ok()?;
+            let member = ffi_type_of(pool, elem)?;
+            let members: Vec<Type> = (0..len).map(|_| member.clone()).collect();
+            Some(Type::structure(members))
+        }
+        // A `string`, a view and a dynamic array are compiler-defined aggregates of words, so they are
+        // described as the `{pointer, count}` pairs they are rather than walked as fields they do not have.
+        Item::StringType | Item::ViewType { .. } => {
+            Some(Type::structure(vec![Type::pointer(), Type::u64()]))
+        }
+        _ => None,
+    }
+}
+
+fn marshal(vm: &Vm<'_>, value: &Value, ty: PoolId) -> Result<Marshalled, VmError> {
     let pool = vm.pool();
     match pool.item(ty) {
         Item::IntType { .. } => {
             let kind = IntKind::of(pool, ty).unwrap_or(IntKind::S64);
             // Sign-extend to a full word: the C ABI passes a narrow signed integer
             // sign-extended, and `Value::Scalar` holds it width-normalised.
-            Ok(value.as_int(kind)? as u64)
+            Ok(Marshalled::Word(value.as_int(kind)? as u64))
         }
         // **A float is marshalled to its bits, and `dispatch` passes it in a float register** (ADR-0114 §1).
         // The bits are stored width-normalised in `Value::Scalar` already; keying the libffi arg type on the
         // parameter is what makes libffi place it in `xmm0`/`d0` rather than an integer register, which every
         // real ABI requires and which passing the bits as a `u64` would get wrong — silently, since the callee
         // would read a float register that was never written.
-        Item::FloatType { .. } => Ok(value.scalar()?),
-        Item::BoolType => Ok(u64::from(value.boolean()?)),
+        Item::FloatType { .. } => Ok(Marshalled::Word(value.scalar()?)),
+        Item::BoolType => Ok(Marshalled::Word(u64::from(value.boolean()?))),
         Item::PointerType(_) => {
             let address = value.scalar()?;
             if address == 0 {
                 // A null pointer is a legitimate C argument, and `host_pointer` would
                 // refuse it, so it is passed through rather than translated.
-                return Ok(0);
+                return Ok(Marshalled::Word(0));
             }
             let host = vm.memory().host_pointer(address, 1)?;
-            Ok(host as u64)
+            Ok(Marshalled::Word(host as u64))
+        }
+        // **An aggregate passed by value is its bytes** (ADR-0160 part 2). `Value::Aggregate` already holds
+        // them in target layout, so there is nothing to read out of the VM's memory region and nothing to
+        // translate — which is also why this direction has none of the nested-pointer problem ADR-0158 §3
+        // found: the bytes are copied, and a pointer *inside* them would still be region-relative. A struct of
+        // pointers therefore stays wrong across this boundary, and `jr-sema` is where that is refused.
+        Item::StructType { .. }
+        | Item::ArrayType { .. }
+        | Item::StringType
+        | Item::ViewType { .. } => {
+            let Value::Aggregate(bytes) = value else {
+                return Err(VmError::unsupported(String::from(
+                    "an aggregate argument arrived as a scalar, which means the caller and the signature \
+                     disagree about its type",
+                )));
+            };
+            Ok(Marshalled::Bytes(bytes.clone()))
         }
         other => Err(VmError::unsupported(format!(
             "passing {other:?} to a foreign procedure arrives with a later wave"
@@ -249,9 +325,12 @@ fn marshal(vm: &Vm<'_>, value: &Value, ty: PoolId) -> Result<u64, VmError> {
 /// turns into the process exit status. This is the one symbol whose C behaviour the
 /// VM deliberately does not reproduce, and the reason is that the VM is a *guest*
 /// inside a process that has other work to finish.
-fn dispatch(vm: &mut Vm<'_>, foreign: &ForeignProc, args: &[u64]) -> Result<Value, VmError> {
+fn dispatch(vm: &mut Vm<'_>, foreign: &ForeignProc, args: &[Marshalled]) -> Result<Value, VmError> {
     if foreign.symbol == "exit" {
-        let status = args.first().copied().unwrap_or(0);
+        let status = match args.first() {
+            Some(Marshalled::Word(word)) => *word,
+            _ => 0,
+        };
         return Err(VmError::Exited(status as i64));
     }
 
@@ -261,47 +340,85 @@ fn dispatch(vm: &mut Vm<'_>, foreign: &ForeignProc, args: &[u64]) -> Result<Valu
     // `floats`, kept alive for the duration of the call, because `libffi::arg` borrows its operand — a
     // temporary would dangle before `signature.call`.
     let pool = vm.pool();
-    let arg_types: Vec<Type> = foreign
-        .params
-        .iter()
-        .map(|ty| match jr_pool::FloatKind::of(pool, *ty) {
+    // **Per-argument libffi types.** An aggregate is described faithfully so libffi places its pieces itself
+    // (ADR-0160 part 2); a float is `f32`/`f64`, which is what puts it in a float register; everything else is
+    // a word.
+    let mut arg_types: Vec<Type> = Vec::with_capacity(foreign.params.len());
+    for ty in &foreign.params {
+        if matches!(
+            pool.item(*ty),
+            Item::StructType { .. }
+                | Item::ArrayType { .. }
+                | Item::StringType
+                | Item::ViewType { .. }
+        ) {
+            let described = ffi_type_of(pool, *ty).ok_or_else(|| {
+                VmError::unsupported(format!(
+                    "an aggregate parameter of {:?} cannot be described to the C ABI",
+                    pool.item(*ty)
+                ))
+            })?;
+            arg_types.push(described);
+            continue;
+        }
+        arg_types.push(match jr_pool::FloatKind::of(pool, *ty) {
             Some(k) if k.bits == 32 => Type::f32(),
             Some(_) => Type::f64(),
             None => Type::u64(),
-        })
-        .collect();
+        });
+    }
     let mut floats32: Vec<f32> = Vec::new();
     let mut floats64: Vec<f64> = Vec::new();
-    // Decode each float word to a host float, into the width-appropriate store, so its address survives to the
-    // call. Recorded as `(is_float, is_32, index)` so `cell` can point at the right store.
-    let mut plan: Vec<(bool, bool, usize)> = Vec::with_capacity(args.len());
+    // Where each argument's operand lives, so `cell` can take its address. A float has to be *decoded* into a
+    // width-appropriate store first, because `libffi::arg` borrows its operand and a temporary would dangle
+    // before the call; an aggregate's bytes are already owned by `args`, so its arm carries no store.
+    enum Cell {
+        /// The word in `args` at this position.
+        Word,
+        /// `floats32[index]`.
+        Float32(usize),
+        /// `floats64[index]`.
+        Float64(usize),
+        /// The bytes in `args` at this position.
+        Bytes,
+    }
+    let mut plan: Vec<Cell> = Vec::with_capacity(args.len());
     for (value, ty) in args.iter().zip(foreign.params.iter()) {
-        match jr_pool::FloatKind::of(pool, *ty) {
-            Some(k) if k.bits == 32 => {
-                floats32.push(k.decode(*value) as f32);
-                plan.push((true, true, floats32.len() - 1));
-            }
-            Some(k) => {
-                floats64.push(k.decode(*value));
-                plan.push((true, false, floats64.len() - 1));
-            }
-            None => plan.push((false, false, 0)),
+        match value {
+            Marshalled::Bytes(_) => plan.push(Cell::Bytes),
+            Marshalled::Word(word) => match jr_pool::FloatKind::of(pool, *ty) {
+                Some(k) if k.bits == 32 => {
+                    floats32.push(k.decode(*word) as f32);
+                    plan.push(Cell::Float32(floats32.len() - 1));
+                }
+                Some(k) => {
+                    floats64.push(k.decode(*word));
+                    plan.push(Cell::Float64(floats64.len() - 1));
+                }
+                None => plan.push(Cell::Word),
+            },
         }
     }
     let signature = Cif::new(arg_types, return_type(vm, foreign)?);
     let cell: Vec<Arg> = args
         .iter()
         .zip(plan.iter())
-        .map(|(word, (is_float, is_32, idx))| {
-            if *is_float {
-                if *is_32 {
-                    arg(&floats32[*idx])
-                } else {
-                    arg(&floats64[*idx])
-                }
-            } else {
-                arg(word)
+        .map(|(value, where_it_is)| match (value, where_it_is) {
+            (Marshalled::Word(word), Cell::Word) => arg(word),
+            (_, Cell::Float32(index)) => arg(&floats32[*index]),
+            (_, Cell::Float64(index)) => arg(&floats64[*index]),
+            // **The address of the first byte**, which is what libffi wants for a struct: it reads the
+            // described type's size from there. An empty aggregate has no first byte, so it gets the address
+            // of the vector itself — libffi will read zero bytes from it, and a null would be a different
+            // argument entirely.
+            (Marshalled::Bytes(bytes), Cell::Bytes) => {
+                bytes.first().map_or_else(|| arg(bytes), arg)
             }
+            // Unreachable: `plan` was built from `args` in the same order, so the two always agree. Answered
+            // rather than panicking, because a panic inside the compiler is worse than a wrong argument the
+            // signature check already prevented.
+            (Marshalled::Bytes(bytes), Cell::Word) => arg(bytes),
+            (Marshalled::Word(word), Cell::Bytes) => arg(word),
         })
         .collect();
 
@@ -327,6 +444,36 @@ fn dispatch(vm: &mut Vm<'_>, foreign: &ForeignProc, args: &[u64]) -> Result<Valu
         }
         let r = unsafe { signature.call::<f64>(code, &cell) };
         return Ok(Value::Scalar(kind.encode(r)));
+    }
+
+    // **An aggregate return comes back as bytes** (ADR-0160 part 2), read into a buffer big enough for every
+    // shape the classification permits: four eight-byte members is the largest, so thirty-two bytes.
+    //
+    // `#[repr(C, align(16))]` matters. `libffi::low::call` writes into a `MaybeUninit<R>` directly whenever
+    // `size_of::<R>()` is at least a word, and a returned struct is stored from registers — so the buffer has
+    // to be aligned for the widest member. A bare `[u8; 32]` is one-aligned and would be undefined behaviour
+    // on a target that requires alignment for the store.
+    if let Some(class) = jr_pool::classify(pool, jr_pool::TargetLayout::host(), foreign.ret)
+        .map_err(|error| VmError::unsupported(format!("{error}")))?
+    {
+        if class == jr_pool::Class::Memory {
+            return Err(VmError::unsupported(String::from(
+                "returning this aggregate from a `#foreign` procedure needs a register class this \
+                 compiler does not implement",
+            )));
+        }
+        let layout = jr_pool::layout_of(pool, jr_pool::TargetLayout::host(), foreign.ret)
+            .map_err(|error| VmError::unsupported(format!("{error}")))?;
+        #[repr(C, align(16))]
+        #[derive(Clone, Copy)]
+        struct ReturnBuffer([u8; 32]);
+        // SAFETY: as the paths above — the declaration is the only description of the callee that exists, and
+        // ADR-0006 accepts that a wrong `#foreign` declaration is undefined behaviour. The CIF's return type
+        // is the faithful struct description from `return_type`, whose size is at most thirty-two bytes
+        // because `classify` answered a register class; every bit pattern is a valid `[u8; 32]`.
+        let returned = unsafe { signature.call::<ReturnBuffer>(code, &cell) };
+        let size = usize::try_from(layout.size).unwrap_or(0).min(32);
+        return Ok(Value::Aggregate(returned.0[..size].to_vec()));
     }
 
     // SAFETY: as above. The result is read as a full word and then narrowed by the
@@ -363,6 +510,17 @@ fn return_type(vm: &Vm<'_>, foreign: &ForeignProc) -> Result<Type, VmError> {
         // A float return is described to libffi as `f32`/`f64` so it reads the float register (ADR-0114 §1).
         Item::FloatType { bits: 32 } => Ok(Type::f32()),
         Item::FloatType { .. } => Ok(Type::f64()),
+        // An aggregate return is described faithfully, exactly as an aggregate *argument* is, so libffi
+        // decides between registers and a hidden pointer itself (ADR-0160 part 2).
+        Item::StructType { .. }
+        | Item::ArrayType { .. }
+        | Item::StringType
+        | Item::ViewType { .. } => ffi_type_of(pool, foreign.ret).ok_or_else(|| {
+            VmError::unsupported(format!(
+                "an aggregate return of {:?} cannot be described to the C ABI",
+                pool.item(foreign.ret)
+            ))
+        }),
         other => Err(VmError::unsupported(format!(
             "a foreign procedure returning {other:?} arrives with a later wave"
         ))),

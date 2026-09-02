@@ -696,6 +696,7 @@ impl<'ctx> Backend for LlvmBackend<'ctx> {
             locations,
             shadow: self.shadow,
             names: &self.names,
+            foreign: &self.foreign,
             shadow_capacity: SHADOW_CAPACITY,
         };
         body::translate(

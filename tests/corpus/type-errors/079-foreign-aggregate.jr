@@ -1,42 +1,51 @@
-// EXPECT: E0286 — a type that cannot cross a `#foreign` boundary (ADR-0150)
+// EXPECT: E0286 — an aggregate whose C register class this compiler does not implement (ADR-0160 §3)
 //
-// This file exists because the construct used to be a **leaked internal error**, and the ninth
-// occurrence of this project's most-recorded failure shape. The declaration below checked clean, and
-// *calling* it gave `procedure 0 in file 0 was defined without being declared` from Cranelift and
-// `no routine for file 0 proc 0` from the VM — two different internal errors, no diagnostic, for a
-// program a reader would reasonably expect to work.
+// **This file's subject moved, and the history is worth keeping.** It was written for ADR-0150, when *every*
+// aggregate was refused at a `#foreign` boundary — the construct had been the ninth occurrence of this
+// project's most-recorded failure shape, checking clean and then giving two different internal errors when
+// called. That refusal is now much narrower: ADR-0160 classified the shapes both supported targets agree
+// about, so a two-word integer struct and a homogeneous float aggregate **cross**, and `valid/130` and
+// `jr-cli`'s C-shim test verify them against a real C compiler.
 //
-// **Refused at the declaration rather than the call**, because the signature is what cannot be
-// lowered: a binding that could never be called successfully is itself the error, and a library
-// binding is usually written before its first caller. Refusing at the call would report one fact once
-// per call site and say nothing at all about a binding nobody calls yet.
+// What remains refused is the case where the targets genuinely **disagree**, and that is what this file now
+// pins. `Mixed` is sixteen bytes of one `float64` and one `s64`:
 //
-// `jr-codegen-llvm`'s signature builder already refused this *in words* — "an aggregate passed across
-// a `#foreign` boundary" — so the fix was to raise an existing refusal to where it can carry a span
-// and name the workaround, not to invent a rule.
+//   * System V on x86-64 classifies each eight bytes independently, so `d` goes in `xmm0` and `n` in `rdi` —
+//     one struct spanning two register files;
+//   * AAPCS64 has no such rule: `Mixed` is not a homogeneous float aggregate, it is sixteen bytes, so both
+//     halves go in `x0`/`x1`.
 //
-// **One** refusal here, per this directory's contract. The message differs by *why*, and the other
-// shapes E0286 covers are:
+// One case with two correct answers cannot be implemented once, and implementing both means a second ABI's
+// worth of rules verified against a target this project has never run (PLAN §1.5's Linux CI is still owed).
+// So it is refused, and the diagnostic names the two shapes that *do* work — an honest narrower rule rather
+// than a wrong wider one, which is the call ADR-0112 made about `sqrt` and ADR-0157 made about a variadic
+// `open`.
 //
-//   * a `string`, which is `{data, count}` and gets its own sentence because it is the aggregate a
-//     caller is most likely to try — the advice is to pass `.data` and `.count` as two arguments;
-//   * a view or a dynamic array, multi-word descriptors, with the same advice;
-//   * an array, which C decays to a pointer and Jairs does not;
-//   * a `#simd` vector — the one refusal that is *not* about width, since a vector is one register:
-//     no engine here declares one across a C boundary, so passing it would be a silent
-//     reinterpretation rather than a call;
-//   * a return type in any of those shapes, whose advice is an out-parameter instead.
+// **One** refusal here, per this directory's contract. The other shapes E0286 still covers, each with its own
+// sentence because the *reason* differs:
 //
-// The general fix — the platform ABI's field-classification rules, in both back ends and libffi — is
-// PLAN §8.1.2, and it is what gates W10: every windowing and GPU API passes structs by value.
+//   * a struct past two words that is not a float aggregate — `{ s64, s64, s64 }` — where the register class
+//     simply runs out;
+//   * a **union** or **variant**, always, because their members overlap and every C ABI treats a union's
+//     bytes as opaque;
+//   * a float aggregate of five or more members, one past what the four-register form holds;
+//   * an aggregate of two different float widths, which is not *homogeneous* however similar it looks;
+//   * a dynamic array, which is three words — data, count and capacity — one past the two a C aggregate may
+//     occupy;
+//   * a `#simd` vector, the one refusal that is not about width at all: a vector *is* one register, and no
+//     engine here declares one across a C boundary, so passing it would be a silent reinterpretation.
+//
+// **Refused at the declaration rather than the call**, unchanged from ADR-0150: the signature is what cannot
+// be lowered, a binding that could never be called successfully is itself the error, and a library binding is
+// usually written before its first caller.
 libc :: #system_library "c";
 
-Pair :: struct {
-    a: s64;
-    b: s64;
+Mixed :: struct {
+    d: float64;
+    n: s64;
 }
 
-takes :: (p: Pair) -> s64 #foreign libc "takes";
+takes :: (m: Mixed) -> s64 #foreign libc "takes";
 
 main :: () {
 }

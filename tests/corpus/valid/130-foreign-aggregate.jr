@@ -1,0 +1,83 @@
+// ADR-0160 part 2: an aggregate crossing a `#foreign` boundary, verified against real libc.
+//
+// PLAN §8.1.2, the gate in front of W10. This file exercises the **return** direction, which is the half a
+// corpus program can test in all three engines — because `ldiv(3)` is in libc, returns a sixteen-byte
+// two-integer struct, and the comptime VM resolves symbols from the compiler's own process.
+//
+// **Verifying against libc rather than against Jairs is the whole point.** A test that called a Jairs
+// procedure declared `#c_call` would pass with both sides wrong, since one classification would be used to
+// emit the call *and* to read it. `ldiv` was compiled by a real C compiler years ago and its convention is not
+// negotiable, so agreeing with it is evidence rather than self-consistency.
+//
+// The **argument** direction and the homogeneous float aggregate need a C function this project compiles
+// itself, and the VM cannot reach one — it resolves symbols from the process image, not from a library on a
+// link line. So those live in `jr-cli`'s `aggregates_cross_a_foreign_boundary_as_a_c_compiler_expects`, which
+// builds an object, links a `cc`-compiled shim, and runs it. Same reasoning as ADR-0158 §3: a program whose
+// engines legitimately differ has no home here.
+//
+// Five bits:
+//
+//   1   the quotient is right                       17 / 5 = 3
+//   2   the remainder is right                      17 % 5 = 2
+//   4   a negative numerator truncates toward zero   -17 / 5 = -3, C's rule since C99
+//   8   ...and its remainder carries the sign        -17 % 5 = -2
+//   16  an exact division leaves no remainder        20 / 5 = 4 rem 0
+//
+// 31, which is also the exit status.
+#import "Basic";
+
+/// The C library, declared **here** rather than reached through `Basic`.
+///
+/// `modules/Basic` declares its own, and importing it would be the shorter spelling — but the `jr-sema` corpus
+/// harness resolves a file with no module paths, so a `#foreign` declaration naming an imported library is
+/// E0225 "unknown foreign library" there. Every `type-errors` fixture that touches `#foreign` declares its own
+/// for the same reason; this is the first `valid` one that has to.
+libc :: #system_library "c";
+
+/// C's `ldiv_t`: two `long`s, sixteen bytes, and `Class::Integer { words: 2 }`.
+///
+/// The field *order* is C's — quotient first — and it matters: this struct is read from two registers the
+/// callee wrote, so swapping the fields would swap the answers with no diagnostic anywhere. That is exactly
+/// the silent failure the shared classification exists to prevent, and the reason this file checks the two
+/// values separately rather than checking their sum.
+Ldiv_Result :: struct {
+    /// The quotient.
+    quot: s64;
+    /// The remainder.
+    rem: s64;
+}
+
+/// libc `ldiv(3)`, which returns its result **by value**.
+ldiv :: (numerator: s64, denominator: s64) -> Ldiv_Result #foreign libc "ldiv";
+
+main :: () {
+    total := 0;
+
+    positive := ldiv(17, 5);
+    if positive.quot == 3 {
+        total = total + 1;
+    }
+    if positive.rem == 2 {
+        total = total + 2;
+    }
+
+    // C truncates toward zero, so `-17 / 5` is `-3` and not `-4`. Checked because it is the case where a
+    // wrong *register* and a wrong *rounding rule* would look alike, and only one of them is this
+    // compiler's business.
+    negative := ldiv(-17, 5);
+    if negative.quot == -3 {
+        total = total + 4;
+    }
+    if negative.rem == -2 {
+        total = total + 8;
+    }
+
+    exact := ldiv(20, 5);
+    if exact.quot == 4 {
+        if exact.rem == 0 {
+            total = total + 16;
+        }
+    }
+
+    exit(total);
+}

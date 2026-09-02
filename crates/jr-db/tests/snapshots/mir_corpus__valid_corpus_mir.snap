@@ -15062,3 +15062,76 @@ proc main -> void {
     discard call extern proc1(v124)
     return
 }
+
+========================================
+130-foreign-aggregate.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: Ldiv_Result  // local 1
+    s1: Ldiv_Result  // local 2
+    s2: Ldiv_Result  // local 3
+  bb0(v0: *Context):
+    v1: Ldiv_Result = call proc0(17_s64, 5_s64)
+    store s0 <- v1
+    v2: s64 = load s0.0
+    v3: bool = v2 == 3_s64
+    branch v3 ? bb1() : bb2()
+  bb1():
+    v4: s64 = 0_s64 + 1_s64
+    goto bb3(v4)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v7: s64):
+    v5: s64 = load s0.1
+    v6: bool = v5 == 2_s64
+    branch v6 ? bb4() : bb5()
+  bb4():
+    v8: s64 = v7 + 2_s64
+    goto bb6(v8)
+  bb5():
+    goto bb6(v7)
+  bb6(v12: s64):
+    v9: Ldiv_Result = call proc0(-17_s64, 5_s64)
+    store s1 <- v9
+    v10: s64 = load s1.0
+    v11: bool = v10 == -3_s64
+    branch v11 ? bb7() : bb8()
+  bb7():
+    v13: s64 = v12 + 4_s64
+    goto bb9(v13)
+  bb8():
+    goto bb9(v12)
+  bb9(v16: s64):
+    v14: s64 = load s1.1
+    v15: bool = v14 == -2_s64
+    branch v15 ? bb10() : bb11()
+  bb10():
+    v17: s64 = v16 + 8_s64
+    goto bb12(v17)
+  bb11():
+    goto bb12(v16)
+  bb12(v23: s64):
+    v18: Ldiv_Result = call proc0(20_s64, 5_s64)
+    store s2 <- v18
+    v19: s64 = load s2.0
+    v20: bool = v19 == 4_s64
+    branch v20 ? bb13() : bb14()
+  bb13():
+    v21: s64 = load s2.1
+    v22: bool = v21 == 0_s64
+    branch v22 ? bb16() : bb17()
+  bb16():
+    v24: s64 = v23 + 16_s64
+    goto bb18(v24)
+  bb17():
+    goto bb18(v23)
+  bb18(v26: s64):
+    goto bb15(v26)
+  bb14():
+    goto bb15(v23)
+  bb15(v25: s64):
+    discard call extern proc1(v25)
+    return
+}

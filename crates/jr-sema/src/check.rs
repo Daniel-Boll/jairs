@@ -1251,6 +1251,22 @@ impl Ctx<'_> {
     /// Exhaustive over the pool item rather than a `matches!`, so a new type is a compile error here
     /// instead of silently becoming passable — which is the discipline that would have caught this gap
     /// when `#simd` added a type two waves ago.
+    /// `None` when `ty`'s aggregate shape is one the engines implement, and `refusal` when it is not.
+    ///
+    /// The single place the aggregate half of [`Self::foreign_boundary_refusal`] consults the shared
+    /// classification (ADR-0160). Written as a helper rather than inline at four match arms so that each arm
+    /// contributes only its own *wording* — a reader comparing them sees four sentences and one rule, which is
+    /// the shape that stops the rule drifting between them.
+    ///
+    /// A layout error refuses too: a type whose size is unknown has no classification, and guessing is what
+    /// this whole mechanism exists to prevent.
+    fn aggregate_refusal(&self, ty: PoolId, refusal: &'static str) -> Option<&'static str> {
+        match jr_pool::classify(self.pool, jr_pool::TargetLayout::LP64, ty) {
+            Ok(Some(jr_pool::Class::Integer { .. } | jr_pool::Class::Float { .. })) => None,
+            _ => Some(refusal),
+        }
+    }
+
     fn foreign_boundary_refusal(&self, ty: PoolId) -> Option<&'static str> {
         match self.pool.item(ty) {
             // Passable: one register each, and the C ABI agrees about all of them.
@@ -1264,22 +1280,37 @@ impl Ctx<'_> {
             // Poison is already reported; refusing it again would double-report one mistake.
             | Item::ErrorType => None,
 
-            // `string` is `{data, count}` (ADR-0004) — two words, and C has no such type. This is the
-            // aggregate a caller is most likely to try, which is why it gets its own sentence.
-            Item::StringType => Some(
+            // **An aggregate crosses when the shared classification says where its pieces go**
+            // (ADR-0160). Asked through `jr_pool::classify`, which is the same answer all three engines
+            // act on — so this refusal and their capability cannot drift, which is the property that
+            // makes relaxing it safe at all.
+            //
+            // `string` keeps its own sentence when refused, because it is the aggregate a caller is most
+            // likely to try; it is two words, so in practice it now crosses.
+            Item::StringType => self.aggregate_refusal(
+                ty,
                 "a `string` is a pointer and a count, and C has no such type: pass `s.data` and \
                  `s.count` as two arguments",
             ),
-            Item::StructType { .. } | Item::UnionType { .. } | Item::VariantType { .. } => Some(
-                "passing an aggregate by value needs the platform ABI's field-classification rules, \
-                 which no engine here implements yet",
+            Item::StructType { .. } | Item::UnionType { .. } | Item::VariantType { .. } => self
+                .aggregate_refusal(
+                    ty,
+                    "this aggregate needs a register class no engine here implements: at most two \
+                     words, or up to four floats of one width. A union or variant is always refused — \
+                     its members overlap, so every C ABI treats its bytes as opaque",
+                ),
+            Item::ArrayType { .. } => self.aggregate_refusal(
+                ty,
+                "an array crosses only as a homogeneous float aggregate of at most four members; C \
+                 decays any other array to a pointer and Jairs does not",
             ),
-            Item::ArrayType { .. } => Some(
-                "an array is its elements laid out in memory; C decays one to a pointer and Jairs \
-                 does not",
+            Item::ViewType { .. } => self.aggregate_refusal(
+                ty,
+                "a view is a multi-word descriptor: pass `.data` and `.count`",
             ),
-            Item::ViewType { .. } | Item::DynamicArrayType { .. } => Some(
-                "a view and a dynamic array are multi-word descriptors: pass `.data` and `.count`",
+            Item::DynamicArrayType { .. } => Some(
+                "a dynamic array is three words — data, count and capacity — which is past the two \
+                 a C aggregate may occupy: pass `.data` and `.count`",
             ),
             // A vector *is* one register, so this is the one refusal that is not about width. Neither
             // back end declares a vector in a foreign signature and libffi has no vector type in this

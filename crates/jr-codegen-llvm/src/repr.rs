@@ -25,7 +25,7 @@
 
 use inkwell::context::Context;
 use inkwell::types::{
-    BasicMetadataTypeEnum, BasicTypeEnum, FloatType, FunctionType, IntType, VectorType,
+    BasicMetadataTypeEnum, BasicTypeEnum, FloatType, FunctionType, IntType, StructType, VectorType,
 };
 use jr_codegen::CodegenError;
 use jr_pool::{Item, Pool, PoolId, TargetLayout, layout_of};
@@ -294,12 +294,15 @@ pub fn function_type<'ctx>(
     let mut arguments: Vec<BasicMetadataTypeEnum<'ctx>> = Vec::new();
 
     let ret_repr = Repr::of(context, pool, target, ret)?;
-    if ret_repr.is_aggregate() {
-        if foreign {
-            return Err(describe(
-                "an aggregate returned across a `#foreign` boundary",
-            ));
-        }
+    // **A classified C aggregate return comes back in registers** (ADR-0160 part 2), described to LLVM as a
+    // struct of the classification's pieces so its own ABI lowering places them. Computed before the return
+    // arm below because it decides whether a leading pointer appears at all.
+    let c_return = if foreign && ret_repr.is_aggregate() {
+        Some(class_type(context, pool, target, ret, &describe)?)
+    } else {
+        None
+    };
+    if ret_repr.is_aggregate() && c_return.is_none() {
         arguments.push(pointer_int(context, target).into());
     }
 
@@ -324,13 +327,23 @@ pub fn function_type<'ctx>(
             }
             Repr::Aggregate { .. } => {
                 if foreign {
-                    return Err(describe("an aggregate passed across a `#foreign` boundary"));
+                    // The classification's pieces, each its own parameter — the same shape the Cranelift
+                    // back end emits, because both read `jr_pool::classify`. LLVM would also accept the
+                    // struct type with a `byval` attribute; separate scalars are used so the two native
+                    // back ends produce the same *call*, which is what the differential harness compares.
+                    for piece in class_pieces(context, pool, target, *param, &describe)? {
+                        arguments.push(piece.into());
+                    }
+                    continue;
                 }
                 arguments.push(pointer_int(context, target).into());
             }
         }
     }
 
+    if let Some(returned) = c_return {
+        return Ok(returned.fn_type(&arguments, false));
+    }
     Ok(match ret_repr {
         // An aggregate return writes through the leading pointer and returns nothing.
         Repr::Void | Repr::Aggregate { .. } => context.void_type().fn_type(&arguments, false),
@@ -356,4 +369,62 @@ pub fn returns_via_sret(
     ret: PoolId,
 ) -> Result<bool, CodegenError> {
     Ok(Repr::of(context, pool, target, ret)?.is_aggregate())
+}
+
+/// The LLVM types a classified aggregate's register pieces travel in.
+///
+/// One per register: `Integer { words }` gives `words` pointer-width integers, and `Float { kind, count }`
+/// gives `count` floats of that width. Separate scalars rather than one struct with `byval`, so this back end
+/// emits the same *call* the Cranelift one does — the property `differential.rs` compares, and the reason
+/// both read `jr_pool::classify` rather than each expressing the ABI in its own idiom.
+///
+/// # Errors
+/// A [`jr_pool::Class::Memory`] aggregate, or one with no layout, which is what E0286 refuses before lowering.
+/// Reported here as well so the two cannot disagree about which shapes are supported.
+fn class_pieces<'ctx>(
+    context: &'ctx Context,
+    pool: &Pool,
+    target: TargetLayout,
+    ty: PoolId,
+    describe: &dyn Fn(&str) -> CodegenError,
+) -> Result<Vec<BasicTypeEnum<'ctx>>, CodegenError> {
+    match jr_pool::classify(pool, target, ty) {
+        Ok(Some(jr_pool::Class::Integer { words })) => {
+            let word = pointer_int(context, target);
+            Ok((0..words).map(|_| word.into()).collect())
+        }
+        Ok(Some(jr_pool::Class::Float { kind, count })) => {
+            let member: BasicTypeEnum<'ctx> = if kind.bits == 32 {
+                context.f32_type().into()
+            } else {
+                context.f64_type().into()
+            };
+            Ok((0..count).map(|_| member).collect())
+        }
+        Ok(Some(jr_pool::Class::Memory)) | Ok(None) => Err(describe(
+            "an aggregate at a `#foreign` boundary needs a register class this back end does not \
+             implement — at most two words, or up to four floats of one width",
+        )),
+        Err(_) => Err(describe(
+            "an aggregate at a `#foreign` boundary whose layout cannot be computed",
+        )),
+    }
+}
+
+/// The LLVM struct type a classified aggregate **return** comes back in.
+///
+/// A struct of [`class_pieces`], because a function returns one value: two words come back as
+/// `{ i64, i64 }`, four doubles as `{ double, double, double, double }`, and LLVM's own ABI lowering places
+/// each member in the register the platform specifies. That is the one place this back end delegates rather
+/// than describing, and it is safe to do so precisely because the *classification* — which shapes are
+/// permitted at all — was decided before LLVM was asked.
+fn class_type<'ctx>(
+    context: &'ctx Context,
+    pool: &Pool,
+    target: TargetLayout,
+    ty: PoolId,
+    describe: &dyn Fn(&str) -> CodegenError,
+) -> Result<StructType<'ctx>, CodegenError> {
+    let pieces = class_pieces(context, pool, target, ty, describe)?;
+    Ok(context.struct_type(&pieces, false))
 }
