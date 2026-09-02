@@ -172,6 +172,21 @@ pub trait SourceInfo {
     /// ADR-0020 §2's argument for a single trap-message formatter, applied one level down.
     fn position(&self, span: jr_mir::MirSpan) -> Option<SourcePosition>;
 
+    /// The name of a local in the body being defined.
+    ///
+    /// `None` for a local the HIR does not have. A compiler temporary never reaches this: a MIR slot standing
+    /// for one carries no `LocalId` at all, so there is nothing to ask about.
+    ///
+    /// **A `LocalId` rather than a span**, which the first draft used. A slot's *span* is not reliably
+    /// `MirSpan::Local` — an aggregate's slot carries the span of the expression that created it — so keying on
+    /// the span found `total` and missed `pair`, silently. `SlotData::local` is the authoritative answer and
+    /// the back end already holds it (ADR-0172 §2).
+    ///
+    /// The body is the one currently being defined, which is why this is on a per-body implementor rather than
+    /// taking a `BodyId`: every body's arena starts at 0, so a `LocalId` means nothing without knowing whose it
+    /// is — the trap ADR-0017 records.
+    fn local_name(&self, local: jr_hir::LocalId) -> Option<String>;
+
     /// The text an interned symbol stands for — a field's name, say.
     ///
     /// Here for the reason [`FileInput::names`] is supplied by the caller: resolving a `Symbol` needs the
@@ -222,6 +237,10 @@ impl SourceInfo for NoLocations {
     }
 
     fn symbol(&self, _symbol: jr_base::Symbol) -> Option<String> {
+        None
+    }
+
+    fn local_name(&self, _local: jr_hir::LocalId) -> Option<String> {
         None
     }
 }

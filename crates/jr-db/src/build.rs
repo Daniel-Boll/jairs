@@ -248,6 +248,13 @@ impl jr_codegen::SourceInfo for BodyLocations<'_> {
         })
     }
 
+    fn local_name(&self, local: jr_hir::LocalId) -> Option<String> {
+        // `self.body` is the body being defined, so its arena is the one this `LocalId` indexes — the
+        // invariant ADR-0017 records, and the reason this implementor is built per body.
+        let name = self.body?.locals.get(local.index())?.name;
+        Some(self.interner.resolve(name).to_owned())
+    }
+
     fn symbol(&self, symbol: jr_base::Symbol) -> Option<String> {
         // The driver has the interner; the back end does not, which is the whole reason this trait exists
         // (ADR-0171 §2). `resolve` is infallible on a symbol this interner minted, and every symbol a back

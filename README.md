@@ -18,6 +18,19 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
+**A local variable can be printed in a debugger** — by the name the programmer wrote, with its type and its
+place on the stack. Half of that item is delivered, and the other half is now precisely described rather than
+vaguely owed: a variable that lives entirely in registers has no stack address to point at, so describing it
+needs a different kind of location entry. Writing the test is what established the boundary, and the test now
+asserts the absence as well as the presence — so whoever closes the gap is told by a failing test to update it,
+rather than having to rediscover why the case was missing.
+
+The name lookup got this wrong once in an instructive way. It first identified a variable by the source position
+recorded on its storage, which worked for simple values and silently failed for structures, whose storage records
+the position of the expression that created it instead. A lookup that names some variables and not others is
+worse than one that names none, because the gap looks like a fact about the program rather than a gap in the
+compiler.
+
 **A struct's layout is visible to a debugger** — its field names, and the byte offset of each one. Those offsets
 come from the very function the compiler uses to generate a field access, so a debugger cannot disagree with the
 running code about where a field is. Computing them separately for the debug info would have been a second
@@ -61,7 +74,7 @@ debug section placed outside the segment reserved for it does not merely get ign
 the linker lays it out among real pointers.
 
 Last updated with **W10 — Graphics DONE** (W6 — Metaprogram, W7 — Stdlib, W8 — Performance and W9 — Tooling
-depth were already), 1064 tests green — 1067 with the LLVM back end compiled in, and nineteen library modules.
+depth were already), 1064 tests green — 1068 with the LLVM back end compiled in, and nineteen library modules.
 **Two waves remain: W11 — Concurrency, and W12 — Debug info, which is now under way.**
 
 Graphics arrived in four steps, on a foundation the plan had wrong: a window and a 2D renderer, an event loop,
