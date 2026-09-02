@@ -196,7 +196,23 @@ binding instead of restoring it, which PLAN's known-defects list had recorded as
 four at once and cannot. The wave moved the corpus count and not the test count, for the reason the
 all-library waves before it did: what a corpus program can observe is a corpus program.
 
-**Two lessons worth keeping from it.** First, `cmd | head -1; echo $?` bit *again* — the note above was
+**ADR-0156 holds at 1034** (1035 under gate 7) and adds one corpus file = **248** — PLAN §8.3 item 4,
+`modules/JSON`. The first module in this library that is not a utility: a data model, a grammar, a failure
+mode and two kinds of allocation. A value is an **index** into one `[..]Json_Node` rather than a pointer in a
+recursive type, so freeing is one call and a handle carries no ownership question. Two of §8.3's own guesses
+about this module were wrong and are corrected in place: a `variant` is not the right JSON value, and `Map`
+cannot be an object. Numbers get their *extent* from JSON's grammar and their *value* from `strtod`, because
+`strtod` alone accepts `0x1p3` and `inf`; integers are converted in Jairs, since `float64` cannot hold
+2^53 + 1. Serialisation is deferred with a reason — a correct `dtoa` — rather than half-built.
+
+**Two things that wave is worth reading for.** A `malloc` allocation handed to `String.free_string` (which
+frees through `context.allocator_free`) was written and caught: it is invisible while the installed allocator
+*is* libc and corruption the moment a caller installs an arena. That exposed the library's real **allocator
+seam** — `List` and `Map` use `malloc`, `String` uses the context — which `JSON` is the first module to
+straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
+not lower. That is the third capability gap a library has surfaced rather than a compiler test.
+
+**Two lessons worth keeping from ADR-0155.** First, `cmd | head -1; echo $?` bit *again* — the note above was
 already in this file, and it still cost several false "silent miscompile" findings, including a spurious
 conclusion that indirect calls through a procedure pointer return the wrong answer (they are fine). Check a
 status with no pipe in the way, every time. Second, the sort's *first* failure was neither a language gap

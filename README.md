@@ -18,8 +18,22 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated with **W7 — Stdlib three modules further on** (W8 — Performance and W6 — Metaprogram are
+Last updated with **W7 — Stdlib four modules further on** (W8 — Performance and W6 — Metaprogram are
 DONE; W7 is still open), 1034 tests green — 1035 with the LLVM back end compiled in.
+
+**`JSON` parses** (ADR-0156) — the module the plan called the most valuable for proving the language, and
+the first one here that is not a utility: it has a data model, a grammar, a failure mode and two kinds of
+allocation. A value is an **index** into one flat node array rather than a pointer in a recursive type, so
+freeing a document is one call and a handle carries no ownership question — including on the error path,
+where a half-built pointer tree would have to be unwound. A number's *extent* comes from JSON's grammar and
+its *value* from `strtod`, because `strtod` alone accepts `0x1p3`, `inf` and a leading `+`; integers are
+converted in Jairs, since a `float64` cannot hold 2^53 + 1 and returning the wrong one would be a silently
+wrong answer. **Serialisation is deliberately absent**: writing a `float64` back out needs a correct `dtoa`,
+and an approximate one would emit numbers the parser could not read back, which is worse than emitting none.
+
+Two of the plan's own guesses about that module were wrong, and are corrected where they were written: a
+`variant` is not the right JSON value, and `Map` cannot be an object — it is `Map(s64, s64)` and cannot key
+on a string, and a member chain preserves source order anyway, which a hash table destroys.
 
 **`Time`, `Bucket_Array` and a stable merge sort landed** (ADR-0155), the first three of W7's nine
 remaining modules. `Time` is nanoseconds as an `s64` with a monotonic and a wall clock, and deliberately

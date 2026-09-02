@@ -343,6 +343,26 @@ free_string :: (s: string) {
     }
 }
 
+/// Adopts an allocation as a `string`, taking ownership of it.
+///
+/// `data` must point at `count` bytes from `context.allocator`, and after this call the string owns them:
+/// `free_string` is what releases them and nothing else should. It is the mirror of `free_string`, and the
+/// two are the whole ownership story for a computed string.
+///
+/// **This used to be module-private**, on the stated ground that "a caller has no business constructing a
+/// `string` from raw parts" — and that was right while the only callers were the allocating routines below,
+/// which all build a string from *other strings*. ADR-0156's JSON parser is the first caller that genuinely
+/// cannot: it unescapes `\n` and `\uXXXX` into a buffer it sizes itself, so its result exists as bytes
+/// before it exists as a string. Exporting a *named* transfer is better than the alternatives, which were
+/// for JSON to assign the fields itself — the same five lines with no shared contract to read — or for
+/// `String` to grow an `unescape` that belongs to JSON's grammar rather than to strings.
+///
+/// The name says the contract: `adopt` takes over an allocation, where a `make`/`from_bytes` would suggest
+/// it copies. It does not copy, and a caller who wants a copy wants `substring`.
+adopt :: (data: *u8, count: s64) -> string {
+    return make_string(data, count);
+}
+
 #scope_module
 
 /// Builds a `string` from a data pointer and a count.

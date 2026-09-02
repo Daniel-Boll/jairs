@@ -1,0 +1,175 @@
+// ADR-0156: the JSON module — a parser and an inspector over a flat node store.
+//
+// PLAN §8.3 item 4, and it called this "the most valuable module for proving the language, because it
+// exercises tagged unions, containers and strings together". It does more than that: `#must` on the parse
+// (ADR-0151), multiple return values through every parser routine (ADR-0052), `[..]T` as the node store
+// (ADR-0136), `view` over it because a `[..]T` cannot be indexed (ADR-0109), `enum` for the kind, the
+// context allocator for the strings (ADR-0062), temporary storage for the `strtod` scratch (ADR-0065), and
+// a float crossing the `#foreign` boundary (ADR-0114) to convert a decimal exactly.
+//
+// **This file is the module's acceptance test**, so it checks the things that are easy to get subtly wrong
+// rather than the happy path. Twenty independent bits, because a sum would let one failure hide inside
+// another's success:
+//
+//   1        an object's member count                       structure
+//   2        an integer member read exactly
+//   4        an array's length, by walking the sibling chain
+//   8        an element by index
+//   16       a string member compared by value
+//   32       a `true` member distinguished from `false`
+//   64       `\n`, `\t`, `\"`, `\\`, `\/` all unescape        escapes
+//   128      `\u0041` is one byte                            UTF-8 encoding
+//   256      `\u00e9` is two
+//   512      `\u20ac` is three
+//   1024     `\ud83d\ude00` — a surrogate **pair** — is four
+//   2048     `3.5` is not an integer                         numbers
+//   4096     `1e3` is not an integer
+//   8192     `9007199254740993` is exact — past 2^53, where a float64 cannot hold it
+//   16384    `[1,]` is refused                               refusals
+//   32768    `01` is refused
+//   65536    trailing content after a value is refused
+//   131072   a lone surrogate is refused
+//   262144   `1.` is refused
+//   524288   `{}` and `[]` are accepted
+//
+// All twenty is 1048575, and the exit status is that modulo 251 — 1048575 = 4177 * 251 + 148, so **148**.
+// The modulus is there because an exit status is a byte; the printed number is the real evidence.
+#import "Basic";
+#import "JSON";
+#import "String";
+
+/// The allocate half of an allocator, as `valid/090` does it: a `#foreign` procedure cannot fill a
+/// procedure-pointer field directly (E0256, ADR-0059 §3), so a Jairs wrapper does.
+libc_alloc :: (n: s64) -> *u8 {
+    return malloc(n);
+}
+
+/// The release half.
+libc_free :: (p: *u8) {
+    free(p);
+}
+
+/// Whether parsing `text` succeeds or fails as expected.
+///
+/// The document is freed either way, which is the flat store's point: a failed parse still owns whatever
+/// nodes it built, and releasing it takes the same one call.
+parsed_as :: (text: string, want_ok: bool) -> s64 {
+    doc, ok := parse(text);
+    r := 0;
+    if ok == want_ok {
+        r = 1;
+    }
+    free_document(*doc);
+    return r;
+}
+
+main :: () {
+    context.allocator = libc_alloc;
+    context.allocator_free = libc_free;
+    total := 0;
+
+    // Structure and typed reads.
+    shape, shape_ok := parse("{\"a\": 1, \"b\": [10, 20, 30], \"c\": \"hi\", \"d\": true, \"e\": null}");
+    if shape_ok {
+        if member_count(*shape, shape.root) == 5 {
+            total = total + 1;
+        }
+        if integer_of(*shape, member(*shape, shape.root, "a")) == 1 {
+            total = total + 2;
+        }
+        b := member(*shape, shape.root, "b");
+        if array_count(*shape, b) == 3 {
+            total = total + 4;
+        }
+        if integer_of(*shape, array_at(*shape, b, 2)) == 30 {
+            total = total + 8;
+        }
+        if equal(string_of(*shape, member(*shape, shape.root, "c")), "hi") {
+            total = total + 16;
+        }
+        // `is_true` of `null` must be false, not "not false" — three kinds rather than a boolean with a
+        // flag is what makes that unambiguous.
+        if is_true(*shape, member(*shape, shape.root, "d")) {
+            if !is_true(*shape, member(*shape, shape.root, "e")) {
+                total = total + 32;
+            }
+        }
+    }
+    free_document(*shape);
+
+    // The five single-character escapes that change a byte, plus the three that stand for themselves.
+    // `a\nb\t"c\/` is eight bytes out of fourteen in.
+    esc, esc_ok := parse("\"a\\nb\\t\\\"c\\\\\\/\"");
+    if esc_ok {
+        s := string_of(*esc, esc.root);
+        if s.count == 8 {
+            if byte_at(s, 1) == 10 {
+                if byte_at(s, 3) == 9 {
+                    total = total + 64;
+                }
+            }
+        }
+    }
+    free_document(*esc);
+
+    // `\uXXXX` at each UTF-8 width. The fourth is a **surrogate pair**, which is the only place JSON's
+    // escape syntax needs two escapes to mean one code point — and the place a parser that treats each
+    // `\uXXXX` independently emits two broken three-byte sequences instead of one four-byte one.
+    uni, uni_ok := parse("[\"\\u0041\", \"\\u00e9\", \"\\u20ac\", \"\\ud83d\\ude00\"]");
+    if uni_ok {
+        one := string_of(*uni, array_at(*uni, uni.root, 0));
+        two := string_of(*uni, array_at(*uni, uni.root, 1));
+        three := string_of(*uni, array_at(*uni, uni.root, 2));
+        four := string_of(*uni, array_at(*uni, uni.root, 3));
+        if one.count == 1 {
+            total = total + 128;
+        }
+        if two.count == 2 {
+            total = total + 256;
+        }
+        if three.count == 3 {
+            total = total + 512;
+        }
+        if four.count == 4 {
+            total = total + 1024;
+        }
+    }
+    free_document(*uni);
+
+    // Numbers. The last one is the reason `integer_of` exists beside `number_of`: 9007199254740993 is
+    // 2^53 + 1, which no `float64` can represent, so a parser that stored only the float would hand back
+    // 9007199254740992 — a silently wrong answer of exactly the kind this project refuses.
+    nums, nums_ok := parse("[1, -2, 3.5, 1e3, 0, 9007199254740993]");
+    if nums_ok {
+        if !is_integer_at(*nums, array_at(*nums, nums.root, 2)) {
+            total = total + 2048;
+        }
+        if !is_integer_at(*nums, array_at(*nums, nums.root, 3)) {
+            total = total + 4096;
+        }
+        if integer_of(*nums, array_at(*nums, nums.root, 5)) == 9007199254740993 {
+            total = total + 8192;
+        }
+    }
+    free_document(*nums);
+
+    // What must be refused. Each of these is accepted by some real parser, which is why they are here:
+    // a trailing comma (JavaScript accepts it), a leading zero (C's strtol accepts it), trailing content
+    // (a truncated stream looks valid), a lone surrogate (many parsers substitute U+FFFD), and `1.`
+    // (C accepts it).
+    total = total + parsed_as("[1,]", false) * 16384;
+    total = total + parsed_as("01", false) * 32768;
+    total = total + parsed_as("{\"a\":1} x", false) * 65536;
+    total = total + parsed_as("\"\\ud83d\"", false) * 131072;
+    total = total + parsed_as("1.", false) * 262144;
+
+    // And the two empty containers, which a chain-based store gets wrong if `first` is not `NONE`.
+    if parsed_as("{}", true) == 1 {
+        if parsed_as("[]", true) == 1 {
+            total = total + 524288;
+        }
+    }
+
+    print_int(total);
+    exit(total % 251);
+}
