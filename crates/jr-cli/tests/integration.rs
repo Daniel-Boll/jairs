@@ -798,6 +798,8 @@ fn run_build(path: PathBuf, output: Option<PathBuf>) -> i32 {
             // flag through the binary instead, as the opt-level test below does.
             opt_level: None,
             module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
+            // Empty: these two tests link only against libc, which the driver finds on its own.
+            library_paths: Vec::new(),
         },
         &quiet_global(),
     )
@@ -1335,6 +1337,8 @@ main :: () {
             // `None` so the default level applies, which is what an ordinary build gets (ADR-0154 §1).
             opt_level: None,
             module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
+            // Empty: these two tests link only against libc, which the driver finds on its own.
+            library_paths: Vec::new(),
         },
         &global,
     )
@@ -1359,4 +1363,101 @@ main :: () {
         Some(31),
         "every aggregate shape must agree with the C compiler; a lower value names which bit failed"
     );
+}
+
+/// `--library-path` puts a `-L` on the link line, so a `#system_library` outside the driver's defaults resolves
+/// (ADR-0163 §2).
+///
+/// # Why this builds its own library instead of using SDL2
+///
+/// The gap was found with SDL2 — `ld: library 'SDL2' not found`, with `-lSDL2` on the line and nowhere to look
+/// — and testing it with SDL2 would make the suite depend on a Homebrew package. So the test compiles a
+/// one-function library into a temporary directory and points `-L` at it. That proves the mechanism, which is
+/// the part this compiler owns; whether any particular library is installed is not.
+///
+/// The negative half runs **first** and is the half that matters: without the flag the link must *fail*.
+/// A test that only checked the success case would pass even if `-L` were ignored, because a driver that
+/// happened to find the library some other way would look identical.
+#[test]
+fn a_library_path_reaches_the_link_line() {
+    let dir = TempDir::new().unwrap();
+
+    let lib_source = dir.path().join("answer.c");
+    fs::write(&lib_source, "long jr_answer(void) { return 42; }\n").unwrap();
+    let lib_object = dir.path().join("answer.o");
+    let compiled = std::process::Command::new("cc")
+        .arg("-c")
+        .arg(&lib_source)
+        .arg("-o")
+        .arg(&lib_object)
+        .status();
+    match compiled {
+        Ok(status) if status.success() => {}
+        // No C compiler, no test — and `jr build` could not link at all on such a machine, so this cannot
+        // hide a regression anywhere the rest of the suite runs.
+        _ => return,
+    }
+    let archive = dir.path().join("libjranswer.a");
+    let archived = std::process::Command::new("ar")
+        .arg("rcs")
+        .arg(&archive)
+        .arg(&lib_object)
+        .status();
+    match archived {
+        Ok(status) if status.success() => {}
+        _ => return,
+    }
+
+    let source = dir.path().join("uses_library.jr");
+    fs::write(
+        &source,
+        r#"answers :: #system_library "jranswer";
+libc :: #system_library "c";
+jr_answer :: () -> s64 #foreign answers "jr_answer";
+exit :: (status: s64) #foreign libc "exit";
+main :: () {
+    exit(jr_answer());
+}
+"#,
+    )
+    .unwrap();
+
+    // Without the path, the link must fail — otherwise this test proves nothing about `-L`.
+    let unfound = dir.path().join("without");
+    let code = run_build_with_paths(source.clone(), unfound, &[]);
+    assert_ne!(
+        code, 0,
+        "with no --library-path the library cannot be found, so the link must fail; if it succeeds, \
+         the flag is not what is being exercised"
+    );
+
+    let binary = dir.path().join("with");
+    let code = run_build_with_paths(source, binary.clone(), &[dir.path().to_path_buf()]);
+    assert_eq!(code, 0, "with the path, the link must succeed");
+    let ran = std::process::Command::new(&binary)
+        .status()
+        .expect("the linked binary should run");
+    assert_eq!(
+        ran.code(),
+        Some(42),
+        "the library's own function must be the one that ran"
+    );
+}
+
+/// `jr build` with explicit library search paths.
+fn run_build_with_paths(path: PathBuf, output: PathBuf, library_paths: &[PathBuf]) -> i32 {
+    jr_cli::commands::build::run(
+        jr_cli::cli::BuildArgs {
+            path,
+            output: Some(output),
+            emit_object: false,
+            backend: jr_cli::cli::BackendArg::Cranelift,
+            no_bounds_check: false,
+            opt_level: None,
+            module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
+            library_paths: library_paths.to_vec(),
+        },
+        &quiet_global(),
+    )
+    .unwrap_or(1)
 }

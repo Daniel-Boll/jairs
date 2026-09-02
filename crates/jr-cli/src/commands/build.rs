@@ -226,12 +226,27 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
         object: &built.object,
         output: &output,
         libraries: &built.libraries,
+        library_paths: &library_paths(&args),
     }) {
         crate::report::error(&error.to_string());
         return Ok(BUILD_EXIT);
     }
 
     Ok(0)
+}
+
+/// Every directory to search for a `#system_library`, flags first.
+///
+/// `--library-path` comes before `JR_LIBRARY_PATH`, because a flag is the more specific instruction and `ld`
+/// takes the first match — the same precedence `-o` has over a declared output (ADR-0102 §2). The environment
+/// variable exists so a machine can be configured once rather than at every invocation, which is what a
+/// Homebrew or Nix prefix wants.
+fn library_paths(args: &crate::cli::BuildArgs) -> Vec<std::path::PathBuf> {
+    let mut paths = args.library_paths.clone();
+    if let Ok(value) = std::env::var("JR_LIBRARY_PATH") {
+        paths.extend(std::env::split_paths(&value));
+    }
+    paths
 }
 
 #[cfg(test)]

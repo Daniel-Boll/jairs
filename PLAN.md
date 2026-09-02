@@ -258,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0162. See [`docs/adr/README.md`](docs/adr/README.md). (This line
+Accepted ADRs: 0001–0163. See [`docs/adr/README.md`](docs/adr/README.md). (This line
 said 0001–0128 for thirteen ADRs, which is the argument §7 makes for its own count
 being the one to trust.)
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
@@ -585,17 +585,21 @@ That unblocked **three** named things at once, exactly as predicted: **W10 — G
 `readdir`/`stat` in `File_Utilities` and `getaddrinfo` in `Socket` are now expressible — two owed library
 items that need no further language work.
 
-**So W10 is the next wave, and its second gate is now a *stated* limitation** rather than a silent
-miscompile. ADR-0162 built the `#c_variadic` marker: a declaration can say the C signature ended in `...`, and
-a **call** is E0289 in all three engines. Refusing uniformly was chosen over supporting it in the two engines
-that could (libffi has a variadic CIF, LLVM has variadic function types) because `jr build` failing where
-`jr run` succeeds breaks the premise the differential harness rests on.
+**W10 — Graphics is unblocked and startable** (ADR-0163), on a different foundation than §8.5 planned. Its
+second gate turned out to remove an option rather than delay the wave: ADR-0162's `#c_variadic` marker makes a
+variadic *declaration* legal and a *call* E0289 in all three engines, and the blocker is **upstream** —
+Cranelift's `Signature` has no notion of a variadic boundary. So `objc_msgSend` is uncallable and "Cocoa via
+`#foreign`" is not a plan this project can execute.
 
-**Supporting the call is blocked upstream**: Cranelift's `Signature` has no notion of a variadic boundary at
-all — probed, not assumed — so there is no way to say "the arguments past the second belong on the stack". That
-makes `objc_msgSend` uncallable and W10's Objective-C path unavailable, which is a **real constraint on how
-W10 can be built** rather than a task: a Cocoa window cannot be opened through `objc_msgSend` today. §8.5
-should be re-read with that in mind before W10 starts, because it assumed the call would be available.
+**SDL2's C API is the foundation instead, and it is proven rather than proposed**: a Jairs program opens a
+window, creates a renderer, sets a colour, clears, fills a rect through a `*SDL_Rect`, presents and tears down
+— six calls, all six succeeding. No `objc_msgSend`, no aggregate by value. The probe also found and closed the
+last gap: a `#system_library` names *what* to link and never *where*, so `jr build -L`/`--library-path` and
+`JR_LIBRARY_PATH` now exist.
+
+**So W10's prerequisite list is empty** and its content is library work. Read §8.5 before starting it — this
+section's own correction was itself wrong, and both errors are recorded there because the second is the more
+instructive.
 
 **W12 — Debug info has no blocker at all**, which makes it the one to reach for while something above is
 pending — the role W9 played.
@@ -643,7 +647,7 @@ crossing the `#foreign` boundary — which is also W10's hard gate, so one chang
 an `Any` or a procedure handle through `jr-vm`'s untagged `union`; `jr-lsp` path handling — URI
 decoding, `..`, symlinks), which must be done **by hand** because six subagent dispatches returned
 empty; and `tree-sitter test` added to gate 6, which today catches grammar *drift* but not a broken
-grammar *rule*. **1054 workspace tests** (1055 under gate 7) and **253 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
+grammar *rule*. **1055 workspace tests** (1056 under gate 7) and **253 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
 has ever happened — plus **170** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -2642,21 +2646,49 @@ quietly dropped or quietly become a quarter of work.
 **W9 was deliberately last-but-one and could be done at any time.** It had no blocker in §8.1, which made it
 the wave to reach for while a decision above was pending — and that is exactly how it was picked up.
 
-### 8.5 W10 — Graphics: gated, and honest about what gates it
+### 8.5 W10 — Graphics: **unblocked, on a different foundation than this section planned** (ADR-0163)
 
-§2.1 describes it as **all library work written in Jairs, no compiler changes**. That description is
-now known to be **wrong**, and this is the plan's most important correction:
+§2.1 describes it as **all library work written in Jairs, no compiler changes**. That was wrong, and this
+section's own correction was wrong in turn — both are recorded, because the second error is the more
+instructive.
 
-- **§8.1.2 blocks it outright.** No struct crosses the FFI boundary, and every windowing and GPU API
-  passes structs by value.
-- **`objc_msgSend` is variadic**, and a Jairs `..T` variadic is *its own* packing convention
-  (ADR-0139), not the C one. Calling into Objective-C needs C-variadic FFI, which is a third thing
-  neither engine does.
-- **Image decode wants `File`** (§8.3 item 5), so it inherits §8.1.1 too.
+**What this section said, and what happened to each claim:**
 
-So W10's real prerequisite list is: E0286 (§8.1.3), then FFI aggregates and C-variadics (§8.1.2), then
-`File`. Until those exist, the honest state of W10 is **blocked, not "not started"** — and the §2.1 row
-should say so rather than describing it as pure library work.
+- **§8.1.2 blocks it outright** — no struct crosses the FFI boundary. **Closed** by ADR-0160 and ADR-0161: an
+  aggregate crosses when the shared classification says where its pieces go, verified against a real C
+  compiler.
+- **Image decode wants `File`** — **closed** by ADR-0157.
+- **`objc_msgSend` is variadic**, needing C-variadic FFI. **Not closed, and not closable here.** ADR-0162 built
+  the `#c_variadic` marker so a declaration can say it, and a *call* is E0289 in all three engines — because
+  **Cranelift's `Signature` has no notion of a variadic boundary at all** (probed). That blocker is upstream.
+
+> [!IMPORTANT]
+> **The third item does not delay this wave; it removes an option, and ADR-0163 chose another.** Every Cocoa
+> call goes through `objc_msgSend`, so "Cocoa via `#foreign`" is not a plan this project can execute. W10 is
+> built on **SDL2's C API** instead, and that is proven rather than proposed: a Jairs program opens a window,
+> creates a renderer, sets a colour, clears the surface, fills a rectangle through a `*SDL_Rect`, presents it
+> and tears it down — six calls, all six succeeding. Every one is a plain C function taking scalars and
+> pointers, so it needs neither `objc_msgSend` nor an aggregate by value.
+>
+> The probe failed once first, and exactly: `ld: library 'SDL2' not found`. A `#system_library` names *what* to
+> link and never *where*, and `-lc` had always resolved from the driver's defaults, so no program had needed a
+> search path. `jr build -L`/`--library-path` and `JR_LIBRARY_PATH` now exist, with the `-L`s emitted before
+> the `-l`s because `ld` requires that order — and **not** as a source directive, since a path is a property of
+> the machine compiling and a file naming `/opt/homebrew/lib` is unbuildable anywhere else.
+>
+> **The cost is stated**: SDL2 is a third party where §2.1 imagined system frameworks, so a drawing program
+> needs it installed and the graphics module binds somebody else's library. In exchange the wave starts now, on
+> an API that also works on Linux — which §0's decision #6 makes a target and which Cocoa never was.
+>
+> Rejected: an Objective-C shim compiled during a Jairs build (worth revisiting for later items, and it makes
+> the standard library carry compiled C, which is a decision about decision #5); and hand-rolling messages on
+> the `objc_` runtime's fixed-arity C API, which needs a `#foreign` procedure *value* — E0256, two language
+> features deep for a path SDL2 already covers.
+
+**So W10's prerequisite list is empty**, and its remaining content is library work: window and renderer
+bindings, image decode on `File`, an immediate-mode UI, audio. **A GPU layer is still open and is now a choice
+rather than a block**: Metal is Objective-C and inherits the refusal, Vulkan is a C API and would work the way
+SDL2 does. SDL2's own renderer covers the 2D items, so the question waits for whichever item needs a shader.
 
 ### 8.6 The recommended order, and why
 
