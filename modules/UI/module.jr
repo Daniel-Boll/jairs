@@ -1,0 +1,257 @@
+//! The UI module: immediate-mode widgets over `Window`'s event loop.
+//!
+//! Written in Jairs. PLAN §8.5's immediate-mode UI item, which ADR-0165's event loop unblocked — and the
+//! module that proves the graphics stack **composes**, since it is the first thing here that needs a window,
+//! an event queue and a renderer at once.
+//!
+//! # Immediate mode, and what that buys
+//!
+//! There is no widget tree and no retained object per button. A caller re-declares every widget every frame:
+//!
+//! ```text
+//! begin_frame(*ui);
+//! while next_event(*e) { feed(*ui, *e); }
+//!
+//! if button(*ui, 1, 10, 10, 80, 24) { save(); }
+//! if button(*ui, 2, 10, 44, 80, 24) { quit(); }
+//! ```
+//!
+//! The state that must persist between frames is exactly three things — where the mouse is, which widget the
+//! cursor is over, and which widget is being pressed — so `UI` is small and a caller never allocates. That is
+//! the property worth having in a language whose allocator is a `context` field (ADR-0061): a UI that needs no
+//! allocator cannot get one wrong.
+//!
+//! **Rejected: a retained widget tree.** It reads better for a form with forty fields and it needs an
+//! allocator, a lifetime discipline for widget handles, and a diffing pass. Immediate mode is what a language
+//! at this stage can carry honestly.
+//!
+//! # A widget's identity is a number the caller chooses
+//!
+//! `button(ui, id, …)` takes an `id` the caller must keep unique and stable across frames. That is how a
+//! stateless call gets stateful behaviour: `active` holds the id of the widget being pressed, so the press
+//! survives into the next frame even though the *call* does not.
+//!
+//! **Two widgets sharing an id is a bug this module cannot detect**, and saying so is better than pretending
+//! otherwise: they would highlight and fire together. A caller with a loop should use the loop index, offset by
+//! a per-group base.
+//!
+//! **`0` is reserved** for "nothing", so a widget must not use it. `id_is_valid` is here to say so, and
+//! `button` refuses a zero id rather than silently behaving as though nothing were pressed.
+//!
+//! # What is absent, and why
+//!
+//! **No text.** A label needs a font, and a font needs either `SDL_ttf` (a second library) or a bitmap glyph
+//! table this module would carry as data. Both are real; neither is a detail, and a button that draws its own
+//! frame is useful without one.
+//!
+//! **No keyboard focus.** Tab-order needs an ordered widget list, which immediate mode deliberately does not
+//! keep — the standard answer is a "focus id" plus a per-frame candidate scan, and it wants the text field
+//! that does not exist yet to be worth having.
+//!
+//! **No layout.** Every widget takes explicit pixels. A row/column stack is a small addition and it is a
+//! *policy* decision (does a stack own spacing? does it clip?) rather than a mechanism, so it waits for a
+//! caller with an opinion.
+
+#import "Window";
+
+// `Event`, `Renderer`, `MOUSE_DOWN`, `set_color`, `fill`, `outline` and `rect` below all come from `Window`,
+// unqualified: an `#import` brings names into this file's scope flat, and there is no `Window.Event` syntax
+// (probed — it does not parse). So this module's own names must not collide with that module's, which is why
+// the id sentinel here is `NONE` and not, say, `Event`. Worth stating because the file reads as though it were
+// qualified and is not.
+
+/// The reserved widget id meaning "no widget".
+NONE :: 0;
+
+/// Per-frame and persistent UI state.
+///
+/// Small on purpose: a caller declares one, keeps it between frames, and never allocates. Every field is
+/// written by `feed` or by a widget call, and none by the caller.
+UI :: struct {
+    /// Where the cursor is, in window pixels.
+    mouse_x: s32;
+    /// Where the cursor is, in window pixels.
+    mouse_y: s32;
+    /// Whether the left button is currently held.
+    ///
+    /// Persistent across frames, because a press that begins in one frame and ends in another is the normal
+    /// case at sixty frames a second.
+    mouse_down: bool;
+    /// Whether the left button went down **during this frame**. Cleared by `begin_frame`.
+    pressed_this_frame: bool;
+    /// Whether the left button came up **during this frame**. Cleared by `begin_frame`.
+    released_this_frame: bool;
+    /// The id of the widget under the cursor, or `NONE`.
+    ///
+    /// Recomputed every frame, by each widget's own hit test — which is why it is cleared in `begin_frame`
+    /// rather than remembered: a widget that stopped being declared must stop being hot.
+    hot: s64;
+    /// The id of the widget being pressed, or `NONE`.
+    ///
+    /// **Not** cleared by `begin_frame`: it is the one piece of genuinely multi-frame state, and clearing it
+    /// is what makes a naive immediate-mode button fire on press instead of on release.
+    active: s64;
+}
+
+/// Whether `id` can name a widget.
+///
+/// `NONE` cannot, because `active == NONE` means "nothing is pressed" and a widget with that id would be
+/// indistinguishable from the absence of one.
+id_is_valid :: (id: s64) -> bool {
+    return id != NONE;
+}
+
+/// Starts a frame: clears the per-frame edges and forgets which widget was hot.
+///
+/// `active` deliberately survives, since a press spans frames. `hot` does not, because a widget the caller
+/// stopped declaring must stop being hot — and recomputing it is what makes that automatic rather than a thing
+/// the caller has to remember.
+///
+/// Must be called before any `feed` for the frame, and before any widget.
+begin_frame :: (ui: *UI) {
+    ui.pressed_this_frame = false;
+    ui.released_this_frame = false;
+    ui.hot = NONE;
+}
+
+/// Folds one event into `ui`.
+///
+/// Ignores every event kind it does not use, so a caller can pass the whole queue through it without
+/// filtering — which is what makes the loop in the module docs a loop rather than a switch.
+///
+/// Only the left button is tracked (`mouse_button == 1`). A right-click is a different interaction with
+/// different conventions on every platform, and guessing at it would be worse than not having it.
+feed :: (ui: *UI, event: *Event) {
+    kind := cast(s64, event.kind);
+    if kind == MOUSE_MOTION {
+        ui.mouse_x = event.mouse_x;
+        ui.mouse_y = event.mouse_y;
+        return;
+    }
+    if kind == MOUSE_DOWN {
+        if cast(s64, event.mouse_button) == 1 {
+            // The position comes from the event, not from the last motion: a click can arrive without a
+            // preceding motion event — a tap on a trackpad, or a synthetic event — and using a stale position
+            // would hit-test the wrong widget.
+            ui.mouse_x = event.mouse_x;
+            ui.mouse_y = event.mouse_y;
+            ui.mouse_down = true;
+            ui.pressed_this_frame = true;
+        }
+        return;
+    }
+    if kind == MOUSE_UP {
+        if cast(s64, event.mouse_button) == 1 {
+            ui.mouse_x = event.mouse_x;
+            ui.mouse_y = event.mouse_y;
+            ui.mouse_down = false;
+            ui.released_this_frame = true;
+        }
+    }
+}
+
+/// Whether `(ui.mouse_x, ui.mouse_y)` is inside the rectangle.
+///
+/// Half-open on the far edges — `x <= px < x + w` — so two rectangles that share an edge do not both claim the
+/// pixel on it. That is the same convention every drawing API here uses for a fill, and disagreeing with it
+/// would make a two-button row have a one-pixel column that highlights both.
+inside :: (ui: *UI, x: s64, y: s64, w: s64, h: s64) -> bool {
+    px := cast(s64, ui.mouse_x);
+    py := cast(s64, ui.mouse_y);
+    return px >= x && px < x + w && py >= y && py < y + h;
+}
+
+/// Declares a button, and reports whether it was clicked this frame.
+///
+/// **A click is a release inside, after a press inside** — never a press. That is what a button does everywhere,
+/// and it is the thing a naive immediate-mode implementation gets wrong: returning `true` on press means a
+/// caller who drags off the button and releases elsewhere still fires it, which is exactly the escape hatch a
+/// user expects to work.
+///
+/// So the sequence is: press inside sets `active` to this id; release with `active == id` **and the cursor still
+/// inside** is a click; release anywhere else clears `active` and fires nothing. A press outside sets `active`
+/// to nothing, so a drag *onto* a button from elsewhere cannot arm it either.
+///
+/// A zero id fires nothing and is not made hot: see `id_is_valid`.
+button :: (ui: *UI, id: s64, x: s64, y: s64, w: s64, h: s64) -> bool {
+    if !id_is_valid(id) {
+        return false;
+    }
+
+    over := inside(ui, x, y, w, h);
+    if over {
+        ui.hot = id;
+    }
+
+    if ui.pressed_this_frame && over {
+        ui.active = id;
+    }
+
+    if ui.released_this_frame {
+        if ui.active == id {
+            ui.active = NONE;
+            // The release must be over the widget too. Checked here rather than at press time, because that is
+            // where the difference between a click and an abandoned press lives.
+            return over;
+        }
+    }
+
+    return false;
+}
+
+/// Whether `id` is the widget under the cursor.
+///
+/// For drawing: a caller picks a hover colour from this. Valid only after the widget's own call, since that
+/// call is what sets `hot`.
+is_hot :: (ui: *UI, id: s64) -> bool {
+    // The zero id is refused rather than compared, and this was a real bug the tests caught: `hot` *is* `NONE`
+    // whenever nothing is hot, so a bare `ui.hot == id` answered **true** for `is_hot(ui, NONE)` on every frame.
+    // A sentinel that means "nothing" must not be askable about, or every "is this widget hot" question has a
+    // widget for which the answer is yes and the widget does not exist.
+    if !id_is_valid(id) {
+        return false;
+    }
+    return ui.hot == id;
+}
+
+/// Whether `id` is the widget being pressed.
+///
+/// For drawing a pressed state. True while the button is held, including after the cursor has left — which is
+/// right: the widget is still armed, and showing it un-pressed would tell the user the release will do nothing
+/// when moving back would still fire it.
+is_active :: (ui: *UI, id: s64) -> bool {
+    // Refused for the same reason as `is_hot`: `active == NONE` means "nothing is pressed".
+    if !id_is_valid(id) {
+        return false;
+    }
+    return ui.active == id;
+}
+
+/// Draws a button's frame in one of three shades, by its state.
+///
+/// Separate from `button` on purpose. Immediate-mode libraries usually draw inside the widget call, which
+/// couples hit-testing to a renderer and makes the logic untestable without a window. Splitting them lets the
+/// state machine be exercised with no display at all — which is how this module's tests run — and lets a caller
+/// draw a button any way they like while keeping the interaction.
+///
+/// `#must`, because it is drawing and every drawing call here can fail.
+draw_button :: (renderer: *Renderer, ui: *UI, id: s64, x: s64, y: s64, w: s64, h: s64) -> bool #must {
+    shade := 70;
+    if is_active(ui, id) {
+        shade = 130;
+    } else if is_hot(ui, id) {
+        shade = 100;
+    }
+
+    if !set_color(renderer, shade, shade, shade, 255) {
+        return false;
+    }
+    box := rect(x, y, w, h);
+    if !fill(renderer, *box) {
+        return false;
+    }
+    if !set_color(renderer, 200, 200, 200, 255) {
+        return false;
+    }
+    return outline(renderer, *box);
+}

@@ -212,6 +212,27 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0166 reaches 1058**, still **253** corpus files, and adds the **eighteenth** module — `modules/UI`, an
+immediate-mode widget layer, and the second module `jr run` cannot execute. It is the wave that shows the
+graphics stack **composes**: one test holds a window, an event queue and a renderer open together and drives a
+real interaction through all three, which is a stronger claim than three modules each working.
+
+**The lesson worth carrying is §6, a real bug the wave's own tests caught.** `is_hot` was `return ui.hot == id`,
+and `begin_frame` sets `hot` to the `NONE` sentinel — so **`is_hot(ui, NONE)` answered `true` on every frame**: a
+widget that does not exist, reported as hovered. `button` already refused a zero id. The accessors did not, and
+that inconsistency is the shape that survives review — the guard was written where the *obvious* misuse was, and
+comparing against a sentinel is not obviously a misuse until you notice the sentinel is what the field holds most
+of the time.
+
+**The general rule, because this project will meet it again: a sentinel meaning "nothing" must not be askable
+about through the same accessor as a real value**, or every "is this the one" question has an answer of yes for a
+thing that is not there. Found by an assertion written because the zero id *existed*, not because a bug was
+suspected — which is the argument for testing a sentinel's behaviour rather than only a value's.
+
+**Also worth knowing before building a module on another one: `#import` is flat.** There is no `Window.Event`
+syntax (probed — it does not parse), so a module's names land in the importing file's scope unqualified and a
+module building on another must not collide with its names.
+
 **ADR-0165 reaches 1057** (1058 under gate 7), still **253** corpus files — and it **amends ADR-0164 §5 by
 contradicting it**, which makes it the most instructive entry in this file.
 

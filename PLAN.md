@@ -258,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0165. See [`docs/adr/README.md`](docs/adr/README.md). (This line
+Accepted ADRs: 0001–0166. See [`docs/adr/README.md`](docs/adr/README.md). (This line
 said 0001–0128 for thirteen ADRs, which is the argument §7 makes for its own count
 being the one to trust.)
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
@@ -626,8 +626,22 @@ successfully and then dropped by SDL**, so the keyboard assertions read a locall
 **The Objective-C question is untouched and still open**: `objc_msgSend` is variadic, which is ADR-0162's
 genuinely different blocker, and it was never the same fork as this one.
 
-**§8.5's remaining items** are image decode (wants `File`, which exists, plus a decoder), an immediate-mode UI
-(which the event loop above now unblocks), and audio. Two language items are **owed** from these two waves: a
+**And the immediate-mode UI is done too** — ADR-0166's `modules/UI`, the eighteenth module and **the wave that
+shows the stack composes**: one test holds a window, an event queue and a renderer open together and drives a
+real interaction through them, which is a stronger claim than three modules each working.
+
+Immediate mode with **no allocator**, which is the property worth having when the allocator is a `context` field
+(ADR-0061). A click is **release inside after press inside**, never a press — four of its sixteen assertions are
+the negative case, because returning `true` on press passes every positive test and breaks the escape hatch a
+user expects (press, think again, drag off, release). And §6 records a real bug the wave's own tests caught:
+`is_hot` compared `ui.hot == id` while `begin_frame` sets `hot` to the `NONE` sentinel, so **`is_hot(ui, NONE)`
+answered `true` every frame** — a widget that does not exist, reported as hovered. `button` already refused a
+zero id; the accessors did not, which is the inconsistency that survives review. The general rule, since this
+project will meet it again: **a sentinel meaning "nothing" must not be askable about through the same accessor
+as a real value.**
+
+**§8.5's remaining items** are image decode (wants `File`, which exists, plus a decoder) and audio, both library
+work. Two language items are **owed** from these two waves: a
 **typed constant** (`QUIT : u32 : 256` does not parse, and one module wants nine of them), and `size_of` of an
 *imported* struct reachable from a **file-scope constant** — E0230 today, which `Socket` and `Window` have both
 worked around by moving the check into a procedure. Read §8.5 before starting one — that section's own correction was
@@ -679,7 +693,7 @@ crossing the `#foreign` boundary — which is also W10's hard gate, so one chang
 an `Any` or a procedure handle through `jr-vm`'s untagged `union`; `jr-lsp` path handling — URI
 decoding, `..`, symlinks), which must be done **by hand** because six subagent dispatches returned
 empty; and `tree-sitter test` added to gate 6, which today catches grammar *drift* but not a broken
-grammar *rule*. **1057 workspace tests** (1058 under gate 7) and **253 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
+grammar *rule*. **1058 workspace tests** (1059 under gate 7) and **253 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
 has ever happened — plus **170** Neovim checks. See §1.5.
 
 > [!NOTE]
