@@ -99,6 +99,18 @@ pub struct LinkRequest<'a> {
     /// These come from the one resolution ADR-0019 §4 interned in the pool, so the
     /// link line cannot disagree with what `jr-sema` checked and the VM called.
     pub libraries: &'a [String],
+    /// Directories to search for those libraries, in order, before the driver's own defaults.
+    ///
+    /// Each becomes a `-L`. Needed because a `#system_library` names *what* to link and never *where*: `-lc`
+    /// resolves from the driver's defaults, and `-lSDL2` does not — the link fails with
+    /// `ld: library 'SDL2' not found`, which is the wall W10 hit the moment a graphics library was tried
+    /// (ADR-0163 §2).
+    ///
+    /// **Not read from the source.** A path is a property of the machine compiling, not of the program, so it
+    /// comes from the operator through `--library-path` or `JR_LIBRARY_PATH` — the same asymmetry that makes
+    /// `-o` outrank a declared `BUILD_OUTPUT` (ADR-0102 §2, ADR-0122). A program that hard-coded
+    /// `/opt/homebrew/lib` would be unbuildable everywhere else.
+    pub library_paths: &'a [std::path::PathBuf],
 }
 
 /// Links an object into an executable.
@@ -121,6 +133,11 @@ pub fn link(request: &LinkRequest<'_>) -> Result<(), LinkError> {
     let mut command = Command::new(&driver);
     command.arg(not_a_flag(&object_path));
     command.arg("-o").arg(not_a_flag(request.output));
+    // **Search paths before the libraries**, which is what `ld` requires: a `-L` affects the `-l`s that
+    // follow it, so emitting them the other way round would look right and find nothing.
+    for path in request.library_paths {
+        command.arg(format!("-L{}", path.display()));
+    }
     for library in request.libraries {
         command.arg(format!("-l{library}"));
     }

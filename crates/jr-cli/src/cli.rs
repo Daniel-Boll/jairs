@@ -294,6 +294,13 @@ pub struct BuildArgs {
     /// the order given, before the bundled module directory (ADR-0014).
     #[arg(short = 'I', long = "module-path", value_name = "DIR")]
     pub module_paths: Vec<std::path::PathBuf>,
+    /// Directories to search for a `#system_library`, before the C driver's own defaults. May be repeated.
+    ///
+    /// A **flag rather than a directive**, because a path is a property of the machine compiling and not of
+    /// the program (ADR-0163 §2): `/opt/homebrew/lib` in a source file would make that file unbuildable
+    /// anywhere else. The same asymmetry that makes `-o` outrank a declared `BUILD_OUTPUT` (ADR-0102 §2).
+    #[arg(short = 'L', long = "library-path", value_name = "DIR")]
+    pub library_paths: Vec<std::path::PathBuf>,
 }
 
 /// Arguments for `jr fmt`.

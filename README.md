@@ -45,7 +45,21 @@ and a `long` in two different register files, while AArch64 puts both in general
 correct answers gets refused until it is split — an honest narrower rule beats a wrong wider one, which is the
 same call this project made about `sqrt`.
 
-**The other gate in front of graphics is now a stated limitation** (ADR-0162). A `#foreign` declaration can
+**Graphics is unblocked, on a different foundation than the plan named** (ADR-0163). The plan said "Cocoa via
+`#foreign`", and every Cocoa call goes through `objc_msgSend`, which is variadic — and the blocker for that is
+upstream, in Cranelift. So that removes an option rather than delaying the wave, and the wave is built on
+**SDL2's C API** instead. Proven rather than proposed: a Jairs program opens a window, creates a renderer, sets
+a colour, clears the surface, fills a rectangle, presents it and tears everything down. Six calls, six
+successes, none of them needing Objective-C or a struct passed by value.
+
+The cost is stated: SDL2 is a third-party library where the plan imagined system frameworks, so a drawing
+program needs it installed. In exchange the wave starts now, on an API that also works on Linux — which this
+project calls a target and which Cocoa never was. The probe also found the last missing piece, and it was
+small and exact: `ld: library 'SDL2' not found`. A `#system_library` declaration says *what* to link and never
+*where*, so `jr build` gained `-L` and reads `JR_LIBRARY_PATH` — as a flag rather than a directive, because a
+source file naming `/opt/homebrew/lib` is unbuildable anywhere else.
+
+**The other gate in front of graphics is a stated limitation** (ADR-0162). A `#foreign` declaration can
 carry `#c_variadic`, meaning its parameters are the *fixed* ones and the C declaration ended in `...` — which
 nothing can infer, since a Jairs signature cannot say that C permits more. Declaring one is legal and
 **calling** one is a diagnostic, so a library author can annotate `printf` today and get an error rather than

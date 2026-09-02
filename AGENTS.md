@@ -212,6 +212,26 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0163 reaches 1055** (1056 under gate 7) and adds **no** corpus file — still **253** — because its
+subject is a *link line*, which no `.jr` program can observe. PLAN §8.5's correction, and the most instructive
+kind: **that section's own correction was itself wrong.**
+
+§8.5 said W10 needs "Cocoa via `#foreign`". Every Cocoa call goes through `objc_msgSend`, which is variadic, and
+ADR-0162 established the blocker is **upstream** in Cranelift. That does not delay the wave — it removes an
+option. So **W10 is built on SDL2's C API**, and the choice is proven rather than argued: a Jairs program opens
+a window, creates a renderer, sets a colour, clears, fills a rect through a `*SDL_Rect`, presents and tears
+down. Six calls, six successes, no `objc_msgSend` and no aggregate by value.
+
+**The probe failed once first, and the failure was the deliverable**: `ld: library 'SDL2' not found`. A
+`#system_library` names *what* to link and never *where*, and `-lc` had always resolved from the driver's
+defaults, so no program had needed a search path in sixteen waves of library work. `jr build -L` and
+`JR_LIBRARY_PATH` now exist — **`-L`s before `-l`s**, which `ld` requires, and **not** a source directive, since
+a file naming `/opt/homebrew/lib` is unbuildable anywhere else (the `-o`-over-`BUILD_OUTPUT` asymmetry again).
+
+**And the test builds its own library rather than using SDL2**, with the negative half first: without the flag
+the link must *fail*. A success-only test passes even when `-L` is ignored, which is ADR-0055's "a test that
+passes without the code it tests is worse than no test", met again.
+
 **ADR-0162 holds at 1054** (1055 under gate 7) and adds two corpus files = **253** — the `#c_variadic`
 marker, which is the first half of ADR-0157 §2's two and W10's other gate. A fixed-arity declaration of a
 variadic C function puts the extra argument in the wrong place *silently*, and **nothing can infer
