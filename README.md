@@ -45,6 +45,19 @@ and a `long` in two different register files, while AArch64 puts both in general
 correct answers gets refused until it is split — an honest narrower rule beats a wrong wider one, which is the
 same call this project made about `sqrt`.
 
+**A window opens and gets drawn on** (ADR-0164). `modules/Window` creates a window, makes a 2D renderer, sets
+a colour, clears the surface, fills and outlines a rectangle, draws a line, presents it and tears everything
+down — ten steps, in a compiled binary, against real SDL2. It is the seventeenth module and the first that
+`jr run` cannot execute: the compile-time interpreter resolves a foreign symbol from the compiler's own
+process image, so it reaches the C library and nothing else.
+
+**What that wave could not do is the more useful result.** A window opened this way cannot be closed by
+clicking its close box, because reading an event means reading an `SDL_Event`, which is a **union** — and this
+compiler refuses a union at a foreign boundary, correctly: a union's members overlap, so every C calling
+convention treats its bytes as opaque and there is no rule to implement. Four separate pieces of work have now
+arrived at that one boundary, and settling it also settles the Objective-C question above, which reaches the
+same fork from the other side.
+
 **Graphics is unblocked, on a different foundation than the plan named** (ADR-0163). The plan said "Cocoa via
 `#foreign`", and every Cocoa call goes through `objc_msgSend`, which is variadic — and the blocker for that is
 upstream, in Cranelift. So that removes an option rather than delaying the wave, and the wave is built on

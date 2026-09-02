@@ -1461,3 +1461,114 @@ fn run_build_with_paths(path: PathBuf, output: PathBuf, library_paths: &[PathBuf
     )
     .unwrap_or(1)
 }
+
+/// `modules/Window` opens a window and draws through SDL2, in a compiled binary (ADR-0163 §1).
+///
+/// # Why this is not a corpus program
+///
+/// `tests/corpus/valid/` asserts that the VM and the native back ends agree, and the VM **cannot** reach
+/// SDL2: it resolves a foreign symbol from the compiler's own process image, and `jr` is not linked against
+/// SDL2. That is the same reason `Process` got an integration test while `Socket` got a corpus file
+/// (ADR-0158 §3) — the boundary is what the VM can call, not what the language can express.
+///
+/// # Why it skips instead of failing
+///
+/// SDL2 is a third-party library, which ADR-0163 §1 accepted as this foundation's stated cost. A machine
+/// without it cannot run this and the rest of the suite is unaffected — so the test looks for the library
+/// first and returns if it is absent. The skip is narrow on purpose: it checks for the *library*, and every
+/// assertion after that point is unconditional.
+///
+/// The program exercises ten steps and sums a distinct bit for each, so a failure names which one broke
+/// rather than only that something did.
+#[test]
+fn a_window_opens_and_draws_through_sdl2() {
+    // The directories `-L` would search, in the order a developer on either supported platform would have
+    // them. Homebrew on arm64 macOS first, then Intel's prefix, then the two usual Linux locations.
+    let candidates = [
+        "/opt/homebrew/lib",
+        "/usr/local/lib",
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib",
+    ];
+    let library_dir = candidates.iter().map(PathBuf::from).find(|dir| {
+        dir.join("libSDL2.dylib").exists()
+            || dir.join("libSDL2.so").exists()
+            || dir.join("libSDL2-2.0.so.0").exists()
+    });
+    let Some(library_dir) = library_dir else {
+        // No SDL2, no test. ADR-0163 §1 accepted this dependency explicitly; the rest of the suite has none.
+        return;
+    };
+
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("draws.jr");
+    fs::write(
+        &source,
+        r#"#import "Window";
+
+libc :: #system_library "c";
+exit_now :: (status: s64) #foreign libc "exit";
+
+main :: () {
+    total := 0;
+
+    // 1 — the library linked and ran at all, with no display needed.
+    if video_driver_count() > 0 { total = total + 1; }
+
+    if !start() { exit_now(90); }
+    total = total + 2;
+
+    // `HIDDEN`, so the whole creation path runs with no display. `SOFTWARE`, because `ACCELERATED` fails
+    // on a machine with no GPU driver and this must pass on a CI runner.
+    title := "Jairs\0";
+    w, ok := open(title.data, 320, 240, HIDDEN);
+    if !ok { exit_now(91); }
+    total = total + 4;
+
+    r, rok := renderer_for(*w, SOFTWARE);
+    if !rok { exit_now(92); }
+    total = total + 8;
+
+    if set_color(*r, 20, 30, 40, 255) { total = total + 16; }
+    if clear(*r) { total = total + 32; }
+
+    // A rect crosses as a `*Rect`, which is why SDL2 was reachable before Cocoa: no aggregate by value.
+    box := rect(10, 20, 100, 50);
+    if fill(*r, *box) { total = total + 64; }
+    if outline(*r, *box) { total = total + 128; }
+    if line(*r, 0, 0, 319, 239) { total = total + 256; }
+
+    present(*r);
+    delay(1);
+
+    // Closing twice must be safe, so a caller can close on every path without tracking whether they got one.
+    destroy(*r);
+    close(*w);
+    destroy(*r);
+    close(*w);
+    total = total + 512;
+
+    stop();
+    exit_now(total % 251);
+}
+"#,
+    )
+    .unwrap();
+
+    let binary = dir.path().join("draws");
+    let code = run_build_with_paths(source, binary.clone(), &[library_dir]);
+    assert_eq!(code, 0, "the program must build and link against SDL2");
+
+    let ran = std::process::Command::new(&binary)
+        // The dummy driver, so no display is needed and a headless runner behaves like a desktop.
+        .env("SDL_VIDEODRIVER", "dummy")
+        .status()
+        .expect("the linked binary should run");
+    assert_eq!(
+        ran.code(),
+        // 1023 is all ten bits; the exit status is a byte, so the program takes it mod 251 the way every
+        // other corpus program does.
+        Some(1023 % 251),
+        "every step must succeed; a lower value names which bit failed, and 90-92 name a hard stop"
+    );
+}
