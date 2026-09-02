@@ -1,0 +1,500 @@
+//! The Simp module: an immediate-mode 2D renderer, shaped like Jai's `Simp`.
+//!
+//! Group D of the Simp-shaped-graphics restructure (ADR-0182). A batch is opened by `immediate_begin`,
+//! filled with quads that each carry their own colour, and closed by `immediate_flush` — which is Jai's
+//! model, and not the one `modules/Window` used to have (a renderer-global colour set before each
+//! axis-aligned rectangle).
+//!
+//! # The backend, and why it is `SDL_RenderGeometry`
+//!
+//! Jai's `Simp` is **single-backend**: the Jai Community Library says *"SIMP has a GL backend. Eventually,
+//! SIMP will have other backends"*, and all the per-OS code lives in `Window_Creation`. So the shape to
+//! imitate is one portable rendering library with the platform work quarantined in window creation — not
+//! three backends behind one API.
+//!
+//! For Jairs that library is SDL2, because it is `-lSDL2` on macOS, Linux and Windows alike, while OpenGL
+//! is `OpenGL.framework` / `GL` / `opengl32` — three names, and a per-OS *library name* is out of reach
+//! even after ADR-0180 (the operand would have to be evaluated before the library is known; ADR-0180
+//! §"Why not conditional compilation" has the cycle). A GL backend remains a later swap behind an
+//! unchanged API.
+//!
+//! `SDL_RenderGeometry` is what makes the mapping faithful rather than approximate: per-vertex position,
+//! colour and normalised texture coordinate is *exactly* `immediate_quad`'s four-point form.
+//! `SDL_RenderFillRect` cannot draw a rotated quad at all.
+//!
+//! # Why the renderer is caller-owned, and not module state
+//!
+//! Jai's `Simp` keeps the render target, the shader mode and the vertex batch in module-level variables.
+//! **Jairs has no module-level mutable state**: a file-scope `var` is E0245, *"a file-level item has no
+//! value until jr-vm"* — probed before a line of this module was written (ADR-0182 §1). So all of it lives
+//! in a [`Renderer`] the caller declares and passes by pointer.
+//!
+//! That is `modules/UI`'s established pattern, for the reason its docs give: a caller declares one, keeps
+//! it between frames, and never allocates. It is also the better API — two windows can have two renderers,
+//! which a module global cannot express — and it makes the batch's cost visible, which a hidden global
+//! does not.
+//!
+//! # Colours are floats in 0..1
+//!
+//! `clear_render_target(0.15, 0.08, 0.08, 1.0)` is Jai's spelling, and the 0-255 integers the old
+//! `Window.set_color` took are gone from this API. The conversion to `SDL_Color`'s bytes happens once,
+//! inside `immediate_quad`.
+//!
+//! # This module does not run under `jr run`
+//!
+//! The comptime VM resolves foreign symbols from the compiler's own process image rather than from a link
+//! line (ADR-0158 §3), so it reaches libc and nothing else. A program that draws is a `jr build` program,
+//! and a build needs `-L` pointing at SDL2 (ADR-0163 §2).
+
+Window :: #import "Window";
+
+/// `SDL_BLENDMODE_NONE` — write the source colour, ignore alpha.
+BLEND_NONE :: 0;
+
+/// `SDL_BLENDMODE_BLEND` — alpha blending, which is what `set_shader_for_color(true)` asks for.
+BLEND :: 1;
+
+/// How many vertices one batch holds: 170 quads at six vertices each.
+///
+/// Six per quad rather than four plus an index list, because `SDL_RenderGeometry` accepts a null index
+/// array meaning "vertices in order" — so two extra vertices per quad buys the removal of the whole index
+/// buffer.
+///
+/// **A `Renderer` is therefore about 20 KB**, which is worth naming because a caller declares one as a
+/// local. That is the price of a batch with no allocator, and this library has none (ADR-0182 §3).
+MAX_VERTICES :: 1020;
+
+/// A 2-vector, for a position or a texture coordinate.
+Vector2 :: struct {
+    /// Horizontal.
+    x: float32;
+    /// Vertical.
+    y: float32;
+}
+
+/// An RGBA colour, each channel in 0..1 as Simp's are.
+Vector4 :: struct {
+    /// Red.
+    x: float32;
+    /// Green.
+    y: float32;
+    /// Blue.
+    z: float32;
+    /// Alpha: 1 is opaque.
+    w: float32;
+}
+
+/// An `SDL_Vertex`, spelled out as eight scalars.
+///
+/// C's is `{SDL_FPoint position; SDL_Color color; SDL_FPoint tex_coord;}` — **20 bytes**, align 4, with
+/// `position` at 0, `color` at 8 and `tex_coord` at 12, measured against a `cc`-compiled `offsetof` rather
+/// than reasoned about.
+///
+/// Written as eight flat fields rather than three nested structs so the layout is **one thing a reader can
+/// check**, which is the same argument `Input`'s `Event` overlay makes. `VERTEX_LAYOUT_IS_SDL2` asserts the
+/// size, because a layout is a claim about somebody else's ABI and a claim should be checkable.
+Vertex :: struct {
+    /// Position x, in renderer coordinates (pixels, by default).
+    x: float32;
+    /// Position y.
+    y: float32;
+    /// Red, 0-255.
+    r: u8;
+    /// Green.
+    g: u8;
+    /// Blue.
+    b: u8;
+    /// Alpha.
+    a: u8;
+    /// Normalised texture coordinate u, 0..1. Ignored when no texture is bound.
+    u: float32;
+    /// Normalised texture coordinate v.
+    v: float32;
+}
+
+/// Whether `Vertex` is the 20 bytes `SDL_RenderGeometry` reads.
+///
+/// A file-scope constant, which ADR-0180 §3 made possible. Prefixed rather than called `LAYOUT_IS_SDL2`,
+/// because `Window` and `Image` each have a layout claim too and an exported name is a claim on every
+/// importer that spells it bare (ADR-0167 §7).
+VERTEX_LAYOUT_IS_SDL2 :: size_of(Vertex) == 20;
+
+/// A texture living in the renderer's memory.
+///
+/// Carries `width` and `height` because Simp's does and every caller needs them to size a quad — a texture
+/// whose dimensions have to be queried separately makes the common case two calls.
+Texture :: struct {
+    /// The `SDL_Texture *`. Null when the texture is not loaded.
+    handle: *u8;
+    /// Width in pixels, 0 when not loaded.
+    width: s64;
+    /// Height in pixels.
+    height: s64;
+}
+
+/// The render target, the shader mode and the vertex batch — everything Jai's `Simp` keeps globally.
+///
+/// **About 20 KB**, dominated by the batch. A caller declares one, usually as a local of `main`, and passes
+/// it to every call. See the module docs for why it is not module state.
+///
+/// Every field is written by the routines below and none by the caller.
+Renderer :: struct {
+    /// The `SDL_Renderer *`. Null until `set_render_target` succeeds.
+    handle: *u8;
+    /// The texture `immediate_flush` will draw with, or null for flat colour.
+    ///
+    /// Set by `set_shader_for_images` and cleared by `set_shader_for_color`, which is Simp's shader-mode
+    /// selection expressed as the one piece of state `SDL_RenderGeometry` actually takes.
+    texture: *u8;
+    /// Whether a batch is open — set by `immediate_begin`, cleared by `immediate_flush`.
+    in_batch: bool;
+    /// How many of `vertices` are filled.
+    vertex_count: s64;
+    /// The batch itself.
+    vertices: [MAX_VERTICES]Vertex;
+}
+
+/// A colour from four channels in 0..1.
+///
+/// A constructor because `Simp.immediate_quad(x0, y0, x1, y1, Simp.vector4(1.0, 0.5, 0.5, 1.0))` is the
+/// call this API is built around, and a caller declaring a local per quad would be noise.
+vector4 :: (r: float32, g: float32, b: float32, a: float32) -> Vector4 {
+    out: Vector4;
+    out.x = r;
+    out.y = g;
+    out.z = b;
+    out.w = a;
+    return out;
+}
+
+/// A 2-vector from two floats.
+vector2 :: (x: float32, y: float32) -> Vector2 {
+    out: Vector2;
+    out.x = x;
+    out.y = y;
+    return out;
+}
+
+/// Creates the renderer for `window` and makes it `simp`'s target.
+///
+/// **Jai's `set_render_target`**, which there takes only a window because the renderer is global. Here it
+/// creates the SDL renderer *and* stores it, because a Jairs caller has nowhere else to put one — and
+/// splitting the two would give a caller a handle whose only use is to hand straight back.
+///
+/// `flags` is `Window.SOFTWARE` or `Window.ACCELERATED`. `SOFTWARE` is the one to reach for first, because
+/// `ACCELERATED` *fails* on a machine with no GPU driver where software always works.
+///
+/// `#must`: nothing else here works if this failed, and a caller who ignores the flag draws into a null
+/// handle and gets a blank window with no idea why (ADR-0151).
+set_render_target :: (simp: *Renderer, window: *Window.Window, flags: s64) -> bool #must {
+    if window.handle == null {
+        simp.handle = null;
+        return false;
+    }
+    // `-1` means "the first driver that satisfies the flags", which is what every caller wants and what a
+    // named constant would only obscure.
+    simp.handle = sdl_create_renderer(window.handle, -1, cast(u32, flags));
+    simp.texture = null;
+    simp.in_batch = false;
+    simp.vertex_count = 0;
+    return simp.handle != null;
+}
+
+/// Destroys the renderer and marks it destroyed.
+///
+/// Safe on an already-destroyed one, so a caller can call it on every path without tracking whether they
+/// got one — the property that makes `File.close` usable where a `defer` would go (ADR-0157 §3).
+destroy_render_target :: (simp: *Renderer) {
+    if simp.handle != null {
+        sdl_destroy_renderer(simp.handle);
+    }
+    simp.handle = null;
+    simp.texture = null;
+    simp.in_batch = false;
+    simp.vertex_count = 0;
+}
+
+/// The renderer's output size in pixels.
+///
+/// **Jai puts this in `Simp` and the plan put it in `Window`**; Simp is right, and not by preference: it
+/// binds `SDL_GetRendererOutputSize`, which needs the *renderer* — and after this restructure `Window`
+/// does not have one. The plan's version could not have compiled.
+///
+/// `(0, 0)` when there is no renderer, which is the same "no target" answer every other routine here gives.
+get_render_dimensions :: (simp: *Renderer) -> (s64, s64) {
+    if simp.handle == null {
+        return 0, 0;
+    }
+    w: s32;
+    h: s32;
+    if sdl_get_output_size(simp.handle, *w, *h) != 0 {
+        return 0, 0;
+    }
+    return cast(s64, w), cast(s64, h);
+}
+
+/// Fills the whole target with `(r, g, b, a)`, each channel in 0..1.
+///
+/// **Jai's `clear_render_target(0.15, 0.08, 0.08, 1.0)`**, floats and all. The old
+/// `Window.set_color(r, g, b, a)` with 0-255 integers followed by `Window.clear` is what this replaces:
+/// two calls and a different numeric range for one operation.
+clear_render_target :: (simp: *Renderer, r: float32, g: float32, b: float32, a: float32) -> bool #must {
+    if simp.handle == null {
+        return false;
+    }
+    if sdl_set_draw_color(simp.handle, channel(r), channel(g), channel(b), channel(a)) != 0 {
+        return false;
+    }
+    return sdl_render_clear(simp.handle) == 0;
+}
+
+/// Selects flat-colour drawing, with or without alpha blending.
+///
+/// **Flushes any open batch first**, because changing shader mode mid-batch is the one thing Simp's
+/// contract forbids: the vertices already queued were meant for the *previous* mode, and drawing them
+/// under this one would silently draw the wrong thing. A caller who wanted them kept should have flushed.
+///
+/// The flush's own failure is reported, so a caller who ignores this `bool` does not lose a frame quietly.
+set_shader_for_color :: (simp: *Renderer, enable_blend: bool) -> bool #must {
+    if simp.handle == null {
+        return false;
+    }
+    if !flush_open_batch(simp) {
+        return false;
+    }
+    simp.texture = null;
+    mode := BLEND_NONE;
+    if enable_blend {
+        mode = BLEND;
+    }
+    return sdl_set_blend_mode(simp.handle, cast(u32, mode)) == 0;
+}
+
+/// Selects textured drawing from `texture`.
+///
+/// Flushes any open batch first, for `set_shader_for_color`'s reason. Blending is enabled, because a
+/// texture with an alpha channel drawn without it is the single most common way a sprite comes out with a
+/// black box around it.
+set_shader_for_images :: (simp: *Renderer, texture: *Texture) -> bool #must {
+    if simp.handle == null || texture.handle == null {
+        return false;
+    }
+    if !flush_open_batch(simp) {
+        return false;
+    }
+    simp.texture = texture.handle;
+    return sdl_set_blend_mode(simp.handle, cast(u32, BLEND)) == 0;
+}
+
+/// Opens a batch.
+///
+/// Calling it twice without a flush **discards** the first batch, which is what Simp does: a begin starts a
+/// batch. Not `#must`, because it cannot fail — there is nothing to report.
+immediate_begin :: (simp: *Renderer) {
+    simp.vertex_count = 0;
+    simp.in_batch = true;
+}
+
+/// Adds an axis-aligned quad from two opposite corners, in one colour.
+///
+/// **Jai's two-corner `immediate_quad(x, y, x + w, y + h, color)`.** The four-point form is
+/// [`immediate_quad_uv`]: two named procedures rather than one overloaded name, because Jai distinguishes
+/// them by argument *count* and Jairs has no overloading.
+///
+/// **Outside a batch this is a no-op rather than a trap.** A dropped quad is a visible bug the caller can
+/// see; a trap would make a mis-ordered draw call kill a program mid-frame, which is worse for the thing a
+/// renderer is used for.
+///
+/// **When the batch is full it flushes and continues**, so a caller cannot silently lose geometry by
+/// drawing more than 170 quads. A flush failure there is not reported — this returns nothing, matching
+/// Jai — so a caller who cares checks `immediate_flush`'s own answer at the end of the frame.
+immediate_quad :: (simp: *Renderer, x0: float32, y0: float32, x1: float32, y1: float32, color: Vector4) {
+    a := vector2(x0, y0);
+    b := vector2(x1, y0);
+    c := vector2(x1, y1);
+    d := vector2(x0, y1);
+    zero := vector2(0.0, 0.0);
+    one := vector2(1.0, 1.0);
+    immediate_quad_uv(simp, a, b, c, d, zero, vector2(1.0, 0.0), one, vector2(0.0, 1.0), color);
+}
+
+/// Adds a quad from four arbitrary corners with four texture coordinates.
+///
+/// **Jai's four-point `immediate_quad(v0, v1, v2, v3, uv0 = …, uv1 = …, uv2 = …, uv3 = …)`**, and the form
+/// `SDL_RenderFillRect` cannot express at all: the corners need not be axis-aligned, so a rotated sprite is
+/// this call and nothing else.
+///
+/// The corners are taken in order round the quad — `v0`, `v1`, `v2`, `v3` — and emitted as two triangles,
+/// `v0 v1 v2` and `v0 v2 v3`. Six vertices rather than four plus indices, because `SDL_RenderGeometry`
+/// accepts a null index array meaning "in order".
+///
+/// A no-op outside a batch, and it flushes when full, exactly as [`immediate_quad`] does.
+immediate_quad_uv :: (simp: *Renderer, v0: Vector2, v1: Vector2, v2: Vector2, v3: Vector2, uv0: Vector2, uv1: Vector2, uv2: Vector2, uv3: Vector2, color: Vector4) {
+    if !simp.in_batch {
+        return;
+    }
+    // Six at a time, so a quad is never split across a flush — half a quad drawn is a triangle nobody
+    // asked for, which is harder to diagnose than a whole quad in the next batch.
+    if simp.vertex_count + 6 > MAX_VERTICES {
+        _ = flush_batch(simp);
+        simp.in_batch = true;
+        simp.vertex_count = 0;
+    }
+    push_vertex(simp, v0, uv0, color);
+    push_vertex(simp, v1, uv1, color);
+    push_vertex(simp, v2, uv2, color);
+    push_vertex(simp, v0, uv0, color);
+    push_vertex(simp, v2, uv2, color);
+    push_vertex(simp, v3, uv3, color);
+}
+
+/// Draws the batch and closes it.
+///
+/// Calls `SDL_RenderGeometry` with the current texture — null under `set_shader_for_color`, which is how
+/// that mode is expressed to SDL — then clears the batch.
+///
+/// `true` for an **empty** batch: flushing nothing succeeded. That matters because a frame that happened to
+/// draw nothing must not read as a failure.
+immediate_flush :: (simp: *Renderer) -> bool #must {
+    ok := flush_batch(simp);
+    simp.in_batch = false;
+    return ok;
+}
+
+/// Shows everything drawn since the last present.
+///
+/// **Jai's `swap_buffers(window)`**, and it takes the renderer here because that is what SDL presents. It
+/// returns nothing, matching `SDL_RenderPresent`, which returns nothing — inventing a failure flag would be
+/// a lie about what the library says.
+///
+/// It does **not** flush: a caller who forgot `immediate_flush` sees an empty frame, which is a visible
+/// bug, where an implicit flush here would hide the missing call and make the batch's lifetime unreadable.
+swap_buffers :: (simp: *Renderer) {
+    if simp.handle != null {
+        sdl_render_present(simp.handle);
+    }
+}
+
+/// The raw `SDL_Renderer *` this target holds, or null.
+///
+/// Exists for `modules/Image`, which needs a renderer to make a texture. A **procedure** rather than a
+/// field access, so that `Image` depends on this module's *API* rather than on `Renderer`'s layout — which
+/// is what it used to do with `Window`'s (ADR-0182 §4).
+current_renderer :: (simp: *Renderer) -> *u8 {
+    return simp.handle;
+}
+
+/// The last SDL error, as a NUL-terminated C string.
+///
+/// SDL's own `SDL_GetError`, exposed because a null handle plus a bare `false` was every graphics module's
+/// only failure report until now — and "the BMP is malformed" and "the file is not there" are different
+/// problems a caller can act on differently.
+///
+/// The pointer is SDL's and is valid until the next SDL call sets it. Read it immediately.
+get_error :: () -> *u8 {
+    return sdl_get_error();
+}
+
+// ---------------------------------------------------------------------------
+// Private
+// ---------------------------------------------------------------------------
+
+#scope_module
+
+/// A 0..1 channel as SDL's 0-255 byte.
+///
+/// Clamped rather than wrapped: `cast(u8, 300)` would give 44, so an out-of-range channel would come out a
+/// *different colour* instead of a saturated one. One place does the conversion, so no call site can get
+/// the rounding or the clamp differently.
+channel :: (value: float32) -> u8 {
+    scaled := cast(s64, value * 255.0);
+    if scaled < 0 {
+        scaled = 0;
+    }
+    if scaled > 255 {
+        scaled = 255;
+    }
+    return cast(u8, scaled);
+}
+
+/// Appends one vertex. The caller has already made room.
+push_vertex :: (simp: *Renderer, position: Vector2, uv: Vector2, color: Vector4) {
+    i := simp.vertex_count;
+    simp.vertices[i].x = position.x;
+    simp.vertices[i].y = position.y;
+    simp.vertices[i].r = channel(color.x);
+    simp.vertices[i].g = channel(color.y);
+    simp.vertices[i].b = channel(color.z);
+    simp.vertices[i].a = channel(color.w);
+    simp.vertices[i].u = uv.x;
+    simp.vertices[i].v = uv.y;
+    simp.vertex_count = i + 1;
+}
+
+/// Draws and empties the batch, without touching `in_batch`.
+///
+/// Shared by `immediate_flush` and the two shader-mode setters, so "what a flush does" is written once and
+/// the setters cannot drift from it.
+flush_batch :: (simp: *Renderer) -> bool {
+    if simp.handle == null {
+        return false;
+    }
+    if simp.vertex_count == 0 {
+        return true;
+    }
+    ok := sdl_render_geometry(simp.handle, simp.texture, *simp.vertices[0], cast(s32, simp.vertex_count), null, 0) == 0;
+    simp.vertex_count = 0;
+    return ok;
+}
+
+/// Flushes only if a batch is open, and closes it.
+///
+/// What the shader-mode setters need: an open batch belongs to the *previous* mode and must be drawn before
+/// the mode changes, while a closed one is nothing to do.
+flush_open_batch :: (simp: *Renderer) -> bool {
+    if !simp.in_batch {
+        return true;
+    }
+    ok := flush_batch(simp);
+    simp.in_batch = false;
+    return ok;
+}
+
+/// The SDL2 shared library.
+///
+/// Declared again here rather than imported from `Window`, because a `#foreign` declaration resolves its
+/// library in **its own file** (ADR-0019 §4).
+sdl :: #system_library "SDL2";
+
+/// `SDL_CreateRenderer(SDL_Window *, int index, Uint32 flags)`.
+sdl_create_renderer :: (window: *u8, index: s32, flags: u32) -> *u8 #foreign sdl "SDL_CreateRenderer";
+
+/// `SDL_DestroyRenderer`.
+sdl_destroy_renderer :: (renderer: *u8) #foreign sdl "SDL_DestroyRenderer";
+
+/// `SDL_SetRenderDrawColor(SDL_Renderer *, Uint8 r, Uint8 g, Uint8 b, Uint8 a)`.
+sdl_set_draw_color :: (renderer: *u8, red: u8, green: u8, blue: u8, alpha: u8) -> s32 #foreign sdl "SDL_SetRenderDrawColor";
+
+/// `SDL_RenderClear`.
+sdl_render_clear :: (renderer: *u8) -> s32 #foreign sdl "SDL_RenderClear";
+
+/// `SDL_SetRenderDrawBlendMode(SDL_Renderer *, SDL_BlendMode)`.
+sdl_set_blend_mode :: (renderer: *u8, mode: u32) -> s32 #foreign sdl "SDL_SetRenderDrawBlendMode";
+
+/// `SDL_RenderGeometry(SDL_Renderer *, SDL_Texture *, const SDL_Vertex *, int, const int *, int)`.
+///
+/// The vertices cross **by pointer**, which is required rather than chosen: at 20 bytes a `Vertex` exceeds
+/// the two words `jr_pool::classify` allows by value and would be E0286 (ADR-0160). SDL's own signature
+/// takes a pointer, so nothing is being worked around.
+///
+/// Added in SDL 2.0.18. A platform with an older SDL2 fails to link, which is the honest failure.
+sdl_render_geometry :: (renderer: *u8, texture: *u8, vertices: *Vertex, num_vertices: s32, indices: *s32, num_indices: s32) -> s32 #foreign sdl "SDL_RenderGeometry";
+
+/// `SDL_RenderPresent`.
+sdl_render_present :: (renderer: *u8) #foreign sdl "SDL_RenderPresent";
+
+/// `SDL_GetRendererOutputSize(SDL_Renderer *, int *w, int *h)`.
+sdl_get_output_size :: (renderer: *u8, w: *s32, h: *s32) -> s32 #foreign sdl "SDL_GetRendererOutputSize";
+
+/// `SDL_GetError` — the last error, as a static NUL-terminated string SDL owns.
+sdl_get_error :: () -> *u8 #foreign sdl "SDL_GetError";

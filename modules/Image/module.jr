@@ -57,17 +57,17 @@
 //! **No sub-rectangle source.** `draw_texture` copies the whole texture. A sprite sheet needs a source rect, which is
 //! one more `*Rect` argument and no new mechanism, so it is a small addition rather than a design.
 
-#import "Window";
+Window :: #import "Window";
+Simp :: #import "Simp";
 
-// `Renderer`, `Rect` and `rect` below come from `Window`, unqualified: an `#import` is flat and there is no
-// `Window.Rect` syntax (ADR-0166 §7).
+// Imported **aliased** (ADR-0179 §1). `Window.Rect` is a real spelling now — it was not when this module was
+// written, and this comment used to say so: *"an `#import` is flat and there is no `Window.Rect` syntax"*.
 //
-// **Which is why every routine here is prefixed** — `fill_surface` and not `fill`, `free_surface` and not
-// `free`, `destroy_texture` and not `destroy`. Written unprefixed first, and a file importing `Window`, `Basic`
-// and this module got **four E0211 ambiguous-name errors** at once: `fill` and `destroy` collide with `Window`'s,
-// `free` with `Basic`'s, and `layout_is_sdl2` with `Window`'s. The compiler catching it is the good outcome. The
-// lesson is that in a flat namespace a module must prefix as though the namespace were its own, because there is
-// no qualification to fall back on and a short name is a claim on every importer.
+// **The prefixes stay anyway** — `fill_surface` and not `fill`, `free_surface` and not `free`,
+// `destroy_texture` and not `destroy`. They were written unprefixed first, and a file importing `Window`,
+// `Basic` and this module got **four E0211 ambiguous-name errors** at once. A qualified import makes that
+// survivable; it does not make a short exported name a good idea, because a name this module exports is a
+// claim on every importer that spells it bare (ADR-0167 §7).
 
 /// An `SDL_Surface` — pixels in ordinary memory — as a `#place` overlay of the fields worth reading.
 ///
@@ -95,13 +95,10 @@ Surface_Data :: struct {
     tail: [56]u8 #place 40;
 }
 
-/// A texture the renderer can draw from.
-///
-/// A named one-field struct, for `Window`'s reason (ADR-0164 §1): a handle and a count are both machine words.
-Texture :: struct {
-    /// The `SDL_Texture *`. Null when the texture is not loaded.
-    handle: *u8;
-}
+// **This module no longer declares a `Texture`** (ADR-0182 §4). It had a one-field
+// `Texture :: struct { handle: *u8; }`, and `Simp.Texture` carries `width` and `height` too — because
+// Simp's does, and because every caller sizing a quad needs them. Two texture types would mean a caller
+// converting between them at every boundary, so this module produces `Simp.Texture` and there is one.
 
 /// A loaded image's pixels, before it becomes a texture.
 Surface :: struct {
@@ -130,7 +127,7 @@ SURFACE_LAYOUT_IS_SDL2 :: size_of(Surface_Data) == 96;
 
 /// Loads a BMP file into a surface.
 ///
-/// `path` must be NUL-terminated — a `*u8`, not a `string`, for `Window.open`'s reason.
+/// `path` must be NUL-terminated — a `*u8`, not a `string`, for `Window.create_window`'s reason.
 ///
 /// `#must`: a missing or corrupt file is the *expected* failure of this routine, and it is the reason ADR-0166 §
 /// rejected deferring images entirely. A caller who ignores the flag gets a null handle and a null texture and
@@ -155,7 +152,7 @@ load_bmp :: (path: *u8) -> (Surface, bool) #must {
 /// nothing binary lives in the repository. A caller building an image procedurally wants it too.
 create_surface :: (width: s64, height: s64) -> (Surface, bool) #must {
     s: Surface;
-    s.handle = sdl_create_surface(0, width, height, 32, FORMAT_RGBA8888);
+    s.handle = sdl_create_surface(0, cast(s32, width), cast(s32, height), 32, cast(u32, FORMAT_RGBA8888));
     return s, s.handle != null;
 }
 
@@ -164,11 +161,13 @@ create_surface :: (width: s64, height: s64) -> (Surface, bool) #must {
 /// The colour is packed in the *surface's* format, which for a `create_surface` surface is RGBA8888 — so `0xFF0000FF`
 /// is opaque red. A caller mixing this with a surface loaded from a file must know that file's format, which is
 /// the honest reason this module has no `set_pixel`.
-fill_surface :: (surface: *Surface, area: *Rect, colour: s64) -> bool #must {
+fill_surface :: (surface: *Surface, area: *Window.Rect, colour: s64) -> bool #must {
     if surface.handle == null {
         return false;
     }
-    return sdl_fill_surface(surface.handle, area, colour) == 0;
+    // Narrowed at the boundary: SDL's `Uint32` is the surface's packed pixel, and a `s64` caller-facing
+    // parameter is what lets `0xFF0000FF` be written without a cast at every call site.
+    return sdl_fill_surface(surface.handle, area, cast(u32, colour)) == 0;
 }
 
 /// Writes `surface` to `path` as a BMP.
@@ -225,38 +224,54 @@ free_surface :: (surface: *Surface) {
 ///
 /// The surface stays valid and is the caller's to `free_surface`: SDL copies out of it, and freeing it here would make
 /// `load_bmp` plus `texture_from` unusable for a caller who wanted both.
-texture_from :: (renderer: *Renderer, surface: *Surface) -> (Texture, bool) #must {
-    t: Texture;
+texture_from :: (simp: *Simp.Renderer, surface: *Surface) -> (Simp.Texture, bool) #must {
+    t: Simp.Texture;
+    t.handle = null;
+    t.width = 0;
+    t.height = 0;
     if surface.handle == null {
-        t.handle = null;
         return t, false;
     }
-    t.handle = sdl_texture_from_surface(renderer.handle, surface.handle);
-    return t, t.handle != null;
+    // **The renderer is asked for, not reached into** (ADR-0182 §4). This used to read `renderer.handle`,
+    // so the module depended on another module's *struct layout* rather than on its procedures. It is a
+    // call now, which means `Simp.Renderer` can change shape without this file noticing.
+    t.handle = sdl_texture_from_surface(Simp.current_renderer(simp), surface.handle);
+    if t.handle == null {
+        return t, false;
+    }
+    // Filled from the surface this came out of, which already has them — a `SDL_QueryTexture` round trip
+    // would ask SDL for a number we are holding.
+    t.width = cast(s64, surface.handle.width);
+    t.height = cast(s64, surface.handle.height);
+    return t, true;
 }
 
 /// Loads a BMP straight to a texture, freeing the intermediate surface.
 ///
 /// The common case in one call. It frees the surface **on both paths**, including when the upload fails, which
 /// is the leak a caller writing this sequence by hand gets wrong — the failure path is the one nobody runs.
-load_texture :: (renderer: *Renderer, path: *u8) -> (Texture, bool) #must {
-    t: Texture;
+load_texture :: (simp: *Simp.Renderer, path: *u8) -> (Simp.Texture, bool) #must {
+    t: Simp.Texture;
     s, ok := load_bmp(path);
     if !ok {
         t.handle = null;
+        t.width = 0;
+        t.height = 0;
         return t, false;
     }
-    t, uploaded := texture_from(renderer, *s);
+    t, uploaded := texture_from(simp, *s);
     free_surface(*s);
     return t, uploaded;
 }
 
 /// Destroys `texture` and marks it destroyed. Safe on an already-destroyed one.
-destroy_texture :: (texture: *Texture) {
+destroy_texture :: (texture: *Simp.Texture) {
     if texture.handle != null {
         sdl_destroy_texture(texture.handle);
     }
     texture.handle = null;
+    texture.width = 0;
+    texture.height = 0;
 }
 
 /// The texture's size, and whether it could be asked.
@@ -267,7 +282,7 @@ destroy_texture :: (texture: *Texture) {
 ///
 /// `#must`: a destroyed texture reports an error rather than trapping, and a caller who ignores it draws with a
 /// zero size, which is invisible.
-size_of_texture :: (texture: *Texture, width: *s32, height: *s32) -> bool #must {
+size_of_texture :: (texture: *Simp.Texture, width: *s32, height: *s32) -> bool #must {
     if texture.handle == null {
         return false;
     }
@@ -284,13 +299,13 @@ size_of_texture :: (texture: *Texture, width: *s32, height: *s32) -> bool #must 
 /// **Rejected: a null `destination` meaning "fill the window"**, which SDL supports. It reads well and it makes
 /// the one argument that matters optional, so a caller who forgot it gets a full-window stretch instead of a
 /// diagnostic.
-draw_texture :: (renderer: *Renderer, texture: *Texture, area: *Rect) -> bool #must {
+draw_texture :: (simp: *Simp.Renderer, texture: *Simp.Texture, area: *Window.Rect) -> bool #must {
     if texture.handle == null {
         return false;
     }
     // A null source rect is "the whole texture", which is what this routine means by its name — the asymmetry
     // with `destination` above is deliberate: the source has an obvious whole, the destination has none.
-    return sdl_render_copy(renderer.handle, texture.handle, null, area) == 0;
+    return sdl_render_copy(Simp.current_renderer(simp), texture.handle, null, area) == 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -311,19 +326,19 @@ sdl_rw_from_file :: (path: *u8, mode: *u8) -> *u8 #foreign sdl "SDL_RWFromFile";
 /// `SDL_LoadBMP_RW(SDL_RWops *, int freesrc)`.
 ///
 /// `SDL_LoadBMP` is a **macro** in the header, not a symbol, so this is what a `#foreign` declaration can name.
-sdl_load_bmp_rw :: (source: *u8, free_source: s64) -> *Surface_Data #foreign sdl "SDL_LoadBMP_RW";
+sdl_load_bmp_rw :: (source: *u8, free_source: s32) -> *Surface_Data #foreign sdl "SDL_LoadBMP_RW";
 
 /// `SDL_SaveBMP_RW(SDL_Surface *, SDL_RWops *, int freedst)`.
-sdl_save_bmp_rw :: (surface: *Surface_Data, destination: *u8, free_destination: s64) -> s64 #foreign sdl "SDL_SaveBMP_RW";
+sdl_save_bmp_rw :: (surface: *Surface_Data, destination: *u8, free_destination: s32) -> s32 #foreign sdl "SDL_SaveBMP_RW";
 
 /// `SDL_CreateRGBSurfaceWithFormat(Uint32 flags, int w, int h, int depth, Uint32 format)`.
-sdl_create_surface :: (flags: s64, width: s64, height: s64, depth: s64, format: s64) -> *Surface_Data #foreign sdl "SDL_CreateRGBSurfaceWithFormat";
+sdl_create_surface :: (flags: u32, width: s32, height: s32, depth: s32, format: u32) -> *Surface_Data #foreign sdl "SDL_CreateRGBSurfaceWithFormat";
 
 /// `SDL_FreeSurface`.
 sdl_free_surface :: (surface: *Surface_Data) #foreign sdl "SDL_FreeSurface";
 
 /// `SDL_FillRect(SDL_Surface *, const SDL_Rect *, Uint32 color)`.
-sdl_fill_surface :: (surface: *Surface_Data, area: *Rect, colour: s64) -> s64 #foreign sdl "SDL_FillRect";
+sdl_fill_surface :: (surface: *Surface_Data, area: *Window.Rect, colour: u32) -> s32 #foreign sdl "SDL_FillRect";
 
 /// `SDL_CreateTextureFromSurface(SDL_Renderer *, SDL_Surface *)`.
 sdl_texture_from_surface :: (renderer: *u8, surface: *Surface_Data) -> *u8 #foreign sdl "SDL_CreateTextureFromSurface";
@@ -332,7 +347,7 @@ sdl_texture_from_surface :: (renderer: *u8, surface: *Surface_Data) -> *u8 #fore
 sdl_destroy_texture :: (texture: *u8) #foreign sdl "SDL_DestroyTexture";
 
 /// `SDL_QueryTexture(SDL_Texture *, Uint32 *format, int *access, int *w, int *h)`.
-sdl_query_texture :: (texture: *u8, format: *u32, access: *s32, width: *s32, height: *s32) -> s64 #foreign sdl "SDL_QueryTexture";
+sdl_query_texture :: (texture: *u8, format: *u32, access: *s32, width: *s32, height: *s32) -> s32 #foreign sdl "SDL_QueryTexture";
 
 /// `SDL_RenderCopy(SDL_Renderer *, SDL_Texture *, const SDL_Rect *src, const SDL_Rect *dst)`.
-sdl_render_copy :: (renderer: *u8, texture: *u8, source: *Rect, destination: *Rect) -> s64 #foreign sdl "SDL_RenderCopy";
+sdl_render_copy :: (renderer: *u8, texture: *u8, source: *Window.Rect, destination: *Window.Rect) -> s32 #foreign sdl "SDL_RenderCopy";

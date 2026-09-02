@@ -1,0 +1,345 @@
+//! The Input module: SDL2's event queue, as Jai's `Input` shapes it.
+//!
+//! Group D of the Simp-shaped-graphics restructure (ADR-0182). Everything here was in `modules/Window`
+//! and moved unchanged, because the overlay's offsets are checked and correct and rewriting a working
+//! thing to make a diff look tidier is how a wave introduces a defect. What is *new* is the per-frame
+//! entry point Simp programs are built around: `update_window_events`, `events_this_frame`,
+//! `event_count`.
+//!
+//! # Why a separate module
+//!
+//! Jai splits `Window_Creation`, `Simp` and `Input`, and the split is not cosmetic: **all the per-platform
+//! work lives in window creation**, the renderer is one portable API, and events are a third thing that a
+//! program may want without either. A headless test that pushes a synthetic `QUIT` and reads it back needs
+//! this module and no renderer at all.
+//!
+//! # The overlay, and what is actually guaranteed (ADR-0165 §2)
+//!
+//! `Event` is a `#place` overlay of `SDL_Event`'s union members. **Fields share offsets on purpose** —
+//! `key_sym` and `mouse_x` are both at 20 — because that is what a union *is*, and `#place` (ADR-0144) is
+//! the mechanism for saying so. Which field is meaningful is decided by `kind`, exactly as in C.
+//!
+//! SDL's own header says of `type`: *"Event type, shared with all events"* — so **offset 0 is
+//! contractual**. The rest are SDL2 ABI offsets, stable across the 2.x series by the same promise that
+//! makes `SDL_Event` a fixed 56 bytes, and `EVENT_LAYOUT_IS_SDL2` is the assertion a caller can check.
+//! That is the honest line: one documented invariant, and an ABI this module asserts rather than assumes.
+//!
+//! # Why the frame buffer is caller-owned, and not module state
+//!
+//! Jai's `Input` keeps `events_this_frame` in a module-level array. **Jairs has no module-level mutable
+//! state**: a file-scope `var` is E0245, *"a file-level item has no value until jr-vm"* — probed before a
+//! line of this module was written, and confirmed for a scalar and for an array (ADR-0182 §1). So the
+//! buffer lives in an `Events` struct the caller declares and keeps between frames.
+//!
+//! That is not a workaround invented here: it is exactly what `modules/UI` already does with its `UI`
+//! struct, and for the reason its docs give — *"a caller declares one, keeps it between frames, and never
+//! allocates"*. Jai's version is global because Jai has globals. This one is explicit because that is what
+//! the language offers, and an explicit `*Events` is the better API anyway: two windows can have two
+//! queues' worth of frame state, which a module global cannot express.
+//!
+//! # Its own library handle
+//!
+//! `sdl :: #system_library "SDL2";` appears again at the bottom of this file rather than being imported
+//! from `Window`, because a `#foreign` declaration resolves its library **in its own file** (ADR-0019 §4).
+//! A name imported from another module would not be that. `Image` already carries a second one for the
+//! same reason.
+//!
+//! # This module does not run under `jr run`
+//!
+//! The comptime VM resolves foreign symbols from the compiler's own process image rather than from a link
+//! line (ADR-0158 §3), so it reaches libc and nothing else. A program that reads events is a `jr build`
+//! program, and a build needs `-L` pointing at SDL2 (ADR-0163 §2).
+
+/// `SDL_QUIT` — the application was asked to stop.
+QUIT :: 256;
+
+/// `SDL_WINDOWEVENT` — something happened to a window; `window_event` says what.
+WINDOW_EVENT :: 512;
+
+/// `SDL_WINDOWEVENT_CLOSE`, the `window_event` value for a close box (or Cmd-W).
+///
+/// Small because it is an enumerator inside the window-event kind, not an event type of its own.
+WINDOW_CLOSE :: 14;
+
+/// `SDL_KEYDOWN`.
+KEY_DOWN :: 768;
+
+/// `SDL_KEYUP`.
+KEY_UP :: 769;
+
+/// `SDL_MOUSEMOTION`.
+MOUSE_MOTION :: 1024;
+
+/// `SDL_MOUSEBUTTONDOWN`.
+MOUSE_DOWN :: 1025;
+
+/// `SDL_MOUSEBUTTONUP`.
+MOUSE_UP :: 1026;
+
+/// `SDLK_ESCAPE`, the one keycode worth naming here.
+///
+/// 27 — a keycode below 128 is its ASCII value, which is why this is the *only* one that needs a constant: a
+/// caller comparing against `'a'` can do so directly, and a caller who needs F-keys wants a table this module
+/// deliberately does not carry.
+KEY_ESCAPE :: 27;
+
+/// How many events one frame's drain will hold, and the bound `update_window_events` clamps to.
+///
+/// A fixed number rather than a `[..]Event` because a dynamic array needs the context allocator and no
+/// graphics module allocates. 256 is one frame's worth of mouse motion during a drag with room to spare,
+/// and it makes an `Events` **14 KB** — a size worth naming, since a caller declares one as a local.
+///
+/// A caller who overruns it loses nothing: the drain stops and the remaining events stay queued for the
+/// next call, which is the behaviour a frame budget wants.
+MAX_EVENTS_PER_FRAME :: 256;
+
+/// An `SDL_Event`, as a `#place` overlay of the union's members (ADR-0165 §2).
+///
+/// **Fields share offsets on purpose.** `key_sym` and `mouse_x` are both at 20, `key_state`, `mouse_button`
+/// and `window_event` at 12 and 16 — that is what a union is, and `#place` (ADR-0144) is the mechanism for
+/// saying so. Which field is meaningful is decided by `kind`, exactly as in C.
+///
+/// **56 bytes**, which `EVENT_LAYOUT_IS_SDL2` asserts: SDL writes the whole union through the pointer, so a
+/// smaller struct is a stack overwrite and a larger one wastes nothing but lies about the ABI.
+Event :: struct {
+    /// The event type — `QUIT`, `KEY_DOWN`, `MOUSE_MOTION` and so on.
+    ///
+    /// **Offset 0 is contractual**, not inferred: SDL's header documents it as "shared with all events".
+    kind: u32 #place 0;
+    /// Milliseconds since SDL started, as `SDL_GetTicks` reports them.
+    timestamp: u32 #place 4;
+    /// Which window the event is about, for the kinds that concern one.
+    window_id: u32 #place 8;
+    /// For `WINDOW_EVENT`: which window thing happened — compare against `WINDOW_CLOSE`.
+    window_event: u8 #place 12;
+    /// For `KEY_DOWN`/`KEY_UP`: 1 while the key is held.
+    key_state: u8 #place 12;
+    /// For a key event: non-zero when this is an auto-repeat rather than a fresh press.
+    key_repeat: u8 #place 13;
+    /// For `MOUSE_DOWN`/`MOUSE_UP`: which button, 1 for left.
+    mouse_button: u8 #place 16;
+    /// For a key event: the keycode. Below 128 it is the ASCII value.
+    key_sym: u32 #place 20;
+    /// For a mouse event: x, in pixels from the window's left. Shares offset 20 with `key_sym`.
+    mouse_x: s32 #place 20;
+    /// For a mouse event: y, in pixels from the top.
+    mouse_y: s32 #place 24;
+    /// The rest of the union, so the struct is the 56 bytes SDL writes.
+    ///
+    /// Never read. It exists so that `sdl_poll_event` cannot write past this struct — the difference between
+    /// a working poll and a stack overwrite that appears as a corrupted unrelated local.
+    tail: [28]u8 #place 28;
+}
+
+/// Whether `Event` is the 56 bytes SDL2 writes through the pointer.
+///
+/// A file-scope constant, which ADR-0180 §3 made possible — it was a procedure in `Window`, because
+/// `size_of` of a struct could not reach a file-scope constant.
+///
+/// **Named `EVENT_LAYOUT_IS_SDL2` and not `LAYOUT_IS_SDL2`**: `Window` and `Image` each have a layout
+/// claim of their own, and three modules exporting one name is the flat-namespace hazard ADR-0166 §7
+/// recorded and ADR-0167 §7 hit for real. A qualified import (ADR-0179) makes it survivable; the prefix
+/// stays anyway, because an exported name is a claim on every importer that spells it bare.
+///
+/// An overlay is a claim about somebody else's ABI, so the claim is checkable. A caller who wants the check
+/// to be fatal reads it and exits.
+EVENT_LAYOUT_IS_SDL2 :: size_of(Event) == 56;
+
+/// One frame's worth of drained events, owned by the caller (ADR-0182 §1).
+///
+/// Declared once — usually a local of `main` — and passed to `update_window_events` each frame. It is
+/// **14 KB**, so it is a local rather than something to copy around; every routine here takes it by
+/// pointer.
+///
+/// Nothing here is written by the caller. `update_window_events` fills it; the readers below only read.
+Events :: struct {
+    /// The events the last drain took, in the order SDL delivered them.
+    buffer: [MAX_EVENTS_PER_FRAME]Event;
+    /// How many of `buffer` are meaningful. Zero on a frame with no input.
+    count: s64;
+}
+
+/// Takes the next event, if one is waiting.
+///
+/// The `bool` is "an event was written", **not** a failure flag, so this is deliberately not `#must`: an empty
+/// queue is the normal case in a draw loop and `#must` on it would make every frame carry a ceremony for a
+/// non-event. That is the line ADR-0151 draws — the marker is for a failure a caller would otherwise miss, and
+/// "nothing happened yet" is not one.
+next_event :: (event: *Event) -> bool {
+    return sdl_poll_event(event) == 1;
+}
+
+/// Moves pending device state into the queue.
+///
+/// `next_event` pumps implicitly, so a caller who only polls never needs this. It is here for a caller who
+/// wants the queue filled at a known point — before a timing measurement, say — rather than as a side effect.
+pump :: () {
+    sdl_pump_events();
+}
+
+/// Puts `event` on the queue, so it comes back from `next_event`.
+///
+/// `#must`: SDL refuses a push when the queue is full or an event filter drops it, and a caller who ignores
+/// that waits forever for something that was never enqueued.
+///
+/// Its first use is a **test**: pushing a synthetic `QUIT` and polling it back exercises the whole overlay
+/// with no window manager and no human, which is how ADR-0165 §1 established the loop works at all.
+push :: (event: *Event) -> bool #must {
+    return sdl_push_event(event) == 1;
+}
+
+/// Whether `event` means the program should stop.
+///
+/// True for `QUIT` — the Dock's Quit, Cmd-Q, a signal — **and** for a window-close event, because a user
+/// clicking the close box of the only window means the same thing and a caller who checked only `QUIT` would
+/// have a window that refuses to shut. Handling both is what almost every program wants, and a caller who
+/// wants to distinguish them still can, by reading `kind` directly.
+should_close :: (event: *Event) -> bool {
+    // The fields are widened rather than the constants narrowed, and every comparison in this module does the
+    // same. A `#place` overlay's fields are C widths — `u32`, `u8` — while a Jairs constant is `s64` and there
+    // is no syntax to annotate one (probed: `QUIT : u32 : 256` does not parse). Widening a `u32` to `s64` is
+    // lossless in every case, so this direction cannot be wrong; narrowing the constant could be.
+    if cast(s64, event.kind) == QUIT {
+        return true;
+    }
+    return cast(s64, event.kind) == WINDOW_EVENT && cast(s64, event.window_event) == WINDOW_CLOSE;
+}
+
+/// Whether `event` is a fresh press of `keycode` — not an auto-repeat.
+///
+/// `key_repeat` is checked, because a held key produces a stream of `KEY_DOWN`s and a caller asking "was this
+/// pressed" almost never wants forty of them. A caller who *does* want the repeats reads `kind` and `key_sym`
+/// directly.
+pressed :: (event: *Event, keycode: s64) -> bool {
+    // `keycode` is `s64` so a caller can pass `KEY_ESCAPE` or a character literal without a cast, which is the
+    // whole point of a helper: the widening happens once here rather than at every call site.
+    return cast(s64, event.kind) == KEY_DOWN && cast(s64, event.key_sym) == keycode && event.key_repeat == 0;
+}
+
+/// A synthetic `QUIT` event, ready to `push`.
+///
+/// A constructor because a caller building one by hand has to know that `kind` is the only field that matters
+/// and that the rest must be zero — and because the *test* for this module needs one.
+quit_event :: () -> Event {
+    e: Event;
+    e.kind = cast(u32, QUIT);
+    return e;
+}
+
+/// Drains the queue into `events` and returns how many it took.
+///
+/// **Jai's `update_window_events`**, and the routine a Simp-shaped program calls once per frame. It is
+/// `wants_to_close`'s drain loop generalised from one predicate to *storage*: the events are kept, so a
+/// caller can ask several questions of one frame's input instead of one.
+///
+/// `limit` bounds the work, clamped to [`MAX_EVENTS_PER_FRAME`]. An event source that produces faster than
+/// this drains would otherwise hang the frame — mouse motion during a drag genuinely can — and anything not
+/// taken stays queued for the next call rather than being lost.
+///
+/// Not `#must`: zero is the ordinary answer on most frames.
+update_window_events :: (events: *Events, limit: s64) -> s64 {
+    bound := limit;
+    if bound > MAX_EVENTS_PER_FRAME {
+        bound = MAX_EVENTS_PER_FRAME;
+    }
+    if bound < 0 {
+        bound = 0;
+    }
+    events.count = 0;
+    while events.count < bound {
+        // Written straight into the buffer slot rather than into a local and copied: the overlay is 56
+        // bytes and a copy per event is a copy per event.
+        if !next_event(*events.buffer[events.count]) {
+            return events.count;
+        }
+        events.count = events.count + 1;
+    }
+    return events.count;
+}
+
+/// How many events the last `update_window_events` took.
+///
+/// A reader rather than a field access, so a caller never has to know that `count` is the field's name —
+/// which is what lets the buffer's shape change without touching a call site.
+event_count :: (events: *Events) -> s64 {
+    return events.count;
+}
+
+/// The events the last `update_window_events` took, as a view.
+///
+/// A view over the caller's own buffer, which is how a Jairs caller iterates what Jai iterates as a
+/// dynamic array. It is valid until the next `update_window_events` on the same `Events`, and that is
+/// stated rather than enforced: there are no lifetimes here, and a caller who keeps it across frames reads
+/// the next frame's events — a bug a comment can prevent and a type cannot.
+events_this_frame :: (events: *Events) -> []Event {
+    return view(*events.buffer[0], events.count);
+}
+
+/// Whether anything the last `update_window_events` took asked the program to stop.
+///
+/// The question `wants_to_close` answers, asked of a *stored* frame instead of by draining. Kept because it
+/// is what almost every program actually wants, and because a caller who has already called
+/// `update_window_events` **must not** drain again: the second drain would find an empty queue and answer
+/// `false` for a frame that did contain a close.
+frame_wants_to_close :: (events: *Events) -> bool {
+    i := 0;
+    while i < events.count {
+        if should_close(*events.buffer[i]) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+/// Drains the queue and reports whether anything in it asked the program to stop.
+///
+/// **Kept beside the frame buffer, not replaced by it.** A program that only wants to know whether to stop
+/// needs no storage, and this is the whole of its event handling. `Window`'s own test is written this way.
+///
+/// It drains **everything** rather than stopping at the first close, so the queue is empty when it returns and
+/// a caller's next frame starts clean. SDL's queue does not promise one-push-one-poll: a single `next_event`
+/// can return nothing while an event is pending, because `SDL_PollEvent` pumps the device state as a side
+/// effect and the pump can deliver on a later call. That was found by writing it — a test that polled exactly
+/// once per push failed on the *second* push and passed on the first, which is the shape of a bug nobody
+/// debugs correctly at three in the morning.
+///
+/// Not `#must`: `false` is the ordinary answer on almost every frame.
+wants_to_close :: (limit: s64) -> bool {
+    closing := false;
+    e: Event;
+    i := 0;
+    while i < limit {
+        if !next_event(*e) {
+            return closing;
+        }
+        if should_close(*e) {
+            closing = true;
+        }
+        i = i + 1;
+    }
+    return closing;
+}
+
+// ---------------------------------------------------------------------------
+// Private: the raw SDL2 bindings
+// ---------------------------------------------------------------------------
+
+#scope_module
+
+/// The SDL2 shared library.
+///
+/// Declared again here rather than imported from `Window`, because a `#foreign` declaration resolves its
+/// library in **its own file** (ADR-0019 §4) and a name imported from another module would not be that.
+sdl :: #system_library "SDL2";
+
+/// `SDL_PollEvent(SDL_Event *)` — 1 when an event was written, 0 when the queue is empty.
+///
+/// Takes a **pointer**, which is the whole reason ADR-0164 §5's refusal did not apply (ADR-0165 §1).
+sdl_poll_event :: (event: *Event) -> s32 #foreign sdl "SDL_PollEvent";
+
+/// `SDL_PushEvent(SDL_Event *)` — 1 on success.
+sdl_push_event :: (event: *Event) -> s32 #foreign sdl "SDL_PushEvent";
+
+/// `SDL_PumpEvents` — moves pending device state into the queue.
+sdl_pump_events :: () #foreign sdl "SDL_PumpEvents";

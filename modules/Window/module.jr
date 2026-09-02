@@ -1,19 +1,23 @@
-//! The Window module: a window and a 2D drawing surface, over SDL2's C API.
+//! The Window module: window creation over SDL2's C API — Jai's `Window_Creation`.
 //!
-//! Written in Jairs. PLAN §8.5's first two items, on the foundation ADR-0163 chose after §8.5's own
-//! foundation turned out to be unreachable.
+//! Narrowed to that in Group D of the Simp-shaped-graphics restructure (ADR-0182). It used to be a window
+//! *and* a renderer *and* an event queue; the renderer is `modules/Simp` now and the events are
+//! `modules/Input`. Jai splits the three, and the split is load-bearing rather than tidy: **all the
+//! per-platform work lives in window creation**, which is what lets one portable rendering API sit on top.
 //!
 //! # Why SDL2 and not Cocoa
 //!
-//! §2.1 imagined "Cocoa via `#foreign`", and every Cocoa call goes through `objc_msgSend`, which is
+//! PLAN §2.1 imagined "Cocoa via `#foreign`", and every Cocoa call goes through `objc_msgSend`, which is
 //! **variadic** — and a variadic call is E0289 here because Cranelift's `Signature` has no notion of a
 //! variadic boundary (ADR-0162 §2). That blocker is upstream, so it is not a matter of doing more work in
 //! this project.
 //!
 //! SDL2 needs none of it: every routine below is a plain C function taking scalars and pointers. It also
-//! works on Linux, which §0's decision #6 makes a target and which Cocoa never was. The cost is that a
-//! drawing program needs SDL2 installed and that this module binds somebody else's library rather than the
-//! platform — stated rather than glossed, and argued at length in ADR-0163 §1.
+//! works on Linux, which §0's decision #6 makes a target and which Cocoa never was — and on Windows, which
+//! matters here because `-lSDL2` is the link name on all three while OpenGL has three different ones
+//! (ADR-0182 §2). The cost is that a drawing program needs SDL2 installed and that this module binds
+//! somebody else's library rather than the platform — stated rather than glossed, and argued at length in
+//! ADR-0163 §1.
 //!
 //! # Using it
 //!
@@ -30,40 +34,22 @@
 //! own process image rather than from a link line (ADR-0158 §3's mechanism), so it can reach libc and nothing
 //! else. A program that draws is a `jr build` program.
 //!
-//! # Why the handles are `*u8` and not opaque types
+//! # Why the handle is `*u8` and not an opaque type
 //!
-//! `SDL_Window` and `SDL_Renderer` are opaque in C — a caller only ever holds a pointer. A Jairs
-//! `Window :: struct { handle: *u8; }` would add a name and one field, and the name is worth having, so that
-//! is what the two wrappers below are. The *raw* bindings take `*u8` because that is what an opaque pointer
-//! is, and because a `#foreign` signature naming a Jairs struct it never dereferences would be describing a
-//! layout SDL2 does not have.
-//!
-//! # The event loop, and why it needed no compiler change (ADR-0165)
-//!
-//! ADR-0164 §5 claimed this module could not have an event loop, because `SDL_Event` is a **union** and E0286
-//! refuses a union at a `#foreign` boundary. **That was wrong, and it was wrong for not probing**: E0286
-//! refuses an aggregate crossing **by value**, and `SDL_PollEvent` takes a `SDL_Event *`. A pointer to a union
-//! is just a pointer, exactly as a `*Rect` is.
-//!
-//! So the loop below needed no compiler work at all. `Event` is a `#place` overlay (ADR-0144) whose every
-//! offset is checked against C's `offsetof` — and `#place` is precisely the union mechanism, since two fields
-//! at one offset is what a union *is*. `key_sym` and `mouse_x` genuinely share offset 20, and that overlap is
-//! the union showing through rather than a mistake.
-//!
-//! **What is actually guaranteed, stated exactly.** SDL's own header says of `type`: *"Event type, shared with
-//! all events"* — so offset 0 is contractual. The rest are SDL2 ABI offsets, stable across the 2.x series by
-//! the same promise that makes `SDL_Event` a fixed 56 bytes, and `LAYOUT_IS_SDL2` below fails the build if
-//! this platform disagrees about the size. That is the honest line: offset 0 is a documented invariant, the
-//! others are an ABI this module asserts and checks rather than assumes.
+//! `SDL_Window` is opaque in C — a caller only ever holds a pointer. A Jairs `Window :: struct { handle:
+//! *u8; }` adds a name and one field, and the name is worth having, so that is what the wrapper below is.
+//! The *raw* bindings take `*u8` because that is what an opaque pointer is, and because a `#foreign`
+//! signature naming a Jairs struct it never dereferences would be describing a layout SDL2 does not have.
 //!
 //! # What is absent, and why
 //!
-//! **No texture or image loading.** `SDL_image` is a second library, and decoding in Jairs wants `File`
-//! (which exists) plus a decoder, which is its own item in §8.5.
+//! **No drawing.** `modules/Simp` owns the renderer, and a second way to draw would be the opposite of a
+//! clean cutover — which is why `set_color`, `clear`, `fill`, `outline`, `line` and `present` were deleted
+//! rather than deprecated.
 //!
-//! **No GPU layer.** SDL2's renderer is a 2D API and covers §8.5's first two items. Metal is Objective-C and
-//! inherits §1's refusal; Vulkan is a C API and would work the way this does. The choice waits for whichever
-//! item needs a shader (ADR-0163 §4).
+//! **No events.** `modules/Input` owns the queue and the `SDL_Event` overlay.
+//!
+//! **No texture or image loading.** `modules/Image` owns that.
 
 /// `SDL_INIT_VIDEO`, the only subsystem this module needs.
 ///
@@ -98,89 +84,6 @@ SOFTWARE :: 1;
 /// `SDL_RENDERER_PRESENTVSYNC`.
 PRESENT_VSYNC :: 4;
 
-/// `SDL_QUIT` — the application was asked to stop.
-QUIT :: 256;
-
-/// `SDL_WINDOWEVENT` — something happened to a window; `window_event` says what.
-WINDOW_EVENT :: 512;
-
-/// `SDL_WINDOWEVENT_CLOSE`, the `window_event` value for a close box (or Cmd-W).
-///
-/// Small because it is an enumerator inside the window-event kind, not an event type of its own.
-WINDOW_CLOSE :: 14;
-
-/// `SDL_KEYDOWN`.
-KEY_DOWN :: 768;
-
-/// `SDL_KEYUP`.
-KEY_UP :: 769;
-
-/// `SDL_MOUSEMOTION`.
-MOUSE_MOTION :: 1024;
-
-/// `SDL_MOUSEBUTTONDOWN`.
-MOUSE_DOWN :: 1025;
-
-/// `SDL_MOUSEBUTTONUP`.
-MOUSE_UP :: 1026;
-
-/// `SDLK_ESCAPE`, the one keycode worth naming here.
-///
-/// 27 — a keycode below 128 is its ASCII value, which is why this is the *only* one that needs a constant: a
-/// caller comparing against `'a'` can do so directly, and a caller who needs F-keys wants a table this module
-/// deliberately does not carry.
-KEY_ESCAPE :: 27;
-
-/// An `SDL_Event`, as a `#place` overlay of the union's members (ADR-0165 §2).
-///
-/// **Fields share offsets on purpose.** `key_sym` and `mouse_x` are both at 20, `key_state`, `mouse_button`
-/// and `window_event` at 12 and 16 — that is what a union is, and `#place` (ADR-0144) is the mechanism for
-/// saying so. Which field is meaningful is decided by `kind`, exactly as in C.
-///
-/// **56 bytes**, which `LAYOUT_IS_SDL2` asserts: SDL writes the whole union through the pointer, so a smaller
-/// struct is a stack overwrite and a larger one wastes nothing but lies about the ABI.
-Event :: struct {
-    /// The event type — `QUIT`, `KEY_DOWN`, `MOUSE_MOTION` and so on.
-    ///
-    /// **Offset 0 is contractual**, not inferred: SDL's header documents it as "shared with all events".
-    kind: u32 #place 0;
-    /// Milliseconds since SDL started, as `SDL_GetTicks` reports them.
-    timestamp: u32 #place 4;
-    /// Which window the event is about, for the kinds that concern one.
-    window_id: u32 #place 8;
-    /// For `WINDOW_EVENT`: which window thing happened — compare against `WINDOW_CLOSE`.
-    window_event: u8 #place 12;
-    /// For `KEY_DOWN`/`KEY_UP`: 1 while the key is held.
-    key_state: u8 #place 12;
-    /// For a key event: non-zero when this is an auto-repeat rather than a fresh press.
-    key_repeat: u8 #place 13;
-    /// For `MOUSE_DOWN`/`MOUSE_UP`: which button, 1 for left.
-    mouse_button: u8 #place 16;
-    /// For a key event: the keycode. Below 128 it is the ASCII value.
-    key_sym: u32 #place 20;
-    /// For a mouse event: x, in pixels from the window's left. Shares offset 20 with `key_sym`.
-    mouse_x: s32 #place 20;
-    /// For a mouse event: y, in pixels from the top.
-    mouse_y: s32 #place 24;
-    /// The rest of the union, so the struct is the 56 bytes SDL writes.
-    ///
-    /// Never read. It exists so that `sdl_poll` cannot write past this struct — the difference between a
-    /// working poll and a stack overwrite that appears as a corrupted unrelated local.
-    tail: [28]u8 #place 28;
-}
-
-/// Whether `Event` is the 56 bytes SDL2 writes through the pointer.
-///
-/// **A file-scope constant at last** (ADR-0180 §3). It was a *procedure*, and the comment here recorded
-/// why: `size_of` of a struct was unreachable from a file-scope constant — E0230, "a name failed to
-/// resolve at file scope" — because the signature phase folded the call and then threw the value away,
-/// so `jr-mir`'s thunk found no value and resolved `size_of` as a name. `Socket` had moved the same
-/// check into a procedure for the same reason (ADR-0158 §4).
-///
-/// An overlay is a claim about somebody else's ABI, so the claim is checkable. A caller who wants the
-/// check to be fatal reads it and exits; a caller who does not can ignore it.
-LAYOUT_IS_SDL2 :: size_of(Event) == 56;
-
 /// An `SDL_Rect`: four C `int`s.
 ///
 /// `s32` fields, matching C's `int` on both supported targets, and **not** `s64`: SDL reads sixteen bytes
@@ -198,6 +101,14 @@ Rect :: struct {
     h: s32;
 }
 
+/// Whether `Rect` is the 16 bytes SDL2 reads through the pointer.
+///
+/// A file-scope constant, which ADR-0180 §3 made possible. `Rect` is the one layout claim this module still
+/// makes — the `Event` overlay's moved to `Input` and became `EVENT_LAYOUT_IS_SDL2` there — and it is worth
+/// checking for the reason its own docs give: four `s32`s and four `s64`s are the same *shape* and different
+/// bytes, so a widened field puts the second rectangle's data in the first's height.
+RECT_LAYOUT_IS_SDL2 :: size_of(Rect) == 16;
+
 /// A window.
 ///
 /// A named one-field struct rather than a bare pointer, for the reason `File` wraps a descriptor (ADR-0157
@@ -205,12 +116,6 @@ Rect :: struct {
 /// name.
 Window :: struct {
     /// The `SDL_Window *`. Null when the window is not open.
-    handle: *u8;
-}
-
-/// A 2D renderer bound to a window.
-Renderer :: struct {
-    /// The `SDL_Renderer *`. Null when the renderer is not created.
     handle: *u8;
 }
 
@@ -222,7 +127,7 @@ Renderer :: struct {
 ///
 /// Idempotent in SDL, so calling it twice is defined and cheap.
 start :: () -> bool #must {
-    return sdl_init(INIT_VIDEO) == 0;
+    return sdl_init(cast(u32, INIT_VIDEO)) == 0;
 }
 
 /// Shuts the video subsystem down. Not `#must`: there is nothing to recover from and nothing to report.
@@ -232,6 +137,12 @@ stop :: () {
 
 /// Opens a window `width` by `height`, centred, with `flags`.
 ///
+/// **Jai's `create_window`**, and the name is a correction rather than a rename: this was `open`, which
+/// collided with `File.open` — so a program that both drew and read a file could not name either
+/// (`error[E0211]: ambiguous name `open``). ADR-0179 makes a qualified import the general answer; the name
+/// changes anyway, because `create_window` says what it does and because an exported name is a claim on
+/// every importer that spells it bare.
+///
 /// `title` must be NUL-terminated, which is why it is a `*u8` and not a `string`: SDL reads to a NUL and a
 /// Jairs `string` carries a count instead. `File.nul_terminated`'s trick — a scratch copy from temporary
 /// storage — is the way to pass a computed title, and it is deliberately not done here: a window title
@@ -240,9 +151,12 @@ stop :: () {
 /// `#must`, and the flag is the honest answer rather than a null check: SDL fails to create a window for
 /// reasons a caller can act on — no display, an unsupported flag combination — and a null handle read as
 /// "not yet" instead of "never" is how a draw loop spins forever.
-open :: (title: *u8, width: s64, height: s64, flags: s64) -> (Window, bool) #must {
+create_window :: (title: *u8, width: s64, height: s64, flags: s64) -> (Window, bool) #must {
     w: Window;
-    w.handle = sdl_create_window(title, CENTERED, CENTERED, width, height, flags);
+    // Every constant is cast at the boundary, which is the discipline the private section's own
+    // comment argues for: a Jairs constant is `s64` and there is no syntax to annotate one narrower
+    // (probed — `CENTERED : s32 : 805240832` does not parse), so the narrowing is explicit here.
+    w.handle = sdl_create_window(title, cast(s32, CENTERED), cast(s32, CENTERED), cast(s32, width), cast(s32, height), cast(u32, flags));
     return w, w.handle != null;
 }
 
@@ -250,6 +164,10 @@ open :: (title: *u8, width: s64, height: s64, flags: s64) -> (Window, bool) #mus
 ///
 /// Safe on an already-closed window, so a caller can close on every path without tracking whether they got
 /// one — the property that makes `File.close` usable where a `defer` would go (ADR-0157 §3).
+///
+/// **Destroy the renderer first.** SDL destroys a window's renderer with it, so closing in the other order
+/// leaves `Simp` holding a dangling handle. Stated because nothing enforces it: the renderer lives in
+/// another module and neither struct points at the other.
 close :: (window: *Window) {
     if window.handle != null {
         sdl_destroy_window(window.handle);
@@ -257,83 +175,21 @@ close :: (window: *Window) {
     window.handle = null;
 }
 
-/// Creates a renderer for `window`.
+/// The window's size in pixels, as the window manager has it.
 ///
-/// `SOFTWARE` rather than `ACCELERATED` as the flag a caller should reach for first, and the docs say so
-/// because the default is surprising: `ACCELERATED` *fails* on a machine with no GPU driver, where software
-/// always works. A caller who wants acceleration should ask for it and check the flag.
+/// **Not the render target's size**, which is `Simp.get_render_dimensions` — on a high-DPI display the two
+/// genuinely differ, and a program that sized its geometry from this one would draw at half scale. Both
+/// exist because both questions get asked: this one is about the window, that one about the pixels.
 ///
-/// The `-1` index means "the first driver that satisfies the flags", which is what every caller wants and
-/// what a named constant would only obscure.
-renderer_for :: (window: *Window, flags: s64) -> (Renderer, bool) #must {
-    r: Renderer;
+/// `(0, 0)` for a closed window, which is the same "nothing there" answer every other routine here gives.
+get_window_size :: (window: *Window) -> (s64, s64) {
     if window.handle == null {
-        r.handle = null;
-        return r, false;
+        return 0, 0;
     }
-    r.handle = sdl_create_renderer(window.handle, -1, flags);
-    return r, r.handle != null;
-}
-
-/// Destroys `renderer`. Safe on an already-destroyed one.
-destroy :: (renderer: *Renderer) {
-    if renderer.handle != null {
-        sdl_destroy_renderer(renderer.handle);
-    }
-    renderer.handle = null;
-}
-
-/// Sets the colour subsequent drawing uses, as four 0-255 channels.
-///
-/// `#must` like every other call that can fail, and it genuinely can: a destroyed renderer returns an error
-/// rather than trapping, and a caller who ignores it draws in whatever colour was set before.
-set_color :: (renderer: *Renderer, red: s64, green: s64, blue: s64, alpha: s64) -> bool #must {
-    if renderer.handle == null {
-        return false;
-    }
-    return sdl_set_draw_color(renderer.handle, red, green, blue, alpha) == 0;
-}
-
-/// Fills the whole drawing area with the current colour.
-clear :: (renderer: *Renderer) -> bool #must {
-    if renderer.handle == null {
-        return false;
-    }
-    return sdl_render_clear(renderer.handle) == 0;
-}
-
-/// Fills `rect` with the current colour.
-fill :: (renderer: *Renderer, rect: *Rect) -> bool #must {
-    if renderer.handle == null {
-        return false;
-    }
-    return sdl_fill_rect(renderer.handle, rect) == 0;
-}
-
-/// Strokes `rect`'s outline with the current colour.
-outline :: (renderer: *Renderer, rect: *Rect) -> bool #must {
-    if renderer.handle == null {
-        return false;
-    }
-    return sdl_draw_rect(renderer.handle, rect) == 0;
-}
-
-/// Draws a line from `(x1, y1)` to `(x2, y2)`.
-line :: (renderer: *Renderer, x1: s64, y1: s64, x2: s64, y2: s64) -> bool #must {
-    if renderer.handle == null {
-        return false;
-    }
-    return sdl_draw_line(renderer.handle, x1, y1, x2, y2) == 0;
-}
-
-/// Shows everything drawn since the last present.
-///
-/// Not `#must`: SDL's own `SDL_RenderPresent` returns nothing, so there is no failure to report and inventing
-/// one would be a lie about what the library says.
-present :: (renderer: *Renderer) {
-    if renderer.handle != null {
-        sdl_render_present(renderer.handle);
-    }
+    w: s32;
+    h: s32;
+    sdl_get_window_size(window.handle, *w, *h);
+    return cast(s64, w), cast(s64, h);
 }
 
 /// Sleeps for `milliseconds`.
@@ -343,7 +199,7 @@ present :: (renderer: *Renderer) {
 /// the objection does not apply. A drawing program needs to yield the CPU between frames, and this is the
 /// only way it can.
 delay :: (milliseconds: s64) {
-    sdl_delay(milliseconds);
+    sdl_delay(cast(u32, milliseconds));
 }
 
 /// A rectangle, built from four `s64`s a caller already has.
@@ -364,180 +220,47 @@ rect :: (x: s64, y: s64, w: s64, h: s64) -> Rect {
 /// Not useful for drawing, and useful for a *test*: it is the cheapest call that proves the library linked
 /// and ran, with no display and no window. It is what ADR-0163 §1's first probe used.
 video_driver_count :: () -> s64 {
-    return sdl_video_drivers();
-}
-
-/// Takes the next event, if one is waiting.
-///
-/// The `bool` is "an event was written", **not** a failure flag, so this is deliberately not `#must`: an empty
-/// queue is the normal case in a draw loop and `#must` on it would make every frame carry a ceremony for a
-/// non-event. That is the line ADR-0151 draws — the marker is for a failure a caller would otherwise miss, and
-/// "nothing happened yet" is not one.
-///
-/// ```text
-/// while running {
-///     e: Event;
-///     while next_event(*e) {
-///         if should_close(*e) { running = false; }
-///     }
-///     // draw
-/// }
-/// ```
-next_event :: (event: *Event) -> bool {
-    return sdl_poll_event(event) == 1;
-}
-
-/// Moves pending device state into the queue.
-///
-/// `next_event` pumps implicitly, so a caller who only polls never needs this. It is here for a caller who
-/// wants the queue filled at a known point — before a timing measurement, say — rather than as a side effect.
-pump :: () {
-    sdl_pump_events();
-}
-
-/// Puts `event` on the queue, so it comes back from `next_event`.
-///
-/// `#must`: SDL refuses a push when the queue is full or an event filter drops it, and a caller who ignores
-/// that waits forever for something that was never enqueued.
-///
-/// Its first use is a **test**: pushing a synthetic `QUIT` and polling it back exercises the whole overlay
-/// with no window manager and no human, which is how ADR-0165 §1 established the loop works at all.
-push :: (event: *Event) -> bool #must {
-    return sdl_push_event(event) == 1;
-}
-
-/// Whether `event` means the program should stop.
-///
-/// True for `QUIT` — the Dock's Quit, Cmd-Q, a signal — **and** for a window-close event, because a user
-/// clicking the close box of the only window means the same thing and a caller who checked only `QUIT` would
-/// have a window that refuses to shut. Handling both is what almost every program wants, and a caller who
-/// wants to distinguish them still can, by reading `kind` directly.
-should_close :: (event: *Event) -> bool {
-    // The fields are widened rather than the constants narrowed, and every comparison in this module does the
-    // same. A `#place` overlay's fields are C widths — `u32`, `u8` — while a Jairs constant is `s64` and there
-    // is no syntax to annotate one (probed: `QUIT : u32 : 256` does not parse). Widening a `u32` to `s64` is
-    // lossless in every case, so this direction cannot be wrong; narrowing the constant could be.
-    if cast(s64, event.kind) == QUIT {
-        return true;
-    }
-    return cast(s64, event.kind) == WINDOW_EVENT && cast(s64, event.window_event) == WINDOW_CLOSE;
-}
-
-/// Whether `event` is a fresh press of `keycode` — not an auto-repeat.
-///
-/// `key_repeat` is checked, because a held key produces a stream of `KEY_DOWN`s and a caller asking "was this
-/// pressed" almost never wants forty of them. A caller who *does* want the repeats reads `kind` and `key_sym`
-/// directly.
-pressed :: (event: *Event, keycode: s64) -> bool {
-    // `keycode` is `s64` so a caller can pass `KEY_ESCAPE` or a character literal without a cast, which is the
-    // whole point of a helper: the widening happens once here rather than at every call site.
-    return cast(s64, event.kind) == KEY_DOWN && cast(s64, event.key_sym) == keycode && event.key_repeat == 0;
-}
-
-/// A synthetic `QUIT` event, ready to `push`.
-///
-/// A constructor because a caller building one by hand has to know that `kind` is the only field that matters
-/// and that the rest must be zero — and because the *test* for this module needs one.
-quit_event :: () -> Event {
-    e: Event;
-    e.kind = cast(u32, QUIT);
-    return e;
-}
-
-/// Drains the queue and reports whether anything in it asked the program to stop.
-///
-/// **The routine almost every program wants**, and the one a caller writes wrong first. SDL's queue does not
-/// promise one-push-one-poll: a single `next_event` can return nothing while an event is pending, because
-/// `SDL_PollEvent` pumps the device state as a side effect and the pump can deliver on a later call. A caller
-/// who polls once per frame and acts on the result will miss events; a caller who drains will not. That was
-/// found by writing it — a test that polled exactly once per push failed on the *second* push and passed on
-/// the first, which is the shape of a bug nobody debugs correctly at three in the morning.
-///
-/// It drains **everything** rather than stopping at the first close, so the queue is empty when it returns and
-/// a caller's next frame starts clean. `limit` bounds the work, because an event source that produces faster
-/// than this drains would otherwise hang the frame — mouse motion during a drag genuinely can.
-///
-/// Not `#must`: `false` is the ordinary answer on almost every frame.
-wants_to_close :: (limit: s64) -> bool {
-    closing := false;
-    e: Event;
-    i := 0;
-    while i < limit {
-        if !next_event(*e) {
-            return closing;
-        }
-        if should_close(*e) {
-            closing = true;
-        }
-        i = i + 1;
-    }
-    return closing;
+    return cast(s64, sdl_video_drivers());
 }
 
 // ---------------------------------------------------------------------------
 // Private: the raw SDL2 bindings
 // ---------------------------------------------------------------------------
 
-// Everything below is **not exported** (ADR-0054 §2, ADR-0179 §6). These are the raw C symbols and
-// the library handle; a caller wants `open` and `fill`, not `sdl_create_window`. They used to be
-// exported into every importer's flat namespace, seventeen names deep, because this file had no
-// `#scope_module` — which `modules/Basic`, `File`, `File_Utilities` and `List` all have.
+// Everything below is **not exported** (ADR-0054 §2, ADR-0179 §6). These are the raw C symbols and the
+// library handle; a caller wants `create_window`, not `sdl_create_window`.
+//
+// **The widths are C's** (ADR-0182 §2). Every binding here used to take and return `s64` even where SDL
+// declares `int`, `Uint32` or `Uint8` — which contradicted this file's own `Rect`, whose docs explain at
+// length why a narrow field matters at a C boundary. Correcting them is unambiguously right on every
+// target, and it is a prerequisite for trusting the boundary on Windows x64, whose first four arguments are
+// register-passed and whose remainder are stack-passed. The *wrapper* parameters above stay `s64`, so a
+// caller needs no casts: the narrowing happens once, here, exactly as `rect` already did it.
 #scope_module
 
 /// The SDL2 shared library.
 ///
-/// Named `"SDL2"`, which becomes `-lSDL2`. Where it lives is the operator's business — see the module docs.
+/// Named `"SDL2"`, which becomes `-lSDL2` — the same name on macOS, Linux and Windows, which is the whole
+/// reason this library and not OpenGL. Where it lives is the operator's business; see the module docs.
 sdl :: #system_library "SDL2";
 
-/// libc `SDL_Init`.
-sdl_init :: (flags: s64) -> s64 #foreign sdl "SDL_Init";
+/// `SDL_Init(Uint32 flags)`.
+sdl_init :: (flags: u32) -> s32 #foreign sdl "SDL_Init";
 
-/// libc `SDL_Quit`.
+/// `SDL_Quit`.
 sdl_quit :: () #foreign sdl "SDL_Quit";
 
 /// `SDL_CreateWindow(const char *title, int x, int y, int w, int h, Uint32 flags)`.
-sdl_create_window :: (title: *u8, x: s64, y: s64, w: s64, h: s64, flags: s64) -> *u8 #foreign sdl "SDL_CreateWindow";
+sdl_create_window :: (title: *u8, x: s32, y: s32, w: s32, h: s32, flags: u32) -> *u8 #foreign sdl "SDL_CreateWindow";
 
 /// `SDL_DestroyWindow`.
 sdl_destroy_window :: (window: *u8) #foreign sdl "SDL_DestroyWindow";
 
-/// `SDL_CreateRenderer(SDL_Window *, int index, Uint32 flags)`.
-sdl_create_renderer :: (window: *u8, index: s64, flags: s64) -> *u8 #foreign sdl "SDL_CreateRenderer";
-
-/// `SDL_DestroyRenderer`.
-sdl_destroy_renderer :: (renderer: *u8) #foreign sdl "SDL_DestroyRenderer";
-
-/// `SDL_SetRenderDrawColor(SDL_Renderer *, Uint8 r, Uint8 g, Uint8 b, Uint8 a)`.
-sdl_set_draw_color :: (renderer: *u8, red: s64, green: s64, blue: s64, alpha: s64) -> s64 #foreign sdl "SDL_SetRenderDrawColor";
-
-/// `SDL_RenderClear`.
-sdl_render_clear :: (renderer: *u8) -> s64 #foreign sdl "SDL_RenderClear";
-
-/// `SDL_RenderFillRect(SDL_Renderer *, const SDL_Rect *)`.
-sdl_fill_rect :: (renderer: *u8, rect: *Rect) -> s64 #foreign sdl "SDL_RenderFillRect";
-
-/// `SDL_RenderDrawRect`.
-sdl_draw_rect :: (renderer: *u8, rect: *Rect) -> s64 #foreign sdl "SDL_RenderDrawRect";
-
-/// `SDL_RenderDrawLine`.
-sdl_draw_line :: (renderer: *u8, x1: s64, y1: s64, x2: s64, y2: s64) -> s64 #foreign sdl "SDL_RenderDrawLine";
-
-/// `SDL_RenderPresent`.
-sdl_render_present :: (renderer: *u8) #foreign sdl "SDL_RenderPresent";
+/// `SDL_GetWindowSize(SDL_Window *, int *w, int *h)` — returns nothing, writes through both pointers.
+sdl_get_window_size :: (window: *u8, w: *s32, h: *s32) #foreign sdl "SDL_GetWindowSize";
 
 /// `SDL_GetNumVideoDrivers`.
-sdl_video_drivers :: () -> s64 #foreign sdl "SDL_GetNumVideoDrivers";
+sdl_video_drivers :: () -> s32 #foreign sdl "SDL_GetNumVideoDrivers";
 
 /// `SDL_Delay(Uint32 ms)`.
-sdl_delay :: (milliseconds: s64) #foreign sdl "SDL_Delay";
-
-/// `SDL_PollEvent(SDL_Event *)` — 1 when an event was written, 0 when the queue is empty.
-///
-/// Takes a **pointer**, which is the whole reason ADR-0164 §5's refusal did not apply (ADR-0165 §1).
-sdl_poll_event :: (event: *Event) -> s64 #foreign sdl "SDL_PollEvent";
-
-/// `SDL_PushEvent(SDL_Event *)` — 1 on success.
-sdl_push_event :: (event: *Event) -> s64 #foreign sdl "SDL_PushEvent";
-
-/// `SDL_PumpEvents` — moves pending device state into the queue.
-sdl_pump_events :: () #foreign sdl "SDL_PumpEvents";
+sdl_delay :: (milliseconds: u32) #foreign sdl "SDL_Delay";

@@ -1521,7 +1521,8 @@ fn a_window_opens_and_draws_through_sdl2() {
     let source = dir.path().join("draws.jr");
     fs::write(
         &source,
-        r#"#import "Window";
+        r#"Window :: #import "Window";
+Simp :: #import "Simp";
 
 libc :: #system_library "c";
 exit_now :: (status: s64) #foreign libc "exit";
@@ -1530,42 +1531,61 @@ main :: () {
     total := 0;
 
     // 1 — the library linked and ran at all, with no display needed.
-    if video_driver_count() > 0 { total = total + 1; }
+    if Window.video_driver_count() > 0 { total = total + 1; }
 
-    if !start() { exit_now(90); }
+    if !Window.start() { exit_now(90); }
     total = total + 2;
 
     // `HIDDEN`, so the whole creation path runs with no display. `SOFTWARE`, because `ACCELERATED` fails
     // on a machine with no GPU driver and this must pass on a CI runner.
     title := "Jairs\0";
-    w, ok := open(title.data, 320, 240, HIDDEN);
+    w, ok := Window.create_window(title.data, 320, 240, Window.HIDDEN);
     if !ok { exit_now(91); }
     total = total + 4;
 
-    r, rok := renderer_for(*w, SOFTWARE);
-    if !rok { exit_now(92); }
+    simp: Simp.Renderer;
+    if !Simp.set_render_target(*simp, *w, Window.SOFTWARE) { exit_now(92); }
     total = total + 8;
 
-    if set_color(*r, 20, 30, 40, 255) { total = total + 16; }
-    if clear(*r) { total = total + 32; }
+    // Colours are floats in 0..1 now, as Simp's are, where `set_color` took 0-255 integers.
+    if Simp.clear_render_target(*simp, 0.08, 0.12, 0.16, 1.0) { total = total + 16; }
+    if Simp.set_shader_for_color(*simp, true) { total = total + 32; }
 
-    // A rect crosses as a `*Rect`, which is why SDL2 was reachable before Cocoa: no aggregate by value.
-    box := rect(10, 20, 100, 50);
-    if fill(*r, *box) { total = total + 64; }
-    if outline(*r, *box) { total = total + 128; }
-    if line(*r, 0, 0, 319, 239) { total = total + 256; }
+    // A batch of two quads in *different colours*, which the old renderer-global colour could not do in one
+    // draw call. The second one is deliberately not axis-aligned: `SDL_RenderFillRect` cannot draw it.
+    Simp.immediate_begin(*simp);
+    Simp.immediate_quad(*simp, 10.0, 20.0, 110.0, 70.0, Simp.vector4(1.0, 0.4, 0.4, 1.0));
+    Simp.immediate_quad_uv(*simp,
+                           Simp.vector2(160.0, 20.0), Simp.vector2(220.0, 60.0),
+                           Simp.vector2(180.0, 120.0), Simp.vector2(120.0, 80.0),
+                           Simp.vector2(0.0, 0.0), Simp.vector2(1.0, 0.0),
+                           Simp.vector2(1.0, 1.0), Simp.vector2(0.0, 1.0),
+                           Simp.vector4(0.3, 0.9, 0.4, 1.0));
+    if Simp.immediate_flush(*simp) { total = total + 64; }
 
-    present(*r);
-    delay(1);
+    // An empty flush succeeds: a frame that drew nothing must not read as a failure.
+    Simp.immediate_begin(*simp);
+    if Simp.immediate_flush(*simp) { total = total + 128; }
+
+    // The render target's size, which is `Simp`'s question because it needs the renderer. The *window*'s is
+    // `Window.get_window_size`, and on a high-DPI display the two differ.
+    pw, ph := Simp.get_render_dimensions(*simp);
+    if pw == 320 && ph == 240 { total = total + 256; }
+    ww, wh := Window.get_window_size(*w);
+    if ww == 320 && wh == 240 { total = total + 512; }
+
+    Simp.swap_buffers(*simp);
+    Window.delay(1);
 
     // Closing twice must be safe, so a caller can close on every path without tracking whether they got one.
-    destroy(*r);
-    close(*w);
-    destroy(*r);
-    close(*w);
-    total = total + 512;
+    // The renderer goes first: SDL destroys a window's renderer with it.
+    Simp.destroy_render_target(*simp);
+    Window.close(*w);
+    Simp.destroy_render_target(*simp);
+    Window.close(*w);
+    total = total + 1024;
 
-    stop();
+    Window.stop();
     exit_now(total % 251);
 }
 "#,
@@ -1583,9 +1603,9 @@ main :: () {
         .expect("the linked binary should run");
     assert_eq!(
         ran.code(),
-        // 1023 is all ten bits; the exit status is a byte, so the program takes it mod 251 the way every
+        // 2047 is all eleven bits; the exit status is a byte, so the program takes it mod 251 the way every
         // other corpus program does.
-        Some(1023 % 251),
+        Some(2047 % 251),
         "every step must succeed; a lower value names which bit failed, and 90-92 name a hard stop"
     );
 }
@@ -1633,7 +1653,8 @@ fn an_event_loop_reads_the_sdl_event_union() {
     let source = dir.path().join("events.jr");
     fs::write(
         &source,
-        r#"#import "Window";
+        r#"Window :: #import "Window";
+Input :: #import "Input";
 
 libc :: #system_library "c";
 exit_now :: (status: s64) #foreign libc "exit";
@@ -1642,53 +1663,69 @@ main :: () {
     total := 0;
 
     // 1 — the overlay is the 56 bytes SDL writes. Everything after this is meaningless if it is not.
-    if LAYOUT_IS_SDL2 { total = total + 1; }
+    if Input.EVENT_LAYOUT_IS_SDL2 { total = total + 1; }
 
-    if !start() { exit_now(90); }
-    title := "Events ";
-    w, ok := open(title.data, 200, 150, HIDDEN);
+    if !Window.start() { exit_now(90); }
+    title := "Events";
+    w, ok := Window.create_window(title.data, 200, 150, Window.HIDDEN);
     if !ok { exit_now(91); }
     total = total + 2;
 
     // Nothing pending on a fresh queue.
-    if !wants_to_close(64) { total = total + 4; }
+    if !Input.wants_to_close(64) { total = total + 4; }
 
     // A window-close round-trips through SDL's real queue and is recognised.
-    c: Event;
-    c.kind = cast(u32, WINDOW_EVENT);
-    c.window_event = cast(u8, WINDOW_CLOSE);
-    if push(*c) { total = total + 8; }
-    if wants_to_close(64) { total = total + 16; }
+    c: Input.Event;
+    c.kind = cast(u32, Input.WINDOW_EVENT);
+    c.window_event = cast(u8, Input.WINDOW_CLOSE);
+    if Input.push(*c) { total = total + 8; }
+    if Input.wants_to_close(64) { total = total + 16; }
 
     // So does a QUIT, and the drain leaves the queue empty.
-    q := quit_event();
-    if push(*q) { total = total + 32; }
-    if wants_to_close(64) { total = total + 64; }
-    if !wants_to_close(64) { total = total + 128; }
+    q := Input.quit_event();
+    if Input.push(*q) { total = total + 32; }
+    if Input.wants_to_close(64) { total = total + 64; }
+    if !Input.wants_to_close(64) { total = total + 128; }
 
     // A key event is built locally: SDL drops a synthetic keyboard push, so the queue cannot carry one.
-    k: Event;
-    k.kind = cast(u32, KEY_DOWN);
-    k.key_sym = cast(u32, KEY_ESCAPE);
-    if pressed(*k, KEY_ESCAPE) { total = total + 256; }
-    if !pressed(*k, 97) { total = total + 512; }
-    if !should_close(*k) { total = total + 1024; }
+    k: Input.Event;
+    k.kind = cast(u32, Input.KEY_DOWN);
+    k.key_sym = cast(u32, Input.KEY_ESCAPE);
+    if Input.pressed(*k, Input.KEY_ESCAPE) { total = total + 256; }
+    if !Input.pressed(*k, 97) { total = total + 512; }
+    if !Input.should_close(*k) { total = total + 1024; }
 
     // An auto-repeat is not a press.
     k.key_repeat = 1;
-    if !pressed(*k, KEY_ESCAPE) { total = total + 2048; }
+    if !Input.pressed(*k, Input.KEY_ESCAPE) { total = total + 2048; }
 
     // The union shows through: mouse_x and key_sym genuinely share offset 20, which is the point of #place.
-    m: Event;
-    m.kind = cast(u32, MOUSE_DOWN);
+    m: Input.Event;
+    m.kind = cast(u32, Input.MOUSE_DOWN);
     m.mouse_button = 1;
     m.mouse_x = 40;
     m.mouse_y = 90;
     if cast(s64, m.mouse_button) == 1 && m.mouse_x == 40 && m.mouse_y == 90 { total = total + 4096; }
     if cast(s64, m.key_sym) == 40 { total = total + 8192; }
 
-    close(*w);
-    stop();
+    // **The per-frame API** (ADR-0182 §1), which is what a Simp-shaped program calls instead of draining.
+    // A caller-owned `Events`, filled by one call, then asked several questions of the same frame — which
+    // is the half `wants_to_close` cannot do, because it consumes what it reads.
+    events: Input.Events;
+    if Input.update_window_events(*events, 64) == 0 { total = total + 16384; }
+    if Input.event_count(*events) == 0 { total = total + 32768; }
+    if !Input.frame_wants_to_close(*events) { total = total + 65536; }
+
+    q2 := Input.quit_event();
+    if Input.push(*q2) { total = total + 131072; }
+    if Input.update_window_events(*events, 64) >= 1 { total = total + 262144; }
+    if Input.frame_wants_to_close(*events) { total = total + 524288; }
+    seen := Input.events_this_frame(*events);
+    if seen.count == Input.event_count(*events) { total = total + 1048576; }
+    if cast(s64, seen[0].kind) == Input.QUIT { total = total + 2097152; }
+
+    Window.close(*w);
+    Window.stop();
     exit_now(total % 251);
 }
 "#,
@@ -1705,8 +1742,8 @@ main :: () {
         .expect("the linked binary should run");
     assert_eq!(
         ran.code(),
-        // 16383 is all fourteen bits, mod 251 because an exit status is a byte.
-        Some(16383 % 251),
+        // 4194303 is all twenty-two bits, mod 251 because an exit status is a byte.
+        Some(4194303 % 251),
         "every step must succeed; a lower value names which bit failed, and 90-91 name a hard stop"
     );
 }
@@ -1771,102 +1808,110 @@ fn an_immediate_mode_button_fires_on_release_inside() {
 ///
 /// A constant rather than an inline literal, because it is long enough that the assertions would be lost
 /// after it.
-const PROGRAM: &str = r#"#import "Window";
+const PROGRAM: &str = r#"Window :: #import "Window";
+Input :: #import "Input";
+Simp :: #import "Simp";
 #import "UI";
 libc :: #system_library "c";
 exit_now :: (status: s64) #foreign libc "exit";
 
 // Pushes a mouse event and folds every queued event into `ui`.
+//
+// **Every assertion below is unchanged from before the migration** (ADR-0182 §5). Only this helper's types
+// and `main`'s setup and teardown moved: the same button, clicked the same way, must produce the same exit
+// code while every pixel now goes through `SDL_RenderGeometry`. An unchanged assertion over a replaced
+// backend is the only check that a migration preserved behaviour rather than merely compiling.
 send :: (ui: *UI, kind: s64, x: s64, y: s64) {
-    m: Event;
+    m: Input.Event;
     m.kind = cast(u32, kind);
     m.mouse_button = 1;
     m.mouse_x = cast(s32, x);
     m.mouse_y = cast(s32, y);
-    _ = push(*m);
-    e: Event;
+    _ = Input.push(*m);
+    e: Input.Event;
     i := 0;
     while i < 32 {
-        if next_event(*e) { feed(ui, *e); }
+        if Input.next_event(*e) { feed(ui, *e); }
         i = i + 1;
     }
 }
 
 main :: () {
-    if !start() { exit_now(90); }
+    if !Window.start() { exit_now(90); }
     t := "UI\0";
-    w, ok := open(t.data, 200, 200, HIDDEN);
+    w, ok := Window.create_window(t.data, 200, 200, Window.HIDDEN);
     if !ok { exit_now(91); }
-    r, rok := renderer_for(*w, SOFTWARE);
-    if !rok { exit_now(92); }
+    simp: Simp.Renderer;
+    if !Simp.set_render_target(*simp, *w, Window.SOFTWARE) { exit_now(92); }
 
     ui: UI;
     total := 0;
 
     // A press-and-release inside is a click.
     begin_frame(*ui);
-    send(*ui, MOUSE_DOWN, 20, 20);
+    send(*ui, Input.MOUSE_DOWN, 20, 20);
     if !button(*ui, 1, 10, 10, 80, 24) { total = total + 1; }   // not on press
     if is_active(*ui, 1) { total = total + 2; }
     if is_hot(*ui, 1) { total = total + 4; }
 
     begin_frame(*ui);
-    send(*ui, MOUSE_UP, 20, 20);
+    send(*ui, Input.MOUSE_UP, 20, 20);
     if button(*ui, 1, 10, 10, 80, 24) { total = total + 8; }    // fires on release
     if !is_active(*ui, 1) { total = total + 16; }
 
     // Press inside, drag off, release outside: must NOT fire.
     begin_frame(*ui);
-    send(*ui, MOUSE_DOWN, 20, 20);
+    send(*ui, Input.MOUSE_DOWN, 20, 20);
     _ = button(*ui, 1, 10, 10, 80, 24);
     begin_frame(*ui);
-    send(*ui, MOUSE_UP, 150, 150);
+    send(*ui, Input.MOUSE_UP, 150, 150);
     if !button(*ui, 1, 10, 10, 80, 24) { total = total + 32; }
     if !is_active(*ui, 1) { total = total + 64; }
 
     // A press that begins outside cannot arm the button.
     begin_frame(*ui);
-    send(*ui, MOUSE_DOWN, 150, 150);
+    send(*ui, Input.MOUSE_DOWN, 150, 150);
     _ = button(*ui, 1, 10, 10, 80, 24);
     begin_frame(*ui);
-    send(*ui, MOUSE_UP, 20, 20);
+    send(*ui, Input.MOUSE_UP, 20, 20);
     if !button(*ui, 1, 10, 10, 80, 24) { total = total + 128; }
 
     // Two buttons: only the one under the cursor fires.
     begin_frame(*ui);
-    send(*ui, MOUSE_DOWN, 20, 50);
+    send(*ui, Input.MOUSE_DOWN, 20, 50);
     _ = button(*ui, 1, 10, 10, 80, 24);
     _ = button(*ui, 2, 10, 44, 80, 24);
     begin_frame(*ui);
-    send(*ui, MOUSE_UP, 20, 50);
+    send(*ui, Input.MOUSE_UP, 20, 50);
     if !button(*ui, 1, 10, 10, 80, 24) { total = total + 256; }
     if button(*ui, 2, 10, 44, 80, 24) { total = total + 512; }
 
     // Edges are half-open: x + w is outside.
     begin_frame(*ui);
-    send(*ui, MOUSE_MOTION, 90, 20);
+    send(*ui, Input.MOUSE_MOTION, 90, 20);
     _ = button(*ui, 1, 10, 10, 80, 24);
     if !is_hot(*ui, 1) { total = total + 1024; }
     begin_frame(*ui);
-    send(*ui, MOUSE_MOTION, 89, 20);
+    send(*ui, Input.MOUSE_MOTION, 89, 20);
     _ = button(*ui, 1, 10, 10, 80, 24);
     if is_hot(*ui, 1) { total = total + 2048; }
 
     // A zero id fires nothing and is not hot.
     begin_frame(*ui);
-    send(*ui, MOUSE_DOWN, 20, 20);
+    send(*ui, Input.MOUSE_DOWN, 20, 20);
     begin_frame(*ui);
-    send(*ui, MOUSE_UP, 20, 20);
+    send(*ui, Input.MOUSE_UP, 20, 20);
     if !button(*ui, NONE, 10, 10, 80, 24) { total = total + 4096; }
     if !is_hot(*ui, NONE) { total = total + 8192; }
     if !is_active(*ui, NONE) { total = total + 32768; }
 
-    // Drawing composes with all three states.
-    if draw_button(*r, *ui, 1, 10, 10, 80, 24) { total = total + 16384; }
+    // Drawing composes with all three states — five quads and two colours in one batch now, where it was
+    // a fill and an outline with a renderer-global colour between them.
+    if draw_button(*simp, *ui, 1, 10, 10, 80, 24) { total = total + 16384; }
 
-    destroy(*r);
-    close(*w);
-    stop();
+    Simp.destroy_render_target(*simp);
+    Window.close(*w);
+    Window.stop();
     exit_now(total % 251);
 }
 "#;
@@ -1918,7 +1963,8 @@ fn a_bmp_round_trips_into_a_texture() {
 }
 
 /// The image program the test above builds.
-const IMAGE_PROGRAM: &str = r#"#import "Window";
+const IMAGE_PROGRAM: &str = r#"Window :: #import "Window";
+Simp :: #import "Simp";
 #import "Image";
 libc :: #system_library "c";
 exit_now :: (status: s64) #foreign libc "exit";
@@ -1927,12 +1973,12 @@ remove_file :: (path: *u8) -> s64 #foreign libc "remove";
 main :: () {
     total := 0;
     if SURFACE_LAYOUT_IS_SDL2 { total = total + 1; }
-    if !start() { exit_now(90); }
+    if !Window.start() { exit_now(90); }
     t := "Img\0";
-    w, ok := open(t.data, 200, 200, HIDDEN);
+    w, ok := Window.create_window(t.data, 200, 200, Window.HIDDEN);
     if !ok { exit_now(91); }
-    r, rok := renderer_for(*w, SOFTWARE);
-    if !rok { exit_now(92); }
+    simp: Simp.Renderer;
+    if !Simp.set_render_target(*simp, *w, Window.SOFTWARE) { exit_now(92); }
 
     // Build an image, so nothing binary lives in the repository.
     s, sok := create_surface(24, 16);
@@ -1941,7 +1987,7 @@ main :: () {
     if width_of(*s) == 24 && height_of(*s) == 16 { total = total + 4; }
     if pitch_of(*s) >= 24 * 4 { total = total + 8; }
 
-    box := rect(4, 4, 8, 8);
+    box := Window.rect(4, 4, 8, 8);
     if fill_surface(*s, *box, 255) { total = total + 16; }
 
     path := "/tmp/jr-image-test.bmp\0";
@@ -1955,7 +2001,7 @@ main :: () {
     if lok { total = total + 128; }
     if width_of(*l) == 24 && height_of(*l) == 16 { total = total + 256; }
 
-    tex, tok := texture_from(*r, *l);
+    tex, tok := texture_from(*simp, *l);
     if tok { total = total + 512; }
     free_surface(*l);
 
@@ -1964,26 +2010,251 @@ main :: () {
     if size_of_texture(*tex, *tw, *th) { total = total + 1024; }
     if cast(s64, tw) == 24 && cast(s64, th) == 16 { total = total + 2048; }
 
-    dst := rect(10, 10, 48, 32);
-    if draw_texture(*r, *tex, *dst) { total = total + 4096; }
-    present(*r);
+    dst := Window.rect(10, 10, 48, 32);
+    if draw_texture(*simp, *tex, *dst) { total = total + 4096; }
+    Simp.swap_buffers(*simp);
     destroy_texture(*tex);
     destroy_texture(*tex);
     total = total + 8192;
 
     // The one-call path, and a missing file must fail rather than trap.
-    t2, t2ok := load_texture(*r, path.data);
+    t2, t2ok := load_texture(*simp, path.data);
     if t2ok { total = total + 16384; }
     destroy_texture(*t2);
     missing := "/tmp/jr-image-absent.bmp\0";
-    t3, t3ok := load_texture(*r, missing.data);
+    t3, t3ok := load_texture(*simp, missing.data);
     if !t3ok { total = total + 32768; }
 
     _ = remove_file(path.data);
-    destroy(*r);
-    close(*w);
-    stop();
+    Simp.destroy_render_target(*simp);
+    Window.close(*w);
+    Window.stop();
     exit_now(total % 251);
+}
+"#;
+
+/// The whole Simp-shaped stack in one program, in the import style ADR-0179 delivered (ADR-0182).
+///
+/// # Why this test exists on top of the four above
+///
+/// Those four each exercise one module. This one is the *composition*, and it is the program the plan behind
+/// this wave was written to make writable: five modules imported at once, four of them aliased, and `Window`
+/// beside `File` — which is the collision that could not be written at all before ADR-0179, because both
+/// exported `open`.
+///
+/// It is a `jr-cli` integration test and not a corpus file for ADR-0164's reason: the comptime VM resolves a
+/// foreign symbol from the compiler's own process image, so SDL2 is unreachable under `jr run` and a
+/// `tests/corpus/valid/` file — whose premise is that the two engines agree — has no home for one.
+///
+/// # What it asserts
+///
+/// Each earlier failure exits with its own number, so a failure **names the call that broke**: 1-3 are the
+/// three layout claims, then window creation, the render target, the clear, the shader mode, the flush, the
+/// dimensions, and the per-frame event drain. 42 means every one succeeded.
+#[test]
+fn the_simp_stack_draws_a_frame_end_to_end() {
+    let candidates = [
+        "/opt/homebrew/lib",
+        "/usr/local/lib",
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib",
+    ];
+    let library_dir = candidates.iter().map(PathBuf::from).find(|dir| {
+        dir.join("libSDL2.dylib").exists()
+            || dir.join("libSDL2.so").exists()
+            || dir.join("libSDL2-2.0.so.0").exists()
+    });
+    let Some(library_dir) = library_dir else {
+        return;
+    };
+
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("simp.jr");
+    fs::write(&source, SIMP_PROGRAM).unwrap();
+
+    let binary = dir.path().join("simp");
+    let code = run_build_with_paths(source, binary.clone(), &[library_dir]);
+    assert_eq!(code, 0, "the program must build and link against SDL2");
+
+    let ran = std::process::Command::new(&binary)
+        .env("SDL_VIDEODRIVER", "dummy")
+        .status()
+        .expect("the linked binary should run");
+    assert_eq!(
+        ran.code(),
+        Some(42),
+        "every call must succeed; a lower code names the one that did not"
+    );
+}
+
+/// The end-to-end Simp program the test above builds.
+const SIMP_PROGRAM: &str = r#"#import "Basic";
+Window :: #import "Window";
+Input :: #import "Input";
+Simp :: #import "Simp";
+File :: #import "File";
+
+main :: () {
+    // The three layout claims, each about somebody else's ABI. Nothing below means anything if one is false.
+    if !Window.RECT_LAYOUT_IS_SDL2 { exit(1); }
+    if !Input.EVENT_LAYOUT_IS_SDL2 { exit(2); }
+    if !Simp.VERTEX_LAYOUT_IS_SDL2 { exit(3); }
+
+    if !Window.start() { exit(4); }
+    title := "simp";
+    w, ok := Window.create_window(title.data, 320, 240, Window.HIDDEN);
+    if !ok { exit(5); }
+
+    simp: Simp.Renderer;
+    if !Simp.set_render_target(*simp, *w, Window.SOFTWARE) { exit(6); }
+    if !Simp.clear_render_target(*simp, 0.15, 0.08, 0.08, 1.0) { exit(7); }
+    if !Simp.set_shader_for_color(*simp, true) { exit(8); }
+
+    Simp.immediate_begin(*simp);
+    Simp.immediate_quad(*simp, 10.0, 10.0, 110.0, 60.0, Simp.vector4(1.0, 0.5, 0.5, 1.0));
+    Simp.immediate_quad(*simp, 120.0, 10.0, 220.0, 60.0, Simp.vector4(0.2, 0.9, 0.3, 1.0));
+    if !Simp.immediate_flush(*simp) { exit(9); }
+    Simp.swap_buffers(*simp);
+
+    pw, ph := Simp.get_render_dimensions(*simp);
+    if pw != 320 { exit(10); }
+    if ph != 240 { exit(11); }
+
+    events: Input.Events;
+    if Input.update_window_events(*events, 64) != 0 { exit(12); }
+    if Input.frame_wants_to_close(*events) { exit(13); }
+
+    // `File` is imported and used beside `Window`, which is the E0211 that could not be written before
+    // ADR-0179: `Window` used to export `open` and `close`, and `File` still does.
+    if File.READ_WRITE != 2 { exit(14); }
+
+    Simp.destroy_render_target(*simp);
+    Window.close(*w);
+    Window.stop();
+    exit(42);
+}
+"#;
+
+/// A **rotated, textured** quad — the thing the old renderer could not draw at all (ADR-0182 §3).
+///
+/// # Why this is a separate test
+///
+/// It is the check that the new API expresses something the old one could not, rather than the same thing
+/// differently. `SDL_RenderFillRect` takes an `SDL_Rect` of four integers: it cannot draw a quad whose corners
+/// are not axis-aligned, at any angle, with any amount of care. `immediate_quad_uv` takes four arbitrary
+/// points and four texture coordinates, which is `SDL_RenderGeometry`'s shape and Jai's four-point
+/// `immediate_quad`'s.
+///
+/// The texture is **built by the program**, so no binary fixture lives in the repository and the *decode* is
+/// exercised — the step with the interesting failure. It comes back through `Image.load_texture`, which now
+/// yields a `Simp.Texture` carrying `width` and `height` (ADR-0182 §4), and those are read: a texture whose
+/// dimensions have to be queried separately makes the common case two calls.
+#[test]
+fn a_rotated_textured_quad_draws_through_render_geometry() {
+    let candidates = [
+        "/opt/homebrew/lib",
+        "/usr/local/lib",
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib",
+    ];
+    let library_dir = candidates.iter().map(PathBuf::from).find(|dir| {
+        dir.join("libSDL2.dylib").exists()
+            || dir.join("libSDL2.so").exists()
+            || dir.join("libSDL2-2.0.so.0").exists()
+    });
+    let Some(library_dir) = library_dir else {
+        return;
+    };
+
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("rotated.jr");
+    fs::write(&source, ROTATED_PROGRAM).unwrap();
+
+    let binary = dir.path().join("rotated");
+    let code = run_build_with_paths(source, binary.clone(), &[library_dir]);
+    assert_eq!(code, 0, "the program must build and link against SDL2");
+
+    let ran = std::process::Command::new(&binary)
+        .env("SDL_VIDEODRIVER", "dummy")
+        .status()
+        .expect("the linked binary should run");
+    assert_eq!(
+        ran.code(),
+        Some(42),
+        "every call must succeed; a lower code names the one that did not"
+    );
+}
+
+/// The rotated-textured-quad program the test above builds.
+const ROTATED_PROGRAM: &str = r#"#import "Basic";
+Window :: #import "Window";
+Simp :: #import "Simp";
+Image :: #import "Image";
+
+libc :: #system_library "c";
+remove_file :: (path: *u8) -> s64 #foreign libc "remove";
+
+main :: () {
+    if !Window.start() { exit(1); }
+    title := "rotated";
+    w, ok := Window.create_window(title.data, 320, 240, Window.HIDDEN);
+    if !ok { exit(2); }
+
+    simp: Simp.Renderer;
+    if !Simp.set_render_target(*simp, *w, Window.SOFTWARE) { exit(3); }
+
+    // Build a texture rather than committing one: this exercises the decode, and it keeps the repository
+    // free of binary fixtures.
+    surface, sok := Image.create_surface(32, 16);
+    if !sok { exit(4); }
+    area := Window.rect(0, 0, 32, 16);
+    if !Image.fill_surface(*surface, *area, 4278190335) { exit(5); }
+    path := "/tmp/jr-rotated-test.bmp\0";
+    if !Image.save_bmp(*surface, path.data) { exit(6); }
+    Image.free_surface(*surface);
+
+    texture, tok := Image.load_texture(*simp, path.data);
+    if !tok { exit(7); }
+    // `Simp.Texture` carries its own size, which `Image`'s one-field `Texture` could not.
+    if texture.width != 32 { exit(8); }
+    if texture.height != 16 { exit(9); }
+
+    if !Simp.clear_render_target(*simp, 0.0, 0.0, 0.0, 1.0) { exit(10); }
+    if !Simp.set_shader_for_images(*simp, *texture) { exit(11); }
+
+    // Four corners of a quad rotated roughly 20 degrees about (160, 120), and four texture coordinates in
+    // the same order. `SDL_RenderFillRect` cannot express this at all — which is the whole point.
+    Simp.immediate_begin(*simp);
+    Simp.immediate_quad_uv(*simp,
+                           Simp.vector2(145.0, 105.0), Simp.vector2(175.0, 110.0),
+                           Simp.vector2(172.0, 135.0), Simp.vector2(142.0, 130.0),
+                           Simp.vector2(0.0, 0.0), Simp.vector2(1.0, 0.0),
+                           Simp.vector2(1.0, 1.0), Simp.vector2(0.0, 1.0),
+                           Simp.vector4(1.0, 1.0, 1.0, 1.0));
+    if !Simp.immediate_flush(*simp) { exit(12); }
+
+    // And the same geometry under the *colour* shader, which must flush the batch it finds open rather than
+    // drawing the queued vertices in the new mode.
+    Simp.immediate_begin(*simp);
+    Simp.immediate_quad_uv(*simp,
+                           Simp.vector2(45.0, 55.0), Simp.vector2(95.0, 45.0),
+                           Simp.vector2(105.0, 95.0), Simp.vector2(55.0, 105.0),
+                           Simp.vector2(0.0, 0.0), Simp.vector2(1.0, 0.0),
+                           Simp.vector2(1.0, 1.0), Simp.vector2(0.0, 1.0),
+                           Simp.vector4(0.9, 0.2, 0.4, 1.0));
+    if !Simp.set_shader_for_color(*simp, false) { exit(13); }
+    // The mode change flushed and closed the batch, so this flush has nothing to draw — and must still
+    // succeed, because flushing nothing is not a failure.
+    if !Simp.immediate_flush(*simp) { exit(14); }
+
+    Simp.swap_buffers(*simp);
+
+    _ = remove_file(path.data);
+    Image.destroy_texture(*texture);
+    Simp.destroy_render_target(*simp);
+    Window.close(*w);
+    Window.stop();
+    exit(42);
 }
 "#;
 

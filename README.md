@@ -18,9 +18,31 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-**All twelve waves are done.** The last was concurrency: three threads share one counter through an atomic add,
-and none of three thousand increments is lost — in both native compilers, checked over five runs, because a race
-that fails one run in three passes one run in three.
+**All twelve waves are done, and the graphics library has been restructured on top of them.** 1073 workspace
+tests. The most recent work made a module importable *under a name* — `Simp.immediate_quad(…)` — gave the
+compiler a notion of which operating system it is compiling for, and rebuilt the 2D renderer around a vertex
+batch instead of a rectangle fill.
+
+**The plan for that work was wrong in five places, and every one was found by writing the thing rather than by
+review.** That is worth leading with, because it is the pattern this project keeps paying for and keeps
+collecting on. The plan said a qualified name should be represented as a field access, and counting where the
+compiler reads a function's callee showed it would have to teach nineteen places about a new shape; carried as a
+*name* instead, nothing downstream changed at all. It reserved a second error code for a condition that turns out
+to be unreachable, so the code was refused rather than shipped as a promise nothing checks. It called for the
+target OS to be a build setting that invalidates cached work, which buys nothing for a value that cannot change
+while the compiler runs and would have cost a new parameter at roughly fifty call sites. It named the wrong cause
+for why a compile-time value could not be used at file scope — the fix it proposed changed nothing, because the
+value was being computed and then thrown away one phase earlier. And it assumed the renderer could keep its state
+in module-level variables, which **this language does not have**, making two of its five items unbuildable as
+written.
+
+The last one has the better ending. The renderer's state lives in a struct the caller declares and passes in,
+which is the pattern the UI module had already chosen for its own reasons — and it is the better design anyway,
+because two windows can now have two renderers where a module-level variable could only ever describe one.
+
+Before that: the twelfth wave was concurrency. Three threads share one counter through an atomic add, and none of
+three thousand increments is lost — in both native compilers, checked over five runs, because a race that fails
+one run in three passes one run in three.
 
 The blocker turned out not to be the one the plan named. The plan said concurrency needed a per-thread stack,
 atomic operations, and a rule for what compile-time execution does when it meets a thread. It did not say that a
@@ -997,8 +1019,8 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 1010 workspace tests; six gates green on macOS arm64 — **locally**, since CI
-has never run — plus 166 Neovim checks that are verified rather than gated.
+`print_int` (ADR-0037). 1073 workspace tests; six gates green on macOS arm64 — **locally**, since CI
+has never run — plus 170 Neovim checks that are verified rather than gated.
 
 ### What you can actually do
 
@@ -1010,7 +1032,7 @@ has never run — plus 166 Neovim checks that are verified rather than gated.
 | Compile to a native executable | `jr build file.jr -o out` | arm64 macOS verified. x86-64 Linux is **configured in CI and has never run** — the workflow exists, and no CI run has ever happened on this repository, so Linux is entirely unverified. A declared `BUILD_OUTPUT` is confined to the working directory (ADR-0122) |
 | Build without bounds checks | `jr build file.jr --no-bounds-check`, or `jr run` | ADR-0003's build setting, finally wired (ADR-0058). An out-of-range index is then undefined behaviour, which is the trade. `#no_abc` on a procedure does the same locally, whatever the build says; compile-time execution checks regardless |
 | Choose an optimisation level | `jr build file.jr -O0`, or `jr run -O0` | Two levels, `0` and `1` (the default, and what every build did before the flag). `-O0` runs no mid-end pass, so the code executed is exactly what lowering produced — which is how a wrong answer becomes attributable to lowering rather than to a pass. A level may **not** change what a program computes, and the differential harness now sweeps every corpus program at both levels to check it (ADR-0142). The one thing `-O0` does change is a backtrace: nothing is inlined, so a trap inside a leaf names the leaf's own line. There is no `-O2` yet and no `--release` — deliberately, since a level with no pass behind it is a promise rather than a flag |
-| Get rustc-grade diagnostics | `jr check file.jr` | 115 codes across lexer, parser, HIR, sema, MIR and const-eval, with cross-crate uniqueness enforced by a test (ADR-0123). E0218 and E0212 suggest a near name; E0231 and E0245 are *warnings* — an unused `#import`, and a body the compiler could not lower |
+| Get rustc-grade diagnostics | `jr check file.jr` | 117 codes across lexer, parser, HIR, sema, MIR and const-eval, with cross-crate uniqueness enforced by a test (ADR-0123). E0218 and E0212 suggest a near name; E0231 and E0245 are *warnings* — an unused `#import`, and a body the compiler could not lower |
 | Format source canonically | `jr fmt [--check] paths…` | The corpus is canonical under it, enforced by gate 5 — locally, since CI has never run |
 | Inspect tokens or the CST | `jr parse file.jr` | Debug aid |
 | Measure language-server latency | `jr bench file.jr` | Reports min/median/p95 cold, warm and after an edit. **Reports, never judges** — no threshold, not a gate (ADR-0033), so a performance regression is invisible to CI by construction |
@@ -1018,7 +1040,9 @@ has never run — plus 166 Neovim checks that are verified rather than gated.
 | Print a number | `print_int(n)` from `modules/Basic` | Written in Jairs, and still recursive — both the `[N]u8` buffer and the `[]u8` view it wanted now exist, so nothing in the language is missing; converting it is its own change. Traps on the most negative `s64`, which cannot be negated (ADR-0002). Executed by `valid/101`, which until ADR-0125 nothing did |
 | Call libc from Jairs | `#foreign` / `#system_library` | Through libffi at run time (refused at comptime, ADR-0006). `modules/Basic` binds `write`, `exit`, `malloc`, `free`; the VM satisfies `malloc`/`free` from its own region (ADR-0061) so a pointer round-trips there too |
 | Fold a compile-time call | `COMPUTED :: #run add(2, 3)`, or `n := #run add(2, 3)` in a body | Nested calls, arithmetic around a call, a loop in the callee and an **imported** callee all work (ADR-0069). Still refused: a `#foreign` call (ADR-0006), an operator overload, a default or named argument, and reading another file's constant — all because const-eval precedes the check phase |
-| Import a module | `#import "Basic";` | One module = one file, flat imports, cycles legal. Procedures, types, enum members and **constants' values** all cross the boundary; an imported struct's *fields* do not, so `using` on one is refused. `#scope_module` hides a declaration from importers, and `modules/Basic` uses it for its own internals |
+| Import a module | `#import "Basic";` or `Simp :: #import "Simp";` | One module = one file, cycles legal. A **bare** import merges the module's names into the file flat; an **aliased** one merges nothing and is reached as `Simp.name` — in value *and* type position, so `e: Input.Event` is a spelling (ADR-0179). That is what makes two modules exporting the same name usable together: before it, a program that both drew a window and read a file could not name `open` at all. Procedures, types, enum members and **constants' values** all cross the boundary; an imported struct's *fields* do not, so `using` on one is refused. `#scope_module` hides a declaration from importers |
+| Ask which operating system you are compiling for | `os() == Operating_System.MACOS` | A compile-time value, folded before any code generator sees it, so it works in a body, in a `#run`, and in a plain file-scope constant (ADR-0180). An enum rather than a number, so a `switch` over it is checked for completeness — "this program does not handle Windows" is a compile error rather than a wrong branch. There is deliberately **no** conditional compilation: nothing in the standard library needed a declaration to exist on one platform only, and every case that came up needed a *number* |
+| Draw a frame | `Simp.immediate_quad(…)` from `modules/Simp` | An immediate-mode renderer shaped like Jai's `Simp` (ADR-0182): open a batch, add quads that each carry their own colour, flush. Built on SDL2's vertex API, so a quad's four corners need not be axis-aligned and a **rotated** sprite is one call — which the previous rectangle-fill renderer could not draw at any angle. Needs SDL2 installed and `-L` pointing at it; a drawing program cannot run in the compile-time VM, which reaches libc and nothing else |
 | Edit in Neovim, with highlighting, diagnostics, hover, goto-definition, completion, rename, code actions, signature help and inlay hints | `editors/nvim/` | Two lines in `init.lua` and one build script; no plugin manager. Neovim **0.11+** — every capability is on a stock 0.11 default binding (`K`, `gd`, `gra`, `grn`, `grr`, `gO`, `<C-s>`), so there are no keymaps to add. Works on a standalone `.jr` file too, not only inside a checkout. See [`editors/nvim/README.md`](editors/nvim/README.md) |
 | Use any other LSP editor | `jr lsp` | Speaks LSP 3.17 over stdio. The repository packages for Neovim only and **will not ship a VS Code extension** (ADR-0036) — point your client at the command yourself |
 
@@ -1052,6 +1076,8 @@ The authoritative version of this list is
 | `using p: Point` promotes a struct's fields; `using base: Point;` embeds them, transitively | `using` on an enum, a module, or an **imported** struct |
 | blocks and block scope, shadowing | |
 | `#scope_module` / `#scope_export` — module-private declarations, exported by default | `#scope_file` (indistinguishable while a module is one file); re-export |
+| **aliased imports** — `Simp :: #import "Simp";` then `Simp.name`, in value and type position; an aliased module merges nothing into file scope, so two modules exporting one name are usable together (ADR-0179) | a nested module reached as `A.B.c` (there are no nested modules); a bare alias as a value (`x := Simp;` is an unresolved name) |
+| **`os()`** — the target operating system as a compile-time `Basic.Operating_System`, folded in the checker, usable in a body, a `#run` or a file-scope constant (ADR-0180) | item-level `#if` — conditional *declarations*, deferred because every case in the library needed a value; a per-OS **library name** for `#system_library`, which is blocked by a query-order cycle rather than by effort |
 | `+ - * / %` trapping, `+% -% *%` wrapping, unary `-` | |
 | `& \| ^ ~ << >>`, **non-C precedence**, trapping shift count | `transmute` — though a `union { f: float64; bits: u64; }` reads a float's bits |
 | `== != < <= > >=`, `&& \|\| !` short-circuiting | |
@@ -1316,7 +1342,7 @@ ignoring the flag a compile error, is owed its own ADR. There is no GC and no RA
 - **ADR-0002's arithmetic has two implementations, not one.** `jr-pool` owns the one
   both *evaluators* share; `jr-codegen-clif` keeps its own because it emits code rather
   than evaluating. The pair is held equal by `differential.rs` and nothing else.
-- **Neovim integration is verified on one machine, not gated.** The 166 checks need an
+- **Neovim integration is verified on one machine, not gated.** The 170 checks need an
   editor, and Neovim is not a build dependency of this workspace, so `cargo test` cannot
   run them. No other editor is packaged for, deliberately (ADR-0036). They also need the
   *installed* parser to be current: `editors/nvim/build.sh` is a separate artefact from the
