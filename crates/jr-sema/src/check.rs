@@ -41,7 +41,7 @@ use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
     E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272, E0277,
-    E0278, E0279, E0284,
+    E0278, E0279, E0284, E0285,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -1511,6 +1511,11 @@ impl Ctx<'_> {
             | Item::UnionType { .. }
             | Item::VariantType { .. }
             | Item::ArrayType { .. }
+            // A vector is sixteen bytes in one register, so `==` on it is the same unanswerable
+            // question an array's is (ADR-0099 §4): elementwise, or all-lanes? The all-lanes answer
+            // needs a mask, which is ADR-0148 §5's deferred wave — so this stays a refusal until
+            // there is a type to express it in, rather than picking one silently.
+            | Item::VectorType { .. }
             | Item::ViewType { .. }
             | Item::DynamicArrayType { .. }
             | Item::ResultsType { .. }
@@ -1937,6 +1942,115 @@ impl Ctx<'_> {
     }
 
     /// Types a binary operation.
+    /// Whether `op` is an operation `vector` has, reporting E0285 when it is not (ADR-0148 §3, §6).
+    ///
+    /// The set differs by lane type, and for integers it differs from *scalar* arithmetic:
+    ///
+    /// | lanes | has | refused |
+    /// |---|---|---|
+    /// | integer | `+% -% *%` | `+ - *` (would have to trap), `/ %` (no machine has them) |
+    /// | float | `+ - * /` | `%` and the wrapping forms, exactly as a scalar float (ADR-0040 §7) |
+    ///
+    /// # Why an integer vector wants the *wrapping* spelling
+    ///
+    /// A scalar `+` traps on overflow (ADR-0002), and **no vector add can**: there is no per-lane
+    /// overflow flag on any target, and Cranelift's `iadd` on a vector wraps silently. So the three
+    /// engines can only agree on wrapping — the VM loops and could trap, native cannot.
+    ///
+    /// Three ways out, and this is the third. Let `+` wrap on a vector: then one spelling means two
+    /// things depending on the type, which is the silent-semantic-difference this project refuses.
+    /// Make `+` trap: then every lane needs a compare and a branch, which destroys the entire reason
+    /// the construct exists — a pessimisation as invisible as a miscompile (§3's argument for
+    /// refusing integer division rather than scalarising it). Or require the operators that *say*
+    /// they wrap, which is what ADR-0002 put in the language for exactly this: a program gets the
+    /// arithmetic it asked for and the engines agree.
+    fn check_vector_operator(&mut self, op: BinOp, vector: PoolId, span: Span) -> bool {
+        let Some((elem, _)) = self.vector_parts(vector) else {
+            return true;
+        };
+        let float_lanes = jr_pool::FloatKind::of(self.pool, elem).is_some();
+        let text = self.describe(vector);
+        let operator = bin_op_text(op);
+
+        if float_lanes {
+            // A float vector is the easy half: exactly the scalar float set, for the same reasons
+            // (ADR-0040 §7 for `%`, ADR-0002 for the wrapping forms having no float meaning).
+            if matches!(
+                op,
+                BinOp::Rem | BinOp::WrapAdd | BinOp::WrapSub | BinOp::WrapMul
+            ) {
+                self.reject_float_operator(op, &text, span);
+                return false;
+            }
+            return true;
+        }
+
+        match op {
+            BinOp::WrapAdd | BinOp::WrapSub | BinOp::WrapMul => true,
+            // The trapping forms, whose refusal is the §6 decision above.
+            BinOp::Add | BinOp::Sub | BinOp::Mul => {
+                let wrapping = match op {
+                    BinOp::Add => "+%",
+                    BinOp::Sub => "-%",
+                    _ => "*%",
+                };
+                self.diags.push(
+                    Diagnostic::error(
+                        span,
+                        format!(
+                            "`{operator}` on `{text}` would have to trap, and no vector add can"
+                        ),
+                    )
+                    .with_code(E0285)
+                    .with_note(
+                        "no target has a per-lane overflow flag, so a trapping vector operation \
+                         would need a compare and a branch for every lane",
+                    )
+                    .with_help(format!(
+                        "use `{wrapping}`, which says the arithmetic wraps — that is what the \
+                         hardware does"
+                    )),
+                );
+                false
+            }
+            // Division, the fact the probe found (ADR-0148 §3). `%` is a divide too.
+            BinOp::Div | BinOp::Rem => {
+                self.diags.push(
+                    Diagnostic::error(
+                        span,
+                        format!("`{operator}` is not a vector operation on integers"),
+                    )
+                    .with_code(E0285)
+                    .with_note(
+                        "no machine has an integer vector divide, so only float vectors can be \
+                         divided",
+                    )
+                    .with_help("divide the lanes individually, or use a float vector"),
+                );
+                false
+            }
+            // Reached only if a new arithmetic `BinOp` is added; the caller has already narrowed to
+            // the arithmetic group, and the bitwise, shift and comparison groups are handled by
+            // their own arms in `check_binary`.
+            BinOp::BitAnd
+            | BinOp::BitOr
+            | BinOp::BitXor
+            | BinOp::Shl
+            | BinOp::Shr
+            | BinOp::Eq
+            | BinOp::Ne
+            | BinOp::Lt
+            | BinOp::Le
+            | BinOp::Gt
+            | BinOp::Ge
+            | BinOp::And
+            | BinOp::Or => {
+                self.reject_operator(op, &text, span);
+                false
+            }
+        }
+    }
+
     fn check_binary(
         &mut self,
         scope: ExprScope,
@@ -2057,6 +2171,15 @@ impl Ctx<'_> {
                 if result == PoolId::ERROR {
                     return self.expect(expected, result, span);
                 }
+                // **A vector, before the scalar numeric path** (ADR-0148 §3, §6). Its own decision
+                // because the operator set differs by *lane* type and, for integers, differs from
+                // scalar arithmetic in a way the program must spell.
+                if result != PoolId::ERROR && self.vector_parts(result).is_some() {
+                    if !self.check_vector_operator(op, result, span) {
+                        return PoolId::ERROR;
+                    }
+                    return self.expect(expected, result, span);
+                }
                 let is_float = jr_pool::FloatKind::of(self.pool, result).is_some();
                 if self.int_info(result).is_none() && !is_float {
                     // An enum gets a message that says what to do: the members are named
@@ -2121,6 +2244,15 @@ impl Ctx<'_> {
                     let contents = if operand == PoolId::STRING {
                         "two strings could compare as the same bytes or as the same pointer, and \
                          Jairs does not pick one for you"
+                    } else if self.vector_parts(operand).is_some() {
+                        // A vector's own reason, because the generic aggregate wording — "field by
+                        // field", "compare fields one at a time" — names something a vector has
+                        // none of, and a message that describes the wrong construct is worse than a
+                        // vague one. Comparing lanes yields a *mask*, which is ADR-0148 §5's
+                        // deferred wave: the answer is "which lanes are equal", and `bool` cannot
+                        // carry it.
+                        "comparing two vectors yields one answer per lane — a mask — and Jairs has \
+                         no mask type yet, so there is nothing for `==` to produce"
                     } else {
                         "an aggregate's equality would have to be field by field, and Jairs does \
                          not generate one for you"
@@ -2132,7 +2264,13 @@ impl Ctx<'_> {
                         )
                         .with_code(E0278)
                         .with_note(contents)
-                        .with_help("compare `.count`, or compare fields one at a time"),
+                        .with_help(
+                            if self.vector_parts(operand).is_some() {
+                                "compare the lanes you care about: `a[0] == b[0]`"
+                            } else {
+                                "compare `.count`, or compare fields one at a time"
+                            },
+                        ),
                     );
                     return PoolId::BOOL;
                 }
@@ -4731,6 +4869,15 @@ impl Ctx<'_> {
                     self.infer_var_in(elem, arg_elem, bindings);
                 }
             }
+            // A `#simd [4]$T` parameter binds `$T` from a vector argument, and **only** from one: the
+            // pattern must match the item, so a `[4]s32` array argument does not bind against a
+            // vector parameter. That is the identity distinction doing its job at the one place a
+            // mismatch would otherwise be silent (ADR-0148 §1).
+            TypeRef::Vector { elem, .. } => {
+                if let Item::VectorType { elem: arg_elem, .. } = *self.pool.item(arg_ty) {
+                    self.infer_var_in(elem, arg_elem, bindings);
+                }
+            }
             TypeRef::DynamicArray { elem } => {
                 if let Item::DynamicArrayType { elem: arg_elem } = *self.pool.item(arg_ty) {
                     self.infer_var_in(elem, arg_elem, bindings);
@@ -4988,6 +5135,12 @@ impl Ctx<'_> {
             // key one on (ADR-0057 §1), so this is its own receiver kind rather than a `Struct`.
             Item::ContextType => ReceiverKind::Context,
             Item::ArrayType { .. } => ReceiverKind::Array,
+            // **A vector answers `.count` as an array does** — a constant from the type, nothing
+            // loaded (ADR-0148 §1) — so it shares `ReceiverKind::Array` rather than getting a
+            // variant. That variant's meaning is precisely "the count is in the type", and it is the
+            // distinction MIR needs; a vector's is, so there is nothing here to tell apart. Found by
+            // *writing* the corpus file, which asserted `.count` worked before it did.
+            Item::VectorType { .. } => ReceiverKind::Array,
             Item::ViewType { .. } => ReceiverKind::View,
             Item::DynamicArrayType { elem } => {
                 // The pointer type is `*elem`, which needs its own interning — the pool has
@@ -5246,6 +5399,12 @@ impl Ctx<'_> {
     fn indexable_parts(&self, ty: PoolId) -> Option<(PoolId, Option<u64>)> {
         match self.pool.item(ty) {
             Item::ArrayType { elem, len } => Some((*elem, Some(*len))),
+            // **A vector indexes exactly as the array of the same bytes does** (ADR-0148 §1), which
+            // is why this is here rather than in a vector-specific path: the lane count is a
+            // compile-time length, so a literal index out of range is the same E0236 an array's is,
+            // and `Statement::BoundsCheck` guards a dynamic one. That falls out of the layouts being
+            // identical, and it is the reason reading a lane needed no MIR change at all.
+            Item::VectorType { elem, lanes } => Some((*elem, Some(*lanes))),
             Item::ViewType { elem } => Some((*elem, None)),
             _ => None,
         }
@@ -5397,7 +5556,9 @@ impl Ctx<'_> {
             Item::StringType => vec![String::from("data"), String::from("count")],
             // Only `count`. Listing `data` would suggest a pseudo-field arrays do not have
             // (ADR-0039 §5), which is worse than no suggestion.
-            Item::ArrayType { .. } | Item::ViewType { .. } => vec![String::from("count")],
+            Item::ArrayType { .. } | Item::VectorType { .. } | Item::ViewType { .. } => {
+                vec![String::from("count")]
+            }
             // A `[..]T` exposes three (ADR-0136 §1); listing them helps the suggestion pick
             // the right one for a near miss like `xs.cout`.
             Item::DynamicArrayType { .. } => vec![

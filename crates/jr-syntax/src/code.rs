@@ -215,6 +215,14 @@ pub(crate) const E0131: &str = "E0131";
 /// use.
 pub(crate) const E0132: &str = "E0132";
 
+/// A `#simd` not followed by an array type (ADR-0148 §1).
+///
+/// `#simd` and the `[N]T` it applies to are inseparable, so this is a *syntax* error rather than a
+/// vector with a missing part: finishing the node would hand sema a `VECTOR_TYPE` with no element
+/// type, which is the well-typed-placeholder shape `AGENTS.md` names as one of this project's two
+/// real failure modes.
+pub(crate) const E0133: &str = "E0133";
+
 /// Input nested more deeply than the parser's depth limit.
 ///
 /// Deliberately at the top of the parser's range rather than in sequence: it is a
@@ -263,6 +271,7 @@ mod tests {
         ("E0130", "malformed named argument or default"),
         ("E0131", "`#code` without a braced body"),
         ("E0132", "a field layout attribute with no value"),
+        ("E0133", "a `#simd` with no array type"),
         ("E0199", "nesting depth limit"),
     ];
 

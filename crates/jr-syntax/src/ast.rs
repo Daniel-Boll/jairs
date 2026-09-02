@@ -129,6 +129,7 @@ ast_node!(NameType, NAME_TYPE);
 ast_node!(PolyType, POLY_TYPE);
 ast_node!(PointerType, POINTER_TYPE);
 ast_node!(ArrayType, ARRAY_TYPE);
+ast_node!(VectorType, VECTOR_TYPE);
 ast_node!(ViewType, VIEW_TYPE);
 ast_node!(DynamicArrayType, DYNAMIC_ARRAY_TYPE);
 ast_node!(ProcType, PROC_TYPE);
@@ -257,6 +258,8 @@ pub enum TypeExpr {
     Poly(PolyType),
     /// `struct { ... }`
     Struct(StructType),
+    /// `#simd [N]T` — a vector (ADR-0148 §1)
+    Vector(VectorType),
     /// `union { ... }` (ADR-0045)
     Union(UnionType),
     /// `variant { … }` (ADR-0068 §1)
@@ -271,6 +274,7 @@ impl AstNode for TypeExpr {
             kind,
             POINTER_TYPE
                 | ARRAY_TYPE
+                | VECTOR_TYPE
                 | VIEW_TYPE
                 | DYNAMIC_ARRAY_TYPE
                 | PROC_TYPE
@@ -287,6 +291,7 @@ impl AstNode for TypeExpr {
         match node.kind() {
             POINTER_TYPE => Some(Self::Pointer(PointerType(node))),
             ARRAY_TYPE => Some(Self::Array(ArrayType(node))),
+            VECTOR_TYPE => Some(Self::Vector(VectorType(node))),
             VIEW_TYPE => Some(Self::View(ViewType(node))),
             DYNAMIC_ARRAY_TYPE => Some(Self::DynamicArray(DynamicArrayType(node))),
             PROC_TYPE => Some(Self::Proc(ProcType(node))),
@@ -304,6 +309,7 @@ impl AstNode for TypeExpr {
         match self {
             Self::Pointer(n) => n.syntax(),
             Self::Array(n) => n.syntax(),
+            Self::Vector(n) => n.syntax(),
             Self::View(n) => n.syntax(),
             Self::DynamicArray(n) => n.syntax(),
             Self::Proc(n) => n.syntax(),
@@ -848,6 +854,21 @@ impl ArrayType {
     }
 
     /// The element type, `T` in `[N]T`.
+    pub fn elem(&self) -> Option<TypeExpr> {
+        child_node(&self.0)
+    }
+}
+
+impl VectorType {
+    /// The lane count, `N` in `#simd [N]T` (ADR-0148 §1).
+    ///
+    /// An expression, like [`ArrayType::len`], because `#simd [LANES]s32` must parse; whether it is
+    /// a compile-time constant *and* one of the six legal widths is `jr-sema`'s question (E0285).
+    pub fn lanes(&self) -> Option<Expr> {
+        child_node(&self.0)
+    }
+
+    /// The element type, `T` in `#simd [N]T`.
     pub fn elem(&self) -> Option<TypeExpr> {
         child_node(&self.0)
     }

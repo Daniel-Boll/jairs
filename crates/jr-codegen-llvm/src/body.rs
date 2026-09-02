@@ -651,6 +651,25 @@ impl<'ctx> Translator<'ctx, '_> {
                     let source = self.pointer_of(source, "src")?;
                     self.copy(destination, source, size, align)?;
                 }
+                // A vector element is copied like an aggregate, because a vector constant is an
+                // aggregate of lanes in the pool (ADR-0148 §5 defers every way of naming one), so
+                // `constant` hands back an address here too. Its size and alignment come from
+                // `layout_of`, not from the `Repr`, which carries only the LLVM type — the one
+                // layout computation stays the pool's (ADR-0018 §2).
+                Repr::Vector { .. } => {
+                    let Some(source) = self.constant(element)? else {
+                        continue;
+                    };
+                    let elem_layout =
+                        jr_pool::layout_of(self.shared.pool, self.shared.target, elem_ty).map_err(
+                            |reason| CodegenError::NoLayout {
+                                ty: elem_ty,
+                                reason,
+                            },
+                        )?;
+                    let source = self.pointer_of(source, "src")?;
+                    self.copy(destination, source, elem_layout.size, elem_layout.align)?;
+                }
                 // A `void` element occupies no bytes, so it writes nothing.
                 Repr::Void => {}
             }
@@ -692,6 +711,63 @@ impl<'ctx> Translator<'ctx, '_> {
     // Arithmetic
     // -----------------------------------------------------------------------
 
+    /// One elementwise vector operation (ADR-0148 §4).
+    ///
+    /// LLVM's arithmetic instructions are polymorphic over `<N x T>`, so this is the *same* builder
+    /// call the scalar path makes with a different operand type — which is the point: a vector add is
+    /// one instruction here and a loop in the VM, and the differential harness asserts they agree.
+    ///
+    /// **No overflow check on the integer forms**, and that is a language decision rather than an
+    /// omission: sema accepts only `+% -% *%` on an integer vector (§6), because no target has a
+    /// per-lane overflow flag and a trapping vector add would need a compare and a branch for every
+    /// lane. So the wrapping instruction *is* the whole meaning.
+    ///
+    /// # Errors
+    /// [`CodegenError::Internal`] for an operator sema should have refused (E0285) — integer
+    /// division, a trapping integer add, or a comparison, which needs a mask type this language does
+    /// not have yet (§5).
+    fn vector_binary(
+        &mut self,
+        op: BinOp,
+        vector: inkwell::types::VectorType<'ctx>,
+        signed: bool,
+        left: BasicValueEnum<'ctx>,
+        right: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let left = left.into_vector_value();
+        let right = right.into_vector_value();
+        // Float lanes or integer lanes, asked of the *lane* type rather than re-derived from the
+        // Jairs type: this is the same LLVM vector the `Repr` built, so the two cannot disagree.
+        let float_lanes = vector.get_element_type().is_float_type();
+        let _ = signed;
+
+        let value: BasicValueEnum<'ctx> = if float_lanes {
+            match op {
+                BinOp::Add => built(self.builder.build_float_add(left, right, "vfadd"))?.into(),
+                BinOp::Sub => built(self.builder.build_float_sub(left, right, "vfsub"))?.into(),
+                BinOp::Mul => built(self.builder.build_float_mul(left, right, "vfmul"))?.into(),
+                BinOp::Div => built(self.builder.build_float_div(left, right, "vfdiv"))?.into(),
+                _ => {
+                    return Err(CodegenError::Internal(format!(
+                        "{op:?} is not defined on a float vector"
+                    )));
+                }
+            }
+        } else {
+            match op {
+                BinOp::WrapAdd => built(self.builder.build_int_add(left, right, "vadd"))?.into(),
+                BinOp::WrapSub => built(self.builder.build_int_sub(left, right, "vsub"))?.into(),
+                BinOp::WrapMul => built(self.builder.build_int_mul(left, right, "vmul"))?.into(),
+                _ => {
+                    return Err(CodegenError::Internal(format!(
+                        "{op:?} is not defined on an integer vector"
+                    )));
+                }
+            }
+        };
+        Ok(value)
+    }
+
     /// Translates a binary operation, trapping per ADR-0002 where required.
     fn binary(
         &mut self,
@@ -703,6 +779,15 @@ impl<'ctx> Translator<'ctx, '_> {
         let right = self.read_scalar(rhs)?;
         let ty = self.operand_type(lhs);
         let repr = Repr::of(self.context, self.shared.pool, self.shared.target, ty)?;
+
+        // **A vector before the scalar paths** (ADR-0148 §4). Its operands are `VectorValue`s, so
+        // `into_int_value` below would panic rather than fail — which is what it did the first time
+        // this ran, and is exactly why the arm is here and not appended after them.
+        if let Repr::Vector { ty: vector, signed } = repr {
+            return self
+                .vector_binary(op, vector, signed, left, right)
+                .map(Some);
+        }
 
         // Floats first and separately, because every instruction differs — and, the point of
         // ADR-0040 §1, **no overflow check at all**.
@@ -1511,7 +1596,10 @@ impl<'ctx> Translator<'ctx, '_> {
         let address = self.address(place)?;
         match repr {
             Repr::Void => Ok(None),
-            Repr::Scalar(_) => {
+            // A vector loads as itself, exactly as a scalar does — one instruction into a register,
+            // so there is nothing for a later write through the original place to alias (ADR-0148
+            // §1). The two share this arm because `llvm_type` already answers for both.
+            Repr::Scalar(_) | Repr::Vector { .. } => {
                 let llvm = repr
                     .llvm_type(self.context, self.shared.target)
                     .ok_or_else(|| CodegenError::Internal("a scalar with no type".to_owned()))?;
@@ -1545,7 +1633,7 @@ impl<'ctx> Translator<'ctx, '_> {
             // A `void` store writes nothing and never touches the address, exactly as the
             // VM's `Shape::Void` arm returns without writing.
             Repr::Void => Ok(()),
-            Repr::Scalar(_) => {
+            Repr::Scalar(_) | Repr::Vector { .. } => {
                 let value = source.ok_or_else(|| {
                     CodegenError::Internal("storing void into a scalar place".to_owned())
                 })?;
@@ -1687,7 +1775,11 @@ impl<'ctx> Translator<'ctx, '_> {
     /// indexed directly.
     fn index_elem(&self, ty: PoolId) -> Result<PoolId, CodegenError> {
         match self.shared.pool.item(ty) {
-            Item::ArrayType { elem, .. } | Item::PointerType(elem) => Ok(*elem),
+            // A vector lane, for the reason the Cranelift back end's twin gives: the layouts are
+            // identical, so this feeds the right stride (ADR-0148 §1).
+            Item::ArrayType { elem, .. }
+            | Item::VectorType { elem, .. }
+            | Item::PointerType(elem) => Ok(*elem),
             _ => Err(CodegenError::Internal(
                 "an index projection on neither an array nor a pointer".to_owned(),
             )),

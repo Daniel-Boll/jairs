@@ -40,7 +40,7 @@ use jr_pool::{ContextKind, DeclId, IntKind, Item, Pool, PoolId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::code::{
-    E0211, E0212, E0213, E0214, E0233, E0237, E0240, E0269, E0270, E0282, E0283, E0284,
+    E0211, E0212, E0213, E0214, E0233, E0237, E0240, E0269, E0270, E0282, E0283, E0284, E0285,
 };
 use crate::map::TypeMap;
 use crate::sigs::{FileSignatures, SigEntry, SigKind};
@@ -503,6 +503,46 @@ impl<'a> Ctx<'a> {
                 } else {
                     self.pool.array_of(element, n)
                 }
+            }
+            // `#simd [N]T` — the lane count resolves exactly as an array length does, sharing
+            // `constant_array_length` and the comptime-parameter withholding, and *then* the width
+            // is checked (ADR-0148 §2). The order matters: a `$N` template must withhold before the
+            // width test, because a template genuinely has no count yet and refusing it would reject
+            // correct code.
+            TypeRef::Vector {
+                elem,
+                lanes,
+                lanes_name,
+                lanes_span,
+            } => {
+                let element = self.resolve_type(scope, elem, span);
+                let resolved = match lanes {
+                    Some(n) => Some(n),
+                    None => lanes_name.and_then(|name| self.constant_array_length(name)),
+                };
+                let Some(n) = resolved else {
+                    if lanes_name.is_some_and(|name| self.comptime_param_names.contains(&name)) {
+                        if element == PoolId::ERROR {
+                            return PoolId::ERROR;
+                        }
+                        // A placeholder *vector*, not a placeholder array: the two are different
+                        // types and a template's own type must be the shape it will instantiate to,
+                        // or every use inside the template body would be checked against the wrong
+                        // operator set.
+                        let placeholder = self.pool.vector_of(element, 0);
+                        self.placeholder_arrays.insert(placeholder);
+                        return placeholder;
+                    }
+                    self.array_length_not_literal(lanes_name.is_some(), lanes_span);
+                    return PoolId::ERROR;
+                };
+                if element == PoolId::ERROR {
+                    return PoolId::ERROR;
+                }
+                if !self.check_vector_shape(element, n, span) {
+                    return PoolId::ERROR;
+                }
+                self.pool.vector_of(element, n)
             }
             TypeRef::View { elem } => {
                 let element = self.resolve_type(scope, elem, span);
@@ -1509,6 +1549,80 @@ impl<'a> Ctx<'a> {
     /// The message does not name the offending text: a `TypeRef` carries no way back to
     /// the source, and the span already points at it. Naming the *reason* is what matters,
     /// because "write a literal" is not obvious advice unless you know why.
+    /// The bytes a vector must total, which is one machine register (ADR-0148 §2).
+    ///
+    /// A constant rather than a literal at the two sites that need it, because the number is a *fact
+    /// about the target* and the day a back end carries a 256-bit vector this is the one place that
+    /// learns it.
+    const VECTOR_BYTES: u64 = 16;
+
+    /// Whether `element` and `lanes` name one of the six legal vector shapes (ADR-0148 §2).
+    ///
+    /// Reports E0285 and answers `false` when they do not. **Two separate refusals**, because the two
+    /// mistakes are different and a reader can act on exactly one of them: a `#simd [4]s64` wrote a
+    /// legal element and the wrong count, while a `#simd [4]string` wrote something a register cannot
+    /// hold at all.
+    fn check_vector_shape(&mut self, element: PoolId, lanes: u64, span: Span) -> bool {
+        // A numeric scalar only: an integer or a float. Not a `bool` (one byte, but comparisons are
+        // its only arithmetic and a mask is ADR-0148 §5's deferred wave), not a pointer (a vector of
+        // addresses is a real thing and a much larger one — gather/scatter), and not an aggregate.
+        let numeric = matches!(
+            self.pool.item(element),
+            Item::IntType { .. } | Item::FloatType { .. }
+        );
+        if !numeric {
+            let text = self.describe(element);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`#simd` needs a numeric element type, and `{text}` is not one"),
+                )
+                .with_code(E0285)
+                .with_note(
+                    "a vector lane is an integer or a float: a pointer, a `bool`, a `string` or an \
+                     aggregate has no vector arithmetic",
+                )
+                .with_help("use an integer or float element, or a plain array for storage"),
+            );
+            return false;
+        }
+
+        // The element's own layout, from the pool — never `size_of` re-derived here (ADR-0018 §2).
+        // `LP64` explicitly, matching every other `layout_of` call in this crate: a vector's width
+        // is the *element's* width times the lanes, and no numeric scalar's size differs by target.
+        let Ok(layout) = jr_pool::layout_of(self.pool, jr_pool::TargetLayout::LP64, element) else {
+            // Unreachable for a numeric scalar, whose layout is its width. Refusing rather than
+            // assuming keeps this from becoming a place that invents a size.
+            return false;
+        };
+        let total = layout.size.saturating_mul(lanes);
+        if total != Self::VECTOR_BYTES {
+            let text = self.describe(element);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!(
+                        "`#simd` needs a vector exactly {} bytes wide, and `[{lanes}]{text}` is {total}",
+                        Self::VECTOR_BYTES
+                    ),
+                )
+                .with_code(E0285)
+                // The six shapes rather than the rule, because the rule is the *reason* and these are
+                // the answer — a reader who wrote `[4]s64` wants to be told `[2]s64` exists.
+                .with_note(
+                    "a vector is one machine register: 16×s8, 8×s16, 4×s32, 2×s64, 4×float32, or \
+                     2×float64 (and the unsigned integer forms)",
+                )
+                .with_help(
+                    "use one of those shapes, or a plain array if you want storage rather than \
+                     arithmetic",
+                ),
+            );
+            return false;
+        }
+        true
+    }
+
     fn array_length_not_literal(&mut self, was_a_name: bool, span: Span) {
         // **The message names which side of the line the reader is on** (ADR-0070 §3). A
         // literal-valued constant is accepted now, so "must be an integer literal" would be simply
@@ -1548,6 +1662,19 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// The element type and lane count of `ty`, if it is a vector (ADR-0148 §1).
+    ///
+    /// Deliberately **not** folded into [`Ctx::array_parts`], even though the two return the same
+    /// pair and the layouts are identical: every caller of `array_parts` wants "can I index this and
+    /// how long is it", and a vector answers both — while the callers that must *not* see a vector
+    /// are the arithmetic ones, which is exactly the distinction a merged helper would erase.
+    pub(crate) fn vector_parts(&self, ty: PoolId) -> Option<(PoolId, u64)> {
+        match self.pool.item(ty) {
+            Item::VectorType { elem, lanes } => Some((*elem, *lanes)),
+            _ => None,
+        }
+    }
+
     /// Renders a type the way a diagnostic should spell it.
     pub(crate) fn describe(&self, ty: PoolId) -> String {
         match self.pool.item(ty) {
@@ -1566,6 +1693,12 @@ impl<'a> Ctx<'a> {
             Item::FloatType { bits } => format!("float{bits}"),
             Item::PointerType(inner) => format!("*{}", self.describe(*inner)),
             Item::ArrayType { elem, len } => format!("[{len}]{}", self.describe(*elem)),
+            // Spelled the way it is written, `#simd` included, because the whole point of the type
+            // is that it is *not* the array with the same bytes: a message saying `[4]s32` when the
+            // program said `#simd [4]s32` would name a type the program does not have.
+            Item::VectorType { elem, lanes } => {
+                format!("#simd [{lanes}]{}", self.describe(*elem))
+            }
             Item::ViewType { elem } => format!("[]{}", self.describe(*elem)),
             Item::DynamicArrayType { elem } => format!("[..]{}", self.describe(*elem)),
             // Spelled the way the source spells it (ADR-0052 §1), so an arity diagnostic can say

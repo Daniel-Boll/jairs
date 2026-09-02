@@ -133,6 +133,11 @@
 ; its node, so nothing else colours it. The count is an ordinary expression and is left alone.
 (soa_attr "#soa" @keyword.directive)
 
+; And `#simd` on a vector type (ADR-0148 §1), for the third time in this wave and the same reason: a
+; literal token inside its own node, so nothing else colours it. The lane count and the element type
+; are an ordinary expression and an ordinary type, and are left to their own rules.
+(vector_type "#simd" @keyword.directive)
+
 ; A visibility marker (ADR-0054 §1). Captured as `@keyword.directive` like every other directive,
 ; because that is what it is — the scope rule is semantic and nothing about it is visible in colour.
 (scope_decl) @keyword.directive

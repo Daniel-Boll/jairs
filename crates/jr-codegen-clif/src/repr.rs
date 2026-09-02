@@ -72,6 +72,26 @@ pub enum Repr {
         /// Alignment in bytes, from [`jr_pool::layout_of`].
         align: u32,
     },
+    /// Fits one *vector* register: `#simd [N]T` (ADR-0148 §1).
+    ///
+    /// Its own case rather than an [`Repr::Aggregate`] with a vector type bolted on, because the
+    /// two answer the load/store question differently: an aggregate is *carried as a pointer to its
+    /// bytes* and copied with `memcpy`, while a vector is loaded into a register, operated on with
+    /// one instruction, and stored back. Sharing the case would mean every arithmetic site asking
+    /// "but is this aggregate secretly a vector", which is the question this enum exists to answer
+    /// once.
+    Vector {
+        /// The Cranelift vector type, exactly 128 bits wide.
+        ///
+        /// **The width is not re-derived here.** `jr-sema` has already refused every other width
+        /// (E0285), because a vector operation compiles at exactly 128 bits and nowhere else — which
+        /// is what probing found before ADR-0148 was written.
+        ty: Type,
+        /// `true` for a signed integer element, which decides `sshr` versus `ushr` and which
+        /// widening applies. Meaningless for a float element, recorded `true` for the reason
+        /// [`Repr::Scalar`]'s float case gives.
+        signed: bool,
+    },
 }
 
 impl Repr {
@@ -131,6 +151,28 @@ impl Repr {
             }),
             // A view joins the aggregates: two words, so it lives in memory and is passed
             // by copy exactly as a `string` is (ADR-0044 §1).
+            // A vector: one register, and the lane type comes from the element (ADR-0148 §1).
+            // `Type::by` is the constructor Cranelift offers, and it happily makes an `I64X4` that
+            // no backend can compile — so its `None` is not the only failure mode, and the width
+            // constraint that matters lives in sema rather than here.
+            Item::VectorType { elem, lanes } => {
+                let Repr::Scalar { ty, signed } = Self::of(pool, target, *elem)? else {
+                    return Err(CodegenError::Internal(format!(
+                        "a vector of a non-scalar element {}",
+                        elem.index()
+                    )));
+                };
+                let lanes = u32::try_from(*lanes).map_err(|_| {
+                    CodegenError::Internal(format!("a vector of {lanes} lanes"))
+                })?;
+                let vector = ty.by(lanes).ok_or_else(|| {
+                    CodegenError::Internal(format!("no Cranelift vector type for {lanes}x{ty}"))
+                })?;
+                Ok(Self::Vector {
+                    ty: vector,
+                    signed,
+                })
+            }
             Item::StringType
             | Item::StructType { .. }
             // A union is an aggregate: it lives in memory and is passed by copy, exactly as a
@@ -193,6 +235,11 @@ impl Repr {
             Self::Scalar { ty, .. } => Some(ty),
             // An aggregate travels as a pointer to its bytes; see the module docs.
             Self::Aggregate { .. } => Some(pointer_type(target)),
+            // A vector travels *as itself*, in a vector register — which is the entire difference
+            // from the aggregate case and the reason ADR-0148 §1 made it its own `Item`. On both
+            // targets a 128-bit vector is a legal parameter and return type, so nothing has to
+            // spill it to make a call.
+            Self::Vector { ty, .. } => Some(ty),
         }
     }
 
@@ -200,6 +247,11 @@ impl Repr {
     /// assignment.
     #[must_use]
     pub const fn is_aggregate(self) -> bool {
+        // A vector is deliberately **not** one, even though its Jairs type has sixteen bytes and a
+        // layout: this predicate decides copy-versus-move and `returns_via_sret`, and a vector needs
+        // neither — it is one register in, one register out (ADR-0148 §1). Answering `true` here
+        // would make every vector-returning procedure allocate a hidden slot for a value that fits
+        // in `v0`.
         matches!(self, Self::Aggregate { .. })
     }
 }

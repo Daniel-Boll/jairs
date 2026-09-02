@@ -969,6 +969,7 @@ impl Lower<'_> {
             | Item::ErrorType
             | Item::ForeignLibraryType
             | Item::ArrayType { .. }
+            | Item::VectorType { .. }
             | Item::ViewType { .. }
             | Item::DynamicArrayType { .. }
             | Item::ResultsType { .. }
@@ -1485,6 +1486,7 @@ impl Lower<'_> {
             // words, so the same applies — and a zeroed view is `{null, 0}`, which indexes
             // nothing because every index fails the bounds check against a count of 0.
             | Item::ArrayType { .. }
+            | Item::VectorType { .. }
             | Item::ViewType { .. }
             | Item::DynamicArrayType { .. }
             | Item::ResultsType { .. }
@@ -3918,24 +3920,40 @@ impl Lower<'_> {
             && self.array_len_through_pointers(self.ty(receiver)).is_some()
     }
 
-    /// The element count of `ty`, if it is a `[N]T`.
+    /// The element count of `ty`, if it is a `[N]T` **or a `#simd [N]T`** (ADR-0148 §1).
+    ///
+    /// # Why one helper answers for both
+    ///
+    /// Their layouts are identical — sixteen contiguous bytes with the element's stride — so every
+    /// question this crate asks through here has the same answer for either: the stride to scale an
+    /// index by, the constant to bound-check against, the end of a `for`, and the `.count` to fold.
+    /// The distinction between them is *which operators apply*, and that was settled in `jr-sema`
+    /// before MIR saw the body (E0285).
+    ///
+    /// So a vector needed **no new lowering at all** for lane access — which is the strongest
+    /// evidence that ADR-0148 §1's "same layout, different operations" reading of the type is the
+    /// right one. Answering `None` here is what refused every body that read a lane, and it did so
+    /// through `give_up` rather than a placeholder, exactly as ADR-0017 §4 requires.
     fn array_len(&self, ty: PoolId) -> Option<u64> {
         if ty.index() >= self.pool.len() {
             return None;
         }
         match self.pool.item(ty) {
             Item::ArrayType { len, .. } => Some(*len),
+            Item::VectorType { lanes, .. } => Some(*lanes),
             _ => None,
         }
     }
 
-    /// The element type of `ty`, if it is a `[N]T`.
+    /// The element type of `ty`, if it is a `[N]T` **or a `#simd [N]T`**, for the reason
+    /// [`Lower::array_len`] gives.
     fn array_elem(&self, ty: PoolId) -> Option<PoolId> {
         if ty.index() >= self.pool.len() {
             return None;
         }
         match self.pool.item(ty) {
             Item::ArrayType { elem, .. } => Some(*elem),
+            Item::VectorType { elem, .. } => Some(*elem),
             _ => None,
         }
     }

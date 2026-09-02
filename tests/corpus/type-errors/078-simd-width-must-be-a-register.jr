@@ -1,0 +1,29 @@
+// EXPECT: E0285 — a `#simd` width no machine register has (ADR-0148 §2)
+//
+// `[4]s64` is thirty-two bytes, and a vector operation compiles at exactly sixteen: `iadd` on an
+// `I64X4` fails Cranelift's backend with `Unexpected SSA-value type`, which is what probing found
+// before this feature was designed. The type *constructor* is happy to make one, so a plan built on
+// it would have looked fine right up to the first compile.
+//
+// **This is a machine fact in the language, deliberately.** A vector type exists because the machine
+// has vector registers; a portable-looking `#simd [8]s64` would have to be split into four of them or
+// scalarised into a loop, and ADR-0058 §3's rule — a directive silently ignored is worse than one
+// rejected — applies with unusual force to a construct a reader chose for speed. Letting LLVM split
+// while Cranelift could not would also make the differential harness compare two different programs.
+//
+// **One** refusal here, per this directory's contract. The other shapes E0285 covers:
+//
+//   * an element that is not a numeric scalar — `#simd [2]string`, a pointer, or a `bool`, none of
+//     which a lane can hold arithmetic for;
+//   * `/` and `%` on an integer vector, because no machine has an integer vector divide — refused
+//     rather than scalarised, since a silent pessimisation in a construct chosen for speed is the
+//     performance-domain twin of a silent miscompile (§3);
+//   * `+ - *` on an integer vector, which would have to trap and cannot: no target has a per-lane
+//     overflow flag, so the wrapping spellings `+% -% *%` are what an integer vector has (§6).
+//
+// The message names the six legal shapes rather than stating the rule, because the rule is the
+// *reason* and the shapes are the answer: a reader who wrote `[4]s64` wants to be told `[2]s64`
+// exists.
+main :: () {
+    wide: #simd [4]s64;
+}

@@ -284,6 +284,7 @@ impl Pool {
             | Item::ForeignLibraryType
             | Item::PointerType(_)
             | Item::ArrayType { .. }
+            | Item::VectorType { .. }
             | Item::ViewType { .. }
             | Item::DynamicArrayType { .. }
             | Item::ResultsType { .. }
@@ -329,6 +330,19 @@ impl Pool {
     /// Interns `[len]elem` (ADR-0039 §3).
     pub fn array_of(&mut self, elem: PoolId, len: u64) -> PoolId {
         self.intern(Item::ArrayType { elem, len })
+    }
+
+    /// Interns `#simd [lanes]elem` — a vector one machine register wide (ADR-0148 §1).
+    ///
+    /// Distinct from [`Pool::array_of`] with the same arguments: the bytes are identical and the
+    /// types are not, which is the whole point — a use site cannot be asked which of the two it
+    /// has, so the answer is in the identity.
+    ///
+    /// **The width is not checked here.** `jr-sema` refuses anything but sixteen bytes (E0285)
+    /// because that is where a refusal can carry a span and name the six legal shapes; a check
+    /// here could only panic or silently substitute.
+    pub fn vector_of(&mut self, elem: PoolId, lanes: u64) -> PoolId {
+        self.intern(Item::VectorType { elem, lanes })
     }
 
     /// Interns `[]elem` (ADR-0044 §1).
@@ -675,6 +689,7 @@ impl Pool {
             | Item::ResultsType { .. }
             | Item::ContextType
             | Item::ArrayType { .. }
+            | Item::VectorType { .. }
             | Item::ViewType { .. }
             | Item::DynamicArrayType { .. }
             | Item::EnumType { .. }

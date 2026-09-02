@@ -124,6 +124,26 @@ pub enum TypeRef {
         /// E0233 would have to point at the whole declaration.
         len_span: Span,
     },
+    /// A vector type `#simd [N]T` — one machine register wide (ADR-0148 §1).
+    ///
+    /// The same four fields [`TypeRef::Array`] carries, and for the same reasons: the lane count may
+    /// be a literal or a name that resolves to one, lowering reads it but does not judge it, and the
+    /// span is carried because a `TypeRef` has none (ADR-0013). What differs is entirely in sema —
+    /// the count must be one of six values rather than any positive integer, and arithmetic applies.
+    ///
+    /// Its own variant rather than an `Array` with a flag, because the *type* is different (ADR-0148
+    /// §1): a flag would make `#simd [4]s32` and `[4]s32` the same `TypeRef`, so resolution would
+    /// have to intern one of two pool items from a field rather than from the shape it is looking at.
+    Vector {
+        /// The element type.
+        elem: TypeRefId,
+        /// The literal lane count, when it was written as one.
+        lanes: Option<u64>,
+        /// The **name** the lane count was written as, when it was a bare name (ADR-0070 §1).
+        lanes_name: Option<Symbol>,
+        /// Span of the lane-count expression, for the diagnostic sema raises (E0285).
+        lanes_span: Span,
+    },
     /// A view type `[]T` (ADR-0044 §1).
     ///
     /// Its own variant rather than an [`TypeRef::Array`] with `len: None`, because that

@@ -29,7 +29,7 @@ use rowan::{Checkpoint, GreenNode, GreenNodeBuilder};
 use crate::code::{
     E0100, E0101, E0102, E0103, E0104, E0105, E0106, E0107, E0108, E0109, E0110, E0111, E0112,
     E0113, E0114, E0115, E0116, E0117, E0118, E0119, E0121, E0123, E0124, E0125, E0126, E0127,
-    E0128, E0129, E0130, E0131, E0132, E0199,
+    E0128, E0129, E0130, E0131, E0132, E0133, E0199,
 };
 use crate::kind::{SyntaxKind, SyntaxKind::*, SyntaxNode};
 use crate::lexer::{Token, lex};
@@ -304,6 +304,8 @@ impl ProcAttr {
 /// A `const` rather than a literal at the one site that matches it, so that a reader grepping for
 /// `#soa` finds the spelling in one place — the same reason `FOREIGN_DIRECTIVE` is one.
 const SOA_DIRECTIVE: &str = "#soa";
+/// The directive token that makes an array type a vector (ADR-0148 §1).
+const SIMD_DIRECTIVE: &str = "#simd";
 
 /// A layout attribute on a struct field (ADR-0144 §1).
 ///
@@ -1401,6 +1403,37 @@ impl<'src> Parser<'src> {
                         span,
                         "`$` must be followed by a type-variable name, e.g. `$T`",
                         E0107,
+                    );
+                }
+                self.finish_node();
+            }
+            // `#simd [N]T` — a vector (ADR-0148 §1). Taken here, in type position, rather than in
+            // the attribute loop a declaration's directives go through: `#simd` is not a property of
+            // the *declaration* but part of the *type*, so it must survive being written in a
+            // parameter list, a return type, or a struct field — which is exactly the reason
+            // ADR-0148 §1 rejected putting the vector-ness on the variable.
+            DIRECTIVE if self.current_directive_text() == SIMD_DIRECTIVE => {
+                self.start_node(VECTOR_TYPE);
+                self.bump(); // `#simd`
+                if self.at(L_BRACK) {
+                    self.bump(); // `[`
+                    if self.at_set(EXPR_START) {
+                        self.parse_expr();
+                    } else {
+                        let span = self.current_span();
+                        self.error(span, "expected a lane count after `[`", E0124);
+                    }
+                    self.expect(R_BRACK);
+                    self.parse_type();
+                } else {
+                    // A `#simd` with no array after it is an *error node*, not a vector with a
+                    // missing part: the grammar has no other shape for it, and letting it finish as
+                    // a `VECTOR_TYPE` would hand sema a node with no element type to refuse.
+                    let span = self.current_span();
+                    self.error(
+                        span,
+                        "`#simd` must be followed by an array type, e.g. `#simd [4]s32`",
+                        E0133,
                     );
                 }
                 self.finish_node();
@@ -2701,7 +2734,11 @@ const TYPE_START: TokenSet = TokenSet::new(&[
     // `DOLLAR` for `$T` (ADR-0081 §1) — the token-set trap the earlier waves hit repeatedly: without it
     // a `$` in parameter-type position would not be recognised as a type and would report "expected a
     // type" at the `$` rather than parsing the polymorphic variable.
+    // `DIRECTIVE` for `#simd [N]T` (ADR-0148 §1) — the same trap one more time, and the fourth
+    // recorded instance: without it `v: #simd [4]s32` reports "expected a type after `:`" at the `#`
+    // and never reaches the arm that parses it. ADR-0045 found this set missing *three* keywords.
     STAR, IDENT, STRUCT_KW, ENUM_KW, FLAGS_KW, UNION_KW, VARIANT_KW, L_BRACK, L_PAREN, DOLLAR,
+    DIRECTIVE,
 ]);
 
 /// The operators ADR-0048 §2 permits an overload for.

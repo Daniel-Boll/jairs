@@ -589,6 +589,7 @@ impl Translator<'_, '_> {
                 // rather than stored — the element is already an image of itself. `copy` is the same
                 // helper every other aggregate move in this file uses, so Cranelift makes one judgement
                 // about inline stores versus a `memcpy` call.
+                //
                 Repr::Aggregate { size, align } => {
                     let Some(source) = self.constant(element)? else {
                         continue;
@@ -597,6 +598,23 @@ impl Translator<'_, '_> {
                     // that matches `store`'s own signed displacement.
                     let destination = self.builder.ins().iadd_imm_s(base, i64::from(offset_i32));
                     self.copy(destination, source, size, align);
+                }
+                // A vector element is copied like an aggregate, because a vector *constant* is an
+                // aggregate of lanes in the pool (there is no vector literal — ADR-0148 §5 defers
+                // every way of naming one), so `constant` yields an address rather than a register
+                // value. Its size and alignment come from `layout_of` rather than from the `Repr`,
+                // which carries only the Cranelift type: the one layout computation stays the pool's
+                // (ADR-0018 §2), and this arm has no business knowing that a vector is 16 bytes.
+                Repr::Vector { .. } => {
+                    let Some(source) = self.constant(element)? else {
+                        continue;
+                    };
+                    let layout = jr_pool::layout_of(self.ctx.pool, self.ctx.target, elem_ty)
+                        .map_err(|_| {
+                            CodegenError::Internal("a vector element with no layout".to_owned())
+                        })?;
+                    let destination = self.builder.ins().iadd_imm_s(base, i64::from(offset_i32));
+                    self.copy(destination, source, layout.size, layout.align);
                 }
                 // A `void` element occupies no bytes, so it writes nothing.
                 Repr::Void => {}
@@ -661,6 +679,56 @@ impl Translator<'_, '_> {
     // -----------------------------------------------------------------------
 
     /// Translates a binary operation, trapping per ADR-0002 where required.
+    /// One elementwise vector operation (ADR-0148 §4).
+    ///
+    /// Cranelift's arithmetic is polymorphic over its vector types, so this is the *same* instruction
+    /// the scalar path emits with a different controlling type — which is the point: one instruction
+    /// here, a loop in the VM, and the differential harness asserts the answers agree.
+    ///
+    /// **No overflow check on the integer forms**, and that is the language's decision rather than an
+    /// omission: sema accepts only `+% -% *%` on an integer vector (§6), because no target has a
+    /// per-lane overflow flag. Probing found the rest of the shape before any of this was designed —
+    /// `sdiv` on a vector fails Cranelift's verifier at every lane count, because no machine has an
+    /// integer vector divide (§3).
+    ///
+    /// # Errors
+    /// [`CodegenError::Internal`] for an operator sema should have refused (E0285).
+    fn vector_binary(
+        &mut self,
+        op: BinOp,
+        vector: Type,
+        left: ClifValue,
+        right: ClifValue,
+    ) -> Result<ClifValue, CodegenError> {
+        // The *lane* type decides, read off the Cranelift vector rather than re-derived from the
+        // Jairs one, so the classification and the instruction cannot disagree.
+        let value = if vector.lane_type().is_float() {
+            match op {
+                BinOp::Add => self.builder.ins().fadd(left, right),
+                BinOp::Sub => self.builder.ins().fsub(left, right),
+                BinOp::Mul => self.builder.ins().fmul(left, right),
+                BinOp::Div => self.builder.ins().fdiv(left, right),
+                _ => {
+                    return Err(CodegenError::Internal(format!(
+                        "{op:?} is not defined on a float vector"
+                    )));
+                }
+            }
+        } else {
+            match op {
+                BinOp::WrapAdd => self.builder.ins().iadd(left, right),
+                BinOp::WrapSub => self.builder.ins().isub(left, right),
+                BinOp::WrapMul => self.builder.ins().imul(left, right),
+                _ => {
+                    return Err(CodegenError::Internal(format!(
+                        "{op:?} is not defined on an integer vector"
+                    )));
+                }
+            }
+        };
+        Ok(value)
+    }
+
     fn binary(&mut self, op: BinOp, lhs: Operand, rhs: Operand) -> Result<Slot, CodegenError> {
         let left = self.read_scalar(lhs)?;
         let right = self.read_scalar(rhs)?;
@@ -669,6 +737,16 @@ impl Translator<'_, '_> {
             Repr::of(self.ctx.pool, self.ctx.target, ty)?,
             Repr::Scalar { signed: true, .. }
         );
+
+        // **A vector before both scalar paths** (ADR-0148 §4), and it must dispatch on its *lane*
+        // type for the reason the comment below gives, one type wider: `FloatKind::of` answers `None`
+        // for a vector of floats, so a `#simd [2]float64` fell through to the integer path and
+        // emitted `iadd.f64x2`. Cranelift's verifier met that with `unreachable!()` — a **panic**,
+        // not an error — which is worse than the hard failure the note below promises, and is why
+        // this arm is here rather than appended after them.
+        if let Repr::Vector { ty: vector, .. } = Repr::of(self.ctx.pool, self.ctx.target, ty)? {
+            return self.vector_binary(op, vector, left, right).map(Some);
+        }
 
         // Floats first and separately, because every instruction differs: `fadd` not `iadd`,
         // `fcmp` not `icmp`, and — the point of ADR-0040 §1 — **no overflow check at all**.
@@ -1474,6 +1552,15 @@ impl Translator<'_, '_> {
                 self.copy(copy, address, size, align);
                 Ok(Some(copy))
             }
+            // A vector load is *one instruction*, not a byte copy: the value ends up in a register,
+            // so there is nothing for a later write through the original place to alias (ADR-0148
+            // §1). That is the same reason the scalar arm above needs no copy.
+            Repr::Vector { ty: clif, .. } => Ok(Some(self.builder.ins().load(
+                clif,
+                MemFlagsData::new(),
+                address,
+                0,
+            ))),
         }
     }
 
@@ -1483,7 +1570,10 @@ impl Translator<'_, '_> {
             // A `void` store writes nothing and never touches the address, exactly
             // as the VM's `Shape::Void` arm returns without writing.
             Repr::Void => Ok(()),
-            Repr::Scalar { .. } => {
+            // A vector stores exactly as a scalar does — one instruction at the address — so the
+            // two share this arm rather than repeating it. They are separate `Repr` cases because
+            // *loading* and calling differ, not because storing does.
+            Repr::Scalar { .. } | Repr::Vector { .. } => {
                 let value = source.ok_or_else(|| {
                     CodegenError::Internal("storing void into a scalar place".to_owned())
                 })?;
@@ -1542,7 +1632,14 @@ impl Translator<'_, '_> {
     /// beside one, which would have left two answers to one question.
     fn index_elem(&self, ty: PoolId) -> Result<PoolId, CodegenError> {
         match self.ctx.pool.item(ty) {
-            Item::ArrayType { elem, .. } | Item::PointerType(elem) => Ok(*elem),
+            // A vector lane joins the array and the pointer here, rather than in a fourth helper:
+            // the layouts are identical, so the stride computation this feeds is the right one
+            // (ADR-0148 §1). The two are different *types* precisely so that arithmetic can differ,
+            // and that was decided in sema — by the time a place is being built there is nothing
+            // left to distinguish.
+            Item::ArrayType { elem, .. }
+            | Item::VectorType { elem, .. }
+            | Item::PointerType(elem) => Ok(*elem),
             _ => Err(CodegenError::Internal(
                 "an index projection on neither an array nor a pointer".to_owned(),
             )),

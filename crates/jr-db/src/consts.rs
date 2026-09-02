@@ -1158,6 +1158,11 @@ fn type_info_kind_name(pool: &Pool, ty: PoolId) -> Option<&'static str> {
         jr_pool::Item::StringType => Some("STRING"),
         jr_pool::Item::PointerType(..) => Some("POINTER"),
         jr_pool::Item::ArrayType { .. } => Some("ARRAY"),
+        // **Its own kind, not `ARRAY`.** A reflecting metaprogram that saw `ARRAY` for a vector
+        // would read a type it can index and pass to an array routine, and get a type on which
+        // arithmetic is legal and division is not — the distinction ADR-0148 §1 put in the identity
+        // would be erased at exactly the layer whose job is to report it.
+        jr_pool::Item::VectorType { .. } => Some("VECTOR"),
         jr_pool::Item::ViewType { .. } => Some("VIEW"),
         // A dynamic array reports as its own kind so a `type_info(...).kind ==
         // Type_Info_Kind.DYNAMIC_ARRAY` reads. The `Type_Info_Kind` enum in
@@ -1380,6 +1385,10 @@ fn reduce_element(
     }
     match *pool.item(ty) {
         jr_pool::Item::ArrayType { .. }
+        // A vector reduces lane by lane, exactly as the array of the same bytes does: in the VM it
+        // *is* those bytes (ADR-0148 §4), so a `#run` returning one interns the same aggregate an
+        // array would. That is what lets a comptime-computed vector be a constant at all.
+        | jr_pool::Item::VectorType { .. }
         | jr_pool::Item::StructType { .. }
         | jr_pool::Item::UnionType { .. }
         | jr_pool::Item::VariantType { .. } => reduce(vm, pool, value, ty, is_float),

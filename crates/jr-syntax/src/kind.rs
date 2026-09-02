@@ -344,6 +344,15 @@ pub enum SyntaxKind {
     /// refused, because "is this expression a compile-time constant" is a semantic
     /// question the parser cannot answer.
     ARRAY_TYPE,
+    /// `#simd [N]T` — a vector, one machine register wide (ADR-0148 §1).
+    ///
+    /// **One node rather than an attribute node wrapping an `ARRAY_TYPE`**, which is the shape
+    /// `#align`/`#place` take on a field (ADR-0144 §1). The difference is that those are optional
+    /// on a construct that stands alone, while `#simd` and the `[N]T` it applies to are
+    /// inseparable: neither means anything without the other. So the attribute is spelled in the
+    /// node's own first token, and every consumer reads one node with the same three children an
+    /// `ARRAY_TYPE` has.
+    VECTOR_TYPE,
     /// `[]T` — a view (ADR-0044 §1).
     ///
     /// A separate kind from `ARRAY_TYPE` rather than one with an absent length child, because

@@ -172,6 +172,18 @@ exits 114, a checksum of offsets and sizes) and two refusals in `type-errors/`. 
 registry earned its keep here**: `crates/jr-cli/tests/codes.rs` failed the moment E0283 was declared
 while this file still claimed E0282 was free, which is exactly the rot it was written to catch.
 
+**ADR-0148 reaches 1033** (1034 under gate 7) and adds two corpus files = **237** — W8 sub-wave 7,
+`#simd`. Only **one** new Rust test (the formatter's survival-and-canonicalisation assertion), which is
+the pattern by now: the coverage a vector needs is a corpus program the three engines must agree on,
+and the differential, snapshot and `type-errors` harnesses already iterate the directory. The enforced
+registry moved to E0286, and the *parser* range grew for the first time in three waves (E0133).
+
+**The nvim parser is a checked-in `.so` and it goes stale.** `editors/nvim/parser/jairs.so` predates
+any grammar change, so `verify.lua` fails "the highlights query loads" the moment a query names a new
+node — which is the AGENTS.md trap arriving through the one check that can see it, since gate 6's
+`query` run uses the *freshly generated* grammar. Run `./editors/nvim/build.sh` after touching
+`grammar.js`, then re-run the verification.
+
 **ADR-0147 reaches 1032** (1033 under gate 7) and adds two corpus files = **235** — W8 sub-wave 6,
 `#soa`. Two new tests are the formatter's (survival *and* canonicalisation, because dropping the
 attribute changes the program's *layout* rather than its formatting) and the corpus files are
@@ -329,7 +341,10 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0285 is the first free code**; E0133 is the first free *parser* code. E0284 is `#soa`'s single refusal (ADR-0147) — an unusable count, a `using` field, or an index that is not a field receiver — one code because each is "this is not how an `#soa` struct is used". E0282 and E0283 are `#align`'s and `#place`'s refusals (ADR-0144), one per attribute because the two have different rules, and E0132 is `jr-syntax`'s for either attribute written with no value at all. E0280 refuses an
+**E0286 is the first free code**; E0134 is the first free *parser* code. E0285 is `#simd`'s single
+refusal (ADR-0148) — a width that is not one machine register, an element a lane cannot hold, integer
+division, or a trapping integer add — one code because each is "this is not how a vector works".
+E0133 is the parser's `#simd` with no array type. E0284 is `#soa`'s single refusal (ADR-0147) — an unusable count, a `using` field, or an index that is not a field receiver — one code because each is "this is not how an `#soa` struct is used". E0282 and E0283 are `#align`'s and `#place`'s refusals (ADR-0144), one per attribute because the two have different rules, and E0132 is `jr-syntax`'s for either attribute written with no value at all. E0280 refuses an
 instantiation family that never settles and E0281 a `$N` call in a file whose `#insert`
 operand is computed (both ADR-0120, **owned by `jr-db`**). E0231 is `jr-db`'s
 unused-import warning — the first code in this project that is a *warning* rather than an

@@ -580,6 +580,9 @@ impl<'a> ResolveCtx<'a> {
                 crate::hir::TypeRef::Name(sym) => return Some(*sym),
                 crate::hir::TypeRef::Pointer(inner) => ty = *inner,
                 crate::hir::TypeRef::Array { .. }
+                // A `using v: #simd [4]s32` promotes nothing either: a vector's lanes are indexed,
+                // not named, so there is no member for `using` to bring into scope (ADR-0148 §1).
+                | crate::hir::TypeRef::Vector { .. }
                 | crate::hir::TypeRef::View { .. }
                 // A `using xs: [..]T` would promote nothing: a dynamic array has compiler-
                 // known fields (`data`, `count`, `capacity`) but they are storage housekeeping,

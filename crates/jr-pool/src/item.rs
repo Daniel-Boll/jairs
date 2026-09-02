@@ -339,6 +339,37 @@ pub enum Item {
         /// The element type.
         elem: PoolId,
     },
+    /// `#simd [N]T` — a vector, one machine register wide (ADR-0148 §1).
+    ///
+    /// **Structural**, like [`Item::ArrayType`], and the lane count is in the key for the same
+    /// reason a length is. The layout is *identical* to `[N]T`'s: `lanes * size_of(elem)` bytes,
+    /// contiguous. What differs is everything else — the representation is a register rather than
+    /// memory, and an arithmetic operator applies.
+    ///
+    /// # Why this is its own variant when an `#soa` struct is not
+    ///
+    /// ADR-0147 §1 refused an `Item::SoaType` because an `#soa` struct answers every question the
+    /// same way an ordinary struct does, so five crates' matches would have grown an arm saying
+    /// "the same as a struct". A vector answers three differently: its representation, which
+    /// operators apply, and whether its element count is chosen or fixed by its width. A new
+    /// variant earns its arms exactly when the arms differ (ADR-0148 §1).
+    ///
+    /// # Why the width is fixed
+    ///
+    /// `lanes * size_of(elem)` is **exactly 16 bytes**, enforced in `jr-sema` (E0285), because a
+    /// vector operation compiles at exactly that width and nowhere else — `iadd` on an `I64X4`
+    /// fails with `Unexpected SSA-value type`, which is what probing found before this was
+    /// designed (ADR-0148's context). Nothing here re-checks it: by the time a `PoolId` names this
+    /// variant, sema has already refused every other width.
+    VectorType {
+        /// The element type: a numeric scalar, never a pointer or an aggregate.
+        elem: PoolId,
+        /// The number of lanes.
+        ///
+        /// In the key, like [`Item::ArrayType`]'s `len`: `[[4]]s32` and `[[2]]s64` are the same
+        /// sixteen bytes and different types, and a use site cannot be asked which it has.
+        lanes: u64,
+    },
     /// `[..]T` — a growable dynamic array (ADR-0136).
     ///
     /// **Structural**, like [`Item::ViewType`] and [`Item::PointerType`]: the element is the whole
@@ -588,6 +619,7 @@ impl Item {
             | Self::ContextType
             | Self::PointerType(_)
             | Self::ArrayType { .. }
+            | Self::VectorType { .. }
             | Self::ViewType { .. }
             | Self::DynamicArrayType { .. }
             | Self::EnumType { .. }
