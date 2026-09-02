@@ -67,6 +67,9 @@ enum Intrinsic {
     NotedCount,
     /// `noted_name("name", i)` — the name of the `i`th of them, or `""` (ADR-0100 §1).
     NotedName,
+    /// `noted_declarations("name")` — every declaration carrying `@name`, as a `[]Declaration`
+    /// (ADR-0153 §1). W6's headline claim: a metaprogram *iterates* rather than unrolling.
+    NotedDeclarations,
     /// `noted_insert("name", "template")` — the template once per noted declaration (ADR-0101 §1).
     NotedInsert,
     /// `size_of(T)` — `T`'s size in bytes, folded (ADR-0106 §1).
@@ -116,6 +119,18 @@ enum TypeInfoField {
 const ANY_FIELDS: &[(&str, TypeInfoField)] = &[
     ("type", TypeInfoField::PointerToStruct),
     ("data", TypeInfoField::Exact(PoolId::PTR_U8)),
+];
+
+/// The fields the compiler expects `Basic`'s `Declaration` to have, in order (ADR-0153 §1).
+///
+/// The third client of the library-shape contract `TYPE_INFO_FIELDS` established, which is what makes
+/// that mechanism worth having rather than a one-off: editing the struct produces a diagnostic instead of
+/// a wrong read.
+///
+/// Keep it in step with `Declaration` in `modules/Basic/module.jr`.
+const DECLARATION_FIELDS: &[(&str, TypeInfoField)] = &[
+    ("name", TypeInfoField::Exact(PoolId::STRING)),
+    ("note_value", TypeInfoField::Exact(PoolId::STRING)),
 ];
 
 const TYPE_INFO_FIELDS: &[(&str, TypeInfoField)] = &[
@@ -3185,6 +3200,13 @@ impl Ctx<'_> {
             Some(Intrinsic::NotedName) => {
                 return self.check_noted_name(scope, id, callee, args, span);
             }
+            // **The loop, at last** (ADR-0153 §1). `noted_count` and `noted_name` above can only be
+            // unrolled to a guessed bound, which ADR-0100 §2 stated as an honest limit and named the
+            // mechanism it was waiting for. ADR-0152 built that mechanism, so this folds to a *table* and
+            // a program iterates it.
+            Some(Intrinsic::NotedDeclarations) => {
+                return self.check_noted_declarations(scope, id, callee, args, span);
+            }
             // **The loop lives inside the fold** (ADR-0101 §1). ADR-0100 §2 established that folding can
             // never take a `for` variable as an argument; it said nothing about looping *within* the fold,
             // which is what this does — and for code *generation* that is not a workaround but the right
@@ -3589,6 +3611,7 @@ impl Ctx<'_> {
             "has_note" => Intrinsic::HasNote,
             "note_value" => Intrinsic::NoteValue,
             "noted_count" => Intrinsic::NotedCount,
+            "noted_declarations" => Intrinsic::NotedDeclarations,
             "noted_name" => Intrinsic::NotedName,
             "noted_insert" => Intrinsic::NotedInsert,
             "size_of" => Intrinsic::SizeOf,
@@ -3737,6 +3760,66 @@ impl Ctx<'_> {
         let value = self.pool.int_value(PoolId::S64, count);
         self.record_fold(scope, id, span, value);
         self.expect(None, PoolId::S64, span)
+    }
+
+    /// Types and folds `noted_declarations("name")` to a `[]Declaration` table (ADR-0153 §1).
+    ///
+    /// # Why this is W6's headline claim rather than a convenience
+    ///
+    /// `noted_count` and `noted_name` let a script *unroll*: ask the count, then ask for name 0, name 1,
+    /// and so on to a bound written into the script. ADR-0100 §2 recorded that as the boundary of folding
+    /// itself rather than a spelling problem — a fold is answered while checking, and a `for` variable does
+    /// not exist then — and named what it was waiting for: a compiler-emitted table. ADR-0152 built one.
+    ///
+    /// So this returns a view over a table the compiler emitted, and a metaprogram writes an ordinary
+    /// `for` over it. The count is the table's, not a number the script guessed.
+    ///
+    /// # What is in it, and what is not
+    ///
+    /// A name and the note's value. Not a `Type_Info`, and not a procedure pointer: both would make this
+    /// the *inspection* half of a message loop that also wants to *change* what it inspects, and ADR-0153
+    /// §2 keeps those apart deliberately.
+    fn check_noted_declarations(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        self.types.set_expr(scope, callee, PoolId::VOID);
+        if args.len() != 1 {
+            self.wrong_intrinsic_arity("noted_declarations", 1, args.len(), span);
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+        let Some(note) = self.note_name_argument(scope, args[0], "noted_declarations", span) else {
+            return PoolId::ERROR;
+        };
+
+        let Some(decl_ty) = self.library_struct(span, "Declaration", DECLARATION_FIELDS) else {
+            return PoolId::ERROR;
+        };
+
+        // Declaration order, for the reason `noted_declarations` gives: it is the one order a reader can
+        // predict from the source.
+        let found = self.noted_declarations_with_values(note);
+        let mut entries = Vec::with_capacity(found.len());
+        for (name, value) in &found {
+            let name_text = self.interner.resolve(*name).to_owned();
+            let name_value = self.pool.str_value(&name_text);
+            let note_value = self.pool.str_value(value);
+            entries.push(
+                self.pool
+                    .aggregate_value(decl_ty, vec![name_value, note_value]),
+            );
+        }
+        let table = self.pool.static_array(decl_ty, entries);
+        self.record_fold(scope, id, span, table);
+        let view = self.pool.view_of(decl_ty);
+        self.expect(None, view, span)
     }
 
     /// Types and folds `noted_name("name", i)` (ADR-0100 §1).
@@ -4151,6 +4234,34 @@ impl Ctx<'_> {
     /// Declaration order rather than any other, because it is the one order a reader can predict from the
     /// source: sorting by name would make inserting a declaration renumber every index a script had
     /// unrolled, and a hash order would make the same program answer differently between runs.
+    /// This file's procedures carrying `@note`, with each note's value, in declaration order.
+    ///
+    /// Separate from [`Ctx::noted_declarations`] rather than replacing it, because the two have different
+    /// consumers: the name-only form answers `noted_count`/`noted_name`, which cannot carry a value, and
+    /// changing its return type would make those two build a string they then throw away.
+    fn noted_declarations_with_values(&self, note: Symbol) -> Vec<(Symbol, String)> {
+        let mut found = Vec::new();
+        for item in &self.hir.items {
+            let jr_hir::ItemKind::Const {
+                value: jr_hir::ConstValue::Proc(proc),
+            } = &item.kind
+            else {
+                continue;
+            };
+            let Some(name) = item.name else {
+                continue;
+            };
+            // The *first* note with this name, matching what `note_value` answers for the same
+            // declaration — a second `@x` on one declaration would otherwise read differently here than
+            // there.
+            if let Some((_, value)) = self.hir.proc(*proc).notes.iter().find(|(n, _)| *n == note) {
+                let text = value.clone().unwrap_or_default();
+                found.push((name, text));
+            }
+        }
+        found
+    }
+
     fn noted_declarations(&self, note: Symbol) -> Vec<Symbol> {
         let mut found = Vec::new();
         for item in &self.hir.items {
