@@ -531,6 +531,9 @@ fn scan(
                 // callee stays `Res::Error`, so refusing the body for it would refuse every program that
                 // allocates.
                 || consts.pointer_view(scope, *call).is_some()
+                // An `atomic_*` call names no procedure either (ADR-0176 §3), so refusing the body for its
+                // unresolved callee would refuse every program that uses one.
+                || consts.atomic(scope, *call).is_some()
         })
         .map(|(callee, _)| *callee)
         .collect();
@@ -1526,7 +1529,14 @@ impl Lower<'_> {
         // A call in statement position is the one expression whose value is
         // genuinely discarded; `Statement::Discard` exists so that a dump shows
         // that rather than an unused definition.
-        if expr.index() < self.body.exprs.len()
+        // **An atomic falls through to `expr`** (ADR-0176 §3), because `call_rvalue` knows nothing about
+        // intrinsics and built an *indirect call* out of one — which Cranelift then rejected with "an
+        // indirect call whose callee is not of procedure type". A discarded atomic therefore shows in a dump
+        // as an unused definition rather than a `Discard`, which is cosmetic; being lowered as a call to a
+        // pointer that is not one is not.
+        let is_atomic = self.consts.atomic(self.scope(), expr).is_some();
+        if !is_atomic
+            && expr.index() < self.body.exprs.len()
             && let Expr::Call {
                 callee,
                 args,
@@ -2443,6 +2453,13 @@ impl Lower<'_> {
         {
             return self.lower_pointer_view(&args, target, span);
         }
+        // **An atomic** (ADR-0176 §3), intercepted here for the same reason: its callee names no procedure,
+        // so the ordinary call path would look for one and refuse the body.
+        if let Some(op) = self.consts.atomic(self.scope(), id)
+            && let Expr::Call { args, .. } = self.body.expr(id).clone()
+        {
+            return self.lower_atomic(op, &args, id, span);
+        }
         self.expr_inner(id)
     }
 
@@ -3268,6 +3285,48 @@ impl Lower<'_> {
         self.define(view_ty, Rvalue::Load(view), span)
     }
 
+    /// Lowers an `atomic_*` call to an [`Rvalue::Atomic`] (ADR-0176 §3).
+    ///
+    /// Sema has already checked the arity and that the first argument is a `*s64`, so the shapes here are
+    /// known — and the MIR verifier checks them again, because a lowering bug would otherwise produce a
+    /// wrong *store* rather than an error (ADR-0176 §2).
+    ///
+    /// A store yields `void` and still gets a destination value, which is what every void-producing rvalue
+    /// here does: `void` is a storable value in this language (ADR-0015 §3), and giving the store no
+    /// destination would make it the one rvalue the VM's lowering has to special-case twice.
+    fn lower_atomic(
+        &mut self,
+        op: crate::AtomicOp,
+        args: &[ExprId],
+        call: ExprId,
+        span: MirSpan,
+    ) -> Operand {
+        let address = self.expr(args[0]);
+        // The operand order in the source is `(p, expected, new)` for a compare-exchange and `(p, v)` for
+        // the rest — so `value` is the *last* argument in both shapes, which is why it is indexed from the
+        // end rather than by a per-operation constant.
+        let value = match op {
+            crate::AtomicOp::Load => None,
+            crate::AtomicOp::Store | crate::AtomicOp::Add => Some(self.expr(args[1])),
+            crate::AtomicOp::CompareExchange => Some(self.expr(args[2])),
+        };
+        let expected = match op {
+            crate::AtomicOp::CompareExchange => Some(self.expr(args[1])),
+            _ => None,
+        };
+        let ty = self.ty(call);
+        self.define(
+            ty,
+            Rvalue::Atomic {
+                op,
+                address,
+                value,
+                expected,
+            },
+            span,
+        )
+    }
+
     fn lower_pointer_view(&mut self, args: &[ExprId], target: PoolId, span: MirSpan) -> Operand {
         // **`view(p, n)` builds a `{data, count}` aggregate** (ADR-0109 §1) rather than retyping a pointer, so it
         // takes the other branch. Recognised by the *target* being a view type, which is the one thing that
@@ -3604,24 +3663,32 @@ impl Lower<'_> {
     /// evaluated to an operand and the call is [`Callee::Indirect`], which both engines already
     /// have an arm for.
     ///
-    /// **The context is prepended exactly as for a direct call.** A proc-pointer type is
-    /// `ContextKind::Jairs` in this wave (ADR-0059 §3), so the target always receives the context —
-    /// there is no `#c_call` proc-pointer type to check. A `#c_call` procedure calling through a
-    /// pointer still has no context to pass, and refuses for the same reason a direct such call does.
+    /// **The context is prepended only when the callee's *type* takes one** (ADR-0175 §2). This used
+    /// to prepend unconditionally, on the stated grounds that "a proc-pointer type is
+    /// `ContextKind::Jairs` in this wave — there is no `#c_call` proc-pointer type to check". ADR-0175
+    /// §1 added one, and the unconditional prepend then produced `internal compiler error: called a
+    /// procedure taking 1 arguments with 2` — the argument-shift failure ADR-0053 §1 records, arriving
+    /// through the one path that had been *told* it could not happen.
+    ///
+    /// So the convention is read from the callee expression's type. A `#c_call` procedure calling
+    /// through a Jairs-convention pointer still refuses: it has no context to pass.
     ///
     /// **No `FilledArgs`**: named arguments and defaults resolve against a *declaration*'s parameter
     /// names (ADR-0053 §1), and an indirect call has no declaration in hand — only a type. So the
     /// arguments are positional, which is the only form sema admits through a proc pointer.
     fn indirect_call(&mut self, _call: ExprId, callee: ExprId, args: &[ExprId]) -> Option<Rvalue> {
+        // Read before the pointer is evaluated, because `expr` may append statements and the type
+        // question is about the *expression*, not about anything lowering does to it.
+        let takes_context = self.pointer_takes_context(callee);
         let pointer = self.expr(callee);
         let mut operands: Vec<Operand> = Vec::with_capacity(args.len() + 1);
-        // Every Jairs procedure receives the context, and a proc-pointer type is always a Jairs one
-        // this wave — so an indirect call always prepends it, from *this* procedure's context.
-        match self.context {
-            Some(operand) => operands.push(operand),
-            None => {
-                self.give_up("a `#c_call` procedure calling through a procedure pointer");
-                return None;
+        if takes_context {
+            match self.context {
+                Some(operand) => operands.push(operand),
+                None => {
+                    self.give_up("a `#c_call` procedure calling through a procedure pointer");
+                    return None;
+                }
             }
         }
         operands.extend(args.iter().map(|arg| self.expr(*arg)));
@@ -3629,6 +3696,19 @@ impl Lower<'_> {
             callee: Callee::Indirect(pointer),
             args: operands,
         })
+    }
+
+    /// Whether the procedure pointer `callee` names a type that takes the implicit context.
+    ///
+    /// `true` for anything this cannot determine, which is the safe direction: a Jairs-convention call
+    /// with the context missing is an arity error the verifier catches, while a `#c_call` call given one
+    /// silently puts the context where C expects the first real argument.
+    fn pointer_takes_context(&self, callee: ExprId) -> bool {
+        let ty = self.ty(callee);
+        match self.pool.item(ty) {
+            Item::ProcType { context, .. } => *context != jr_pool::ContextKind::CCall,
+            _ => true,
+        }
     }
 
     /// Whether the callee at `target` receives the implicit context (ADR-0057 §3).

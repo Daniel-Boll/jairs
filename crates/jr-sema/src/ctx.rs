@@ -196,6 +196,8 @@ pub(crate) struct Ctx<'a> {
     /// depend on its pointee, so retyping is a store-then-load through a slot (the mechanism ADR-0076 §1
     /// already uses), and lowering needs to know the target type to make the slot.
     pub(crate) pointer_views: FxHashMap<(ExprScope, jr_hir::ExprId), PoolId>,
+    /// Which atomic operation each `atomic_*` call performs, as an `AtomicOp` code (ADR-0176 §3).
+    pub(crate) atomics: FxHashMap<(ExprScope, jr_hir::ExprId), u8>,
     /// Calls folded to a value here rather than downstream — `has_note`, `note_value` (ADR-0099 §2).
     pub(crate) folded_calls: FxHashMap<(ExprScope, jr_hir::ExprId), PoolId>,
     /// The same values keyed by span, so an *expanded* tree can still find them (ADR-0101 §3).
@@ -300,6 +302,7 @@ impl<'a> Ctx<'a> {
             type_info_calls: FxHashMap::default(),
             folded_calls: FxHashMap::default(),
             pointer_views: FxHashMap::default(),
+            atomics: FxHashMap::default(),
             folded_call_spans: FxHashMap::default(),
             type_bindings: FxHashMap::default(),
             instantiations: FxHashMap::default(),
@@ -582,13 +585,20 @@ impl<'a> Ctx<'a> {
                     self.pool.results_type(resolved)
                 }
             }
-            // `(T, T) -> T` (ADR-0059 §3). Interned to the **same** `Item::ProcType` a declared
-            // procedure gets, so `add`'s type and a `fn: (s64, s64) -> s64` parameter's type are one
-            // entry and passing the procedure is an ordinary type match. `ContextKind::Jairs`
-            // always: the type syntax carries no `#c_call`, so a `#foreign` procedure's `CCall` type
-            // is a *different* interned type — which is what makes ADR-0059 §5's refusal fall out of
-            // the type system rather than needing a separate check.
-            TypeRef::Proc { params, ret } => {
+            // A procedure-pointer type resolves to the **same** `Item::ProcType` a declared procedure
+            // has, so passing a procedure to a parameter of this type is an ordinary type match.
+            //
+            // **The convention comes from the type expression** (ADR-0175 §1). It used to be
+            // `ContextKind::Jairs` always, on the grounds that "the type syntax carries no `#c_call`" —
+            // which was true and made a `#c_call` procedure *unpassable*, since its `CCall` type could
+            // never be named. ADR-0059 §5's refusal of a `#foreign` procedure value still falls out of
+            // the type system, because a `#foreign` declaration is refused as a *value* before its type
+            // is compared; what changed is that a **local** `#c_call` procedure now has a spellable type.
+            TypeRef::Proc {
+                params,
+                ret,
+                c_call,
+            } => {
                 let mut resolved = Vec::with_capacity(params.len());
                 let mut poisoned = false;
                 for param in params {
@@ -606,7 +616,12 @@ impl<'a> Ctx<'a> {
                 if poisoned {
                     PoolId::ERROR
                 } else {
-                    self.pool.proc_type(resolved, ret_ty, ContextKind::Jairs)
+                    let context = if c_call {
+                        ContextKind::CCall
+                    } else {
+                        ContextKind::Jairs
+                    };
+                    self.pool.proc_type(resolved, ret_ty, context)
                 }
             }
             TypeRef::Struct(sid) => {
@@ -1722,9 +1737,29 @@ impl<'a> Ctx<'a> {
             Item::EnumType { .. } => self
                 .type_name(ty)
                 .map_or_else(|| "enum".to_owned(), str::to_owned),
-            Item::ProcType { params, ret, .. } => {
+            // **The convention is rendered** (ADR-0175 §3), because without it two procedure types that
+            // differ *only* in it print identically — and the mismatch between them read
+            // "expected `(s64) -> s64`, found `(s64) -> s64`", which tells a reader nothing and looks
+            // like a compiler bug. ADR-0001 made the two different types; this makes them different
+            // *words*.
+            Item::ProcType {
+                params,
+                ret,
+                context,
+                ..
+            } => {
                 let rendered: Vec<String> = params.iter().map(|p| self.describe(*p)).collect();
-                format!("({}) -> {}", rendered.join(", "), self.describe(*ret))
+                let convention = if *context == jr_pool::ContextKind::CCall {
+                    " #c_call"
+                } else {
+                    ""
+                };
+                format!(
+                    "({}) -> {}{}",
+                    rendered.join(", "),
+                    self.describe(*ret),
+                    convention
+                )
             }
             // A value is never what a "type" diagnostic means to name, but
             // `describe` must be total, so fall through to the value's type.

@@ -1,0 +1,168 @@
+//! The Thread module: spawning, joining, and the atomics that make sharing safe.
+//!
+//! Written in Jairs. W11's content, on the two language pieces it needed: a spellable `#c_call` procedure
+//! type (ADR-0175) so a thread body can be handed to C, and atomics as real operations (ADR-0176) so two
+//! threads can share a counter.
+//!
+//! # What a thread body must be
+//!
+//! A `#c_call` procedure taking a `*u8` and returning a `*u8`, because that is `pthread_create`'s signature
+//! and this module is a binding rather than a runtime:
+//!
+//! ```text
+//! worker :: (arg: *u8) -> *u8 #c_call {
+//!     shared := typed(s64, arg);
+//!     _ = atomic_add(shared, 1);
+//!     return null;
+//! }
+//! ```
+//!
+//! **`#c_call` is not optional and not incidental.** An ordinary Jairs procedure takes the hidden context
+//! parameter (ADR-0001), so C calling one would pass its `arg` where the context belongs and read the
+//! context's field off the argument. The convention is what makes the two agree, and until ADR-0175 §1 it
+//! could not be *written* in a type — which is why this module could not exist before.
+//!
+//! # What a thread body cannot do
+//!
+//! **It has no context**, so it cannot allocate: `context.allocator` is exactly what `#c_call` opts out of
+//! (ADR-0057 §3). A worker that needs memory takes it through `arg`, which is the discipline C imposes
+//! anyway and is why `arg` exists.
+//!
+//! **It cannot trap usefully.** The shadow call stack a backtrace walks is one module-wide object with one
+//! depth counter (ADR-0066 §1), and two threads pushing onto it race. A trap in a spawned thread still
+//! *stops the program* — the message may name the wrong frames. Stated rather than hidden: making the stack
+//! per-thread needs thread-local storage in both back ends, which is its own wave (ADR-0177 §4).
+//!
+//! # Why there is no `Mutex`
+//!
+//! `pthread_mutex_t` is 64 bytes of opaque platform layout on macOS and a different size on Linux, and this
+//! language has no way to say "an opaque N-byte thing whose N I looked up" without hard-coding N per
+//! platform — the same wall `Socket`'s `sockaddr_in` hit (ADR-0158 §4) and lost more of.
+//!
+//! So this module offers the **spin lock** `acquire`/`release` built on `atomic_compare_exchange`, which
+//! needs no platform layout at all and is correct. It burns CPU while contended, which is stated rather than
+//! papered over: a caller holding a lock across a syscall wants a real mutex and should say so in an issue.
+//!
+//! # Why the atomics are not in this module
+//!
+//! `atomic_add` and friends are language intrinsics, not procedures here, because they must lower to machine
+//! instructions in three engines and no library call can do that (ADR-0176 §1). They are usable without
+//! importing this module at all, which is right: a program that shares one counter between two threads it
+//! did not spawn still needs them.
+
+libc :: #system_library "c";
+
+/// `pthread_create`. The handle is written through `thread`.
+///
+/// `start` is spelled with its convention (ADR-0175 §1). Without that, a Jairs procedure could not be named
+/// here at all: its type would be the context-taking one and no coercion exists between the two.
+pthread_create :: (thread: *u8, attr: *u8, start: (*u8) -> *u8 #c_call, arg: *u8) -> s64 #foreign libc "pthread_create";
+
+/// `pthread_join`. Takes the handle **by value**, not by pointer.
+///
+/// Spelled `*u8` because a `pthread_t` *is* a pointer on both supported platforms. Passing the address of the
+/// handle instead compiles and returns `EINVAL` at run time, which is how this was got wrong first.
+pthread_join :: (thread: *u8, result: *u8) -> s64 #foreign libc "pthread_join";
+
+/// `sched_yield`, for a spin lock that has waited long enough to be embarrassing.
+sched_yield :: () -> s64 #foreign libc "sched_yield";
+
+/// A running thread.
+///
+/// A named one-field struct rather than a bare `*u8`, for `File`'s reason (ADR-0157 §1): a handle and a count
+/// are both machine words, and the compiler will not confuse them once one has a name.
+Thread :: struct {
+    /// The `pthread_t`. Null before a successful spawn and after a join.
+    handle: *u8;
+}
+
+/// The value an unlocked spin lock holds.
+UNLOCKED :: 0;
+
+/// The value a held spin lock holds.
+LOCKED :: 1;
+
+/// Starts `body` on a new thread, passing it `argument`.
+///
+/// `#must`: a spawn fails when the system is out of threads, and a caller who ignores that then *joins* a
+/// null handle — which is `EINVAL` reported one step away from its cause, the failure chain the marker exists
+/// for (ADR-0151).
+///
+/// `argument` is a `*u8` because C's is. A caller with a typed pointer passes `untyped(p)` and the body reads
+/// it back with `typed(T, arg)`, which is the one erasing boundary ADR-0106 permits and names.
+spawn :: (body: (*u8) -> *u8 #c_call, argument: *u8) -> (Thread, bool) #must {
+    t: Thread;
+    t.handle = null;
+    if pthread_create(untyped(*t.handle), null, body, argument) != 0 {
+        return t, false;
+    }
+    return t, t.handle != null;
+}
+
+/// Waits for `thread` to finish.
+///
+/// `#must`: joining twice, or joining a thread that never started, fails — and a caller who ignores it
+/// continues as though the thread's writes were visible when they may not be, which is the one failure here
+/// that produces a *wrong answer* rather than a stopped program.
+///
+/// Nulls the handle on success, so a second join is refused by this module rather than by libc: joining an
+/// already-joined `pthread_t` is undefined behaviour in C, not an error, so catching it here is the
+/// difference between a refusal and a crash.
+join :: (thread: *Thread) -> bool #must {
+    if thread.handle == null {
+        return false;
+    }
+    if pthread_join(thread.handle, null) != 0 {
+        return false;
+    }
+    thread.handle = null;
+    return true;
+}
+
+/// Whether `thread` is still ours to join.
+///
+/// Not "whether it is running": a thread may have finished and still be joinable, and reporting otherwise
+/// would invite a caller to skip the join and leak it.
+joinable :: (thread: *Thread) -> bool {
+    return thread.handle != null;
+}
+
+/// Yields the processor, so a spinning thread lets a lock holder run.
+yield_now :: () {
+    _ = sched_yield();
+}
+
+/// Takes the spin lock at `lock`, waiting until it is free.
+///
+/// `lock` must point at an `s64` holding `UNLOCKED` or `LOCKED` and nothing else — it is not a struct,
+/// because a one-field struct would need `typed`/`untyped` at every call and buy nothing.
+///
+/// **A spin lock, not a mutex**, for the reason in the module docs: `pthread_mutex_t`'s layout is opaque and
+/// platform-sized. This burns CPU while contended and yields on every failed attempt, which is what keeps a
+/// single-core machine from live-locking — a bare spin with no yield deadlocks there whenever the holder is
+/// descheduled.
+///
+/// Not `#must`: it does not fail, it waits.
+acquire :: (lock: *s64) {
+    while !atomic_compare_exchange(lock, UNLOCKED, LOCKED) {
+        yield_now();
+    }
+}
+
+/// Releases the spin lock at `lock`.
+///
+/// An atomic **store** rather than a compare-exchange: only the holder releases, so there is nothing to
+/// check, and a store is the cheaper of the two. A caller releasing a lock it does not hold is a bug this
+/// cannot detect — recording that plainly, because the alternative is an owner field and a thread identity
+/// this module does not have.
+release :: (lock: *s64) {
+    atomic_store(lock, UNLOCKED);
+}
+
+/// Whether the lock at `lock` is currently held.
+///
+/// For a diagnostic, never for a decision: by the time a caller reads the answer it may be stale, which is
+/// the whole difficulty of shared state. `acquire` is the only correct way to act on it.
+is_locked :: (lock: *s64) -> bool {
+    return atomic_load(lock) == LOCKED;
+}

@@ -185,6 +185,13 @@ pub enum TypeRef {
         /// return resolves to `PoolId::VOID` in sema, the same way a declared procedure's missing
         /// arrow does (`signature.rs`).
         ret: Option<TypeRefId>,
+        /// `true` when the type was written `#c_call` (ADR-0175 §1).
+        ///
+        /// The pool has always distinguished the two conventions — `ProcType.context` is a
+        /// `ContextKind`, and ADR-0001 made a `#c_call` procedure of the same shape a *different*
+        /// type — but until this field no type expression could say which, so a `#c_call` procedure
+        /// could not be passed anywhere and `pthread_create` was unreachable.
+        c_call: bool,
     },
     /// An inline struct type `struct { ... }`.
     Struct(StructId),

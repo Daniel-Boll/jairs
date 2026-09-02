@@ -419,6 +419,24 @@ impl Dumper<'_> {
     fn rvalue(&self, rvalue: &Rvalue) -> String {
         match rvalue {
             Rvalue::Use(operand) => self.operand(*operand),
+            // `atomic add [p], v` — the operation, the address in brackets so it reads as memory, then the
+            // operands it has. A compare-exchange prints both, expected first, in the order the source
+            // writes them.
+            Rvalue::Atomic {
+                op,
+                address,
+                value,
+                expected,
+            } => {
+                let mut text = format!("atomic {} [{}]", op.name(), self.operand(*address));
+                if let Some(expected) = expected {
+                    text.push_str(&format!(", {}", self.operand(*expected)));
+                }
+                if let Some(value) = value {
+                    text.push_str(&format!(", {}", self.operand(*value)));
+                }
+                text
+            }
             // The *source* kind is printed, because the destination is already on the
             // defining value's type line and printing it twice would make a snapshot diff
             // ambiguous about which side changed.

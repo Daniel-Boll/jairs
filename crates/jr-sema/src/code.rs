@@ -498,3 +498,13 @@ pub(crate) const E0288: &str = "E0288";
 /// So this code exists to turn that silent miscompile into a refusal. It is the same trade ADR-0150 made for
 /// an aggregate at a foreign boundary, one wave before that boundary opened.
 pub(crate) const E0289: &str = "E0289";
+
+/// An atomic whose pointer is not a `*s64` (ADR-0176 §3).
+///
+/// **E0291, not E0290**: `jr-hir` owns E0290 for `$$` in a return type (ADR-0168), and the ownership table
+/// in `AGENTS.md` is what keeps two crates from minting the same number — a collision `jr-cli`'s
+/// `codes.rs` test catches, and did catch while this wave was written.
+///
+/// Owned by `jr-sema`, continuing this crate's block, because what is wrong is an operand's *type* and a
+/// type judgement belongs to the checker.
+pub(crate) const E0291: &str = "E0291";

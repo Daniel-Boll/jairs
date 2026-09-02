@@ -582,6 +582,21 @@ impl Splice {
     fn rvalue(&self, rvalue: &Rvalue) -> Rvalue {
         match rvalue {
             Rvalue::Use(operand) => Rvalue::Use(self.operand(operand)),
+            // Translated faithfully, though `is_inlinable` refuses a callee containing one for now: an
+            // atomic in an inlined body is *correct* — the operation and its ordering are preserved and
+            // only the operand names change — so the refusal is policy, and translating it here means
+            // relaxing that policy is a one-line change rather than a crash (ADR-0176 §2).
+            Rvalue::Atomic {
+                op,
+                address,
+                value,
+                expected,
+            } => Rvalue::Atomic {
+                op: *op,
+                address: self.operand(address),
+                value: value.as_ref().map(|v| self.operand(v)),
+                expected: expected.as_ref().map(|e| self.operand(e)),
+            },
             Rvalue::Binary { op, lhs, rhs } => Rvalue::Binary {
                 op: *op,
                 lhs: self.operand(lhs),

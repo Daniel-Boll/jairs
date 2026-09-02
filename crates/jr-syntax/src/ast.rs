@@ -926,6 +926,15 @@ impl ProcType {
             .filter(|n| n.kind() != PROC_TYPE_PARAMS)
             .find_map(TypeExpr::cast)
     }
+
+    /// Whether the type carries `#c_call` (ADR-0175 §1).
+    ///
+    /// A `C_CALL_ATTR` child, the same node a *declaration*'s `#c_call` produces — so a reader and a
+    /// consumer see one shape for one concept rather than a second spelling for the type position.
+    #[must_use]
+    pub fn is_c_call(&self) -> bool {
+        self.0.children().any(|n| n.kind() == C_CALL_ATTR)
+    }
 }
 impl AutocastExpr {
     /// The operand being converted.

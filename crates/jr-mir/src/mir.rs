@@ -654,6 +654,136 @@ pub enum Rvalue {
     /// uninitialised read *defined*, hiding the very bug the definite-assignment
     /// pass exists to report, and there is no zero for a `string` or a struct.
     Undef,
+    /// An atomic read-modify-write, load or store through a pointer (ADR-0176 §1).
+    ///
+    /// # Why this is an `Rvalue` and not a `Statement`
+    ///
+    /// Three of the four operations *produce* a value — a load yields it, an add yields the previous
+    /// one, a compare-exchange yields whether it succeeded — so they are expressions. A store yields
+    /// `void`, which is a value this language already stores (ADR-0015 §3), so making it the odd one
+    /// out would buy nothing and cost every consumer a second arm.
+    ///
+    /// # Why no pass may move, duplicate or elide one
+    ///
+    /// **This is the whole reason atomics need a MIR variant rather than a library call.** An atomic's
+    /// point is its *ordering* relative to other threads' accesses, and every mid-end pass here was
+    /// written for a single-threaded program: `forward_stores` would forward a store *across* one,
+    /// const-prop would fold a load of a location another thread writes, and DCE would delete a
+    /// compare-exchange whose result nobody reads even though its *effect* is the lock.
+    ///
+    /// Each pass therefore treats an `Atomic` as opaque and unremovable. That is stated here because
+    /// the failure mode is a program that works until it is optimised, which is the worst kind.
+    Atomic {
+        /// Which operation.
+        op: AtomicOp,
+        /// The address operated on — a pointer operand, always `*s64` in this wave.
+        address: Operand,
+        /// The value to store, add, or install on success. `None` for a load, which has none.
+        value: Option<Operand>,
+        /// The value a compare-exchange requires to be present. `None` for every other operation.
+        expected: Option<Operand>,
+    },
+}
+
+/// Which atomic operation an [`Rvalue::Atomic`] performs (ADR-0176 §1).
+///
+/// **Four, on `s64` only.** A wider set — `and`, `or`, `xor`, `min` — is mechanical once these work, and
+/// a narrower one is not useful: a counter needs `Add`, a flag needs `Load` and `Store`, and a lock needs
+/// `CompareExchange`. Every operation is sequentially consistent; a weaker ordering is a separate decision
+/// with its own ADR, and offering `relaxed` before the memory model is written down would be selling a
+/// guarantee nobody had described (ADR-0176 §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AtomicOp {
+    /// Reads the value. Yields it.
+    Load,
+    /// Writes the value. Yields `void`.
+    Store,
+    /// Adds to the value. Yields the value *before* the addition, which is what makes it a ticket.
+    Add,
+    /// Installs the new value if the present one equals the expected one. Yields `true` on success.
+    ///
+    /// **The strong form**: it does not fail spuriously. A weak compare-exchange is faster in a loop and
+    /// its spurious failures are a trap for a caller who does not expect them, so the loop-friendly
+    /// version waits for a caller who has measured the difference.
+    CompareExchange,
+}
+
+impl AtomicOp {
+    /// The operation's name, for a dump and for a diagnostic.
+    ///
+    /// The *source* spelling minus the `atomic_` prefix, so a reader matching a MIR dump against the
+    /// program it came from does not have to translate — the same reason `BinOp::name` exists.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Load => "load",
+            Self::Store => "store",
+            Self::Add => "add",
+            Self::CompareExchange => "compare_exchange",
+        }
+    }
+
+    /// This operation's wire code, as `jr-sema` records it.
+    ///
+    /// A number rather than the enum, because `jr-sema` cannot name this type — `jr-mir` depends on it and
+    /// not the reverse — so the two agree through an integer. [`Self::from_code`] is its inverse and the
+    /// round trip is asserted, which is what stops the two lists drifting.
+    #[must_use]
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Load => 0,
+            Self::Store => 1,
+            Self::Add => 2,
+            Self::CompareExchange => 3,
+        }
+    }
+
+    /// The operation a wire code names, or `None` for a code no version of `jr-sema` emits.
+    #[must_use]
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Load),
+            1 => Some(Self::Store),
+            2 => Some(Self::Add),
+            3 => Some(Self::CompareExchange),
+            _ => None,
+        }
+    }
+
+    /// Every operation, for a test that must cover all of them.
+    #[must_use]
+    pub fn all() -> [Self; 4] {
+        [Self::Load, Self::Store, Self::Add, Self::CompareExchange]
+    }
+}
+
+#[cfg(test)]
+mod atomic_tests {
+    use super::AtomicOp;
+
+    #[test]
+    fn every_atomic_op_round_trips_through_its_code() {
+        // The one thing that stops `jr-sema`'s hand-written codes and this enum drifting apart. Without it a
+        // fifth operation added here and forgotten there would silently lower as the wrong one — a wrong
+        // *store* rather than a compile error, which is the failure shape this project keeps recording.
+        for op in AtomicOp::all() {
+            assert_eq!(
+                AtomicOp::from_code(op.code()),
+                Some(op),
+                "`{}` must survive a round trip through its wire code",
+                op.name()
+            );
+        }
+    }
+
+    #[test]
+    fn the_codes_are_distinct_and_contiguous_from_zero() {
+        // Contiguous from zero, so `jr-sema`'s match arms can be read against this list by eye. A gap would
+        // still round-trip and would make the two lists harder to compare, which is the whole point.
+        let mut codes: Vec<u8> = AtomicOp::all().iter().map(|op| op.code()).collect();
+        codes.sort_unstable();
+        assert_eq!(codes, vec![0, 1, 2, 3]);
+    }
 }
 
 /// One step inside a basic block.
@@ -1457,6 +1587,22 @@ fn remap_place_slots(place: &mut Place, remap: &[Option<SlotId>]) {
 
 fn remap_rvalue_slots(rvalue: &mut Rvalue, remap: &[Option<SlotId>]) {
     match rvalue {
+        // A pure operand walk. Renaming an atomic's operands never changes what it does or when, which is
+        // why every such pass may touch one while none may move, duplicate or delete it (ADR-0176 §2).
+        Rvalue::Atomic {
+            op: _,
+            address,
+            value,
+            expected,
+        } => {
+            remap_operand_slots(address, remap);
+            if let Some(value) = value {
+                remap_operand_slots(value, remap);
+            }
+            if let Some(expected) = expected {
+                remap_operand_slots(expected, remap);
+            }
+        }
         Rvalue::Use(operand) => remap_operand_slots(operand, remap),
         Rvalue::Binary { op: _, lhs, rhs } => {
             remap_operand_slots(lhs, remap);

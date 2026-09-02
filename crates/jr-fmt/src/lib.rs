@@ -1037,6 +1037,15 @@ impl Formatter {
                     self.emit(" -> ");
                     self.format_type(&ret);
                 }
+                // **`#c_call` after the return type** (ADR-0175 §1). Dropping it silently changed a
+                // C-convention procedure type into a Jairs one, which is the *unsound* direction: the
+                // reformatted file no longer type-checks against the procedure it was written for, and if
+                // it did it would pass the context where C expects an argument. The **twelfth**
+                // consecutive wave this formatter loop has had to learn a construct, and gate 5 caught it
+                // on this wave's own module.
+                if node.children().any(|n| n.kind() == C_CALL_ATTR) {
+                    self.emit(" #c_call");
+                }
             }
             _ => {
                 self.emit(&node.text().to_string());

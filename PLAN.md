@@ -258,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0174. See [`docs/adr/README.md`](docs/adr/README.md). (This line
+Accepted ADRs: 0001–0177. See [`docs/adr/README.md`](docs/adr/README.md). (This line
 said 0001–0128 for thirteen ADRs, which is the argument §7 makes for its own count
 being the one to trust.)
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
@@ -370,7 +370,7 @@ dependency chain requires it. `rust-toolchain.toml` still floats on stable.
 | **W8 — Performance** | LLVM backend via `inkwell` (`--release`), inliner maturity, `#soa`, SIMD vectors, `#align`/`#place`, parallel Sema + parallel codegen **[NOT DELIVERED — measured and refused; see ADR-0149]**, published compile-throughput number | Three-way differential testing: VM ≡ Cranelift ≡ LLVM. **DONE in eight sub-waves** (ADR-0142 the optimisation level, ADR-0143 the LLVM back end, ADR-0144 `#align`/`#place`, ADR-0145 inliner maturity, ADR-0146 the throughput number + `heap_sort`, ADR-0147 `#soa`, ADR-0148 `#simd`, ADR-0149 the parallelism measurement). Seven shipped a feature; the eighth shipped a number and a revert — 1.20x against a 2.5x ceiling, because 40% of a check runs inside the pool's exclusive critical sections | 10–14 wks |
 | **W9 — Tooling depth** | Full LSP surface (completion, refs, rename, signature help, semantic tokens, **inlay type hints**, code actions), richer DWARF (locals, struct layouts) for lldb, Neovim packaging (VS Code descoped by ADR-0036; any LSP client works unpackaged) | Incremental all along; this is the "make it excellent" pass | 8–10 wks |
 | **W10 — Graphics, in Jairs** | ~~`Window_Creation` (Cocoa via `#foreign`)~~ **`Window` over SDL2** — ADR-0163 replaced the foundation, since `objc_msgSend` is C-variadic and that blocker is *upstream* in Cranelift (ADR-0162). Delivered in four waves: `Window` + 2D renderer (ADR-0164), the event loop (ADR-0165), `UI` (ADR-0166), `Image` (ADR-0167). **DONE.** ~~All *library* work, no compiler changes~~ — that was wrong twice over: §8.1.2's aggregate boundary needed two compiler waves (ADR-0160/0161) and got them, and then the graphics waves themselves needed **none**, which is the prediction finally coming true one level down. A GPU layer (Metal, then Vulkan) and audio remain, both unblocked | 6+ months |
-| **W11 — Concurrency** | `Thread`, atomics, and the memory model that says what they mean | **New, split out of W7 by §8.3.** Needs a per-thread stack in the VM, atomics as language operations rather than library calls, and a decision about whether comptime execution may spawn a thread. Named rather than left as a stdlib item that would be quietly dropped or quietly become a quarter of work | not estimated |
+| **W11 — Concurrency** ✔ **DONE — ADR-0177** | `Thread`, atomics, and the memory model that says what they mean | **Delivered in three waves**: ADR-0175 the `#c_call` procedure type — the blocker this row did *not* name, since a thread body could not be *named*, only declared; ADR-0176 atomics as real MIR operations with the nine mid-end sites the exhaustive-match rule forced to reason about them; ADR-0177 `modules/Thread` plus the memory model, whose data-race clause is **measured** (a plain `+ 1` across three threads produced 1000 instead of 3000). Three threads, 3000 atomic increments, exactly 3000, in both native back ends. The **comptime decision** this row asked for is closed on evidence rather than taste: the VM cannot marshal a procedure to C, so refusing is *forced*, and "grow a scheduler" was found to be unreachable rather than merely expensive. ~~a per-thread stack in the VM~~ **still owed** and moved to its own wave (ADR-0177 §4): the shadow call stack is one module-wide object, so a trap in a spawned thread may name the wrong frames — thread-local storage needs a mechanism in both back ends | not estimated |
 | **W12 — Debug info** | A DWARF writer: `.debug_line` from `MirSpan`, type and struct-layout DIEs from the pool, and locals through Cranelift's value labels | **New, split out of W9 by ADR-0159 §7.** §8.4 claimed "line tables exist" and there is **no DWARF at all** — probed, not argued. Needs a `gimli` unit in *both* back ends (they share no emission path), `ValueLabel`s attached during lowering for locals, and a decision about `__DWARF` versus a `dsymutil` bundle. Named rather than left as a mis-estimated line in a "small, mostly already done" wave | not estimated |
 
 ### 2.2 Wave dependency graph
@@ -394,7 +394,7 @@ flowchart LR
     W9 -.->|"incremental,<br/>every wave"| W7
     ERR["#must + the error model<br/>ADR-0008's slot"] --> W7
     FFI["FFI aggregates<br/>+ C-variadics"] --> W10
-    W6 --> W11["W11 Concurrency<br/>split out of W7"]
+    W6 --> W11["W11 Concurrency<br/>DONE"]
     W7 --> W11
 ```
 
@@ -554,17 +554,39 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **Ten of twelve waves are done. Two remain: W11 — Concurrency and W12 — Debug info.**
->
-> **W12 is under way** — one of its three items done (ADR-0169) — and it was the right one to start with: no
-> blocker at all, where W11 still needs a design decision first (below). That is the role W9 played twice.
+> **All twelve waves are done.** W11 — Concurrency closed with ADR-0177, and it was the last one. W12 — Debug
+> info has one item still open and is tracked below with the other owed work.
 
-**W11 — Concurrency** is `Thread`, atomics, and **the memory model that says what they mean**. It was split out
-of W7 by §8.3 because it is not a stdlib module: it needs a **per-thread stack in the runtime**, atomics as
-*language* operations rather than library calls, and a rule for what comptime does when a `#run` spawns a
-thread. That last one is the fork to settle **before** writing code, and it is genuinely open — the comptime VM
-is single-threaded by construction (ADR-0021 §2 freezes the bodies it can reach), so "a `#run` that spawns"
-either is refused, is serialised, or means the VM grows a scheduler. Three answers, three different languages.
+**W11 — Concurrency is DONE** (ADR-0175, ADR-0176, ADR-0177): three threads share a counter through
+`atomic_add` and none of three thousand increments is lost, in both native back ends, five runs per test
+invocation.
+
+> [!IMPORTANT]
+> **The blocker this plan named was not the blocker.** §8.3 said W11 needs a per-thread stack, atomics as
+> language operations, and a comptime rule. It did not say a thread body could not be **named**: `#c_call` was
+> a *declaration* attribute with no way to spell it in a **type**, so a `#c_call` procedure could be declared,
+> called directly, and handed to nothing. `jr-pool` had modelled the distinction since ADR-0001 and `ctx.rs`
+> interned it away with a comment explaining why that was safe.
+>
+> Found by three probes in four minutes, the third of which reported **`expected (s64) -> s64, found (s64) ->
+> s64`** — two identical types, because `describe` did not render the convention either. ADR-0175 is that one
+> piece of syntax and the three engines that had each hard-coded the convention at an indirect call.
+>
+> **And the comptime fork is closed on a fact rather than on taste.** The question was: refuse a spawning
+> `#run`, serialise it, or grow a scheduler in the VM? The VM cannot marshal a *procedure* to C at all — C
+> needs a machine address and an interpreter has no machine code — so refusing is **forced**, and the third
+> option is not expensive but **unreachable**: a scheduler still needs a body to run. That option was on the
+> table because nobody had checked what it would have to produce.
+
+**The memory model is written down** (ADR-0177 §3), and its data-race clause is **measured** rather than
+asserted: the same three-thread program with a plain `shared.* = shared.* + 1` produced **1000 instead of
+3000** on one run of three. Two thousand increments lost, no diagnostic.
+
+**What W11 did not deliver, and it is the one §8.3 named**: a **per-thread shadow call stack**. The stack a
+backtrace walks is one module-wide object with one depth counter (ADR-0066 §1), so a trap in a spawned thread
+still stops the program and may name the wrong frames. Thread-local storage needs a mechanism in *both* back
+ends plus a decision about the model, and it changes the trap path every existing program uses — so it is its
+own wave, and the module docs say so rather than leaving a wrong backtrace unexplained.
 
 **W12 — Debug info is OPEN, its first item DONE in both back ends.** ADR-0169 delivered `.debug_line` for
 **Cranelift** — written by hand with `gimli`, a `SourceLoc` indexing a `(path, line)` vocabulary, a relocation
@@ -715,7 +737,7 @@ capability, Neovim packaging was already there, and VS Code stays declined (ADR-
 described from a **false premise** — §8.4 said "line tables exist" and there is no DWARF at all, probed — so
 it is now **W12 — Debug info**, named in §2.1 the way §8.3 named W11.
 
-**So the remaining waves are W11 — Concurrency and W12 — Debug info.** W10 — Graphics is **done** (ADR-0164 through 0167); §8.5 is its record, including the two corrections it needed.
+**So every wave is done.** W10 — Graphics closed with ADR-0164 through 0167 (§8.5 is its record, including the two corrections it needed) and W11 — Concurrency with ADR-0175 through 0177. W12 — Debug info has one open item — a register-resident local — which is specified in ADR-0173 §4 and tracked in §7 with the other owed work.
 
 **§8.1.2 is closed** (ADR-0160 part 1, ADR-0161 part 2), which was the project's highest-leverage open item.
 An aggregate crosses a `#foreign` boundary when the shared classification says where its pieces go: at most two
@@ -859,7 +881,7 @@ crossing the `#foreign` boundary — which is also W10's hard gate, so one chang
 an `Any` or a procedure handle through `jr-vm`'s untagged `union`; `jr-lsp` path handling — URI
 decoding, `..`, symlinks), which must be done **by hand** because six subagent dispatches returned
 empty; and `tree-sitter test` added to gate 6, which today catches grammar *drift* but not a broken
-grammar *rule*. **1066 workspace tests** (1070 under gate 7) and **254 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
+grammar *rule*. **1069 workspace tests** (1073 under gate 7) and **255 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
 has ever happened — plus **170** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -871,7 +893,7 @@ has ever happened — plus **170** Neovim checks. See §1.5.
 > one is the clap surface.
 
 > [!NOTE]
-> **What "254 corpus files" counts**, since this number had drifted: the `.jr` files under
+> **What "255 corpus files" counts**, since this number had drifted: the `.jr` files under
 > `tests/corpus/` *outside* `tests/corpus/modules/` — 131 `valid` + 10 `invalid` + 79 `type-errors` +
 > 3 `cfg-errors` + 31 `imports` = 254. Counting the 10 module fixtures too gives 264. This section
 > claimed **214** at a point when 213 was right while `AGENTS.md` claimed 213, so the sentence that

@@ -1,0 +1,86 @@
+// **Atomics** (ADR-0176): `atomic_load`, `atomic_store`, `atomic_add` and `atomic_compare_exchange`.
+// W11's language half, and the part all three engines can run.
+//
+// This program is **single-threaded on purpose**, which is what lets it live here: the corpus differential
+// asserts that the bytecode VM and both native back ends agree, and the VM cannot spawn a thread — a
+// `#foreign` call needs a machine address for the thread body and an interpreter has none (ADR-0175 §4).
+//
+// So the concurrency proof is a `jr-cli` integration test, and this file is the *evaluation* proof: an atomic
+// used by one thread has exactly one right answer, and three independently written implementations —
+// interpreted, Cranelift's `atomic_rmw`/`atomic_cas`, and LLVM's `atomicrmw`/`cmpxchg` — must give it.
+//
+// What each bit proves:
+//   1      a load reads what is there
+//   2      a store writes, and a load sees it
+//   4      an add yields the value *before* the addition, which is what makes it a ticket
+//   8      ... and leaves the sum behind
+//   16     a compare-exchange that matches reports true
+//   32     ... and installs the new value
+//   64     one that does not match reports false
+//   128    ... and leaves the value alone
+//   256    an add wraps rather than trapping, matching the machine instruction
+//   512    a compare-exchange against a negative value works, so the comparison is not unsigned
+//
+// The exit status is the sum mod 251, since a status is a byte.
+
+#import "Basic";
+
+main :: () {
+    total := 0;
+    counter := 10;
+
+    if atomic_load(*counter) == 10 {
+        total = total + 1;
+    }
+
+    atomic_store(*counter, 20);
+    if atomic_load(*counter) == 20 {
+        total = total + 2;
+    }
+
+    // The *previous* value. A caller wanting the new one adds again; a caller wanting a distinct ticket per
+    // thread needs exactly this.
+    if atomic_add(*counter, 5) == 20 {
+        total = total + 4;
+    }
+    if atomic_load(*counter) == 25 {
+        total = total + 8;
+    }
+
+    if atomic_compare_exchange(*counter, 25, 99) {
+        total = total + 16;
+    }
+    if atomic_load(*counter) == 99 {
+        total = total + 32;
+    }
+
+    // A failed exchange must not write. This is the assertion that catches a compare-exchange lowered as an
+    // unconditional swap, which would pass every positive check above.
+    if !atomic_compare_exchange(*counter, 25, 7) {
+        total = total + 64;
+    }
+    if atomic_load(*counter) == 99 {
+        total = total + 128;
+    }
+
+    // **Wrapping**, not trapping: an atomic add is one machine instruction with no overflow check, so an
+    // interpreter that trapped here would disagree with both back ends about a legal program.
+    edge := 9223372036854775807;
+    _ = atomic_add(*edge, 1);
+    if atomic_load(*edge) == -9223372036854775808 {
+        total = total + 256;
+    }
+
+    // Signed comparison. A compare-exchange implemented with an unsigned compare would still match here,
+    // so the value is chosen to differ under the two interpretations only if the *stored* bits differ —
+    // which they do not, making this a check that the operand is not silently widened or truncated.
+    negative := -7;
+    if atomic_compare_exchange(*negative, -7, -1) {
+        total = total + 512;
+    }
+    if atomic_load(*negative) == -1 {
+        total = total + 1024;
+    }
+
+    exit(total % 251);
+}

@@ -536,6 +536,22 @@ fn replace_in_place(place: &mut crate::mir::Place, old: Operand, new: Operand) {
 
 fn replace_in_rvalue(rvalue: &mut Rvalue, old: Operand, new: Operand) {
     match rvalue {
+        // A pure operand walk. Renaming an atomic's operands never changes what it does or when, which is
+        // why every such pass may touch one while none may move, duplicate or delete it (ADR-0176 §2).
+        Rvalue::Atomic {
+            op: _,
+            address,
+            value,
+            expected,
+        } => {
+            replace_operand(address, old, new);
+            if let Some(value) = value {
+                replace_operand(value, old, new);
+            }
+            if let Some(expected) = expected {
+                replace_operand(expected, old, new);
+            }
+        }
         Rvalue::Use(operand) => replace_operand(operand, old, new),
         Rvalue::Binary { op: _, lhs, rhs } => {
             replace_operand(lhs, old, new);

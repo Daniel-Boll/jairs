@@ -41,7 +41,7 @@ use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
     E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272, E0277,
-    E0278, E0279, E0284, E0285, E0286, E0287, E0288, E0289,
+    E0278, E0279, E0284, E0285, E0286, E0287, E0288, E0289, E0291,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -80,6 +80,22 @@ enum Intrinsic {
     Untyped,
     /// `view(p, count)` — a `[]T` over `count` elements at `p` (ADR-0109 §1).
     View,
+    /// `atomic_load(p)` — the `s64` at `p`, read atomically (ADR-0176 §3).
+    AtomicLoad,
+    /// `atomic_store(p, v)` — writes `v` to `p` atomically. Yields nothing.
+    AtomicStore,
+    /// `atomic_add(p, v)` — adds `v` to the `s64` at `p` and yields the value *before* the addition.
+    ///
+    /// The previous value rather than the new one, which makes it a ticket dispenser: two threads adding
+    /// one each get distinct numbers, and a caller wanting the new value adds `v` again. Returning the
+    /// new value would make that use impossible to write correctly.
+    AtomicAdd,
+    /// `atomic_compare_exchange(p, expected, new)` — installs `new` if `p` holds `expected`.
+    ///
+    /// Yields `true` when it swapped, which is the whole answer a caller needs; the value it *found* is
+    /// deliberately not returned, because a caller who wants it can `atomic_load` and a two-result
+    /// intrinsic would make the common case pay for the rare one.
+    AtomicCompareExchange,
 }
 
 /// How a `Type_Info` field's type is checked.
@@ -219,6 +235,15 @@ pub struct CheckOutput {
     /// Real code rather than a fold, so it goes to `jr-mir` rather than into `folded_calls`: a pointer's bits
     /// do not depend on its pointee, and retyping is a store-then-load through a slot.
     pub pointer_views: FxHashMap<(ExprScope, ExprId), PoolId>,
+    /// Which atomic operation each `atomic_*` call performs (ADR-0176 §3).
+    ///
+    /// Recorded here for the reason `pointer_views` is: an intrinsic's callee resolves to nothing, so MIR
+    /// cannot recognise the call by *resolution* and would have to compare interned names — a second place
+    /// that must agree with `resolve.rs`'s list, and the exact duplication that list's own docs warn about.
+    ///
+    /// A `u8` rather than `jr_mir::AtomicOp`, because `jr-mir` depends on this crate and not the reverse.
+    /// The two are matched by `AtomicOp::from_code`, whose round-trip is asserted in `jr-mir`.
+    pub atomics: FxHashMap<(ExprScope, ExprId), u8>,
     /// Calls that folded to a value **in this crate** — `has_note` and `note_value` (ADR-0099 §2).
     ///
     /// Separate from [`CheckOutput::type_info_calls`], whose meaning is "build a `Type_Info` for this type"
@@ -463,6 +488,7 @@ pub fn check_file(
         filled_calls: ctx.filled_calls,
         folded_calls: ctx.folded_calls,
         pointer_views: ctx.pointer_views,
+        atomics: ctx.atomics,
         folded_call_spans: ctx.folded_call_spans,
         type_info_calls: ctx.type_info_calls,
         any_calls: ctx.any_calls,
@@ -3262,6 +3288,27 @@ impl Ctx<'_> {
             // `any_of` and `any_as` are intercepted for the same reason one level weaker: `any_as`'s
             // second argument is a *type*, and `any_of`'s pointer needs the erasing conversion §1
             // allows here and nowhere else.
+            // The four atomics share one checker: their shapes differ only in arity and result, and four
+            // near-identical functions would be four places for the pointer rule to drift (ADR-0176 §3).
+            Some(Intrinsic::AtomicLoad) => {
+                return self.check_atomic(scope, id, callee, args, span, Intrinsic::AtomicLoad);
+            }
+            Some(Intrinsic::AtomicStore) => {
+                return self.check_atomic(scope, id, callee, args, span, Intrinsic::AtomicStore);
+            }
+            Some(Intrinsic::AtomicAdd) => {
+                return self.check_atomic(scope, id, callee, args, span, Intrinsic::AtomicAdd);
+            }
+            Some(Intrinsic::AtomicCompareExchange) => {
+                return self.check_atomic(
+                    scope,
+                    id,
+                    callee,
+                    args,
+                    span,
+                    Intrinsic::AtomicCompareExchange,
+                );
+            }
             Some(Intrinsic::AnyOf) => return self.check_any_of(scope, id, callee, args, span),
             Some(Intrinsic::AnyAs) => return self.check_any_as(scope, id, callee, args, span),
             // **A note reader folds here** (ADR-0099 §2), and it is intercepted for a *third* reason: its
@@ -3701,6 +3748,10 @@ impl Ctx<'_> {
             "typed" => Intrinsic::Typed,
             "untyped" => Intrinsic::Untyped,
             "view" => Intrinsic::View,
+            "atomic_load" => Intrinsic::AtomicLoad,
+            "atomic_store" => Intrinsic::AtomicStore,
+            "atomic_add" => Intrinsic::AtomicAdd,
+            "atomic_compare_exchange" => Intrinsic::AtomicCompareExchange,
             _ => return None,
         };
         match self.resolve.get(scope, callee).unwrap_or(res) {
@@ -4034,6 +4085,99 @@ impl Ctx<'_> {
     ///
     /// It does not make the conversion *safe*: `typed(s64, p)` on a `p` that points at four bytes is still
     /// wrong. It makes it **visible and searchable**, which a `cast` buried in an expression is not.
+    /// Checks one of the four atomics (ADR-0176 §3).
+    ///
+    /// # Why one checker
+    ///
+    /// The four differ only in how many arguments they take and what they produce. Written separately,
+    /// each would restate "the first argument must be a `*s64`" — and the fourth copy is where that rule
+    /// would drift, which is the duplication ADR-0051 §1 names as the cause of a silent shift.
+    ///
+    /// # Why `*s64` and nothing wider or narrower
+    ///
+    /// A width parameter would mean choosing what an atomic of a `u8` means on a machine whose smallest
+    /// atomic is a word, and choosing whether a `*Point` may be exchanged. Both are real decisions; this
+    /// wave makes neither and says so, so a caller reading E0290's message learns the boundary rather than
+    /// discovering it.
+    fn check_atomic(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+        op: Intrinsic,
+    ) -> PoolId {
+        self.types.set_expr(scope, callee, PoolId::VOID);
+        // Exhaustive over the four, with every other intrinsic an internal error: reaching here with one
+        // means the dispatch above routed a call to the wrong checker, which is a compiler bug rather than
+        // anything a program can cause.
+        let (name, wanted) = match op {
+            Intrinsic::AtomicLoad => ("atomic_load", 1),
+            Intrinsic::AtomicStore => ("atomic_store", 2),
+            Intrinsic::AtomicAdd => ("atomic_add", 2),
+            Intrinsic::AtomicCompareExchange => ("atomic_compare_exchange", 3),
+            _ => return PoolId::ERROR,
+        };
+        if args.len() != wanted {
+            self.wrong_intrinsic_arity(name, wanted, args.len(), span);
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+
+        // The pointer. Checked against `*s64` exactly rather than "any pointer", because the operation's
+        // width is the pointee's and this wave has one width.
+        let pointee = PoolId::S64;
+        let wanted_pointer = self.pool.pointer_to(pointee);
+        let actual = self.check_expr(scope, args[0], Some(wanted_pointer));
+        if actual != PoolId::ERROR && actual != wanted_pointer {
+            self.diags.push(
+                // The *call's* span, which is the convention every other intrinsic diagnostic here uses:
+                // an argument's own span is not reachable from this crate without the HIR body, and a
+                // caller reading "`atomic_add` needs a `*s64`" under the call already knows which argument.
+                Diagnostic::error(span, format!("`{name}` needs a `*s64`"))
+                    .with_code(E0291)
+                    .with_note(format!("this is a `{}`", self.describe(actual)))
+                    .with_help(
+                        "an atomic operates on a 64-bit signed integer through a pointer; other widths \
+                         and aggregate types are not decided yet",
+                    ),
+            );
+            for arg in &args[1..] {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+
+        // Every remaining argument is an `s64`: the value to store or add, and a compare-exchange's
+        // expected and new values.
+        for arg in &args[1..] {
+            self.check_expr(scope, *arg, Some(PoolId::S64));
+        }
+
+        let result = match op {
+            Intrinsic::AtomicLoad | Intrinsic::AtomicAdd => PoolId::S64,
+            Intrinsic::AtomicStore => PoolId::VOID,
+            Intrinsic::AtomicCompareExchange => PoolId::BOOL,
+            _ => PoolId::ERROR,
+        };
+        // Recorded for MIR, which cannot recognise an intrinsic by resolution (ADR-0176 §3). The code is
+        // the operation's ordinal, matched by `AtomicOp::from_code` — a `u8` because `jr-mir` depends on
+        // this crate and not the reverse.
+        let code = match op {
+            Intrinsic::AtomicLoad => 0,
+            Intrinsic::AtomicStore => 1,
+            Intrinsic::AtomicAdd => 2,
+            Intrinsic::AtomicCompareExchange => 3,
+            _ => return PoolId::ERROR,
+        };
+        self.atomics.insert((scope, id), code);
+        self.types.set_expr(scope, id, result);
+        result
+    }
+
     fn check_typed(
         &mut self,
         scope: ExprScope,

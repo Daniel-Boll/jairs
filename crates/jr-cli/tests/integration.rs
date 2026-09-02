@@ -2817,3 +2817,99 @@ main :: () {
         );
     }
 }
+
+/// Three threads share one counter through `atomic_add`, and none of the three thousand increments is lost
+/// (ADR-0177).
+///
+/// # Why this is not a corpus program
+///
+/// The corpus differential asserts that the bytecode VM and the native back ends agree, and **the VM cannot
+/// spawn a thread**: `pthread_create` needs a machine address for the thread body, and an interpreter has no
+/// machine code to point at (ADR-0175 §4). That is a property of interpreting, not a missing wave.
+///
+/// So the *evaluation* of atomics is covered by `valid/132-atomics.jr`, which all three engines run, and their
+/// *concurrency* is covered here. Splitting them this way is the same call ADR-0158 §3 made for `Process`.
+///
+/// # Why 3000 is the whole assertion
+///
+/// It is the one number that distinguishes a real atomic from a plain read-modify-write. The same program with
+/// `shared.* = shared.* + 1` was measured at **1000** on one run of three — two thousand increments silently
+/// lost — so this test would fail loudly if the atomics regressed to ordinary loads and stores, which no
+/// single-threaded test can detect.
+///
+/// The exit codes 90-92 name a failed spawn and 93-95 a failed join, so a failure says which step broke rather
+/// than only that the count was wrong.
+#[test]
+fn three_threads_share_a_counter_without_losing_an_increment() {
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("threads.jr");
+    fs::write(
+        &source,
+        r#"#import "Basic";
+#import "Thread";
+
+// Each worker adds 1000 to the shared counter, one atomic add at a time.
+//
+// `#c_call` is not decoration: an ordinary Jairs procedure takes the hidden context parameter, so C calling
+// one would pass `arg` where the context belongs (ADR-0175 §1).
+bump :: (arg: *u8) -> *u8 #c_call {
+    shared := typed(s64, arg);
+    i := 0;
+    while i < 1000 {
+        _ = atomic_add(shared, 1);
+        i = i + 1;
+    }
+    return null;
+}
+
+main :: () {
+    counter := 0;
+
+    a, aok := spawn(bump, untyped(*counter));
+    if !aok { exit(90); }
+    b, bok := spawn(bump, untyped(*counter));
+    if !bok { exit(91); }
+    c, cok := spawn(bump, untyped(*counter));
+    if !cok { exit(92); }
+
+    if !join(*a) { exit(93); }
+    if !join(*b) { exit(94); }
+    if !join(*c) { exit(95); }
+
+    // A second join must be refused by the module rather than by libc, where it is undefined behaviour.
+    if join(*a) { exit(96); }
+
+    // 3000 exactly. Less means an increment was lost, which is what a non-atomic add does.
+    if counter != 3000 { exit(1); }
+
+    // The spin lock, on the same counter's neighbour: acquire, mutate, release, and confirm the state.
+    lock := UNLOCKED;
+    acquire(*lock);
+    if !is_locked(*lock) { exit(97); }
+    release(*lock);
+    if is_locked(*lock) { exit(98); }
+
+    exit(42);
+}
+"#,
+    )
+    .unwrap();
+
+    let binary = dir.path().join("threads");
+    let code = run_build_with_paths(source, binary.clone(), &[]);
+    assert_eq!(code, 0, "the program must build and link");
+
+    // Run it several times: a lost increment is a race, and a race that fails once in three runs is a race
+    // that passes once in three. One run proving nothing is how a concurrency test becomes decoration.
+    for attempt in 1..=5 {
+        let ran = std::process::Command::new(&binary)
+            .status()
+            .expect("the linked binary should run");
+        assert_eq!(
+            ran.code(),
+            Some(42),
+            "attempt {attempt}: 90-92 name a failed spawn, 93-96 a failed or repeated join, \
+             97-98 the spin lock, and 1 means an increment was lost"
+        );
+    }
+}

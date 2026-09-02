@@ -448,11 +448,14 @@ fn write_only_slots(body: &jr_mir::MirBody) -> usize {
                     jr_mir::Rvalue::Load(place) | jr_mir::Rvalue::Address(place) => {
                         note(place, &mut read);
                     }
+                    // An atomic reaches memory through a *pointer operand*, never a `Place`, so it names
+                    // no slot here — the slot it points into escaped through an `Address` above.
                     jr_mir::Rvalue::Use(_)
                     | jr_mir::Rvalue::Binary { .. }
                     | jr_mir::Rvalue::Unary { .. }
                     | jr_mir::Rvalue::Convert { .. }
                     | jr_mir::Rvalue::Call { .. }
+                    | jr_mir::Rvalue::Atomic { .. }
                     | jr_mir::Rvalue::Undef => {}
                 },
                 jr_mir::Statement::BoundsCheck { .. }

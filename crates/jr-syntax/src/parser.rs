@@ -1573,6 +1573,25 @@ impl<'src> Parser<'src> {
                 self.error(span, "expected a return type after `->`", E0111);
             }
         }
+        // **`#c_call` after the return type** (ADR-0175 §1), which makes a C-convention procedure
+        // *spellable* as a type at last. The pool has always modelled the distinction —
+        // `ProcType.context` is a `ContextKind`, and ADR-0001 made a `#c_call` procedure of the same
+        // shape a different type — but no type expression could say it, so a `#c_call` procedure could
+        // not be passed anywhere and `pthread_create` was unreachable.
+        //
+        // After the arrow rather than before the parameters, matching a *declaration*: `f :: (n: s64) ->
+        // s64 #c_call { }` puts it there, and a type that spelled it elsewhere would make one convention
+        // read two ways.
+        if self.at(DIRECTIVE)
+            && matches!(
+                ProcAttr::from_text(self.current_directive_text()),
+                Some(ProcAttr::CCall)
+            )
+        {
+            self.start_node(C_CALL_ATTR);
+            self.bump();
+            self.finish_node();
+        }
         self.finish_node(); // PROC_TYPE
     }
 

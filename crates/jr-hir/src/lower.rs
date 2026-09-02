@@ -352,7 +352,12 @@ impl<'a> LowerCtx<'a> {
                 let params: Vec<TypeRefId> =
                     p.params().map(|t| self.lower_type_expr_top(&t)).collect();
                 let ret = p.ret().map(|t| self.lower_type_expr_top(&t));
-                self.alloc_top_type_ref(TypeRef::Proc { params, ret })
+                let c_call = p.is_c_call();
+                self.alloc_top_type_ref(TypeRef::Proc {
+                    params,
+                    ret,
+                    c_call,
+                })
             }
             TypeExpr::Struct(s) => {
                 let struct_id = self.lower_struct_type(s);
@@ -1819,7 +1824,12 @@ impl<'a> BodyLowerCtx<'a> {
             TypeExpr::Proc(p) => {
                 let params: Vec<TypeRefId> = p.params().map(|t| self.lower_type_expr(&t)).collect();
                 let ret = p.ret().map(|t| self.lower_type_expr(&t));
-                self.alloc_type_ref(TypeRef::Proc { params, ret })
+                let c_call = p.is_c_call();
+                self.alloc_type_ref(TypeRef::Proc {
+                    params,
+                    ret,
+                    c_call,
+                })
             }
             TypeExpr::Struct(_) | TypeExpr::Union(_) | TypeExpr::Variant(_) | TypeExpr::Enum(_) => {
                 // An inline aggregate type inside a body is unusual, and both arenas would
