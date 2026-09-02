@@ -671,6 +671,8 @@ fn bench_reports_a_number_for_every_operation() {
 
     let args = jr_cli::cli::BenchArgs {
         file,
+        paths: Vec::new(),
+        throughput: false,
         // Two, because the assertion is about shape rather than about statistics; twenty
         // would make this test the slowest in the suite for no extra confidence.
         iterations: 2,
@@ -1011,5 +1013,55 @@ fn the_opt_level_surface_accepts_two_levels_and_defaults_to_one() {
     assert!(
         rendered.contains('0') && rendered.contains('1'),
         "the refusal must name the levels that do exist: {rendered}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0146: compile throughput
+// ---------------------------------------------------------------------------
+
+/// `jr bench --throughput` measures a file set and reports rather than judges (ADR-0146 §1).
+///
+/// The assertion is on the *exit code* and on the mode having run at all, not on a rate: a
+/// throughput figure is a property of the machine, and asserting one would be the threshold
+/// ADR-0033 §4 refuses and ADR-0146 §2 extends that refusal to.
+///
+/// **The empty-input case is asserted too, and it is the interesting half.** A throughput
+/// number over no files is the most misleading output this subcommand could produce — it would
+/// divide zero lines by a real duration and print `0 lines/s`, which reads as "this compiler is
+/// infinitely slow" rather than "you gave me nothing". So it is an error.
+#[test]
+fn bench_throughput_measures_a_set_and_refuses_an_empty_one() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let one = copy_corpus("valid/024-hello.jr", dir.path());
+    let two = copy_corpus("valid/030-arrays.jr", dir.path());
+
+    let args = jr_cli::cli::BenchArgs {
+        file: one,
+        paths: vec![two],
+        throughput: true,
+        iterations: 2,
+        module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
+    };
+    let code =
+        jr_cli::commands::bench::run(args, &quiet_global()).expect("the throughput mode must run");
+    assert_eq!(
+        code, 0,
+        "throughput reports, it does not judge — it cannot fail"
+    );
+
+    let empty = TempDir::new().expect("a temporary directory");
+    let args = jr_cli::cli::BenchArgs {
+        file: empty.path().to_path_buf(),
+        paths: Vec::new(),
+        throughput: true,
+        iterations: 1,
+        module_paths: Vec::new(),
+    };
+    let error = jr_cli::commands::bench::run(args, &quiet_global())
+        .expect_err("a directory with no `.jr` files must be an error");
+    assert!(
+        error.to_string().contains("no `.jr` files"),
+        "the refusal must say what was missing: {error}"
     );
 }

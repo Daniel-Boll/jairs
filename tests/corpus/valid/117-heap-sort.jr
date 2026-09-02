@@ -1,0 +1,86 @@
+// ADR-0146 §3–§4: `heap_sort` beside `sort`, and the measurement that justifies it.
+//
+// ADR-0104 §3 chose insertion sort and deferred a faster algorithm to "W8, with a benchmark behind
+// it". This is that benchmark, and it is a **comparison count** rather than a timing — deliberately:
+// a count is deterministic, machine-independent and identical in all three engines, so the choice
+// between two algorithms is settled by a *test* in the differential harness instead of by a number
+// needing a footnote about the machine it was taken on. It also measures what the decision rests on,
+// which is the asymptotics rather than the constant factor.
+//
+// A **reversed** input, because it is insertion sort's worst case: every element must travel the whole
+// sorted prefix, so the count is ~n²/2 while heapsort stays ~n log n. On 32 elements that is roughly
+// 496 against roughly 160, and the assertion is the *inequality* rather than either number — pinning
+// an exact schedule would fail on any future tuning for no reason.
+//
+// The exit status is a checksum of the things that must all hold:
+//
+//   1   both results are sorted ascending          (`ints_sorted` of each)
+//   2   heapsort made strictly fewer comparisons
+//   4   insertion sort's count is the worst case   (> 400 on 32 reversed elements)
+//   8   heapsort's count is well under it          (< 300)
+//  16   both sorts agree element for element       (same permutation of the same values)
+//  32   heapsort left the same multiset            (sum preserved)
+//
+// 1 + 2 + 4 + 8 + 16 + 32 = 63.
+#import "Basic";
+#import "Sort";
+
+N :: 32;
+
+main :: () {
+    a: [N]s64;
+    b: [N]s64;
+    // Reversed: 32, 31, … 1. Insertion sort's worst case, and heapsort's ordinary one.
+    i := 0;
+    while i < N {
+        a[i] = N - i;
+        b[i] = N - i;
+        i = i + 1;
+    }
+
+    insertion_comparisons := 0;
+    heap_comparisons := 0;
+    sort_ints_counting(a[], *insertion_comparisons);
+    heap_sort_ints_counting(b[], *heap_comparisons);
+
+    total := 0;
+    if ints_sorted(a[]) {
+        if ints_sorted(b[]) {
+            total = total + 1;
+        }
+    }
+    // The whole point of the wave: fewer comparisons, on the input where the difference is real.
+    if heap_comparisons < insertion_comparisons {
+        total = total + 2;
+    }
+    // Both counts are bounded, so a sort that stopped comparing — or one that never ran — fails
+    // rather than passing the inequality trivially.
+    if insertion_comparisons > 400 {
+        total = total + 4;
+    }
+    if heap_comparisons < 300 {
+        total = total + 8;
+    }
+
+    // A stable and an unstable sort agree on distinct keys, which is what makes this comparison
+    // fair: the difference between them is the *count*, not the answer.
+    same := true;
+    sum := 0;
+    j := 0;
+    while j < N {
+        if a[j] != b[j] {
+            same = false;
+        }
+        sum = sum + b[j];
+        j = j + 1;
+    }
+    if same {
+        total = total + 16;
+    }
+    // 1 + 2 + … + 32 = 528, so a lost or duplicated element changes it.
+    if sum == 528 {
+        total = total + 32;
+    }
+
+    exit(total);
+}

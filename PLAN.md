@@ -258,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0145. See [`docs/adr/README.md`](docs/adr/README.md). (This line
+Accepted ADRs: 0001–0146. See [`docs/adr/README.md`](docs/adr/README.md). (This line
 said 0001–0128 for thirteen ADRs, which is the argument §7 makes for its own count
 being the one to trust.)
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
@@ -535,11 +535,11 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 ## 7. Immediate next actions
 
-**W8 — Performance is OPEN**, four sub-waves in (ADR-0142, the optimisation level; ADR-0143, the LLVM back end; ADR-0144, `#align`/`#place`; ADR-0145, inliner maturity). **W7 — Stdlib is
+**W8 — Performance is OPEN**, five sub-waves in (ADR-0142, the optimisation level; ADR-0143, the LLVM back end; ADR-0144, `#align`/`#place`; ADR-0145, inliner maturity; ADR-0146, the throughput number and `heap_sort`). **W7 — Stdlib is
 also open**, and **W6 — Metaprogram is open too**: W6's remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's remaining modules each want
 an allocation policy decided first. All three are tracked below, and W8 is the one currently being
-worked. **1030 workspace tests** (1031 under gate 7) and **232 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
+worked. **1031 workspace tests** (1032 under gate 7) and **233 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
 has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -552,8 +552,8 @@ has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
 > **What "228 corpus files" counts**, since this number had drifted: the `.jr` files under
-> `tests/corpus/` *outside* `tests/corpus/modules/` — 116 `valid` + 10 `invalid` + 73 `type-errors` +
-> 3 `cfg-errors` + 30 `imports` = 232. Counting the 10 module fixtures too gives 242. This section
+> `tests/corpus/` *outside* `tests/corpus/modules/` — 117 `valid` + 10 `invalid` + 73 `type-errors` +
+> 3 `cfg-errors` + 30 `imports` = 233. Counting the 10 module fixtures too gives 243. This section
 > claimed **214** at a point when 213 was right while `AGENTS.md` claimed 213, so the sentence that
 > tells a reader to trust §7 over any other count was itself pointing at the wrong one. ADR-0125
 > reconciled the numbers and that pair slipped through, which is the argument for the definition
@@ -742,10 +742,32 @@ complete, so nothing blocks it.
       layout attributes before anything is written.
 - [ ] **Parallel Sema and parallel codegen**, which is a salsa question first: what is safe to run
       concurrently when the pool is behind a mutex the queries lock.
-- [ ] **A published compile-throughput number**, and the **faster sort** W7 owes this wave (ADR-0104 §3
-      chose insertion sort and said a faster algorithm belongs here "with a benchmark behind it"). Both want
-      the same thing first: a benchmark harness that measures rather than reports, since `jr bench` today
-      "reports, never judges" (ADR-0033).
+- [x] **A published compile-throughput number, and the faster sort it justifies** (ADR-0146, sub-wave 5).
+      `jr bench --throughput <PATH>…` is a *mode* of the existing subcommand — the same contract, so a
+      second subcommand would be a second place to add a threshold — timing `check` and `build`
+      **cold only**, because a compiler is a process and a warm figure would measure a memo table.
+
+      **The number**, on an M2 Pro with a `--release` compiler over `tests/corpus/valid` (116 files,
+      9 203 lines): **check 113 k lines/s, build 26 k lines/s**. The debug compiler every gate runs
+      manages 87 k and 19 k. And `build` is **4.4× `check`**, which is the most useful thing the table
+      says: the front end is not where the time goes, so the remaining W8 items that would speed *it*
+      up have less to win than they appeared to.
+
+      **It reports and never judges** (ADR-0033 §4 extended), so it is verified rather than gated, and
+      the published figure carries its machine — a throughput number without one is not a number.
+
+      `modules/Sort` gains **`heap_sort`**: in place, no allocation, `O(n log n)` *always*, and
+      **unstable** — so it sits beside `sort` rather than replacing it. Stability is observable
+      behaviour, not an implementation quality: with equal keys the two produce different
+      permutations, so swapping the algorithm silently would change what an existing program computes.
+      Rejected: a hybrid (stability would depend on input *size*), a merge sort (reopens ADR-0103 §3's
+      allocation decision), quicksort (`O(n²)` worst case plus a pivot argument).
+
+      **The choice is proved by a comparison count rather than a timing**, which is the better
+      measurement for this project: a count is deterministic, machine-independent and identical in all
+      three engines, so `valid/117` — heapsort makes strictly fewer comparisons than insertion sort on
+      a reversed input — is a test in the differential harness rather than a number needing a footnote.
+      The assertion is the *inequality*, since pinning an exact schedule would fail on any tuning.
 
 ### W7 — Stdlib, open
 
@@ -1978,6 +2000,19 @@ project defines 94 codes", frozen roughly fifteen waves back.)
       all*, for any platform: no CI run has ever happened on this repository.
 - [ ] **Iterate-by-reference, a range as a first-class type, `for` over a user type** (ADR-0049
       §1/§4).
+- [ ] **A `$T` template cannot call another `$T` template**, even with the variable already bound:
+      `sift_down(xs, …)` where `xs: []T` inside a `[]$T` procedure is **E0268**, "cannot infer every
+      `$T`". Found writing `heap_sort` (ADR-0146), which is therefore one loop with a single sift site
+      — a better shape anyway, since the alternative was writing the sift twice, but the limitation is
+      real. Adjacent to ADR-0104 §5's *cross-file* refusal rather than the same thing: this is within
+      one file, where instantiation is available and inference is what fails.
+- [ ] **A file-level mutable variable leaks an internal error** — the **eighth** occurrence of this
+      project's most-recorded failure shape. `counter := 0;` at file scope checks clean and then fails
+      in lowering with "the compiler could not lower `main` … this compiler has a gap — please report
+      it". Found by probing (ADR-0146). It wants either a real refusal or **mutable static data**, and
+      the latter is W6's compiler-emitted static-data table — so it belongs to that wave rather than
+      being guessed at. One corpus fixture (`imports/invalid/016`) already relies on a file-level
+      variable being *unlowerable*, which is worth knowing before a refusal is written.
 - [ ] **`check_polymorphic_call` removes rather than restores a shadowed binding**
       (`jr-sema/src/check.rs`), unlike the save/restore idiom beside it in `ctx.rs`. ADR-0124 fixed the
       sibling leak in `resolve_instance_fields_in` and left this one, because it sits in a different

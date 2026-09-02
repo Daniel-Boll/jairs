@@ -19,7 +19,22 @@ error-recovering compiler written in Rust.
 ## Status, honestly
 
 Last updated with **wave W8 — Performance open** (W7 — Stdlib and W6 — Metaprogram are still open
-too), 1030 tests green — 1031 with the LLVM back end compiled in.
+too), 1031 tests green — 1032 with the LLVM back end compiled in.
+
+**There is a compile-throughput number, and it is published rather than claimed.** On an Apple M2 Pro
+with a `--release` compiler, over `tests/corpus/valid` (116 files, 9 203 lines, 360 982 bytes) with
+`modules/` on the search path, best of ten: **`check` 113 103 lines/s** and **`build` 25 864 lines/s**
+(ADR-0146). The debug compiler every gate runs manages 87 460 and 19 230. `jr bench --throughput`
+took it, it reports and never judges, and the machine is quoted beside the figure because a throughput
+number without one is not a number. The most useful thing the table says is that **`build` costs 4.4×
+`check`** — the front end is not where the time goes.
+
+That number is also what `modules/Sort` was waiting for: **`heap_sort`** now sits beside `sort` — in
+place, no allocation, `O(n log n)` always, and *unstable*, which is why it is a second name rather
+than a faster `sort`. Stability is observable behaviour, so swapping the algorithm silently would
+change what an existing program computes. The choice is proved by a **comparison count** rather than a
+timing: deterministic, machine-independent, identical in all three engines, so it is a test in the
+differential harness instead of a number needing a footnote.
 
 **The inliner takes a non-leaf callee**, so the `sort_ints` → `sort` → `less_int` shape a standard
 library is full of collapses instead of stopping at one level (ADR-0145). `024-hello.jr`'s optimized
@@ -172,7 +187,9 @@ lookup instantiation does not do. `operator <` exists and `#modify` can *reject*
 can *select* an implementation per instantiated type; that is operator-bounded polymorphism, and it belongs to
 whichever wave decides how a template states its requirements. The algorithm is **insertion sort**, `O(n²)` said
 plainly: it is *stable*, which quicksort is not, it needs no allocation, which is the decision `String` declined
-to make, and it is short enough to read. A faster one is W8's job, with a benchmark behind it.
+to make, and it is short enough to read. **W8 delivered the faster one** (ADR-0146): `heap_sort` sits
+beside it — `O(n log n)` always, no allocation, and unstable, which is why it is a second name rather
+than a replacement — with a comparison count rather than a timing behind the choice.
 
 **Writing that module found two leaked internal errors**, which is the argument for a standard library written
 in the language paying out twice in one sub-wave. Passing an **imported procedure as a value** reported "this
@@ -594,6 +611,7 @@ has never run — plus 166 Neovim checks that are verified rather than gated.
 | Format source canonically | `jr fmt [--check] paths…` | The corpus is canonical under it, enforced by gate 5 — locally, since CI has never run |
 | Inspect tokens or the CST | `jr parse file.jr` | Debug aid |
 | Measure language-server latency | `jr bench file.jr` | Reports min/median/p95 cold, warm and after an edit. **Reports, never judges** — no threshold, not a gate (ADR-0033), so a performance regression is invisible to CI by construction |
+| Measure compile throughput | `jr bench --throughput paths… ` | Lines and bytes per second for `check` and `build`, cold only — a compiler is a process, so there is no warm throughput to report (ADR-0146). Same contract: reports, never judges. The published figure is above, with the machine beside it |
 | Print a number | `print_int(n)` from `modules/Basic` | Written in Jairs, and still recursive — both the `[N]u8` buffer and the `[]u8` view it wanted now exist, so nothing in the language is missing; converting it is its own change. Traps on the most negative `s64`, which cannot be negated (ADR-0002). Executed by `valid/101`, which until ADR-0125 nothing did |
 | Call libc from Jairs | `#foreign` / `#system_library` | Through libffi at run time (refused at comptime, ADR-0006). `modules/Basic` binds `write`, `exit`, `malloc`, `free`; the VM satisfies `malloc`/`free` from its own region (ADR-0061) so a pointer round-trips there too |
 | Fold a compile-time call | `COMPUTED :: #run add(2, 3)`, or `n := #run add(2, 3)` in a body | Nested calls, arithmetic around a call, a loop in the callee and an **imported** callee all work (ADR-0069). Still refused: a `#foreign` call (ADR-0006), an operator overload, a default or named argument, and reading another file's constant — all because const-eval precedes the check phase |
@@ -690,6 +708,7 @@ ignoring the flag a compile error, is owed its own ADR. There is no GC and no RA
 | VS Code integration | **Will not be built** | ADR-0036: the maintainer does not use it, and a packaging target for an unused editor rots. `jr lsp` is editor-agnostic, so any LSP client works |
 | Compilation driver / workspaces | **Partly** | `jr-driver` is still a one-line stub; the workspace *file list* exists in `jr-db::workspace` (ADR-0029): the search paths plus the root tree, walked and watched, bounded at 10 000 files |
 | Debug info | **Not started** | No DWARF at all; a native binary is not debuggable |
+| Compile throughput | **Measured** | `jr bench --throughput` (ADR-0146). 113 k lines/s checking and 26 k building, on the machine named in the status section — `build` is 4.4× `check`. Not a gate, and not compared against anything: this is the first number, so there is no trend yet |
 | Optimisation levels | **Two** | `--opt-level` takes `0` or `1` (short `-O`) on `jr run` and `jr build`, defaulting to 1 = the pipeline (ADR-0142). `-O0` runs no mid-end pass and is asserted to leave every body byte-identical to what lowering produced. No `-O2` and no `--release`, both deliberately: a level with no pass behind it is a promise, and `--release` is a bundle that would re-couple the safety setting ADR-0058 unbundled. The level does not reach a *back end* yet — Cranelift's own optimisation level is untouched, and selecting a back end is the LLVM sub-wave's business |
 
 ### Things it is easy to over-read
