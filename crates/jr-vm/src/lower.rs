@@ -312,6 +312,26 @@ impl Compiler<'_> {
     }
 
     fn rvalue(&mut self, dest: Option<Reg>, rvalue: &Rvalue) -> Result<(), VmError> {
+        // **An atomic is emitted even with no destination**, unlike every other rvalue: a store produces
+        // nothing and must still happen (ADR-0176 §4). The early return below is what makes a
+        // destination-less rvalue free, and it is right for arithmetic — dropping an unused add changes
+        // nothing — and wrong for an operation whose *effect* is the point.
+        if let Rvalue::Atomic {
+            op,
+            address,
+            value,
+            expected,
+        } = rvalue
+        {
+            self.emit(Instr::Atomic {
+                dest,
+                op: *op,
+                address: *address,
+                value: *value,
+                expected: *expected,
+            });
+            return Ok(());
+        }
         let Some(dest) = dest else {
             return Ok(());
         };
@@ -362,6 +382,9 @@ impl Compiler<'_> {
             Rvalue::Undef => {
                 self.emit(Instr::Undef { dest });
             }
+            // Handled above, before the destination-less early return, because a store has no destination
+            // and must still be emitted (ADR-0176 §4).
+            Rvalue::Atomic { .. } => unreachable!("an atomic is emitted before the dest check"),
         }
         Ok(())
     }
@@ -490,7 +513,10 @@ impl Compiler<'_> {
             // destination differs from the source, and the destination's width is what the
             // interpreter masks with. `Convert` carries no destination type, so the caller's
             // `dest` type is authoritative and this fallback must not guess the source's.
-            Rvalue::Convert { .. }
+            // An atomic's result width is the destination's, exactly as a conversion's is: the operand is a
+            // *pointer* and would give the wrong width.
+            Rvalue::Atomic { .. }
+            | Rvalue::Convert { .. }
             | Rvalue::Call { .. }
             | Rvalue::Load(_)
             | Rvalue::Address(_)

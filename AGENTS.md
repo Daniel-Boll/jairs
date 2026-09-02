@@ -212,6 +212,53 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0175, ADR-0176 and ADR-0177 reach 1069** (**1073** under gate 7) and add one corpus file = **255**.
+**W11 — Concurrency is DONE, and it was the last of the twelve waves.**
+
+**The blocker PLAN named was not the blocker, and this is the entry to read before trusting any plan here.**
+§8.3 said W11 needs a per-thread stack, atomics as language operations, and a comptime rule. It did not say a
+thread body could not be **named**: `#c_call` was a *declaration* attribute with no spelling in a **type**, so a
+`#c_call` procedure could be declared, called directly, and handed to nothing — and `pthread_create` takes a
+function pointer. `jr-pool` had modelled the two conventions as distinct types since ADR-0001, and `ctx.rs`
+interned the distinction away with a comment explaining why that was safe.
+
+**Found by three probes in four minutes**, the third of which reported **`expected (s64) -> s64, found (s64) ->
+s64`** — two identical types, because `describe` did not render the convention either. So the diagnostic that
+would have explained the wall was itself broken.
+
+**Three engines had each hard-coded the convention at an indirect call**, each with a comment saying it was safe
+because no `#c_call` pointer type existed. MIR and Cranelift then failed **loudly**; **LLVM did not** — it would
+have passed the context where C expects the first argument. Two of three failing loudly is not a safety net.
+
+**The comptime fork is closed on a fact.** Refuse a spawning `#run`, serialise it, or grow a scheduler? The VM
+cannot marshal a *procedure* to C — C needs a machine address, an interpreter has no machine code — so refusing
+is **forced**, and the scheduler option is not expensive but **unreachable**: a scheduler still needs a body to
+run. It was on the table because nobody had asked what it would have to produce.
+
+**Atomics are a MIR variant, and the exhaustive-match rule is why they are correct.** Nine mid-end sites became
+compile errors that each had to be *reasoned* about: `forward_stores` would have forwarded a store across one,
+const-prop would have folded a load another thread writes, DCE would have deleted a compare-exchange whose
+*effect* is the lock. A `_` arm would have compiled and produced a program that works until it is optimised.
+
+**And `file_consts`'s early-out bit for the third time.** It returns an empty `ConstValues` unless the file has a
+`#run`, a `type_info`, a fold, an `any_of` or a `pointer_view` — a **list of features that nothing enforces** —
+so an atomic's callee resolved to nothing and `scan` refused the body with "a name failed to resolve" on an
+obviously fine program. The comment directly above that condition already records the previous occurrence,
+ending "Found by running the feature's own probe." **Whoever adds a fifth intrinsic family will hit it a fourth
+time.**
+
+**Three tooling traps fired on this wave's own files, each caught by its own gate**: the formatter silently
+dropped `#c_call` from a procedure type (gate 5 — the twelfth consecutive wave that loop has had to learn a
+construct, and the *unsound* direction, since the reformatted file no longer type-checks); the tree-sitter
+grammar reported an `ERROR` node over it (gate 6, which is what that gate exists for) and then reported a
+**genuine** ambiguity — `f :: () -> (s64) #c_call` — that the hand-written parser resolves greedily in favour of
+the type, verified by writing it; and `codes.rs` caught a code collision when this wave first reached for E0290,
+which `jr-hir` owns.
+
+**Still owed after W11**: a per-thread shadow call stack, so a trap in a spawned thread names the right frames —
+§8.3 put it *in* this wave, and it needs thread-local storage in both back ends plus a change to the trap path
+every existing program uses, so it is its own wave and `modules/Thread`'s docs say so.
+
 **ADR-0174 reaches 1066** (**1070** under gate 7) and holds at **254** corpus files. Stack-resident locals now
 work in **both** back ends, and the ADR **amends ADR-0172 §3** — the second time in one session that this habit
 has caught this project's own accepted ADR.
@@ -837,7 +884,7 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0291 is the first free code**; E0134 is the first free *parser* code. **E0290** refuses `$$` in a **return**
+**E0292 is the first free code**; E0134 is the first free *parser* code. **E0290** refuses `$$` in a **return**
 type — **owned by `jr-hir`**, continuing its block, because the validity of a type decoration at a declaration
 site is judged where the signature is built. It was a leaked internal error until an audit of PLAN's wave table
 probed it: that table said `$$T` was "NOT DELIVERED — E0107" while this file said ADR-0137 delivered it, and both

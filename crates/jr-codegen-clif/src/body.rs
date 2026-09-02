@@ -380,9 +380,70 @@ impl Translator<'_, '_> {
         }
     }
 
+    /// An atomic's required operand, read as a scalar.
+    ///
+    /// `None` is a lowering bug the MIR verifier already refuses (ADR-0176 §2), so this is an internal
+    /// error rather than a program one — and it is a *helper* so the four arms above cannot each invent a
+    /// different message for the same impossibility.
+    fn require_atomic_operand(
+        &mut self,
+        operand: Option<Operand>,
+    ) -> Result<ClifValue, CodegenError> {
+        let operand = operand
+            .ok_or_else(|| CodegenError::Internal("an atomic is missing an operand".to_owned()))?;
+        self.read_scalar(operand)
+    }
+
     /// Translates an rvalue, returning the value it produces.
     fn rvalue(&mut self, rvalue: &Rvalue, dest: Option<ValueId>) -> Result<Slot, CodegenError> {
         match rvalue {
+            // **Real machine atomics** (ADR-0176 §5): `atomic_load`, `atomic_store`, `atomic_rmw` and
+            // `atomic_cas`, all with `MemFlags::trusted()` — which is what carries the sequential
+            // consistency Cranelift gives these instructions by default.
+            //
+            // No bounds check and no null check, unlike an ordinary `Load`: the address came from a
+            // pointer the program already holds, and an atomic is the one operation where inserting a
+            // branch before it would change the very ordering it exists to establish.
+            Rvalue::Atomic {
+                op,
+                address,
+                value,
+                expected,
+            } => {
+                let pointer = self.read_scalar(*address)?;
+                let i64_ty = cranelift_codegen::ir::types::I64;
+                let flags = MemFlagsData::trusted();
+                let produced = match op {
+                    jr_mir::AtomicOp::Load => {
+                        Some(self.builder.ins().atomic_load(i64_ty, flags, pointer))
+                    }
+                    jr_mir::AtomicOp::Store => {
+                        let operand = self.require_atomic_operand(*value)?;
+                        self.builder.ins().atomic_store(flags, operand, pointer);
+                        None
+                    }
+                    jr_mir::AtomicOp::Add => {
+                        let operand = self.require_atomic_operand(*value)?;
+                        Some(self.builder.ins().atomic_rmw(
+                            i64_ty,
+                            flags,
+                            cranelift_codegen::ir::AtomicRmwOp::Add,
+                            pointer,
+                            operand,
+                        ))
+                    }
+                    jr_mir::AtomicOp::CompareExchange => {
+                        let wanted = self.require_atomic_operand(*expected)?;
+                        let new = self.require_atomic_operand(*value)?;
+                        let seen = self.builder.ins().atomic_cas(flags, pointer, wanted, new);
+                        // `atomic_cas` yields the value it *found*, not whether it swapped — so the
+                        // boolean this language promises is derived here. Comparing against the expected
+                        // value is exact: the swap happened if and only if they were equal.
+                        Some(self.builder.ins().icmp(IntCC::Equal, seen, wanted))
+                    }
+                };
+                Ok(produced)
+            }
             // A plain move propagates undefinedness rather than trapping, exactly as
             // the VM's `Move` clones `Value::Undefined` without inspecting it.
             Rvalue::Use(operand) => {
@@ -1533,22 +1594,40 @@ impl Translator<'_, '_> {
         operand: Operand,
     ) -> Result<cranelift_codegen::ir::Signature, CodegenError> {
         let proc_ty = self.operand_type(operand);
-        let Item::ProcType { params, ret, .. } = self.ctx.pool.item(proc_ty) else {
+        let Item::ProcType {
+            params,
+            ret,
+            context,
+            ..
+        } = self.ctx.pool.item(proc_ty)
+        else {
             return Err(CodegenError::Internal(
                 "an indirect call whose callee is not of procedure type".to_owned(),
             ));
         };
         let params = params.clone();
         let ret = *ret;
+        // **The convention comes from the callee's type** (ADR-0175 §2). A `#c_call` pointer takes no
+        // context and uses the C convention; a Jairs one takes the context and uses `Fast`. Before
+        // ADR-0175 §1 there was no `#c_call` pointer type, so both were hard-coded — and the mismatch
+        // surfaced as Cranelift's verifier saying `mismatched argument count ... got 1, expected 2`,
+        // which is the good outcome and still a wrong signature.
+        let c_call = *context == jr_pool::ContextKind::CCall;
+        let call_conv = if c_call {
+            cranelift_codegen::isa::CallConv::SystemV
+        } else {
+            cranelift_codegen::isa::CallConv::Fast
+        };
+        let takes_context = !c_call;
         let proc = self.proc;
         repr::signature(
             self.ctx.pool,
             self.ctx.target,
             &params,
             ret,
-            cranelift_codegen::isa::CallConv::Fast,
+            call_conv,
             false,
-            true,
+            takes_context,
             &|what: &str| CodegenError::Unsupported {
                 proc,
                 what: what.to_owned(),

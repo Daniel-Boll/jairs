@@ -74,6 +74,12 @@ pub fn is_pure(rvalue: &Rvalue) -> bool {
         Rvalue::Load(_) => false,
         // Anything at all, including `exit`.
         Rvalue::Call { .. } => false,
+        // **Never pure, including a load** (ADR-0176 §2). An ordinary `Load` is impure only because it
+        // can fault; an atomic load is impure because *another thread can observe it* — it participates
+        // in the ordering that gives the program its meaning. Deleting an unread `atomic_compare_exchange`
+        // would delete the lock acquisition while leaving the critical section, which is the exact shape
+        // of bug this arm exists to prevent.
+        Rvalue::Atomic { .. } => false,
     }
 }
 
@@ -238,6 +244,22 @@ fn note_place(place: &Place, used: &mut FxHashSet<ValueId>) {
 
 fn note_rvalue(rvalue: &Rvalue, used: &mut FxHashSet<ValueId>) {
     match rvalue {
+        // A pure operand walk. Renaming an atomic's operands never changes what it does or when, which is
+        // why every such pass may touch one while none may move, duplicate or delete it (ADR-0176 §2).
+        Rvalue::Atomic {
+            op: _,
+            address,
+            value,
+            expected,
+        } => {
+            note_operand(address, used);
+            if let Some(value) = value {
+                note_operand(value, used);
+            }
+            if let Some(expected) = expected {
+                note_operand(expected, used);
+            }
+        }
         Rvalue::Use(operand) => note_operand(operand, used),
         Rvalue::Binary { op: _, lhs, rhs } => {
             note_operand(lhs, used);
@@ -406,11 +428,15 @@ fn note_place_slots(place: &Place, used: &mut FxHashSet<SlotId>) {
 fn note_rvalue_slots(rvalue: &Rvalue, used: &mut FxHashSet<SlotId>) {
     match rvalue {
         Rvalue::Load(place) | Rvalue::Address(place) => note_place_slots(place, used),
+        // An atomic reaches memory through a *pointer operand*, never through a `Place` — so it names no
+        // slot directly. The slot it points into is kept alive by whatever produced that pointer, which is
+        // an `Address` and is already handled above.
         Rvalue::Use(_)
         | Rvalue::Binary { .. }
         | Rvalue::Unary { .. }
         | Rvalue::Convert { .. }
         | Rvalue::Call { .. }
+        | Rvalue::Atomic { .. }
         | Rvalue::Undef => {}
     }
 }

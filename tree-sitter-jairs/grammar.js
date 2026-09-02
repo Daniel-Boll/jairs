@@ -68,6 +68,16 @@ module.exports = grammar({
     // is the trap `loop_label` and `scope_decl` each walked into. The compiler's parser resolves it
     // the same way it always did — `ret_type` looks for the arrow after the `)`.
     [$.result_list, $.proc_type_params],
+    // `f :: () -> (s64) #c_call` — does the directive belong to the returned *procedure type* or to `f`'s
+    // own declaration? A genuine ambiguity, not a look-ahead question, and the compiler's own parser
+    // resolves it **greedily in favour of the type**: `parse_proc_type` consumes the directive before
+    // returning, so the innermost construct wins. Probed rather than assumed — `pick :: () -> (s64) -> s64
+    // #c_call { return id; }` returns a `#c_call` procedure and calling it works.
+    //
+    // Declared rather than given a `prec`, for the reason the conflict above is: a `prec` silently picks
+    // one reading, and if it ever picked the *other* one the program would still compile and pass the
+    // context where C expects an argument (ADR-0175 §5).
+    [$.proc_type],
   ],
 
   word: ($) => $.identifier,
@@ -332,6 +342,11 @@ module.exports = grammar({
         // — which GLR still resolves, because `ret_type` offers both and only the following token
         // distinguishes them.
         optional(seq("->", field("return", $._type))),
+        // **`#c_call` after the return type** (ADR-0175 §1). A `#c_call` procedure type is what lets a
+        // thread body be handed to `pthread_create`, and without this rule the grammar reports an ERROR
+        // node over it — which stops highlighting for the rest of the file and is exactly the silent
+        // failure gate 6 exists to catch (ADR-0025 §4). Caught on this wave's own module.
+        optional(field("directive", $.c_call_attr)),
       ),
 
     proc_type_params: ($) =>

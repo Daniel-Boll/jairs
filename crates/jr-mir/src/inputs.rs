@@ -151,6 +151,8 @@ pub struct ConstValues {
     /// builder needs the target type to make the slot. A folded value would be wrong — the *address* is only
     /// known at run time.
     pointer_views: FxHashMap<(ExprScope, ExprId), PoolId>,
+    /// Which atomic operation each `atomic_*` call performs (ADR-0176 §3).
+    atomics: FxHashMap<(ExprScope, ExprId), crate::AtomicOp>,
     /// The procedure a polymorphic call was instantiated to (ADR-0082, DECISIONS fork 4).
     ///
     /// A call to a `$T` procedure is redirected here to the *instantiated* `ProcRef` appended to the
@@ -320,6 +322,23 @@ impl ConstValues {
     #[must_use]
     pub fn pointer_view(&self, scope: ExprScope, expr: ExprId) -> Option<PoolId> {
         self.pointer_views.get(&(scope, expr)).copied()
+    }
+
+    /// Records that a call is an atomic, from `jr-sema`'s wire code (ADR-0176 §3).
+    ///
+    /// A code `AtomicOp::from_code` does not know is **dropped rather than guessed**: it can only mean a
+    /// `jr-sema` newer than this `jr-mir`, and lowering it as some other operation would be a wrong store.
+    /// The call then lowers as an ordinary one and fails to find a callee, which refuses the body.
+    pub fn set_atomic(&mut self, scope: ExprScope, expr: ExprId, code: u8) {
+        if let Some(op) = crate::AtomicOp::from_code(code) {
+            self.atomics.insert((scope, expr), op);
+        }
+    }
+
+    /// The atomic operation a call performs, if it is one.
+    #[must_use]
+    pub fn atomic(&self, scope: ExprScope, expr: ExprId) -> Option<crate::AtomicOp> {
+        self.atomics.get(&(scope, expr)).copied()
     }
 
     /// Records that a polymorphic call was instantiated to `target` (ADR-0082).

@@ -324,6 +324,20 @@ impl Verifier<'_> {
 
     fn check_rvalue_ids(&mut self, at: BlockId, rvalue: &Rvalue) {
         match rvalue {
+            Rvalue::Atomic {
+                op: _,
+                address,
+                value,
+                expected,
+            } => {
+                self.check_operand_ids(at, *address);
+                if let Some(value) = value {
+                    self.check_operand_ids(at, *value);
+                }
+                if let Some(expected) = expected {
+                    self.check_operand_ids(at, *expected);
+                }
+            }
             Rvalue::Use(operand) => self.check_operand_ids(at, *operand),
             Rvalue::Binary { op: _, lhs, rhs } => {
                 self.check_operand_ids(at, *lhs);
@@ -795,6 +809,53 @@ impl Verifier<'_> {
                     );
                 }
             }
+            // **An atomic's shapes, checked here because nothing downstream can** (ADR-0176 §2). Both
+            // back ends and the VM take the address as a pointer and the value as a 64-bit integer; a
+            // wrong lowering would hand one of them a `bool` or a struct and produce a wrong *store*
+            // rather than a type error, which is the silent-miscompile shape §5 names.
+            Rvalue::Atomic {
+                op,
+                address,
+                value,
+                expected,
+            } => {
+                if let Some(ty) = self.operand_type(*address)
+                    && !matches!(self.pool.item(ty), jr_pool::Item::PointerType(_))
+                {
+                    self.report(
+                        Some(at),
+                        "atomic on a non-pointer",
+                        "an atomic operates through a pointer".to_owned(),
+                    );
+                }
+                // The operand set is decided by the operation, and a mismatch means the lowering built a
+                // shape no engine has an arm for.
+                let wants_value = !matches!(op, crate::mir::AtomicOp::Load);
+                let wants_expected = matches!(op, crate::mir::AtomicOp::CompareExchange);
+                if wants_value != value.is_some() || wants_expected != expected.is_some() {
+                    self.report(
+                        Some(at),
+                        "atomic with the wrong operands",
+                        format!("`{}` does not take these operands", op.name()),
+                    );
+                }
+                // A store yields `void`; every other operation yields something, and a compare-exchange
+                // yields a `bool` rather than a number.
+                if let Some(dest) = dest {
+                    let expected_dest = match op {
+                        crate::mir::AtomicOp::Store => jr_pool::PoolId::VOID,
+                        crate::mir::AtomicOp::CompareExchange => jr_pool::PoolId::BOOL,
+                        crate::mir::AtomicOp::Load | crate::mir::AtomicOp::Add => dest,
+                    };
+                    if dest != expected_dest {
+                        self.report(
+                            Some(at),
+                            "atomic result of the wrong type",
+                            format!("`{}` does not produce this type", op.name()),
+                        );
+                    }
+                }
+            }
             Rvalue::Use(operand) => {
                 if let (Some(dest), Some(source)) = (dest, self.operand_type(*operand))
                     && dest != source
@@ -1025,6 +1086,20 @@ fn mark_place(place: &Place, used: &mut [bool]) {
 
 fn mark_rvalue(rvalue: &Rvalue, used: &mut [bool]) {
     match rvalue {
+        Rvalue::Atomic {
+            op: _,
+            address,
+            value,
+            expected,
+        } => {
+            mark_operand(*address, used);
+            if let Some(value) = value {
+                mark_operand(*value, used);
+            }
+            if let Some(expected) = expected {
+                mark_operand(*expected, used);
+            }
+        }
         Rvalue::Use(operand) => mark_operand(*operand, used),
         Rvalue::Binary { op: _, lhs, rhs } => {
             mark_operand(*lhs, used);

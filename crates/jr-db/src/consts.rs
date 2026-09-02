@@ -439,11 +439,18 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     // one: a file whose only compile-time work is a `type_info` has no `wanted` target at all, and
     // returning here left its call unfolded — which `scan` then refused as "a name failed to resolve",
     // the callee naming no procedure. Found by running the feature's own probe.
+    //
+    // **Third time.** The comment above records this trap being hit once before; ADR-0176 §6 records it
+    // being hit again, by the atomics, in exactly the same way and found by exactly the same probe. This
+    // condition is a *list of features*, every new one must be added to it, and **nothing enforces that** —
+    // so the failure is always "a name failed to resolve" on a program that is obviously fine, and the
+    // author always looks at the new feature's own code first.
     if targets.is_empty()
         && checked_file.type_info_calls.is_empty()
         && checked_file.folded_calls.is_empty()
         && checked_file.any_calls.is_empty()
         && checked_file.pointer_views.is_empty()
+        && checked_file.atomics.is_empty()
     {
         return ConstResult {
             values: Arc::new(ConstValues::new()),
@@ -534,6 +541,11 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     // thread.
     for ((scope, expr), ty) in checked_file.pointer_views.iter() {
         values.set_pointer_view(*scope, *expr, *ty);
+    }
+    // The atomics ride the same channel for the same reason (ADR-0176 §3): `ConstValues` is what `jr-mir`
+    // receives, so a separate one would be another thing to thread through every caller.
+    for ((scope, expr), code) in checked_file.atomics.iter() {
+        values.set_atomic(*scope, *expr, *code);
     }
 
     for ((scope, expr), (op, ty)) in checked_file.any_calls.iter() {

@@ -18,6 +18,39 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
+**All twelve waves are done.** The last was concurrency: three threads share one counter through an atomic add,
+and none of three thousand increments is lost — in both native compilers, checked over five runs, because a race
+that fails one run in three passes one run in three.
+
+The blocker turned out not to be the one the plan named. The plan said concurrency needed a per-thread stack,
+atomic operations, and a rule for what compile-time execution does when it meets a thread. It did not say that a
+thread body could not be **named**. Handing a function to the operating system requires writing down its calling
+convention as part of a *type*, and while the compiler had always treated the two conventions as different types
+internally, there was no way to *write* the distinction — so such a function could be declared, called directly,
+and passed to nothing.
+
+Three probes over about four minutes found it, and the third reported a type error whose two sides printed
+**identically**: the diagnostic that would have explained the wall was itself missing the very detail at issue.
+Fixing the syntax then invalidated an assumption in all three execution engines at once, each of which had a
+comment explaining why it was safe. Two failed loudly. The third would have passed the hidden argument where C
+expects the first real one, silently — which is why "two of three fail loudly" is not a safety net.
+
+One open question got answered by a fact rather than a preference. When compile-time code tries to start a
+thread, should the compiler refuse, run the body inline, or grow a scheduler? The compile-time interpreter cannot
+hand a function to C at all — C wants a machine address and an interpreter has no machine code — so refusing is
+forced, and the scheduler option is not expensive but *impossible*: a scheduler still needs a body to run. That
+option had been on the list because nobody had asked what it would have to produce.
+
+The atomic operations are built into the compiler rather than called as a library, and the reason is the
+optimiser. Every existing optimisation was written for a single-threaded program, and each was wrong about an
+atomic in its own way: one would have moved a write past a synchronisation point, one would have folded a read
+another thread writes, one would have deleted a lock acquisition because nothing read its result. The rule
+against catch-all match arms turned all nine of those into compile errors that each had to be argued, rather than
+one that would have compiled and produced a program that works until it is optimised.
+
+The memory model is now written down, and its data-race clause is *measured* rather than promised: the same
+three-thread program with an ordinary increment produced 1000 instead of 3000 on one run of three.
+
 **Both compilers now show a local variable at its real place on the stack.** The second one needed a small piece
 of care worth mentioning: it reports a variable's position measured from the bottom of the stack frame, while the
 debug format measures from a reference point near the top. Reconciling those is one subtraction, and getting it
@@ -97,9 +130,9 @@ Two false starts are recorded, and both were a single string. On macOS the secti
 debug section placed outside the segment reserved for it does not merely get ignored: it breaks the link, because
 the linker lays it out among real pointers.
 
-Last updated with **W10 — Graphics DONE** (W6 — Metaprogram, W7 — Stdlib, W8 — Performance and W9 — Tooling
-depth were already), 1066 tests green — 1070 with the LLVM back end compiled in, and nineteen library modules.
-**Two waves remain: W11 — Concurrency, and W12 — Debug info, which is now under way.**
+Last updated with **W11 — Concurrency DONE, and with it all twelve waves**, 1069 tests green — 1073 with the
+LLVM back end compiled in, and twenty library modules. W12 — Debug info has one open item, a register-resident
+local, which is specified rather than vague.
 
 Graphics arrived in four steps, on a foundation the plan had wrong: a window and a 2D renderer, an event loop,
 an immediate-mode UI, and image loading. It rests on SDL2's C API rather than on Cocoa, because every Cocoa call

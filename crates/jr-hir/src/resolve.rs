@@ -126,6 +126,14 @@ fn is_intrinsic_name(name: &str) -> bool {
             | "typed"
             | "untyped"
             | "view"
+            // The atomics (ADR-0176 §3). Named `atomic_*` rather than given operators, because an
+            // operator would make the *ordering* invisible at the call site: `a += 1` and
+            // `atomic_add(*a, 1)` mean very different things to another thread, and a reader auditing a
+            // concurrent program must be able to find every synchronising operation by searching.
+            | "atomic_load"
+            | "atomic_store"
+            | "atomic_add"
+            | "atomic_compare_exchange"
     )
 }
 

@@ -15164,3 +15164,133 @@ proc main -> void {
     discard call extern proc1(v9)
     return
 }
+
+========================================
+132-atomics.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: s64  // local 1
+    s1: s64  // local 2
+    s2: s64  // local 3
+  bb0(v0: *Context):
+    store s0 <- 10_s64
+    v1: *s64 = addr s0
+    v2: s64 = atomic load [v1]
+    v3: bool = v2 == 10_s64
+    branch v3 ? bb1() : bb2()
+  bb1():
+    v4: s64 = 0_s64 + 1_s64
+    goto bb3(v4)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v10: s64):
+    v5: *s64 = addr s0
+    v6: void = atomic store [v5], 20_s64
+    v7: *s64 = addr s0
+    v8: s64 = atomic load [v7]
+    v9: bool = v8 == 20_s64
+    branch v9 ? bb4() : bb5()
+  bb4():
+    v11: s64 = v10 + 2_s64
+    goto bb6(v11)
+  bb5():
+    goto bb6(v10)
+  bb6(v15: s64):
+    v12: *s64 = addr s0
+    v13: s64 = atomic add [v12], 5_s64
+    v14: bool = v13 == 20_s64
+    branch v14 ? bb7() : bb8()
+  bb7():
+    v16: s64 = v15 + 4_s64
+    goto bb9(v16)
+  bb8():
+    goto bb9(v15)
+  bb9(v20: s64):
+    v17: *s64 = addr s0
+    v18: s64 = atomic load [v17]
+    v19: bool = v18 == 25_s64
+    branch v19 ? bb10() : bb11()
+  bb10():
+    v21: s64 = v20 + 8_s64
+    goto bb12(v21)
+  bb11():
+    goto bb12(v20)
+  bb12(v24: s64):
+    v22: *s64 = addr s0
+    v23: bool = atomic compare_exchange [v22], 25_s64, 99_s64
+    branch v23 ? bb13() : bb14()
+  bb13():
+    v25: s64 = v24 + 16_s64
+    goto bb15(v25)
+  bb14():
+    goto bb15(v24)
+  bb15(v29: s64):
+    v26: *s64 = addr s0
+    v27: s64 = atomic load [v26]
+    v28: bool = v27 == 99_s64
+    branch v28 ? bb16() : bb17()
+  bb16():
+    v30: s64 = v29 + 32_s64
+    goto bb18(v30)
+  bb17():
+    goto bb18(v29)
+  bb18(v34: s64):
+    v31: *s64 = addr s0
+    v32: bool = atomic compare_exchange [v31], 25_s64, 7_s64
+    v33: bool = !v32
+    branch v33 ? bb19() : bb20()
+  bb19():
+    v35: s64 = v34 + 64_s64
+    goto bb21(v35)
+  bb20():
+    goto bb21(v34)
+  bb21(v39: s64):
+    v36: *s64 = addr s0
+    v37: s64 = atomic load [v36]
+    v38: bool = v37 == 99_s64
+    branch v38 ? bb22() : bb23()
+  bb22():
+    v40: s64 = v39 + 128_s64
+    goto bb24(v40)
+  bb23():
+    goto bb24(v39)
+  bb24(v46: s64):
+    store s1 <- 9223372036854775807_s64
+    v41: *s64 = addr s1
+    v42: s64 = atomic add [v41], 1_s64
+    v43: *s64 = addr s1
+    v44: s64 = atomic load [v43]
+    v45: bool = v44 == -9223372036854775808_s64
+    branch v45 ? bb25() : bb26()
+  bb25():
+    v47: s64 = v46 + 256_s64
+    goto bb27(v47)
+  bb26():
+    goto bb27(v46)
+  bb27(v50: s64):
+    store s2 <- -7_s64
+    v48: *s64 = addr s2
+    v49: bool = atomic compare_exchange [v48], -7_s64, -1_s64
+    branch v49 ? bb28() : bb29()
+  bb28():
+    v51: s64 = v50 + 512_s64
+    goto bb30(v51)
+  bb29():
+    goto bb30(v50)
+  bb30(v55: s64):
+    v52: *s64 = addr s2
+    v53: s64 = atomic load [v52]
+    v54: bool = v53 == -1_s64
+    branch v54 ? bb31() : bb32()
+  bb31():
+    v56: s64 = v55 + 1024_s64
+    goto bb33(v56)
+  bb32():
+    goto bb33(v55)
+  bb33(v57: s64):
+    v58: s64 = v57 % 251_s64
+    discard call extern proc1(v58)
+    return
+}

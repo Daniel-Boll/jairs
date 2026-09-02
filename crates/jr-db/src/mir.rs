@@ -508,6 +508,11 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
                 for ((scope, expr), ty) in inst.check.pointer_views.iter() {
                     values.set_pointer_view(*scope, *expr, *ty);
                 }
+                // An atomic inside an instantiated template, for the same reason: the template's own scope
+                // records nothing, because `T` is bound only here.
+                for ((scope, expr), code) in inst.check.atomics.iter() {
+                    values.set_atomic(*scope, *expr, *code);
+                }
                 if !inst.check.type_info_calls.is_empty() {
                     let base_sigs_for_ti = crate::sema::file_signatures(db, file, search_paths);
                     let module_sigs: Vec<Arc<jr_sema::FileSignatures>> =

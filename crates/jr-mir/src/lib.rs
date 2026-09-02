@@ -84,9 +84,9 @@ pub use inputs::{
     OperatorCalls,
 };
 pub use mir::{
-    BinOp, BlockData, BlockId, Callee, Facts, FileMir, MirBody, MirSpan, NumKind, Operand, Place,
-    PlaceBase, Poisoned, ProcRef, Projection, Rvalue, SlotData, SlotId, Statement, Target,
-    Terminator, UnOp, UndefinedRead, Unreachable, ValueData, ValueId,
+    AtomicOp, BinOp, BlockData, BlockId, Callee, Facts, FileMir, MirBody, MirSpan, NumKind,
+    Operand, Place, PlaceBase, Poisoned, ProcRef, Projection, Rvalue, SlotData, SlotId, Statement,
+    Target, Terminator, UnOp, UndefinedRead, Unreachable, ValueData, ValueId,
 };
 pub use optimize::{MAX_OPT_ROUNDS, OptStats, optimize};
 pub use span::resolve_span;

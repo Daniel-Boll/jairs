@@ -590,6 +590,81 @@ impl<'a> Vm<'a> {
                     let address = self.address(frame, place)?;
                     self.store(address, place, &value)?;
                 }
+                // **An atomic, implemented non-atomically, which is correct here** (ADR-0176 §4). Nothing
+                // in this interpreter can spawn a thread — a `#foreign` call needs a machine address for
+                // the thread body and there is none (ADR-0175 §4) — so there is no concurrency to be
+                // atomic against, and the plain read-modify-write *is* the sequentially consistent
+                // answer.
+                //
+                // Implemented rather than refused so a `#run` may use one and the corpus differential can
+                // cover atomics at all: a single-threaded program using `atomic_add` has one right answer
+                // and all three engines must give it.
+                // **An atomic, implemented non-atomically, which is correct here** (ADR-0176 §4). Nothing
+                // in this interpreter can spawn a thread — a `#foreign` call needs a machine address for
+                // the thread body and there is none (ADR-0175 §4) — so there is no concurrency to be
+                // atomic against, and the plain read-modify-write *is* the sequentially consistent answer.
+                //
+                // Implemented rather than refused so a `#run` may use one and the corpus differential can
+                // cover atomics at all: a single-threaded program using `atomic_add` has one right answer
+                // and all three engines must give it.
+                Instr::Atomic {
+                    dest,
+                    op,
+                    address,
+                    value,
+                    expected,
+                } => {
+                    let target = self.operand(frame, *address)?.scalar()?;
+                    // Always eight bytes: this wave's atomics are `s64` only, stated in `AtomicOp`'s own
+                    // docs rather than inferred from a type here.
+                    const WIDTH: u64 = 8;
+                    // A missing operand is a lowering bug the verifier already refuses, so this is an
+                    // internal error rather than a program one.
+                    let missing =
+                        || VmError::internal("an atomic is missing an operand".to_owned());
+                    let result = match op {
+                        jr_mir::AtomicOp::Load => {
+                            Some(Value::Scalar(self.memory.read_scalar(target, WIDTH)?))
+                        }
+                        jr_mir::AtomicOp::Store => {
+                            let operand = value.ok_or_else(missing)?;
+                            let bits = self.operand(frame, operand)?.scalar()?;
+                            self.memory.write_scalar(target, WIDTH, bits)?;
+                            None
+                        }
+                        jr_mir::AtomicOp::Add => {
+                            let operand = value.ok_or_else(missing)?;
+                            let addend = self.operand(frame, operand)?.scalar()?;
+                            let before = self.memory.read_scalar(target, WIDTH)?;
+                            // **Wrapping**, matching the hardware: an atomic add is one machine
+                            // instruction with no overflow check, so trapping here would make the
+                            // interpreter disagree with both back ends about a program that wraps.
+                            let after = before.wrapping_add(addend);
+                            self.memory.write_scalar(target, WIDTH, after)?;
+                            Some(Value::Scalar(before))
+                        }
+                        jr_mir::AtomicOp::CompareExchange => {
+                            let wanted_operand = expected.ok_or_else(missing)?;
+                            let new_operand = value.ok_or_else(missing)?;
+                            let wanted = self.operand(frame, wanted_operand)?.scalar()?;
+                            let new = self.operand(frame, new_operand)?.scalar()?;
+                            let present = self.memory.read_scalar(target, WIDTH)?;
+                            let matched = present == wanted;
+                            if matched {
+                                self.memory.write_scalar(target, WIDTH, new)?;
+                            }
+                            // A boolean is a `Scalar` of 0 or 1 in this interpreter — see `Value::boolean`.
+                            Some(Value::Scalar(u64::from(matched)))
+                        }
+                    };
+                    // **A store writes `Value::Void`, not nothing.** MIR gives every rvalue a destination —
+                    // `void` is a storable value here (ADR-0015 §3) — so leaving the register alone left it
+                    // `Value::Undefined`, and the next read of it trapped with "read a value that was never
+                    // assigned" on a program whose store had in fact succeeded.
+                    if let Some(dest) = dest {
+                        frame.regs[dest.index()] = result.unwrap_or(Value::Void);
+                    }
+                }
                 Instr::Undef { dest } => frame.regs[dest.index()] = Value::Undefined,
                 Instr::Jump { target } => pc = *target,
                 Instr::Branch { cond, then_, else_ } => {

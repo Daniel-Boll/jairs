@@ -532,12 +532,104 @@ impl<'ctx> Translator<'ctx, '_> {
     }
 
     /// Translates an rvalue, returning the value it produces.
+    /// An atomic's required operand, read as a 64-bit integer.
+    ///
+    /// `None` is a lowering bug the MIR verifier already refuses (ADR-0176 §2), so it is an internal
+    /// error — and a helper, so the four arms cannot each invent a message for the same impossibility.
+    fn require_atomic_operand(
+        &mut self,
+        operand: Option<Operand>,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        let operand = operand
+            .ok_or_else(|| CodegenError::Internal("an atomic is missing an operand".to_owned()))?;
+        self.read_int(operand)
+    }
+
     fn rvalue(
         &mut self,
         rvalue: &Rvalue,
         dest: Option<ValueId>,
     ) -> Result<Slot<'ctx>, CodegenError> {
         match rvalue {
+            // **Real machine atomics** (ADR-0176 §5), matching Cranelift's: a sequentially consistent
+            // load, store, `atomicrmw add` and `cmpxchg`.
+            //
+            // No null check, unlike an indirect *call*: the address came from a pointer the program holds,
+            // and a branch inserted before an atomic would change the very ordering it establishes.
+            Rvalue::Atomic {
+                op,
+                address,
+                value,
+                expected,
+            } => {
+                let raw = self.read_int(*address)?;
+                let pointer = built(self.builder.build_int_to_ptr(
+                    raw,
+                    self.context.ptr_type(AddressSpace::default()),
+                    "atomicptr",
+                ))?;
+                let i64_ty = self.context.i64_type();
+                let produced = match op {
+                    jr_mir::AtomicOp::Load => {
+                        let loaded = built(self.builder.build_load(i64_ty, pointer, "atomicload"))?;
+                        let loaded = loaded.into_int_value();
+                        // The ordering is set on the instruction after the fact, because inkwell's
+                        // `build_load` has no ordering parameter — an `alignment` must be set too or LLVM
+                        // rejects an ordered load.
+                        if let Some(instruction) = loaded.as_instruction() {
+                            instruction
+                                .set_alignment(8)
+                                .map_err(|e| CodegenError::Internal(format!("atomic load: {e}")))?;
+                            instruction
+                                .set_atomic_ordering(
+                                    inkwell::AtomicOrdering::SequentiallyConsistent,
+                                )
+                                .map_err(|e| CodegenError::Internal(format!("atomic load: {e}")))?;
+                        }
+                        Some(loaded.into())
+                    }
+                    jr_mir::AtomicOp::Store => {
+                        let operand = self.require_atomic_operand(*value)?;
+                        let stored = built(self.builder.build_store(pointer, operand))?;
+                        stored
+                            .set_alignment(8)
+                            .map_err(|e| CodegenError::Internal(format!("atomic store: {e}")))?;
+                        stored
+                            .set_atomic_ordering(inkwell::AtomicOrdering::SequentiallyConsistent)
+                            .map_err(|e| CodegenError::Internal(format!("atomic store: {e}")))?;
+                        None
+                    }
+                    jr_mir::AtomicOp::Add => {
+                        let operand = self.require_atomic_operand(*value)?;
+                        let previous = built(self.builder.build_atomicrmw(
+                            inkwell::AtomicRMWBinOp::Add,
+                            pointer,
+                            operand,
+                            inkwell::AtomicOrdering::SequentiallyConsistent,
+                        ))?;
+                        Some(previous.into())
+                    }
+                    jr_mir::AtomicOp::CompareExchange => {
+                        let wanted = self.require_atomic_operand(*expected)?;
+                        let new = self.require_atomic_operand(*value)?;
+                        let outcome = built(self.builder.build_cmpxchg(
+                            pointer,
+                            wanted,
+                            new,
+                            inkwell::AtomicOrdering::SequentiallyConsistent,
+                            // The *failure* ordering may not be stronger than the success one and may not
+                            // be `Release`; sequential consistency for both is the only choice that keeps
+                            // this identical to Cranelift's single-ordering instruction.
+                            inkwell::AtomicOrdering::SequentiallyConsistent,
+                        ))?;
+                        // `cmpxchg` yields `{ value, did_swap }`; the boolean is field 1, and taking it
+                        // here is what makes this produce the same `bool` the other two engines do.
+                        let flag = built(self.builder.build_extract_value(outcome, 1, "swapped"))?;
+                        Some(flag)
+                    }
+                };
+                Ok(produced)
+            }
             // A plain move propagates undefinedness rather than trapping, exactly as the
             // VM's `Move` clones `Value::Undefined` without inspecting it.
             Rvalue::Use(operand) => {
@@ -1664,13 +1756,25 @@ impl<'ctx> Translator<'ctx, '_> {
         operand: Operand,
     ) -> Result<inkwell::types::FunctionType<'ctx>, CodegenError> {
         let proc_ty = self.operand_type(operand);
-        let Item::ProcType { params, ret, .. } = self.shared.pool.item(proc_ty) else {
+        let Item::ProcType {
+            params,
+            ret,
+            context,
+            ..
+        } = self.shared.pool.item(proc_ty)
+        else {
             return Err(CodegenError::Internal(
                 "an indirect call whose callee is not of procedure type".to_owned(),
             ));
         };
         let params = params.clone();
         let ret = *ret;
+        // **The context parameter comes from the callee's type** (ADR-0175 §2), matching Cranelift and
+        // the VM. LLVM needs no calling-convention flag here: a `#c_call` procedure is already emitted
+        // with C's convention at its *declaration*, and an indirect call adopts the pointee's — so only
+        // the hidden parameter differs, and getting it wrong puts the context where C expects the first
+        // real argument.
+        let takes_context = *context != jr_pool::ContextKind::CCall;
         let proc = self.proc;
         repr::function_type(
             self.context,
@@ -1679,7 +1783,7 @@ impl<'ctx> Translator<'ctx, '_> {
             &params,
             ret,
             false,
-            true,
+            takes_context,
             &|what: &str| CodegenError::Unsupported {
                 proc,
                 what: what.to_owned(),

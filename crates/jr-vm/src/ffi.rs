@@ -309,8 +309,23 @@ fn marshal(vm: &Vm<'_>, value: &Value, ty: PoolId) -> Result<Marshalled, VmError
             };
             Ok(Marshalled::Bytes(bytes.clone()))
         }
-        other => Err(VmError::unsupported(format!(
-            "passing {other:?} to a foreign procedure arrives with a later wave"
+        // **A procedure value cannot cross this boundary, and never will** (ADR-0175 §4). C wants a
+        // machine address to call; this interpreter executes bytecode and there *is* no machine code for
+        // a Jairs procedure, so there is no address to hand over. That is a property of interpreting, not
+        // a wave that has not happened — the previous message said "arrives with a later wave", which
+        // promised something unreachable without a JIT.
+        //
+        // This is what makes a compile-time `pthread_create` impossible: every spawn needs a function
+        // pointer for the thread body, so the refusal lands here rather than at any thread API.
+        Item::ProcType { .. } | Item::ProcValue { .. } => Err(VmError::unsupported(String::from(
+            "a procedure cannot be passed to a `#foreign` procedure at compile time: C needs a machine \
+             address to call and the compile-time interpreter has no machine code to point at",
+        ))),
+        // Everything else is a genuine gap rather than an impossibility, so it still says so — and it
+        // names the *type* rather than dumping a `Debug` rendering of the pool item, which is what this
+        // arm used to do and is unreadable in a diagnostic.
+        _ => Err(VmError::unsupported(String::from(
+            "this argument's type cannot be passed to a `#foreign` procedure yet",
         ))),
     }
 }

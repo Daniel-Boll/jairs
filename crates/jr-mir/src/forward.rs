@@ -359,6 +359,13 @@ fn kills(rvalue: &Rvalue, slot: SlotId, escapes: bool) -> bool {
         // A call can write through any pointer it was given, so it kills a slot that
         // has a pointer and cannot touch one that does not.
         Rvalue::Call { .. } => escapes,
+        // **An atomic kills an escaped slot for the same reason a call does** (ADR-0176 §2), and for one
+        // more: forwarding a store *across* an atomic would reorder a plain write past a
+        // synchronisation point, which is precisely what an atomic is there to prevent. Even a slot that
+        // does not escape is unsafe to forward across one — but such a slot is invisible to other
+        // threads, so `escapes` is the honest condition and the stronger claim would only cost
+        // optimisation on single-threaded code.
+        Rvalue::Atomic { .. } => escapes,
         // A load has no effect. Everything else is arithmetic on values.
         // A conversion reads a value and writes a value; it cannot reach memory.
         Rvalue::Load(_)

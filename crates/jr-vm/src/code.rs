@@ -237,6 +237,30 @@ pub enum Instr {
         /// What to write.
         value: Operand,
     },
+    /// An atomic operation through a pointer register (ADR-0176 §4).
+    ///
+    /// # Why the interpreter has these at all
+    ///
+    /// It cannot spawn a thread — a `#foreign` call needs a machine address for the thread body and
+    /// there is none (ADR-0175 §4) — so nothing here ever races. The operations are implemented anyway,
+    /// because a program that uses them must still *evaluate* the same way in all three engines: a
+    /// `#run` computing a value with an `atomic_add` is single-threaded and has one right answer, and
+    /// refusing it would make the corpus differential unable to cover atomics at all.
+    ///
+    /// So the interpreter's implementation is the plain non-atomic one, which is correct precisely
+    /// because there is no concurrency here to be atomic against.
+    Atomic {
+        /// Where the result goes. `None` for a store, which produces nothing.
+        dest: Option<Reg>,
+        /// Which operation.
+        op: jr_mir::AtomicOp,
+        /// The pointer.
+        address: Operand,
+        /// The value to store, add, or install. `None` for a load.
+        value: Option<Operand>,
+        /// The value a compare-exchange requires. `None` otherwise.
+        expected: Option<Operand>,
+    },
     /// `dest <- undefined`. Reading the result traps; see [`crate::Value::Undefined`].
     Undef {
         /// The destination register.

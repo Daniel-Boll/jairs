@@ -274,10 +274,17 @@ fn fold(pool: &mut Pool, rvalue: &Rvalue, ty: PoolId) -> Option<PoolId> {
         Rvalue::Convert { operand, from: _ } => fold_convert(pool, *operand, ty),
         // `Use` of a constant is already folded; everything else either has no
         // constant answer or must not be given one here.
+        //
+        // **An atomic is in the second category** (ADR-0176 §2), and it is the sharpest case: an
+        // `atomic_load` of a location this thread just stored a constant into has *no* constant answer,
+        // because another thread may have written between the two. Folding it would produce a program
+        // that is correct alone and wrong in company — the failure mode that made these operations a MIR
+        // variant rather than a library call.
         Rvalue::Use(_)
         | Rvalue::Call { .. }
         | Rvalue::Load(_)
         | Rvalue::Address(_)
+        | Rvalue::Atomic { .. }
         | Rvalue::Undef => None,
     }
 }
@@ -544,6 +551,24 @@ fn substitute_rvalue(rvalue: &mut Rvalue, subst: &impl Fn(&mut Operand)) {
             args.iter_mut().for_each(subst);
         }
         Rvalue::Load(place) | Rvalue::Address(place) => substitute_place(place, subst),
+        // Substituting *into* an atomic's operands is safe and necessary: it renames values, which is
+        // bookkeeping, and it never changes what the operation does or when. Refusing here would leave a
+        // dangling value id behind whenever const-prop renamed one — a verifier error, not a miscompile,
+        // but the pass would be wrong about a variant it is allowed to touch.
+        Rvalue::Atomic {
+            op: _,
+            address,
+            value,
+            expected,
+        } => {
+            subst(address);
+            if let Some(value) = value {
+                subst(value);
+            }
+            if let Some(expected) = expected {
+                subst(expected);
+            }
+        }
         Rvalue::Undef => {}
     }
 }
