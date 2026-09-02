@@ -655,6 +655,17 @@ impl Formatter {
         if let Some(params) = node.children().find(|n| n.kind() == STRUCT_TYPE_PARAMS) {
             self.format_struct_type_params(&params);
         }
+        // `struct #soa(N) { … }` — one array per field (ADR-0147 §1). **Dropping it would change the
+        // struct's layout**, silently, in three engines: every field would stop being an array and
+        // every `e[i].x` in the program would stop compiling. That is the worst version of the
+        // construct-losing failure this file has met in most of the waves that added a node kind.
+        if let Some(soa) = node.children().find(|n| n.kind() == SOA_ATTR) {
+            self.emit(" #soa(");
+            if let Some(count) = soa.children().find(|n| is_expr_kind(n.kind())) {
+                self.format_expr(&count);
+            }
+            self.emit(")");
+        }
         self.emit(" {");
         if let Some(field_list) = node.children().find(|n| n.kind() == FIELD_LIST) {
             let has_fields = field_list.children().any(|n| n.kind() == FIELD);
@@ -2556,6 +2567,43 @@ mod tests {
         );
         assert_idempotent(both);
         assert_parses(&out);
+    }
+
+    /// `#soa(N)` on a struct (ADR-0147 §1), asserted to *survive* and to be canonicalised.
+    ///
+    /// **Dropping this changes the program's layout**, not merely its formatting: every field stops
+    /// being an array, so every `e[i].x` stops compiling and every `size_of` answer changes. The
+    /// round-trip and idempotence assertions do not catch it on their own — a formatter emitting
+    /// `node.text()` verbatim passes both — which is why the spacing assertion is here too.
+    #[test]
+    fn the_soa_attribute_survives_and_is_canonicalised() {
+        let src = "Entities :: struct #soa(4) {\n    x: s64;\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("struct #soa(4) {"),
+            "`#soa` must survive, between the keyword and the brace: {out}"
+        );
+        assert_idempotent(src);
+        assert_parses(&out);
+
+        // A named count, and untidy spacing, both normalised — which is what says the construct is
+        // emitted rather than echoed.
+        let named = "N :: 8;\n\nE :: struct    #soa(  N  ) {\n    x: s64;\n}\n";
+        let out = fmt(named);
+        assert!(
+            out.contains("struct #soa(N) {"),
+            "spacing must be canonicalised and a named count kept: {out}"
+        );
+        assert_parses(&out);
+
+        // And a parameterised struct keeps both, in the order the two things are decided.
+        let both = "B :: struct($T) #soa(2) {\n    v: T;\n}\n";
+        let out = fmt(both);
+        assert!(
+            out.contains("struct($T) #soa(2) {"),
+            "the type parameters and the `#soa` must both survive: {out}"
+        );
+        assert_idempotent(both);
     }
 
     /// `#align` and `#place` on a field (ADR-0144 §1), asserted to *survive* and to keep their

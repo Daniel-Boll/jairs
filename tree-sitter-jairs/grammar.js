@@ -395,8 +395,15 @@ module.exports = grammar({
       seq(
         "struct",
         optional(field("params", $.struct_type_params)),
+        // `#soa(N)` — one array per field (ADR-0147 §1), after the parameter list so the two things
+        // read in the order they are decided: what the type is parameterised over, then how it is
+        // stored.
+        optional(field("soa", $.soa_attr)),
         field("fields", $.field_list),
       ),
+
+    // #soa(N) (ADR-0147 §1)
+    soa_attr: ($) => seq(field("directive", "#soa"), "(", field("count", $._expr), ")"),
 
     // ($T) or ($K, $V) after `struct` — the type parameters of a parameterised struct. Each is a
     // `poly_type`, so `$` is required: a struct parameter binds a variable, it does not name a type.

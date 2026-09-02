@@ -169,6 +169,14 @@ pub struct ConstValues {
     /// of the trailing view. MIR packs `args[fixed..]` into a stack array of `element_ty` and
     /// passes a view over it as the last parameter.
     variadic_calls: FxHashMap<(ExprScope, ExprId), (usize, PoolId)>,
+    /// Each `#soa` field access, keyed on the **index** expression that is its receiver, holding the
+    /// field's position (ADR-0147 §2).
+    ///
+    /// Carried here for the reason `variadic_calls` is: `jr-sema` decided it, `jr-mir` needs it, and
+    /// this is the channel between them that already exists. Recognising the pattern again in `jr-mir`
+    /// would be a second decision, and a disagreement between the two is a wrong *address* — sema
+    /// typing an element while lowering reads a whole array.
+    soa_fields: FxHashMap<(ExprScope, ExprId), u32>,
 }
 
 /// How the MIR builder should lower one `any_of`/`any_as` call (ADR-0076).
@@ -351,6 +359,18 @@ impl ConstValues {
     ) {
         self.variadic_calls
             .insert((scope, expr), (fixed, element_ty));
+    }
+
+    /// Records that a field access on `expr` — an index expression — is an `#soa` access whose
+    /// field is at `position` (ADR-0147 §2).
+    pub fn set_soa_field(&mut self, scope: ExprScope, expr: ExprId, position: u32) {
+        self.soa_fields.insert((scope, expr), position);
+    }
+
+    /// The `#soa` field position recorded for an index expression, if it is one.
+    #[must_use]
+    pub fn soa_field(&self, scope: ExprScope, expr: ExprId) -> Option<u32> {
+        self.soa_fields.get(&(scope, expr)).copied()
     }
 
     /// The variadic-call info for a call, if it is one.

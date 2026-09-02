@@ -452,6 +452,11 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
             for ((scope, expr), info) in checked_file.variadic_calls.iter() {
                 values.set_variadic_call(*scope, *expr, info.fixed_arg_count, info.element_ty);
             }
+            // The `#soa` accesses, threaded on the same path and for the same reason (ADR-0147 §2):
+            // sema decided the place order, and lowering reads it rather than deciding again.
+            for ((scope, expr), position) in checked_file.soa_fields.iter() {
+                values.set_soa_field(*scope, *expr, *position);
+            }
             Arc::new(values)
         };
         match &instantiated {

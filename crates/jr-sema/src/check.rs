@@ -41,7 +41,7 @@ use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
     E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272, E0277,
-    E0278, E0279,
+    E0278, E0279, E0284,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -231,6 +231,14 @@ pub struct CheckOutput {
     /// view's element type — what each trailing argument was checked against. Empty for a
     /// program with no variadic calls.
     pub variadic_calls: FxHashMap<(ExprScope, ExprId), VariadicCall>,
+    /// Each `#soa` field access, keyed on the **index** expression that is its receiver, holding the
+    /// field's position (ADR-0147 §2).
+    ///
+    /// `jr-mir` reads this to build `Field(position)` then `Index(i)` for a place whose HIR nests
+    /// them the other way round. Recorded rather than recomputed for the reason `operator_calls` is:
+    /// one pass decides and `jr-mir` reads, so the two cannot disagree — and a disagreement here is
+    /// a wrong *address*, sema typing an element while MIR reads a whole array.
+    pub soa_fields: FxHashMap<(ExprScope, ExprId), u32>,
 }
 
 /// The information a variadic call needs so MIR can pack the trailing arguments (ADR-0138 §2).
@@ -436,6 +444,7 @@ pub fn check_file(
         instantiations: ctx.instantiations,
         comptime_calls: ctx.comptime_calls,
         variadic_calls: ctx.variadic_calls,
+        soa_fields: ctx.soa_fields,
     }
 }
 
@@ -4860,6 +4869,82 @@ impl Ctx<'_> {
     }
 
     /// Types a field access, looking through pointers.
+    /// Types `e[i].x` where `e` is an `#soa` struct, or answers `None` if this is not one.
+    ///
+    /// The result is the field's **element** type, and the access is recorded in
+    /// [`CheckOutput::soa_fields`] so that `jr-mir` builds `Field(x)` then `Index(i)` — the same
+    /// place it would build for `e.x[i]`. Sema decides and MIR reads, exactly as `operator_calls`,
+    /// `any_calls` and `variadic_calls` already work: two crates recognising this pattern
+    /// independently would be two chances to disagree, and a disagreement here is a *wrong
+    /// address* — sema typing an element while MIR reads a whole array.
+    fn check_soa_field(
+        &mut self,
+        scope: ExprScope,
+        receiver: ExprId,
+        name: Symbol,
+        name_span: Span,
+    ) -> Option<PoolId> {
+        // **Through `expr_of`, not `hir.exprs`.** Expressions live in per-*body* arenas selected by
+        // `scope` (that is what `ExprScope` is for), so indexing the top-level arena would read a
+        // different node — which is exactly what the first attempt did: it silently answered `None`
+        // for every access inside a procedure, so the sugar appeared not to work at all.
+        let Expr::Index { base, index, .. } = self.expr_of(scope, receiver) else {
+            return None;
+        };
+        // The base's type, with pointers stripped as an ordinary field receiver's is: `p[i].x`
+        // through a `*Entities` reads the same way `p.x` does.
+        let mut base_ty = self.check_expr(scope, base, None);
+        while let Some(inner) = self.pointee(base_ty) {
+            base_ty = inner;
+        }
+        let Item::StructType { decl, .. } = *self.pool.item(base_ty) else {
+            return None;
+        };
+        self.pool.soa_count(decl)?;
+
+        // The index is an ordinary `s64`, checked and recorded so MIR can lower it — and so a
+        // non-integer index is the same diagnostic it would be on an array.
+        let _ = self.check_expr(scope, index, Some(PoolId::S64));
+        // **The index expression is recorded with the *receiver's* type.** `e[i]` has no type of
+        // its own by design (§2 refuses every other use of it), but it must have *some* recorded
+        // type: `jr-mir`'s `scan` refuses a body containing a reachable expression typed `ERROR`,
+        // so recording poison here refused every program that used the sugar — which is what the
+        // first attempt did. The struct's own type is the honest placeholder: an `#soa` index is a
+        // projection *step* rather than a value, and nothing reads this entry, because lowering
+        // handles the whole `e[i].x` in one place.
+        self.types.set_expr(scope, receiver, base_ty);
+
+        let interner = self.interner;
+        let field = interner.resolve(name);
+        let fields = self.pool.fields_of(base_ty)?.to_vec();
+        let Some(position) = fields.iter().position(|f| f.name == name) else {
+            self.diags.push(
+                Diagnostic::error(
+                    name_span,
+                    format!("no field `{field}` on this `#soa` struct"),
+                )
+                .with_code(E0284),
+            );
+            return Some(PoolId::ERROR);
+        };
+        // **Keyed on the receiver — the index expression — rather than on the field access.**
+        // `check_field` does not receive the field expression's own id, and the receiver is exactly
+        // as unambiguous: an `Expr::Index` is the receiver of at most one field access, and MIR has
+        // it in hand when it lowers that access.
+        self.soa_fields
+            .insert((scope, receiver), u32::try_from(position).unwrap_or(0));
+        // The field's type is `[N]T`; the access yields `T`. Reading the element type from the
+        // *field* rather than recomputing it is what keeps this in step with the wrapping done at
+        // resolution (ADR-0147 §1) — one place decides what `#soa` did to a field.
+        match *self.pool.item(fields[position].ty) {
+            Item::ArrayType { elem, .. } => Some(elem),
+            // A field of a `#soa` struct is an array by construction, so this is a compiler
+            // disagreement rather than a program error; typing it as `ERROR` keeps the cascade
+            // quiet, and the wrapping site is the thing to fix.
+            _ => Some(PoolId::ERROR),
+        }
+    }
+
     fn check_field(
         &mut self,
         scope: ExprScope,
@@ -4867,6 +4952,13 @@ impl Ctx<'_> {
         name: Symbol,
         name_span: Span,
     ) -> PoolId {
+        // **`e[i].x` on an `#soa` struct means `e.x[i]`** (ADR-0147 §2), and it is decided here
+        // rather than in the `Index` arm because the index expression alone is not enough: `e[i]`
+        // has no type of its own by design, so there is nothing to record against it. Both the
+        // index and the field name are in reach only at the field access.
+        if let Some(ty) = self.check_soa_field(scope, receiver, name, name_span) {
+            return ty;
+        }
         // The receiver is a position where a **type** is legal: `Colour.RED` names the enum type used
         // as a value (ADR-0041 §1). Recorded before typing it, the way `check_call` records its callee,
         // so that `check_expr`'s `Name` arm skips E0261 here while still typing and recording the
@@ -5064,6 +5156,28 @@ impl Ctx<'_> {
         // length is unknown at compile time by definition, and `Statement::BoundsCheck` still
         // guards every access at run time (ADR-0044 §4).
         let Some((elem, len)) = self.indexable_parts(base_ty) else {
+            // **An `#soa` struct indexed anywhere but as a field receiver** (ADR-0147 §2). It
+            // reaches here because `check_soa_field` is the only path that accepts one, so
+            // everything else lands in the general "not indexable" arm — where E0234's "only
+            // arrays and views can be indexed" would be true and unhelpful to someone who just
+            // wrote `#soa` and expected exactly this to work.
+            if let Item::StructType { decl, .. } = *self.pool.item(base_ty)
+                && self.pool.soa_count(decl).is_some()
+            {
+                self.diags.push(
+                    Diagnostic::error(
+                        span,
+                        "an `#soa` struct can only be indexed as the receiver of a field access",
+                    )
+                    .with_code(E0284)
+                    .with_note(
+                        "`e[i]` on its own has no type: the fields live in separate arrays, so \
+                         there is no single element to name",
+                    )
+                    .with_help("write `e[i].field`, or `e.field[i]`, which mean the same thing"),
+                );
+                return PoolId::ERROR;
+            }
             // Poison propagates silently: the base's own error was already reported.
             if base_ty != PoolId::ERROR {
                 let text = self.describe(base_ty);

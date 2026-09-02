@@ -462,6 +462,16 @@ pub enum SyntaxKind {
     /// `union` cannot express when only *some* fields overlap. A placed field does not move the
     /// ones after it (§4).
     PLACE_ATTR,
+    /// A `#soa(N)` attribute on a `struct`, storing it as one array per field (ADR-0147 §1).
+    ///
+    /// Holds the directive token and the count expression — an integer literal or a name that
+    /// resolves to a literal-valued constant. Its own kind beside [`Self::ALIGN_ATTR`] and
+    /// [`Self::PLACE_ATTR`] for the reason every attribute here has one: a downstream match on
+    /// kinds is exhaustive where a match on a directive's *text* is not.
+    ///
+    /// On the `struct` rather than on a field, because it is a statement about the whole
+    /// declaration: every field becomes `[N]T`, and an attribute on one field could not say that.
+    SOA_ATTR,
     /// A `@note` on a declaration — metadata a metaprogram can read (ADR-0098 §1).
     ///
     /// Holds the `@`, the name, and an optional string payload: `@deprecated` or `@requires "x"`. Its own

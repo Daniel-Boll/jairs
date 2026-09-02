@@ -129,6 +129,10 @@
 (align_attr "#align" @keyword.directive)
 (place_attr "#place" @keyword.directive)
 
+; And `#soa` on a struct (ADR-0147 §1), for the same reason once more: it is a literal token inside
+; its node, so nothing else colours it. The count is an ordinary expression and is left alone.
+(soa_attr "#soa" @keyword.directive)
+
 ; A visibility marker (ADR-0054 §1). Captured as `@keyword.directive` like every other directive,
 ; because that is what it is — the scope rule is semantic and nothing about it is visible in colour.
 (scope_decl) @keyword.directive

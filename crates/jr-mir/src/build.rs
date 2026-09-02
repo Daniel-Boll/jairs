@@ -4114,7 +4114,78 @@ impl Lower<'_> {
         None
     }
 
+    /// The field position sema recorded for an `#soa` access whose receiver is `index_expr`.
+    ///
+    /// `None` for every ordinary field access, which is the common case and one hash probe.
+    fn soa_field(&self, index_expr: ExprId) -> Option<u32> {
+        self.consts.soa_field(self.scope(), index_expr)
+    }
+
+    /// Builds the place for `e[i].x` on an `#soa` struct: `Field(position)` then `Index(i)`.
+    ///
+    /// The same place `e.x[i]` builds, which is the whole content of the feature — so the bounds
+    /// check is emitted here too, from the field's own array length, rather than being skipped
+    /// because the syntax looked different (ADR-0003).
+    fn soa_place(&mut self, index_expr: ExprId, position: u32) -> Option<(Place, PoolId)> {
+        // Through the scope's own arena, for the reason sema's hook is: an expression id indexes a
+        // *body*'s arena, not the file's.
+        let Some(&Expr::Index { base, index, .. }) = self.body.exprs.get(index_expr.index()) else {
+            return None;
+        };
+        let mut base_ty = self.ty(base);
+        // A pointer receiver auto-dereferences exactly as an ordinary field access's does.
+        let (mut place, mut ty) = if self.pointee(base_ty).is_some() {
+            let operand = self.expr(base);
+            let pointee = self.pointee(base_ty)?;
+            base_ty = pointee;
+            (Place::deref(operand), pointee)
+        } else {
+            let found = self.place(base)?;
+            base_ty = found.1;
+            found
+        };
+        while let Some(pointee) = self.pointee(ty) {
+            place = place.project(Projection::Deref);
+            ty = pointee;
+        }
+        let _ = base_ty;
+
+        let field_ty = self
+            .pool
+            .fields_of(ty)
+            .and_then(|fields| fields.get(position as usize))
+            .map(|field| field.ty)?;
+        let Item::ArrayType { elem, len } = *self.pool.item(field_ty) else {
+            return None;
+        };
+
+        let index_operand = self.expr(index);
+        let span = MirSpan::Expr(self.scope(), index_expr);
+        if self.bounds_checks {
+            let len_operand = Operand::Constant(self.pool.int_value(PoolId::S64, len));
+            self.emit(Statement::BoundsCheck {
+                index: index_operand,
+                len: len_operand,
+                span,
+            });
+        }
+        Some((
+            place
+                .project(Projection::Field(position))
+                .project(Projection::Index(index_operand)),
+            elem,
+        ))
+    }
+
     fn field_place(&mut self, receiver: ExprId, name: Symbol) -> Option<(Place, PoolId)> {
+        // **An `#soa` access is built in the other order** (ADR-0147 §2): the HIR nests
+        // `Index` inside `Field`, and the place is `Field` then `Index`. Sema decided this and
+        // recorded the field's position, so nothing here re-recognises the pattern — a second
+        // recognition would be a second chance to disagree, and a disagreement is a wrong
+        // *address*: sema typed an element while this read a whole array.
+        if let Some(position) = self.soa_field(receiver) {
+            return self.soa_place(receiver, position);
+        }
         let receiver_ty = self.ty(receiver);
 
         // Field access auto-dereferences (`tests/corpus/valid/015-pointers.jr`), so

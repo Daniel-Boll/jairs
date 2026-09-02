@@ -354,7 +354,11 @@ impl<'a> LowerCtx<'a> {
                 }
             }
         }
-        self.lower_fields_into_struct(span, s.field_list(), AggregateKind::Struct, poly_vars)
+        // `#soa(N)` (ADR-0147 §1). Only a `struct` may carry it: a `union`'s fields all share one
+        // offset and a `variant`'s are cases, so "one array per field" means nothing for either —
+        // and the parser only admits the attribute on a `struct`, so there is nothing to refuse.
+        let soa = s.soa_count().map(|e| self.lower_top_expr(&e));
+        self.lower_fields_into_struct(span, s.field_list(), AggregateKind::Struct, poly_vars, soa)
     }
 
     /// Lowers `union { i: s64; f: float64; }` (ADR-0045).
@@ -366,7 +370,7 @@ impl<'a> LowerCtx<'a> {
     /// joined the same arena for the same reason (ADR-0068 §2).
     fn lower_union_type(&mut self, u: &jr_syntax::ast::UnionType) -> StructId {
         let span = self.span_of_node(u.syntax());
-        self.lower_fields_into_struct(span, u.field_list(), AggregateKind::Union, Vec::new())
+        self.lower_fields_into_struct(span, u.field_list(), AggregateKind::Union, Vec::new(), None)
     }
 
     /// Lowers `variant { i: s64; f: float64; }` (ADR-0068 §1).
@@ -375,7 +379,13 @@ impl<'a> LowerCtx<'a> {
     /// what makes the tag a *layout* question (ADR-0068 §3) rather than a different HIR shape.
     fn lower_variant_type(&mut self, v: &jr_syntax::ast::VariantType) -> StructId {
         let span = self.span_of_node(v.syntax());
-        self.lower_fields_into_struct(span, v.field_list(), AggregateKind::Variant, Vec::new())
+        self.lower_fields_into_struct(
+            span,
+            v.field_list(),
+            AggregateKind::Variant,
+            Vec::new(),
+            None,
+        )
     }
 
     /// The field loop all three aggregate forms share.
@@ -385,6 +395,7 @@ impl<'a> LowerCtx<'a> {
         field_list: Option<jr_syntax::ast::FieldList>,
         kind: AggregateKind,
         poly_vars: Vec<Symbol>,
+        soa: Option<ExprId>,
     ) -> StructId {
         let mut fields = Vec::new();
 
@@ -421,6 +432,7 @@ impl<'a> LowerCtx<'a> {
             poly_vars,
             span,
             type_refs: Vec::new(),
+            soa,
         })
     }
 

@@ -1081,6 +1081,15 @@ pub struct Struct {
     /// [`Proc::type_refs`](crate::Proc::type_refs): field types are allocated in
     /// [`FileHir::type_refs`](crate::FileHir::type_refs).
     pub type_refs: Vec<TypeRef>,
+    /// The `#soa(N)` count expression, when the struct carries the attribute (ADR-0147 §1).
+    ///
+    /// An [`ExprId`] for the reason a field's `#align` operand is one: whether it is a usable count
+    /// is a semantic judgement, so `jr-hir` records the expression and `jr-sema` reads it — the same
+    /// split an array length uses (ADR-0070 §1).
+    ///
+    /// When present, `jr-sema` wraps **every** field's type in `[N]T` while resolving the body, so
+    /// nothing downstream of resolution sees anything but an ordinary struct of arrays.
+    pub soa: Option<ExprId>,
 }
 
 /// An enum type definition.

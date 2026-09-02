@@ -100,6 +100,18 @@ pub struct Pool {
     /// `struct_fields`, so its lookup is untouched; only an instance with arguments lands here. The
     /// dispatcher [`Pool::fields_of`] chooses between the two by whether the `Item` carries arguments.
     instance_fields: FxHashMap<PoolId, Vec<Field>>,
+    /// The `#soa(N)` count of each struct that has one (ADR-0147 §1).
+    ///
+    /// A side table keyed on the *declaration* rather than a field on `Item::StructType`, for the
+    /// reason `struct_fields` is one: the count is part of the declaration's **body**, recorded when
+    /// the body is resolved, and putting it in the interning key would mean a type could not be
+    /// referred to before its body was read.
+    ///
+    /// Here rather than in `jr-hir` because the question "is this an `#soa` struct" is asked by
+    /// `jr-sema` about a type that may have been declared in **another file** (ADR-0117), and the
+    /// pool is the one place every file's declarations already meet. Two lookups — one per file's HIR
+    /// — would be two chances to disagree about a type's identity.
+    soa_counts: FxHashMap<DeclId, u64>,
     /// Enum members, keyed by declaration site (ADR-0041 §4).
     enum_members: FxHashMap<DeclId, Vec<EnumMember>>,
 }
@@ -124,6 +136,7 @@ impl Pool {
             string_dedupe: FxHashMap::default(),
             struct_fields: FxHashMap::default(),
             instance_fields: FxHashMap::default(),
+            soa_counts: FxHashMap::default(),
             enum_members: FxHashMap::default(),
         };
 
@@ -497,6 +510,24 @@ impl Pool {
     #[must_use]
     pub fn struct_fields(&self, decl: DeclId) -> Option<&[Field]> {
         self.struct_fields.get(&decl).map(Vec::as_slice)
+    }
+
+    /// Records that the struct declared at `decl` is `#soa(count)` (ADR-0147 §1).
+    ///
+    /// Called from the same place `set_struct_fields` is, because the two facts are recorded
+    /// together: the fields have already been wrapped in `[count]T` by the time this runs, so this
+    /// records *why* they are arrays rather than a fact anything recomputes.
+    pub fn set_soa_count(&mut self, decl: DeclId, count: u64) {
+        self.soa_counts.insert(decl, count);
+    }
+
+    /// The `#soa` count of the struct declared at `decl`, or `None` for an ordinary struct.
+    ///
+    /// The predicate `jr-sema` asks to decide whether `e[i].x` is an `#soa` access (ADR-0147 §2)
+    /// and whether a bare `e[i]` is E0284.
+    #[must_use]
+    pub fn soa_count(&self, decl: DeclId) -> Option<u64> {
+        self.soa_counts.get(&decl).copied()
     }
 
     /// Records the substituted fields of a parameterised struct **instance** (ADR-0085 §2).

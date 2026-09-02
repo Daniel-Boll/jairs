@@ -19,7 +19,14 @@ error-recovering compiler written in Rust.
 ## Status, honestly
 
 Last updated with **wave W8 — Performance open** (W7 — Stdlib and W6 — Metaprogram are still open
-too), 1031 tests green — 1032 with the LLVM back end compiled in.
+too), 1032 tests green — 1033 with the LLVM back end compiled in.
+
+**A struct can be stored as arrays.** `Entities :: struct #soa(4) { x: s64; hp: u8; }` lays out as one
+array per field, and `e[i].x` means `e.x[i]` (ADR-0147) — so a loop over one field is contiguous
+instead of striding over every other. The whole feature is a change in the type checker *before*
+layout runs, so layout, reflection, the VM and both back ends needed no line: after resolution there
+is nothing special about the type. A bare `e[i]` is refused, because with the fields in separate arrays
+there is no single element to name.
 
 **There is a compile-throughput number, and it is published rather than claimed.** On an Apple M2 Pro
 with a `--release` compiler, over `tests/corpus/valid` (116 files, 9 203 lines, 360 982 bytes) with
@@ -632,7 +639,7 @@ The authoritative version of this list is
 | `s8 s16 s32 s64`, `u8 u16 u32 u64`, `bool`, `string`, `*T`, `null` | pointer *difference* `p - q`; unchecked, so past-end is UB |
 | `float32`, `float64` — plain IEEE-754, no traps | `%` on floats, `is_nan`, math intrinsics (**W7**) |
 | `cast(T, x)` between any two numeric types, and `xx` where the context gives the type | pointer conversions — `xx` is no more powerful than `cast` |
-| `struct { … }`, one level, nominal, with per-field `#align N` (a minimum, power of two up to 4096) and `#place N` (an exact byte offset, may overlap and may be unaligned) — ADR-0144 | a struct-level `#align`; any packing form; `#align` on a local or a procedure; an operand needing evaluation |
+| `struct { … }`, one level, nominal, with `#soa(N)` for one-array-per-field storage and `e[i].x` access (ADR-0147), and per-field `#align N` (a minimum, power of two up to 4096) and `#place N` (an exact byte offset, may overlap and may be unaligned) — ADR-0144 | a struct-level `#align`; any packing form; `#align` on a local or a procedure; an operand needing evaluation; a bare `e[i]` on an `#soa` struct, and `using` inside one |
 | `union { … }`, nominal, **untagged** — every field at offset 0, so a cross-field read reinterprets | |
 | `variant { … }` — a tagged union: a write sets the tag, reading another case **traps**, `switch` destructures it (ADR-0068) | a recursive variant; one in a `#foreign` signature; eliding the check inside a matching arm |
 | `enum { RED; GREEN :: 5; }`, nominal, namespaced members, and bare `.RED` from context — including as a `switch` case (ADR-0067). A member's value may **name a constant** whose initialiser is a literal, and auto-numbering continues from it (ADR-0129) | a value needing evaluation (`2 + 2`, a `#run`, another file's constant); a member naming a **sibling** member |

@@ -1,0 +1,29 @@
+// EXPECT: E0284 — an `#soa` struct indexed as something other than a field receiver (ADR-0147 §2)
+//
+// `e[i]` on its own has no type, by design. The fields of an `#soa` struct live in separate arrays,
+// so there is no single element to name — and the alternative is Jai's synthesised
+// struct-of-pointers, which is a real design and a much larger one: it needs a type that exists only
+// as an intermediate, and pointers into N arrays kept consistent. Refusing leaves that available
+// rather than foreclosing it.
+//
+// **One** refusal here, per this directory's contract. The other shapes E0284 covers:
+//
+//   * a count that is not a usable positive array length — including one needing evaluation, for
+//     ADR-0018 §3's ordering reason (a struct's fields are laid out with its declaration);
+//   * a `using` field inside an `#soa` struct, because `using` promotes for *lookup* and under
+//     `#soa` each promoted name would be an array — a second transformation with no spelling for
+//     the index.
+//
+// The diagnostic is E0284 rather than E0234's general "cannot index a value of type …" precisely
+// because that message is true and unhelpful to someone who has just written `#soa` and expected
+// exactly this to work: it names the two spellings that do.
+Entities :: struct #soa(4) {
+    x: s64;
+    hp: u8;
+}
+
+main :: () {
+    e: Entities;
+    e.x[0] = 1;
+    one := e[0];
+}
