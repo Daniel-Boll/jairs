@@ -21,6 +21,20 @@ error-recovering compiler written in Rust.
 Last updated with **wave W8 — Performance DONE** (W7 — Stdlib and W6 — Metaprogram are still open),
 1033 tests green — 1034 with the LLVM back end compiled in.
 
+**What happens next is planned, and the plan named its own blockers.** PLAN §8 is the completion plan
+for the four waves that remain — W6 Metaprogram, W7 Stdlib, W9 Tooling, W10 Graphics — and writing it
+changed three things. Five of W7's seven remaining modules turn out to wait on one decision this
+language has never made: there is no error-handling model, so `File`, `Process`, `Socket` and the useful
+half of `JSON` have no way to say that ignoring a failure is an error. `Thread` + atomics was one item
+in a stdlib list and is really a wave of its own, so it is now W11. And W10 was described as "all
+library work, no compiler changes", which is false: no aggregate crosses a `#foreign` boundary today, and
+every windowing and GPU API passes structs by value — so W10 is **blocked**, not merely unstarted.
+
+**Probing the plan found a live defect.** Calling a `#foreign` procedure with a struct by value produces
+an internal compiler error in both engines rather than a diagnostic — the ninth occurrence of this
+project's most-recorded failure shape, found by writing the thing rather than reading about it. It is
+also the cheapest fix on the list, because one back end already refuses it in words.
+
 **One of W8's eight sub-waves shipped a measurement instead of a feature, on purpose.** Parallel
 semantic analysis was written, produced byte-identical output at every thread count, and was then
 measured: 1.20x on a clean 119-file tree and 1.01x on one with errors, against a ceiling of 2.5x set by

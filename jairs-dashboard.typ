@@ -304,7 +304,7 @@
 // Roadmap
 // ---------------------------------------------------------------------------
 
-#section[Roadmap: W1 through W5 and W8 closed; W6 and W7 open; W9 and W10 ahead]
+#section[Roadmap: W1–W5 and W8 closed; W6 and W7 open; W9 ahead, W10 blocked — see PLAN §8]
 
 #let waves = (
   (
@@ -348,8 +348,12 @@
     "Semantic tokens are the one LSP capability still missing; the other thirteen landed early. Richer DWARF (locals, struct layouts) for lldb, and Neovim packaging — VS Code was descoped by ADR-0036, and any LSP client works unpackaged.",
   ),
   (
-    "W10 Graphics, in Jairs", "not started",
-    "The last wave the plan reaches. Window creation through foreign calls (Cocoa), a GPU layer (Metal then Vulkan), an immediate-mode 2D renderer, image decode, immediate-mode UI, audio. ALL library work written in Jairs, no compiler changes — which is why it is gated on W5 (complete) and W7 (open), and why it is the wave that tests whether the language is actually usable.",
+    "W10 Graphics, in Jairs", "blocked",
+    "BLOCKED, not merely unstarted, and PLAN section 8.5 corrects the record. It was described as ALL library work with no compiler changes; that is false. No aggregate crosses a #foreign boundary today — calling such a procedure is a leaked internal error in both engines, the ninth occurrence of this project's most-recorded failure shape — and every windowing and GPU API passes structs by value: CGRect, CGPoint, MTLViewport. objc_msgSend is C-variadic on top of that, which is a third thing neither engine does, and a Jairs ..T variadic is its own packing convention rather than the C one. So W10's real prerequisites are a diagnostic (E0286), then FFI aggregates and C-variadics, then W7's File. Window creation through Cocoa, a GPU layer (Metal then Vulkan), an immediate-mode 2D renderer, image decode, UI and audio all sit above that.",
+  ),
+  (
+    "W11 Concurrency", "not started",
+    "NEW, split out of W7 by PLAN section 8.3. Thread plus atomics was one item in a stdlib list and is really a wave comparable to W4: there is no thread support anywhere in the runtime — not in the VM, whose Value and linear memory region assume one execution context, and not in the trap machinery, whose shadow call stack is a single mutable global in native code. It needs a per-thread VM stack, atomics as language operations rather than library calls, a memory model to say what they mean, and a rule for whether comptime execution may spawn one. Named rather than left as a list item that would be quietly dropped or quietly become a quarter of work.",
   ),
 )
 
@@ -362,7 +366,10 @@
       text(size: 7.4pt, weight: "bold")[#name],
       text(
         size: 6.6pt,
-        fill: if state == "done" { good } else if state == "in progress" { accent } else { absent },
+        // `blocked` is amber, not the grey `not started` gets: a wave that cannot be started until
+        // something else lands is a different fact from one nobody has picked up, and the whole point
+        // of PLAN §8.5 is that W10 is the first kind while the table used to imply the second.
+        fill: if state == "done" { good } else if state == "in progress" { accent } else if state == "blocked" { warn } else { absent },
       )[#state],
       text(size: 7.1pt, fill: muted)[#note],
     )
