@@ -61,6 +61,20 @@ down — ten steps, in a compiled binary, against real SDL2. It is the seventeen
 `jr run` cannot execute: the compile-time interpreter resolves a foreign symbol from the compiler's own
 process image, so it reaches the C library and nothing else.
 
+**And closing that wave found a bug in something else** (ADR-0168). The plan's table of what each wave delivered
+carried three "not delivered" notes that were no longer true, and they had been added in the first place to
+correct a *different* set of stale claims. Two documents disagreed about one of them, so rather than pick a side
+the construct was simply run — and it turned out that half of it worked, half of it had never been tried, and the
+untried half produced an internal compiler error on a program that looked perfectly legal.
+
+It is now a diagnostic. The construct in question decorates a parameter to say "this argument is a compile-time
+constant"; written on a *return* type it cannot mean anything at all, because a return has no argument. So it is
+refused rather than implemented, which is the strongest case a refusal can have.
+
+The correction then made the same class of mistake one screen later: a note claimed a file count was unchanged
+because a test fixture had moved between directories. The reasoning was plausible and the count was wrong. Running
+the count caught it.
+
 **An image loads and draws** (ADR-0167). A BMP is decoded, uploaded to the renderer as a texture, and drawn
 scaled into a rectangle. BMP rather than PNG because SDL decodes it in the library already installed, where PNG
 would mean a second dependency or an inflate implementation — the largest single thing this standard library
