@@ -762,6 +762,7 @@ dependencies = [
  "jr-sema",
  "object",
  "rustc-hash 2.1.3",
+ "target-lexicon",
 ]
 
 [[package]]

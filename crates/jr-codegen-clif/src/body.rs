@@ -39,8 +39,8 @@
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
-    Block, BlockArg, FuncRef, InstBuilder, MemFlagsData, SourceLoc, StackSlotData, StackSlotKind,
-    TrapCode, Type, Value as ClifValue,
+    Block, BlockArg, FuncRef, InstBuilder, MemFlagsData, SourceLoc, StackSlotData, StackSlotKey,
+    StackSlotKind, TrapCode, Type, Value as ClifValue,
 };
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataDescription, DataId, Linkage, Module};
@@ -252,10 +252,20 @@ impl Translator<'_, '_> {
             let size = u32::try_from(layout.size.max(1)).map_err(|_| {
                 CodegenError::Internal(format!("slot {index} is larger than a u32"))
             })?;
-            let data = StackSlotData::new(
+            // **Keyed by the MIR slot index** (ADR-0174 §1). Cranelift reports each stack slot's frame offset
+            // in `MachBufferFrameLayout`, keyed by *its* `StackSlot` — and this back end also creates slots for
+            // aggregate temporaries elsewhere, so slot order is not a safe correlation. A `StackSlotKey`
+            // carries the MIR index through the compile, which makes the mapping a fact rather than an
+            // assumption about creation order.
+            //
+            // `+ 1`, so that 0 can mean "not a MIR slot": `MachBufferStackSlot::key` is `Option`, but a
+            // temporary created without a key reads as `None` and a *keyed* zero would be indistinguishable
+            // from the first real slot if anything ever defaulted it.
+            let data = StackSlotData::new_with_key(
                 StackSlotKind::ExplicitSlot,
                 size,
                 layout.align.trailing_zeros().try_into().unwrap_or(0),
+                StackSlotKey::new(index as u64 + 1),
             );
             let handle = self.builder.create_sized_stack_slot(data);
             self.slots.push(handle);

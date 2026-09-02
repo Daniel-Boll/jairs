@@ -68,6 +68,8 @@ struct PendingSubprogram {
     line: u32,
     /// The return type's description index, when it has one.
     ret: Option<usize>,
+    /// Each named local: name, type description index, and offset from the frame base (ADR-0174 §2).
+    variables: Vec<(String, usize, i64)>,
 }
 
 /// One defined function's line-table rows, before its `FuncId` becomes an object symbol.
@@ -869,12 +871,51 @@ impl Backend for ClifBackend {
                 .flat_map(|block| block.stmts.iter().map(body::statement_span))
                 .find_map(|span| locations.position(span))
                 .map_or(0, |at| at.line);
+            // Each named local's stack offset, from Cranelift's own frame layout (ADR-0174 §2). Correlated by
+            // the `StackSlotKey` the slot was created with rather than by creation order, because this back end
+            // also creates unkeyed slots for aggregate temporaries.
+            let mut variables = Vec::new();
+            if let Some(frame) = compiled.buffer.frame_layout() {
+                for (_, slot) in frame.stackslots.iter() {
+                    let Some(key) = slot.key else {
+                        continue;
+                    };
+                    let Some(mir_index) = key.bits().checked_sub(1) else {
+                        continue;
+                    };
+                    let Ok(mir_index) = usize::try_from(mir_index) else {
+                        continue;
+                    };
+                    if mir_index >= mir.slot_count() {
+                        continue;
+                    }
+                    let data = mir.slot(jr_mir::SlotId::from_usize(mir_index));
+                    let Some(local) = data.local else {
+                        continue;
+                    };
+                    let Some(name) = locations.local_name(local) else {
+                        continue;
+                    };
+                    let Some(ty) = self.debug_types.describe(pool, layout, data.ty, locations)
+                    else {
+                        continue;
+                    };
+                    // Cranelift reports a slot's offset from the **bottom** of the frame and the frame's
+                    // distance to FP separately. A DWARF `DW_OP_fbreg` offset is relative to the frame base,
+                    // which this emitter declares to be FP — so the two are subtracted, and the result is
+                    // negative for a slot below FP, which every stack slot is.
+                    let offset = i64::from(slot.offset) - i64::from(frame.frame_to_fp_offset);
+                    variables.push((name, ty, offset));
+                }
+            }
+
             self.debug_subprograms.push(PendingSubprogram {
                 id,
                 length: u64::from(compiled.buffer.total_size()),
                 name: self.source_names.get(&proc).cloned(),
                 line,
                 ret: ret_index,
+                variables,
             });
         }
 
@@ -906,6 +947,17 @@ impl Backend for ClifBackend {
 
     fn finalise(mut self: Box<Self>) -> Result<Vec<u8>, CodegenError> {
         self.define_entry_shim()?;
+        // The DWARF register number of the frame pointer, which every variable's location is relative to
+        // (ADR-0174 §2). Per-architecture, because DWARF numbers registers per-ABI: x29 on AArch64, RBP on
+        // x86-64. A wrong number makes every local read from an arbitrary register, confidently.
+        let frame_pointer = match self.module.isa().triple().architecture {
+            target_lexicon::Architecture::Aarch64(_) => gimli::Register(29),
+            target_lexicon::Architecture::X86_64 => gimli::Register(6),
+            // An architecture this compiler has never been built for: `u16::MAX` is a register no ABI assigns,
+            // so a consumer rejects the expression rather than reading a real register that means something
+            // else. Refusing to guess is the whole point.
+            _ => gimli::Register(u16::MAX),
+        };
         let endian = if self.module.isa().endianness() == cranelift_codegen::ir::Endianness::Little
         {
             gimli::RunTimeEndian::Little
@@ -938,6 +990,7 @@ impl Backend for ClifBackend {
                     name: pending.name,
                     line: pending.line,
                     ret: pending.ret,
+                    variables: pending.variables,
                 })
                 .collect();
             debug::emit(
@@ -949,6 +1002,7 @@ impl Backend for ClifBackend {
                 &comp_dir,
                 &primary,
                 endian,
+                frame_pointer,
             )
             .map_err(|e| CodegenError::Internal(format!("cannot write debug info: {e}")))?;
         }

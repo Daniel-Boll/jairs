@@ -212,6 +212,35 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0174 reaches 1066** (**1070** under gate 7) and holds at **254** corpus files. Stack-resident locals now
+work in **both** back ends, and the ADR **amends ADR-0172 §3** — the second time in one session that this habit
+has caught this project's own accepted ADR.
+
+**ADR-0173 §4 said to *probe* Cranelift's frame layout rather than assume, and it paid**: `MachBufferFrameLayout`
+carries `frame_to_fp_offset` and a per-slot offset, populated unconditionally. But a Cranelift `StackSlot` is not
+a MIR slot — this back end also creates *unkeyed* slots for aggregate temporaries — so a `StackSlotKey` carries
+the MIR index through the compile. Correlating by creation order would work today and break the first time a
+temporary is created before a body's own, which is a change nobody would connect to wrong debug info.
+
+**§3 is the lesson.** ADR-0172 §3 concluded from **one program** that "an aggregate local is not named — its slot
+carries no `LocalId`". It is not that general: an aggregate **passed by value to a procedure** is bound to its
+slot and *is* named, in both engines, while one only field-assigned is not. The rule is about **usage**, and that
+sentence described its test program as though it described the language.
+
+**So the pattern is now specific enough to state: a negative result from one program is evidence about that
+program.** Generalising it needs a second program that differs in the suspected dimension — and here that program
+was one line away. The habit is nine for nine, and its two most valuable catches were both against ADRs written
+minutes earlier in the same session (ADR-0165 → ADR-0164 §5, and this one).
+
+**One DWARF detail worth keeping**: the frame base is the **frame-pointer register**, not `DW_OP_call_frame_cfa`,
+because the CFA form needs `.eh_frame` this compiler does not emit. The register number is per-ABI (29 on
+AArch64, 6 on x86-64), and an unknown architecture gets `u16::MAX` so a consumer *rejects* the expression rather
+than reading a real register that means something else. The test asserts the offset is **negative**, because
+forgetting to subtract `frame_to_fp_offset` yields a location that parses perfectly and reads the wrong memory.
+
+**W12's remaining debug work is now one item**: a **register-resident** local, which *neither* engine shows — so
+it is a property of the project rather than of one back end. ADR-0173 §4 lists its three pieces.
+
 **ADR-0173 reaches 1065** (**1069** under gate 7) and holds at **254** corpus files. Cranelift now emits a
 `.debug_info` — type DIEs and a subprogram per function — so **both back ends agree about a struct's layout in
 DWARF by two entirely different routes**, and the test asserts the agreement rather than each emitter separately.
