@@ -996,6 +996,30 @@ impl<'ctx> Backend for LlvmBackend<'ctx> {
             None => (None, Vec::new()),
         };
 
+        // Per-slot names, type DIEs and lines, built before the builder is borrowed (ADR-0172 §1). Only a
+        // slot that stands for a *source local* gets an entry — a compiler temporary has no name worth
+        // showing, and holes are kept so an index still identifies its slot.
+        let slot_debug: Vec<Option<(String, inkwell::debug_info::DIType<'ctx>, u32)>> =
+            if self.debug.is_some() {
+                let file = body_file;
+                let mut out = Vec::with_capacity(mir.slot_count());
+                for index in 0..mir.slot_count() {
+                    let slot = mir.slot(jr_mir::SlotId::from_usize(index));
+                    let entry = match (slot.local, file) {
+                        (Some(local), Some(file)) => locations.local_name(local).and_then(|name| {
+                            let die = self.debug_type(pool, slot.ty, file, locations)?;
+                            let line = locations.position(slot.span).map_or(1, |at| at.line);
+                            Some((name, die, line))
+                        }),
+                        _ => None,
+                    };
+                    out.push(entry);
+                }
+                out
+            } else {
+                Vec::new()
+            };
+
         // Parameter names, resolved before the builder is borrowed. `arg{n}` when a name is unavailable — the
         // index is real information, unlike a guessed identifier.
         let parameter_names: Vec<String> = self
@@ -1072,7 +1096,12 @@ impl<'ctx> Backend for LlvmBackend<'ctx> {
                 );
             }
 
-            body::DebugScope { info, subprogram }
+            body::DebugScope {
+                info,
+                subprogram,
+                file,
+                slots: &slot_debug,
+            }
         });
 
         let shared = body::Shared {

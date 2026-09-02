@@ -2379,3 +2379,150 @@ main :: () {
          or a debugger shows a field the program does not have there"
     );
 }
+
+/// A **stack-resident** local reaches DWARF as a named `DW_TAG_variable` with a frame location (ADR-0172).
+///
+/// # Why the program takes an address, and the two boundaries that writing it exposed
+///
+/// The first version used `total := 7; doubled := total * 2;` and found **no variables at all**. That is not a
+/// bug in the emission — it is MIR's design: only an **escaped** local gets a stack slot (ADR-0017 §2), and a
+/// slot is what a `llvm.dbg.declare` describes. A local living its whole life in SSA registers has no address
+/// to point at. **So a register-resident local is invisible to a debugger**, and closing that is exactly what
+/// W12's "locals through value labels" item is for: a register location is a different DWARF expression, not a
+/// missing call.
+///
+/// The second version added an **aggregate** local, expecting it to escape and be named. It escapes and is
+/// *not* named — its MIR slot carries no `LocalId`, so nothing connects it back to a source name. That is a
+/// MIR-side gap rather than an emission one, and it is asserted **negatively** at the end so the boundary is
+/// pinned rather than rediscovered.
+///
+/// Both were found by writing the test, which is why it names one local and documents two absences.
+///
+/// # What has to line up
+///
+/// * The **name** must be the one the programmer wrote, via `SourceInfo::local_name` — a back end holds a
+///   `MirSpan` and cannot reach a local's `Symbol` on its own. A variable called `s3` would parse fine and
+///   tell a reader nothing.
+/// * The **location** must be a frame-relative expression. `llvm.dbg.declare` has to be placed where it
+///   dominates every use, and the wrong block yields a verifier failure or a variable with no location.
+/// * A **compiler temporary must not appear.** MIR has far more slots than the program has locals, and a
+///   debugger listing them beside the user's own names is noise.
+#[cfg(feature = "llvm")]
+#[test]
+fn a_local_reaches_dwarf_with_its_name_and_a_stack_location() {
+    use gimli::EndianSlice;
+    use object::{Object as _, ObjectSection as _};
+
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("locals.jr");
+    fs::write(
+        &source,
+        r#"#import "Basic";
+
+Pair :: struct {
+    lo: s64;
+    hi: s64;
+}
+
+main :: () {
+    // An aggregate escapes, so `pair` gets a stack slot.
+    pair: Pair;
+    pair.lo = 7;
+    pair.hi = 11;
+
+    // Its address is taken, so `total` escapes too.
+    total := pair.lo + pair.hi;
+    view := *total;
+    exit(view.*);
+}
+"#,
+    )
+    .unwrap();
+
+    let object_path = dir.path().join("locals.o");
+    let code = jr_cli::commands::build::run(
+        jr_cli::cli::BuildArgs {
+            path: source,
+            output: Some(object_path.clone()),
+            emit_object: true,
+            backend: jr_cli::cli::BackendArg::Llvm,
+            no_bounds_check: false,
+            opt_level: None,
+            module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
+            library_paths: Vec::new(),
+        },
+        &quiet_global(),
+    )
+    .unwrap_or(1);
+    assert_eq!(code, 0, "the object must be emitted");
+
+    let bytes = fs::read(&object_path).expect("the object should exist");
+    let file = object::File::parse(&*bytes).expect("the object should parse");
+    let endian = if file.is_little_endian() {
+        gimli::RunTimeEndian::Little
+    } else {
+        gimli::RunTimeEndian::Big
+    };
+    let load = |id: gimli::SectionId| -> Result<EndianSlice<'_, gimli::RunTimeEndian>, ()> {
+        let name = id.name();
+        let macho = format!("__{}", name.trim_start_matches('.'));
+        let data = file
+            .sections()
+            .find(|s| matches!(s.name(), Ok(n) if n == name || n == macho.as_str()))
+            .and_then(|s| s.data().ok())
+            .unwrap_or(&[]);
+        Ok(EndianSlice::new(data, endian))
+    };
+    let dwarf = gimli::Dwarf::load(load).expect("the DWARF should load");
+
+    let mut variables = Vec::new();
+    let mut units = dwarf.units();
+    while let Some(header) = units.next().expect("units should parse") {
+        let unit = dwarf.unit(header).expect("the unit should parse");
+        let mut entries = unit.entries();
+        while let Some(entry) = entries.next_dfs().expect("entries should walk") {
+            if entry.tag() != gimli::DW_TAG_variable {
+                continue;
+            }
+            let name = entry
+                .attr(gimli::DW_AT_name)
+                .and_then(|a| a.string_value(&dwarf.debug_str))
+                .map(|s| String::from_utf8_lossy(s.slice()).into_owned())
+                .unwrap_or_default();
+            let located = entry.attr_value(gimli::DW_AT_location).is_some();
+            variables.push((name, located));
+        }
+    }
+
+    // One local, not a loop: only the address-taken scalar is named today, and the two absences beside it are
+    // the interesting part — see the doc comment.
+    let (_, located) = variables
+        .iter()
+        .find(|(name, _)| name == "total")
+        .unwrap_or_else(|| {
+            panic!("the local `total` must appear as a DWARF variable; got {variables:?}")
+        });
+    assert!(
+        *located,
+        "`total` must carry a location, or a debugger knows its name and cannot read it"
+    );
+    // MIR has more slots than the program has locals. A debugger listing `s3` beside the user's own names is
+    // noise, so a temporary must contribute nothing.
+    let names: Vec<&str> = variables.iter().map(|(name, _)| name.as_str()).collect();
+    let temporary = names
+        .iter()
+        .any(|name| name.starts_with('s') && name[1..].chars().all(char::is_numeric));
+    assert!(
+        !temporary,
+        "a compiler temporary must not be declared; got {names:?}"
+    );
+    // **Pinned, not accepted quietly**: an aggregate local escapes to a stack slot and is still unnamed,
+    // because that slot carries no `LocalId`. When MIR starts recording it this assertion fails, and whoever
+    // fixed it is told to invert the line — which is the point of asserting an absence rather than omitting
+    // the case and letting the next reader rediscover it.
+    assert!(
+        !names.contains(&"pair"),
+        "an aggregate local is not yet named — if it now is, MIR started recording its LocalId and this \
+         assertion should be inverted; got {names:?}"
+    );
+}

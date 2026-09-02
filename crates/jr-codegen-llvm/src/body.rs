@@ -113,6 +113,17 @@ pub struct DebugScope<'ctx, 'a> {
     /// enclosing function's subprogram. The verifier's message for getting it wrong is
     /// `!dbg attachment points at wrong subprogram for function`, which is at least honest.
     pub subprogram: inkwell::debug_info::DISubprogram<'ctx>,
+    /// The file this body's variables are declared in.
+    pub file: inkwell::debug_info::DIFile<'ctx>,
+    /// Per MIR slot: its source name, type DIE and line, when it has all three (ADR-0172 §1).
+    ///
+    /// **Precomputed by the back end**, because building a type DIE needs the back end's cache and `&mut`
+    /// access to it, while declaring a variable needs the `alloca` that exists only during translation. So the
+    /// two halves happen on opposite sides of this boundary and meet here.
+    ///
+    /// Indexed by slot, holes included: a compiler temporary has no name and gets no entry, and dropping the
+    /// holes would misalign every later slot — the same trap ADR-0171 §3 records for parameters.
+    pub slots: &'a [Option<(String, inkwell::debug_info::DIType<'ctx>, u32)>],
 }
 
 pub struct Shared<'ctx, 'a> {
@@ -240,7 +251,7 @@ impl<'ctx> Translator<'ctx, '_> {
             .ok_or_else(|| CodegenError::Internal("the alloca block lost its branch".to_owned()))?;
         self.allocas.position_before(&branch);
 
-        self.declare_slots()?;
+        self.declare_slots(alloca_block)?;
 
         // The result pointer is the *leading* parameter, so it must be taken before the
         // ordinary ones are bound — binding from position 0 regardless would give the result
@@ -337,7 +348,7 @@ impl<'ctx> Translator<'ctx, '_> {
     /// Sizes and alignments come from [`jr_pool::layout_of`]. An `i8` array of the layout's
     /// own size, rather than a typed allocation, keeps LLVM out of the layout business
     /// (ADR-0143 §4).
-    fn declare_slots(&mut self) -> Result<(), CodegenError> {
+    fn declare_slots(&mut self, alloca_block: BasicBlock<'ctx>) -> Result<(), CodegenError> {
         for index in 0..self.body.slot_count() {
             let slot = self.body.slot(jr_mir::SlotId::from_usize(index));
             let layout =
@@ -354,6 +365,61 @@ impl<'ctx> Translator<'ctx, '_> {
             })?;
             let pointer = self.alloca(bytes, layout.align, &format!("s{index}"))?;
             self.slots.push(pointer);
+
+            // The DWARF variable for a slot that stands for a source local (ADR-0172 §1). A temporary gets
+            // none, which is right: a debugger showing `s7` next to a user's own names is noise.
+            if let Some(debug) = self.shared.debug
+                && let Some(Some((name, die, line))) = debug.slots.get(index)
+            {
+                let variable = debug.info.create_auto_variable(
+                    debug.subprogram.as_debug_info_scope(),
+                    name,
+                    debug.file,
+                    *line,
+                    *die,
+                    // `always_preserve`: keep the variable at `-O0` even when nothing reads it, which is the
+                    // whole point of debug info in an unoptimised build.
+                    true,
+                    0,
+                    // The slot's own alignment, in bits.
+                    layout.align.saturating_mul(8),
+                );
+                let location = debug.info.create_debug_location(
+                    self.context,
+                    *line,
+                    0,
+                    debug.subprogram.as_debug_info_scope(),
+                    None,
+                );
+                // Declared in the **alloca block**, which dominates the whole body by construction
+                // (ADR-0143 §4) — a declare must dominate every use of its variable.
+                //
+                // **The raw `llvm-sys` call, not inkwell's wrapper**, and this is an upstream bug rather than a
+                // preference (ADR-0172 §2). LLVM 19 replaced the `llvm.dbg.declare` *intrinsic call* with a
+                // debug **record**, which is not a value — and inkwell 0.9's `insert_declare_at_end` casts the
+                // returned `LLVMDbgRecordRef` to an `LLVMValueRef` and wraps it in `InstructionValue::new`,
+                // which asserts `is_instruction()`. Both of its insert helpers panic on LLVM 21 for that
+                // reason, at a message naming inkwell's internals and no call of ours.
+                //
+                // The record itself is discarded: nothing here needs a handle on it, and the metadata is
+                // attached to the block by the call.
+                //
+                // SAFETY: every pointer comes from a live inkwell wrapper whose lifetime outlives this call —
+                // the builder from `DebugScope`, the variable and expression just created from it, the storage
+                // from an `alloca` in this function, and the block from this body. An empty expression is the
+                // correct one for a variable whose storage *is* its address.
+                let expression = debug.info.create_expression(Vec::new());
+                unsafe {
+                    inkwell::llvm_sys::debuginfo::LLVMDIBuilderInsertDeclareRecordAtEnd(
+                        debug.info.as_mut_ptr(),
+                        inkwell::values::AsValueRef::as_value_ref(&pointer),
+                        variable.as_mut_ptr(),
+                        expression.as_mut_ptr(),
+                        location.as_mut_ptr(),
+                        alloca_block.as_mut_ptr(),
+                    );
+                }
+            }
         }
         Ok(())
     }

@@ -212,6 +212,36 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0172 holds at 1064** (**1068** under gate 7) and holds at **254** corpus files. W12's third item for LLVM,
+**half delivered — and the partition is the point.** An escaped *scalar* local reaches DWARF with its name, type
+and stack location; `lldb` can print it.
+
+**Two boundaries, both found by writing the test rather than by reasoning.** A **register-resident** local is
+invisible, because only an *escaped* local gets a MIR slot (ADR-0017 §2) and a slot is what a `dbg.declare`
+describes — that is precisely what "locals through value labels" is for, and it is a *different DWARF
+expression* rather than a missing call. And an **aggregate** local is unnamed even though it escapes: its slot
+carries no `LocalId`. **Both are asserted, the second negatively**, with a message telling whoever fixes MIR to
+invert the line — an absence that is asserted is a boundary, an absence merely omitted is something the next
+reader rediscovers.
+
+**§2 is the mistake worth remembering.** The name lookup first keyed on `MirSpan::Local`; it found `total` and
+**silently missed `pair`**, because an aggregate's slot carries the span of the expression that created it.
+`SlotData::local` is the authoritative answer and the back end already held it. **A lookup that names *some*
+locals is worse than one that names none**, because the gap then looks like a property of the program rather
+than of the compiler.
+
+**And a trap for anyone touching LLVM debug info here: inkwell 0.9's insert helpers panic on LLVM 21.** LLVM 19
+replaced the `llvm.dbg.declare` *intrinsic call* with a debug **record**, which is not a value — inkwell casts
+the returned `LLVMDbgRecordRef` to an `LLVMValueRef` and wraps it in `InstructionValue::new`, which asserts
+`is_instruction()`. **Both** `insert_declare_at_end` and `insert_declare_before_instruction` fail, at a message
+naming inkwell's internals and no call of ours. The raw
+`inkwell::llvm_sys::debuginfo::LLVMDIBuilderInsertDeclareRecordAtEnd` is used instead, and `inkwell::llvm_sys` is
+re-exported so no new dependency was needed.
+
+**One process note.** Gates 3 and 7 were run concurrently once and gate 7 failed with "this compiler was built
+without LLVM support" — the two share `target/debug/jr`, and the non-LLVM run rebuilt it underneath the
+differential test. **Never run the two test gates in parallel.**
+
 **ADR-0171 holds at 1064** (**1067** under gate 7 — two new `llvm`-gated tests) and holds at **254** corpus
 files. W12's second item for LLVM: a struct's layout now reaches DWARF with source field names and real offsets.
 
