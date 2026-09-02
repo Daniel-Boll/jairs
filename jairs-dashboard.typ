@@ -449,10 +449,12 @@
   #v(0.15em)
   #text(size: 7.4pt)[
     *Everything is merged.* This box used to say `main` sat at `ec150a5` with twenty-three waves stacked
-    on branches ahead of it. `main` is now at `8e2dafe`, and every wave through W8 is merged with
-    `--no-ff`, one merge commit per wave — so `git log --merges main` reads as the wave history. The
-    branch names were corrected first: two W8 sub-waves had been committed onto a sibling's branch, and
-    `feat/simd` and `feat/parallel-sema` now name their own work.
+    on branches ahead of it. Every wave through W8 is now merged with `--no-ff`, one merge commit per
+    wave — so `git log --merges main` reads as the wave history, which is a claim you can check rather
+    than a revision that goes stale the moment this file is committed. (That is why no SHA appears here:
+    the commit that would record one changes the thing it records.) The branch names were corrected
+    first — two W8 sub-waves had been committed onto a sibling's branch, and `feat/simd` and
+    `feat/parallel-sema` now name their own work.
   ]
   #v(0.15em)
   #text(size: 7.4pt, style: "italic")[
