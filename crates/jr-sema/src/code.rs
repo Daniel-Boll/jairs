@@ -456,3 +456,15 @@ pub(crate) const E0284: &str = "E0284";
 /// directive silently ignored is worse than one rejected — applies with unusual force to a construct
 /// chosen for speed.
 pub(crate) const E0285: &str = "E0285";
+
+/// A type that cannot cross a `#foreign` boundary, in a foreign signature (ADR-0150).
+///
+/// Raised at the **declaration**, because the signature is what cannot be lowered: a binding that
+/// could never be called successfully is itself the error, and a library binding is usually written
+/// before its first caller.
+///
+/// This replaced the **ninth** leaked internal error in this project's most-recorded failure shape.
+/// `jr-codegen-llvm`'s signature builder already refused an aggregate here in words, while the
+/// Cranelift path simply never declared the procedure — so a legal-looking program produced two
+/// different internal errors and no diagnostic.
+pub(crate) const E0286: &str = "E0286";
