@@ -116,6 +116,12 @@ pub struct Shared<'ctx, 'a> {
     pub names: &'a FxHashMap<ProcRef, (GlobalValue<'ctx>, usize)>,
     /// How many frames the shadow stack holds, so the push can be bounds-checked.
     pub shadow_capacity: usize,
+    /// Whether each declared procedure is `#foreign` (ADR-0160 part 2).
+    ///
+    /// The call site needs it and the signature builder does not, for the reason the Cranelift back end's
+    /// copy of this field gives: a signature is built from a declaration that knows its own kind, while a
+    /// *call* has only a `ProcRef`.
+    pub foreign: &'a FxHashMap<ProcRef, bool>,
 }
 
 /// Translates one body into `function`.
@@ -1225,8 +1231,23 @@ impl<'ctx> Translator<'ctx, '_> {
         dest: Option<ValueId>,
     ) -> Result<Slot<'ctx>, CodegenError> {
         let ret_ty = dest.map_or(PoolId::VOID, |id| self.body.value(id).ty);
-        let via_sret =
-            repr::returns_via_sret(self.context, self.shared.pool, self.shared.target, ret_ty)?;
+        // **Whether this call crosses a C boundary** (ADR-0160 part 2), which changes the return convention
+        // and how an aggregate argument travels. Only a direct call can be foreign (ADR-0059 §5).
+        let crosses_c = match callee {
+            Callee::Direct(target) => self.shared.foreign.get(target).copied().unwrap_or(false),
+            Callee::Indirect(_) => false,
+        };
+        // A classified C aggregate return comes back **in registers**, so it takes no leading pointer even
+        // though `returns_via_sret` — which describes Jairs's own convention — says an aggregate does.
+        let c_return_in_registers = crosses_c
+            && matches!(
+                jr_pool::classify(self.shared.pool, self.shared.target, ret_ty),
+                Ok(Some(
+                    jr_pool::Class::Integer { .. } | jr_pool::Class::Float { .. }
+                ))
+            );
+        let via_sret = !c_return_in_registers
+            && repr::returns_via_sret(self.context, self.shared.pool, self.shared.target, ret_ty)?;
 
         let mut values: Vec<BasicMetadataValueEnum<'ctx>> = Vec::with_capacity(args.len() + 1);
         // A **fresh** slot per call, copied out of afterwards rather than passing the
@@ -1248,6 +1269,15 @@ impl<'ctx> Translator<'ctx, '_> {
         };
 
         for arg in args {
+            let ty = self.operand_type(*arg);
+            if crosses_c
+                && Repr::of(self.context, self.shared.pool, self.shared.target, ty)?.is_aggregate()
+                && let Some(address) = self.read(*arg)?
+            {
+                // The aggregate's address is a machine word here, as every Jairs aggregate value is.
+                self.push_aggregate_pieces(address.into_int_value(), ty, &mut values)?;
+                continue;
+            }
             if let Some(value) = self.read(*arg)? {
                 values.push(value.into());
             }
@@ -1311,7 +1341,156 @@ impl<'ctx> Translator<'ctx, '_> {
         if let Some(address) = result_slot {
             return Ok(Some(address.into()));
         }
+        // **A C aggregate returned in registers is stored back into a fresh slot** (ADR-0160 part 2),
+        // because a Jairs aggregate value is its address. LLVM hands the struct back as one value, so the
+        // members are extracted and stored at the offsets `push_aggregate_pieces` reads from.
+        if c_return_in_registers {
+            let returned = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::Internal(String::from(
+                    "a `#foreign` aggregate return produced no value",
+                ))
+            })?;
+            return self.store_aggregate_pieces(ret_ty, returned).map(Some);
+        }
         Ok(call.try_as_basic_value().basic())
+    }
+
+    /// Loads a classified aggregate's register pieces from `address` and appends them to `values`.
+    ///
+    /// **Whole words from the start**, matching the Cranelift back end byte for byte: the classification
+    /// counts words from the layout's *size*, so a `{ s64, u8 }` is two registers with one meaningful byte in
+    /// the second (ADR-0160 §4). A float class loads one member per register at its own stride, which is what
+    /// makes an HFA work.
+    fn push_aggregate_pieces(
+        &mut self,
+        address: IntValue<'ctx>,
+        ty: PoolId,
+        values: &mut Vec<BasicMetadataValueEnum<'ctx>>,
+    ) -> Result<(), CodegenError> {
+        let pointer = built(self.builder.build_int_to_ptr(
+            address,
+            self.context.ptr_type(AddressSpace::default()),
+            "agg",
+        ))?;
+        match jr_pool::classify(self.shared.pool, self.shared.target, ty) {
+            Ok(Some(jr_pool::Class::Integer { words })) => {
+                let word = repr::pointer_int(self.context, self.shared.target);
+                for index in 0..words {
+                    let piece = self.load_piece(pointer, word.into(), u64::from(index) * 8)?;
+                    values.push(piece.into());
+                }
+                Ok(())
+            }
+            Ok(Some(jr_pool::Class::Float { kind, count })) => {
+                let member: BasicTypeEnum<'ctx> = if kind.bits == 32 {
+                    self.context.f32_type().into()
+                } else {
+                    self.context.f64_type().into()
+                };
+                let stride = u64::from(kind.bits / 8);
+                for index in 0..count {
+                    let piece = self.load_piece(pointer, member, u64::from(index) * stride)?;
+                    values.push(piece.into());
+                }
+                Ok(())
+            }
+            // Unreachable: the signature builder refused `Memory` before a body was lowered, and E0286
+            // refused it before that.
+            _ => Err(CodegenError::Internal(String::from(
+                "an aggregate reached a `#foreign` call site with no register class",
+            ))),
+        }
+    }
+
+    /// One register piece, loaded from `pointer` at `offset`.
+    fn load_piece(
+        &mut self,
+        pointer: inkwell::values::PointerValue<'ctx>,
+        ty: BasicTypeEnum<'ctx>,
+        offset: u64,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let at = if offset == 0 {
+            pointer
+        } else {
+            let byte = self.context.i8_type();
+            // SAFETY: the offset is inside the aggregate's slot, whose size the classification bounded to the
+            // pieces it asked for — the same bound `store_aggregate_pieces` allocates to.
+            unsafe {
+                built(self.builder.build_gep(
+                    byte,
+                    pointer,
+                    &[self.context.i64_type().const_int(offset, false)],
+                    "piece_at",
+                ))?
+            }
+        };
+        built(self.builder.build_load(ty, at, "piece"))
+    }
+
+    /// Stores a register-returned aggregate's members into a fresh slot and answers its address.
+    ///
+    /// The mirror of [`Self::push_aggregate_pieces`], written beside it because the offsets have to agree.
+    /// LLVM returns the struct as one value, so each member is *extracted* rather than read from a result
+    /// list — the one place the two native back ends differ in shape while agreeing on the ABI.
+    fn store_aggregate_pieces(
+        &mut self,
+        ty: PoolId,
+        returned: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let layout = layout_of(self.shared.pool, self.shared.target, ty)
+            .map_err(|reason| CodegenError::NoLayout { ty, reason })?;
+        let class = match jr_pool::classify(self.shared.pool, self.shared.target, ty) {
+            Ok(Some(class)) => class,
+            _ => {
+                return Err(CodegenError::Internal(String::from(
+                    "an aggregate returned from a `#foreign` call with no register class",
+                )));
+            }
+        };
+        let (count, stride) = match class {
+            jr_pool::Class::Integer { words } => (words, 8_u64),
+            jr_pool::Class::Float { kind, count } => (count, u64::from(kind.bits / 8)),
+            jr_pool::Class::Memory => {
+                return Err(CodegenError::Internal(String::from(
+                    "an aggregate returned from a `#foreign` call with no register class",
+                )));
+            }
+        };
+        // Rounded up to the pieces' total, so storing the last whole word cannot write past the slot.
+        let pieces = u64::from(count) * stride;
+        let size = u32::try_from(layout.size.max(1).max(pieces))
+            .map_err(|_| CodegenError::Internal("a call result is larger than a u32".to_owned()))?;
+        let slot = self.alloca(size, layout.align, "cagg")?;
+        let address = self.address_int(slot, "cagg_addr")?;
+        let pointer = built(self.builder.build_int_to_ptr(
+            address,
+            self.context.ptr_type(AddressSpace::default()),
+            "cagg_ptr",
+        ))?;
+        for index in 0..count {
+            let member = built(self.builder.build_extract_value(
+                returned.into_struct_value(),
+                index,
+                "member",
+            ))?;
+            let offset = u64::from(index) * stride;
+            let at = if offset == 0 {
+                pointer
+            } else {
+                let byte = self.context.i8_type();
+                // SAFETY: bounded by the slot allocated just above, whose size is the pieces' total.
+                unsafe {
+                    built(self.builder.build_gep(
+                        byte,
+                        pointer,
+                        &[self.context.i64_type().const_int(offset, false)],
+                        "member_at",
+                    ))?
+                }
+            };
+            built(self.builder.build_store(at, member))?;
+        }
+        Ok(address.into())
     }
 
     /// Writes `target`'s name onto the shadow call stack and increments the depth

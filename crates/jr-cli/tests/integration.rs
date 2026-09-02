@@ -1212,3 +1212,151 @@ main :: () {
         "all four checks must pass in a compiled binary; a lower value names which bit failed"
     );
 }
+
+/// An aggregate crosses a `#foreign` boundary exactly as a **real C compiler** expects (ADR-0160 part 2).
+///
+/// # Why this compiles a C shim instead of asserting against Jairs
+///
+/// A test that called a Jairs procedure declared `#c_call` would pass with both sides wrong: one
+/// classification emits the call *and* reads it, so an agreement proves only self-consistency. The C ABI is
+/// not negotiable, and the only way to know this compiler implements it is to link against something a C
+/// compiler produced. `cc` is already a hard dependency — `jr-link` shells out to it — so needing it here
+/// costs nothing new.
+///
+/// `valid/130` covers the *return* direction in all three engines through libc's `ldiv`. This covers what a
+/// corpus program cannot: an aggregate **argument**, and the homogeneous float aggregate that a size test
+/// would reject. The comptime VM is absent for a stated reason — it resolves symbols from the compiler's own
+/// process image, not from a link line, so it cannot reach a shim at all.
+///
+/// # What it asserts
+///
+/// Five bits, each a shape the classification treats differently:
+///
+///   * `1` — a two-word integer struct **passed** by value;
+///   * `2` — the same struct **returned**, with its fields swapped so a register mix-up is visible;
+///   * `4` — a two-`double` HFA passed by value, which travels in floating-point registers;
+///   * `8` — the same HFA returned, alongside a plain `double` argument, so the two register files are used
+///     at once and a spill from one into the other would show;
+///   * `16` — a **nested** four-`double` HFA: thirty-two bytes, still four registers. This is the `CGRect`
+///     shape, and the one a byte-count test rejects.
+#[test]
+fn aggregates_cross_a_foreign_boundary_as_a_c_compiler_expects() {
+    let dir = TempDir::new().unwrap();
+
+    // The shim. `-O1` rather than `-O0` deliberately: an optimising compiler is freer to keep a struct in
+    // registers, which is the convention under test.
+    let shim_source = dir.path().join("shim.c");
+    fs::write(
+        &shim_source,
+        r#"#include <stdint.h>
+typedef struct { int64_t a; int64_t b; } Pair;
+typedef struct { double x; double y; } Point;
+typedef struct { Point origin; Point size; } Rect;
+
+int64_t pair_sum(Pair p) { return p.a + p.b; }
+Pair pair_swap(Pair p) { Pair r; r.a = p.b; r.b = p.a; return r; }
+double point_sum(Point p) { return p.x + p.y; }
+Point point_scale(Point p, double by) { Point r; r.x = p.x * by; r.y = p.y * by; return r; }
+double rect_total(Rect r) { return r.origin.x + r.origin.y + r.size.x + r.size.y; }
+"#,
+    )
+    .unwrap();
+    let shim_object = dir.path().join("shim.o");
+    let compiled = std::process::Command::new("cc")
+        .arg("-O1")
+        .arg("-c")
+        .arg(&shim_source)
+        .arg("-o")
+        .arg(&shim_object)
+        .status();
+    match compiled {
+        Ok(status) if status.success() => {}
+        // No C compiler, no test. Skipped rather than failed: `cc` is present wherever `jr build` works, so
+        // this cannot hide a regression on a machine that can run the rest of the suite.
+        _ => return,
+    }
+
+    let source = dir.path().join("aggregates.jr");
+    fs::write(
+        &source,
+        r#"#import "Basic";
+Pair :: struct { a: s64; b: s64; }
+Point :: struct { x: float64; y: float64; }
+Rect :: struct { origin: Point; size: Point; }
+
+pair_sum :: (p: Pair) -> s64 #foreign libc "pair_sum";
+pair_swap :: (p: Pair) -> Pair #foreign libc "pair_swap";
+point_sum :: (p: Point) -> float64 #foreign libc "point_sum";
+point_scale :: (p: Point, by: float64) -> Point #foreign libc "point_scale";
+rect_total :: (r: Rect) -> float64 #foreign libc "rect_total";
+
+main :: () {
+    total := 0;
+
+    p: Pair;
+    p.a = 3;
+    p.b = 4;
+    if pair_sum(p) == 7 { total = total + 1; }
+
+    // Swapped, so reading the two result registers in the wrong order is visible. A sum would not show it.
+    swapped := pair_swap(p);
+    if swapped.a == 4 { if swapped.b == 3 { total = total + 2; } }
+
+    q: Point;
+    q.x = 1.5;
+    q.y = 2.5;
+    if point_sum(q) == 4.0 { total = total + 4; }
+
+    // An HFA argument *and* a plain float argument, so both register files are in use at once.
+    scaled := point_scale(q, 2.0);
+    if scaled.x == 3.0 { if scaled.y == 5.0 { total = total + 8; } }
+
+    // Thirty-two bytes, four registers: the CGRect shape a byte-count test would send to memory.
+    r: Rect;
+    r.origin = q;
+    r.size = scaled;
+    if rect_total(r) == 12.0 { total = total + 16; }
+
+    exit(total);
+}
+"#,
+    )
+    .unwrap();
+
+    let object = dir.path().join("aggregates.o");
+    let global = quiet_global();
+    let code = jr_cli::commands::build::run(
+        jr_cli::cli::BuildArgs {
+            path: source,
+            output: Some(object.clone()),
+            emit_object: true,
+            backend: jr_cli::cli::BackendArg::Cranelift,
+            no_bounds_check: false,
+            // `None` so the default level applies, which is what an ordinary build gets (ADR-0154 §1).
+            opt_level: None,
+            module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
+        },
+        &global,
+    )
+    .expect("emitting an object must not fail at the io layer");
+    assert_eq!(code, 0, "the program must compile");
+
+    let binary = dir.path().join("aggregates");
+    let linked = std::process::Command::new("cc")
+        .arg(&object)
+        .arg(&shim_object)
+        .arg("-o")
+        .arg(&binary)
+        .status()
+        .expect("cc should run");
+    assert!(linked.success(), "the object and the shim must link");
+
+    let ran = std::process::Command::new(&binary)
+        .status()
+        .expect("the linked binary should run");
+    assert_eq!(
+        ran.code(),
+        Some(31),
+        "every aggregate shape must agree with the C compiler; a lower value names which bit failed"
+    );
+}

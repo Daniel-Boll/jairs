@@ -92,6 +92,13 @@ pub struct Context<'a> {
     /// Absent for a procedure whose name is unknown — an anonymous one — and such a frame is simply not
     /// pushed, which is the same "omit rather than placeholder" rule the VM's renderer follows.
     pub names: &'a FxHashMap<ProcRef, (DataId, usize)>,
+    /// Whether each declared procedure is `#foreign` (ADR-0160 part 2).
+    ///
+    /// The call site needs this and the signature builder does not: a signature is built from a declaration,
+    /// which knows its own kind, while a *call* has only a `ProcRef`. Without it an aggregate argument to a
+    /// foreign call would be passed as the pointer a Jairs-to-Jairs call wants — which compiles, and puts an
+    /// address where C expects a struct.
+    pub foreign: &'a FxHashMap<ProcRef, bool>,
 }
 
 /// Translates one body into the function `builder` is building.
@@ -1174,7 +1181,27 @@ impl Translator<'_, '_> {
         // aggregate-returning procedure would need a slot with no reader, and MIR does not
         // produce one because a discarded call's `dest` is `None` only for `void`.
         let ret_ty = dest.map_or(PoolId::VOID, |id| self.body.value(id).ty);
-        let via_sret = repr::returns_via_sret(self.ctx.pool, self.ctx.target, ret_ty)?;
+        // **Whether this call crosses a C boundary**, decided before anything else because it changes both
+        // the return convention and how an aggregate argument travels (ADR-0160 part 2). Only a direct call
+        // can be foreign — ADR-0059 §5 refuses a `#foreign` procedure as an indirect target — so an
+        // indirect call keeps the Jairs conventions without asking.
+        let crosses_c = match callee {
+            Callee::Direct(target) => self.ctx.foreign.get(target).copied().unwrap_or(false),
+            Callee::Indirect(_) => false,
+        };
+        // A C aggregate return that classifies comes back **in registers**, so it takes no `sret` parameter
+        // even though `returns_via_sret` — which describes Jairs's own convention — says an aggregate does.
+        // Asked through the same `classify` the signature builder used, so the two cannot disagree about the
+        // parameter count, which is the property ADR-0051 §1 made `returns_via_sret` the single answer for.
+        let c_return_in_registers = crosses_c
+            && matches!(
+                jr_pool::classify(self.ctx.pool, self.ctx.target, ret_ty),
+                Ok(Some(
+                    jr_pool::Class::Integer { .. } | jr_pool::Class::Float { .. }
+                ))
+            );
+        let via_sret = !c_return_in_registers
+            && repr::returns_via_sret(self.ctx.pool, self.ctx.target, ret_ty)?;
 
         let mut values = Vec::with_capacity(args.len() + usize::from(via_sret));
         // A **fresh** slot per call, copied out of afterwards rather than passing the
@@ -1202,7 +1229,18 @@ impl Translator<'_, '_> {
             None
         };
 
+        // An aggregate argument to a C call travels as its **bytes in registers**, where a Jairs-to-Jairs
+        // call passes a pointer to them. Without this an address would be handed to a callee expecting a
+        // struct — which compiles, and is wrong.
         for arg in args {
+            let ty = self.operand_type(*arg);
+            if crosses_c
+                && Repr::of(self.ctx.pool, self.ctx.target, ty)?.is_aggregate()
+                && let Some(address) = self.read(*arg)?
+            {
+                self.push_aggregate_pieces(address, ty, &mut values)?;
+                continue;
+            }
             if let Some(value) = self.read(*arg)? {
                 values.push(value);
             }
@@ -1253,8 +1291,121 @@ impl Translator<'_, '_> {
         if let Some(address) = result_slot {
             return Ok(Some(address));
         }
+        // **A C aggregate returned in registers is stored back into a fresh slot**, because a Jairs
+        // aggregate value *is* a pointer to its bytes (ADR-0160 part 2). The slot is fresh rather than the
+        // destination's own, for ADR-0051 §2's reason: a callee that trapped would otherwise leave the
+        // caller's variable half-assigned.
+        if c_return_in_registers {
+            let results: Vec<ClifValue> = self.builder.inst_results(inst).to_vec();
+            return self.store_aggregate_pieces(ret_ty, &results).map(Some);
+        }
         let results = self.builder.inst_results(inst);
         Ok(results.first().copied())
+    }
+
+    /// Loads a classified aggregate's register pieces from `address` and appends them to `values`.
+    ///
+    /// **Whole words from the start**, not per-field loads: the classification counts words from the layout's
+    /// *size*, so a `{ s64, u8 }` is two registers with one meaningful byte in the second (ADR-0160 §4). A
+    /// per-field load would compute a different second register on each target and be wrong on at least one.
+    ///
+    /// A float class loads one member per register at its own stride, which is what makes an HFA work: four
+    /// `float64`s at offsets 0, 8, 16, 24 become `v0`–`v3`.
+    fn push_aggregate_pieces(
+        &mut self,
+        address: ClifValue,
+        ty: PoolId,
+        values: &mut Vec<ClifValue>,
+    ) -> Result<(), CodegenError> {
+        let pointer = pointer_type(self.ctx.target);
+        match jr_pool::classify(self.ctx.pool, self.ctx.target, ty) {
+            Ok(Some(jr_pool::Class::Integer { words })) => {
+                for index in 0..words {
+                    let offset = i32::try_from(index * 8).unwrap_or(0);
+                    let piece =
+                        self.builder
+                            .ins()
+                            .load(pointer, MemFlagsData::trusted(), address, offset);
+                    values.push(piece);
+                }
+                Ok(())
+            }
+            Ok(Some(jr_pool::Class::Float { kind, count })) => {
+                let stride = i32::from(kind.bits / 8);
+                let clif = if kind.bits == 32 {
+                    cranelift_codegen::ir::types::F32
+                } else {
+                    cranelift_codegen::ir::types::F64
+                };
+                for index in 0..count {
+                    let offset = i32::try_from(index).unwrap_or(0) * stride;
+                    let piece =
+                        self.builder
+                            .ins()
+                            .load(clif, MemFlagsData::trusted(), address, offset);
+                    values.push(piece);
+                }
+                Ok(())
+            }
+            // Unreachable: the signature builder refused `Memory` before a body was lowered, and E0286
+            // refused it before that. Answered rather than panicked, for the reason every other
+            // belt-and-braces arm here is.
+            _ => Err(CodegenError::Internal(String::from(
+                "an aggregate reached a `#foreign` call site with no register class",
+            ))),
+        }
+    }
+
+    /// Stores a classified aggregate's returned register pieces into a fresh slot and answers its address.
+    ///
+    /// The mirror of [`Self::push_aggregate_pieces`], and deliberately written beside it: the offsets have to
+    /// agree, and two functions that must agree belong where a reader sees both.
+    fn store_aggregate_pieces(
+        &mut self,
+        ty: PoolId,
+        results: &[ClifValue],
+    ) -> Result<ClifValue, CodegenError> {
+        let layout = layout_of(self.ctx.pool, self.ctx.target, ty)
+            .map_err(|reason| CodegenError::NoLayout { ty, reason })?;
+        // Rounded up to the pieces' total, so storing the last whole word of a `{ s64, u8 }` cannot write
+        // past the slot. The extra bytes are padding the aggregate already has room for at its alignment,
+        // and a short slot would be a stack overwrite rather than a wrong value.
+        let pieces = u64::try_from(results.len()).unwrap_or(0) * 8;
+        let size = u32::try_from(layout.size.max(1).max(pieces))
+            .map_err(|_| CodegenError::Internal("a call result is larger than a u32".to_owned()))?;
+        let data = StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            size,
+            layout.align.trailing_zeros().try_into().unwrap_or(0),
+        );
+        let handle = self.builder.create_sized_stack_slot(data);
+        let pointer = pointer_type(self.ctx.target);
+        let address = self.builder.ins().stack_addr(pointer, handle, 0);
+        match jr_pool::classify(self.ctx.pool, self.ctx.target, ty) {
+            Ok(Some(jr_pool::Class::Integer { .. })) => {
+                for (index, piece) in results.iter().enumerate() {
+                    let offset = i32::try_from(index * 8).unwrap_or(0);
+                    self.builder
+                        .ins()
+                        .store(MemFlagsData::trusted(), *piece, address, offset);
+                }
+            }
+            Ok(Some(jr_pool::Class::Float { kind, .. })) => {
+                let stride = i32::from(kind.bits / 8);
+                for (index, piece) in results.iter().enumerate() {
+                    let offset = i32::try_from(index).unwrap_or(0) * stride;
+                    self.builder
+                        .ins()
+                        .store(MemFlagsData::trusted(), *piece, address, offset);
+                }
+            }
+            _ => {
+                return Err(CodegenError::Internal(String::from(
+                    "an aggregate returned from a `#foreign` call with no register class",
+                )));
+            }
+        }
+        Ok(address)
     }
 
     /// Writes `target`'s name onto the shadow call stack and increments the depth (ADR-0066 §1).

@@ -258,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0159. See [`docs/adr/README.md`](docs/adr/README.md). (This line
+Accepted ADRs: 0001–0161. See [`docs/adr/README.md`](docs/adr/README.md). (This line
 said 0001–0128 for thirteen ADRs, which is the argument §7 makes for its own count
 being the one to trust.)
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
@@ -573,11 +573,24 @@ described from a **false premise** — §8.4 said "line tables exist" and there 
 it is now **W12 — Debug info**, named in §2.1 the way §8.3 named W11.
 
 **So the remaining waves are W10 — Graphics, W11 — Concurrency, and W12 — Debug info.** §8.5 is W10's plan.
-**W10 is still blocked** on §8.1.2 — an aggregate crossing the `#foreign` boundary — and that single change
-now unblocks **three** named things: W10 entirely, `readdir` and `stat` in `File_Utilities`, and `getaddrinfo`
-in `Socket`. That makes it the highest-leverage item left and the obvious thing to do before W10 rather than
-inside it. W12 has no blocker at all, which makes it the one to reach for while something above is pending —
-the role W9 just played.
+
+**§8.1.2 is closed** (ADR-0160 part 1, ADR-0161 part 2), which was the project's highest-leverage open item.
+An aggregate crosses a `#foreign` boundary when the shared classification says where its pieces go: at most two
+words in general registers, or a homogeneous float aggregate of at most four members in floating-point
+registers. Verified against a **real C compiler** — libc's `ldiv` in all three engines, and a `cc`-compiled
+shim for the argument direction and a nested thirty-two-byte HFA — because a test checking Jairs against Jairs
+passes with both sides wrong.
+
+That unblocked **three** named things at once, exactly as predicted: **W10 — Graphics is startable**, and
+`readdir`/`stat` in `File_Utilities` and `getaddrinfo` in `Socket` are now expressible — two owed library
+items that need no further language work.
+
+**So W10 is the next wave**, with one prerequisite left of its own: §8.5 lists **C-variadic foreign calls**
+beside the aggregate one, because `objc_msgSend` is variadic. ADR-0157 §2 established what a fixed-arity
+declaration of a variadic C function does — it puts the extra argument in the wrong place, silently — and named
+the honest fix: a `#c_variadic` marker whose absence means "not variadic". That is now W10's only remaining
+gate. **W12 — Debug info has no blocker at all**, which makes it the one to reach for while something above is
+pending — the role W9 played.
 
 > [!IMPORTANT]
 > **The FFI is where the last three waves' surprises came from, and all four were silent.** ADR-0157 found a
@@ -622,7 +635,7 @@ crossing the `#foreign` boundary — which is also W10's hard gate, so one chang
 an `Any` or a procedure handle through `jr-vm`'s untagged `union`; `jr-lsp` path handling — URI
 decoding, `..`, symlinks), which must be done **by hand** because six subagent dispatches returned
 empty; and `tree-sitter test` added to gate 6, which today catches grammar *drift* but not a broken
-grammar *rule*. **1040 workspace tests** (1041 under gate 7) and **250 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
+grammar *rule*. **1054 workspace tests** (1055 under gate 7) and **251 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
 has ever happened — plus **170** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -634,9 +647,9 @@ has ever happened — plus **170** Neovim checks. See §1.5.
 > one is the clap surface.
 
 > [!NOTE]
-> **What "250 corpus files" counts**, since this number had drifted: the `.jr` files under
-> `tests/corpus/` *outside* `tests/corpus/modules/` — 129 `valid` + 10 `invalid` + 78 `type-errors` +
-> 3 `cfg-errors` + 30 `imports` = 250. Counting the 10 module fixtures too gives 260. This section
+> **What "251 corpus files" counts**, since this number had drifted: the `.jr` files under
+> `tests/corpus/` *outside* `tests/corpus/modules/` — 130 `valid` + 10 `invalid` + 78 `type-errors` +
+> 3 `cfg-errors` + 30 `imports` = 251. Counting the 10 module fixtures too gives 261. This section
 > claimed **214** at a point when 213 was right while `AGENTS.md` claimed 213, so the sentence that
 > tells a reader to trust §7 over any other count was itself pointing at the wrong one. ADR-0125
 > reconciled the numbers and that pair slipped through, which is the argument for the definition
@@ -2483,6 +2496,41 @@ the platform ABI's classification rules — which fields go in which register cl
 passed in memory, when a hidden pointer appears. ADR-0051's `sret` did the *return* half for Jairs's
 own calls; this is the argument half, for the C ABI, on two architectures. `libffi` gives the VM its
 half; both native back ends need theirs.
+
+> [!IMPORTANT]
+> **Part 1 is done — ADR-0160.** The half that was actually *undecided* is settled: `jr_pool::classify`
+> answers where an aggregate's pieces go, in **one** place, because three engines cross this boundary and a
+> struct in the wrong register is a silent wrong answer with no diagnostic. Two shapes are supported — at
+> most two words in general registers, and a homogeneous float aggregate of at most four members in
+> floating-point registers — and everything else stays refused.
+>
+> **The HFA has no size limit, and that is the point**: a `CGRect` is four `float64`s and thirty-two bytes,
+> so the size test this section's own wording implies ("when a struct is passed in memory") would reject
+> exactly the type W10 needs most. The limit is four *scalars*.
+>
+> **`Memory` is a refusal rather than an indirect pass**, and the reason is worth carrying: the case covers a
+> *large* composite, where an indirect pass is correct, **and** a small *mixed* one, where System V
+> classifies each eightbyte independently (a `double` in `xmm0`, a `long` in `rdi`) and AAPCS64 does not
+> (both in `x0`/`x1`). Two correct answers in one case means refusing until it is split. Implementing System
+> V's rules was rejected: it is a second ABI's worth of rules verified against a target this project has
+> never run, and PLAN §1.5's owed Linux CI run comes first.
+>
+> **Part 2 is done too — ADR-0161, so this blocker is closed.** The VM describes the struct faithfully and
+> lets libffi place it; Cranelift emits an `AbiParam` per register and moves whole words from the layout's
+> start; LLVM emits separate scalars rather than `byval`, matching Cranelift so the differential harness
+> compares like with like. E0286 now asks the same `classify` the engines act on, so the diagnostic and the
+> capability cannot drift. **Verified against a C compiler rather than against itself**: `valid/130` calls
+> libc's `ldiv` in all three engines, and a `cc`-compiled shim covers an aggregate argument and a nested
+> four-`double` HFA. A `string` crosses now, as the two words it is.
+>
+> The original plan for part 2 read (ADR-0160 §6): the VM builds an
+> `ffi_type` and lets libffi place the pieces — the least work of the three, since libffi implements the ABI
+> itself; Cranelift turns a class into one or more `AbiParam`s and loads the pieces from the value's slot;
+> LLVM does the same separately, because the two back ends share no emission path. It must land **atomically
+> across all three**, since a half-wired ABI is exactly the silent divergence ADR-0157 §5 and ADR-0158 §3
+> found the hard way — and it must be verified against a **real C compiler**, not against itself: `ldiv`
+> returns a sixteen-byte integer struct from libc, and a `cc`-compiled shim covers the parameter direction
+> and the HFA. A test checking Jairs against Jairs would pass with both sides wrong.
 
 #### 8.1.3 A defect found while probing this: that refusal is an ICE, not a diagnostic
 

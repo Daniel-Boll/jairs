@@ -321,13 +321,31 @@ pub fn signature(
     let mut sig = Signature::new(call_conv);
 
     let ret_repr = Repr::of(pool, target, ret)?;
-    if ret_repr.is_aggregate() {
-        if foreign {
-            return Err(describe(
-                "returning an aggregate from a `#foreign` procedure, whose C struct \
-                 convention this back end does not implement",
-            ));
+    // **A classified aggregate return comes back in registers** (ADR-0160 part 2): the shared classification
+    // says how many and of which file, and the body reassembles them into a slot. Computed here and *emitted
+    // at the end*, because the returns follow every parameter — an early return from this function would
+    // produce a signature with the results and no arguments, which the verifier catches as
+    // "mismatched argument count" at the first call site.
+    let c_returns = if foreign && ret_repr.is_aggregate() {
+        match foreign_class(pool, target, ret, &describe)? {
+            jr_pool::Class::Integer { words } => {
+                Some(vec![AbiParam::new(pointer_type(target)); words as usize])
+            }
+            jr_pool::Class::Float { kind, count } => {
+                Some(vec![AbiParam::new(float_type(kind)); count as usize])
+            }
+            jr_pool::Class::Memory => {
+                return Err(describe(
+                    "returning this aggregate from a `#foreign` procedure needs a register class \
+                     this back end does not implement — at most two words, or up to four floats of \
+                     one width",
+                ));
+            }
         }
+    } else {
+        None
+    };
+    if ret_repr.is_aggregate() && c_returns.is_none() {
         // **First**, matching every C ABI that uses this convention, and marked
         // `StructReturn` rather than passed as a plain pointer so Cranelift's verifier
         // and any later ABI work can see what it is.
@@ -347,16 +365,39 @@ pub fn signature(
     for ty in params {
         let repr = Repr::of(pool, target, *ty)?;
         if foreign && repr.is_aggregate() {
-            return Err(describe(
-                "an aggregate parameter on a `#foreign` procedure, whose C struct \
-                 convention this back end does not implement",
-            ));
+            // The same classification the return uses, so a struct that can be *returned* can be *passed*
+            // — one predicate, one answer, and no shape that works in one direction and not the other.
+            match foreign_class(pool, target, *ty, &describe)? {
+                jr_pool::Class::Integer { words } => {
+                    for _ in 0..words {
+                        sig.params.push(AbiParam::new(pointer_type(target)));
+                    }
+                }
+                jr_pool::Class::Float { kind, count } => {
+                    for _ in 0..count {
+                        sig.params.push(AbiParam::new(float_type(kind)));
+                    }
+                }
+                jr_pool::Class::Memory => {
+                    return Err(describe(
+                        "an aggregate parameter on a `#foreign` procedure needs a register class this \
+                         back end does not implement — at most two words, or up to four floats of one \
+                         width",
+                    ));
+                }
+            }
+            continue;
         }
         if let Some(clif) = repr.clif_type(target) {
             sig.params.push(AbiParam::new(clif));
         }
     }
 
+    // A classified C aggregate return, emitted here so it follows every parameter.
+    if let Some(returns) = c_returns {
+        sig.returns.extend(returns);
+        return Ok(sig);
+    }
     // An `sret` procedure returns *nothing*: the result travels through the pointer, so
     // adding a return value as well would describe a convention neither side implements.
     if !ret_repr.is_aggregate()
@@ -382,4 +423,37 @@ pub fn returns_via_sret(
     ret: PoolId,
 ) -> Result<bool, CodegenError> {
     Ok(Repr::of(pool, target, ret)?.is_aggregate())
+}
+
+/// The C ABI class of an aggregate crossing a `#foreign` boundary.
+///
+/// A thin wrapper turning [`jr_pool::classify`]'s `Option` and layout error into this crate's error type, so
+/// the two call sites above read as one line each. It answers [`jr_pool::Class::Memory`] for a scalar too,
+/// which cannot happen — the callers check `is_aggregate` first — and answering rather than panicking keeps a
+/// future caller's mistake a diagnostic.
+fn foreign_class(
+    pool: &Pool,
+    target: TargetLayout,
+    ty: PoolId,
+    describe: &dyn Fn(&str) -> CodegenError,
+) -> Result<jr_pool::Class, CodegenError> {
+    match jr_pool::classify(pool, target, ty) {
+        Ok(Some(class)) => Ok(class),
+        Ok(None) => Ok(jr_pool::Class::Memory),
+        Err(_) => Err(describe(
+            "an aggregate at a `#foreign` boundary whose layout cannot be computed",
+        )),
+    }
+}
+
+/// The Cranelift type a float class's members travel in.
+///
+/// Separate from [`Repr::clif_type`] because a class carries a [`jr_pool::FloatKind`] rather than a `PoolId`:
+/// the classification flattened the aggregate, so there is no member type left to look up.
+const fn float_type(kind: jr_pool::FloatKind) -> Type {
+    if kind.bits == 32 {
+        cranelift_codegen::ir::types::F32
+    } else {
+        cranelift_codegen::ir::types::F64
+    }
 }

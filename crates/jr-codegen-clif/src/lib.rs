@@ -735,6 +735,7 @@ impl Backend for ClifBackend {
             locations,
             shadow: (self.shadow_stack, self.shadow_depth),
             names: &self.names,
+            foreign: &self.foreign,
         };
         body::translate(&mut builder, &mut self.module, &ctx, proc, mir)?;
         builder.finalize(self.module.target_config());
@@ -742,7 +743,7 @@ impl Backend for ClifBackend {
         let mut context = Context::for_function(function);
         self.module
             .define_function(id, &mut context)
-            .map_err(|e| CodegenError::Internal(format!("cannot define a body: {e}")))?;
+            .map_err(|e| CodegenError::Internal(format!("cannot define a body: {e:?}")))?;
         Ok(())
     }
 

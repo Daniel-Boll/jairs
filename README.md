@@ -19,8 +19,39 @@ error-recovering compiler written in Rust.
 ## Status, honestly
 
 Last updated with **W7 — Stdlib and W9 — Tooling depth both DONE** (W6 — Metaprogram and W8 — Performance
-were already), 1040 tests green — 1041 with the LLVM back end compiled in. **Three waves remain: W10 —
+were already), 1053 tests green — 1054 with the LLVM back end compiled in. **Three waves remain: W10 —
 Graphics, W11 — Concurrency, and W12 — Debug info.**
+
+**An aggregate crosses a `#foreign` boundary** (ADR-0160, ADR-0161), which was the project's
+highest-leverage open item: it blocked graphics entirely — every windowing and GPU call passes a rectangle by
+value — and also blocked `readdir`, `stat` and `getaddrinfo` in the standard library. All three are now
+unblocked.
+
+**Where an aggregate's pieces go is answered in exactly one place**, because three engines cross that boundary
+and a struct in the wrong register is a silent wrong answer with no diagnostic. The compile-time VM describes
+the struct to libffi and lets it place the pieces; Cranelift emits one machine value per register; LLVM emits
+the same separate scalars rather than using its own `byval` lowering, so the two native back ends produce the
+same call and the differential harness compares like with like. The diagnostic that refuses the rest asks the
+same function, so it cannot drift from what the engines can do.
+
+Two shapes are supported — at most two words in general registers, and a homogeneous float aggregate of at most
+four members in floating-point registers — and everything else is refused with a message naming what works. A
+homogeneous float aggregate has **no size limit**, which is the point rather than an oversight: a `CGRect` is
+four doubles and thirty-two bytes, so a byte test would reject precisely the type graphics needs most.
+
+The refusal is argued rather than temporary. It covers a small *mixed* struct, and the two supported targets
+genuinely disagree about one of those: System V classifies each eight bytes independently, putting a `double`
+and a `long` in two different register files, while AArch64 puts both in general registers. One case with two
+correct answers gets refused until it is split — an honest narrower rule beats a wrong wider one, which is the
+same call this project made about `sqrt`.
+
+**And it is verified against a real C compiler, not against itself.** A test that called a Jairs procedure
+using the C convention would pass with both sides wrong, since one classification would emit the call and read
+it. So the corpus calls libc's `ldiv`, which returns a sixteen-byte struct and whose convention was fixed years
+ago, and checks the quotient and remainder separately so that reading two result registers in the wrong order
+shows up. A second test compiles a C shim with `cc`, links it, and runs it — covering an aggregate *argument*,
+a return whose fields are deliberately swapped, and a nested four-`double` rectangle that a byte-count test
+would have rejected.
 
 **Semantic tokens ship** (ADR-0159), the fourteenth and last LSP capability — and the only one whose whole
 value is information the parser does not have. The tree-sitter grammar colours this language well and cannot
