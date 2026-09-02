@@ -18,8 +18,8 @@ mod harness;
 
 use harness::Program;
 use jr_mir::{
-    Callees, MAX_INLINE_STATEMENTS, MirBody, MirSpan, Operand, Rvalue, Statement, Terminator,
-    inline_body, is_inlinable,
+    Callees, MAX_INLINE_ROUNDS, MAX_INLINE_STATEMENTS, MAX_INLINED_STATEMENTS, MirBody, MirSpan,
+    Operand, Rvalue, Statement, Terminator, inline_body, is_inlinable,
 };
 
 // ---------------------------------------------------------------------------
@@ -289,34 +289,207 @@ fn a_callee_with_control_flow_is_inlined_with_its_blocks() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_recursive_procedure_is_not_a_leaf_and_so_is_never_inlined() {
-    // The whole termination argument, asserted rather than reasoned about: there is
-    // no depth counter in the pass, so if a recursive callee were ever eligible the
-    // splice would not terminate.
+fn a_recursive_callee_is_refused_so_its_backtrace_survives() {
+    // **The reason changed even though the answer did not** (ADR-0145 §1). ADR-0021 §4
+    // refused a recursive callee as a side effect of the leaf rule, whose purpose was
+    // termination. The leaf rule is gone, so this is now its own condition — and building it
+    // found that the *better* argument is not termination at all:
+    //
+    // An inlined callee has no frame (ADR-0021 §3), and ADR-0066 §4 defers
+    // inline-provenance backtraces, so every flattened frame is permanently missing from a
+    // diagnostic. In a recursive trap the *depth* is the message: four `countdown` frames
+    // reported as one would be a backtrace that lies about what happened. So the case where
+    // flattening costs the most is exactly the case whose benefit was never measured, and
+    // `differential.rs` pins the four-frame chain that depends on this.
     let mut program = Program::new();
     let lowered = program.lower_clean(
         "down :: (a: s64) -> s64 { if a > 0 { return down(a - 1); } return 0; }\n\
          caller :: () -> s64 { return down(3); }\n",
     );
     let down = lowered.body(&program.interner, "down");
-    assert!(!is_inlinable(down));
-
-    let mut caller = lowered.body(&program.interner, "caller").clone();
+    let down_ref = lowered.proc_ref(&program.interner, "down");
     let mut callees = Callees::new();
     callees.insert(down);
+    assert!(
+        !is_inlinable(down_ref, down, &callees),
+        "a callee that reaches itself must be refused"
+    );
+
+    let mut caller = lowered.body(&program.interner, "caller").clone();
     assert_eq!(inline_body(&mut caller, &callees, &program.pool), 0);
     assert_eq!(calls(&caller), 1, "the call must survive untouched");
 }
 
 #[test]
-fn a_callee_that_calls_something_is_not_inlinable() {
+fn a_mutually_recursive_pair_is_refused_through_the_cycle() {
+    // The case a *self*-call check would miss and this one catches: neither procedure calls
+    // itself directly, so only walking the available bodies finds the cycle. Asserted because
+    // the cheap check was the tempting one, and it would have flattened these frames while
+    // reporting the direct case correctly — an inconsistency no reader could predict.
+    let mut program = Program::new();
+    let lowered = program.lower_clean(
+        "ping :: (a: s64) -> s64 { if a > 0 { return pong(a - 1); } return 0; }\n\
+         pong :: (a: s64) -> s64 { if a > 0 { return ping(a - 1); } return 1; }\n\
+         caller :: () -> s64 { return ping(3); }\n",
+    );
+    let mut callees = Callees::new();
+    callees.insert(lowered.body(&program.interner, "ping"));
+    callees.insert(lowered.body(&program.interner, "pong"));
+    assert!(!is_inlinable(
+        lowered.proc_ref(&program.interner, "ping"),
+        lowered.body(&program.interner, "ping"),
+        &callees
+    ));
+    assert!(!is_inlinable(
+        lowered.proc_ref(&program.interner, "pong"),
+        lowered.body(&program.interner, "pong"),
+        &callees
+    ));
+
+    let mut caller = lowered.body(&program.interner, "caller").clone();
+    assert_eq!(inline_body(&mut caller, &callees, &program.pool), 0);
+}
+
+#[test]
+fn a_non_leaf_callee_is_inlined_and_the_chain_collapses() {
+    // The shape the leaf rule refused, and the reason ADR-0145 exists: a standard library is
+    // full of `sort_ints` → `sort` → `less_int`, and the middle procedure stopped the chain
+    // for every caller above it. Both levels must go.
     let mut program = Program::new();
     let lowered = program.lower_clean(
         "add :: (a: s64, b: s64) -> s64 { return a + b; }\n\
-         twice :: (a: s64) -> s64 { return add(a, a); }\n",
+         twice :: (a: s64) -> s64 { return add(a, a); }\n\
+         caller :: () -> s64 { return twice(21); }\n",
     );
-    assert!(is_inlinable(lowered.body(&program.interner, "add")));
-    assert!(!is_inlinable(lowered.body(&program.interner, "twice")));
+    let mut callees = Callees::new();
+    callees.insert(lowered.body(&program.interner, "add"));
+    callees.insert(lowered.body(&program.interner, "twice"));
+    assert!(is_inlinable(
+        lowered.proc_ref(&program.interner, "add"),
+        lowered.body(&program.interner, "add"),
+        &callees
+    ));
+    assert!(
+        is_inlinable(
+            lowered.proc_ref(&program.interner, "twice"),
+            lowered.body(&program.interner, "twice"),
+            &callees
+        ),
+        "a callee containing a call is eligible now"
+    );
+
+    let mut caller = lowered.body(&program.interner, "caller").clone();
+    assert!(inline_body(&mut caller, &callees, &program.pool) >= 2);
+    assert_eq!(
+        calls(&caller),
+        0,
+        "both levels must collapse, which is what one round could not do"
+    );
+}
+
+#[test]
+fn the_round_count_bounds_the_nesting_depth() {
+    // What `MAX_INLINE_ROUNDS` bounds, pinned so the number can be tuned without the
+    // property changing silently (ADR-0145 §1). A chain of wrappers deeper than the round
+    // count keeps a real call, because each round inlines exactly one more level: a splice
+    // copies the callee's own calls in, and those are not visited until the next round.
+    //
+    // Asserted from *both* sides, because an off-by-one in either direction is invisible
+    // otherwise: a chain at the limit must collapse completely, and one past it must not.
+    let mut program = Program::new();
+    let mut source = String::from("leaf :: (a: s64) -> s64 { return a + 1; }\n");
+    // `w1` calls `leaf`, `w2` calls `w1`, and so on: `wN` is N + 1 levels deep.
+    source.push_str("w1 :: (a: s64) -> s64 { return leaf(a); }\n");
+    for level in 2..=(MAX_INLINE_ROUNDS + 2) {
+        source.push_str(&format!(
+            "w{level} :: (a: s64) -> s64 {{ return w{}(a); }}\n",
+            level - 1
+        ));
+    }
+    let lowered = program.lower_clean(&source);
+
+    let mut callees = Callees::new();
+    callees.insert(lowered.body(&program.interner, "leaf"));
+    for level in 1..=(MAX_INLINE_ROUNDS + 2) {
+        callees.insert(lowered.body(&program.interner, &format!("w{level}")));
+    }
+
+    // At the limit: `w{ROUNDS - 1}` is ROUNDS levels of call, so every one goes.
+    let mut at_limit = lowered
+        .body(&program.interner, &format!("w{}", MAX_INLINE_ROUNDS - 1))
+        .clone();
+    inline_body(&mut at_limit, &callees, &program.pool);
+    assert_eq!(
+        calls(&at_limit),
+        0,
+        "a chain within the round budget must collapse completely"
+    );
+
+    // Past it: one call survives, which is correct rather than a failure — the program still
+    // computes the same thing, it is merely less flattened.
+    let mut past_limit = lowered
+        .body(&program.interner, &format!("w{}", MAX_INLINE_ROUNDS + 2))
+        .clone();
+    inline_body(&mut past_limit, &callees, &program.pool);
+    assert!(
+        calls(&past_limit) > 0,
+        "a chain deeper than the round budget must keep a real call"
+    );
+}
+
+#[test]
+fn a_caller_over_the_total_budget_stops_absorbing_splices() {
+    // `MAX_INLINED_STATEMENTS` (ADR-0145 §1): every individual callee may be under
+    // `MAX_INLINE_STATEMENTS` and a fan-out of them still explode one body. The leaf rule
+    // used to make that unlikely by refusing most callees; nothing does now, so the budget
+    // has to.
+    //
+    // The assertion is on the *statement count* rather than on the splice count, because the
+    // budget's job is to bound the body and not to bound the pass.
+    let mut program = Program::new();
+    let mut source = String::from("chunk :: (a: s64) -> s64 {\n    n := a;\n");
+    for _ in 0..(MAX_INLINE_STATEMENTS - 4) {
+        source.push_str("    n = n + 1;\n");
+    }
+    source.push_str("    return n;\n}\n\ncaller :: () -> s64 {\n    t := 0;\n");
+    for _ in 0..40 {
+        source.push_str("    t = t + chunk(t);\n");
+    }
+    source.push_str("    return t;\n}\n");
+    let lowered = program.lower_clean(&source);
+    let chunk = lowered.body(&program.interner, "chunk");
+    let mut callees = Callees::new();
+    callees.insert(chunk);
+    assert!(
+        is_inlinable(
+            lowered.proc_ref(&program.interner, "chunk"),
+            chunk,
+            &callees
+        ),
+        "each callee is individually eligible"
+    );
+
+    let mut caller = lowered.body(&program.interner, "caller").clone();
+    inline_body(&mut caller, &callees, &program.pool);
+    let statements: usize = caller
+        .blocks()
+        .iter()
+        .map(|block| {
+            block
+                .stmts
+                .iter()
+                .filter(|s| !matches!(s, Statement::Nop))
+                .count()
+        })
+        .sum();
+    assert!(
+        statements < MAX_INLINED_STATEMENTS + MAX_INLINE_STATEMENTS,
+        "the budget must stop the fan-out; the body reached {statements} statements"
+    );
+    assert!(
+        calls(&caller) > 0,
+        "and it must stop by *refusing* splices, leaving real calls behind"
+    );
 }
 
 #[test]
@@ -328,8 +501,13 @@ fn a_callee_over_the_statement_threshold_is_not_inlinable() {
     }
     source.push_str("    return n;\n}\n");
     let lowered = program.lower_clean(&source);
+    let callees = Callees::new();
     assert!(
-        !is_inlinable(lowered.body(&program.interner, "big")),
+        !is_inlinable(
+            lowered.proc_ref(&program.interner, "big"),
+            lowered.body(&program.interner, "big"),
+            &callees
+        ),
         "a body of {MAX_INLINE_STATEMENTS} assignments or more must be refused"
     );
 }

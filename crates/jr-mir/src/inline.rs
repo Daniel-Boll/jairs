@@ -49,15 +49,26 @@
 //! without shifting every later index in the block; this is that pass, and it is
 //! its first producer.
 //!
-//! # Why only a leaf callee, and why that is the whole termination argument
+//! # A non-leaf callee, and where termination comes from now
 //!
-//! [`is_inlinable`] requires the callee to contain no call of its own. That single
-//! condition does two jobs. It bounds the work — one splice per call site, with no
-//! iteration to a fixed point. And it makes termination *structural*: a recursive
-//! procedure calls something, so it is not a leaf, so it is never inlined, and
-//! neither is any member of a mutual-recursion cycle. There is deliberately no
-//! depth counter and no recursion check in this module, because no code path needs
-//! one. ADR-0021 §4 records the general cost model that was rejected in its favour.
+//! ADR-0021 §4 took the leaf rule — a callee containing any call was refused — and said
+//! that single condition was "the whole termination argument": a recursive procedure
+//! calls something, so it is never inlined. **ADR-0145 supersedes that**, because the
+//! rule also refuses the shape a standard library is full of: `sort_ints` calls `sort`
+//! calls `less_int`, and the middle procedure stopped the chain for every caller above
+//! it.
+//!
+//! Termination has **two** guards now, and they are for different things. A callee that can
+//! reach itself through the available bodies is **refused** — which keeps the structural
+//! argument for cycles *and* preserves a recursive trap's backtrace, since an inlined callee
+//! has no frame (ADR-0021 §3) and in a recursive trap the depth is the message. And
+//! [`inline_body`] runs at most [`MAX_INLINE_ROUNDS`] rounds, each splicing only the sites
+//! that existed when it began, which bounds the *nesting depth* without needing
+//! per-statement provenance MIR does not carry.
+//!
+//! [`MAX_INLINED_STATEMENTS`] then stops a fan-out of medium callees from exploding one
+//! body. Both numbers are guesses, said to be guesses where they are declared, with the
+//! properties they bound pinned by tests instead.
 //!
 //! # Why every copied span becomes the call's span
 //!
@@ -168,53 +179,124 @@ impl<'a> Callees<'a> {
 // Eligibility
 // ---------------------------------------------------------------------------
 
-/// Whether `callee` is small enough and simple enough to inline.
+/// How many rounds of splicing [`inline_body`] performs.
 ///
-/// The predicate is the whole of ADR-0021 §4 except the caller-side exclusion,
-/// which is not this module's decision: the callee makes no call of its own, and it
-/// has fewer than [`MAX_INLINE_STATEMENTS`] statements. A [`Statement::Nop`] is not
-/// counted, so a body an earlier splice left holes in is not penalised for them.
+/// **This is the termination argument** (ADR-0145 §1). A callee may contain calls of its
+/// own, so a splice copies calls *in*; each round visits only the sites that existed when
+/// it began, which makes the round number the inlining depth. Three levels collapses the
+/// wrapper chains this exists for (`sort_ints` → `sort` → `less_int`) and unrolls a
+/// recursive procedure three times, leaving a real call at the bottom.
+///
+/// A guess, like [`MAX_INLINE_STATEMENTS`], and said to be one for the same reason: the
+/// measurement that would justify a number is W8's throughput work. What is pinned by
+/// tests is the *behaviour* it bounds, so this can be tuned without a property changing
+/// silently.
+pub const MAX_INLINE_ROUNDS: usize = 3;
+
+/// How large a body may grow before [`inline_body`] stops splicing into it.
+///
+/// A fan-out of medium callees can explode one body even when every individual callee is
+/// under [`MAX_INLINE_STATEMENTS`], which the leaf rule used to make unlikely by refusing
+/// most of them. Checked before each splice, so a body over budget takes no further splice
+/// and the pass stops **for that body only**.
+///
+/// Also a guess. Roughly ten times [`MAX_INLINE_STATEMENTS`], on the reasoning that a body
+/// which has absorbed ten wrappers has had the benefit.
+pub const MAX_INLINED_STATEMENTS: usize = 256;
+
+/// Whether `callee` is small enough and free enough of recursion to inline.
+///
+/// Two conditions, and ADR-0145 §1 replaced the leaf rule with the second:
+///
+/// - **Size.** Fewer than [`MAX_INLINE_STATEMENTS`] statements, ignoring [`Statement::Nop`]
+///   so that a body an earlier splice left holes in is not penalised for them.
+/// - **No cycle.** A callee that can reach *itself* through the bodies available for
+///   inlining is refused. A callee that merely calls something else is now eligible, which
+///   is the point of the change.
+///
+/// **The cycle check is not (only) about termination — it is about backtraces**, and that is
+/// what building this found. Unrolling recursion is a legitimate optimisation and it costs a
+/// documented promise: an inlined callee has no frame (ADR-0021 §3), and ADR-0066 §4 defers
+/// inline-provenance backtraces, so every flattened frame is a frame permanently missing
+/// from a diagnostic. In a recursive trap the *depth* is the message — a chain of four
+/// `countdown` frames reported as one would be a backtrace that lies about what happened —
+/// so the case where flattening costs the most is exactly the case whose benefit was never
+/// measured. It is refused instead.
+///
+/// The check is over `callees` rather than over a program call graph, and that is the right
+/// scope rather than a compromise: a cycle whose members are not all available for inlining
+/// cannot be spliced through anyway, because the unavailable call is not a site.
 #[must_use]
-pub fn is_inlinable(callee: &MirBody) -> bool {
-    let mut statements = 0usize;
-    for block in callee.blocks() {
-        for stmt in &block.stmts {
-            match stmt {
-                Statement::Nop => {}
-                Statement::Assign { rvalue, .. } | Statement::Discard { rvalue, .. } => {
-                    if contains_call(rvalue) {
-                        return false;
-                    }
-                    statements += 1;
-                }
-                // Both are real work and neither contains a call, so they count toward the
-                // size budget without needing to be inspected.
-                Statement::Store { .. }
-                | Statement::Zero { .. }
-                | Statement::BoundsCheck { .. }
-                | Statement::TagCheck { .. } => statements += 1,
+pub fn is_inlinable(proc: ProcRef, callee: &MirBody, callees: &Callees<'_>) -> bool {
+    statement_count(callee) < MAX_INLINE_STATEMENTS && !reaches_itself(proc, callee, callees)
+}
+
+/// Whether `proc` can reach itself through the bodies in `callees`.
+///
+/// A depth-first walk over direct callees, with a visited set — so a diamond is walked once
+/// and a cycle *not* through `proc` terminates rather than spinning. Bounded by the number of
+/// available bodies, which is what makes this cheap enough to ask per call site.
+fn reaches_itself(proc: ProcRef, callee: &MirBody, callees: &Callees<'_>) -> bool {
+    let mut seen: FxHashMap<ProcRef, ()> = FxHashMap::default();
+    let mut stack: Vec<&MirBody> = vec![callee];
+    while let Some(body) = stack.pop() {
+        for target in direct_calls(body) {
+            if target == proc {
+                return true;
+            }
+            if seen.insert(target, ()).is_some() {
+                continue;
+            }
+            if let Some(next) = callees.get(target) {
+                stack.push(next);
             }
         }
     }
-    statements < MAX_INLINE_STATEMENTS
+    false
 }
 
-/// Whether an rvalue performs a call.
+/// Every procedure `body` calls directly.
 ///
-/// An exhaustive match rather than a `matches!`, so that a new [`Rvalue`] variant
-/// that can call something is a compile error here instead of a leaf test that
-/// quietly starts lying.
-fn contains_call(rvalue: &Rvalue) -> bool {
-    match rvalue {
-        Rvalue::Call { .. } => true,
-        Rvalue::Use(_)
-        | Rvalue::Binary { .. }
-        | Rvalue::Unary { .. }
-        | Rvalue::Convert { .. }
-        | Rvalue::Load(_)
-        | Rvalue::Address(_)
-        | Rvalue::Undef => false,
+/// `Callee::Indirect` contributes nothing, for the same reason it is never an inline site:
+/// nothing maps a procedure *value* back to a [`ProcRef`]. That makes this check blind to a
+/// cycle closed through a procedure pointer — which is stated rather than hidden, and is
+/// harmless here because such a call is not a site either, so no cycle can be *spliced*
+/// through it.
+fn direct_calls(body: &MirBody) -> Vec<ProcRef> {
+    let mut out = Vec::new();
+    for block in body.blocks() {
+        for stmt in &block.stmts {
+            let rvalue = match stmt {
+                Statement::Assign { rvalue, .. } | Statement::Discard { rvalue, .. } => rvalue,
+                Statement::Store { .. }
+                | Statement::Zero { .. }
+                | Statement::BoundsCheck { .. }
+                | Statement::TagCheck { .. }
+                | Statement::Nop => continue,
+            };
+            if let Rvalue::Call {
+                callee: Callee::Direct(target),
+                ..
+            } = rvalue
+            {
+                out.push(*target);
+            }
+        }
     }
+    out
+}
+
+/// How many statements a body has, ignoring [`Statement::Nop`].
+///
+/// Shared by [`is_inlinable`]'s callee test and [`inline_body`]'s caller budget, because
+/// the two are the same question about different bodies and two spellings of "how big is
+/// this" would be free to disagree about whether a `Nop` counts.
+fn statement_count(body: &MirBody) -> usize {
+    body.blocks()
+        .iter()
+        .flat_map(|block| block.stmts.iter())
+        .filter(|stmt| !matches!(stmt, Statement::Nop))
+        .count()
 }
 
 // ---------------------------------------------------------------------------
@@ -231,19 +313,43 @@ fn contains_call(rvalue: &Rvalue) -> bool {
 /// In a debug build, if the spliced body is malformed. That is the point.
 pub fn inline_body(body: &mut MirBody, callees: &Callees<'_>, pool: &Pool) -> usize {
     let mut spliced = 0usize;
-    // An index walk rather than an iterator: a splice appends the copied blocks and
-    // the continuation, and both must be visited. The continuation carries whatever
-    // followed the call, so a second call in the same original block is reached on a
-    // later turn of this loop. This terminates because each splice removes one call
-    // from the body and copies none in — a leaf callee has none to copy.
-    let mut block = 0usize;
-    while block < body.block_count() {
-        let id = BlockId::from_usize(block);
-        if let Some(site) = next_site(body, id, callees) {
-            splice(body, site, callees);
-            spliced += 1;
+    // **Rounds are the termination argument** (ADR-0145 §1). A splice copies the callee's
+    // own calls into the caller, so those are new sites; visiting them only on the next
+    // round makes the round number the inlining depth, with no provenance on a statement.
+    // Without the bound a recursive callee would splice itself forever.
+    for _ in 0..MAX_INLINE_ROUNDS {
+        // **A worklist, not an index walk over every block.** A splice appends two kinds of
+        // block: the *continuation*, which holds the caller's own statements from after the
+        // call, and the *copied callee* blocks. The continuation must be visited in this
+        // round, or a second call in one original block would wait a round for no reason.
+        // The copied blocks must **not** be, because their calls are the deeper level — that
+        // is what makes the round number the depth. Only `splice` can tell them apart, so it
+        // returns its continuation and this pushes that.
+        let mut worklist: Vec<BlockId> = (0..body.block_count()).map(BlockId::from_usize).collect();
+        let mut round = 0usize;
+        let mut next = 0usize;
+        while next < worklist.len() {
+            let id = worklist[next];
+            next += 1;
+            // Checked per splice rather than once per round, so a body that crosses the
+            // budget mid-round stops there rather than absorbing the rest of it.
+            if statement_count(body) >= MAX_INLINED_STATEMENTS {
+                break;
+            }
+            if let Some(site) = next_site(body, id, callees) {
+                let cont = splice(body, site, callees);
+                worklist.push(cont);
+                round += 1;
+                // The same block may hold another call before the one just spliced was
+                // reached; re-visiting it costs one `next_site` scan and is what keeps a
+                // block of several calls to one round.
+                worklist.push(id);
+            }
         }
-        block += 1;
+        spliced += round;
+        if round == 0 {
+            break;
+        }
     }
     if spliced > 0 {
         verify::assert_valid(body, pool);
@@ -290,7 +396,7 @@ fn next_site(body: &MirBody, block: BlockId, callees: &Callees<'_>) -> Option<Si
             continue;
         };
         let callee = callees.get(*proc)?;
-        if !is_inlinable(callee) {
+        if !is_inlinable(*proc, callee, callees) {
             continue;
         }
         // A callee that returns nothing cannot supply the argument a `dest`
@@ -327,7 +433,11 @@ fn returns_a_value(callee: &MirBody) -> bool {
 }
 
 /// Copies `site`'s callee into the caller and rewires control flow through it.
-fn splice(body: &mut MirBody, site: Site, callees: &Callees<'_>) {
+///
+/// Returns the **continuation** block — the one holding whatever followed the call. The
+/// caller needs it to tell a continuation apart from a copied callee block, which is what
+/// bounds the inlining depth (ADR-0145 §1).
+fn splice(body: &mut MirBody, site: Site, callees: &Callees<'_>) -> BlockId {
     let callee = callees
         .get(site.proc)
         .expect("the site was only created because the callee was available");
@@ -403,6 +513,7 @@ fn splice(body: &mut MirBody, site: Site, callees: &Callees<'_>) {
         site.block,
         Terminator::Goto(Target::with_args(entry, site.args)),
     );
+    cont
 }
 
 // ---------------------------------------------------------------------------

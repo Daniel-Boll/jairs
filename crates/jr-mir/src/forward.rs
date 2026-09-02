@@ -5,7 +5,32 @@
 //! folded nothing in `PLAN.md` §1.4's exit criterion, because `p` is a `struct` and
 //! so lives in a slot, and nothing saw through memory.
 //!
-//! # Why block-local is enough for the case that motivated it
+//! # Why it now follows a single-predecessor chain
+//!
+//! ADR-0145 §2. ADR-0023 §1 made this one walk per block on the correct observation that
+//! every store/load pair in the slice's exit criterion sits in one block. MIR has since
+//! grown constructs that split a straight line into several — `if` with no `else`, `&&`
+//! and `||`, a `for` step block, a `defer` — so a store and its load are routinely one
+//! block apart with nothing between them.
+//!
+//! When the backward walk reaches a block's start it therefore continues into that
+//! block's **unique** predecessor, for at most [`MAX_FORWARD_HOPS`] blocks. Two facts make
+//! that sound, and both are needed:
+//!
+//! - A block with exactly one predecessor is entered only from it, so every statement in
+//!   that predecessor ran first, in order.
+//! - Each block in such a chain **dominates** the load's block — by induction from the
+//!   single-predecessor relation — which is what makes it legal to *use* a `ValueId`
+//!   defined there at the load. Forwarding a value that does not dominate its use would
+//!   be a verifier failure at best and a wrong read at worst.
+//!
+//! A block with two predecessors ends the chain, so a loop header ends it: a store before
+//! a loop is still not forwarded into the body. That case needs a meet at the join —
+//! "every predecessor supplies the same operand" — which is a real dataflow analysis and
+//! is deferred with its reason in ADR-0145 §2. A terminator cannot store, so nothing on
+//! the way back needs examining beyond the statements.
+//!
+//! # Why block-local was enough for the case that motivated it
 //!
 //! Every store and its matching load in `024-hello.jr` sit in one block:
 //!
@@ -60,6 +85,18 @@ use crate::mir::{
     BlockId, MirBody, Operand, Place, PlaceBase, Projection, Rvalue, SlotId, Statement,
 };
 use crate::verify;
+
+/// How many blocks back the single-predecessor walk may go (ADR-0145 §2).
+///
+/// A bound rather than "until the chain ends", for the reason every other bound in this
+/// project's mid-end has one: a chain is walked per load, so an unbounded walk makes the
+/// pass quadratic in a long straight line, and this runs inside a salsa query where a slow
+/// pass is a slow editor.
+///
+/// Eight is a guess and is said to be one. What it bounds is *how far* a forward can reach,
+/// never whether one is correct, so tuning it cannot introduce a wrong answer — only find
+/// or miss an optimisation.
+pub const MAX_FORWARD_HOPS: usize = 8;
 
 /// Replaces loads with the values stores put there, and reports whether it changed anything.
 ///
@@ -150,7 +187,7 @@ fn forward_in_block(
             continue;
         };
         let loaded_ty = body.value(*dest).ty;
-        if let Some(value) = available_store(stmts, position, load, slot, escaping, pool, body) {
+        if let Some(value) = available_anywhere(body, block, position, load, slot, escaping, pool) {
             // **A forward must not change the value's type** (ADR-0106 §2). Storing a `*u8` into a `*T` slot
             // and loading it back is how a pointer is *retyped* — the mechanism ADR-0076 §1 built, since a
             // pointer's bits do not depend on its pointee and no conversion node exists. Forwarding the store
@@ -179,6 +216,69 @@ fn forward_in_block(
     true
 }
 
+/// The value a store made available at `load`, following the single-predecessor chain
+/// backwards from `position` in `block` (ADR-0145 §2).
+///
+/// The walk within one block is [`available_store`]; this is the part that continues into a
+/// predecessor. Split so that the *soundness* condition — one predecessor, therefore
+/// dominance and therefore a usable value — lives in one place with the loop that relies on
+/// it, rather than being a branch inside the statement walk.
+fn available_anywhere(
+    body: &MirBody,
+    block: BlockId,
+    position: usize,
+    load: &Place,
+    slot: SlotId,
+    escaping: &FxHashSet<SlotId>,
+    pool: &Pool,
+) -> Option<Operand> {
+    // The first block is searched from the load; every earlier one from its end.
+    let mut current = block;
+    let mut from = position;
+    for _ in 0..MAX_FORWARD_HOPS {
+        match available_store(
+            &body.block(current).stmts,
+            from,
+            load,
+            slot,
+            escaping,
+            pool,
+            body,
+        ) {
+            Found::Value(operand) => return Some(operand),
+            // A kill, a partial overlap, or a store this pass cannot reason about: the
+            // search is over, and continuing into a predecessor would skip past the very
+            // thing that ended it.
+            Found::Stop => return None,
+            Found::RanOut => {}
+        }
+        // **Exactly one predecessor**, or the chain ends: two predecessors means the load's
+        // block is a join, and a value defined in one of them does not dominate the load.
+        let preds = body.predecessors();
+        let [only] = preds.get(current.index()).map(Vec::as_slice)? else {
+            return None;
+        };
+        current = *only;
+        from = body.block(current).stmts.len();
+    }
+    None
+}
+
+/// What one block's backward walk concluded.
+///
+/// Three outcomes rather than an `Option`, because "no store here" and "stop looking" are
+/// different answers and collapsing them is exactly how a cross-block walk becomes unsound:
+/// it would continue past a kill into a predecessor and forward a value the kill invalidated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Found {
+    /// A store supplied this operand.
+    Value(Operand),
+    /// Something ended the search: a kill, a partial overlap, or an unanalysable store.
+    Stop,
+    /// The block's statements ran out with nothing relevant found.
+    RanOut,
+}
+
 /// The value a store made available at `load`, searching backwards from `position`.
 ///
 /// Backwards rather than forwards because the *nearest* preceding store is the one
@@ -193,30 +293,30 @@ fn available_store(
     escaping: &FxHashSet<SlotId>,
     pool: &Pool,
     body: &MirBody,
-) -> Option<Operand> {
+) -> Found {
     let escapes = escaping.contains(&slot);
     for earlier in stmts[..position].iter().rev() {
         match earlier {
             Statement::Store { place, value, .. } => {
                 match store_relation(place, load, slot, pool, body) {
-                    Some(Overlap::Same) => return Some(*value),
+                    Some(Overlap::Same) => return Found::Value(*value),
                     // Shares storage without matching it, so the load's bytes are not
                     // this operand — and no earlier store can be trusted either.
-                    Some(Overlap::Partial) => return None,
+                    Some(Overlap::Partial) => return Found::Stop,
                     Some(Overlap::Disjoint) => {}
                     // A store this pass cannot reason about: through a pointer, or to
                     // a place with a `Deref` in its projection. Safe only if nothing
                     // can point at our slot.
                     None => {
                         if escapes {
-                            return None;
+                            return Found::Stop;
                         }
                     }
                 }
             }
             Statement::Assign { rvalue, .. } | Statement::Discard { rvalue, .. } => {
                 if kills(rvalue, slot, escapes) {
-                    return None;
+                    return Found::Stop;
                 }
             }
             // Zeroing writes the *whole* slot, so it kills any earlier store to it and
@@ -226,7 +326,7 @@ fn available_store(
             Statement::Zero { place, .. } => match participating_slot(place) {
                 Some(zeroed) if zeroed != slot => {}
                 // Our slot, or a place this pass cannot reason about.
-                _ => return None,
+                _ => return Found::Stop,
             },
             // Reads its operands and may trap. It writes nothing, so it cannot invalidate
             // a store — a trap does not produce a *wrong* value, it ends the program.
@@ -234,7 +334,7 @@ fn available_store(
             Statement::Nop => {}
         }
     }
-    None
+    Found::RanOut
 }
 
 /// The type of an operand, or `None` for a constant whose type the pool would have to answer.
