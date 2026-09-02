@@ -172,6 +172,19 @@ exits 114, a checksum of offsets and sizes) and two refusals in `type-errors/`. 
 registry earned its keep here**: `crates/jr-cli/tests/codes.rs` failed the moment E0283 was declared
 while this file still claimed E0282 was free, which is exactly the rot it was written to catch.
 
+**ADR-0150 through ADR-0154 reach 1034** (1035 under gate 7) and **243 corpus files** — PLAN §8.6's first
+three steps, which closed **W6**. ADR-0150 turned the ninth leaked internal error into E0286. ADR-0151
+implemented `#must`, filling ADR-0008's reserved effect-row slot for the first time since the slice, and
+unblocking five W7 modules. ADR-0152 built the compiler-emitted static-data table ADR-0078 §3 deferred,
+delivering `Type_Info.fields` with it; ADR-0153 put the message loop on top; ADR-0154 added a second build
+option and **declined** plugin hooks and Jai-style workspaces with the poll as the stated reason.
+
+**Two traps re-confirmed in this stretch.** The formatter dropped `#must` on the first attempt (tenth wave
+running), and it was the *unsound* direction — losing the attribute deletes a check. And a shell mistake
+cost real time twice: `cmd | head -1; echo $?` reports **`head`'s** status, so two apparent VM divergences
+were the harness, not the compiler. Rebuild `jr-cli` before every hand-run, too; a stale binary produced a
+third false divergence.
+
 **ADR-0149 holds at 1033** (1034 under gate 7) and adds **no** corpus file = still **237** — W8
 sub-wave 8, which closes W8 by *measuring* parallel sema and refusing it. A wave whose deliverable is a
 measurement and a revert adds no test and no corpus file, and that is the honest shape for one: the
@@ -347,7 +360,9 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0286 is the first free code**; E0134 is the first free *parser* code. E0285 is `#simd`'s single
+**E0289 is the first free code**; E0134 is the first free *parser* code. E0286 is a `#foreign` signature
+carrying a type with no C representation (ADR-0150), E0287 a discarded `#must` result and E0288 `#must` on
+a `void` procedure (ADR-0151). E0285 is `#simd`'s single
 refusal (ADR-0148) — a width that is not one machine register, an element a lane cannot hold, integer
 division, or a trapping integer add — one code because each is "this is not how a vector works".
 E0133 is the parser's `#simd` with no array type. E0284 is `#soa`'s single refusal (ADR-0147) — an unusable count, a `using` field, or an index that is not a field receiver — one code because each is "this is not how an `#soa` struct is used". E0282 and E0283 are `#align`'s and `#place`'s refusals (ADR-0144), one per attribute because the two have different rules, and E0132 is `jr-syntax`'s for either attribute written with no value at all. E0280 refuses an

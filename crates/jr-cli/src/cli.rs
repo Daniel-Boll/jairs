@@ -269,8 +269,13 @@ pub struct BuildArgs {
     /// A level may not change what a program computes (ADR-0002, ADR-0142 §3). The one
     /// thing `0` does change is a backtrace: nothing is inlined, so a trap inside a leaf
     /// names the leaf's own line and lists its frame (ADR-0021 §3).
-    #[arg(short = 'O', long = "opt-level", value_enum, default_value_t)]
-    pub opt_level: OptLevelArg,
+    ///
+    /// **`Option`, not a default**, so that "absent" is distinguishable from an explicit `-O1`
+    /// (ADR-0154 §1): a build script may declare `BUILD_OPT_LEVEL`, and an operator's flag has to be
+    /// able to outrank it — which needs knowing whether one was given. `jr run` keeps a plain default,
+    /// because there is no artefact declaring anything for it to lose to.
+    #[arg(short = 'O', long = "opt-level", value_enum)]
+    pub opt_level: Option<OptLevelArg>,
 
     /// Which code generator to use (ADR-0143 §2).
     ///

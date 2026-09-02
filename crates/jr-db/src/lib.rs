@@ -168,7 +168,9 @@ pub use module_loader::{
     resolved,
 };
 
-pub use build::{BackendChoice, BuildOutput, build_object, declared_build_output, entry_of};
+pub use build::{
+    BackendChoice, BuildOutput, build_object, declared_build_output, declared_opt_level, entry_of,
+};
 pub use consts::{ConstResult, file_consts};
 // Re-exported because `ConstResult::values` is an `Arc<ConstValues>` in this crate's
 // public API: a consumer could not name the type it is handed without depending on

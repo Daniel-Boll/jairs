@@ -18,8 +18,23 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated with **wave W8 — Performance DONE** (W7 — Stdlib and W6 — Metaprogram are still open),
+Last updated with **W8 — Performance and W6 — Metaprogram both DONE** (W7 — Stdlib is still open),
 1033 tests green — 1034 with the LLVM back end compiled in.
+
+**W6 is closed, and the last three waves' worth of decisions are made.** PLAN §8.6 laid out seven steps to
+finish the programme; the first three are done. A `#foreign` signature that cannot be lowered is now a
+diagnostic instead of an internal compiler error (ADR-0150). **`#must` exists** (ADR-0151) — the error
+marker ADR-0008 chose in the vertical slice and nothing built for the whole programme — so a fallible
+operation returns a value beside a flag and ignoring the flag has to be *written*, as `_ = f();`. The
+obligation lives in the procedure's *type*, in ADR-0008's reserved effect-row slot, which is why it works
+across module boundaries and through a procedure pointer. And the compiler can now **emit static data**
+(ADR-0152), which delivered `Type_Info.fields` — owed since ADR-0078 — and let a metaprogram *iterate* the
+declarations carrying a note instead of unrolling to a guessed bound (ADR-0153).
+
+**Two W6 items were declined rather than deferred**, with the reason stated: plugin hooks and Jai-style
+workspaces are both the *poll* model, and a poll's behaviour would depend on compilation order, which
+salsa's re-execution makes unstable. What a plugin would want is already available in two reproducible
+pieces.
 
 **What happens next is planned, and the plan named its own blockers.** PLAN §8 is the completion plan
 for the four waves that remain — W6 Metaprogram, W7 Stdlib, W9 Tooling, W10 Graphics — and writing it
