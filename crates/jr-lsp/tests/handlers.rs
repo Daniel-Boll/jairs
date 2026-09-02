@@ -1887,3 +1887,216 @@ fn a_top_level_run_still_does_not_hover_as_an_item() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Semantic tokens (ADR-0159)
+// ---------------------------------------------------------------------------
+
+/// Decodes a semantic-token response back into `(line, character, length, type, modifiers)` tuples.
+///
+/// The whole point of testing through a decoder rather than against the raw five-integer stream is that the
+/// stream is **delta-encoded**: a raw assertion would be unreadable, and — worse — it would not notice that a
+/// misplaced token corrupts every later position rather than only its own. Decoding reverses the encoding, so
+/// an assertion is about where a token actually lands.
+fn decoded(tokens: &lsp_types::SemanticTokens) -> Vec<(u32, u32, u32, String, u32)> {
+    let mut out = Vec::new();
+    let mut line = 0_u32;
+    let mut start = 0_u32;
+    for token in &tokens.data {
+        if token.delta_line == 0 {
+            start += token.delta_start;
+        } else {
+            line += token.delta_line;
+            start = token.delta_start;
+        }
+        out.push((
+            line,
+            start,
+            token.length,
+            jr_lsp::tokens::TOKEN_TYPES[token.token_type as usize]
+                .as_str()
+                .to_owned(),
+            token.token_modifiers_bitset,
+        ));
+    }
+    out
+}
+
+/// The token kind reported at the position of `needle`'s first character.
+fn kind_at(source: &str, needle: &str) -> Option<(String, u32)> {
+    let (db, _search, file) = program(source);
+    let tokens = jr_lsp::tokens::semantic_tokens(&db, file, Encoding::Utf8)
+        .expect("the file is in the database");
+    let want = at(source, needle);
+    decoded(&tokens)
+        .into_iter()
+        .find(|(line, start, ..)| *line == want.line && *start == want.character)
+        .map(|(_, _, _, kind, modifiers)| (kind, modifiers))
+}
+
+#[test]
+fn semantic_tokens_distinguish_the_identifiers_a_grammar_cannot() {
+    // The whole reason this capability exists: every one of these is `IDENT` to the parser.
+    let source = "Point :: struct {
+    x: s64;
+}
+Colour :: enum {
+    RED;
+}
+scale :: (factor: s64) -> s64 {
+    total := factor;
+    p: Point;
+    total = total + p.x;
+    return total;
+}
+";
+    assert_eq!(
+        kind_at(source, "Point ::"),
+        Some((String::from("struct"), 3)),
+        "a struct declaration's name is a struct, declared and readonly"
+    );
+    assert_eq!(
+        kind_at(source, "Colour ::"),
+        Some((String::from("enum"), 3)),
+        "an enum declaration's name is an enum, not a struct"
+    );
+    assert_eq!(
+        kind_at(source, "RED;"),
+        Some((String::from("enumMember"), 3)),
+        "an enum member is its own kind"
+    );
+    assert_eq!(
+        kind_at(source, "scale ::"),
+        Some((String::from("function"), 3)),
+        "a procedure declaration is a function"
+    );
+    assert_eq!(
+        kind_at(source, "factor: s64"),
+        Some((String::from("parameter"), 1)),
+        "a parameter is declared but not readonly"
+    );
+    assert_eq!(
+        kind_at(source, "total := factor"),
+        Some((String::from("variable"), 1)),
+        "a `:=` local is a declared variable"
+    );
+    assert_eq!(
+        kind_at(source, "x: s64"),
+        Some((String::from("property"), 1)),
+        "a field declaration is a property"
+    );
+    assert_eq!(
+        kind_at(source, "Point;"),
+        Some((String::from("type"), 0)),
+        "a name in type position is a type, with no declaration modifier"
+    );
+}
+
+/// A field *access* and a bare reference are the two cases context alone cannot settle, and they sit in the
+/// same expression — so this is the test that would catch classifying `p.x`'s receiver as a property.
+#[test]
+fn a_field_access_colours_the_receiver_and_the_field_differently() {
+    let source = "Point :: struct {
+    x: s64;
+}
+read_x :: (p: Point) -> s64 {
+    return p.x;
+}
+";
+    assert_eq!(
+        kind_at(source, "p.x"),
+        Some((String::from("parameter"), 0)),
+        "the receiver resolves to the parameter it is"
+    );
+    assert_eq!(
+        kind_at(source, "x;"),
+        Some((String::from("property"), 0)),
+        "the token after the dot is the field"
+    );
+}
+
+/// Keywords, comments, strings, numbers and directives all come from the token kind alone — which means this
+/// test is really about the *walk* reaching every token, including trivia the HIR never sees.
+#[test]
+fn semantic_tokens_cover_trivia_and_literals() {
+    let source = "// a comment
+greet :: () -> s64 {
+    text := \"hi\";
+    n := 42;
+    if n > 0 {
+        return n;
+    }
+    return 0;
+}
+";
+    let (db, _search, file) = program(source);
+    let tokens =
+        jr_lsp::tokens::semantic_tokens(&db, file, Encoding::Utf8).expect("the file is present");
+    let all = decoded(&tokens);
+    let kinds: Vec<&str> = all.iter().map(|(_, _, _, kind, _)| kind.as_str()).collect();
+    for want in ["comment", "string", "number", "keyword"] {
+        assert!(
+            kinds.contains(&want),
+            "the walk must reach a {want} token; got {kinds:?}"
+        );
+    }
+    assert_eq!(
+        all.first().map(|(line, start, ..)| (*line, *start)),
+        Some((0, 0)),
+        "the first token is the comment at the very start, so the encoding's first delta is absolute"
+    );
+}
+
+/// The encoding is monotonic, which is the property that makes every *other* assertion meaningful: one
+/// out-of-order token silently shifts every position after it.
+#[test]
+fn semantic_token_positions_are_non_decreasing() {
+    let source = "Pair :: struct {
+    a: s64;
+    b: s64;
+}
+sum :: (p: Pair) -> s64 {
+    return p.a + p.b;
+}
+";
+    let (db, _search, file) = program(source);
+    let tokens =
+        jr_lsp::tokens::semantic_tokens(&db, file, Encoding::Utf8).expect("the file is present");
+    let all = decoded(&tokens);
+    assert!(all.len() > 10, "a file this size has many tokens: {all:?}");
+    let mut previous = (0_u32, 0_u32);
+    for (line, start, length, kind, _) in &all {
+        assert!(
+            (*line, *start) >= previous,
+            "tokens must be sorted: {kind} at {line}:{start} follows {previous:?}"
+        );
+        assert!(*length > 0, "a zero-length token colours nothing: {kind}");
+        previous = (*line, *start);
+    }
+}
+
+/// A file that does not parse still gets tokens, which is the state an editor is in most of the time — and
+/// the reason context leads and resolution follows.
+#[test]
+fn semantic_tokens_survive_a_file_that_does_not_parse() {
+    let source = "Point :: struct {
+    x: s64;
+}
+broken :: (p: Point) -> s64 {
+    return p.
+}
+";
+    let (db, _search, file) = program(source);
+    let tokens =
+        jr_lsp::tokens::semantic_tokens(&db, file, Encoding::Utf8).expect("the file is present");
+    let all = decoded(&tokens);
+    let kinds: Vec<&str> = all.iter().map(|(_, _, _, kind, _)| kind.as_str()).collect();
+    assert!(
+        kinds.contains(&"struct"),
+        "the struct declaration is still classified in a file with a hole in it: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"type"),
+        "and so is the type annotation: {kinds:?}"
+    );
+}

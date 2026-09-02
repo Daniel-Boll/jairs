@@ -1522,6 +1522,10 @@ if config then
       "codeActionProvider",
       "signatureHelpProvider",
       "inlayHintProvider",
+      -- ADR-0159: the fourteenth and last capability, and the only one whose value is information the
+      -- grammar cannot have. Checked here rather than in its own block because it needs the same
+      -- assertion the other three do.
+      "semanticTokensProvider",
     }) do
       local advertised = client.server_capabilities[capability]
       check(
@@ -1530,6 +1534,28 @@ if config then
         vim.inspect(advertised)
       )
     end
+    local tokens = client.server_capabilities.semanticTokensProvider
+    check(
+      "the semantic-token legend names its types, so a client can index the response",
+      tokens ~= nil
+        and tokens.legend ~= nil
+        and #tokens.legend.tokenTypes > 0
+        and vim.tbl_contains(tokens.legend.tokenTypes, "enumMember"),
+      vim.inspect(tokens and tokens.legend)
+    )
+    check(
+      "the legend names its modifiers too — `readonly` is what `::` means (ADR-0159)",
+      tokens ~= nil
+        and tokens.legend ~= nil
+        and vim.tbl_contains(tokens.legend.tokenModifiers, "readonly")
+        and vim.tbl_contains(tokens.legend.tokenModifiers, "declaration"),
+      vim.inspect(tokens and tokens.legend and tokens.legend.tokenModifiers)
+    )
+    check(
+      "full-document tokens are offered and range tokens are declined, deliberately (ADR-0159 §4)",
+      tokens ~= nil and tokens.full == true and tokens.range == false,
+      vim.inspect(tokens)
+    )
     check(
       "the organise-imports kind is listed, so a client can put it on its own menu",
       vim.tbl_contains(

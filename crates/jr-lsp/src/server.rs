@@ -129,6 +129,25 @@ pub fn capabilities(encoding: Encoding) -> ServerCapabilities {
             work_done_progress_options: lsp_types::WorkDoneProgressOptions::default(),
         }),
         inlay_hint_provider: Some(OneOf::Left(true)),
+        // **Full-document only, with no range and no delta support** (ADR-0159 §4). A range request would
+        // save work on a large file, and a delta would save bandwidth on an edit — both are optimisations,
+        // and both need the server to hold per-document state it does not otherwise keep. A file this
+        // compiler parses in microseconds does not need either yet, and offering `full: true` alone is the
+        // honest advertisement: a client that wants a range asks for the whole file instead, which is
+        // correct rather than merely tolerable.
+        semantic_tokens_provider: Some(
+            lsp_types::SemanticTokensServerCapabilities::SemanticTokensOptions(
+                lsp_types::SemanticTokensOptions {
+                    work_done_progress_options: lsp_types::WorkDoneProgressOptions::default(),
+                    legend: lsp_types::SemanticTokensLegend {
+                        token_types: crate::tokens::TOKEN_TYPES.to_vec(),
+                        token_modifiers: crate::tokens::TOKEN_MODIFIERS.to_vec(),
+                    },
+                    range: Some(false),
+                    full: Some(lsp_types::SemanticTokensFullOptions::Bool(true)),
+                },
+            ),
+        ),
         ..ServerCapabilities::default()
     }
 }
@@ -473,6 +492,11 @@ enum Job {
         file: SourceFile,
         range: lsp_types::Range,
     },
+    SemanticTokens {
+        db: Box<JairsDatabase>,
+        id: RequestId,
+        file: SourceFile,
+    },
     /// A request naming a file this server has never been told about.
     Unknown { id: RequestId },
 }
@@ -696,6 +720,18 @@ fn dispatch(db: &mut JairsDatabase, jobs: &Sender<Job>, request: Request) {
                         id: id.clone(),
                         file,
                         range: params.range,
+                    })
+                })
+        }
+        "textDocument/semanticTokens/full" => {
+            serde_json::from_value::<lsp_types::SemanticTokensParams>(request.params)
+                .ok()
+                .and_then(|params| {
+                    let file = file_of(db, &params.text_document.uri)?;
+                    Some(Job::SemanticTokens {
+                        db: Box::new(db.snapshot()),
+                        id: id.clone(),
+                        file,
                     })
                 })
         }
@@ -961,6 +997,11 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
             let db = db.as_ref();
             let computed =
                 catch(|| crate::hints::inlay_hints(db, file, search_paths, encoding, range));
+            answer(out, id, computed.map(serde_json::to_value));
+        }
+        Job::SemanticTokens { db, id, file } => {
+            let db = db.as_ref();
+            let computed = catch(|| crate::tokens::semantic_tokens(db, file, encoding));
             answer(out, id, computed.map(serde_json::to_value));
         }
     }

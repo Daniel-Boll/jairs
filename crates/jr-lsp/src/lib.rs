@@ -57,6 +57,7 @@ pub mod navigate;
 pub mod position;
 pub mod render;
 pub mod server;
+pub mod tokens;
 pub mod uri;
 
 pub use actions::code_actions;
