@@ -133,6 +133,26 @@ Type_Info_Kind :: enum {
     DYNAMIC_ARRAY;
 }
 
+/// Which operating system the program is being compiled for (ADR-0180 §1).
+///
+/// The type of the `os()` intrinsic, which sema folds to a constant of this enum before any back end
+/// sees a call. Declared **here**, in Jairs, rather than inside the compiler for exactly the reason
+/// `Type_Info` is (ADR-0075 §2): a caller has to be able to *name* the type to store the value, and a
+/// type the compiler owns and no source file can spell would be unusable.
+///
+/// An enum rather than an integer so a `switch` over it is exhaustiveness-checked (ADR-0067) — which is
+/// what makes "this program does not handle Windows" a compile error instead of a silently wrong branch.
+///
+/// **Three members.** A fourth host is a *library* edit plus one arm in the compiler's mapping, which is
+/// the whole point of the declaration living here. Nothing reads these by ordinal: the compiler resolves
+/// the member it wants **by name**, the way it resolves a `Type_Info_Kind`, so a member added in the
+/// middle would renumber the others harmlessly.
+Operating_System :: enum {
+    MACOS;
+    LINUX;
+    WINDOWS;
+}
+
 /// What the compiler knows about a type at run time (ADR-0075 §3, ADR-0077).
 ///
 /// Five fields since ADR-0077 added `id`; `name` is the one that made this wave need ADR-0075 §1 first: a compile-time

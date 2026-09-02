@@ -138,6 +138,11 @@ fn is_intrinsic_name(name: &str) -> bool {
             | "typed"
             | "untyped"
             | "view"
+            // `os()` — the target operating system, as a `Basic.Operating_System` (ADR-0180 §2). An
+            // intrinsic rather than a constant `modules/Basic` declares, because the value comes from
+            // the *compiler*, not from source: no Jairs expression can compute which OS it is being
+            // compiled for. Folded in sema, so no back end sees a call.
+            | "os"
             // The atomics (ADR-0176 §3). Named `atomic_*` rather than given operators, because an
             // operator would make the *ordering* invisible at the call site: `a += 1` and
             // `atomic_add(*a, 1)` mean very different things to another thread, and a reader auditing a
@@ -934,15 +939,63 @@ impl<'a> ResolveCtx<'a> {
         }
     }
 
+    /// Every top-level expression that lies inside an **intrinsic call's argument** (ADR-0180 §4).
+    ///
+    /// Transitive, matching `in_type_info_argument`'s stickiness: `size_of(Slot(s64, s64))` has a call
+    /// as its argument and every name below it is a type, which is why ADR-0119 §2 made the flag `outer
+    /// || intrinsic` rather than an assignment.
+    ///
+    /// Returns an empty set for a file with no intrinsic at file scope, which is almost every file, so
+    /// the flat walk below pays one arena scan and no lookups.
+    fn intrinsic_argument_exprs(&self) -> rustc_hash::FxHashSet<ExprId> {
+        let mut out = rustc_hash::FxHashSet::default();
+        let mut work: Vec<ExprId> = Vec::new();
+        for expr in &self.hir.exprs {
+            let Expr::Call { callee, args, .. } = expr else {
+                continue;
+            };
+            if !self.callee_is_intrinsic(ExprScope::TopLevel, *callee) {
+                continue;
+            }
+            work.extend(args.iter().copied());
+        }
+        while let Some(id) = work.pop() {
+            if !out.insert(id) {
+                continue;
+            }
+            if let Some(expr) = self.hir.exprs.get(id.index()) {
+                work.extend(top_child_exprs(expr));
+            }
+        }
+        out
+    }
+
     /// Resolve all name expressions in the file.
     fn resolve_all(&mut self) {
         // Check for duplicate file-level declarations
         self.check_duplicates();
 
+        // **The top-level arena is walked flat, and that is what made `N :: size_of(s64);` an error**
+        // (ADR-0180 §4). A body's expressions are reached from its statements, so an intrinsic's type
+        // argument is only ever visited *through* the call — with `in_type_info_argument` already set,
+        // which is what withholds E0201 for a builtin type name. This loop has no statements to start
+        // from, so it visited `s64` as an expression in its own right, reported "unresolved name `s64`",
+        // and only afterwards reached the call and re-resolved it correctly. The map ended up right and
+        // the diagnostic was already pushed.
+        //
+        // Fixed by *skipping* the subtrees an intrinsic call's arguments span, rather than by widening
+        // the E0201 suppression: the call resolves them, so nothing is left unresolved, and a builtin
+        // name written anywhere else at file scope keeps its error — the asymmetry ADR-0075 §2's comment
+        // above argues for.
+        let intrinsic_args = self.intrinsic_argument_exprs();
+
         // Resolve top-level expressions
         let n_exprs = self.hir.exprs.len();
         for i in 0..n_exprs {
             let id = ExprId::from_usize(i);
+            if intrinsic_args.contains(&id) {
+                continue;
+            }
             self.resolve_top_expr(id);
         }
 
@@ -1420,4 +1473,39 @@ pub fn resolve(
     let mut ctx = ResolveCtx::new(file, imports, interner);
     ctx.resolve_all();
     (ctx.map, ctx.diags)
+}
+
+/// Every expression one top-level expression directly contains (ADR-0180 §4).
+///
+/// Used by [`ResolveCtx::intrinsic_argument_exprs`] to mark an intrinsic argument's whole subtree.
+/// **Exhaustive**, so a new `Expr` variant is a compile error here rather than a subtree silently not
+/// walked — which would put a builtin type name back in E0201's path.
+///
+/// A near-twin of `jr-mir`'s `child_exprs`, and deliberately not shared: that one lives downstream of
+/// this crate, so importing it would invert the dependency, and its caller wants a call's callee and
+/// arguments separated where this one does not.
+fn top_child_exprs(expr: &Expr) -> Vec<ExprId> {
+    match expr {
+        Expr::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
+        Expr::Unary { operand, .. } | Expr::Autocast { operand, .. } => vec![*operand],
+        Expr::Cast { operand, .. } => vec![*operand],
+        Expr::Run(inner, _) => vec![*inner],
+        Expr::Field { receiver, .. } => vec![*receiver],
+        Expr::Index { base, index, .. } => vec![*base, *index],
+        Expr::Slice { base, .. } => vec![*base],
+        Expr::Deref(inner, _) => vec![*inner],
+        Expr::Call { callee, args, .. } => {
+            let mut out = vec![*callee];
+            out.extend(args.iter().copied());
+            out
+        }
+        // Leaves: nothing to walk into.
+        Expr::Literal(_, _)
+        | Expr::Name { .. }
+        | Expr::Member { .. }
+        | Expr::Context(_)
+        | Expr::Uninit(_)
+        | Expr::Directive { .. }
+        | Expr::Error(_) => Vec::new(),
+    }
 }

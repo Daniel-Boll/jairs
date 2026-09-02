@@ -1,0 +1,23 @@
+// EXPECT: E0293 — a `#system_library` declaration that names no linkable library (ADR-0180 §5)
+//
+// **Two silent holes, one code, and one file each** — this directory's harness asserts that a file
+// reports *exactly* the codes it declares, once, so the pair is split rather than the rule weakened.
+// Its sibling is `083-system-library-no-operand.jr`.
+//
+// Both holes type-checked clean and emitted **no `-l`**, so the symbol failed at *link* time —
+// `ld: symbol not found` — with nothing pointing at the declaration that caused it, and a reader has no
+// reason to doubt a declaration the compiler accepted. That is a silent-failure shape rather than a wrong
+// answer, and refusing it is the trade E0289 made for a `#c_variadic` call.
+//
+// **`#library "c"`** is accepted by the parser, because the parser gives every `#name "arg"` the same
+// generic directive node — the permissiveness that lets a directive be added with no grammar change, and
+// which this file is the cost of. It typed as a foreign library and linked nothing, because
+// `foreign_library_of` compares the directive's *name* against `"system_library"` and returns `None` for
+// anything else.
+//
+// Reported at the **declaration** rather than at a `#foreign` that names it: a `#library` nobody calls is
+// still wrong, and reporting per use would say it once per binding.
+wrong_directive :: #library "c";
+
+main :: () {
+}

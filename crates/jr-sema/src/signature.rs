@@ -46,6 +46,21 @@ pub struct SignatureOutput {
     /// Diagnostics about declarations: unresolvable annotations, constants whose
     /// initialiser does not check, and constant cycles.
     pub diagnostics: Diagnostics,
+    /// Calls this phase **folded** to a constant — `size_of(T)`, `os()` (ADR-0180 §3).
+    ///
+    /// The same map [`crate::CheckOutput::folded_calls`] carries, and it has to exist here too because
+    /// of which phase types what: this phase owns every **named** file-level declaration's initialiser
+    /// and the check phase deliberately does not revisit one. So a fold inside `HERE :: os();` happens
+    /// here, and before this field it was **computed and thrown away** — `jr-mir`'s thunk then found no
+    /// value for the call, resolved `os` as a name, and reported E0230 *"a name failed to resolve at
+    /// file scope"* on a program that is correct. That is what forced `Window.layout_is_sdl2` to be a
+    /// procedure instead of a constant.
+    pub folded_calls: crate::FoldedCalls,
+    /// The same folds keyed by span, for a consumer that has lost the expression id.
+    ///
+    /// Exactly [`crate::CheckOutput::folded_call_spans`]' role, and carried for the same reason: a span
+    /// survives `#insert` expansion where an `ExprId` does not.
+    pub folded_call_spans: rustc_hash::FxHashMap<jr_base::Span, PoolId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +169,8 @@ pub fn file_signatures(
         signatures: ctx.sigs,
         types: ctx.types,
         diagnostics: ctx.diags,
+        folded_calls: ctx.folded_calls,
+        folded_call_spans: ctx.folded_call_spans,
     }
 }
 

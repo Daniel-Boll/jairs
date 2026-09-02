@@ -68,6 +68,14 @@ pub struct SignatureResult {
     pub types: Arc<TypeMap>,
     /// Diagnostics about this file's declarations.
     pub diagnostics: Arc<Diagnostics>,
+    /// Calls the signature phase folded to a constant (ADR-0180 §3).
+    ///
+    /// Carried because that phase owns every **named** file-level declaration's initialiser and the
+    /// check phase does not revisit one — so a fold in `HERE :: os();` exists only here, and
+    /// [`crate::file_consts`] has to read it from this result to key the value into the `run` channel
+    /// `jr-mir` consults. Without it the call reached the thunk unfolded and E0230 said *"a name failed
+    /// to resolve at file scope"*.
+    pub folded_calls: Arc<jr_sema::FoldedCalls>,
 }
 
 /// Each polymorphic call and the instantiation it needs: the template procedure and the tuple of types
@@ -291,6 +299,7 @@ pub fn file_signatures(
         signatures: Arc::new(output.signatures),
         types: Arc::new(output.types),
         diagnostics: Arc::new(output.diagnostics),
+        folded_calls: Arc::new(output.folded_calls),
     }
 }
 

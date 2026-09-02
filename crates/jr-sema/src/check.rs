@@ -41,11 +41,18 @@ use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
     E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272, E0277,
-    E0278, E0279, E0284, E0285, E0286, E0287, E0288, E0289, E0291,
+    E0278, E0279, E0284, E0285, E0286, E0287, E0288, E0289, E0291, E0293,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
 use crate::sigs::{FileSignatures, ProcSig, SigKind};
+
+/// Calls a phase folded to a compile-time constant, by expression (ADR-0180 §3).
+///
+/// A named alias because **two** phases produce one — the check phase for a body, and the signature
+/// phase for a named file-level declaration's initialiser, which the check phase deliberately does not
+/// revisit. Both hand it to `jr-db`, which keys every entry into the one `run` channel `jr-mir` reads.
+pub type FoldedCalls = FxHashMap<(ExprScope, ExprId), PoolId>;
 
 /// A compiler intrinsic: a call the compiler recognises by name and types itself.
 ///
@@ -80,6 +87,12 @@ enum Intrinsic {
     Untyped,
     /// `view(p, count)` — a `[]T` over `count` elements at `p` (ADR-0109 §1).
     View,
+    /// `os()` — the target operating system, as a `Basic.Operating_System` (ADR-0180 §2).
+    ///
+    /// The only intrinsic that takes **no** arguments, and the only one whose answer comes from the
+    /// compiler's own build rather than from the program: no Jairs expression can compute which OS it
+    /// is being compiled for, which is why it cannot be a constant `modules/Basic` declares.
+    Os,
     /// `atomic_load(p)` — the `s64` at `p`, read atomically (ADR-0176 §3).
     AtomicLoad,
     /// `atomic_store(p, v)` — writes `v` to `p` atomically. Yields nothing.
@@ -249,7 +262,7 @@ pub struct CheckOutput {
     /// Separate from [`CheckOutput::type_info_calls`], whose meaning is "build a `Type_Info` for this type"
     /// rather than "here is the value". ADR-0076 §2 records what conflating those two cost: a 40-byte
     /// `Type_Info` stored into a 16-byte `Any`, caught only because the sizes happened to differ.
-    pub folded_calls: FxHashMap<(ExprScope, ExprId), PoolId>,
+    pub folded_calls: FoldedCalls,
     /// The type each `type_info(T)` call describes (ADR-0075 §2).
     ///
     /// Recorded because a *type* is not an operand: nothing in the expression tree carries a `PoolId`,
@@ -2738,7 +2751,15 @@ impl Ctx<'_> {
                 Some(case) => {
                     // Checked against the scrutinee's type, which is what resolves a bare `.RED` and
                     // what rejects a case of the wrong type through the ordinary mismatch (E0214).
-                    let want = (scrutinee != PoolId::ERROR).then_some(scrutinee);
+                    // **`Some` even when the scrutinee is poisoned** (ADR-0180 §6). This used to be
+                    // `(scrutinee != PoolId::ERROR).then_some(scrutinee)`, presumably to avoid an E0214
+                    // mismatch against `ERROR` — but `expect` is already silent for `ERROR`, and passing
+                    // `None` made `check_bare_member` report E0244, *"the enum a bare `.` member belongs
+                    // to cannot be inferred here"*, on a `switch` whose scrutinee had already been
+                    // reported. One mistake, two diagnostics, and the second misdirects: nothing is wrong
+                    // with the arm. `check_bare_member` has an explicit `ERROR` guard for exactly this,
+                    // and `None` was the one input that routed around it.
+                    let want = Some(scrutinee);
                     self.check_expr(scope, case, want);
                     // For an enum, remember *which* member so exhaustiveness and duplicate detection
                     // have something to compare. A case whose member cannot be named — a computed
@@ -3358,6 +3379,10 @@ impl Ctx<'_> {
             // other boundary intrinsics because its *result* type comes from an argument's pointee rather than
             // from anything the ordinary call path could compute.
             Some(Intrinsic::View) => return self.check_view(scope, id, callee, args, span),
+            // **`os()` folds to a `Basic.Operating_System` member** (ADR-0180 §2). Intercepted here
+            // because it takes no arguments and its *type* is a library enum the compiler has to look up
+            // by name — neither of which the ordinary call path can do.
+            Some(Intrinsic::Os) => return self.check_os(scope, id, callee, args, span),
             None => {}
         }
 
@@ -3748,6 +3773,7 @@ impl Ctx<'_> {
             "typed" => Intrinsic::Typed,
             "untyped" => Intrinsic::Untyped,
             "view" => Intrinsic::View,
+            "os" => Intrinsic::Os,
             "atomic_load" => Intrinsic::AtomicLoad,
             "atomic_store" => Intrinsic::AtomicStore,
             "atomic_add" => Intrinsic::AtomicAdd,
@@ -4073,6 +4099,69 @@ impl Ctx<'_> {
         let value = self.pool.int_value(PoolId::S64, layout.size);
         self.record_fold(scope, id, span, value);
         self.expect(None, PoolId::S64, span)
+    }
+
+    /// Types and **folds** `os()` — the target operating system (ADR-0180 §2).
+    ///
+    /// The only zero-argument intrinsic. Its answer is [`jr_pool::TargetOs::host`], and its *type* is
+    /// `Basic.Operating_System` — looked up by name, exactly as `type_info`'s `Type_Info` is, because a
+    /// caller has to be able to name the type to store the value and only the library can declare a
+    /// spellable one (ADR-0075 §2).
+    ///
+    /// Folded with `record_fold`, the mechanism `size_of` uses, so the value is a constant by the time
+    /// const-eval reads it and **neither back end ever sees a call**. That is what makes `os()` legal in a
+    /// `#run` and in a file-scope constant, which is the whole point: the value selects a per-OS constant.
+    fn check_os(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        // The callee names no procedure, so it is typed `void` rather than left unrecorded — MIR reports
+        // "an expression was never typed" for a hole, and the fold means it is never lowered.
+        self.types.set_expr(scope, callee, PoolId::VOID);
+        if !args.is_empty() {
+            self.wrong_intrinsic_arity("os", 0, args.len(), span);
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+        let Some(enum_ty) = self.library_enum(span, "Operating_System") else {
+            return PoolId::ERROR;
+        };
+        let host = jr_pool::TargetOs::host();
+        let member = self.interner.intern(host.member_name());
+        let Item::EnumType { decl, .. } = *self.pool.item(enum_ty) else {
+            // `library_enum` already established the shape, so this is unreachable — but a silent
+            // `unwrap` here would be a panic in the one place a library edit can reach.
+            self.report_library_shape(span, "Operating_System", "it is not an enum");
+            return PoolId::ERROR;
+        };
+        // Read **by name** rather than by ordinal, for `jr-db`'s `type_info_kind_name` reason: the values
+        // are the declaration's, so a reordering in `modules/Basic` changes the numbers and a lookup by
+        // name follows it while an index would silently read a different member.
+        let found = self
+            .pool
+            .enum_members(decl)
+            .and_then(|members| members.iter().find(|m| m.name == member))
+            .map(|m| m.value);
+        let Some(value) = found else {
+            let name = host.member_name();
+            self.report_library_shape(
+                span,
+                "Operating_System",
+                &format!("it has no member `{name}`, which this compiler's host needs"),
+            );
+            return PoolId::ERROR;
+        };
+        // `EnumMember::value` is an `i64` and `int_value` takes raw bits, so the cast is the
+        // two's-complement encoding rather than a conversion — the same move `Colour.RED` makes.
+        let folded = self.pool.int_value(enum_ty, value as u64);
+        self.record_fold(scope, id, span, folded);
+        self.expect(None, enum_ty, span)
     }
 
     /// Types `typed(T, p)` — a `*u8` viewed as a `*T` (ADR-0106 §1).
@@ -4978,6 +5067,39 @@ impl Ctx<'_> {
     /// ADR-0017 §4 says must refuse instead.
     fn type_info_struct(&mut self, span: Span) -> Option<PoolId> {
         self.library_struct(span, "Type_Info", TYPE_INFO_FIELDS)
+    }
+
+    /// Looks a **compiler-known library *enum*** up in `modules/Basic` and validates that it is one.
+    ///
+    /// [`Ctx::library_struct`]'s counterpart, and deliberately a separate function rather than a mode of
+    /// it: a struct is validated field by field against a table, and an enum has no such table — the
+    /// members this compiler needs are looked up **by name** at each use, so a missing one is reported
+    /// where it is wanted rather than as "the enum has the wrong shape". Merging the two would mean one
+    /// function with two unrelated validation halves.
+    ///
+    /// **Silent when no imported signatures were supplied at all**, for `library_struct`'s reason: a
+    /// checker run without module resolution cannot find a type that lives in `Basic`, and reporting
+    /// E0265 there would be inventing a library error out of a missing input. `jr-sema`'s own corpus test
+    /// runs exactly that way on purpose.
+    fn library_enum(&mut self, span: Span, type_name: &str) -> Option<PoolId> {
+        if self.imports.is_empty() {
+            return None;
+        }
+        let name = self.interner.intern(type_name);
+        let entry = self
+            .imports
+            .iter()
+            .find_map(|(_, sigs)| sigs.lookup(name))
+            .or_else(|| self.sigs.lookup(name));
+        let Some(ty) = entry.and_then(|e| e.type_value) else {
+            self.report_library_shape(span, type_name, "it is not declared, or is not a type");
+            return None;
+        };
+        if !matches!(self.pool.item(ty), Item::EnumType { .. }) {
+            self.report_library_shape(span, type_name, "it is not an enum");
+            return None;
+        }
+        Some(ty)
     }
 
     /// Looks a **compiler-known library type** up in `modules/Basic` and validates its shape.
@@ -6265,9 +6387,40 @@ impl Ctx<'_> {
             // ADR-0016 §3. The value is interned as well as the type, so that the
             // FFI boundary has an identity and not merely a shape.
             "system_library" | "library" => {
-                if let Some(library) = arg {
-                    let _ = self.pool.foreign_library_value(library);
+                // **Two silent holes, closed here** (ADR-0180 §5). Both of these type-checked clean and
+                // emitted no `-l`, so a symbol failed at *link* time with nothing pointing at the cause —
+                // and a reader has no reason to doubt a declaration the compiler accepted.
+                //
+                // Reported at the declaration rather than at a use: a `#library` nobody calls is still
+                // wrong, and reporting per binding would say it once per `#foreign`.
+                if interner.resolve(name) == "library" {
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            "`#library` does not name a linkable library",
+                        )
+                        .with_code(E0293)
+                        .with_note(
+                            "the linker's `-l` comes from `#system_library`; `foreign_library_of` \
+                             recognises no other directive, so this declaration links nothing",
+                        )
+                        .with_help("write `#system_library \"name\"`"),
+                    );
+                    return self.expect(expected, PoolId::ERROR, span);
                 }
+                let Some(library) = arg else {
+                    self.diags.push(
+                        Diagnostic::error(span, "`#system_library` needs a library name")
+                            .with_code(E0293)
+                            .with_note(
+                                "the name becomes the linker's `-l`, so without one there is nothing \
+                                 to link against",
+                            )
+                            .with_help("e.g. `libc :: #system_library \"c\";`"),
+                    );
+                    return self.expect(expected, PoolId::ERROR, span);
+                };
+                let _ = self.pool.foreign_library_value(library);
                 PoolId::FOREIGN_LIBRARY
             }
             // Every other directive in expression position was already rejected

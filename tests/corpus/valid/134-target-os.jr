@@ -1,0 +1,90 @@
+// **The target operating system, at compile time** (ADR-0180) — `os()`, folded in sema to a
+// `Basic.Operating_System` member. Before this the compiler had **no notion of an OS at all**: no `#if`,
+// no `OS` constant, no build setting a library could read, and its whole notion of a target was
+// `TargetLayout`'s two numbers. `modules/Time` carried a comment about `CLOCK_MONOTONIC :: 6` being a
+// macOS-only value it could not guard.
+//
+// What is pinned, each an independent bit of the exit code:
+//
+//   * **`os()` in a body**, compared against a member of the library enum;
+//   * **`os()` at file scope**, through a `#run` whose callee reads it — the established idiom
+//     (`modules/Random`'s `GOLDEN :: #run golden_seed();`);
+//   * **`os()` directly in a file-scope constant**, which was E0230 *"a name failed to resolve at file
+//     scope"* until ADR-0180 §3: the signature phase folded the call and threw the value away, so
+//     `jr-mir`'s thunk found nothing and resolved `os` as a name;
+//   * **`size_of` in a file-scope constant of a builtin type**, which was E0201 *"unresolved name
+//     `s64`"* until ADR-0180 §4 — a *different* cause, and the more interesting one: resolution walks
+//     the top-level expression arena **flat**, so it visited `s64` as an expression in its own right
+//     before ever reaching the call that makes it a type argument;
+//   * **`size_of` of a struct in a file-scope constant**, the gap `Window` and `Socket` both documented
+//     and worked around by moving the check into a procedure;
+//   * **`switch` over the enum is exhaustive**, which is the whole reason `os()` answers an enum rather
+//     than an integer: "this program does not handle Windows" is a compile error, not a wrong branch.
+//
+// **The exit code is the sum on this machine's OS**, so the file cannot assert one number on every host.
+// Each bit is a claim that is true on all three, and the bit worth 1 says which host it ran on: 1 for
+// macOS, 2 for Linux, 4 for Windows — so a reader of a failure knows what the total should have been.
+#import "Basic";
+
+HERE :: os();
+BUILTIN_SIZE :: size_of(s64);
+POINT_SIZE :: size_of(Point);
+VIA_RUN :: #run os_code();
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+os_code :: () -> s64 {
+    if os() == Operating_System.MACOS {
+        return 1;
+    }
+    if os() == Operating_System.LINUX {
+        return 2;
+    }
+    return 4;
+}
+
+// A `switch` over the enum, which is exhaustiveness-checked (ADR-0067). Its answer must agree with
+// `os_code`'s chain of `if`s — two spellings of one decision, so a compiler that folded `os()` to two
+// different values in two places would be caught.
+os_code_switched :: () -> s64 {
+    switch os() {
+        case .MACOS;
+            return 1;
+        case .LINUX;
+            return 2;
+        case .WINDOWS;
+            return 4;
+    }
+    return 0;
+}
+
+main :: () {
+    n := 0;
+
+    // Which host, as the low bits: 1, 2 or 4.
+    n = n + os_code();
+
+    // The same answer through a `#run` at file scope, and through a `switch`.
+    if VIA_RUN == os_code() {
+        n = n + 8;
+    }
+    if os_code_switched() == os_code() {
+        n = n + 16;
+    }
+    // `os()` read straight into a file-scope constant, with no `#run` around it.
+    if HERE == os() {
+        n = n + 32;
+    }
+    // `size_of` in a file-scope constant: a builtin, and a struct.
+    if BUILTIN_SIZE == 8 {
+        n = n + 64;
+    }
+    if POINT_SIZE == 16 {
+        n = n + 128;
+    }
+
+    exit(n);
+}

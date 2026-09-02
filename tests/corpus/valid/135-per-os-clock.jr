@@ -1,0 +1,59 @@
+// **A per-OS value in the standard library** (ADR-0181) — the end-to-end proof that `os()` (ADR-0180) is
+// usable for the thing it exists for.
+//
+// `modules/Time`'s `CLOCK_MONOTONIC` was `6`, macOS's number, with a comment that named the problem and
+// said the language had no answer: *"the day the CI matrix runs is the day this needs a `#if`-shaped
+// answer — which this language does not have either"*. It has one now, and it is deliberately **not**
+// `#if`: `os()` is a compile-time *value*, so the number is chosen by an ordinary procedure a `#run`
+// evaluates. No item-level conditional compilation was added, and nothing here needed one.
+//
+// What is pinned, each an independent bit of the exit code:
+//
+//   * **the constant is the host's number** — 6 on macOS, 1 on Linux, 0 on Windows — asserted against
+//     `os()` rather than against a literal, so this file is true on all three hosts;
+//   * **the clock still works**: two readings, and the second is not before the first. That is what makes
+//     this a proof rather than a compile-time assertion — a wrong clock id makes `clock_gettime` fail and
+//     `monotonic` return 0 twice, which `is_after` would not catch, so the *success* of the reading is
+//     checked too;
+//   * **`CLOCK_REALTIME` is unchanged at 0**, which was portable before and had no reason to move.
+//
+// Exit code 42 for success; each failure exits with its own number, so a failure names the claim.
+#import "Basic";
+Time :: #import "Time";
+
+// The number this host's `clock_gettime` wants, written out again here rather than read from `Time`. Two
+// independent statements of one fact: if the module's selection and this one disagree, the wave is wrong.
+expected_clock_id :: () -> s64 {
+    if os() == Operating_System.MACOS {
+        return 6;
+    }
+    if os() == Operating_System.LINUX {
+        return 1;
+    }
+    return 0;
+}
+
+main :: () {
+    if Time.CLOCK_MONOTONIC != expected_clock_id() {
+        exit(1);
+    }
+    if Time.CLOCK_REALTIME != 0 {
+        exit(2);
+    }
+
+    first := Time.monotonic();
+    // A failed `clock_gettime` returns 0, so a zero reading means the clock id was wrong — which is the
+    // failure this wave could have introduced and the one a comparison of two readings would miss.
+    if first == 0 {
+        exit(3);
+    }
+    second := Time.monotonic();
+    if second == 0 {
+        exit(4);
+    }
+    if Time.is_after(first, second) {
+        exit(5);
+    }
+
+    exit(42);
+}

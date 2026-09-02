@@ -915,7 +915,12 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0293 is the first free code**; E0134 is the first free *parser* code. **E0292** refuses a qualified name
+**E0294 is the first free code**; E0134 is the first free *parser* code. **E0293** refuses a
+`#system_library` declaration that names no linkable library (ADR-0180 §5) — **owned by `jr-sema`**,
+continuing its block, raised at the *declaration* because a `#library` nobody calls is still wrong. Two
+conditions, one code, each a way of "which library is this" being unanswerable: `#system_library` with no
+operand, and `#library "x"`, a directive the parser accepts and nothing links. Both type-checked clean and
+emitted no `-l`, so a symbol failed at **link** time with nothing pointing at the cause. **E0292** refuses a qualified name
 `Alias.member` whose module exports nothing by that name (ADR-0179 §4) — **owned by `jr-hir`**, continuing its
 block, because it is raised in resolution beside E0253, which answers the neighbouring question ("the module
 declares it and hides it"). The two are deliberately separate codes: sharing one would send a reader looking

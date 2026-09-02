@@ -41,14 +41,29 @@
 
 #import "Basic";
 
-/// `CLOCK_MONOTONIC` on both supported targets.
+/// `CLOCK_MONOTONIC`, selected for the target (ADR-0181 §1).
 ///
-/// The number differs between platforms in general; it is 6 on macOS and 1 on Linux. **This is a real
-/// portability gap and it is named rather than hidden**: the value below is macOS's, because that is the
-/// only target this project has ever run on (PLAN §1.5 records that no CI run has happened). A Linux build
-/// needs 1, and the day the CI matrix runs is the day this needs a `#if`-shaped answer — which this
-/// language does not have either.
-CLOCK_MONOTONIC :: 6;
+/// **This constant is the reason `os()` exists.** It was `6` — macOS's number — with a comment saying so
+/// and adding *"the day the CI matrix runs is the day this needs a `#if`-shaped answer, which this
+/// language does not have either"*. It has one now, and it is not `#if`: `os()` is a compile-time **value**
+/// (ADR-0180), so a per-OS number is selected by an ordinary procedure that a `#run` evaluates — the
+/// file-scope idiom `modules/Random`'s `GOLDEN :: #run golden_seed();` already used.
+///
+/// Windows gets **0**, which is not a guess: Windows has no `clock_gettime` at all, so there is no correct
+/// number, and `0` is `CLOCK_REALTIME`'s value — the reading a caller would get if the binding somehow
+/// resolved, and otherwise the failure `clock_gettime`'s `-1` already reports. Naming a plausible-looking
+/// constant for a call that cannot happen would be the worse answer.
+monotonic_clock_id :: () -> s64 {
+    if os() == Operating_System.MACOS {
+        return 6;
+    }
+    if os() == Operating_System.LINUX {
+        return 1;
+    }
+    return 0;
+}
+
+CLOCK_MONOTONIC :: #run monotonic_clock_id();
 
 /// `CLOCK_REALTIME`, which is 0 on both macOS and Linux — so this constant, unlike the one above, is
 /// genuinely portable.

@@ -408,6 +408,21 @@ impl Thunk<'_> {
                 arg_names: _,
                 span: _,
             } => {
+                // **A call sema already folded is its value** (ADR-0180 §3). `jr-mir`'s body builder
+                // has consulted this channel since `type_info` needed it — a folded call *names no
+                // procedure*, so resolving a callee for one is asking the wrong question — and this
+                // arm never did. The asymmetry was one line, and its whole visible effect was that an
+                // intrinsic worked in a procedure body and was E0230 at file scope:
+                //
+                //     HERE :: os();   // "a name failed to resolve at file scope"
+                //
+                // reported against the *callee*, because `callee()` looked `os` up as a name and it is
+                // not one. That is what forced `Window.layout_is_sdl2` to be a procedure rather than a
+                // constant, and it would have made `os()` unusable for the one thing it is for:
+                // selecting a per-OS constant at file scope.
+                if let Some(value) = self.consts.run(self.scope, id) {
+                    return Ok(Operand::Constant(value));
+                }
                 let target = self.callee(callee)?;
                 let mut operands = Vec::with_capacity(args.len() + 1);
                 // **A comptime call passes a context too** (ADR-0057 §2), because the callee's
