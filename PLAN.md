@@ -673,9 +673,33 @@ aggregate temporaries and creation order would work today and break silently lat
 > from one program is evidence about that program.** Generalising needs a second program that differs in the
 > suspected dimension — and here that program was one line away.
 
-**Remaining, and it is now one item:** **register-resident locals**, needed equally by both engines (`value_labels_ranges` exists on
-`CompiledCode` while Cranelift emits **no `ValueLabel`s**, so that half needs the emission *and* the
-consumption); **aggregate locals**, pending a `LocalId` on their slot; a struct's **declared name**, which the
+**Remaining, and it is now one item:** **register-resident locals**, needed equally by both engines.
+
+> [!IMPORTANT]
+> **ADR-0173 §4's premise was wrong, and probing it took twenty minutes.** That section said the two things to
+> check were `value_labels_ranges` (present) and **`enable_value_labels` in the ISA flags** (absent) — and
+> `enable_value_labels` **does not exist in `cranelift-codegen` 0.134 at all**, in the settings, the meta crate
+> or anywhere else. So the item was recorded as blocked on a flag that is not a flag.
+>
+> **The real gate is `func.dfg.collect_debug_info()`**, one call on the DFG before translation, plus a
+> `set_val_label` per definition. Wired both and the ranges come out **real**: ten labels for a four-line
+> program, each a `LabelValueLoc::Reg(PReg)` with start and end offsets into the emitted code. The mechanism is
+> reachable today and needs no upstream change.
+>
+> **What makes it a wave rather than an afternoon** is what the measurement then showed: each label holds its
+> register for **4 to 40 bytes**, never for the whole function. So a single `DW_AT_location` of `DW_OP_regN`
+> would be *wrong* — it would claim the register holds the variable everywhere, which is worse than showing
+> nothing, because a debugger would print confident garbage outside the range. Correctness needs a genuine
+> **location list** in `.debug_loclists`, with base addresses and relocations, which is the first section
+> beyond `.debug_line`/`.debug_info` this project would emit.
+>
+> Three pieces, each its own decision: a **name channel** (`ValueData` needs `local: Option<LocalId>`, mirroring
+> `SlotData.local` exactly — a promoted local's writes go through `ssa.write_variable` and the value's span is
+> the *expression*, so nothing today links an SSA value to the local it is the definition of); a **`PReg` →
+> DWARF register number** mapping, per-architecture for the reason ADR-0174 §2 gives about the frame pointer;
+> and the **location list** itself. Plus the LLVM half, which ADR-0170 is the evidence for: `llvm.dbg.value`
+> rather than `llvm.dbg.declare`, and none of the gimli work carries over.
+**Also owed, and separate:** **aggregate locals**, pending a `LocalId` on their slot; a struct's **declared name**, which the
 pool does not record; views, arrays, unions and variants, each wanting its own naming decision; and a
 **`dsymutil` step**, which is a *driver* decision — `ld` on macOS leaves DWARF in the object and `jr build`
 deletes it after a successful link, so a linked binary carries none today while `--emit-object` carries all of
@@ -737,7 +761,7 @@ capability, Neovim packaging was already there, and VS Code stays declined (ADR-
 described from a **false premise** — §8.4 said "line tables exist" and there is no DWARF at all, probed — so
 it is now **W12 — Debug info**, named in §2.1 the way §8.3 named W11.
 
-**So every wave is done.** W10 — Graphics closed with ADR-0164 through 0167 (§8.5 is its record, including the two corrections it needed) and W11 — Concurrency with ADR-0175 through 0177. W12 — Debug info has one open item — a register-resident local — which is specified in ADR-0173 §4 and tracked in §7 with the other owed work.
+**So every wave is done.** W10 — Graphics closed with ADR-0164 through 0167 (§8.5 is its record, including the two corrections it needed) and W11 — Concurrency with ADR-0175 through 0177. W12 — Debug info has one open item — a register-resident local — whose **premise ADR-0173 §4 got wrong** (it named an ISA flag that does not exist; the real gate is one `collect_debug_info()` call, and the mechanism has now been *measured* working) and which §7 respecifies from that measurement.
 
 **§8.1.2 is closed** (ADR-0160 part 1, ADR-0161 part 2), which was the project's highest-leverage open item.
 An aggregate crosses a `#foreign` boundary when the shared classification says where its pieces go: at most two

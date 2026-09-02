@@ -255,6 +255,16 @@ grammar reported an `ERROR` node over it (gate 6, which is what that gate exists
 the type, verified by writing it; and `codes.rs` caught a code collision when this wave first reached for E0290,
 which `jr-hir` owns.
 
+**W12's last item was probed and respecified, and ADR-0173 §4's premise was wrong.** That section said the
+blocker was `enable_value_labels` in Cranelift's ISA flags. **That flag does not exist** in `cranelift-codegen`
+0.134 — not in `settings.rs`, not in the meta crate, nowhere. The real gate is one `func.dfg.collect_debug_info()`
+call plus a `set_val_label` per definition, and wiring both produced **ten real register ranges for a four-line
+program**. What makes it a wave anyway is what the measurement showed next: each label holds its register for
+**4 to 40 bytes**, never the whole function, so a single `DW_OP_regN` location would print confident garbage
+outside the range — correctness needs a `.debug_loclists` location list, the first section beyond
+`.debug_line`/`.debug_info` this project would emit. **A plan entry saying "blocked on X" is worth twenty
+minutes of checking that X exists.**
+
 **Still owed after W11**: a per-thread shadow call stack, so a trap in a spawned thread names the right frames —
 §8.3 put it *in* this wave, and it needs thread-local storage in both back ends plus a change to the trap path
 every existing program uses, so it is its own wave and `modules/Thread`'s docs say so.
