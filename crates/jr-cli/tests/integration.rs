@@ -2113,3 +2113,116 @@ fn run_build_emit_object(path: PathBuf, output: PathBuf) -> i32 {
     )
     .unwrap_or(1)
 }
+
+/// The LLVM back end's object carries a line table too, from the same spans (ADR-0170).
+///
+/// # Why this is a separate test and not a parameter of the Cranelift one
+///
+/// The two back ends produce debug info by **completely different routes**: Cranelift's is written by this
+/// project with `gimli` (ADR-0169), LLVM's is written by LLVM from `DILocation` metadata. They share only the
+/// `TrapLocations::position` lookup. So a shared test would assert the intersection and miss what is
+/// interesting — and what is interesting is that two unrelated emitters agree about which lines exist.
+///
+/// # What differs from the Cranelift assertions, and why that is not a weaker test
+///
+/// LLVM writes a DWARF file entry as a bare name plus a directory, where this project's own emitter writes the
+/// path it was given. So the file-table assertion checks the *name*. That is DWARF's own split, not a
+/// concession.
+///
+/// LLVM also emits rows at **line 0** for instructions with no location, which is what `clang` does for
+/// compiler-generated code and is DWARF's spelling of "no line". Those are filtered rather than asserted
+/// against: a test that demanded none would be asserting an LLVM implementation detail.
+#[cfg(feature = "llvm")]
+#[test]
+fn the_llvm_back_end_emits_a_line_table_too() {
+    use gimli::EndianSlice;
+    use object::{Object as _, ObjectSection as _};
+
+    let dir = TempDir::new().unwrap();
+    let object_path = dir.path().join("hello-llvm.o");
+    let source = corpus_path("valid/024-hello.jr");
+    let code = jr_cli::commands::build::run(
+        jr_cli::cli::BuildArgs {
+            path: source,
+            output: Some(object_path.clone()),
+            emit_object: true,
+            backend: jr_cli::cli::BackendArg::Llvm,
+            no_bounds_check: false,
+            opt_level: None,
+            module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
+            library_paths: Vec::new(),
+        },
+        &quiet_global(),
+    )
+    .unwrap_or(1);
+    assert_eq!(code, 0, "the LLVM object must be emitted");
+
+    let bytes = fs::read(&object_path).expect("the object should exist");
+    let file = object::File::parse(&*bytes).expect("the object should parse");
+    let endian = if file.is_little_endian() {
+        gimli::RunTimeEndian::Little
+    } else {
+        gimli::RunTimeEndian::Big
+    };
+    let load = |id: gimli::SectionId| -> Result<EndianSlice<'_, gimli::RunTimeEndian>, ()> {
+        let name = id.name();
+        let macho = format!("__{}", name.trim_start_matches('.'));
+        let data = file
+            .sections()
+            .find(|s| matches!(s.name(), Ok(n) if n == name || n == macho.as_str()))
+            .and_then(|s| s.data().ok())
+            .unwrap_or(&[]);
+        Ok(EndianSlice::new(data, endian))
+    };
+    let dwarf = gimli::Dwarf::load(load).expect("the DWARF should load");
+
+    let mut units = dwarf.units();
+    let header = units
+        .next()
+        .expect("the DWARF should parse")
+        .expect("the LLVM object must carry a compilation unit");
+    let unit = dwarf.unit(header).expect("the unit should parse");
+    let program = unit
+        .line_program
+        .clone()
+        .expect("the unit must have a line program");
+
+    let mut file_names = Vec::new();
+    for entry in program.header().file_names() {
+        if let gimli::AttributeValue::String(name) = entry.path_name() {
+            file_names.push(String::from_utf8_lossy(name.slice()).into_owned());
+        }
+    }
+    assert!(
+        file_names.iter().any(|f| f.ends_with("024-hello.jr")),
+        "the file table must name the program; got {file_names:?}"
+    );
+    // The imported module must have its own entry. Without a per-body `DIFile` every subprogram hangs off the
+    // unit's file and `modules/Basic`'s statements are blamed on the root program — this wave's first wrong
+    // result, and a check on the root file alone would have passed it.
+    assert!(
+        file_names.iter().any(|f| f.ends_with("module.jr")),
+        "the imported module must have its own file entry, or its lines are attributed to the program; \
+         got {file_names:?}"
+    );
+
+    let mut lines = Vec::new();
+    let mut rows = program.rows();
+    while let Some((_, row)) = rows.next_row().expect("rows should parse") {
+        if let Some(line) = row.line() {
+            lines.push(line.get());
+        }
+    }
+    // Line 0 is DWARF's "no line", which LLVM emits for compiler-generated instructions exactly as clang does.
+    lines.retain(|l| *l != 0);
+    assert!(!lines.is_empty(), "the line program must produce rows");
+
+    // The same three statements the Cranelift test names. Two unrelated emitters, reading one span source, must
+    // agree about which lines exist — that agreement is the whole reason this test is worth having.
+    for expected in [21u64, 35, 40] {
+        assert!(
+            lines.contains(&expected),
+            "line {expected} is a statement in the program and must appear in LLVM's table; got {lines:?}"
+        );
+    }
+}

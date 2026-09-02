@@ -212,6 +212,36 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0170 holds at 1064** (**1066** under gate 7, since its one new test is `llvm`-gated) and holds at **254**
+corpus files. It completes W12's first item by giving the **LLVM** back end a line table, and the useful lesson is
+how little was shared.
+
+**None of ADR-0169 was reusable.** Cranelift's table is written by hand — a `SourceLoc` indexing a vocabulary,
+`gimli` writing the section, a relocation writer for sequence addresses. LLVM writes DWARF *itself* from `!dbg`
+metadata, so that back end attaches a `DILocation` per statement hung off a **per-body** `DISubprogram`, because
+LLVM rejects a location whose scope is not the enclosing function's. The two paths share exactly one thing: the
+`TrapLocations::position` lookup ADR-0169 §2 introduced.
+
+**So the test is separate, deliberately.** A shared test would assert the intersection of two unrelated emitters
+and miss the property worth having — that both, reading one span source, agree about which lines exist. The LLVM
+test names the same three statements the Cranelift one does.
+
+**ADR-0170 §3 is this wave's wrong result, and it is a shape to watch for**: every subprogram initially hung off
+the *compilation unit's* file, so the file table had one entry and `modules/Basic`'s statements were attributed
+to the root program. A line table naming the wrong file is worse than none — it sends a reader to a line that has
+different code on it — and **a check on the root file alone would have passed it**. Both DWARF tests now assert
+the *imported* module has its own entry, which is the same reasoning as "not every row is the same line".
+
+**Two traps worth knowing before touching LLVM debug info.** It **silently** strips every `!dbg` from a module
+whose `llvm.module.flags` lacks `"Debug Info Version"` — a module that verifies, emits, and carries no line table
+— which is the one good reason to use inkwell's `create_debug_info_builder` rather than the raw API. And
+`finalize()` must run before `verify()`, or the verifier rejects temporary metadata nodes with a message about the
+node rather than about the missing call.
+
+**And expect the remaining W12 items to need two implementations too.** LLVM wants
+`create_basic_type`/`create_struct_type` metadata while Cranelift wants `.debug_info` DIEs written by hand — the
+same split as the line table. A plan budgeting one implementation for "type DIEs" is already wrong.
+
 **ADR-0169 reaches 1064** (1065 under gate 7) and **holds at 254** corpus files — no corpus file, because its
 subject is a *section of an object file* and no `.jr` program can observe one. **W12's first item**, and the first
 debug information this compiler has ever produced: a built object now carries a valid DWARF `.debug_line` whose

@@ -44,6 +44,7 @@
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::{Builder, BuilderError};
 use inkwell::context::Context as LlvmContext;
+use inkwell::debug_info::AsDIScope as _;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module};
 use inkwell::types::{BasicTypeEnum, IntType};
@@ -94,6 +95,26 @@ fn built<T>(result: Result<T, BuilderError>) -> Result<T, CodegenError> {
 }
 
 /// Everything the translator needs that outlives one body.
+/// The debug-info handles a body needs to attach a source location to its instructions (ADR-0170).
+///
+/// `None` on `Shared` when the module has no compilation unit — a build with no positions at all, or a
+/// caller with no source map. A body then emits no locations rather than inventing a scope, which is the
+/// same "omit rather than placeholder" rule the trap path follows.
+#[derive(Copy, Clone)]
+pub struct DebugScope<'ctx, 'a> {
+    /// The module's debug-info builder, which mints a `DILocation`.
+    ///
+    /// A shared reference so the scope stays `Copy` and lives on an immutable `Shared`: every method used
+    /// here takes `&self`, so nothing needs the builder mutably.
+    pub info: &'a inkwell::debug_info::DebugInfoBuilder<'ctx>,
+    /// This function's subprogram — the scope a `DILocation` hangs from.
+    ///
+    /// Per body rather than per module, because LLVM **rejects** a debug location whose scope is not the
+    /// enclosing function's subprogram. The verifier's message for getting it wrong is
+    /// `!dbg attachment points at wrong subprogram for function`, which is at least honest.
+    pub subprogram: inkwell::debug_info::DISubprogram<'ctx>,
+}
+
 pub struct Shared<'ctx, 'a> {
     /// The interned types and struct fields every layout question is asked of.
     pub pool: &'a Pool,
@@ -122,6 +143,8 @@ pub struct Shared<'ctx, 'a> {
     /// copy of this field gives: a signature is built from a declaration that knows its own kind, while a
     /// *call* has only a `ProcRef`.
     pub foreign: &'a FxHashMap<ProcRef, bool>,
+    /// Where to hang a source location, when the module has debug info (ADR-0170 §1).
+    pub debug: Option<DebugScope<'ctx, 'a>>,
 }
 
 /// Translates one body into `function`.
@@ -272,9 +295,11 @@ impl<'ctx> Translator<'ctx, '_> {
             let data = self.body.block(*id);
             for stmt in &data.stmts {
                 self.current = statement_span(stmt);
+                self.mark_line();
                 self.statement(stmt)?;
             }
             self.current = self.terminator_span(&data.term);
+            self.mark_line();
             self.terminator(&data.term)?;
         }
 
@@ -2281,6 +2306,38 @@ impl<'ctx> Translator<'ctx, '_> {
         }
     }
 
+    /// Attaches the current span's line and column to every instruction emitted from here on.
+    ///
+    /// Called once per statement and once per terminator, matching the Cranelift back end exactly
+    /// (ADR-0169 §3) — the two engines must attribute code to the same construct or a debugger tells a
+    /// different story about the same program depending on which back end built it.
+    ///
+    /// **The column *is* set here, unlike Cranelift's line table**, and that is not an inconsistency: LLVM
+    /// requires a `DILocation` to carry one, and it writes whatever it is given. Passing 0 — "no column" —
+    /// is what LLVM itself emits for a statement whose column is unknown, so that is what a synthetic-free
+    /// per-statement span deserves. ADR-0169 §4's argument was against *inventing* a column; this passes
+    /// the one the span actually has, which is the statement's first byte, and a consumer reading DWARF
+    /// column 0 knows to ignore it.
+    ///
+    /// A span with no position clears the location, so a synthetic instruction inherits nothing.
+    fn mark_line(&mut self) {
+        let Some(debug) = self.shared.debug else {
+            return;
+        };
+        let Some(at) = self.shared.locations.position(self.current) else {
+            self.builder.unset_current_debug_location();
+            return;
+        };
+        let location = debug.info.create_debug_location(
+            self.context,
+            at.line,
+            at.column,
+            debug.subprogram.as_debug_info_scope(),
+            None,
+        );
+        self.builder.set_current_debug_location(location);
+    }
+
     /// The span of the value an operand names, if it names one.
     fn span_of(&self, operand: Operand) -> MirSpan {
         match operand {
@@ -2397,7 +2454,7 @@ fn min_bits(ty: IntType<'_>) -> u64 {
 }
 
 /// The span a statement's instructions belong to.
-fn statement_span(stmt: &Statement) -> MirSpan {
+pub(crate) fn statement_span(stmt: &Statement) -> MirSpan {
     match stmt {
         Statement::Assign { span, .. }
         | Statement::Store { span, .. }
