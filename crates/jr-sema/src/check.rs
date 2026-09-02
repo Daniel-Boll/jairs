@@ -41,7 +41,7 @@ use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
     E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272, E0277,
-    E0278, E0279, E0284, E0285,
+    E0278, E0279, E0284, E0285, E0286,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -328,6 +328,7 @@ pub fn check_file(
 
     for index in 0..hir.procs.len() {
         ctx.check_foreign_binding(ProcId::from_usize(index));
+        ctx.check_foreign_signature(ProcId::from_usize(index));
     }
 
     for index in 0..hir.bodies.len() {
@@ -1044,6 +1045,145 @@ impl Ctx<'_> {
             .with_help("call it as a statement instead, without the `:=`"),
         );
         PoolId::ERROR
+    }
+
+    /// Refuses a `#foreign` signature carrying a type that cannot cross a C boundary (ADR-0150).
+    ///
+    /// # Why at the declaration rather than the call
+    ///
+    /// The signature is what cannot be lowered, so a declaration that could never be called
+    /// successfully *is* the error. Refusing at the call would report the same fact once per call site
+    /// and say nothing about a declaration nobody calls yet — and a library binding is usually written
+    /// before its first caller.
+    ///
+    /// # What this replaced
+    ///
+    /// A leaked internal error, and the **ninth** occurrence of this project's most-recorded failure
+    /// shape. Calling such a procedure gave `procedure 0 in file 0 was defined without being declared`
+    /// from Cranelift and `no routine for file 0 proc 0` from the VM — two different internal errors
+    /// for one legal-looking program, on a declaration that checked clean. `jr-codegen-llvm`'s
+    /// signature builder already refused it *in words*; this raises that refusal to where it can carry
+    /// a span and name the workaround.
+    fn check_foreign_signature(&mut self, proc: ProcId) {
+        let hir = self.hir;
+        let Some(info) = hir.proc(proc).foreign.clone() else {
+            return;
+        };
+        // The signature is resolved by now: `check` runs after `file_signatures`.
+        let Some(sig) = self.sigs.proc_sig(proc) else {
+            return;
+        };
+        let params: Vec<PoolId> = sig.params.clone();
+        let ret = sig.ret;
+
+        for (index, ty) in params.iter().enumerate() {
+            if let Some(reason) = self.foreign_boundary_refusal(*ty) {
+                let name = self
+                    .sigs
+                    .proc_sig(proc)
+                    .and_then(|s| s.names.get(index).copied());
+                let described = name.map_or_else(
+                    || format!("parameter {}", index + 1),
+                    |sym| format!("`{}`", self.interner.resolve(sym)),
+                );
+                let text = self.describe(*ty);
+                self.diags.push(
+                    Diagnostic::error(
+                        info.span,
+                        format!("{described} cannot cross a `#foreign` boundary: it is `{text}`"),
+                    )
+                    .with_code(E0286)
+                    .with_note(reason)
+                    .with_help(
+                        "pass a pointer instead — `*T` is one register, and the callee reads through \
+                         it",
+                    ),
+                );
+            }
+        }
+
+        if let Some(reason) = self.foreign_boundary_refusal(ret) {
+            let text = self.describe(ret);
+            self.diags.push(
+                Diagnostic::error(
+                    info.span,
+                    format!("a `#foreign` procedure cannot return `{text}`"),
+                )
+                .with_code(E0286)
+                .with_note(reason)
+                .with_help(
+                    "return a pointer, or take a `*T` out-parameter and write through it — which is \
+                     what the C signature would do anyway",
+                ),
+            );
+        }
+    }
+
+    /// Why `ty` cannot cross a `#foreign` boundary, or `None` if it can (ADR-0150 §1).
+    ///
+    /// Exhaustive over the pool item rather than a `matches!`, so a new type is a compile error here
+    /// instead of silently becoming passable — which is the discipline that would have caught this gap
+    /// when `#simd` added a type two waves ago.
+    fn foreign_boundary_refusal(&self, ty: PoolId) -> Option<&'static str> {
+        match self.pool.item(ty) {
+            // Passable: one register each, and the C ABI agrees about all of them.
+            Item::VoidType
+            | Item::BoolType
+            | Item::IntType { .. }
+            | Item::FloatType { .. }
+            | Item::PointerType(_)
+            | Item::EnumType { .. }
+            | Item::ProcType { .. }
+            // Poison is already reported; refusing it again would double-report one mistake.
+            | Item::ErrorType => None,
+
+            // `string` is `{data, count}` (ADR-0004) — two words, and C has no such type. This is the
+            // aggregate a caller is most likely to try, which is why it gets its own sentence.
+            Item::StringType => Some(
+                "a `string` is a pointer and a count, and C has no such type: pass `s.data` and \
+                 `s.count` as two arguments",
+            ),
+            Item::StructType { .. } | Item::UnionType { .. } | Item::VariantType { .. } => Some(
+                "passing an aggregate by value needs the platform ABI's field-classification rules, \
+                 which no engine here implements yet",
+            ),
+            Item::ArrayType { .. } => Some(
+                "an array is its elements laid out in memory; C decays one to a pointer and Jairs \
+                 does not",
+            ),
+            Item::ViewType { .. } | Item::DynamicArrayType { .. } => Some(
+                "a view and a dynamic array are multi-word descriptors: pass `.data` and `.count`",
+            ),
+            // A vector *is* one register, so this is the one refusal that is not about width. Neither
+            // back end declares a vector in a foreign signature and libffi has no vector type in this
+            // bridge, so it would be a silent reinterpretation rather than a call.
+            Item::VectorType { .. } => Some(
+                "a vector is one register but no engine here declares one across a C boundary yet",
+            ),
+            // Compiler-internal shapes. Reachable only through a bug upstream, so they are refused
+            // rather than assumed impossible (ADR-0017 §4's rule about placeholders).
+            Item::ResultsType { .. } => Some(
+                "a C procedure returns one value: several returns have no C signature",
+            ),
+            Item::ContextType => Some(
+                "a `#foreign` procedure is `#c_call` and receives no context (ADR-0057 §3)",
+            ),
+            Item::TypeType | Item::ForeignLibraryType => Some(
+                "this is a compile-time-only type and has no runtime representation to pass",
+            ),
+            // Values, not types. A signature position holding one is a bug upstream.
+            Item::VoidValue
+            | Item::BoolValue(_)
+            | Item::IntValue { .. }
+            | Item::FloatValue { .. }
+            | Item::StrValue(_)
+            | Item::AggregateValue { .. }
+            | Item::ProcValue { .. }
+            | Item::TypeValue(_)
+            | Item::ForeignLibraryValue(_) => {
+                Some("this is a value rather than a type, which is a compiler bug")
+            }
+        }
     }
 
     /// Checks that a `#foreign` procedure's library operand really is a library.

@@ -1,0 +1,42 @@
+// EXPECT: E0286 — a type that cannot cross a `#foreign` boundary (ADR-0150)
+//
+// This file exists because the construct used to be a **leaked internal error**, and the ninth
+// occurrence of this project's most-recorded failure shape. The declaration below checked clean, and
+// *calling* it gave `procedure 0 in file 0 was defined without being declared` from Cranelift and
+// `no routine for file 0 proc 0` from the VM — two different internal errors, no diagnostic, for a
+// program a reader would reasonably expect to work.
+//
+// **Refused at the declaration rather than the call**, because the signature is what cannot be
+// lowered: a binding that could never be called successfully is itself the error, and a library
+// binding is usually written before its first caller. Refusing at the call would report one fact once
+// per call site and say nothing at all about a binding nobody calls yet.
+//
+// `jr-codegen-llvm`'s signature builder already refused this *in words* — "an aggregate passed across
+// a `#foreign` boundary" — so the fix was to raise an existing refusal to where it can carry a span
+// and name the workaround, not to invent a rule.
+//
+// **One** refusal here, per this directory's contract. The message differs by *why*, and the other
+// shapes E0286 covers are:
+//
+//   * a `string`, which is `{data, count}` and gets its own sentence because it is the aggregate a
+//     caller is most likely to try — the advice is to pass `.data` and `.count` as two arguments;
+//   * a view or a dynamic array, multi-word descriptors, with the same advice;
+//   * an array, which C decays to a pointer and Jairs does not;
+//   * a `#simd` vector — the one refusal that is *not* about width, since a vector is one register:
+//     no engine here declares one across a C boundary, so passing it would be a silent
+//     reinterpretation rather than a call;
+//   * a return type in any of those shapes, whose advice is an out-parameter instead.
+//
+// The general fix — the platform ABI's field-classification rules, in both back ends and libffi — is
+// PLAN §8.1.2, and it is what gates W10: every windowing and GPU API passes structs by value.
+libc :: #system_library "c";
+
+Pair :: struct {
+    a: s64;
+    b: s64;
+}
+
+takes :: (p: Pair) -> s64 #foreign libc "takes";
+
+main :: () {
+}
