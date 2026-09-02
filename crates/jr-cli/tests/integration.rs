@@ -1572,3 +1572,124 @@ main :: () {
         "every step must succeed; a lower value names which bit failed, and 90-92 name a hard stop"
     );
 }
+
+/// `modules/Window`'s event loop: a `#place` overlay of `SDL_Event`, round-tripped through SDL's own queue
+/// (ADR-0165).
+///
+/// # Why this test exists separately from the drawing one
+///
+/// ADR-0164 §5 recorded that an event loop was **impossible** here, because `SDL_Event` is a union and E0286
+/// refuses one at a `#foreign` boundary. That was wrong, and it was wrong for the reason `AGENTS.md` warns
+/// about: it was recorded without writing the thing. `SDL_PollEvent` takes a **pointer**, and a pointer to a
+/// union is just a pointer. This test is the correction's evidence.
+///
+/// # What it does and does not push through SDL
+///
+/// A `QUIT` and a window-close go through SDL's real queue, because SDL delivers those. **A keyboard event
+/// does not**: `SDL_PushEvent` returns success for a synthetic `KEY_DOWN` and SDL then drops it, which was
+/// found by instrumenting rather than assumed. So the key assertions build an `Event` locally and read it back
+/// through `pressed` — which tests the overlay's offsets and the auto-repeat filter, the part this project
+/// owns. Whether SDL delivers a fabricated keypress is SDL's business.
+///
+/// The close checks **drain** rather than polling once, because SDL's queue does not promise one-push-one-poll:
+/// a single poll can return nothing while an event is pending. A one-poll version of this test passed on the
+/// first push and failed on the second, which is exactly the bug `wants_to_close` exists to stop a caller
+/// writing.
+#[test]
+fn an_event_loop_reads_the_sdl_event_union() {
+    let candidates = [
+        "/opt/homebrew/lib",
+        "/usr/local/lib",
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib",
+    ];
+    let library_dir = candidates.iter().map(PathBuf::from).find(|dir| {
+        dir.join("libSDL2.dylib").exists()
+            || dir.join("libSDL2.so").exists()
+            || dir.join("libSDL2-2.0.so.0").exists()
+    });
+    let Some(library_dir) = library_dir else {
+        return;
+    };
+
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("events.jr");
+    fs::write(
+        &source,
+        r#"#import "Window";
+
+libc :: #system_library "c";
+exit_now :: (status: s64) #foreign libc "exit";
+
+main :: () {
+    total := 0;
+
+    // 1 — the overlay is the 56 bytes SDL writes. Everything after this is meaningless if it is not.
+    if layout_is_sdl2() { total = total + 1; }
+
+    if !start() { exit_now(90); }
+    title := "Events ";
+    w, ok := open(title.data, 200, 150, HIDDEN);
+    if !ok { exit_now(91); }
+    total = total + 2;
+
+    // Nothing pending on a fresh queue.
+    if !wants_to_close(64) { total = total + 4; }
+
+    // A window-close round-trips through SDL's real queue and is recognised.
+    c: Event;
+    c.kind = cast(u32, WINDOW_EVENT);
+    c.window_event = cast(u8, WINDOW_CLOSE);
+    if push(*c) { total = total + 8; }
+    if wants_to_close(64) { total = total + 16; }
+
+    // So does a QUIT, and the drain leaves the queue empty.
+    q := quit_event();
+    if push(*q) { total = total + 32; }
+    if wants_to_close(64) { total = total + 64; }
+    if !wants_to_close(64) { total = total + 128; }
+
+    // A key event is built locally: SDL drops a synthetic keyboard push, so the queue cannot carry one.
+    k: Event;
+    k.kind = cast(u32, KEY_DOWN);
+    k.key_sym = cast(u32, KEY_ESCAPE);
+    if pressed(*k, KEY_ESCAPE) { total = total + 256; }
+    if !pressed(*k, 97) { total = total + 512; }
+    if !should_close(*k) { total = total + 1024; }
+
+    // An auto-repeat is not a press.
+    k.key_repeat = 1;
+    if !pressed(*k, KEY_ESCAPE) { total = total + 2048; }
+
+    // The union shows through: mouse_x and key_sym genuinely share offset 20, which is the point of #place.
+    m: Event;
+    m.kind = cast(u32, MOUSE_DOWN);
+    m.mouse_button = 1;
+    m.mouse_x = 40;
+    m.mouse_y = 90;
+    if cast(s64, m.mouse_button) == 1 && m.mouse_x == 40 && m.mouse_y == 90 { total = total + 4096; }
+    if cast(s64, m.key_sym) == 40 { total = total + 8192; }
+
+    close(*w);
+    stop();
+    exit_now(total % 251);
+}
+"#,
+    )
+    .unwrap();
+
+    let binary = dir.path().join("events");
+    let code = run_build_with_paths(source, binary.clone(), &[library_dir]);
+    assert_eq!(code, 0, "the program must build and link against SDL2");
+
+    let ran = std::process::Command::new(&binary)
+        .env("SDL_VIDEODRIVER", "dummy")
+        .status()
+        .expect("the linked binary should run");
+    assert_eq!(
+        ran.code(),
+        // 16383 is all fourteen bits, mod 251 because an exit status is a byte.
+        Some(16383 % 251),
+        "every step must succeed; a lower value names which bit failed, and 90-91 name a hard stop"
+    );
+}

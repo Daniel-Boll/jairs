@@ -51,12 +51,21 @@ down — ten steps, in a compiled binary, against real SDL2. It is the seventeen
 `jr run` cannot execute: the compile-time interpreter resolves a foreign symbol from the compiler's own
 process image, so it reaches the C library and nothing else.
 
-**What that wave could not do is the more useful result.** A window opened this way cannot be closed by
-clicking its close box, because reading an event means reading an `SDL_Event`, which is a **union** — and this
-compiler refuses a union at a foreign boundary, correctly: a union's members overlap, so every C calling
-convention treats its bytes as opaque and there is no rule to implement. Four separate pieces of work have now
-arrived at that one boundary, and settling it also settles the Objective-C question above, which reaches the
-same fork from the other side.
+**And the window can be closed** (ADR-0165) — which is worth reading because the previous wave recorded, in an
+accepted decision record, that it could not be. The reasoning was that reading an event means reading an
+`SDL_Event`, which is a union, and this compiler refuses a union at a foreign boundary. The refusal is real. It
+is also beside the point: what is refused is an aggregate passed **by value**, and the SDL call takes a
+**pointer** — the same shape as the rectangle that same module had been passing successfully all along.
+
+The project has a written habit for this: confirm a premise by *writing* the thing before planning around it.
+It has now paid seven times, and this was its most valuable catch — against this project's own accepted record,
+from the same sitting. The correction cost one probe and no compiler change at all. A decision record is
+evidence of a decision, not evidence of a fact.
+
+Two smaller things came out of building it, both by writing rather than reasoning. SDL does not promise that one
+pushed event means one polled event — a test that polled once per push passed the first time and failed the
+second — so the library drains the queue instead. And a fabricated keypress is accepted by SDL and then
+silently discarded, so the keyboard tests read an event built locally rather than one round-tripped.
 
 **Graphics is unblocked, on a different foundation than the plan named** (ADR-0163). The plan said "Cocoa via
 `#foreign`", and every Cocoa call goes through `objc_msgSend`, which is variadic — and the blocker for that is
