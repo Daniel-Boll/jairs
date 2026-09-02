@@ -1,0 +1,82 @@
+// ADR-0155: a stable merge sort, with temporary storage as its allocation policy.
+//
+// This is the sort ADR-0104 §3 owed and PLAN §8.3 scheduled third. ADR-0146 discharged the *faster* half
+// with `heap_sort`; the *stable* half is this, and stability is a property rather than a speed, so it needs
+// no benchmark — a caller either requires it or does not.
+//
+// **The test has to distinguish stability from sortedness**, which `is_sorted` cannot: an unstable sort
+// produces a sorted array too. So each element carries two fields in one `s64` — a key in the hundreds and
+// a tag in the units — and the comparison looks *only* at the key. Three elements share key 5, so the
+// answer is only right if their tags come out in input order.
+//
+//   input:   503  201  502  101  501
+//   keys:      5    2    5    1    5
+//   stable:  101  201  503  502  501      <- the 5s keep 3, 2, 1
+//   unstable: any other order of the 5s
+//
+// A digit-by-digit check rather than a checksum, because a sum cannot see an order.
+//
+// Called through `stable_sort_ints`, the concrete wrapper: instantiating a template across a module
+// boundary is still refused (E0268, ADR-0104 §5), which is what the diagnostic's own advice says to do.
+#import "Basic";
+#import "Sort";
+
+by_key :: (a: s64, b: s64) -> bool {
+    return a / 100 < b / 100;
+}
+
+main :: () {
+    xs: [5]s64;
+    xs[0] = 503;
+    xs[1] = 201;
+    xs[2] = 502;
+    xs[3] = 101;
+    xs[4] = 501;
+
+    comparisons := 0;
+    stable_sort_ints(view(*xs[0], 5), by_key, *comparisons);
+
+    total := 0;
+
+    // The keys are ascending: this is the part `heap_sort` would also pass.
+    if ints_sorted_by(view(*xs[0], 5), by_key) {
+        total = total + 1;
+    }
+
+    // The equal run kept its input order: this is the part only a *stable* sort passes, and the whole
+    // reason the module gained a third algorithm.
+    if xs[2] == 503 {
+        if xs[3] == 502 {
+            if xs[4] == 501 {
+                total = total + 2;
+            }
+        }
+    }
+
+    // The two smaller keys landed where they belong.
+    if xs[0] == 101 {
+        if xs[1] == 201 {
+            total = total + 4;
+        }
+    }
+
+    // The comparison count is reported, as the other two sorts report theirs (ADR-0146 §3), so the three
+    // are measurable against each other on one input. A merge sort on five elements does at most
+    // n*log2(n) = 5*3 = 15 comparisons; asserted as a bound rather than an equality, because the exact
+    // count depends on the merge's short-circuit and pinning it would make a legal refactor fail here.
+    if comparisons > 0 {
+        if comparisons <= 15 {
+            total = total + 8;
+        }
+    }
+
+    // A one-element array is already sorted and must not touch the arena.
+    single: [1]s64;
+    single[0] = 42;
+    stable_sort_ints(view(*single[0], 1), by_key, *comparisons);
+    if single[0] == 42 {
+        total = total + 16;
+    }
+
+    exit(total);
+}

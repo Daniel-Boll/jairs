@@ -492,6 +492,22 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
                 for ((scope, expr), value) in inst.check.folded_calls.iter() {
                     values.set_run(*scope, *expr, *value);
                 }
+                // **The instantiation's own `typed`/`untyped` calls record here** (ADR-0155 §4), for the
+                // reason directly above and with the same shape. `typed(T, malloc(n * size_of(T)))` is how a
+                // template allocates, and in the *template's* check `T` has no binding, so `check_typed`
+                // withheld its refusal and recorded no pointer view — leaving the clone's call with no
+                // entry, `scan` refusing the clone as "a name failed to resolve" (the `typed` callee names
+                // no procedure and is exempted only by having a recorded view), and the call reporting
+                // `no routine for file 0 proc 2` when it was reached. The eleventh occurrence of this
+                // project's most-recorded failure shape, and the third to arrive through a template's
+                // unbound body specifically.
+                //
+                // Recorded from the instantiation's check, which is where `T` is bound and the result
+                // pointer type is real. `copy_body_scope` above cannot substitute for this: it copies what
+                // the template's scope *has*, and the template's scope has nothing here.
+                for ((scope, expr), ty) in inst.check.pointer_views.iter() {
+                    values.set_pointer_view(*scope, *expr, *ty);
+                }
                 if !inst.check.type_info_calls.is_empty() {
                     let base_sigs_for_ti = crate::sema::file_signatures(db, file, search_paths);
                     let module_sigs: Vec<Arc<jr_sema::FileSignatures>> =

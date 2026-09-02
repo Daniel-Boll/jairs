@@ -76,6 +76,13 @@
 //! `sort_ints` and `ints_sorted` are not conveniences — they are the only way an importer can use this module
 //! today, and they will become conveniences when cross-file instantiation arrives.
 
+// The arena `stable_sort_ints` takes its scratch from lives in `Basic` (ADR-0065), which is why this
+// module now imports one. It had no imports at all until this wave: every earlier routine here is pure
+// computation over a view the caller owns, and an unresolved `talloc` showed up only as E0245 "a local
+// has an error type" on the *whole body*, because `typed`'s operand check returns silently when its
+// argument did not type (ADR-0155 §6).
+#import "Basic";
+
 /// Sorts `xs` in place, ordering by `less`.
 ///
 /// `less(a, b)` must answer "does `a` come strictly before `b`". A comparison that answers `true` for equal
@@ -261,4 +268,145 @@ is_sorted :: (xs: []$T, less: (T, T) -> bool) -> bool {
 /// only way to use the ordering, which is a narrower module for no benefit.
 less_int :: (a: s64, b: s64) -> bool {
     return a < b;
+}
+
+// ---------------------------------------------------------------------------
+// A stable sort (ADR-0155 §3)
+// ---------------------------------------------------------------------------
+
+/// Sorts `xs` in place, **stably**, using `less` — equal elements keep their relative order.
+///
+/// This is the merge sort ADR-0104 §3 owed and PLAN §8.3 scheduled third. ADR-0146 discharged the *faster*
+/// half of that debt with `heap_sort`, chosen by a comparison count rather than a clock; what remained was
+/// the *stable* half, and stability is a property rather than a speed, so it needs no benchmark to justify
+/// — a caller either requires it or does not.
+///
+/// # Why stability is worth a third sort
+///
+/// `sort` (insertion) is stable already but `O(n²)`; `heap_sort` is `O(n log n)` and **not** stable. So
+/// before this there was no way to sort a large sequence by one key and keep an earlier ordering by another
+/// — the standard two-pass "sort by name, then stably by department" that every table view needs.
+///
+/// # The allocation policy, which PLAN §8.3 named as the decision to settle first
+///
+/// The scratch a merge needs comes from **temporary storage** (`talloc`), which makes the arena its first
+/// real customer (ADR-0065). Three reasons a caller can check:
+///
+///   * the scratch is dead the moment the sort returns, which is exactly the lifetime an arena models;
+///   * it costs no `free` and cannot leak, so a sort whose comparison traps leaks nothing;
+///   * the arena is in the **context**, so a caller who wants the allocation elsewhere already has the
+///     mechanism — `push_context` with a different arena — and needs nothing from this module.
+///
+/// Rejected: `malloc`/`free` per call, which pays an allocator round trip per sort and leaks on a trap.
+/// Rejected: a **caller-supplied buffer**, which is the fastest and makes every call site carry a parameter
+/// that is always the same expression; this wave wrote that version and took it out, because the one caller
+/// who wants a different arena can already say so through the context. Rejected: an in-place merge,
+/// `O(n log² n)` or rotations — real algorithms, both slower than a scratch buffer for no benefit this
+/// project can measure (ADR-0146 §4).
+///
+/// **Falls back to insertion sort when the arena has no room**, rather than trapping or leaving `xs`
+/// unsorted. `sort` needs no scratch at all, so the fallback is a real sort rather than a degradation —
+/// slower on a large input, and correct, which is the right way round. Both paths are stable, so the
+/// *answer* never depends on whether the arena had room; a program that sorted differently under memory
+/// pressure would be the worst kind of bug to chase.
+///
+/// # Why bottom-up rather than the textbook recursion
+///
+/// The passes run over doubling widths inside **one** procedure. That is the standard iterative form, it
+/// needs no call stack, and the width loop reads as clearly as the recursion — and it keeps the whole sort
+/// in one body, which matters here because the merge needs `less` and every extra procedure that takes
+/// `less` is another instantiation to get right.
+///
+/// `comparisons` counts calls to `less`, as the other two sorts do, so the three are measurable against
+/// each other on one input (ADR-0146 §3).
+stable_sort :: (xs: []$T, less: (T, T) -> bool, comparisons: *s64) {
+    if xs.count < 2 {
+        return;
+    }
+    scratch := typed(T, talloc(xs.count * size_of(T)));
+    if scratch == null {
+        sort(xs, less, comparisons);
+        return;
+    }
+    buffer := view(scratch, xs.count);
+
+    // Widths 1, 2, 4, … Each pass merges every adjacent pair of sorted runs of `width` into runs of
+    // `2 * width`, so after `ceil(log2(count))` passes the whole view is one run.
+    width := 1;
+    while width < xs.count {
+        start := 0;
+        while start < xs.count {
+            middle := start + width;
+            if middle > xs.count {
+                middle = xs.count;
+            }
+            end := start + width * 2;
+            if end > xs.count {
+                end = xs.count;
+            }
+
+            // **The comparison is `less(right, left)`, not `less(left, right)`** — and that single choice is
+            // what makes the sort stable. Taking the left element unless the right is *strictly* less means
+            // an equal pair keeps the left one first, which is the left run, which is the earlier position.
+            // Written the other way round it is a correct sort that is not stable, and no test of
+            // *sortedness* can tell the difference: only a test that checks where equal elements ended up
+            // can, which is why the corpus file sorts by one key and inspects another.
+            left := start;
+            right := middle;
+            at := start;
+            while left < middle {
+                if right >= end {
+                    buffer[at] = xs[left];
+                    left = left + 1;
+                    at = at + 1;
+                } else {
+                    comparisons.* = comparisons.* + 1;
+                    if less(xs[right], xs[left]) {
+                        buffer[at] = xs[right];
+                        right = right + 1;
+                    } else {
+                        buffer[at] = xs[left];
+                        left = left + 1;
+                    }
+                    at = at + 1;
+                }
+            }
+            while right < end {
+                buffer[at] = xs[right];
+                right = right + 1;
+                at = at + 1;
+            }
+
+            // Copied back per merged pair rather than per pass, because the runs a pass has not reached yet
+            // must still be read from `xs`. A version that swapped the roles of `xs` and `buffer` per pass
+            // avoids this copy and has to track which of the two holds the answer — getting that wrong
+            // sorts into the scratch and returns the input untouched.
+            k := start;
+            while k < end {
+                xs[k] = buffer[k];
+                k = k + 1;
+            }
+
+            start = start + width * 2;
+        }
+        width = width * 2;
+    }
+}
+
+/// `stable_sort` at `s64` with `less`, for a caller in another module.
+///
+/// The wrapper an imported template needs (E0268, ADR-0104 §5) — instantiating one across a module boundary
+/// is still refused, so the instantiation lives in the module that declares the template, exactly as
+/// `sort_ints` and `heap_sort_ints` do. `less` is a parameter here, unlike theirs, because a stable sort is
+/// almost always sorting by *one key of several*, and a fixed ascending comparison would defeat the point.
+stable_sort_ints :: (xs: []s64, less: (s64, s64) -> bool, comparisons: *s64) {
+    stable_sort(xs, less, comparisons);
+}
+
+/// Whether `xs` is in non-decreasing order by `less`, for a caller in another module.
+///
+/// `ints_sorted` exists and hard-codes ascending; this takes the comparison, because a caller who needed a
+/// stable sort by one key almost always wants to check that key too.
+ints_sorted_by :: (xs: []s64, less: (s64, s64) -> bool) -> bool {
+    return is_sorted(xs, less);
 }

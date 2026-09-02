@@ -3972,6 +3972,16 @@ impl Ctx<'_> {
         self.types.set_expr(scope, args[0], PoolId::TYPE);
         let Some(described) = described else {
             self.check_expr(scope, args[1], None);
+            // Withheld for an unbound `$T` of the enclosing template, exactly as `size_of`'s and
+            // `type_info`'s are (ADR-0092 §1). `typed(T, malloc(n * size_of(T)))` inside a `$T` body is
+            // correct code — it is how a template allocates — and each instantiation resolves `T` for
+            // real. Refusing it here made `size_of(T)` legal and `typed(T, p)` illegal in the same
+            // expression, an asymmetry no caller could predict (ADR-0155 §4).
+            if let Expr::Name { name, .. } = self.expr_of(scope, args[0])
+                && self.poly_var_names.contains(&name)
+            {
+                return PoolId::ERROR;
+            }
             self.diags.push(
                 Diagnostic::error(span, "`typed` needs a type to view the pointer as")
                     .with_code(E0261)
@@ -5142,18 +5152,48 @@ impl Ctx<'_> {
             .iter()
             .any(|v| !bindings.iter().any(|(b, _)| b == v))
         {
-            self.diags.push(
-                Diagnostic::error(span, "cannot infer every `$T` from the arguments of this call")
-                    .with_code(E0268)
-                    .with_note(
-                        "each type variable is inferred from an argument that pins it — directly, or through a pointer or view (ADR-0084)",
-                    ),
-            );
+            // **Withheld when the caller is a template's own copy** (ADR-0155 §4), the way `size_of`'s and
+            // `type_info`'s E0261 already is. Inside `stable_sort :: (xs: []$T, ...)` the argument `xs` has
+            // the *unbound* `T`, so nothing can pin the callee's variable — and the call is nonetheless
+            // correct code: each instantiation binds `T` for real and infers it there. Refusing here made
+            // "a `$T` template cannot call another `$T` template" a language limitation rather than a
+            // missing check, which is what PLAN's known-defects list recorded it as.
+            //
+            // The condition is "this body is a template, not an instantiation clone": it has variable
+            // *names* and no *bindings* for them. A clone has both, so a genuinely uninferable call inside
+            // an instantiation is still refused — which is where a real mistake shows up, with the
+            // instantiation backtrace attached.
+            let in_unbound_template = self
+                .poly_var_names
+                .iter()
+                .any(|v| !self.type_bindings.contains_key(v));
+            if !in_unbound_template {
+                self.diags.push(
+                    Diagnostic::error(span, "cannot infer every `$T` from the arguments of this call")
+                        .with_code(E0268)
+                        .with_note(
+                            "each type variable is inferred from an argument that pins it — directly, or through a pointer or view (ADR-0084)",
+                        ),
+                );
+            }
             return PoolId::ERROR;
         }
 
         // Bind every variable and re-resolve the signature against them, so a bare `A`/`B` parameter is
         // checked against its inferred type and the return type is concrete.
+        //
+        // **The previous binding is saved and restored, not dropped** (ADR-0155 §4). A template's
+        // instantiation body already has its own `T` bound, and a call *inside* it to another template whose
+        // variable is also spelled `T` shadowed that binding and then **removed** it — so every `size_of(T)`
+        // or `typed(T, …)` *after* the inner call reported E0261 "needs a type" inside a clone where `T` was
+        // bound all along. PLAN's known-defects list recorded this as "`check_polymorphic_call` removes
+        // rather than restores a shadowed binding"; it stayed latent because the two known callers put the
+        // inner call last. Order-dependent invisible breakage is the worst kind, so the save/restore is here
+        // rather than a rule about where to put a call.
+        let shadowed: Vec<(Symbol, Option<PoolId>)> = bindings
+            .iter()
+            .map(|(var, _)| (*var, self.type_bindings.get(var).copied()))
+            .collect();
         for (var, ty) in &bindings {
             self.type_bindings.insert(*var, *ty);
         }
@@ -5168,8 +5208,11 @@ impl Ctx<'_> {
         let ret = self.hir.proc(proc).ret.map_or(PoolId::VOID, |t| {
             self.resolve_type(ExprScope::TopLevel, t, span)
         });
-        for (var, _) in &bindings {
-            self.type_bindings.remove(var);
+        for (var, previous) in shadowed {
+            match previous {
+                Some(ty) => self.type_bindings.insert(var, ty),
+                None => self.type_bindings.remove(&var),
+            };
         }
 
         // Record the instantiation for the expansion pass, keyed by the call. The bound types are ordered

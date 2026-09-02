@@ -258,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0154. See [`docs/adr/README.md`](docs/adr/README.md). (This line
+Accepted ADRs: 0001–0155. See [`docs/adr/README.md`](docs/adr/README.md). (This line
 said 0001–0128 for thirteen ADRs, which is the argument §7 makes for its own count
 being the one to trust.)
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
@@ -558,21 +558,37 @@ order is not the per-wave item lists but three cross-cutting blockers.
 
 **§8.6's first three steps are done**: E0286 (ADR-0150) turned the ninth leaked internal error into a
 diagnostic; `#must` (ADR-0151) filled ADR-0008's reserved effect-row slot and unblocked five W7 modules;
-and W6's static-data decision (ADR-0152/0153/0154) closed that wave. **Next is §8.3's module order**, whose
-first three items — `Time`, a bucket array, a stable merge sort — need nothing new.
+and W6's static-data decision (ADR-0152/0153/0154) closed that wave.
 
-**§8's recommended first three steps**, in order: (1) **E0286**, a diagnostic for an aggregate at a
-`#foreign` boundary, which today is a *leaked internal error* in both engines — the ninth occurrence of
-that pattern, found by probing while writing §8; (2) **`#must` and the error model**, filling or
-explicitly narrowing ADR-0008's reserved slot, which unblocks five of W7's nine remaining modules; and
-(3) **W6's static-data table and message loop**, which discharges `Type_Info`'s variable-length field
-list at the same time.
+**§8.3's module order is three of nine in** (ADR-0155): `Time`, `Bucket_Array`, and the stable merge sort
+ADR-0104 §3 owed. **Next is item 4, `JSON`** — the most valuable module for proving the language, because
+it exercises tagged unions, containers and strings together, and it is reachable now that `#must` exists.
+Then `File`, `File_Utilities`, `Process`, `Socket`, all of which the error model unblocked. `Thread` is
+W11 and is not W7's.
+
+> [!IMPORTANT]
+> **Read ADR-0155 §4 before writing anything polymorphic.** That wave was scheduled as three library
+> modules and became a compiler wave: the sort would not compile, and **four separate instantiation
+> defects** came out — `typed(T, …)` refusing a bound type variable while `size_of(T)` beside it accepted
+> one; an instantiation's pointer views never threaded into MIR; E0268 refusing a template that calls a
+> template; and `check_polymorphic_call` **deleting** a shadowed type binding rather than restoring it.
+> All four are fixed and `valid/126` isolates three of them, but the *shape* is what matters for the next
+> wave: each was silent at check time and surfaced as `no routine for file N proc M` when an engine
+> reached the call, because E0245 is only a warning (below). A template that behaves oddly is more likely
+> to be one of these than a mistake in the program.
+>
+> Two process lessons from it, both already in `AGENTS.md` and both re-learned the hard way. `cmd | head
+> -1; echo $?` reports **`head`'s** status, and it produced several false "silent miscompile" findings
+> including a wrong conclusion that indirect calls are broken (they work). And when a body is refused for
+> "a local has an error type", **check the module's own diagnostics first**: `modules/Sort` had no
+> `#import` at all, so `talloc` did not resolve, and because a module's diagnostics are not shown when a
+> *root* file is checked, the whole thing appeared as one warning on the body.
 
 **Two cheaper things are owed regardless**: the `354d900` audit's security dispatches 2 and 3 (forging
 an `Any` or a procedure handle through `jr-vm`'s untagged `union`; `jr-lsp` path handling — URI
 decoding, `..`, symlinks), which must be done **by hand** because six subagent dispatches returned
 empty; and `tree-sitter test` added to gate 6, which today catches grammar *drift* but not a broken
-grammar *rule*. **1034 workspace tests** (1035 under gate 7) and **243 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
+grammar *rule*. **1034 workspace tests** (1035 under gate 7) and **247 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
 has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -584,9 +600,9 @@ has ever happened — plus **166** Neovim checks. See §1.5.
 > one is the clap surface.
 
 > [!NOTE]
-> **What "228 corpus files" counts**, since this number had drifted: the `.jr` files under
-> `tests/corpus/` *outside* `tests/corpus/modules/` — 122 `valid` + 10 `invalid` + 78 `type-errors` +
-> 3 `cfg-errors` + 30 `imports` = 243. Counting the 10 module fixtures too gives 253. This section
+> **What "247 corpus files" counts**, since this number had drifted: the `.jr` files under
+> `tests/corpus/` *outside* `tests/corpus/modules/` — 126 `valid` + 10 `invalid` + 78 `type-errors` +
+> 3 `cfg-errors` + 30 `imports` = 247. Counting the 10 module fixtures too gives 257. This section
 > claimed **214** at a point when 213 was right while `AGENTS.md` claimed 213, so the sentence that
 > tells a reader to trust §7 over any other count was itself pointing at the wrong one. ADR-0125
 > reconciled the numbers and that pair slipped through, which is the argument for the definition
@@ -2167,14 +2183,22 @@ project defines 94 codes", frozen roughly fifteen waves back.)
       sema diagnostic (**E0286**) that fires before lowering, with the note that a pointer is the
       workaround. It also converts §8.1.2 — W10's hard gate — from a crash into a stated limitation,
       which is the difference between a missing feature and a broken compiler.
-- [ ] **`check_polymorphic_call` removes rather than restores a shadowed binding**
-      (`jr-sema/src/check.rs`), unlike the save/restore idiom beside it in `ctx.rs`. ADR-0124 fixed the
-      sibling leak in `resolve_instance_fields_in` and left this one, because it sits in a different
-      function with a different caller contract. Masked today by the same E0212 deferral that masks the
-      other, so it becomes live the day inference through a parameterised struct lands.
+- [x] ~~**`check_polymorphic_call` removes rather than restores a shadowed binding**~~ **fixed —
+      ADR-0155 §4.4.** It was not masked after all: the entry above guessed it would go live "the day
+      inference through a parameterised struct lands", and it was already live for a much simpler
+      program — a template calling another template whose variable is also spelled `T`. The shadowing
+      call **deleted** the clone's own binding, so every `size_of(T)` or `typed(T, …)` *after* the inner
+      call reported E0261 inside a body where `T` was bound throughout. It stayed invisible because both
+      existing callers happened to put the inner call last, which is the worst reason for a defect to
+      hide: the failure depends on statement order, so it appears the moment somebody rearranges a body.
+      Now a save/restore, matching the idiom in `ctx.rs` the entry pointed at.
 - [ ] **`E0245` is only a warning**, so a body `scan` refused still links and the call ICEs when it is
-      reached. That is what let ADR-0120's four defects reach an engine at all. Gating it on reachability
-      is its own change and would have *masked* those defects rather than exposing them.
+      reached. That is what let ADR-0120's four defects reach an engine at all, and ADR-0155's four as
+      well — eight now, from two waves, which is the strongest case on this list for leaving it alone:
+      gating it on reachability is its own change and would have *masked* all eight rather than exposing
+      them. ADR-0155 §6 adds the companion nuisance: a module's diagnostics are not shown when a *root*
+      file is checked, so an unresolved name inside an intrinsic's operand surfaced only as this warning
+      on the whole body, and cost an hour to localise.
 
 #### Also open, and smaller
 
@@ -2427,9 +2451,9 @@ what rather than by the order §2.1 happens to list them.
 
 | Order | Module | Needs | Note |
 |---|---|---|---|
-| 1 | **`Time`** | nothing new | `clock_gettime` is scalars and a pointer — the FFI shape that already works. The cheapest real module left, and it gives every later benchmark a clock. |
-| 2 | **Bucket array** | nothing new | Pure library work over `[..]T`, which ADR-0140 delivered. A stable-address container, which is what a UI retains handles into (W10). |
-| 3 | **A merge sort** | an allocation policy | Owed since ADR-0104 §3; ADR-0146 discharged the *faster sort* debt with `heap_sort`, so what remains is the stable one. The decision is where scratch space comes from — `talloc` is the obvious answer and makes the arena's first real customer. |
+| ~~1~~ | ~~**`Time`**~~ | — | **done — ADR-0155 §1.** Nanoseconds as an `s64`, `monotonic` and `wall`, truncating conversions, and deliberately **no formatting** (a calendar needs leap seconds, zones and a locale, none of them decided) and no sleeping (a blocking comptime call is a decision about compile-time execution). `CLOCK_MONOTONIC`'s macOS value is carried with the portability gap named rather than hidden. |
+| ~~2~~ | ~~**Bucket array**~~ | — | **done — ADR-0155 §2.** `modules/Bucket_Array`: fixed buckets appended to a movable spine, so an element's address never moves — the promise `List` cannot make since it copies on growth. `push` returns the stable pointer. No removal (compacting breaks the promise; a tombstone stops `get` being pointer arithmetic). Two language limits recorded: a `[..]T` cannot be indexed, so the spine is read through `view`; and a bucket is a named one-field struct because `size_of(*s64)` is E0261 (ADR-0071 §5). |
+| ~~3~~ | ~~**A merge sort**~~ | — | **done — ADR-0155 §3.** `stable_sort` takes its scratch from the **arena** (ADR-0065's first real customer), falls back to insertion sort when it has no room — both paths stable, so the answer never depends on memory pressure — and merges bottom-up in one procedure. Rejected: `malloc` per call, a caller-supplied buffer (written, then removed), an in-place merge. **It did not compile**, and four instantiation defects came out of finding out why (ADR-0155 §4); `Sort` also gained its first `#import`. |
 | 4 | **`JSON`** | §8.1.1 for parse errors | Otherwise reachable *now*: `variant` (ADR-0068) is exactly a JSON value, `[..]T` is an array, `Map` is an object, and `String`'s allocating half builds output. The most valuable module for proving the language, because it exercises tagged unions, containers and strings together. |
 | 5 | **`File`** | §8.1.1 | Then `File_Utilities` on top of it. |
 | 6 | **`Process`** | §8.1.1 | `fork`/`exec`/`waitpid` are scalars, so the FFI is fine; the error model is the whole difficulty. |

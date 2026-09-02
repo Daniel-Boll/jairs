@@ -1,0 +1,74 @@
+// ADR-0155: the Bucket_Array module — a growable sequence whose addresses never move.
+//
+// PLAN §8.3 put this second in W7's remaining order because it needs nothing new: it is `[..]T` used as a
+// spine, and it is what a UI retains handles into (W10).
+//
+// **The property under test is the one `List` cannot offer.** `List($T)` doubles and *copies*, so every
+// pointer into it dies at the next `push`. This keeps fixed-size buckets and only appends a bucket, so an
+// element's address is stable for the life of the array. That is asserted by taking a pointer *before*
+// growing across several buckets and reading through it *after*.
+//
+// The exit status is a checksum, because each half fails silently on its own:
+//
+//   a pointer taken early survives growth   the whole reason the module exists   = 100
+//   the values are right after growth       50 elements, sum 0+1+…+49 = 1225      = 1225
+//   the bucket count is count/16 rounded up  50 elements is 4 buckets            = 4
+//   an out-of-range read is null             a lookup that failed, not a trap     = 8
+//   a fresh array allocates nothing          0 buckets before the first push      = 16
+//
+// 100 + 1225 + 4 + 8 + 16 = 1353, which exceeds a byte, so the exit status is 1353 & 255 = 73.
+#import "Basic";
+#import "Bucket_Array";
+
+main :: () {
+    total := 0;
+
+    b := make();
+
+    // A fresh array allocates nothing, so a struct field of this type costs its owner nothing.
+    if bucket_count(*b) == 0 {
+        total = total + 16;
+    }
+
+    // **Take a pointer to the first element**, then grow far past its bucket. Fifty elements is four
+    // buckets, so three more are allocated after this pointer was handed out — and it must still be valid.
+    first := push(*b, 100);
+
+    i := 1;
+    while i < 50 {
+        _ = push(*b, i);
+        i = i + 1;
+    }
+
+    // Read through the *old* pointer. In a `List` this would be reading freed memory.
+    total = total + first.*;
+
+    // Every value, through `value_at`, which proves the bucket arithmetic maps indices to slots correctly:
+    // an off-by-one in `index / BUCKET_SIZE` or `index % BUCKET_SIZE` changes this sum.
+    sum := 0;
+    j := 1;
+    while j < 50 {
+        sum = sum + value_at(*b, j);
+        j = j + 1;
+    }
+    total = total + sum;
+
+    // 50 elements in buckets of 16 is 4 buckets — the overhead a caller pays for stability.
+    total = total + bucket_count(*b);
+
+    // Out of range is `null`: a lookup that failed rather than a memory error, which is the right shape for
+    // a length that is data rather than part of the type.
+    if get(*b, 50) == null {
+        if get(*b, -1) == null {
+            total = total + 8;
+        }
+    }
+
+    free_all(*b);
+
+    // Freeing leaves it usable, which is what makes `free_all` safe in a `defer` beside the `make`.
+    if bucket_count(*b) == 0 {
+        exit(total);
+    }
+    exit(1);
+}

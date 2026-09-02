@@ -185,6 +185,26 @@ cost real time twice: `cmd | head -1; echo $?` reports **`head`'s** status, so t
 were the harness, not the compiler. Rebuild `jr-cli` before every hand-run, too; a stale binary produced a
 third false divergence.
 
+**ADR-0155 holds at 1034** (1035 under gate 7) and adds four corpus files = **247** — PLAN §8.3's first
+three W7 modules: `Time`, `Bucket_Array`, and the stable merge sort ADR-0104 §3 owed. An all-library wave
+on paper that turned into a compiler wave: **the sort would not compile, and four separate polymorphic
+instantiation defects came out of finding out why** — `typed(T, …)` refusing a bound type variable while
+`size_of(T)` beside it accepted one; an instantiation's pointer views never threaded into MIR; E0268
+refusing a template that calls a template; and `check_polymorphic_call` **deleting** a shadowed type
+binding instead of restoring it, which PLAN's known-defects list had recorded as masked and was not.
+`valid/126` isolates three of the four, so a regression names which one broke, while `valid/125` needs all
+four at once and cannot. The wave moved the corpus count and not the test count, for the reason the
+all-library waves before it did: what a corpus program can observe is a corpus program.
+
+**Two lessons worth keeping from it.** First, `cmd | head -1; echo $?` bit *again* — the note above was
+already in this file, and it still cost several false "silent miscompile" findings, including a spurious
+conclusion that indirect calls through a procedure pointer return the wrong answer (they are fine). Check a
+status with no pipe in the way, every time. Second, the sort's *first* failure was neither a language gap
+nor one of the four: `modules/Sort` had **no `#import` at all**, so `talloc` did not resolve — and because a
+module's diagnostics are not shown when a *root* file is checked, and `typed`'s operand check returns
+silently when its argument did not type, the whole thing surfaced as one E0245 warning on the body. When a
+body is refused for "a local has an error type", check the module's own diagnostics first.
+
 **ADR-0149 holds at 1033** (1034 under gate 7) and adds **no** corpus file = still **237** — W8
 sub-wave 8, which closes W8 by *measuring* parallel sema and refusing it. A wave whose deliverable is a
 measurement and a revert adds no test and no corpus file, and that is the honest shape for one: the

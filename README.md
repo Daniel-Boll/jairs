@@ -18,8 +18,25 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated with **W8 — Performance and W6 — Metaprogram both DONE** (W7 — Stdlib is still open),
-1033 tests green — 1034 with the LLVM back end compiled in.
+Last updated with **W7 — Stdlib three modules further on** (W8 — Performance and W6 — Metaprogram are
+DONE; W7 is still open), 1034 tests green — 1035 with the LLVM back end compiled in.
+
+**`Time`, `Bucket_Array` and a stable merge sort landed** (ADR-0155), the first three of W7's nine
+remaining modules. `Time` is nanoseconds as an `s64` with a monotonic and a wall clock, and deliberately
+no formatting: rendering a timestamp needs a calendar, and a calendar needs leap seconds, time zones and a
+locale that this project has decided nothing about. `Bucket_Array` keeps element **addresses** stable by
+appending fixed-size buckets to a movable spine — the promise `List` cannot make, because it copies on
+growth — which is what a UI retains handles into. And `stable_sort` closes the debt ADR-0104 §3 opened,
+taking its scratch from the **arena**, making that ADR-0065's first real customer.
+
+**The sort would not compile, and four polymorphism defects came out of finding out why.** All four were
+silent: a template that allocated its own scratch, or called another template, type-checked and then
+reached an engine as `no routine for file N proc M`. `typed(T, …)` refused a bound type variable while
+`size_of(T)` beside it accepted one; an instantiation's pointer views were never threaded into the
+mid-end; a template calling a template was refused for an inference it did not need; and one call
+**deleted** a shadowed type binding instead of restoring it, so a `size_of(T)` after an inner call failed
+in a body where `T` was bound throughout. That last one was on the known-defects list, described as masked
+— it was not, and it hid only because both existing callers happened to put the inner call last.
 
 **W6 is closed, and the last three waves' worth of decisions are made.** PLAN §8.6 laid out seven steps to
 finish the programme; the first three are done. A `#foreign` signature that cannot be lowered is now a
@@ -242,7 +259,10 @@ whichever wave decides how a template states its requirements. The algorithm is 
 plainly: it is *stable*, which quicksort is not, it needs no allocation, which is the decision `String` declined
 to make, and it is short enough to read. **W8 delivered the faster one** (ADR-0146): `heap_sort` sits
 beside it — `O(n log n)` always, no allocation, and unstable, which is why it is a second name rather
-than a replacement — with a comparison count rather than a timing behind the choice.
+than a replacement — with a comparison count rather than a timing behind the choice. And **W7 completed the
+family** (ADR-0155) with `stable_sort`: `O(n log n)` *and* stable, at the cost of scratch space, which is
+the trade the other two do not offer. Three names rather than one clever default, because each of the three
+is the right answer to a different question — smallest, fastest without allocating, fastest while stable.
 
 **Writing that module found two leaked internal errors**, which is the argument for a standard library written
 in the language paying out twice in one sub-wave. Passing an **imported procedure as a value** reported "this
@@ -370,6 +390,19 @@ context-carried (a callee facility). xorshift64 because its correctness is obvio
 statistics for a baseline. Writing it surfaced a real language gap: a `u64`-range named constant has no
 `name : T : value` form, so the golden-ratio seed is declared through `#run` of a `-> u64` procedure whose
 return type gives the too-large literal its context — recorded rather than worked around silently.
+
+**And `Time`, `Bucket_Array` and `stable_sort`** (ADR-0155) are W7's next three. `Time` is one integer unit
+— nanoseconds in an `s64`, exact for ±292 years, where a `float64` of seconds loses nanosecond resolution
+in the 2030s and would make two runs of one benchmark differ in their last digits. Two clocks, because
+using the wrong one is a quiet bug: `monotonic` never goes backwards and is the only correct thing to
+*measure* with, `wall` is what a timestamp wants. `Bucket_Array` is the container whose element addresses
+never move — `push` returns the stable pointer, and there is no `remove`, because compacting would break
+the promise and a tombstone would stop `get` being pointer arithmetic. `stable_sort` merges bottom-up
+through arena scratch and **falls back to insertion sort when the arena has no room**; both paths are
+stable, so the answer never depends on memory pressure, which would be the worst kind of bug to chase.
+Its one load-bearing line is `less(right, left)` rather than `less(left, right)` — that is what stability
+*is*, and no test of sortedness can see the difference, so the corpus program sorts by one key and inspects
+another.
 
 **And a float can now cross the FFI boundary** (ADR-0114), the language unblocker two library sub-waves named:
 a `#foreign` procedure may take and return a float, so `sqrt`, `pow` and friends are callable. A float is passed
