@@ -590,6 +590,7 @@ fn run_program(path: PathBuf) -> i32 {
         path,
         module_paths: Vec::new(),
         no_bounds_check: false,
+        opt_level: jr_cli::cli::OptLevelArg::Standard,
     };
     jr_cli::commands::run::run(args, &global).unwrap()
 }
@@ -637,6 +638,7 @@ fn run_reports_a_program_with_no_main() {
         path,
         module_paths: Vec::new(),
         no_bounds_check: false,
+        opt_level: jr_cli::cli::OptLevelArg::Standard,
     };
     let error = jr_cli::commands::run::run(args, &global).expect_err("must not run");
     assert!(
@@ -758,6 +760,7 @@ fn a_refused_body_is_a_diagnostic_rather_than_a_crash() {
             path,
             module_paths: vec![dir.path().to_path_buf()],
             no_bounds_check: false,
+            opt_level: jr_cli::cli::OptLevelArg::Standard,
         },
         &global,
     );
@@ -787,6 +790,7 @@ fn run_build(path: PathBuf, output: Option<PathBuf>) -> i32 {
             output,
             emit_object: false,
             no_bounds_check: false,
+            opt_level: jr_cli::cli::OptLevelArg::Standard,
             module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
         },
         &quiet_global(),
@@ -809,10 +813,19 @@ fn build_output_constant_names_the_executable() {
     .unwrap();
 
     assert_eq!(run_build(source.clone(), None), 0);
-    assert!(
-        dir.path().join("named_by_script").exists() || Path::new("named_by_script").exists(),
-        "the declared name should be the artefact's"
-    );
+
+    // **The artefact lands in the compiler process's working directory**, which for a test is the
+    // crate directory rather than `dir`. That is ADR-0122's confinement working as designed — a
+    // declared name is resolved relative to the working directory, and the test cannot change that
+    // directory because every test in this binary shares it. So both places are accepted, and
+    // whichever one appears is **removed**: a tracked binary that every test run rewrites was
+    // committed once already, which is how this cleanup came to be written.
+    let in_temp = dir.path().join("named_by_script");
+    let in_cwd = PathBuf::from("named_by_script");
+    let written = in_temp.exists() || in_cwd.exists();
+    let _ = fs::remove_file(&in_temp);
+    let _ = fs::remove_file(&in_cwd);
+    assert!(written, "the declared name should be the artefact's");
     assert!(
         !dir.path().join("prog").exists(),
         "the default name should not also be written"
@@ -947,5 +960,55 @@ fn an_imported_modules_errors_are_reported() {
     assert_eq!(
         code, 1,
         "a root whose imported module is broken must not check clean"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0142: the optimisation-level surface
+// ---------------------------------------------------------------------------
+
+/// The flag's *surface*, asserted at the clap layer rather than by running a program.
+///
+/// ADR-0142 §1 accepts two levels and refuses a third **on purpose**: a `-O2` running the same
+/// four passes would be a flag whose only content is a promise. That refusal is a decision, so it
+/// is a test — otherwise the day a level is added nothing would record that the surface used to
+/// be closed. The default is asserted too, because it is what keeps every existing invocation
+/// meaning what it meant before the flag existed.
+#[test]
+fn the_opt_level_surface_accepts_two_levels_and_defaults_to_one() {
+    use clap::Parser as _;
+
+    let default = jr_cli::cli::Cli::try_parse_from(["jr", "run", "x.jr"])
+        .expect("`jr run` without the flag must parse");
+    let jr_cli::cli::Command::Run(args) = default.command else {
+        panic!("`jr run` must parse as the run subcommand");
+    };
+    assert_eq!(
+        args.opt_level,
+        jr_cli::cli::OptLevelArg::Standard,
+        "the default level must be the pipeline, so no existing build changes meaning"
+    );
+
+    for (argv, expected) in [
+        (["jr", "run", "-O0", "x.jr"], jr_cli::cli::OptLevelArg::Off),
+        (
+            ["jr", "run", "-O1", "x.jr"],
+            jr_cli::cli::OptLevelArg::Standard,
+        ),
+    ] {
+        let cli = jr_cli::cli::Cli::try_parse_from(argv)
+            .unwrap_or_else(|e| panic!("{argv:?} must parse: {e}"));
+        let jr_cli::cli::Command::Run(args) = cli.command else {
+            panic!("{argv:?} must parse as the run subcommand");
+        };
+        assert_eq!(args.opt_level, expected, "{argv:?} chose the wrong level");
+    }
+
+    let refused = jr_cli::cli::Cli::try_parse_from(["jr", "build", "-O2", "x.jr"]);
+    let error = refused.expect_err("`-O2` must be refused until a pass justifies it");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains('0') && rendered.contains('1'),
+        "the refusal must name the levels that do exist: {rendered}"
     );
 }

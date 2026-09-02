@@ -18,9 +18,16 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated with **wave W7 — Stdlib open** and **W6 — Metaprogram still open**, 1010 tests green.
+Last updated with **wave W8 — Performance open** (W7 — Stdlib and W6 — Metaprogram are still open
+too), 1018 tests green. **W8 has begun with an optimisation level** (ADR-0142): `-O0` and `-O1` on
+`jr run` and `jr build`, closing the deferral ADR-0058 §6 handed this wave. The level's real payload
+is a check the mid-end never had — **every corpus program's whole observable behaviour is now
+asserted identical at both levels**, so "optimisation preserves meaning" is a test rather than an
+argument. The one legitimate difference is a backtrace: at `-O1` an inlined leaf's trap names the
+call site, at `-O0` it names the leaf's own line, and both halves are pinned.
+
 The **eight-wave programme to keep the promises ADR-0127 found unkept** is **fully done**
-(ADR-0128 through ADR-0139), and its owed follow-ups have begun: **ADR-0140** converted
+(ADR-0128 through ADR-0139), and both of its owed follow-ups have landed: **ADR-0140** converted
 `modules/List` to operate on the native `[..]s64` (the hand-rolled `List :: struct($T)` deleted) and
 added `Type_Info_Kind.DYNAMIC_ARRAY`, and **ADR-0141** landed a `..Any` variadic — `f(*a, *b, *c)`
 packs arguments of arbitrary types into a `[]Any` (`print(fmt, ..)`). All six unkept promises are kept: instantiation backtraces,
@@ -535,6 +542,7 @@ has never run — plus 166 Neovim checks that are verified rather than gated.
 | Compile and run a program in the comptime VM | `jr run file.jr` | Register bytecode interpreter, no JIT tier |
 | Compile to a native executable | `jr build file.jr -o out` | arm64 macOS verified. x86-64 Linux is **configured in CI and has never run** — the workflow exists, and no CI run has ever happened on this repository, so Linux is entirely unverified. A declared `BUILD_OUTPUT` is confined to the working directory (ADR-0122) |
 | Build without bounds checks | `jr build file.jr --no-bounds-check`, or `jr run` | ADR-0003's build setting, finally wired (ADR-0058). An out-of-range index is then undefined behaviour, which is the trade. `#no_abc` on a procedure does the same locally, whatever the build says; compile-time execution checks regardless |
+| Choose an optimisation level | `jr build file.jr -O0`, or `jr run -O0` | Two levels, `0` and `1` (the default, and what every build did before the flag). `-O0` runs no mid-end pass, so the code executed is exactly what lowering produced — which is how a wrong answer becomes attributable to lowering rather than to a pass. A level may **not** change what a program computes, and the differential harness now sweeps every corpus program at both levels to check it (ADR-0142). The one thing `-O0` does change is a backtrace: nothing is inlined, so a trap inside a leaf names the leaf's own line. There is no `-O2` yet and no `--release` — deliberately, since a level with no pass behind it is a promise rather than a flag |
 | Get rustc-grade diagnostics | `jr check file.jr` | 115 codes across lexer, parser, HIR, sema, MIR and const-eval, with cross-crate uniqueness enforced by a test (ADR-0123). E0218 and E0212 suggest a near name; E0231 and E0245 are *warnings* — an unused `#import`, and a body the compiler could not lower |
 | Format source canonically | `jr fmt [--check] paths…` | The corpus is canonical under it, enforced by gate 5 — locally, since CI has never run |
 | Inspect tokens or the CST | `jr parse file.jr` | Debug aid |
@@ -624,18 +632,18 @@ ignoring the flag a compile error, is owed its own ADR. There is no GC and no RA
 | InternPool (types, comptime values, layout, arithmetic) | **Works** | One layout computation and one integer evaluator, shared (ADR-0018 §2, ADR-0022 §2) |
 | Sema (signatures, checking, inference) | **Works** | E0212–E0279; a union's diagnostics are a struct's unchanged, deliberately, and a bare `.RED`'s "no such member" is the qualified form's; no const-eval here — ADR-0018 §3 puts it in the VM, which is why an array length must be a literal. Float literals are context-typed with **no** fit check, because IEEE-754 saturates (ADR-0040 §5) |
 | MIR (typed SSA, Braun construction) | **Works** | Block parameters, not phis (ADR-0017); CFG diagnostics E0227–E0229, the last of which now also reports a `break`/`continue` naming an unknown label (ADR-0049 §2); an explicit `bounds_check` statement and an explicit `zero`, both ADR-0039. `for` reuses the `while` shape with a synthesised induction variable and needs no new node; `defer`'s statements appear once per exit path |
-| Mid-end | **Four passes** | Inliner, store-to-load forwarding, const-prop, DCE, to a bounded fixed point (ADR-0021 – ADR-0023). Forwarding is block-local, so a value read across a loop stays in memory, and it refuses two unequal array indices as possibly-aliasing; no SROA; the SSA value arena is never compacted |
+| Mid-end | **Four passes** | Inliner, store-to-load forwarding, const-prop, DCE, to a bounded fixed point (ADR-0021 – ADR-0023), and all four are skipped at `-O0` (ADR-0142). Forwarding is block-local, so a value read across a loop stays in memory, and it refuses two unequal array indices as possibly-aliasing; no SROA; the SSA value arena is never compacted |
 | Bytecode VM + libffi | **Works** | Per-instruction spans, so a trap names its line. Floats need no new value variant, but are dispatched *before* the bit-compare fallback that would answer `NaN == NaN` and `-0.0 == 0.0` backwards. No JIT |
 | Cranelift back end + linker | **Works** | Returns an aggregate through a caller-allocated `sret` pointer, uniform by size (ADR-0051) — a register fast path is W8's, because the size threshold and field classification are platform-specific and a wrong guess is garbage with no diagnostic. Carries the context as a second hidden parameter, after `sret` and before the declared ones, so one shared predicate computes an offset of 0, 1 or 2 (ADR-0057 §4). Calls through a procedure pointer with `func_addr` + `call_indirect` (ADR-0059 §4). Still refuses an aggregate crossing a `#foreign` boundary in either direction |
 | salsa incremental database | **Works** | Built *and* optimized MIR staged (ADR-0021 §1); invalidation is at file grain |
-| Differential harness | **Works** | Compares stdout, stderr and exit status of both engines as subprocesses |
+| Differential harness | **Works** | Compares stdout, stderr and exit status of both engines as subprocesses, and now also each corpus program against **itself** at both optimisation levels — the check that says the mid-end preserves meaning (ADR-0142 §3) |
 | LLVM back end | **Not started** | Wave W8 |
 | Language server | **Works** | `jr lsp`, twelve capabilities: diagnostics, hover, goto-definition, completion + resolve, references, documentHighlight, rename (workspace-wide, refuses rather than half-renaming), documentSymbol, workspaceSymbol, code actions, `signatureHelp`, inlay hints (ADR-0024, ADR-0028, ADR-0030, ADR-0031). Dispatches a read only after every write, because the reverse silently lost `didOpen`'s diagnostics (ADR-0032). No semantic tokens |
 | Neovim integration | **Works** | `editors/nvim/` (ADR-0025), verified against the real editor by a **166**-check script — **not** by CI, which has no Neovim |
 | VS Code integration | **Will not be built** | ADR-0036: the maintainer does not use it, and a packaging target for an unused editor rots. `jr lsp` is editor-agnostic, so any LSP client works |
 | Compilation driver / workspaces | **Partly** | `jr-driver` is still a one-line stub; the workspace *file list* exists in `jr-db::workspace` (ADR-0029): the search paths plus the root tree, walked and watched, bounded at 10 000 files |
 | Debug info | **Not started** | No DWARF at all; a native binary is not debuggable |
-| Optimisation levels | **Barely started** | No `--release` and no `opt_level`; one code path, plus exactly one build setting — `--no-bounds-check`, which is a *configuration* rather than an optimisation level (ADR-0058 §2). `BuildConfig` has one field deliberately: designing the level surface around a single boolean would mean redesigning it in W8 |
+| Optimisation levels | **Two** | `--opt-level` takes `0` or `1` (short `-O`) on `jr run` and `jr build`, defaulting to 1 = the pipeline (ADR-0142). `-O0` runs no mid-end pass and is asserted to leave every body byte-identical to what lowering produced. No `-O2` and no `--release`, both deliberately: a level with no pass behind it is a promise, and `--release` is a bundle that would re-couple the safety setting ADR-0058 unbundled. The level does not reach a *back end* yet — Cranelift's own optimisation level is untouched, and selecting a back end is the LLVM sub-wave's business |
 
 ### Things it is easy to over-read
 

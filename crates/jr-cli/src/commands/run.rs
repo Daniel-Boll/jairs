@@ -60,7 +60,7 @@ pub fn run(args: RunArgs, global: &GlobalArgs) -> Result<i32> {
     // The build setting, before any MIR query runs. ADR-0058 §2 makes it a salsa input so that
     // setting it late would still invalidate correctly — but setting it here means no query ever
     // runs under a value the user did not ask for, which is one fewer thing to reason about.
-    let config = db.set_build_config(!args.no_bounds_check);
+    let config = db.set_build_config(!args.no_bounds_check, args.opt_level.into());
 
     let text = std::fs::read_to_string(&args.path)
         .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", args.path.display()))?;

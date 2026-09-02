@@ -35,7 +35,7 @@ fn database() -> (JairsDatabase, ModuleSearchPaths) {
 /// Every test here but the two named for ADR-0058 wants the program as written, so the default
 /// is spelled once rather than at each call.
 fn checked(db: &mut JairsDatabase) -> jr_db::BuildConfig {
-    db.set_build_config(true)
+    db.set_build_config(true, jr_db::OptLevel::Standard)
 }
 
 fn add_file(db: &mut JairsDatabase, path: &str, text: &str) -> SourceFile {
@@ -461,7 +461,7 @@ fn no_bounds_check_strips_it() {
     let (mut db, search) = database();
     let file = add_file(&mut db, "main.jr", INDEXED);
     db.load_modules_transitively(file);
-    let unchecked = db.set_build_config(false);
+    let unchecked = db.set_build_config(false, jr_db::OptLevel::Standard);
     assert_eq!(
         checks_left(&db, file, search, unchecked, "read"),
         0,
@@ -479,10 +479,10 @@ fn toggling_the_setting_re_runs_the_query() {
     let file = add_file(&mut db, "main.jr", INDEXED);
     db.load_modules_transitively(file);
 
-    let checked_config = db.set_build_config(true);
+    let checked_config = db.set_build_config(true, jr_db::OptLevel::Standard);
     assert_eq!(checks_left(&db, file, search, checked_config, "read"), 1);
 
-    let unchecked = db.set_build_config(false);
+    let unchecked = db.set_build_config(false, jr_db::OptLevel::Standard);
     assert_eq!(
         checks_left(&db, file, search, unchecked, "read"),
         0,
@@ -491,7 +491,7 @@ fn toggling_the_setting_re_runs_the_query() {
 
     // And back, because an input that invalidated in one direction only would pass the assertion
     // above while being broken.
-    let rechecked = db.set_build_config(true);
+    let rechecked = db.set_build_config(true, jr_db::OptLevel::Standard);
     assert_eq!(
         checks_left(&db, file, search, rechecked, "read"),
         1,
@@ -536,7 +536,7 @@ fn comptime_keeps_its_checks_under_the_flag() {
     db.load_modules_transitively(file);
     // Set, and deliberately not passed to anything: the point is that no setting reaches
     // `file_consts`, which lowers its own MIR and never calls `optimize` (ADR-0058 §4).
-    let _unchecked = db.set_build_config(false);
+    let _unchecked = db.set_build_config(false, jr_db::OptLevel::Standard);
 
     let diagnostics = jr_db::file_diagnostics(&db, file, search);
     let messages: Vec<String> = diagnostics.iter().map(|d| d.message.clone()).collect();
@@ -544,5 +544,113 @@ fn comptime_keeps_its_checks_under_the_flag() {
         messages.iter().any(|m| m.contains("index out of bounds")),
         "an out-of-range comptime index must trap even under `--no-bounds-check`, and for that \
          reason rather than another: {messages:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0142: the optimisation level
+// ---------------------------------------------------------------------------
+
+/// A program with something for every pass to do: a leaf call to inline, a struct in a slot
+/// for forwarding, arithmetic to fold, and a branch that folding makes dead.
+const OPTIMISABLE: &str = "Point :: struct {\n    x: s64;\n    y: s64;\n}\n\nadd :: (a: s64, b: s64) -> s64 {\n    return a + b;\n}\n\nmain :: () {\n    p: Point;\n    p.x = 4;\n    p.y = 5;\n    total := add(p.x, p.y);\n    if total > 5 {\n        return;\n    }\n    total = 0;\n}\n";
+
+#[test]
+fn the_default_level_optimises() {
+    // The control, and the thing every assertion below rests on: `OptLevel::Standard` must
+    // actually rewrite this body, or "`Off` leaves it alone" would be true of both levels and
+    // would say nothing.
+    let (db, search, file, config) = program(OPTIMISABLE);
+    assert_eq!(
+        calls_left(&db, file, search, config, "main"),
+        0,
+        "the default level must inline the leaf call"
+    );
+    assert!(
+        !unchanged(&db, file, search, config, "main"),
+        "the default level must rewrite a body with work in it"
+    );
+}
+
+#[test]
+fn opt_level_off_is_an_identity() {
+    // ADR-0142 §2, and stronger than "the answer is the same": *every* body is byte-identical
+    // to what `file_mir` built. That is what makes `-O0` usable for attribution — a wrong
+    // answer that survives it is not a pass's, because no pass ran.
+    //
+    // Every body rather than `main`'s, because a pass that skipped its level check for one
+    // procedure kind — a module's, an instantiation's — would be invisible in a single-body
+    // assertion.
+    let (mut db, search) = database();
+    let file = add_file(&mut db, "main.jr", OPTIMISABLE);
+    db.load_modules_transitively(file);
+    let off = db.set_build_config(true, jr_db::OptLevel::Off);
+
+    let built = file_mir(&db, file, search).mir;
+    let unoptimized = optimized_file_mir(&db, file, search, off).mir;
+    let mut bodies = 0;
+    for (proc, body) in built.iter() {
+        assert_eq!(
+            unoptimized.get(proc),
+            Some(body),
+            "`OptLevel::Off` must pass every body through unchanged"
+        );
+        bodies += 1;
+    }
+    assert!(
+        bodies > 0,
+        "the program must have lowered bodies to compare"
+    );
+}
+
+#[test]
+fn the_level_is_a_salsa_input_that_invalidates() {
+    // The same property `toggling_the_setting_re_runs_the_query` asserts for the bounds-check
+    // field, for the second field, and for the same reason: a memo computed under the old level
+    // would make the flag look inert. Asserted in both directions, since an input that
+    // invalidates one way only passes a one-way test.
+    let (mut db, search) = database();
+    let file = add_file(&mut db, "main.jr", OPTIMISABLE);
+    db.load_modules_transitively(file);
+
+    let standard = db.set_build_config(true, jr_db::OptLevel::Standard);
+    assert_eq!(calls_left(&db, file, search, standard, "main"), 0);
+
+    let off = db.set_build_config(true, jr_db::OptLevel::Off);
+    assert_eq!(
+        calls_left(&db, file, search, off, "main"),
+        1,
+        "at `Off` the call must still be there, not a memo of the inlined body"
+    );
+
+    let back = db.set_build_config(true, jr_db::OptLevel::Standard);
+    assert_eq!(
+        calls_left(&db, file, search, back, "main"),
+        0,
+        "returning to the default level must optimise again"
+    );
+}
+
+#[test]
+fn the_level_and_the_bounds_check_are_independent() {
+    // ADR-0142 §2 refuses to make a safety setting depend on an optimisation setting, so the
+    // strip pass runs at `Off` too. Both directions of the cross-product that can be observed
+    // here: a check present at `Off` with checks on, and absent at `Off` with them off.
+    let (mut db, search) = database();
+    let file = add_file(&mut db, "main.jr", INDEXED);
+    db.load_modules_transitively(file);
+
+    let off_checked = db.set_build_config(true, jr_db::OptLevel::Off);
+    assert_eq!(
+        checks_left(&db, file, search, off_checked, "read"),
+        1,
+        "`-O0` must not strip a bounds check on its own"
+    );
+
+    let off_unchecked = db.set_build_config(false, jr_db::OptLevel::Off);
+    assert_eq!(
+        checks_left(&db, file, search, off_unchecked, "read"),
+        0,
+        "`--no-bounds-check` must be honoured at every level"
     );
 }
