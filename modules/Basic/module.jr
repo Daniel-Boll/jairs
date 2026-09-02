@@ -144,6 +144,26 @@ Type_Info_Kind :: enum {
 /// versus a comptime-built table) which is its own decision. `size` and `alignment` are enough to be
 /// useful — they are what `size_of` would give, which this language does not otherwise have — and the
 /// shape extends by adding fields, which does not break a reader that names only these four.
+/// One field of a struct, union or variant, as reflection reports it (ADR-0152 §3).
+///
+/// This is the **variable-length** member ADR-0078 §3 deferred, and what it was waiting for was a way
+/// for the compiler to emit an array and hand out a view of it: a `Type_Info` is an interned value, and
+/// a view inside an interned value used to mean interning a *pointer* — which ADR-0074 found gives the
+/// evaluator's own address. `fields` is a view over a compiler-emitted read-only table instead, so no
+/// address is ever interned.
+Type_Info_Field :: struct {
+    /// The field's source name.
+    name: string;
+    /// The field's type, as a type id — the same kind of id `Type_Info.id` carries, so a program
+    /// compares it against another type's `id`.
+    ///
+    /// An id rather than a `*Type_Info`, for the reason `element` is one: a pointer to the field's own
+    /// info would need that info built and stored somewhere, and an id needs nothing built.
+    ty: s64;
+    /// The field's byte offset from the start of the aggregate, in the target's layout.
+    offset: s64;
+}
+
 Type_Info :: struct {
     /// The type's canonical identity — its pool id, widened to `s64` (ADR-0077).
     ///
@@ -170,6 +190,12 @@ Type_Info :: struct {
     /// ask "is this a `[]s64`?". It is an id rather than a `*Type_Info` because a pointer to the element's
     /// info would need that info built and stored somewhere — deferred; an id needs nothing built.
     element: s64;
+    /// Every field of a struct, union or variant, in declaration order (ADR-0152 §3).
+    ///
+    /// Empty for every other kind — a scalar has no fields, and that is a real answer rather than a
+    /// sentinel. The view points into a **read-only table the compiler emitted**, so it is valid for the
+    /// life of the program and must not be written through.
+    fields: []Type_Info_Field;
 }
 
 /// A value whose type is carried alongside it (ADR-0076 §3).

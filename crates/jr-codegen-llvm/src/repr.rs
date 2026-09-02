@@ -161,7 +161,9 @@ impl<'ctx> Repr<'ctx> {
                 };
                 Ok(Self::Vector { ty: vector, signed })
             }
-            Item::StringType
+            // A compiler-emitted table travels as the view it materialises to (ADR-0152 §1).
+            Item::StaticArray { .. }
+            | Item::StringType
             | Item::StructType { .. }
             | Item::UnionType { .. }
             | Item::VariantType { .. }

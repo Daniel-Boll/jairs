@@ -74,6 +74,9 @@ pub struct Context<'a> {
     /// The data object holding each string constant's bytes, keyed by the pool's
     /// own `StrId` so that deduplication matches the VM's `intern_strings`.
     pub strings: &'a FxHashMap<jr_pool::StrId, DataId>,
+    /// The data object holding each compiler-emitted table's bytes (ADR-0152 §1), keyed by the table's
+    /// `PoolId` — the pool deduplicated by contents when it interned the item.
+    pub static_arrays: &'a FxHashMap<jr_pool::PoolId, DataId>,
     /// The runtime helper a trap calls, `jr_trap(message, length)`.
     pub trap_helper: FuncRef,
     /// How to render a trap's source location (ADR-0020 §3).
@@ -488,6 +491,12 @@ impl Translator<'_, '_> {
                 Ok(Some(clif))
             }
             Item::StrValue(str_id) => self.string_constant(str_id).map(Some),
+            // A compiler-emitted table materialises as a `{data, count}` view over its data object
+            // (ADR-0152 §1) — the same two-word build a string constant gets, over a different object.
+            Item::StaticArray { values, .. } => {
+                let count = values.len() as i64;
+                self.static_array_constant(id, count).map(Some)
+            }
             // A **procedure value** is the code address of its target (ADR-0059 §4). Native uses a
             // real function pointer — unlike the VM's encoded handle — because `call_indirect` takes
             // an address, and nothing observes the bits so the two engines need not agree on them.
@@ -620,6 +629,53 @@ impl Translator<'_, '_> {
                 Repr::Void => {}
             }
         }
+        Ok(base)
+    }
+
+    /// Builds a `{data, count}` view over a compiler-emitted table (ADR-0152 §1).
+    ///
+    /// Deliberately the same shape as [`Translator::string_constant`] below, because a table and a
+    /// string constant are the same problem: bytes in a read-only object, and a two-word descriptor
+    /// built where it is used. The `count` comes from the pool's element list rather than from the
+    /// bytes, so it cannot disagree with what was emitted.
+    fn static_array_constant(&mut self, id: PoolId, count: i64) -> Result<ClifValue, CodegenError> {
+        let data = *self.ctx.static_arrays.get(&id).ok_or_else(|| {
+            CodegenError::Internal("a table constant was not given a data object".to_owned())
+        })?;
+
+        let layout = jr_pool::pair_layout(self.ctx.target);
+        let (data_offset, data_layout) = jr_pool::pair_data(self.ctx.target);
+        let (count_offset, count_layout) = jr_pool::pair_count(self.ctx.target);
+
+        let size = u32::try_from(layout.size)
+            .map_err(|_| CodegenError::Internal("a view larger than a u32".to_owned()))?;
+        let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            size,
+            layout.align.trailing_zeros().try_into().unwrap_or(0),
+        ));
+
+        let pointer = pointer_type(self.ctx.target);
+        let global = self.module.declare_data_in_func(data, self.builder.func);
+        let address = self.builder.ins().symbol_value(pointer, global);
+        let base = self.builder.ins().stack_addr(pointer, slot, 0);
+
+        let count_ty = int_of_size(count_layout.size, pointer);
+        let flags = MemFlagsData::new();
+        self.builder.ins().store(
+            flags,
+            address,
+            base,
+            i32::try_from(data_offset).unwrap_or(0),
+        );
+        let count_value = self.builder.ins().iconst(count_ty, count);
+        self.builder.ins().store(
+            flags,
+            count_value,
+            base,
+            i32::try_from(count_offset).unwrap_or(0),
+        );
+        let _ = data_layout;
         Ok(base)
     }
 

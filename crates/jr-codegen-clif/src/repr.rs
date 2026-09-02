@@ -173,7 +173,9 @@ impl Repr {
                     signed,
                 })
             }
-            Item::StringType
+            // A compiler-emitted table travels as the view it materialises to (ADR-0152 §1).
+            Item::StaticArray { .. }
+            | Item::StringType
             | Item::StructType { .. }
             // A union is an aggregate: it lives in memory and is passed by copy, exactly as a
             // struct is. Its size is its largest field's, which `layout_of` already knows.

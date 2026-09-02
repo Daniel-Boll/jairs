@@ -298,6 +298,9 @@ impl Pool {
             Item::VoidValue => PoolId::VOID,
             Item::BoolValue(_) => PoolId::BOOL,
             Item::StrValue(_) => PoolId::STRING,
+            // A table's type is the view it materialises as, which is what a consumer holds
+            // (ADR-0152 §1).
+            Item::StaticArray { view, .. } => *view,
             Item::TypeValue(_) => PoolId::TYPE,
             Item::ForeignLibraryValue(_) => PoolId::FOREIGN_LIBRARY,
             // These carry their own type, because one shape can have many. An aggregate constant is here
@@ -340,6 +343,43 @@ impl Pool {
     pub fn proc_effects(&self, ty: PoolId) -> Option<EffectRow> {
         match self.item(ty) {
             Item::ProcType { effects, .. } => Some(*effects),
+            _ => None,
+        }
+    }
+
+    /// Interns a compiler-emitted read-only table, materialised as a `[]elem` view (ADR-0152 §1).
+    ///
+    /// The view type is interned here so callers cannot pass one that disagrees with `elem`.
+    pub fn static_array(&mut self, elem: PoolId, values: Vec<PoolId>) -> PoolId {
+        let view = self.view_of(elem);
+        // **`*elem` is interned too**, because reading `view[i]` needs it: a view's element place is its
+        // `data` word indexed, and both back ends look the pointer type up rather than construct one
+        // (`"a view's element pointer type was never interned"`). Every *other* way of making a view goes
+        // through a type annotation, which interns the pointer as a side effect of resolving `[]T` — this
+        // is the first constructor with no annotation behind it, so it has to do that itself.
+        let _ = self.pointer_to(elem);
+        self.intern(Item::StaticArray { view, values })
+    }
+
+    /// The element type of a `[]T` view, or `None` for anything else.
+    ///
+    /// Added for the static-table pass, which needs the element's layout to compute a stride and holds
+    /// only the table's own id (ADR-0152 §1).
+    #[must_use]
+    pub fn view_elem(&self, ty: PoolId) -> Option<PoolId> {
+        match self.item(ty) {
+            Item::ViewType { elem } => Some(*elem),
+            _ => None,
+        }
+    }
+
+    /// The element values of a static table, or `None` for anything else (ADR-0152 §1).
+    ///
+    /// How each engine finds the bytes to emit.
+    #[must_use]
+    pub fn static_array_values(&self, id: PoolId) -> Option<&[PoolId]> {
+        match self.item(id) {
+            Item::StaticArray { values, .. } => Some(values),
             _ => None,
         }
     }
@@ -729,6 +769,7 @@ impl Pool {
             | Item::BoolValue(_)
             | Item::IntValue { .. }
             | Item::FloatValue { .. }
+            | Item::StaticArray { .. }
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }

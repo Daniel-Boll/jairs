@@ -351,6 +351,9 @@ impl Decl<'_> {
             // An array constant would need the layout rules to print, which is exactly
             // the narrowness this function's doc comment claims. A vector's is the same bytes and
             // the same narrowness.
+            // A compiler-emitted table has no hover card: its contents are a read-only region
+            // a program never names (ADR-0152 §1).
+            | Item::StaticArray { .. }
             | Item::ArrayType { .. }
             | Item::VectorType { .. }
             | Item::ViewType { .. }
@@ -492,6 +495,7 @@ pub fn type_name(pool: &Pool, signatures: &FileSignatures, ty: PoolId) -> String
         | Item::BoolValue(_)
         | Item::IntValue { .. }
         | Item::FloatValue { .. }
+        | Item::StaticArray { .. }
         | Item::StrValue(_)
         | Item::TypeValue(_)
         | Item::ProcValue { .. }

@@ -62,6 +62,13 @@ pub struct ClifBackend {
     foreign: FxHashMap<ProcRef, bool>,
     /// The data object holding each string constant's bytes.
     strings: FxHashMap<StrId, DataId>,
+    /// The data object holding each compiler-emitted table's bytes (ADR-0152 §1).
+    static_arrays: FxHashMap<PoolId, DataId>,
+    /// The target layout, needed to build a table's byte image at construction (ADR-0152 §1).
+    ///
+    /// Passed in rather than defaulted, because a byte image is a *target* answer and guessing one here
+    /// would put a second layout opinion beside `jr-pool`'s — the thing ADR-0018 §2 exists to prevent.
+    target: TargetLayout,
     /// The runtime helper a trap calls.
     trap_helper: FuncId,
     /// Every library a `#foreign` declaration named, for the link line.
@@ -108,7 +115,7 @@ impl ClifBackend {
     /// # Errors
     /// [`CodegenError::Internal`] when the host has no Cranelift backend, or when the
     /// object module rejects a declaration.
-    pub fn new(pool: &Pool, name: &str) -> Result<Self, CodegenError> {
+    pub fn new(pool: &Pool, target: TargetLayout, name: &str) -> Result<Self, CodegenError> {
         let mut flags = settings::builder();
         // A trap is a call to a helper that does not return, so unwind information
         // buys nothing and costs a section in every object.
@@ -162,6 +169,7 @@ impl ClifBackend {
             ids: FxHashMap::default(),
             foreign: FxHashMap::default(),
             strings: FxHashMap::default(),
+            static_arrays: FxHashMap::default(),
             trap_helper,
             libraries: Vec::new(),
             entry: None,
@@ -169,6 +177,7 @@ impl ClifBackend {
             shadow_stack,
             shadow_depth,
             names: FxHashMap::default(),
+            target,
         };
         backend.emit_strings(pool)?;
         backend.define_trap_helper()?;
@@ -517,6 +526,77 @@ impl ClifBackend {
                 .map_err(|e| CodegenError::Internal(format!("string data: {e}")))?;
             self.strings.insert(str_id, data);
         }
+        self.emit_static_arrays(pool)?;
+        Ok(())
+    }
+
+    /// Emits every compiler-emitted table as a read-only data object (ADR-0152 §1).
+    ///
+    /// Runs after `emit_strings` because a table may contain a `string`, whose `data` word is the
+    /// address of one of those objects — and this is where the two are stitched together, using
+    /// Cranelift *relocations* rather than a numeric address, because a numeric address does not exist
+    /// until the linker has run.
+    fn emit_static_arrays(&mut self, pool: &Pool) -> Result<(), CodegenError> {
+        for index in 0..pool.len() {
+            let id = PoolId::from_usize(index);
+            if self.static_arrays.contains_key(&id) {
+                continue;
+            }
+            let Some(values) = pool.static_array_values(id).map(<[PoolId]>::to_vec) else {
+                continue;
+            };
+            let elem = pool.view_elem(pool.type_of(id)).ok_or_else(|| {
+                CodegenError::Internal("a static table with no element".to_owned())
+            })?;
+
+            // **String addresses are relocations, not numbers.** The image is built with a zero in
+            // every string's `data` word and a relocation is recorded at that offset, which the linker
+            // fills. Writing a number here would be writing a compile-time address into a run-time
+            // program — the defect ADR-0074 found, in the one engine where it would have looked like it
+            // worked until the object was loaded somewhere else.
+            let mut patches: Vec<(u64, StrId)> = Vec::new();
+            let bytes = {
+                let mut resolve = |str_id: StrId, at: u64| {
+                    patches.push((at, str_id));
+                    0
+                };
+                // The pool computes offsets and widths; see `jr_pool::static_image`.
+                jr_pool::static_image(pool, self.target, elem, &values, &mut resolve)
+                    .map_err(|reason| CodegenError::NoLayout { ty: elem, reason })?
+            };
+
+            let symbol = format!("jr$table${}", id.index());
+            let data = self
+                .module
+                .declare_data(&symbol, Linkage::Local, false, false)
+                .map_err(|e| CodegenError::Internal(format!("table data: {e}")))?;
+            let mut description = DataDescription::new();
+            let bytes = if bytes.is_empty() { vec![0u8] } else { bytes };
+            description.define(bytes.into_boxed_slice());
+            // **Every string pointer is a relocation**, applied at the offset the pool reported. Writing
+            // a number instead left a zero in the word, and reading the name through it gave 139 where
+            // the VM gave 121 — caught by this wave's own corpus file, which is what the differential is
+            // for.
+            for (at, str_id) in patches {
+                let target_data = *self.strings.get(&str_id).ok_or_else(|| {
+                    CodegenError::Internal("a table names a string with no data object".to_owned())
+                })?;
+                let global = self
+                    .module
+                    .declare_data_in_data(target_data, &mut description);
+                description.write_data_addr(
+                    u32::try_from(at).map_err(|_| {
+                        CodegenError::Internal("a table larger than a u32".to_owned())
+                    })?,
+                    global,
+                    0,
+                );
+            }
+            self.module
+                .define_data(data, &description)
+                .map_err(|e| CodegenError::Internal(format!("table data: {e}")))?;
+            self.static_arrays.insert(id, data);
+        }
         Ok(())
     }
 }
@@ -650,6 +730,7 @@ impl Backend for ClifBackend {
             target: layout,
             funcs: &funcs,
             strings: &self.strings,
+            static_arrays: &self.static_arrays,
             trap_helper,
             locations,
             shadow: (self.shadow_stack, self.shadow_depth),

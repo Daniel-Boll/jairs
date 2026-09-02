@@ -722,6 +722,9 @@ impl Compiler<'_> {
             // A view is two words, so it reads as an aggregate — the same classification
             // `StringType` gets, and for the same reason (ADR-0044 §1).
             Item::StringType
+            // A compiler-emitted table is held as the view it materialises to — two words, so an
+            // aggregate, exactly as a `string` constant is (ADR-0152 §1).
+            | Item::StaticArray { .. }
             | Item::ArrayType { .. }
             // **A vector reads as an aggregate**, which is the whole shape of ADR-0148 §4: the VM's
             // `Value` is one scalar, so sixteen bytes live in memory and an elementwise operation is

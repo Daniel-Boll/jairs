@@ -558,6 +558,39 @@ pub enum Item {
         /// The value, as raw IEEE-754 bits. A `float32`'s are its low 32.
         bits: u64,
     },
+    /// A compiler-emitted **read-only array**, materialised as a `[]elem` view (ADR-0152 §1).
+    ///
+    /// This is the static-data mechanism W6 has owed since ADR-0078 deferred `Type_Info`'s
+    /// variable-length field list, and it is deliberately shaped exactly like [`Item::StrValue`]: the
+    /// pool interns the *contents*, each engine emits the bytes into its own read-only region once per
+    /// program, and the **descriptor is built at materialisation** rather than interned.
+    ///
+    /// # Why the pointer must not be interned
+    ///
+    /// ADR-0074 found that a pointer or view inside a compile-time aggregate interned the *evaluator's
+    /// own address* as an integer — giving 48 in one engine and a segfault in the other, with no
+    /// diagnostic — and the fix was to refuse it. So an address can never be a pool value: the pool is
+    /// target-independent and an address is the most target-dependent thing there is. `StrValue` already
+    /// solves this by interning a `StrId` and letting the back end make the pair; this is that solution
+    /// one type wider.
+    ///
+    /// # Why a view rather than an address
+    ///
+    /// A `[]T` is what every consumer wants — `fields`, and W6's declaration table — and handing out a
+    /// bare `*T` would make the count a second thing to keep in step. Producing the descriptor also
+    /// means the count comes from `values.len()` at materialisation, so it cannot disagree with the
+    /// bytes.
+    StaticArray {
+        /// The `[]T` view type this materialises as.
+        ///
+        /// The *view* rather than the element, because that is what [`crate::Pool::type_of`] must answer and
+        /// that method takes `&self` — it cannot intern one on demand. Storing the view also means the
+        /// element type is recoverable from it, so nothing is duplicated.
+        view: PoolId,
+        /// The element *values*, interned. Part of the key, so two identical tables share one id and
+        /// one emission — the same deduplication `StrValue` gets from interning its text.
+        values: Vec<PoolId>,
+    },
     /// A string compile-time value.
     StrValue(
         /// The interned, already-escape-decoded contents.
@@ -656,6 +689,7 @@ impl Item {
             | Self::BoolValue(_)
             | Self::IntValue { .. }
             | Self::FloatValue { .. }
+            | Self::StaticArray { .. }
             | Self::StrValue(_)
             | Self::TypeValue(_)
             | Self::ProcValue { .. }

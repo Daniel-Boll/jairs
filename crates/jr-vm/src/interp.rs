@@ -169,6 +169,11 @@ pub struct Vm<'a> {
     depth: usize,
     /// Where each interned string's bytes live. Complete before execution starts.
     strings: FxHashMap<StrId, Address>,
+    /// Where each compiler-emitted table's bytes live in this VM's memory (ADR-0152 §1).
+    ///
+    /// Keyed on the table's `PoolId`, not on its contents: the pool deduplicated by contents when it
+    /// interned the item, so two identical tables are one id and get one emission.
+    static_arrays: FxHashMap<PoolId, Address>,
     /// Bytes a foreign write produced, when the bridge is capturing rather than
     /// writing through. Empty under [`Mode::Runtime`].
     captured: Vec<u8>,
@@ -207,6 +212,7 @@ impl<'a> Vm<'a> {
             mode,
             depth: 0,
             strings: FxHashMap::default(),
+            static_arrays: FxHashMap::default(),
             captured: Vec::new(),
             at: None,
             frames: Vec::new(),
@@ -233,7 +239,84 @@ impl<'a> Vm<'a> {
                 self.strings.insert(str_id, address);
             }
         }
+        self.emit_static_arrays()?;
         Ok(())
+    }
+
+    /// Writes every compiler-emitted table into this VM's memory, once (ADR-0152 §1).
+    ///
+    /// The same shape as the string pass above and run in the same place, because the two solve the
+    /// same problem: a *pointer* can never be a pool value (ADR-0074 found that interning one gave the
+    /// evaluator's own address), so the pool holds contents and each engine supplies an address.
+    ///
+    /// **The byte image comes from `jr_pool::static_image`**, not from a walk written here. Three
+    /// engines emit these bytes, and a byte image is offsets plus widths — the computation ADR-0018 §2
+    /// centralised in the pool so the VM and both back ends cannot disagree. This function supplies
+    /// only the one thing the pool must never hold: the addresses of its own interned strings.
+    ///
+    /// Keyed on the table's `PoolId`, because the pool already deduplicated by contents when it
+    /// interned the item — two identical tables *are* one id, so one emission.
+    fn emit_static_arrays(&mut self) -> Result<(), VmError> {
+        for index in 0..self.pool.len() {
+            let id = PoolId::from_usize(index);
+            if self.static_arrays.contains_key(&id) {
+                continue;
+            }
+            let Some(values) = self.pool.static_array_values(id).map(<[PoolId]>::to_vec) else {
+                continue;
+            };
+            let elem = self
+                .pool
+                .view_elem(self.pool.type_of(id))
+                .ok_or_else(|| VmError::internal("a static table with no element type"))?;
+            let target = self.program.target;
+            let layout = jr_pool::layout_of(self.pool, target, elem)
+                .map_err(|e| VmError::internal(format!("a static table's element: {e}")))?;
+
+            // Every string the table mentions is already in `self.strings`: the string pass above runs
+            // first and covers every `StrValue` in the pool, including the ones nested inside these
+            // tables. A missing one would be an ordering bug, so it is an error rather than a zero.
+            let strings = self.strings.clone();
+            let mut missing = None;
+            let bytes = {
+                // The offset is for a *native* engine, which must record a relocation rather than
+                // answer with a number. The VM has real addresses, so it ignores it.
+                let mut resolve = |str_id: jr_pool::StrId, _at: u64| match strings.get(&str_id) {
+                    Some(address) => *address,
+                    None => {
+                        missing = Some(str_id);
+                        0
+                    }
+                };
+                jr_pool::static_image(self.pool, target, elem, &values, &mut resolve)
+                    .map_err(|e| VmError::internal(format!("a static table's image: {e}")))?
+            };
+            if missing.is_some() {
+                return Err(VmError::internal(
+                    "a static table names a string that was not interned",
+                ));
+            }
+            let address = self.memory.allocate_bytes(&bytes, layout.align)?;
+            self.static_arrays.insert(id, address);
+        }
+        Ok(())
+    }
+
+    /// The `{data, count}` view of a compiler-emitted table (ADR-0152 §1).
+    fn static_array_value(&mut self, id: PoolId) -> Result<Value, VmError> {
+        let address = *self
+            .static_arrays
+            .get(&id)
+            .ok_or_else(|| VmError::internal("a static table was not emitted"))?;
+        let count = self.pool.static_array_values(id).map_or(0, <[PoolId]>::len) as u64;
+        let target = self.program.target;
+        let layout = string_layout(target);
+        let (data_offset, data) = string_data(target);
+        let (count_offset, count_layout) = string_count(target);
+        let mut bytes = vec![0u8; usize::try_from(layout.size).unwrap_or(16)];
+        write_le(&mut bytes, data_offset, data.size, address);
+        write_le(&mut bytes, count_offset, count_layout.size, count);
+        Ok(Value::Aggregate(bytes))
     }
 
     /// Bytes written to standard output by a captured foreign call.
@@ -647,6 +730,7 @@ impl<'a> Vm<'a> {
             // from the type at every use.
             Item::FloatValue { ty: _, bits } => Ok(Value::Scalar(bits)),
             Item::StrValue(str_id) => self.string_value(str_id),
+            Item::StaticArray { .. } => self.static_array_value(id),
             // An aggregate constant is turned into bytes **here**, per target (ADR-0074 §1): the pool
             // interned the element *values*, deliberately not a byte image, because the pool is
             // target-independent and an image is not. This is the one place the VM turns the one into the

@@ -397,6 +397,11 @@ fn layout_at_depth(
 
         Item::StringType => Ok(string_layout(target)),
 
+        // A compiler-emitted table materialises as a `[]T` view (ADR-0152 §1), so its layout is a
+        // view's — two words. Its *contents* live in a read-only region and are not what a consumer
+        // holds, exactly as a `string` constant's bytes are not.
+        Item::StaticArray { .. } => Ok(pair_layout(target)),
+
         // A procedure used as a value is a code pointer (ADR-0012), so it is
         // pointer-shaped. `Callee::Indirect` is what consumes this.
         Item::PointerType(_) | Item::ProcType { .. } => Ok(Layout {
@@ -846,6 +851,164 @@ fn sequential_field_offset(
         end = end.max(at + field_layout.size);
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Static byte images (ADR-0152 §2)
+// ---------------------------------------------------------------------------
+
+/// The byte image of a compiler-emitted table, in `target`'s layout (ADR-0152 §2).
+///
+/// # Why this lives in the pool
+///
+/// Three engines emit these bytes, and a byte image is *offsets plus widths* — which is exactly the
+/// computation ADR-0018 §2 centralised here so that the VM and both back ends cannot disagree about a
+/// layout. Three implementations of "write each element at its own offset" would be three chances to
+/// produce a differently-shaped table, and no verifier would catch it: every engine would be
+/// internally consistent and one would read the wrong field.
+///
+/// # Why the string resolver is a callback, and why it is told *where*
+///
+/// A `string` element is `{data, count}`, and `data` is an **address** — the most target-dependent
+/// thing there is, and the one thing the pool must never hold. ADR-0074 found that interning a pointer
+/// interned the *evaluator's own* address, giving 48 in one engine and a segfault in the other. So the
+/// pool computes every offset and width, and the engine supplies its own addresses through
+/// `string_address`. That split is the whole reason this can be shared at all.
+///
+/// The callback receives the **byte offset of the `data` word** as well as the string, because a native
+/// engine cannot answer with a number at all: there is no address until the linker has run, so it needs
+/// to record a *relocation* at that offset instead. The VM, which does have real addresses, ignores the
+/// offset and returns one. Both were tried the other way round first and the native table's pointer came
+/// out as zero — which read a byte of whatever followed and gave 139 where the VM gave 121.
+///
+/// # Errors
+///
+/// [`LayoutError`] for an element type with no layout, and for an element *value* the image cannot
+/// contain — a bare pointer, which would be the same interned-address defect one level down.
+pub fn static_image(
+    pool: &Pool,
+    target: TargetLayout,
+    elem: PoolId,
+    values: &[PoolId],
+    string_address: &mut dyn FnMut(crate::StrId, u64) -> u64,
+) -> Result<Vec<u8>, LayoutError> {
+    let layout = layout_at_depth(pool, target, elem, 0)?;
+    let stride = align_up(layout.size, layout.align);
+    let total = usize::try_from(stride * values.len() as u64).unwrap_or(0);
+    let mut bytes = vec![0u8; total];
+    for (index, value) in values.iter().enumerate() {
+        let at = usize::try_from(stride * index as u64).unwrap_or(0);
+        write_value_image(pool, target, elem, *value, &mut bytes, at, string_address)?;
+    }
+    Ok(bytes)
+}
+
+/// Writes one interned value's bytes at `at`, recursing through aggregates (ADR-0152 §2).
+fn write_value_image(
+    pool: &Pool,
+    target: TargetLayout,
+    ty: PoolId,
+    value: PoolId,
+    bytes: &mut [u8],
+    at: usize,
+    string_address: &mut dyn FnMut(crate::StrId, u64) -> u64,
+) -> Result<(), LayoutError> {
+    let layout = layout_at_depth(pool, target, ty, 0)?;
+    let width = usize::try_from(layout.size).unwrap_or(0);
+    match pool.item(value) {
+        Item::IntValue { bits, .. } => {
+            put_le(bytes, at, width, *bits);
+            Ok(())
+        }
+        Item::BoolValue(flag) => {
+            put_le(bytes, at, width.max(1), u64::from(*flag));
+            Ok(())
+        }
+        Item::FloatValue { bits, .. } => {
+            put_le(bytes, at, width, *bits);
+            Ok(())
+        }
+        // A `string`'s two words: the count is the pool's, the address is the engine's.
+        Item::StrValue(str_id) => {
+            let (data_offset_only, _) = string_data(target);
+            let address = string_address(*str_id, at as u64 + data_offset_only);
+            let count = pool.resolve_str(*str_id).len() as u64;
+            let (data_offset, data_layout) = string_data(target);
+            let (count_offset, count_layout) = string_count(target);
+            put_le(
+                bytes,
+                at + usize::try_from(data_offset).unwrap_or(0),
+                usize::try_from(data_layout.size).unwrap_or(8),
+                address,
+            );
+            put_le(
+                bytes,
+                at + usize::try_from(count_offset).unwrap_or(0),
+                usize::try_from(count_layout.size).unwrap_or(8),
+                count,
+            );
+            Ok(())
+        }
+        // A nested aggregate: each element at its own offset, from the same fold every engine reads.
+        Item::AggregateValue { elements, .. } => {
+            let field_types = aggregate_field_types(pool, ty)?;
+            let mut cursor = 0u64;
+            for (index, element) in elements.iter().enumerate() {
+                let Some(field_ty) = field_types.get(index).copied() else {
+                    break;
+                };
+                let field_layout = layout_at_depth(pool, target, field_ty, 0)?;
+                let offset = match field_offset(pool, target, ty, u32::try_from(index).unwrap_or(0))
+                {
+                    Ok((offset, _)) => offset,
+                    // An element type with no per-field offset — an array — is packed by stride,
+                    // which is what the sequential fold would answer anyway.
+                    Err(_) => align_up(cursor, field_layout.align),
+                };
+                write_value_image(
+                    pool,
+                    target,
+                    field_ty,
+                    *element,
+                    bytes,
+                    at + usize::try_from(offset).unwrap_or(0),
+                    string_address,
+                )?;
+                cursor = offset + field_layout.size;
+            }
+            Ok(())
+        }
+        // Zero bytes, and correct: a `void` element occupies nothing.
+        Item::VoidValue => Ok(()),
+        // Anything else — a bare pointer value most importantly — is refused rather than written as a
+        // number, because that is the interned-address defect ADR-0074 found, one level down.
+        _ => Err(LayoutError::Poison),
+    }
+}
+
+/// The field types of an aggregate, in order, for the image walk above.
+fn aggregate_field_types(pool: &Pool, ty: PoolId) -> Result<Vec<PoolId>, LayoutError> {
+    match pool.item(ty) {
+        Item::StructType { decl, .. } => Ok(pool
+            .fields_of(ty)
+            .or_else(|| pool.struct_fields(*decl))
+            .map(|fields| fields.iter().map(|f| f.ty).collect())
+            .unwrap_or_default()),
+        Item::ArrayType { elem, len } => Ok(vec![*elem; usize::try_from(*len).unwrap_or(0)]),
+        Item::ViewType { .. } | Item::StringType => Ok(Vec::new()),
+        _ => Err(LayoutError::Poison),
+    }
+}
+
+/// Writes `value`'s low `width` bytes little-endian at `at`, ignoring an out-of-range write.
+///
+/// Little-endian unconditionally: both supported targets are, and the image *is* the target's memory.
+fn put_le(bytes: &mut [u8], at: usize, width: usize, value: u64) {
+    let take = width.min(8);
+    if at + take > bytes.len() {
+        return;
+    }
+    bytes[at..at + take].copy_from_slice(&value.to_le_bytes()[..take]);
 }
 
 #[cfg(test)]
