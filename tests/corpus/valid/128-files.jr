@@ -1,0 +1,241 @@
+// ADR-0157: `File` and `File_Utilities` — descriptors, paths, and whole-file reads.
+//
+// PLAN §8.3 item 5, the modules the error model was holding up: every routine here can fail for a reason the
+// caller has to handle, so before `#must` (ADR-0151) there was no way to say that ignoring the failure is an
+// error rather than a style choice.
+//
+// **This file writes to `/tmp` and cleans up after itself.** That is unusual for a corpus program and it is
+// the point: a file module whose test never touched a filesystem would be checking its arithmetic, not its
+// behaviour. Every path is under `/tmp` with a name no other test uses, and the last thing each group does is
+// `remove` — so a second run sees the same state as the first, which is what makes this safe in a harness
+// that runs the corpus in both engines and at two optimisation levels.
+//
+// Twenty-four independent bits, because a sum lets one failure hide inside another's success:
+//
+//   1         `open_write` then `write_string`                              File
+//   2         `size` on an open file, by seeking rather than `stat`
+//   4         `read_all` loops to end of file
+//   8         the bytes are the bytes that were written, in order
+//   16        `open_append` keeps the existing contents
+//   32        `seek` back to the start
+//   64        `read` again after seeking
+//   128       `READ_WRITE` on an existing file does not truncate
+//   256       `exists` before `remove`, and not after
+//   512       a missing file fails to open, and `close` of it is safe
+//   1024      `join` inserts exactly one separator                         File_Utilities
+//   2048      `join` collapses several
+//   4096      an absolute right-hand side wins
+//   8192      `join` at the root
+//   16384     `base_name`
+//   32768     `base_name` of a path ending in a separator is empty
+//   65536     `directory_name`
+//   131072    `""` for a bare name, `"/"` at the root
+//   262144    `extension` takes the **last** dot
+//   524288    a leading dot is not an extension, nor is a dot in a directory name
+//   1048576   `stem` and `extension` partition the base name
+//   2097152   `normalise` resolves `.`, `..` and doubled separators
+//   4194304   a `..` escaping a relative path is kept; `/..` is `/`; `a/..` is `.`
+//   8388608   `write_entire_file`, `read_entire_file`, `append_entire_file`
+//
+// All twenty-four is 16777215, and the exit status is that modulo 251 — 16777215 = 66841 * 251 + 124, so
+// **124**. The modulus is there because an exit status is a byte; the printed number is the real evidence.
+#import "Basic";
+#import "File";
+#import "File_Utilities";
+#import "String";
+
+/// The allocate half of an allocator (`valid/090`'s shape): a `#foreign` procedure cannot fill a
+/// procedure-pointer field directly (E0256, ADR-0059 §3).
+libc_alloc :: (n: s64) -> *u8 {
+    return malloc(n);
+}
+
+/// The release half.
+libc_free :: (p: *u8) {
+    free(p);
+}
+
+/// `bit` when `got` equals `want`, and nothing otherwise. `got` is **borrowed** — a slice of its argument —
+/// so it is not freed.
+same :: (got: string, want: string, bit: s64) -> s64 {
+    if equal(got, want) {
+        return bit;
+    }
+    return 0;
+}
+
+/// `same`, for a `got` the caller **owns**: freed here, so the check site stays one line.
+///
+/// Two helpers rather than one because the ownership genuinely differs — `base_name` borrows and `join`
+/// allocates — and ADR-0157 §4's whole argument is that the call site should say which.
+owned :: (got: string, want: string, bit: s64) -> s64 {
+    r := same(got, want, bit);
+    free_string(got);
+    return r;
+}
+
+main :: () {
+    context.allocator = libc_alloc;
+    context.allocator_free = libc_free;
+    total := 0;
+
+    // --- File ------------------------------------------------------------------------------------------
+    w, w_ok := open_write("/tmp/jr-corpus-file.txt");
+    if !w_ok {
+        exit(1);
+    }
+    if write_string(*w, "one") {
+        total = total + 1;
+    }
+    _ = close(*w);
+
+    a, a_ok := open_append("/tmp/jr-corpus-file.txt");
+    if !a_ok {
+        exit(2);
+    }
+    // Appending must not truncate — the bug a create-and-truncate `open_append` would have, invisible until
+    // somebody's log file lost its history.
+    if write_string(*a, "two") {
+        total = total + 16;
+    }
+    _ = close(*a);
+
+    r, r_ok := open_read("/tmp/jr-corpus-file.txt");
+    if !r_ok {
+        exit(3);
+    }
+    n, n_ok := size(*r);
+    if n_ok {
+        if n == 6 {
+            total = total + 2;
+        }
+    }
+    buffer: [32]u8;
+    got, got_ok := read_all(*r, view(*buffer[0], 32));
+    if got_ok {
+        if got == 6 {
+            total = total + 4;
+        }
+    }
+    // `onetwo` — byte 3 is `t`, which is only true if the append landed after the write rather than over it.
+    if cast(s64, buffer[3]) == 116 {
+        total = total + 8;
+    }
+    _, seek_ok := seek(*r, 0, SEEK_SET);
+    if seek_ok {
+        total = total + 32;
+    }
+    again, again_ok := read(*r, view(*buffer[0], 3));
+    if again_ok {
+        if again == 3 {
+            total = total + 64;
+        }
+    }
+    _ = close(*r);
+
+    // `READ_WRITE` with no `CREATE` must leave the contents alone. This is the case the `creat` workaround
+    // could plausibly break, because `creat` truncates and the create path has to avoid reaching it.
+    rw, rw_ok := open("/tmp/jr-corpus-file.txt", READ_WRITE);
+    if rw_ok {
+        kept, kept_ok := size(*rw);
+        if kept_ok {
+            if kept == 6 {
+                total = total + 128;
+            }
+        }
+        _ = close(*rw);
+    }
+
+    if exists("/tmp/jr-corpus-file.txt") {
+        if remove("/tmp/jr-corpus-file.txt") {
+            if !exists("/tmp/jr-corpus-file.txt") {
+                total = total + 256;
+            }
+        }
+    }
+
+    // A missing file fails, and closing the failed handle is safe — which is what lets a caller close on
+    // every path without tracking whether they got one.
+    missing, missing_ok := open_read("/tmp/jr-corpus-absent-file");
+    if !missing_ok {
+        if close(*missing) == 0 {
+            total = total + 512;
+        }
+    }
+
+    // --- Paths -----------------------------------------------------------------------------------------
+    total = total + owned(join("a", "b"), "a/b", 1024);
+    total = total + owned(join("a//", "b"), "a/b", 2048);
+    total = total + owned(join("a/", "/b"), "/b", 4096);
+    total = total + owned(join("/", "a"), "/a", 8192);
+
+    total = total + same(base_name("/a/b/c.txt"), "c.txt", 16384);
+    // **Named locals rather than `base_name(…).count`**, because a field of a call's *result* does not lower
+    // today — "a memory reference has no place", E0245 (ADR-0156 §5, on PLAN's known-defects list). The
+    // workaround is one line and this is the file that uses it most, so it is named once here.
+    trailing := base_name("/a/b/");
+    if trailing.count == 0 {
+        total = total + 32768;
+    }
+    total = total + same(directory_name("/a/b/c.txt"), "/a/b", 65536);
+    bare := directory_name("c.txt");
+    if bare.count == 0 {
+        if equal(directory_name("/a"), "/") {
+            total = total + 131072;
+        }
+    }
+    total = total + same(extension("a/b.tar.gz"), "gz", 262144);
+    dotfile := extension(".bashrc");
+    dotted_dir := extension("a.b/c");
+    if dotfile.count == 0 {
+        if dotted_dir.count == 0 {
+            total = total + 524288;
+        }
+    }
+    total = total + same(stem("a/b.tar.gz"), "b.tar", 1048576);
+
+    total = total + owned(normalise("/a/./b/../c//d"), "/a/c/d", 2097152);
+    // A `..` that escapes a *relative* path is kept, because `../b` means something; `/..` is `/`, because
+    // the root has no parent; and `a/..` is `.`, not the empty string nobody can open.
+    if equal_owned(normalise("a/../../b"), "../b") {
+        if equal_owned(normalise("/.."), "/") {
+            if equal_owned(normalise("a/.."), ".") {
+                total = total + 4194304;
+            }
+        }
+    }
+
+    // --- Whole files -----------------------------------------------------------------------------------
+    if write_entire_file("/tmp/jr-corpus-whole.txt", "abc") {
+        contents, read_ok := read_entire_file("/tmp/jr-corpus-whole.txt");
+        if read_ok {
+            if equal(contents, "abc") {
+                if append_entire_file("/tmp/jr-corpus-whole.txt", "de") {
+                    grown, grown_ok := read_entire_file("/tmp/jr-corpus-whole.txt");
+                    if grown_ok {
+                        if equal(grown, "abcde") {
+                            total = total + 8388608;
+                        }
+                    }
+                    free_string(grown);
+                }
+            }
+        }
+        free_string(contents);
+        _ = remove("/tmp/jr-corpus-whole.txt");
+    }
+
+    print_int(total);
+    exit(total % 251);
+}
+
+/// Compares an owned string and frees it.
+///
+/// A third helper because the nested `if`s above want a `bool` rather than a bit, and freeing inside the
+/// condition is the only way to avoid leaking in a chain this deep — this language has no `defer` inside an
+/// expression, and a temporary per level would be four more names.
+equal_owned :: (got: string, want: string) -> bool {
+    r := equal(got, want);
+    free_string(got);
+    return r;
+}

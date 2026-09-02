@@ -1,0 +1,419 @@
+//! The File module: opening, reading, writing and closing a file, with every failure receivable.
+//!
+//! Written in Jairs. PLAN §8.3 item 5, and the module the error model was holding up: every routine here can
+//! fail for a reason the caller has to handle, so before `#must` (ADR-0151) there was no way to say that
+//! ignoring the failure is an error rather than a style choice.
+//!
+//! # Why descriptors rather than a `File` struct with an allocator
+//!
+//! A handle here is a **plain `s64` descriptor** in a one-field struct, not a buffered stream. `read` and
+//! `write` are the syscalls, byte counts and all, and a caller who wants buffering builds it on top.
+//!
+//! The alternative — a `File` owning a buffer — has to answer where the buffer comes from, when it flushes,
+//! and what happens to unflushed bytes when the handle is dropped. There are no destructors (ADR-0008), so
+//! the answer to the last one would be "they are lost unless you remember to flush", which is a worse
+//! bargain than "you called `write` and it wrote". Buffering is a real feature and it belongs to a module
+//! that says so in its name.
+//!
+//! # Why every routine is `#must` except `close`
+//!
+//! `open`, `read`, `write` and `seek` return a value beside a success flag, and the flag is `#must`: a
+//! caller who ignores it reads zero bytes from a file that failed to open and gets a silently empty result,
+//! which is exactly the bug the marker exists to prevent. `_ = f();` is the escape hatch when a caller
+//! genuinely does not care, and writing it is the point.
+//!
+//! `close` is **not** `#must`, and that asymmetry is deliberate rather than an oversight. A failing `close`
+//! means buffered data was lost — but this module does not buffer, so there is nothing to lose; and a caller
+//! who checks it has no recovery available, because the descriptor is gone either way. It returns the status
+//! for a caller who wants to log it, and does not insist.
+//!
+//! # What is absent, and why
+//!
+//! **No `errno`.** A failure says *that* it failed, not *why*. Reading `errno` needs a thread-local, which
+//! this language has no concept of (`Thread` is W11), and `__error` / `__errno_location` differ by platform
+//! in both name and shape. A wrong `errno` is worse than none — it names a cause that is not the cause —
+//! and the flag is enough to decide whether to carry on.
+//!
+//! **No paths as a type.** A path is a `string`, and `File_Utilities` has the joining and splitting. This
+//! module's business is the descriptor.
+//!
+//! **No comptime file reading.** `#foreign` is refused at compile time (ADR-0006), so a `#run` cannot read a
+//! file — which is a real limitation for a build script and is the compiler's decision, not this module's.
+
+#import "Basic";
+
+/// An open file.
+///
+/// A struct rather than a bare `s64` so that a descriptor cannot be passed where a count is wanted: the two
+/// are both integers and the compiler will not confuse them once one has a name.
+File :: struct {
+    /// The OS descriptor. Negative when the file is not open.
+    fd: s64;
+}
+
+/// Open for reading only.
+READ :: 0;
+
+/// Open for writing only.
+WRITE :: 1;
+
+/// Open for reading and writing.
+READ_WRITE :: 2;
+
+/// Create the file if it does not exist. Combine with `WRITE` or `READ_WRITE`.
+///
+/// The numeric values are the BSD/macOS ones, which Linux shares for these four: `O_CREAT` is 0x200 on macOS
+/// and 0x40 on Linux, so **this constant is not portable** and says so where ADR-0155 §1 said the same about
+/// `CLOCK_MONOTONIC`. The three access modes above *are* portable (0, 1, 2 everywhere).
+CREATE :: 512;
+
+/// Truncate the file to nothing on open. Combine with `WRITE` or `READ_WRITE`.
+///
+/// 0x400 on macOS, 0x200 on Linux — the same portability gap as `CREATE`.
+TRUNCATE :: 1024;
+
+/// Append every write to the end. Combine with `WRITE` or `READ_WRITE`.
+///
+/// 0x8 on macOS, 0x400 on Linux — the same gap again.
+APPEND :: 8;
+
+/// Default permissions for a created file: `0644`, owner-writable and world-readable.
+///
+/// Octal 644 is decimal 420. Written as decimal because this language has no octal literal, which is exactly
+/// the kind of detail that makes a hand-computed permission wrong — so it is a named constant computed once.
+CREATE_MODE :: 420;
+
+/// Seek from the start of the file.
+SEEK_SET :: 0;
+
+/// Seek from the current position.
+SEEK_CURRENT :: 1;
+
+/// Seek from the end of the file.
+SEEK_END :: 2;
+
+/// libc `open(2)`, called with **only its fixed arguments**.
+///
+/// C declares `open(const char *, int, ...)` and reads a third `mode_t` only when `O_CREAT` is set. Calling a
+/// variadic function with just its fixed arguments is well-defined on every ABI, so this binding is correct
+/// — and it is the only correct one available, because **a fixed-arity declaration of a variadic function
+/// passes the extra argument in the wrong place**. That was probed, not assumed: declaring
+/// `open(path, flags, mode)` and calling it created a file with permissions `---------x` on arm64 macOS,
+/// where variadic arguments go on the stack while a fixed third argument goes in a register. No diagnostic,
+/// a plausible-looking file, and unreadable — the silent-wrong-answer shape this project refuses.
+///
+/// So creation goes through `creat_raw` instead, which is genuinely fixed-arity. PLAN §8.5 lists C-variadic
+/// foreign calls as unbuilt; this module is the first to *need* them and the workaround is recorded here
+/// rather than in a comment nobody reads (ADR-0157 §2).
+open_raw :: (path: *u8, flags: s64) -> s64 #foreign libc "open";
+
+/// libc `creat(2)`: `open(path, O_WRONLY | O_CREAT | O_TRUNC, mode)`, and **not variadic**.
+///
+/// The one portable way to create a file with a known mode without a variadic call. Its fixed shape is the
+/// whole reason it is used, which is why it is here rather than `open` with three arguments.
+creat_raw :: (path: *u8, mode: s64) -> s64 #foreign libc "creat";
+
+/// libc `close(2)`.
+close_raw :: (fd: s64) -> s64 #foreign libc "close";
+
+/// libc `read(2)`.
+read_raw :: (fd: s64, buf: *u8, count: s64) -> s64 #foreign libc "read";
+
+/// libc `write(2)`.
+write_raw :: (fd: s64, buf: *u8, count: s64) -> s64 #foreign libc "write";
+
+/// libc `lseek(2)`.
+lseek_raw :: (fd: s64, offset: s64, whence: s64) -> s64 #foreign libc "lseek";
+
+/// libc `unlink(2)`.
+unlink_raw :: (path: *u8) -> s64 #foreign libc "unlink";
+
+/// Opens `path` with `flags`, creating it with `CREATE_MODE` when `CREATE` is set.
+///
+/// `#must`: a caller who ignores the flag holds a closed file and every later call fails quietly.
+///
+/// The path is copied into a NUL-terminated scratch buffer from **temporary storage**, because a Jairs
+/// `string` is data and a count with no terminator, and `open` reads to a NUL. The copy is dead the moment
+/// the call returns, which is exactly what an arena models (ADR-0065) — the same reason `JSON`'s `strtod`
+/// scratch comes from there (ADR-0156 §2).
+open :: (path: string, flags: s64) -> (File, bool) #must {
+    f: File;
+    f.fd = -1;
+    c_path, ok := nul_terminated(path);
+    if !ok {
+        return f, false;
+    }
+    // **Creation is separated out**, because the mode cannot be passed to `open` — see `open_raw`. The
+    // three shapes, in the order they are cheapest:
+    //
+    //   * no `CREATE`            one `open`, nothing to arrange;
+    //   * `CREATE` + `TRUNCATE`  one `creat`, which *is* write+create+truncate — then a reopen only when
+    //                            the caller wanted read access too, since `creat` gives write-only;
+    //   * `CREATE` alone         try `open` first, and only `creat` when the file is missing, so an
+    //                            existing file's contents survive — which is what `APPEND` means.
+    if flags % (CREATE * 2) < CREATE {
+        fd := open_raw(c_path, flags);
+        if fd < 0 {
+            return f, false;
+        }
+        f.fd = fd;
+        return f, true;
+    }
+    without_create := flags - CREATE;
+    if without_create % (TRUNCATE * 2) >= TRUNCATE {
+        made := creat_raw(c_path, CREATE_MODE);
+        if made < 0 {
+            return f, false;
+        }
+        // `creat` is write-only. When the caller asked for read access as well, close it and reopen — the
+        // file exists now, so no create flag is needed and no mode has to travel.
+        if without_create - TRUNCATE == WRITE {
+            f.fd = made;
+            return f, true;
+        }
+        _ = close_raw(made);
+        fd := open_raw(c_path, without_create);
+        if fd < 0 {
+            return f, false;
+        }
+        f.fd = fd;
+        return f, true;
+    }
+    fd := open_raw(c_path, without_create);
+    if fd < 0 {
+        made := creat_raw(c_path, CREATE_MODE);
+        if made < 0 {
+            return f, false;
+        }
+        _ = close_raw(made);
+        fd = open_raw(c_path, without_create);
+        if fd < 0 {
+            return f, false;
+        }
+    }
+    f.fd = fd;
+    return f, true;
+}
+
+/// Opens `path` for reading.
+///
+/// The common case, named so a caller does not have to remember that `READ` is 0.
+open_read :: (path: string) -> (File, bool) #must {
+    return open(path, READ);
+}
+
+/// Opens `path` for writing, creating it and truncating it.
+///
+/// Truncating, because "open for writing" almost always means "replace the contents", and a caller who wants
+/// to keep them wants `open_append` or an explicit `open` with their own flags. Making the common case
+/// explicit here is better than making every caller compose three constants correctly.
+open_write :: (path: string) -> (File, bool) #must {
+    return open(path, WRITE + CREATE + TRUNCATE);
+}
+
+/// Opens `path` for appending, creating it if it does not exist.
+open_append :: (path: string) -> (File, bool) #must {
+    return open(path, WRITE + CREATE + APPEND);
+}
+
+/// Closes `f` and marks it closed. Returns the OS status.
+///
+/// Not `#must` — see the module docs. Safe on an already-closed file, so a caller can close on every path
+/// without tracking whether they already did, which is what makes it usable where a `defer` would go.
+close :: (f: *File) -> s64 {
+    if f.fd < 0 {
+        return 0;
+    }
+    status := close_raw(f.fd);
+    f.fd = -1;
+    return status;
+}
+
+/// Whether `f` is open.
+is_open :: (f: *File) -> bool {
+    return f.fd >= 0;
+}
+
+/// Reads up to `buffer.count` bytes into `buffer`, returning how many and whether the call succeeded.
+///
+/// **A short read is success, not failure**, and zero bytes means end of file rather than an error. That is
+/// the syscall's contract and hiding it would be wrong: a caller reading a pipe or a socket has to loop
+/// either way, and a wrapper that looped for them would block where the caller wanted a partial answer.
+/// `read_all` below is the looping version, for the case where a caller does want it.
+read :: (f: *File, buffer: []u8) -> (s64, bool) #must {
+    if f.fd < 0 {
+        return 0, false;
+    }
+    if buffer.count == 0 {
+        return 0, true;
+    }
+    // `*buffer[0]` rather than `buffer.data`, because a view deliberately has **no** `.data` field
+    // (ADR-0044 §4: it would hand out an unbounded pointer). The zero-count case is returned above, so
+    // element 0 exists and the index is in bounds.
+    n := read_raw(f.fd, *buffer[0], buffer.count);
+    if n < 0 {
+        return 0, false;
+    }
+    return n, true;
+}
+
+/// Writes `bytes`, returning how many were written and whether the call succeeded.
+///
+/// A short write is success here too, for the same reason, and `write_all` is the looping version.
+write :: (f: *File, bytes: []u8) -> (s64, bool) #must {
+    if f.fd < 0 {
+        return 0, false;
+    }
+    if bytes.count == 0 {
+        return 0, true;
+    }
+    n := write_raw(f.fd, *bytes[0], bytes.count);
+    if n < 0 {
+        return 0, false;
+    }
+    return n, true;
+}
+
+/// Writes every byte of `bytes`, looping over short writes.
+///
+/// Returns whether all of them landed. **This is the routine most callers want**, because a short write on a
+/// regular file is rare enough that a caller who does not loop has a bug that appears under load and never
+/// in a test — which is the argument for offering it rather than leaving everyone to write the loop.
+write_all :: (f: *File, bytes: []u8) -> bool #must {
+    at := 0;
+    while at < bytes.count {
+        n, ok := write(f, view(*bytes[at], bytes.count - at));
+        if !ok {
+            return false;
+        }
+        // A zero-byte write with no error would spin forever. It should not happen on a regular file, and
+        // "should not happen" is exactly what a loop condition must not rely on.
+        if n == 0 {
+            return false;
+        }
+        at = at + n;
+    }
+    return true;
+}
+
+/// Writes a string's bytes.
+///
+/// A convenience over `write_all`, because a string is the thing a caller usually has and building the view
+/// by hand at every call site is noise.
+write_string :: (f: *File, text: string) -> bool #must {
+    // A `string` *does* have `.data` — it is a distinct type from a view, and its pointer is what makes it
+    // passable to a foreign call at all (ADR-0044 §4 draws the line between the two here).
+    return write_all(f, view(text.data, text.count));
+}
+
+/// Fills `buffer` as far as it can, looping over short reads, and returns how many bytes it got.
+///
+/// Stops at end of file, so a return less than `buffer.count` means the file ended — which a caller can
+/// distinguish from a partial read, unlike `read`'s answer.
+read_all :: (f: *File, buffer: []u8) -> (s64, bool) #must {
+    at := 0;
+    while at < buffer.count {
+        n, ok := read(f, view(*buffer[at], buffer.count - at));
+        if !ok {
+            return at, false;
+        }
+        if n == 0 {
+            return at, true;
+        }
+        at = at + n;
+    }
+    return at, true;
+}
+
+/// Moves the read/write position and returns the new absolute offset.
+seek :: (f: *File, offset: s64, whence: s64) -> (s64, bool) #must {
+    if f.fd < 0 {
+        return 0, false;
+    }
+    at := lseek_raw(f.fd, offset, whence);
+    if at < 0 {
+        return 0, false;
+    }
+    return at, true;
+}
+
+/// The file's size in bytes, leaving the position where it was.
+///
+/// Two seeks rather than a `stat`, which would need a `struct stat` **by value across the FFI boundary** —
+/// E0286 refuses that today (ADR-0150) and it is W10's hard gate (PLAN §8.1.2). So the size comes from
+/// seeking to the end and back, which works on any seekable file and is the honest shape until an aggregate
+/// can cross. Recorded because `stat` is what a reader would expect.
+size :: (f: *File) -> (s64, bool) #must {
+    here, here_ok := seek(f, 0, SEEK_CURRENT);
+    if !here_ok {
+        return 0, false;
+    }
+    end, end_ok := seek(f, 0, SEEK_END);
+    if !end_ok {
+        return 0, false;
+    }
+    _, back_ok := seek(f, here, SEEK_SET);
+    if !back_ok {
+        return 0, false;
+    }
+    return end, true;
+}
+
+/// Deletes `path`. Returns whether it went.
+///
+/// `#must`, unlike `close`: a caller who deletes a temporary file and ignores the failure leaves it behind,
+/// and the next run sees stale data — a real bug with no local symptom, which is the shape the marker is for.
+remove :: (path: string) -> bool #must {
+    c_path, ok := nul_terminated(path);
+    if !ok {
+        return false;
+    }
+    return unlink_raw(c_path) == 0;
+}
+
+/// Whether `path` can be opened for reading.
+///
+/// **Not** an `access(2)` or `stat` check, and the difference matters: this answers "could I read it", which
+/// is the question a caller is really asking, rather than "does something exist there" — a directory exists
+/// and cannot be read, and a file can exist and be unreadable. It costs an open and a close.
+///
+/// Not `#must`: it *is* the answer, so there is no second value to ignore.
+exists :: (path: string) -> bool {
+    f, ok := open_read(path);
+    if !ok {
+        return false;
+    }
+    _ = close(*f);
+    return true;
+}
+
+#scope_module
+
+/// Copies `path` into NUL-terminated scratch from temporary storage.
+///
+/// Module-private because the pointer is only valid until the next `reset_temporary_storage`, which is a
+/// contract that belongs inside this module rather than in its surface.
+nul_terminated :: (path: string) -> (*u8, bool) {
+    scratch := talloc(path.count + 1);
+    if scratch == null {
+        return null, false;
+    }
+    bytes := view(scratch, path.count + 1);
+    i := 0;
+    while i < path.count {
+        bytes[i] = cast(u8, byte_at_raw(path, i));
+        i = i + 1;
+    }
+    bytes[path.count] = cast(u8, 0);
+    return scratch, true;
+}
+
+/// One byte of a string, without importing `String` for it.
+///
+/// `File` imports only `Basic`, deliberately: it sits at the bottom of the library beside it, and importing
+/// `String` here would make every program that opens a file pull in the string routines. One three-line
+/// duplicate is cheaper than that coupling, and it is the same judgement `String` itself makes about
+/// `copy_bytes`.
+byte_at_raw :: (s: string, index: s64) -> s64 {
+    return cast(s64, (s.data + index).*);
+}
