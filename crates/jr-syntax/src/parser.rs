@@ -277,11 +277,23 @@ enum ProcAttr {
     /// `#modify { … }` — a compile-time predicate guarding instantiation (ADR-0093). The only
     /// attribute carrying a block, which is why the loop's arm for it is not a bare kind.
     Modify,
+    /// `#must` — the result must be received (ADR-0151, filling ADR-0008's chosen model).
+    ///
+    /// The error-handling marker ADR-0008 named three years of waves ago and never implemented: with
+    /// multiple returns already in the language, this is the half that makes ignoring a failure an
+    /// error rather than a habit.
+    Must,
 }
 
 impl ProcAttr {
     /// Every attribute, so a test can check that each is accepted at both sites.
-    const ALL: [Self; 4] = [Self::CCall, Self::NoAbc, Self::Expand, Self::Modify];
+    const ALL: [Self; 5] = [
+        Self::CCall,
+        Self::NoAbc,
+        Self::Expand,
+        Self::Modify,
+        Self::Must,
+    ];
 
     /// The directive text that names this attribute.
     const fn text(self) -> &'static str {
@@ -290,6 +302,7 @@ impl ProcAttr {
             Self::NoAbc => "#no_abc",
             Self::Expand => "#expand",
             Self::Modify => "#modify",
+            Self::Must => "#must",
         }
     }
 
@@ -1113,6 +1126,10 @@ impl<'src> Parser<'src> {
             let kind = match attr {
                 ProcAttr::CCall => C_CALL_ATTR,
                 ProcAttr::NoAbc => NO_ABC_ATTR,
+                // `#must` is a bare token like `#c_call` and `#no_abc`: what it marks is the *call
+                // site's* obligation, and that obligation is read from the signature rather than from
+                // anything written here (ADR-0151 §1).
+                ProcAttr::Must => MUST_ATTR,
                 // `#expand` makes the procedure a macro: a call splices its body into the caller's
                 // scope rather than calling it (ADR-0090 §1). Accepted in the same loop, so it may be
                 // written in any order with the other two — the ordering rule ADR-0058 refused to add.

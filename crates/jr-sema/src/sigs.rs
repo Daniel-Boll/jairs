@@ -162,6 +162,14 @@ pub struct ProcSig {
     /// slot already holds the `[]T` type, since HIR wraps the written `..T` as `View { elem
     /// = T }` at lowering.
     pub variadic_params: Vec<bool>,
+    /// Whether the procedure is `#must` — a call must receive its result (ADR-0151 §1).
+    ///
+    /// **In the signature rather than read from the HIR at each call site**, because a call may cross
+    /// a module boundary and the caller's file has no HIR for the callee's declaration. Every other
+    /// per-procedure fact a call site needs — the parameter types, the defaults, the comptime mask —
+    /// travels the same way for the same reason, so an imported `#must` procedure needs no plumbing
+    /// of its own.
+    pub must: bool,
     /// The interned procedure type.
     pub ty: PoolId,
 }

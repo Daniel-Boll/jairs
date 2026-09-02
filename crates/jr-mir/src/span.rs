@@ -82,6 +82,7 @@ fn stmt_span(stmt: &jr_hir::Stmt) -> Span {
         | Stmt::Local(_, span)
         | Stmt::Item(_, span)
         | Stmt::Expr(_, span)
+        | Stmt::Discard { span, .. }
         | Stmt::Return(_, span)
         | Stmt::Error(span) => *span,
         Stmt::Break(_, span) | Stmt::Continue(_, span) | Stmt::Defer(_, span) => *span,

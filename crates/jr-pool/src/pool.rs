@@ -165,13 +165,13 @@ impl Pool {
             params: vec![s64],
             ret: ptr_u8,
             context: ContextKind::Jairs,
-            effects: EffectRow,
+            effects: EffectRow::default(),
         });
         let free_fn = pool.intern(Item::ProcType {
             params: vec![ptr_u8],
             ret: void,
             context: ContextKind::Jairs,
-            effects: EffectRow,
+            effects: EffectRow::default(),
         });
 
         debug_assert_eq!(void, PoolId::VOID);
@@ -330,6 +330,18 @@ impl Pool {
     /// Interns `[len]elem` (ADR-0039 §3).
     pub fn array_of(&mut self, elem: PoolId, len: u64) -> PoolId {
         self.intern(Item::ArrayType { elem, len })
+    }
+
+    /// The effect row of a procedure type, or `None` for anything else (ADR-0151 §1).
+    ///
+    /// This is how a **call site** asks whether its callee is `#must`, including across a module
+    /// boundary: the caller has the callee's *type* whether or not it has the callee's declaration.
+    #[must_use]
+    pub fn proc_effects(&self, ty: PoolId) -> Option<EffectRow> {
+        match self.item(ty) {
+            Item::ProcType { effects, .. } => Some(*effects),
+            _ => None,
+        }
     }
 
     /// Interns `#simd [lanes]elem` — a vector one machine register wide (ADR-0148 §1).
@@ -585,11 +597,27 @@ impl Pool {
     /// `ret` is always a real type; pass [`PoolId::VOID`] when the source
     /// omitted the return arrow.
     pub fn proc_type(&mut self, params: Vec<PoolId>, ret: PoolId, context: ContextKind) -> PoolId {
+        self.proc_type_with(params, ret, context, EffectRow::default())
+    }
+
+    /// Interns a procedure type carrying an explicit effect row (ADR-0151 §1).
+    ///
+    /// Separate from [`Pool::proc_type`] rather than replacing it, because the great majority of call
+    /// sites intern a type with no effects and threading a default through all of them would add a
+    /// parameter that is almost always the same value — the argument ADR-0053 §2 made for defaults
+    /// living beside a signature rather than inside every constructor.
+    pub fn proc_type_with(
+        &mut self,
+        params: Vec<PoolId>,
+        ret: PoolId,
+        context: ContextKind,
+        effects: EffectRow,
+    ) -> PoolId {
         self.intern(Item::ProcType {
             params,
             ret,
             context,
-            effects: EffectRow,
+            effects,
         })
     }
 

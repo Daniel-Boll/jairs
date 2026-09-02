@@ -468,3 +468,21 @@ pub(crate) const E0285: &str = "E0285";
 /// Cranelift path simply never declared the procedure — so a legal-looking program produced two
 /// different internal errors and no diagnostic.
 pub(crate) const E0286: &str = "E0286";
+
+/// The result of a `#must` procedure was discarded (ADR-0151).
+///
+/// ADR-0008 chose this language's error model — multiple return values plus a `#must` marker — and
+/// left the marker unimplemented for the whole programme. This is it: a call whose result is dropped
+/// entirely is an error, so ignoring a failure has to be *written* rather than merely done.
+///
+/// `_ = f();` is accepted, deliberately. An unbypassable check is one people route around with a
+/// wrapper procedure, which hides the decision instead of recording it — and the point is visibility,
+/// not prohibition. That is the same reasoning `#no_abc` already carries.
+pub(crate) const E0287: &str = "E0287";
+
+/// `#must` on a procedure that returns nothing (ADR-0151 §3).
+///
+/// The marker can never be violated on a `void` procedure and never does anything, so accepting it
+/// would leave a reader believing a check is running. ADR-0058 §3's rule about silently-ignored
+/// directives, applied to the newest one.
+pub(crate) const E0288: &str = "E0288";

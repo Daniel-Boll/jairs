@@ -431,6 +431,12 @@ pub enum SyntaxKind {
     /// every one of the eleven passes and back ends that match on a projection, and a flag some of
     /// them ignore is this project's first named failure mode.
     NO_ABC_ATTR,
+    /// `#must` on a procedure — the result must be received (ADR-0151 §1).
+    ///
+    /// Its own kind beside `NO_ABC_ATTR` for the reason every attribute here has one: a consumer that
+    /// forgets it is a missing arm rather than a silent fall-through, which is what ADR-0058 §3's rule
+    /// about silently-ignored directives asks of the tree as well as of the compiler.
+    MUST_ATTR,
     /// A `#expand` attribute on a procedure, making it a **macro** (ADR-0090 §1).
     ///
     /// Its own node beside `C_CALL_ATTR` and `NO_ABC_ATTR`, for the reason those two are separate: a

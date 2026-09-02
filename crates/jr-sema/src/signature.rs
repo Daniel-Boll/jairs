@@ -826,7 +826,13 @@ impl Ctx<'_> {
             self.comptime_param_names.remove(name);
         }
 
-        let ty = self.pool.proc_type(params.clone(), ret, context);
+        // **`#must` goes into the procedure's *type*** (ADR-0151 §1), which is what makes the check
+        // work across a module boundary and through a procedure pointer with no plumbing: a call site
+        // has its callee's type even when it has no HIR for the declaration.
+        let must = self.hir.proc(proc).must;
+        let ty =
+            self.pool
+                .proc_type_with(params.clone(), ret, context, jr_pool::EffectRow { must });
         let sig = ProcSig {
             params,
             names,
@@ -835,6 +841,7 @@ impl Ctx<'_> {
             poly_vars,
             comptime_params,
             variadic_params,
+            must,
             ty,
         };
         self.sigs.insert_proc(proc, sig.clone());

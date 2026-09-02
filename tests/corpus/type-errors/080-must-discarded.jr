@@ -1,0 +1,32 @@
+// EXPECT: E0287 — the result of a `#must` procedure was discarded (ADR-0151 §1)
+//
+// This is the check ADR-0008 promised in the vertical slice and nothing implemented for the whole
+// programme: this language's error model is *multiple returns plus `#must`*, and without the marker
+// the second half was a convention rather than a rule. PLAN §8.1.1 recorded that five of W7's
+// remaining modules — `File`, `File_Utilities`, `Process`, `Socket`, and the useful half of `JSON` —
+// were blocked on nothing more than this.
+//
+// **Checked at exactly one place**: the statement-expression arm, which is the only position in the
+// language where a value is produced and dropped. Every other position — an initialiser, an argument,
+// an operand, a `return`, a target list — *receives* the result. That is what makes this one check
+// rather than a rule every expression position has to remember, and it is why `_ = f();` needs no
+// special case here: it is a different statement entirely (ADR-0151 §2).
+//
+// **The obligation lives in the procedure's type**, in ADR-0008's reserved effect-row slot — inert
+// since the slice and now carrying exactly the one bit it was reserved for. That is what makes the
+// check work across a module boundary, where this file has no HIR for the callee, and through a
+// procedure *pointer*, which has no declaration at all.
+//
+// **One** refusal here, per this directory's contract. E0288 is the sibling: `#must` on a procedure
+// returning nothing, refused at the declaration because the marker could never be violated there and
+// a reader who wrote it believes a check is running (ADR-0058 §3's rule).
+try_divide :: (a: s64, b: s64) -> (s64, bool) #must {
+    if b == 0 {
+        return 0, false;
+    }
+    return a / b, true;
+}
+
+main :: () {
+    try_divide(3, 4);
+}

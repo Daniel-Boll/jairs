@@ -41,7 +41,7 @@ use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
     E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272, E0277,
-    E0278, E0279, E0284, E0285, E0286,
+    E0278, E0279, E0284, E0285, E0286, E0287, E0288,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -329,6 +329,7 @@ pub fn check_file(
     for index in 0..hir.procs.len() {
         ctx.check_foreign_binding(ProcId::from_usize(index));
         ctx.check_foreign_signature(ProcId::from_usize(index));
+        ctx.check_must_returns_something(ProcId::from_usize(index));
     }
 
     for index in 0..hir.bodies.len() {
@@ -535,10 +536,21 @@ impl Ctx<'_> {
             // Declared but never constructed by lowering; a nested item would be
             // E0207 long before it reached here.
             Stmt::Item(_, _) => {}
+            // **`_ = f();`** — the result is received and thrown away, on purpose (ADR-0151 §2). Checked
+            // exactly like a statement expression *except* that `#must` is satisfied: that is the whole
+            // difference between the two statements, and it is why they are two statements.
+            Stmt::Discard { value, .. } => {
+                self.check_expr(scope, value, None);
+            }
             Stmt::Expr(expr, _) => {
                 // A discarded result is fine — `zero();` is a statement in
                 // `valid/017` — so there is no expectation to impose.
                 self.check_expr(scope, expr, None);
+                // **Unless the callee is `#must`** (ADR-0151 §1). This is the *only* place a result is
+                // dropped entirely: every other position — an initialiser, an argument, an operand, a
+                // `return`, a target list — receives it. So one check here covers the whole language,
+                // and `_ = f();` passes because a target list is a reception.
+                self.check_must_received(scope, expr);
             }
             Stmt::Assign { lhs, op, rhs, span } => self.check_assign(scope, lhs, op, rhs, span),
             Stmt::If {
@@ -1045,6 +1057,98 @@ impl Ctx<'_> {
             .with_help("call it as a statement instead, without the `:=`"),
         );
         PoolId::ERROR
+    }
+
+    /// Refuses `#must` on a procedure with nothing to return (ADR-0151 §3).
+    ///
+    /// A `void` result cannot be received, so the attribute can never be violated and never does
+    /// anything. ADR-0058 §3's rule — a directive silently ignored is worse than one rejected — applies
+    /// exactly: a reader who wrote it believes a check is running.
+    ///
+    /// Reported at the **declaration**, which is the mistake's own site. The call-site check stays
+    /// silent for a `void` callee so that one error is not reported at every call as well.
+    fn check_must_returns_something(&mut self, proc: ProcId) {
+        if !self.hir.proc(proc).must {
+            return;
+        }
+        let Some(sig) = self.sigs.proc_sig(proc) else {
+            return;
+        };
+        if sig.ret != PoolId::VOID {
+            return;
+        }
+        let span = self.hir.proc(proc).span;
+        self.diags.push(
+            Diagnostic::error(
+                span,
+                "`#must` on a procedure that returns nothing".to_owned(),
+            )
+            .with_code(E0288)
+            .with_note(
+                "there is no result to receive, so the marker can never be violated and never \
+                     does anything",
+            )
+            .with_help("give it a result to return, or drop the `#must`"),
+        );
+    }
+
+    /// Refuses discarding the result of a `#must` call (ADR-0151 §1).
+    ///
+    /// Called only from the `Stmt::Expr` arm, which is the one position in the language where a value
+    /// is produced and dropped. That is what makes this a single check rather than a rule every
+    /// expression position has to remember — and it is why `_ = f();` is accepted without a special
+    /// case: an assignment to a target list is a *reception*, and it never reaches here.
+    ///
+    /// # What counts as the call
+    ///
+    /// The statement's expression itself, not a call nested inside it. `g(f());` receives `f`'s result
+    /// as an argument, so `f` is satisfied; whether `g`'s own result may be dropped is `g`'s question,
+    /// and it is the expression this sees.
+    fn check_must_received(&mut self, scope: ExprScope, expr: ExprId) {
+        let Expr::Call { callee, span, .. } = self.expr_of(scope, expr) else {
+            return;
+        };
+        // **Asked of the callee's *type***, not of a `ProcId` (ADR-0151 §1). A call may cross a module
+        // boundary, where this file has no HIR for the declaration — and it may go through a procedure
+        // *pointer*, which has no declaration at all. The type carries the obligation, so both work
+        // here with no extra lookup.
+        let callee_ty = self.types.expr_type(scope, callee).unwrap_or(PoolId::ERROR);
+        let Some(effects) = self.pool.proc_effects(callee_ty) else {
+            return;
+        };
+        if !effects.must {
+            return;
+        }
+        // A `void` result has nothing to receive. `#must` on such a procedure is meaningless rather
+        // than violated, and refusing the *call* would be reporting the declaration's mistake at the
+        // wrong place — E0288 reports it at the declaration instead.
+        let Item::ProcType { ret, .. } = self.pool.item(callee_ty) else {
+            return;
+        };
+        if *ret == PoolId::VOID {
+            return;
+        }
+        // Named when the callee is a plain name, which covers every ordinary call; a call through a
+        // pointer or a field says "this call" rather than inventing a name for something unnamed.
+        let name = match self.expr_of(scope, callee) {
+            Expr::Name { name, .. } => format!("`{}`", self.interner.resolve(name)),
+            _ => "this call".to_owned(),
+        };
+        self.diags.push(
+            Diagnostic::error(
+                span,
+                format!("the result of {name} must be received: it is `#must`"),
+            )
+            .with_code(E0287)
+            .with_note(
+                "`#must` marks a result a caller has to look at — typically a success flag beside a \
+                 value, which is this language's error model (ADR-0008)",
+            )
+            .with_help(
+                "receive it — `ok := …` or `ok, value := …` — or write `_ = …` to say the failure is \
+                 deliberately ignored",
+            ),
+        );
     }
 
     /// Refuses a `#foreign` signature carrying a type that cannot cross a C boundary (ADR-0150).

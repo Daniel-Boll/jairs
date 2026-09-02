@@ -206,13 +206,25 @@ module.exports = grammar({
       ),
 
     _proc_attr: ($) =>
-      choice($.c_call_attr, $.no_abc_attr, $.expand_attr, $.modify_attr, $.note),
+      choice(
+        $.c_call_attr,
+        $.no_abc_attr,
+        $.must_attr,
+        $.expand_attr,
+        $.modify_attr,
+        $.note,
+      ),
 
     // #c_call (ADR-0057 §3)
     c_call_attr: (_$) => field("directive", "#c_call"),
 
     // #no_abc (ADR-0058 §3)
     no_abc_attr: (_$) => field("directive", "#no_abc"),
+
+    // #must — the result must be received (ADR-0151 §1). Its own rule beside the other bare
+    // attributes, for the reason each of them has one: two shapes indistinguishable in a query would
+    // let a highlight show a reader an obligation the program does not have, or hide one it does.
+    must_attr: (_$) => field("directive", "#must"),
 
     // #expand — the procedure is a macro, spliced into the caller's scope rather than called
     // (ADR-0090 §1). Its own rule beside the other two attributes, so a query can tell them apart.
