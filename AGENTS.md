@@ -96,7 +96,8 @@ Track the workspace test count in the §7 handoff, so a silent loss of coverage 
 visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
 → 969 (W5 sub-waves 1–4) → 974 (W5 sub-wave 5, polymorphic structs) → 976 (W5 sub-wave 6a, `$N` surface)
 → 977 (W5 sub-wave 6b, `$N` instantiation) → 978 (W5 sub-wave 6c, `[N]T` over `$N`; 7a `#expand` surface) → 979 (W5 sub-wave 7b, the `#expand` splice) → 980 (W5 sub-wave 7c, reflecting a bound type)
-→ 981 (W5 sub-wave 7h, `#bake_arguments` specialisation — **W5 complete**). W6 sub-waves 1–4 hold at
+→ 981 (W5 sub-wave 7h, `#bake_arguments` specialisation — **W5 complete**). It reaches **1073** after the
+Simp-shaped-graphics programme (ADR-0179–0182), with **262** corpus files. W6 sub-waves 1–4 hold at
 981 — each adds corpus files that the existing differential and snapshot tests iterate rather than adding a test
 case, which is why the *corpus* count is tracked too — and sub-wave 5 reaches **984** with three `jr-cli`
 integration tests, because the driver's behaviour is not something a corpus file can observe (210 corpus files).
@@ -254,6 +255,60 @@ grammar reported an `ERROR` node over it (gate 6, which is what that gate exists
 **genuine** ambiguity — `f :: () -> (s64) #c_call` — that the hand-written parser resolves greedily in favour of
 the type, verified by writing it; and `codes.rs` caught a code collision when this wave first reached for E0290,
 which `jr-hir` owns.
+
+**ADR-0179 through ADR-0182 reach 1073** (1077 under gate 7) and **262** corpus files — the Simp-shaped-graphics
+programme, on top of the twelve closed waves. Qualified imports (ADR-0179), the target OS as a compile-time value
+(ADR-0180), a per-OS library value (ADR-0181), the graphics modules restructured onto `SDL_RenderGeometry`
+(ADR-0182).
+
+**Read this one for the score, because it is the highest that habit has ever paid.** The plan was wrong in
+**five** places, every one found by *writing the thing* and none by review — and two of the five made items
+**unbuildable as written**, not merely suboptimal:
+
+1. **`Res::Imported` on an `Expr::Field`** was the plan's design for a qualified value. Sema reads a callee as an
+   `Expr::Name` at a dozen sites and MIR at seven more, so it would have taught nineteen places a new shape — a
+   construct half-represented on the lowering path, which is this project's first named failure mode. Carried on
+   the *name* (`Expr::Name { module: Option<Symbol> }`), four construction sites became compile errors and **no
+   MIR logic changed**.
+2. **A second diagnostic code was drafted and refused.** E0293-as-planned ("the alias is not an import") has
+   **no reachable condition**: a local of the alias's name makes the access an ordinary field (ADR-0014 §3,
+   enforced by *where* lowering checks), and a colliding declaration is already E0200. **A code with no
+   condition reads as a promise that something is checked.**
+3. **A `BuildConfig` field for the OS**, citing ADR-0058 §2's invalidation argument — which does not transfer to
+   a value that cannot change within a process (no `--target`; `jr-link` shells to the host `cc`, `jr-vm`
+   resolves symbols from its own image). Cost measured at **≈50 `file_signatures` call sites across six crates**.
+4. **"One arm in `thunk.rs`"** for the file-scope-intrinsic gap. Fixing that arm changed **nothing**: a named
+   item's initialiser is typed by the **signature** phase, `SignatureOutput` had no `folded_calls` field, and the
+   fold was computed and thrown away. Both halves were needed, and the plan named only the reader.
+5. **Module-level state** for the renderer and the event buffer. **Jairs has none** — a file-scope `var` is
+   E0245, probed for a scalar *and* an array — which made two of the five graphics items unbuildable. The answer
+   was `modules/UI`'s own caller-owned-struct pattern, and it is the better API: two windows can have two
+   renderers where a global describes one.
+
+A sixth, smaller: **`get_render_dimensions` in `Window`** binds `SDL_GetRendererOutputSize`, which needs the
+renderer `Window` no longer has after the split. It could not have compiled.
+
+**Two gaps closed that the library had documented and worked around.** `Window` and `Socket` had both moved an
+ABI size-check into a *procedure* because `size_of` of a struct could not reach a file-scope constant; both are
+constants now. And `N :: size_of(s64);` failed for a **different** reason found by probing the neighbour:
+`resolve_all` walks the top-level expression arena **flat**, so it visited `s64` as an expression in its own
+right and reported E0201 before ever reaching the call that makes it a type argument. **The map ended up right
+and the diagnostic was already pushed** — a phase whose walk order differs from another's will disagree about
+context, and the disagreement shows up as a diagnostic rather than as a wrong answer.
+
+**`file_consts`'s unenforced early-out list needed a fourth entry for a third distinct reason** (ADR-0180 §3).
+The comment above it already records two previous occurrences and ADR-0176 §6 a third. It is still a list of
+features with nothing enforcing it.
+
+**Three tooling traps, each caught by its own gate.** The formatter dropped a qualified type — `f :: (e: W.Event)`
+became `f :: (e: W)`, the **thirteenth consecutive wave** and again the *unsound* direction, since the reformatted
+file no longer type-checks. `codes.rs` failed twice on the "first free code" claim, which is exactly what it is
+for. And the checked-in Neovim parser needs `./editors/nvim/build.sh` after a `grammar.js` change, as ADR-0148
+already recorded.
+
+**One language surprise worth knowing:** `"literal".data` — a field of a string **literal** — does not lower
+("a memory reference has no place"), while binding the literal to a local first works. Every program here does
+the latter, and so did the pre-existing tests, so nothing was blocked; it cost one confused build.
 
 **ADR-0178 reaches 1071** (**1075** under gate 7) with no new corpus file, and fixes a defect the W11
 audit turned up rather than a planned one. `jr check` on a file-scope mutable variable is **good** —

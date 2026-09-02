@@ -1,8 +1,25 @@
-//! The UI module: immediate-mode widgets over `Window`'s event loop.
+//! The UI module: immediate-mode widgets over `Input`'s event queue and `Simp`'s renderer.
 //!
 //! Written in Jairs. PLAN §8.5's immediate-mode UI item, which ADR-0165's event loop unblocked — and the
 //! module that proves the graphics stack **composes**, since it is the first thing here that needs a window,
 //! an event queue and a renderer at once.
+//!
+//! # Migrated onto `Simp` (ADR-0182 §5)
+//!
+//! This module used to draw through `Window.set_color`, `fill`, `outline` and `rect`, and Group D deleted all
+//! four — `Simp` owns the renderer now, and leaving a second way to draw would be the opposite of a clean
+//! cutover. So `draw_button` is a batch of quads.
+//!
+//! **The interaction is untouched.** `button`, `feed`, the hot/active state machine and the id rules are
+//! exactly what they were, and the integration test's assertions are unchanged: the same button, clicked the
+//! same way, produces the same exit code while every pixel now goes through `SDL_RenderGeometry`. An
+//! unchanged assertion over a replaced backend is the only check that a migration preserved behaviour rather
+//! than merely compiling.
+//!
+//! **The outline is four thin quads**, because `SDL_RenderGeometry` draws triangles and has no line
+//! primitive. That is a real cost of the new backend and it is written down rather than glossed: one quad
+//! became five. What it buys is that the body and the outline are now *different colours in one batch* —
+//! `SDL_SetRenderDrawColor` forced one draw call per colour, and a per-vertex colour does not.
 //!
 //! # Immediate mode, and what that buys
 //!
@@ -10,7 +27,8 @@
 //!
 //! ```text
 //! begin_frame(*ui);
-//! while next_event(*e) { feed(*ui, *e); }
+//! Input.update_window_events(*events, 64);
+//! for_each_event(*ui, *events);
 //!
 //! if button(*ui, 1, 10, 10, 80, 24) { save(); }
 //! if button(*ui, 2, 10, 44, 80, 24) { quit(); }
@@ -52,16 +70,25 @@
 //! *policy* decision (does a stack own spacing? does it clip?) rather than a mechanism, so it waits for a
 //! caller with an opinion.
 
-Window :: #import "Window";
+Input :: #import "Input";
+Simp :: #import "Simp";
 
 // Imported **aliased** (ADR-0179 §1), so every name this module borrows says where it comes from:
-// `Window.Event`, `Window.MOUSE_DOWN`, `Window.set_color`. A bare `#import` merges a module's names
-// into this file flat, which is why this file used to have to pick names that did not collide with
-// `Window`'s eleven unprefixed ones — the id sentinel below is called `NONE` for exactly that reason,
-// and it no longer has to be.
+// `Input.Event`, `Input.MOUSE_DOWN`, `Simp.immediate_quad`. A bare `#import` merges a module's names into
+// this file flat, which is why this file used to have to pick names that did not collide with `Window`'s
+// eleven unprefixed ones — the id sentinel below is called `NONE` for exactly that reason, and it no longer
+// has to be. Two aliased imports of modules that both export `Event`-adjacent names is also a program that
+// could not have been written before ADR-0179.
 
 /// The reserved widget id meaning "no widget".
 NONE :: 0;
+
+/// How thick `draw_button`'s outline is, in pixels.
+///
+/// Named because a hairline is invisible on a high-DPI target and a caller who wants a different weight
+/// should be able to find the number — and because an outline made of quads has a thickness at all, which a
+/// line primitive did not (ADR-0182 §5).
+OUTLINE_THICKNESS :: 1.0;
 
 /// Per-frame and persistent UI state.
 ///
@@ -121,14 +148,14 @@ begin_frame :: (ui: *UI) {
 ///
 /// Only the left button is tracked (`mouse_button == 1`). A right-click is a different interaction with
 /// different conventions on every platform, and guessing at it would be worse than not having it.
-feed :: (ui: *UI, event: *Window.Event) {
+feed :: (ui: *UI, event: *Input.Event) {
     kind := cast(s64, event.kind);
-    if kind == Window.MOUSE_MOTION {
+    if kind == Input.MOUSE_MOTION {
         ui.mouse_x = event.mouse_x;
         ui.mouse_y = event.mouse_y;
         return;
     }
-    if kind == Window.MOUSE_DOWN {
+    if kind == Input.MOUSE_DOWN {
         if cast(s64, event.mouse_button) == 1 {
             // The position comes from the event, not from the last motion: a click can arrive without a
             // preceding motion event — a tap on a trackpad, or a synthetic event — and using a stale position
@@ -140,7 +167,7 @@ feed :: (ui: *UI, event: *Window.Event) {
         }
         return;
     }
-    if kind == Window.MOUSE_UP {
+    if kind == Input.MOUSE_UP {
         if cast(s64, event.mouse_button) == 1 {
             ui.mouse_x = event.mouse_x;
             ui.mouse_y = event.mouse_y;
@@ -234,8 +261,14 @@ is_active :: (ui: *UI, id: s64) -> bool {
 /// state machine be exercised with no display at all — which is how this module's tests run — and lets a caller
 /// draw a button any way they like while keeping the interaction.
 ///
+/// **One batch, five quads, two colours** (ADR-0182 §5). The body is a filled quad and the outline is four
+/// thin ones, because `SDL_RenderGeometry` draws triangles and has no line primitive. All five go in one
+/// `immediate_begin`/`immediate_flush` pair, which the old `SDL_SetRenderDrawColor` path could not do: a
+/// per-vertex colour means one flush can carry quads of different colours where a renderer-global colour
+/// forced a draw call each.
+///
 /// `#must`, because it is drawing and every drawing call here can fail.
-draw_button :: (renderer: *Window.Renderer, ui: *UI, id: s64, x: s64, y: s64, w: s64, h: s64) -> bool #must {
+draw_button :: (simp: *Simp.Renderer, ui: *UI, id: s64, x: s64, y: s64, w: s64, h: s64) -> bool #must {
     shade := 70;
     if is_active(ui, id) {
         shade = 130;
@@ -243,15 +276,36 @@ draw_button :: (renderer: *Window.Renderer, ui: *UI, id: s64, x: s64, y: s64, w:
         shade = 100;
     }
 
-    if !Window.set_color(renderer, shade, shade, shade, 255) {
+    // The shade is 0-255 in this module's own terms and `Simp`'s colours are 0..1, so the conversion happens
+    // here, once. Kept as an integer up to this point because the three states are integers a reader can
+    // compare, which `0.27`, `0.39` and `0.51` would not be.
+    level := cast(float32, shade) / 255.0;
+    body := Simp.vector4(level, level, level, 1.0);
+    edge := Simp.vector4(0.78, 0.78, 0.78, 1.0);
+
+    if !Simp.set_shader_for_color(simp, false) {
         return false;
     }
-    box := Window.rect(x, y, w, h);
-    if !Window.fill(renderer, *box) {
-        return false;
-    }
-    if !Window.set_color(renderer, 200, 200, 200, 255) {
-        return false;
-    }
-    return Window.outline(renderer, *box);
+    Simp.immediate_begin(simp);
+
+    left := cast(float32, x);
+    top := cast(float32, y);
+    right := cast(float32, x + w);
+    bottom := cast(float32, y + h);
+
+    Simp.immediate_quad(simp, left, top, right, bottom, body);
+
+    // The outline, inset nowhere: four quads one pixel thick along the edges, drawn *after* the body so they
+    // win where they overlap. `OUTLINE_THICKNESS` rather than a bare `1.0` because a hairline is invisible on
+    // a high-DPI target, and a caller who wants a different weight should be able to find the number.
+    // `cast` because `OUTLINE_THICKNESS` is a `float64`: a Jairs constant has no width annotation — probed,
+    // `OUTLINE_THICKNESS : float32 : 1.0` does not parse — which is the typed-constant gap ADR-0165 §5 already
+    // owed for `QUIT : u32 : 256`. The narrowing is exact for a small integral value, so this cannot be wrong.
+    t := cast(float32, OUTLINE_THICKNESS);
+    Simp.immediate_quad(simp, left, top, right, top + t, edge);
+    Simp.immediate_quad(simp, left, bottom - t, right, bottom, edge);
+    Simp.immediate_quad(simp, left, top, left + t, bottom, edge);
+    Simp.immediate_quad(simp, right - t, top, right, bottom, edge);
+
+    return Simp.immediate_flush(simp);
 }
