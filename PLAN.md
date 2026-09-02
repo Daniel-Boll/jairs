@@ -258,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0159. See [`docs/adr/README.md`](docs/adr/README.md). (This line
+Accepted ADRs: 0001–0160. See [`docs/adr/README.md`](docs/adr/README.md). (This line
 said 0001–0128 for thirteen ADRs, which is the argument §7 makes for its own count
 being the one to trust.)
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
@@ -573,11 +573,23 @@ described from a **false premise** — §8.4 said "line tables exist" and there 
 it is now **W12 — Debug info**, named in §2.1 the way §8.3 named W11.
 
 **So the remaining waves are W10 — Graphics, W11 — Concurrency, and W12 — Debug info.** §8.5 is W10's plan.
-**W10 is still blocked** on §8.1.2 — an aggregate crossing the `#foreign` boundary — and that single change
-now unblocks **three** named things: W10 entirely, `readdir` and `stat` in `File_Utilities`, and `getaddrinfo`
-in `Socket`. That makes it the highest-leverage item left and the obvious thing to do before W10 rather than
-inside it. W12 has no blocker at all, which makes it the one to reach for while something above is pending —
-the role W9 just played.
+
+**The next thing to do is §8.1.2 part 2, and it is now a specified task rather than an open question.**
+ADR-0160 landed part 1: the *decision* — `jr_pool::classify`, one shared answer for where an aggregate's
+pieces go, with two supported shapes and an argued refusal for the rest. Part 2 wires the three engines to it,
+and ADR-0160 §6 says how for each. Two constraints on part 2, both learned rather than assumed:
+>
+> * it must land **atomically across all three engines**, because a half-wired ABI is exactly the silent
+>   divergence ADR-0157 §5 and ADR-0158 §3 found — and this one would be worse, since a mis-placed register is
+>   invisible where a freed literal at least aborts;
+> * it must be verified against a **real C compiler**, not against itself. `ldiv` returns a sixteen-byte
+>   integer struct from libc and covers the return direction; a `cc`-compiled shim covers parameters and the
+>   HFA. A test checking Jairs against Jairs passes with both sides wrong.
+
+That single change unblocks **three** named things: W10 entirely, `readdir` and `stat` in `File_Utilities`, and
+`getaddrinfo` in `Socket` — which is what makes it the highest-leverage item left and the obvious thing to do
+before W10 rather than inside it. **W12 has no blocker at all**, which makes it the one to reach for while
+something above is pending — the role W9 just played.
 
 > [!IMPORTANT]
 > **The FFI is where the last three waves' surprises came from, and all four were silent.** ADR-0157 found a
@@ -622,7 +634,7 @@ crossing the `#foreign` boundary — which is also W10's hard gate, so one chang
 an `Any` or a procedure handle through `jr-vm`'s untagged `union`; `jr-lsp` path handling — URI
 decoding, `..`, symlinks), which must be done **by hand** because six subagent dispatches returned
 empty; and `tree-sitter test` added to gate 6, which today catches grammar *drift* but not a broken
-grammar *rule*. **1040 workspace tests** (1041 under gate 7) and **250 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
+grammar *rule*. **1053 workspace tests** (1054 under gate 7) and **250 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
 has ever happened — plus **170** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -2483,6 +2495,33 @@ the platform ABI's classification rules — which fields go in which register cl
 passed in memory, when a hidden pointer appears. ADR-0051's `sret` did the *return* half for Jairs's
 own calls; this is the argument half, for the C ABI, on two architectures. `libffi` gives the VM its
 half; both native back ends need theirs.
+
+> [!IMPORTANT]
+> **Part 1 is done — ADR-0160.** The half that was actually *undecided* is settled: `jr_pool::classify`
+> answers where an aggregate's pieces go, in **one** place, because three engines cross this boundary and a
+> struct in the wrong register is a silent wrong answer with no diagnostic. Two shapes are supported — at
+> most two words in general registers, and a homogeneous float aggregate of at most four members in
+> floating-point registers — and everything else stays refused.
+>
+> **The HFA has no size limit, and that is the point**: a `CGRect` is four `float64`s and thirty-two bytes,
+> so the size test this section's own wording implies ("when a struct is passed in memory") would reject
+> exactly the type W10 needs most. The limit is four *scalars*.
+>
+> **`Memory` is a refusal rather than an indirect pass**, and the reason is worth carrying: the case covers a
+> *large* composite, where an indirect pass is correct, **and** a small *mixed* one, where System V
+> classifies each eightbyte independently (a `double` in `xmm0`, a `long` in `rdi`) and AAPCS64 does not
+> (both in `x0`/`x1`). Two correct answers in one case means refusing until it is split. Implementing System
+> V's rules was rejected: it is a second ABI's worth of rules verified against a target this project has
+> never run, and PLAN §1.5's owed Linux CI run comes first.
+>
+> **Part 2 is the wiring, and it is now specified rather than open** (ADR-0160 §6): the VM builds an
+> `ffi_type` and lets libffi place the pieces — the least work of the three, since libffi implements the ABI
+> itself; Cranelift turns a class into one or more `AbiParam`s and loads the pieces from the value's slot;
+> LLVM does the same separately, because the two back ends share no emission path. It must land **atomically
+> across all three**, since a half-wired ABI is exactly the silent divergence ADR-0157 §5 and ADR-0158 §3
+> found the hard way — and it must be verified against a **real C compiler**, not against itself: `ldiv`
+> returns a sixteen-byte integer struct from libc, and a `cc`-compiled shim covers the parameter direction
+> and the HFA. A test checking Jairs against Jairs would pass with both sides wrong.
 
 #### 8.1.3 A defect found while probing this: that refusal is an ICE, not a diagnostic
 

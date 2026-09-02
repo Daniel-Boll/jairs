@@ -212,6 +212,23 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0160 reaches 1053** (1054 under gate 7) and adds **no** corpus file — still **250** — because it adds no
+language behaviour at all. PLAN §8.1.2 **part 1 of 2**: the C ABI classification for an aggregate, in
+`jr-pool` beside the layout computation, so that the VM, Cranelift and LLVM *ask* instead of each deciding.
+The reasoning is ADR-0020 §2's about trap messages, with more force: a mis-rendered message is visible and a
+**mis-placed register is not**.
+
+**Two things from it to carry into part 2.** An HFA has **no size limit** — a `CGRect` is four `float64`s and
+thirty-two bytes, so a byte test rejects exactly the type W10 needs most; the limit is four *scalars*. And
+`Class::Memory` is a **refusal**, not an indirect pass, because the case covers a large composite (where
+indirect is right) *and* a small mixed one (where System V and AAPCS64 disagree about which register file each
+field uses). One case with two correct answers gets refused until it is split.
+
+**Part 1 deliberately changes no behaviour**, so the engines can be wired one at a time with no window in
+which two of them disagree. Part 2 must still land **atomically** across all three, and must be verified
+against a **real C compiler** — `ldiv` returns a sixteen-byte integer struct from libc, and a `cc`-compiled
+shim covers parameters and the HFA. A test checking Jairs against Jairs passes with both sides wrong.
+
 **ADR-0159 reaches 1040** (1041 under gate 7), adds **no** corpus file — still **250** — and takes the
 Neovim check count 166 → **170**. PLAN §8.4, W9 — Tooling depth: semantic tokens, the fourteenth and last LSP
 capability. All five new tests are `jr-lsp`'s, because a token classifier's behaviour is not something a `.jr`
