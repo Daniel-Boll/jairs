@@ -82,7 +82,7 @@
     #text(size: 21pt, weight: "bold")[Jairs]
   ],
   [
-    #text(size: 8pt, fill: muted)[1 September 2026]
+    #text(size: 8pt, fill: muted)[2 September 2026]
   ],
 )
 #v(-0.5em)
@@ -95,23 +95,23 @@
 #v(0.4em)
 #pill[7/7 gates green]
 #h(4pt)
-#pill[1033 tests]
+#pill[1071 tests]
 #h(4pt)
-#pill[ADR-0149 latest]
+#pill[ADR-0178 latest]
 #h(4pt)
-#pill(fill: rgb("#eaf5ee"), stroke: good)[W8 DONE · 8 sub-waves]
+#pill(fill: rgb("#eaf5ee"), stroke: good)[ALL TWELVE WAVES DONE]
 #h(4pt)
-#pill(fill: rgb("#fdf2e6"), stroke: warn)[W6 + W7 OPEN]
+#pill(fill: rgb("#eaf5ee"), stroke: good)[everything merged to main]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "1033", "workspace; 1034 with LLVM in"),
-  metric("Corpus", "237", "jr files, all three engines"),
-  metric("ADRs", "149", "0001 to 0149, immutable"),
-  metric("Diagnostics", "118", "codes, E0286 next free"),
-  metric("Editor checks", "166", "Neovim, verified not gated"),
+  metric("Tests", "1071", "workspace; 1075 with LLVM in"),
+  metric("Corpus", "255", "jr files, all three engines"),
+  metric("ADRs", "178", "0001 to 0178, immutable"),
+  metric("Diagnostics", "128", "codes, E0292 next free"),
+  metric("Editor checks", "170", "Neovim, verified not gated"),
 )
 
 // ---------------------------------------------------------------------------
@@ -132,12 +132,13 @@
     - #done #h(3pt) rustc-grade diagnostics
     - #done #h(3pt) formatter round-trips the corpus
     - #done #h(3pt) editor integration (Neovim)
+    - #done #h(3pt) DWARF: lines, types, locals
     - #open #h(3pt) verified Linux x86-64 CI run
 
     #v(0.3em)
     #text(size: 7.2pt, fill: muted)[
       The last one needs a push. Configured, never run, so it is a decision rather than a technical
-      gap.
+      gap — and after twelve waves it is the *only* exit criterion still open.
     ]
   ],
   [
@@ -187,6 +188,21 @@
         named. It uses something refused *by design* now. And one of this wave's own new tests passed
         vacuously until it was teeth-checked.
       ]
+    - #text(size: 7.4pt, fill: warn)[
+        *A count is not an enforcement.* The test guarding `TrapKind::ALL` asserted `len() == 11` — which
+        catches nothing, since a variant left out keeps the length right. Replaced with an exhaustive
+        match, it *immediately* found four of fifteen kinds had never been in the list, in a list whose
+        doc comment described a driver loop that does not exist. Those four had therefore never been
+        checked for message distinctness — the property that keeps a real engine disagreement visible.
+        Third instance of one shape: a hand-kept list, a comment claiming something enforces it, nothing
+        that does.
+      ]
+    - #text(size: 7.4pt, fill: warn)[
+        *A plan entry saying "blocked on X" is worth twenty minutes of checking that X exists.* W12's last
+        item was recorded as blocked on `enable_value_labels` in Cranelift's ISA flags. That flag does not
+        exist — not in the settings, not in the meta crate, nowhere. The real gate is one
+        `collect_debug_info()` call, and wiring it produced ten real register ranges in twenty minutes.
+      ]
   ],
 )
 
@@ -198,7 +214,7 @@
 
 #let lang = (
   ("Full integer tower, bool, string, pointers", "pointer difference p - q, deferred"),
-  ("float32 and float64, plain IEEE-754, no traps", "percent on floats, is_nan, math (W7)"),
+  ("float32 and float64, plain IEEE-754, no traps; a Math module with vectors, Matrix4 and Quaternion", "percent on floats (E0223); is_nan"),
   ("struct, nominal, one level", ""),
   ("union, nominal, untagged — a cross-field read reinterprets", ""),
   ("variant — a tagged union: a wrong-case read traps, switch destructures", "a recursive variant; eliding the check in an arm"),
@@ -208,12 +224,17 @@
   ("#simd [N]T — a vector at one of the six register widths; elementwise +% -% *% on integers, + - * / on floats, lane indexing, .count", "any other width; integer /; comparisons (need a mask type); swizzles"),
   ("Per-field #align N (a minimum, power of two up to 4096) and #place N (an exact offset, may overlap, may be unaligned)", "a struct-level #align; any packing form; an operand needing evaluation"),
   ("..T variadics, including ..Any — arguments are pointers", "a bare value coercing to Any"),
+  ("#c_variadic — a C-convention variadic a #foreign declaration may take", "a Jairs procedure being one"),
+  ("An aggregate crosses a #foreign boundary, by the platform C ABI, in all three engines", ""),
+  ("A (T) -> U #c_call procedure *type*, so a body can be handed to C", "a #c_call procedure inside a #run"),
+  ("atomic_load, atomic_store, atomic_add, atomic_compare_exchange on s64, sequentially consistent", "wider types; other ops; weaker orderings; a fence"),
+  ("Threads: spawn, join, joinable, yield_now, and a spin lock — modules/Thread", "a per-thread backtrace; Thread_Local; channels"),
   ("cast and xx from context; operator overloading", "unary, index and call overloading"),
   ("Trapping arithmetic, wrapping variants, bitwise", "transmute; float printing"),
   ("if, else, while, for, break, continue, defer, using", ""),
   ("switch with exhaustiveness checking over an enum; else", "patterns, ranges, guards; a jump table"),
   ("Multiple returns, named args, literal defaults", "#must; a multi-result call in a return"),
-  ("import, foreign, system_library, #scope_module, #expand macros that splice, #modify predicates, #bake_arguments, @note metadata", "a reader for @note: the message loop (W6)"),
+  ("import, foreign, system_library, #scope_module, #expand macros that splice, #modify predicates, #bake_arguments, @note metadata, and noted_count / noted_name / noted_declarations to ITERATE it", ""),
   ("$T and $$T procedures, Box($T) structs, $N comptime-value parameters, #expand macros that splice, #modify predicates, #bake_arguments — W5 complete", "inference through Box($T); a length needing arithmetic"),
   ("Compile-time run at file scope or in a body, across files; type_info(), Any, #insert, #code", "a cross-file #run value; a Code value (declined)"),
   ("A type as a compile-time value: T :: Point aliases one, usable anywhere Point is", "a chain B :: A; comparing types; Type as an annotation"),
@@ -252,10 +273,16 @@
   bits: documented in three places because it cannot be diagnosed. *Indirect calls work* (ADR-0059) —
   this note used to call them the project's largest gap, and it went stale where nothing could catch
   it, which is the argument for a dashboard whose generator is committed. *The largest remaining gaps*
-  are a compiler message loop (W6), `File` and a merge sort (W7), and semantic tokens (W9).
+  are no longer wave-shaped, because every wave is closed: a *per-thread backtrace* (the shadow call
+  stack is one global, so a trap in a spawned thread may name the wrong frames), a *register-resident
+  local in DWARF* (measured reachable, needs `.debug_loclists`), a *file-scope mutable variable*, and
+  a *typed constant* plus *qualified imports* — the last two found by building the library rather
+  than by design review.
 ]
 
-#pagebreak()
+// No forced page break here. There was one, added when the language table happened to end near the
+// foot of page 1; six rows later it pushed this section onto page 3 and left page 2 about 60% blank.
+// Flowing is the right default for a document whose tables grow every wave.
 
 // ---------------------------------------------------------------------------
 // Internals
@@ -268,15 +295,16 @@
   ("Formatter", "works", "Pure function over the CST; has lost a construct in most waves that added a node kind — #simd made it 9"),
   ("HIR, name resolution, modules", "works", "Flat import merge; cycles legal; export filtering"),
   ("InternPool: types, values, layout", "works", "One layout computation and one integer evaluator, shared. Behind an RwLock: reads share, interning excludes"),
-  ("Sema: signatures, checking", "works", "118 codes, E0286 next free; no const-eval here, by design"),
+  ("Sema: signatures, checking", "works", "128 codes, E0292 next free, ownership enforced by a cross-crate test; no const-eval here, by design"),
   ("MIR: typed SSA", "works", "Block parameters, not phis; explicit bounds check and zeroing"),
   ("Mid-end", "5 passes", "Inline (non-leaf, bounded rounds), forwarding (cross-block), const-prop, DCE, plus the bounds-check strip. -O0 skips all of it"),
   ("Const-eval", "works", "Runs MIR through the bytecode VM"),
   ("VM: register bytecode, libffi", "works", "No JIT; indirect calls, malloc from its own region; a vector is memory and an elementwise loop"),
-  ("Cranelift back end", "works", "Aggregate returns via sret; indirect calls via func_addr; a vector is one register"),
-  ("LLVM back end", "works", "Via inkwell + LLVM 21, behind a default-off cargo feature; gate 7 is its own test run"),
-  ("Language server", "13 caps", "Diagnostics, hover, goto, completion, rename, actions, hints, symbols, signature help; semantic tokens absent (W9)"),
-  ("Neovim integration", "works", "Runtimepath dir, no plugin manager; 166 checks"),
+  ("Cranelift back end", "works", "Aggregate returns via sret; indirect calls via func_addr; a vector is one register; .debug_line and .debug_info written by hand with gimli"),
+  ("LLVM back end", "works", "Via inkwell + LLVM 21, behind a default-off cargo feature; gate 7 is its own test run; DWARF via !dbg metadata, so none of the gimli work carries over"),
+  ("DWARF debug info", "works", "Line tables, base and struct type DIEs with real field offsets, a subprogram per function, and stack-resident locals — in BOTH back ends, from one span source"),
+  ("Language server", "13 caps", "Diagnostics, hover, goto, completion, rename, actions, hints, symbols, signature help, and semantic tokens — the last one landed in ADR-0159, so the set is complete"),
+  ("Neovim integration", "works", "Runtimepath dir, no plugin manager; 170 checks"),
   ("Driver", "stub", "Should consume the workspace notion that now exists"),
 )
 
@@ -304,7 +332,7 @@
 // Roadmap
 // ---------------------------------------------------------------------------
 
-#section[Roadmap: W1–W5 and W8 closed; W6 and W7 open; W9 ahead, W10 blocked — see PLAN §8]
+#section[Roadmap: all twelve waves closed — see PLAN §1.5 and §7]
 
 #let waves = (
   (
@@ -321,7 +349,7 @@
   ),
   (
     "W4 Comptime", "done",
-    "Delivered in sub-waves, because a 10-14 week wave cannot be verified the way a one-ADR wave can. All ten have shipped, and W4 is complete as scoped. A #run may call an imported procedure and appear in a body (ADR-0069), turning two internal compiler errors into working programs. An array length may name a constant (ADR-0070), which replaced the scheduled aggressive const folding after probing showed const-prop already did it. A type is a compile-time value (ADR-0071), which closed a silent miscompile — a type bound to a local compiled to an undefined value in a slot with no layout. Insert of a string literal lowers where it is written (ADR-0072), in the enclosing scope, every synthesized span pointing at the directive because jr-diag clamps an out-of-range offset rather than rejecting it. And a computed insert (ADR-0073) evaluates its operand at compile time and splices the text — the point sema and the VM become mutually recursive, PLAN section 5's named top risk, broken by an acyclic pre-pass that reuses the constant evaluator and re-lowers only the affected bodies rather than by salsa fixed-point recovery. An aggregate compile-time value (ADR-0074): a #run returning a struct or array interns as its element values rather than a byte image, because the pool is target-independent and an image is not. And type_info(T) (ADR-0075), reflection's first half: a type's kind, name, size and alignment, the numbers coming from the same layout_of every real layout decision uses, so reflection cannot disagree with the layout it describes. Type_Info is declared in modules/Basic in Jairs rather than inside the compiler, because it has to be spellable — no compiler-declared type can be named at all — and the resulting dependency on a declaration the compiler does not own is validated on lookup, so editing that struct is a diagnostic rather than a read of whatever now sits at the old offset. Getting there first needed a constant that may hold a string, which ADR-0074's own closing claim said was already done and was not: the fourth false scheduled dependency this project has found, and the first where the false claim was its own ADR about the very next wave. And Any (ADR-0076, ADR-0077), reflection's second half: any_of erases a value to a {*Type_Info, *u8} pair and any_as reads it back, trapping unless the type matches — the erasing pointer conversion allowed only at that boundary, because a general one would make a wrong pointee type a silent wrong read. Nothing is reinterpreted, so neither back end needed a line. The checked read needed a runtime type identity the four-field Type_Info did not have — two type_info calls have different addresses, size and alignment collide, and name is unsound because a local and an imported type share a spelling — so Type_Info gained a stable id, the pool id the compiler already uses. And Type_Info's fixed-size per-kind facts (ADR-0078): a struct's field count and an array's or pointer's element type, added as flat s64 fields because a count is a number and an element type is a pool id — so they need none of the memory-ownership decision the variable-length field list does, which stays deferred. And #code (ADR-0080), unquoted source spliced into the enclosing scope — deliberately sugar over #insert, since #insert of a named constant already worked, so what it adds is no quoting and a body parsed where it is written. A Code value is declined rather than deferred: a quoted syntax tree is worth representing only once something can inspect or transform one. The same sub-wave refused a shipped silent miscompile found while probing (ADR-0079): a pointer or view inside a compile-time aggregate interned the evaluator's own address as an integer, giving 48 in one engine and a segfault in the other with no diagnostic. Out of W4's scope, each with a recorded reason: Type_Info's variable-length field list, which needs a declared static-data mechanism and is owed its own wave; a bare value coercing to Any, which needs a materialised temporary; and a #run reading another file's constant, which now reports itself rather than an internal error.",
+    "DONE in ten sub-waves (ADR-0069 to ADR-0080), delivered that way because a 10-14 week wave cannot be verified the way a one-ADR wave can. A #run may call an imported procedure and appear in a body (ADR-0069), turning two internal compiler errors into working programs. An array length may name a constant (ADR-0070), which REPLACED the scheduled aggressive const folding after probing showed const-prop already did it. A type is a compile-time value (ADR-0071), which closed a silent miscompile — a type bound to a local compiled to an undefined value in a slot with no layout at all. #insert lowers where it is written (ADR-0072/0073), in the enclosing scope, and a computed operand evaluates at compile time and splices before the point sema and the VM become mutually recursive. type_info(T) (ADR-0075) reads its numbers from the same layout_of every real layout decision uses, so reflection cannot disagree with the layout it describes, and Type_Info lives in modules/Basic in Jairs rather than inside the compiler. Any erases a pointer at a named boundary (ADR-0076); #code is a value the metaprogram waves consume.",
   ),
   (
     "W4.5 Pattern matching", "done",
@@ -329,31 +357,35 @@
   ),
   (
     "W5 Polymorphism", "done",
-    "COMPLETE in fifteen sub-waves (ADR-0081 to ADR-0097). The last piece, #bake_arguments specialisation, lowers a declaration to a REAL procedure — a clone with the baked parameters dropped, their literals substituted and the kept ones remapped, which is the same machinery $N instantiation uses, so W5 ends on a reuse rather than a new mechanism. A baked value must be a literal: ADR-0096 planned to use the const-eval pre-pass and building it showed that pre-pass runs AFTER lowering. #bake_arguments has its surface (ADR-0096) — a partial application producing a specialised procedure; its operand is a call so the named-argument spelling is the ordinary one, and its specialisation is refused E0276 pending the last W5 sub-wave. That refusal replaced a leaked gap report (the compiler could not lower main, please report it) which is right for an unknown gap and wrong for a named one. #modify is COMPLETE (ADR-0093/0094/0095): a compile-time predicate over an instantiation runs when a call binds the type variables, and a false refuses that instantiation (E0275) — so a template enforces its own constraints in code. It is hosted in file_mir, the only place with the expanded tree, its MIR and the VM, and rejections ride the existing diagnostics channel so it needed no new query. A predicate that fails to RUN is deliberately not a rejection. E0274 was retired when the predicate began running — the fourth by-design refusal raised then lifted. #modify has its surface (ADR-0093): a compile-time predicate over an instantiation, guarding a template in code rather than a comment. The block parses (the one procedure attribute carrying a block) and formats with its body; a call is refused E0274 pending evaluation, because a parsed-and-ignored predicate would accept calls the author rejected — ADR-0058 rule for the third time. Its evaluation is designed and deferred. type_info(T) now reflects a BOUND type variable (ADR-0092) — a $T procedure can ask its own bound type size, field count or identity, each instantiation seeing its own. That was found missing while designing #modify, whose predicate needs exactly it, and fixing it also turned a sixth leaked internal error into working code. The #expand SPLICE works (ADR-0091): a call splices the macro body into the caller scope, so a macro can modify the caller local — deliberately unhygienic like Jai. A generated prelude binds each argument once (substituting per use would re-evaluate a side-effecting argument), and expression position gets a generated result local so one mechanism serves both. The MIR shows no calls at all. Refused by design: an early return (E0273), a void macro in expression position, a cross-file call (E0272, which had been reaching the VM as an internal error). looks_like_proc_signature needed #expand too — the token-set trap for the fifth time, since a void macro reaches neither arrow nor brace. #expand macros have their surface (ADR-0090): a macro parses, formats and checks like any procedure, and a call is refused E0272 pending the splice — a refusal that ships WITH the surface, because without it #expand was accepted and silently ignored (a macro behaved as an ordinary procedure). jr-fmt dropped #expand on the first run, caught by gate 5. $N comptime-value parameters are complete — surface, instantiation, and [N]T sized by one (ADR-0089), where two instantiations get genuinely different array types from one declaration. They work end to end (ADR-0087 surface, ADR-0088 build): make :: ($N: s64) called as make(5) evaluates the argument via the same acyclic pre-pass #insert uses, and appends a concrete procedure with N baked into the body — parameter list drops the $N, each reference to N becomes a literal. Two calls at the same value dedupe (ADR-0005 extended to values), distinct values instantiate separately. Mixed comptime+runtime params (scaled :: ($N: s64, factor: s64)) pass only the runtime one at the call site — a per-call arg-mask filters at MIR, teeth-checked (disabling it makes the verifier catch an arity mismatch). E0271 refuses a non-constant argument at the call's span. Before that, $T procedures work end to end (ADR-0081-0084): a $T parameter is inferred from the call — directly or through a pointer or view — instantiated once per distinct tuple of bound types, checked per instantiation, and run as an ordinary procedure in both engines, so nothing polymorphic survives to the back end. And polymorphic structs (ADR-0085, built per ADR-0086): Box :: struct($T) { value: T; } used as Box(s64) is a type constructor, and Box(s64) and Box(bool) are distinct types from one declaration with substituted fields and layouts, told apart in the pool by the type argument in the key the way [2]s64 and [3]s64 are. It changed the pool's most load-bearing invariant — a struct's identity was its declaration site — and was landed in two commits, a zero-behaviour-change representation refactor proven by an unchanged snapshot and test count, then the parameterised behaviour, so a half-built type-identity change could not hide a miscompile. W5 is done; next is W6 Metaprogram then W7 Stdlib (modify, bake_arguments, expand), and the deferred struct pieces (inference through Box($T), using on one, cross-file, recursive List($T)), each a refusal today rather than a gap.",
+    "DONE in fifteen sub-waves (ADR-0081 to ADR-0097). $T inference, then $$T mixing inference with baking in one signature, then parameterised structs Box($T), then $N comptime-VALUE parameters — a length that is a constant rather than a type. #expand macros SPLICE their body into the caller's scope rather than calling it, #modify predicates run at instantiation and can REJECT one (E0275), and #bake_arguments produces a specialised procedure. The last piece lowers to a REAL procedure — a clone with the baked parameters dropped, their literals substituted and the kept ones remapped, which is the same machinery $N instantiation uses, so the wave ends on a REUSE rather than a new mechanism. Two plans were corrected by building: ADR-0096 intended to use the const-eval pre-pass and found it runs AFTER lowering, and the expansion fixed point (ADR-0120) needed a settling check because an instantiation family can fail to converge.",
   ),
   (
-    "W6 Metaprogram", "in progress",
-    "OPEN, four sub-waves shipped, and the wave headline claim is MET: a metaprogram can find declarations by note and generate code for each one. @note attaches metadata to a declaration (ADR-0098) — @deprecated, @requires \"x\" — its own node kind rather than a generic attribute, because a note is DATA for a metaprogram while the directives are INSTRUCTIONS to the compiler. has_note and note_value READ it at compile time (ADR-0099), folded in sema with no VM and no new query — unlike type_info, which folds later because it needs a layout; a note answer is in the HIR the checker already holds. The first argument is the declaration itself rather than its name as text, so a misspelling is an unresolved name instead of a silent false, which is the same silence the formatter dropped notes had. An absent note answers false and empty and is NOT an error: asking whether a note is present is the point, the opposite call from any_as which traps, and the difference is that any_as would otherwise return garbage while this returns the truth. noted_count and noted_name QUERY the file without naming declarations (ADR-0100), in declaration order — the one order a reader can predict, since a name sort renumbers every unrolled index when a declaration is inserted and a hash order makes one program answer differently between runs. And noted_insert GENERATES (ADR-0101): one template emitted once per noted declaration, hash standing for each name, spliced by #insert — so a single line generates a call to every noted procedure. The loop lives inside the FOLD, and that corrects ADR-0100 scope the way ADR-0094 corrected ADR-0093: folding cannot take a for variable, but that forbids a loop in the PROGRAM and says nothing about a loop inside the FOLD — and for generation the fold is the only thing that can work at all, since generated code must exist before checking, so a run-time loop could not declare a procedure or emit a statement. Probing found that #insert note_value(f, \"gen\") ALREADY worked, a note payload spliced as code, shipped and undocumented. Two refusals were leaked errors until this wave probed them: == on two strings reached the VM as expected a scalar found an aggregate (E0278), now refused for every aggregate the way a view equality already was, by a structural test since size and alignment cannot tell an s64 from a two-field struct of s32s. And a latent miscompile was fixed (ADR-0101): a folded value keyed by ExprId is STALE once a body expands, because a computed #insert renumbers every id after its splice — so with two computed inserts the second value landed on a different expression, putting a string on an arithmetic operand, and it surfaced as a VERIFIER PANIC rather than a diagnostic. That is the sharpest well-typed placeholder this project has had: the two earlier ones were placeholders that happened to be legal values, while this is a genuine value from the same program merely attached to the wrong expression, so nothing in the type system can see it is wrong. Remaining in W6: run-time INSPECTION — a loop reading declarations as values — which needs a compiler-emitted static-data table and lifts Type_Info variable-length field list at the same time, plus #run build() build scripts, plugin hooks and workspaces.",
+    "W6 Metaprogram", "done",
+    "DONE, closed by ADR-0154. @note attaches metadata to a declaration (ADR-0098) as its own node kind rather than a generic attribute, because a note is DATA for a metaprogram while the directives are INSTRUCTIONS to the compiler. has_note and note_value read it at compile time (ADR-0099), folded in sema with no VM and no new query — unlike type_info, which folds later because it needs a layout. The first argument is the declaration itself rather than its name as text, so a misspelling is an unresolved name instead of a silent false. noted_count / noted_name / noted_declarations then let a metaprogram ITERATE what it found, and the compiler-emitted static-data table was the wave-sized architectural decision that made it possible. The wave headline claim is met: a metaprogram finds declarations by note and generates code for each one.",
   ),
   (
-    "W7 Stdlib", "in progress",
-    "OPEN, seventeen sub-waves, and every one was driven by a refusal or a bug rather than a checklist. String (ADR-0103): equal, compare, starts_with, ends_with, find, contains, byte_at, is_empty, NONE of which allocate — it exists because ADR-0099 refused == on two strings (same storage and same contents are both plausible for a {data, count} pair) and named a byte loop as the fix, which is a library job rather than an operator since an == that looped would be the only implicitly-looping operator in the language. Its OWN module rather than more of Basic, and the deciding argument is not size: adding to Basic would mean nothing ever tested that TWO modules can be imported at once. Nothing allocates deliberately — the mechanism exists but the CHOICE between context-allocator, explicit parameter and always-temporary does not, and settling it in passing is how a library gets an accidental convention. Sort (ADR-0104) is the first POLYMORPHIC library code; the CALLER supplies the comparison because resolving an operator inside a $T template against the instantiated type is a lookup instantiation does not do, and insertion sort is chosen for STABILITY and NO ALLOCATION rather than speed. Writing it found TWO leaked internal errors: an imported procedure used as a VALUE (representable all along, a three-line bridge missing) and a call to an imported TEMPLATE (now E0268, with a diagnostic that NAMES THE WORKAROUND and a corpus file proving the workaround works) — both hiding behind a stale comment that said something checkable nobody had checked. Array (ADR-0105) is FIXED-CAPACITY, and three PROBED refusals decided that rather than effort: a malloc'd region cannot be typed, inference through a parameterised struct is deferred, and such a struct CANNOT CROSS A MODULE BOUNDARY — the last found by importing the module, which makes a polymorphic struct in a module unusable by everyone. Routing around them with hand-computed byte offsets was rejected: the standard library is the worst place to route around a deliberate refusal. Typed allocation (ADR-0106) is a LANGUAGE change: size_of, typed and untyped make heap storage reachable while cast stays refused — typed is not SAFER but VISIBLE, its target type a type argument at a searchable boundary. The plan was amended mid-build because MIR cannot reach malloc, so the library allocates and only the retyping is an intrinsic. It fixed a pre-existing store-to-load forwarding miscompile (forwarding deleted the very store-then-load that performs a retype), and the first fix was too broad — the optimized-MIR snapshot caught the lost optimisation, which is exactly the job a snapshot has since an optimisation quietly not happening is invisible to every other gate. List (ADR-0107) is the genuinely growable array, doubling from four so n pushes cost O(n) amortised; a NEW module rather than a rewrite because contracts differ — an Int_List OWNS memory and there are no destructors. It produced the corpus differential's FIRST REAL CATCH: 247 in the VM against 255 natively, because the VM satisfied malloc from the FRAME BUMP CURSOR, so heap memory allocated in a callee was reclaimed on return and read back as ZERO rather than garbage (release zeroes for determinism, making the symptom a clean wrong answer). Every earlier catch was a construct BOTH engines got wrong; this was one right and one wrong, which is what two implementations exist to expose. ADR-0108 reports every reachable file's diagnostics: a root whose imported module was broken used to check clean and fail inside an engine, because file_diagnostics answers for ONE file — resolution was never wrong, nothing ASKED the module. It rejects programs the compiler used to accept, every one of which was going to fail anyway later and less comprehensibly. ADR-0109 adds view(p, n), which builds a []T from a pointer and a count so sort_ints(elements(*l)) sorts a growable list IN PLACE — the library composes — and it revisited ADR-0044 whose stated reason for refusing view.data had expired (it wanted pointer arithmetic that now exists); the answer was the missing constructor, not the exposed field. And ADR-0110 makes a call through a NULL procedure pointer trap: found while probing what allocator String should use, since context.allocator is null until installed, and both engines were wrong differently — the VM decoded null to file 0 proc 0, an arbitrary real procedure, giving a message about an arity nobody wrote, while native would have jumped to address zero. The VM handle is now biased by one so zero means null, which valid/048 proved necessary by calling the first procedure in the file. Seven leaked internal errors have now become real diagnostics or working code. Then String grew its allocating half (ADR-0111: concat, substring, to_upper, to_lower through context.allocator, caller frees), Math shipped the exact closed-form functions (ADR-0112) and Random a deterministic xorshift64 generator (ADR-0113, which surfaced a language gap: a u64-range constant has no name-colon-type-colon-value form). ADR-0114 then let a FLOAT cross the FFI boundary, passed in a float register rather than a word in both engines — the unblocker Math named — and ADR-0115 collected it, adding Math's transcendentals (sqrt, sin, cos, exp, ln, powf) as libm wraps bit-identical in both engines because both call the same libm. Eight modules now: Basic, String, Sort, Array, List, Math, Random, Map. ADR-0116 added Int_Map, an open-addressed hash table, and writing it caught the SECOND engine divergence: the wrapping operators decoded to i128 and overflowed for two large u64 values, panicking the comptime evaluator while native code was right. Both differential catches have been in arithmetic or memory the native path did in hardware while the VM modelled it in Rust. Then the biggest language unblocker the wave had left: ADR-0117 lets a PARAMETERISED STRUCT CROSS A MODULE BOUNDARY, which three library sub-waves had named. It was not a lookup change — a parameterised struct fields are resolved per instance under the caller arguments, and its own file cannot do that, so the IMPORTER resolves them, which needs the field type tree in the DECLARING file arena. The check phase now receives the imported HIR. Identity stays the declaring file, so Box(s64) is one type across importers, and the pool needed nothing: ADR-0086 instance-keyed field map already covered it. ADR-0118 collected in the modules — Array($T) and List($T) declare their storage ONCE — and ADR-0119 finished the job by letting an intrinsic take a parameterised type argument (three separate refusals of one construct: sema, the resolver type-position flag, and MIR scan), which unblocked Map($K, $V). All three containers are generic structs now, and the MIR snapshots did not move, which is the right outcome since the instances lay out as the concrete structs did. Remaining: a merge sort and binary search, File and the OS modules, JSON, Compiler — plus three named unblockers all in PROCEDURE polymorphism: inference through a parameterised struct, cross-file $T instantiation, and using on an imported struct.",
+    "W7 Stdlib", "done",
+    "DONE in twenty-three sub-waves, closed by ADR-0158, and every one was driven by a refusal or a bug rather than a checklist. String exists because ADR-0099 refused == on two strings — same storage and same contents are both plausible for a {data, count} pair — and named a byte loop as the fix, which is a library job since an == that looped would be the only implicitly-looping operator in the language. Its OWN module rather than more of Basic, and the deciding argument is not size: adding to Basic would mean nothing ever tested that TWO modules can be imported at once. Then Sort, Array, Map, Math (vectors, Matrix4, Quaternion — ADR-0115 had declared Math complete when none of the three existed), Random, Time, Bucket_Array, JSON, File, File_Utilities, Process and Socket. Twenty modules. Four polymorphism defects and two silent divergences were found by USING the language rather than by testing it, which is the argument for dogfooding as the acceptance test.",
   ),
   (
     "W8 Performance", "done",
     "DONE in eight sub-waves (ADR-0142 to ADR-0149). An optimisation level -O0/-O1 whose real deliverable is the check the mid-end never had: every corpus program behaves identically at both levels, so a wrong answer is attributable to lowering rather than a pass. The LLVM back end via inkwell behind a default-off feature, making the differential three-way — it agreed with the VM on all 114 executable programs on the FIRST run, because both native engines read the same MIR and ask jr-pool the same layout questions. #align and #place, the first features whose whole implementation is a layout FEATURE rather than a fix. Inliner maturity: the leaf rule is gone, termination is a bounded round count, and forwarding follows a single-predecessor chain — 024-hello's optimised MIR now flattens three call layers the old pipeline could not. A published compile-throughput number, and heap_sort chosen by a COMPARISON COUNT rather than a wall clock, because this project can measure its own throughput and deliberately cannot measure the programs it compiles. #soa, where the sugar IS the feature — without e[i].x it buys nothing over writing [N]T by hand. #simd, whose legal widths were set by probing Cranelift rather than by taste, and whose integer lanes take the wrapping operators because no vector add can trap. And parallel sema, MEASURED AND REFUSED: 1.20x against a 2.5x ceiling, reverted, with the 40%-serial measurement and two named blockers left behind.",
   ),
   (
-    "W9 Tooling depth", "not started",
-    "Semantic tokens are the one LSP capability still missing; the other thirteen landed early. Richer DWARF (locals, struct layouts) for lldb, and Neovim packaging — VS Code was descoped by ADR-0036, and any LSP client works unpackaged.",
+    "W9 Tooling depth", "done",
+    "DONE, closed by ADR-0159. Semantic tokens were the one LSP capability still missing and the other thirteen had landed early; the set is now complete. The wave also RE-SCOPED its own DWARF item with evidence rather than carrying the plan's description: the plan said 'richer DWARF (locals, struct layouts)' as one line, and probing showed it is two implementations — Cranelift wants .debug_info DIEs written by hand while LLVM writes DWARF itself from metadata — so it moved to W12 where it could be budgeted honestly. VS Code stays descoped by ADR-0036, and any LSP client works unpackaged.",
   ),
   (
-    "W10 Graphics, in Jairs", "blocked",
-    "BLOCKED, not merely unstarted, and PLAN section 8.5 corrects the record. It was described as ALL library work with no compiler changes; that is false. No aggregate crosses a #foreign boundary today — calling such a procedure is a leaked internal error in both engines, the ninth occurrence of this project's most-recorded failure shape — and every windowing and GPU API passes structs by value: CGRect, CGPoint, MTLViewport. objc_msgSend is C-variadic on top of that, which is a third thing neither engine does, and a Jairs ..T variadic is its own packing convention rather than the C one. So W10's real prerequisites are a diagnostic (E0286), then FFI aggregates and C-variadics, then W7's File. Window creation through Cocoa, a GPU layer (Metal then Vulkan), an immediate-mode 2D renderer, image decode, UI and audio all sit above that.",
+    "W10 Graphics, in Jairs", "done",
+    "DONE in four steps (ADR-0164 to ADR-0167), on a foundation the plan had wrong. It was described as ALL library work with no compiler changes; PLAN §8.5 corrected that, and the corrections cost three compiler waves first: no aggregate crossed a #foreign boundary (ADR-0160/0161, a shared C ABI classification in jr-pool so all three engines agree), objc_msgSend is C-variadic on top of that (ADR-0162, the #c_variadic marker and E0289), and a library search path was needed to link SDL2 at all (ADR-0163). Then Window and a 2D surface, an event loop ADR-0164 had said was impossible — recorded and then DISPROVED by one line, because SDL_Event is a union and a *pointer to one is takeable — immediate-mode UI widgets, and Image with BMP and textures.",
   ),
   (
-    "W11 Concurrency", "not started",
-    "NEW, split out of W7 by PLAN section 8.3. Thread plus atomics was one item in a stdlib list and is really a wave comparable to W4: there is no thread support anywhere in the runtime — not in the VM, whose Value and linear memory region assume one execution context, and not in the trap machinery, whose shadow call stack is a single mutable global in native code. It needs a per-thread VM stack, atomics as language operations rather than library calls, a memory model to say what they mean, and a rule for whether comptime execution may spawn one. Named rather than left as a list item that would be quietly dropped or quietly become a quarter of work.",
+    "W11 Concurrency", "done",
+    "DONE, and the LAST of the twelve (ADR-0175 to ADR-0177). The blocker was not the one this row used to name. PLAN §8.3 said a per-thread VM stack, atomics as language operations, and a comptime rule; it did not say a thread body could not be NAMED. pthread_create takes a function pointer, and #c_call was a DECLARATION attribute with no spelling in a TYPE — jr-pool had modelled the two conventions as distinct types since ADR-0001 and the checker interned the distinction away with a comment explaining why that was safe. Found by three probes in four minutes, the third reporting 'expected (s64) -> s64, found (s64) -> s64': two identical types, because the type describer did not render the convention either. Then atomics as a MIR Rvalue rather than library calls, which the exhaustive-match rule turned into nine compile errors each of which had to be argued — forwarding would have moved a write past a synchronisation point, DCE would have deleted a compare-exchange whose EFFECT is the lock. Then modules/Thread as a binding, with a spin lock because pthread_mutex_t is 64 opaque platform-sized bytes this language cannot spell. Three threads, 3000 atomic increments, exactly 3000, in both native back ends, five runs per test.",
+  ),
+  (
+    "W12 Debug info", "done",
+    "DONE in six waves (ADR-0169 to ADR-0174), and §8.4 had claimed line tables already existed when dwarfdump on a built binary printed an empty section. So it started from zero. A .debug_line for Cranelift written by hand with gimli — a SourceLoc indexing a (path, line) vocabulary, a relocation writer for sequence addresses — and then for LLVM, where NONE of that is reusable because LLVM writes DWARF itself from !dbg metadata. Both verified by PARSING the section the way lldb does rather than grepping dwarfdump. Items 2 and 3 turned out COUPLED: a struct mapping was written, was correct, and dwarfdump showed no struct, because LLVM prunes a type nothing declares and a signature is not a declaration — what retains a type is a VARIABLE of it. One item remains and is specified rather than vague: a register-resident local, whose plan entry named an ISA flag that does not exist.",
   ),
 )
 
@@ -380,59 +412,64 @@
 // This session
 // ---------------------------------------------------------------------------
 
-#section[What the last stretch did, and the two claims it settled]
+#section[What the last stretch did, and the three claims it settled]
 
 #grid(
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[W8 shipped, in eight sub-waves]
+    #sub[Four waves shipped; the programme closed]
     #text(size: 7.4pt)[
-      ADR-0142 through 0149. Test count 986 to *1033* (1034 with LLVM compiled in), corpus 210 to
-      *237* files, ADRs 120 to *149*. The wave's shape is worth more than its list: seven sub-waves
-      shipped a feature and the eighth shipped a *number*, which is what closing a performance wave
-      honestly looks like.
+      ADR-0155 through 0178. Test count 1033 to *1071* (1075 with LLVM compiled in), corpus 237 to
+      *255* files, ADRs 149 to *178*. W7, W9, W10, W11 and W12 all closed, which means *every wave in
+      the plan is done* — and three of the five had to correct the plan's own description of them
+      before they could start.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      *A third engine costs less than it looks* when the seam was drawn early. ADR-0009 put every
-      `cranelift-*` reference behind `jr-codegen::Backend` twelve waves before there was a second back
-      end to justify it. Paying that in ADR-0143 took one crate and found exactly what such a seam is
-      for: `TrapKind` and the trap helper moved into the shared crate, because they are the *words*
-      trapping programs print, and a second copy would have been a second chance to drift from the
-      bytes the differential compares.
+      *The wave order was right and the wave contents were not.* W10 was listed as pure library work;
+      it needed three compiler waves first (FFI aggregates, C-variadics, a library search path). W9's
+      "richer DWARF" was one line and is two implementations. W11's blocker was a missing *type*, not
+      the runtime work the row named. In each case the correction came from writing the thing, and in
+      each case the plan row now records what was wrong rather than quietly reading as though it had
+      always said this.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      *Two features needed no engine change at all*, and both for the same reason. `#soa` transforms
-      field types in the type checker *before* layout runs, and a `#simd` vector has the array's exact
-      layout — so `jr-pool`'s single layout computation carried both into the VM and both back ends.
-      `#simd` needed no MIR lowering for lane access whatsoever, which is the strongest evidence its
-      "same layout, different operations" reading is right.
+      *A seam drawn early keeps paying.* ADR-0009 confined `cranelift-*` behind `jr-codegen::Backend`
+      twelve waves before a second back end existed. The DWARF waves are the third collection to
+      benefit: `TrapKind`, `SourceInfo::position` and now the whole span vocabulary live in the shared
+      crate, so a line-table row and a trap's `--> file:line:col` come from *one* resolution and cannot
+      say 41 and 40.
     ]
   ],
   [
-    #sub[Two claims the measurements settled]
+    #sub[Three claims the probes settled]
     #text(size: 7.4pt)[
-      *A vector type's legal widths are a machine fact, not a design choice.* Cranelift's `Type::by`
-      cheerfully constructs a 256-bit vector, reports its width, and then fails to compile a single
-      `iadd` on it. A design that trusted the constructor would have looked complete until the first
-      build. Probing set the six legal shapes, and separately established that no ISA has an integer
-      vector divide — so `/` on an integer vector is refused rather than quietly scalarised into
-      something slower than the scalar code it replaced.
+      *A negative result from one program is evidence about that program.* ADR-0172 §3 concluded, from
+      a single test, that a structure-typed local could never be shown by name. ADR-0174 disproved it an
+      hour later with a one-line change: it depends on *use*. One passed to a procedure by value is
+      named, in both engines; one only assigned field by field is not. Generalising a negative needs a
+      second program that differs in the suspected dimension.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      *Parallelism was refused by its own numbers.* A parallel `jr check` was written, worked, and
-      produced byte-identical output at 1, 2, 4, 8 and 12 threads. Instrumenting the pool guard found
-      571 acquisitions holding it for ~30 ms of a 74 ms check — 40% serial, so Amdahl caps any
-      driver-level parallelism at 2.5x, and the measured process-level gain was 1.20x on a clean tree
-      and 1.01x on a mixed one. It was reverted: 1.2x does not pay for a deadlock mode that appears
-      *only* under threads. The parallel-codegen probe was worse — it looked like 84% lock contention
-      and was actually measuring duplicated work, because no program here has more than four files.
+      *An impossibility claim is a probe you have not run.* ADR-0164 recorded that an event loop was
+      impossible because `SDL_Event` is a union and no pointer to one could be taken. ADR-0165 built it
+      the next wave — the premise was simply wrong, and it had been *written down* as a design
+      constraint. Both the claim and its withdrawal are in the record, because a project that quietly
+      deletes its wrong claims cannot learn the shape of them.
+    ]
+
+    #v(0.3em)
+    #text(size: 7.4pt, fill: warn)[
+      *A data race is worth measuring, not asserting.* The memory model's data-race clause is not a
+      promise: the same three-thread program with a plain `+ 1` instead of an atomic add produced *1000
+      instead of 3000* on one run of three. Two thousand increments lost, no diagnostic. That number is
+      why §3 of ADR-0177 exists as a section rather than a paragraph saying one would be written later.
     ]
   ],
 )
@@ -444,32 +481,40 @@
   radius: 2pt,
   fill: rgb("#eaf5ee"),
   stroke: 0.5pt + good,
+  // Unbreakable: this box split across a page boundary mid-sentence, which reads as a rendering
+  // fault rather than a design choice. A callout is one unit or it is not a callout.
+  breakable: false,
 )[
   #text(size: 7.4pt, weight: "bold", fill: good)[SETTLED SINCE THE LAST DASHBOARD]
   #v(0.15em)
   #text(size: 7.4pt)[
-    *Everything is merged.* This box used to say `main` sat at `ec150a5` with twenty-three waves stacked
-    on branches ahead of it. Every wave through W8 is now merged with `--no-ff`, one merge commit per
-    wave — so `git log --merges main` reads as the wave history, which is a claim you can check rather
-    than a revision that goes stale the moment this file is committed. (That is why no SHA appears here:
-    the commit that would record one changes the thing it records.) The branch names were corrected
-    first — two W8 sub-waves had been committed onto a sibling's branch, and `feat/simd` and
-    `feat/parallel-sema` now name their own work.
+    *All twelve waves are closed, and everything is merged.* Twenty-three more waves went onto `main`
+    with `--no-ff`, one merge commit each, so `git log --merges main` still reads as the wave history —
+    a claim you can check rather than a revision that goes stale the moment this file is committed.
+    (That is why no SHA appears here: the commit that would record one changes the thing it records.)
+    The branch names were corrected first *again*: sixteen waves had accumulated on a single
+    `feat/c-variadic` branch, the same hygiene slip the last dashboard recorded fixing for two W8
+    sub-waves, so each now names its own work.
   ]
   #v(0.15em)
   #text(size: 7.4pt, style: "italic")[
     The one open slice criterion is still a verified Linux x86-64 CI run — configured, never run, which
-    makes it a decision rather than a technical gap. Two other things are owed and cheap: the security
-    audit's remaining two dispatches (by hand — six subagent dispatches returned empty), and
-    `tree-sitter test` added to gate 6, which today catches grammar drift but not a broken rule.
+    makes it a decision rather than a technical gap, and it is now the *only* one. Owed and specified
+    rather than vague: a per-thread shadow call stack, so a trap in a spawned thread names the right
+    frames; a register-resident local in DWARF, measured reachable and needing `.debug_loclists`; the
+    security audit's remaining two dispatches (by hand — six subagent dispatches returned empty); and
+    `tree-sitter test` added to gate 6, which catches grammar drift but not a broken rule.
   ]
 ]
 
 #v(0.4em)
 #text(size: 6.6pt, fill: muted)[
   Sources: PLAN.md §1.5 and §7, the ADR directory, `docs/decisions/DECISIONS.md`, and all seven gates
-  run today on `main`. Every number was measured rather than carried forward — the test count from a full
-  workspace run, the corpus count from a file walk, the diagnostic codes from the `const E0nnn`
-  definitions across the crates, and the editor-check count from a real `verify.lua` run. Rebuild with
-  `typst compile jairs-dashboard.typ`.
+  run today on `main` *after* the merge, not on a branch. Every number was measured rather than carried
+  forward — the test count from a full workspace run (1071, zero failures) and a second under
+  `--features jr-cli/llvm` (1075), the corpus count from a file walk (255 `.jr` files under
+  `tests/corpus/` outside `tests/corpus/modules/`), the ADR count from `docs/adr/`, the diagnostic codes
+  from the `const E0nnn` definitions across the crates — whose ownership is now enforced by
+  `jr-cli/tests/codes.rs` rather than asserted in prose — and the editor-check count from a real
+  `verify.lua` run (170). Rebuild with `typst compile jairs-dashboard.typ`.
 ]
