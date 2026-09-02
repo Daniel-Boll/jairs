@@ -212,6 +212,25 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0159 reaches 1040** (1041 under gate 7), adds **no** corpus file — still **250** — and takes the
+Neovim check count 166 → **170**. PLAN §8.4, W9 — Tooling depth: semantic tokens, the fourteenth and last LSP
+capability. All five new tests are `jr-lsp`'s, because a token classifier's behaviour is not something a `.jr`
+program can observe — the same reason the compile-throughput wave moved only the test count.
+
+**Two things from it worth carrying forward.** The provider classifies by **CST context first** and resolution
+only for a bare `NAME_EXPR`, which is what makes it work in a file that does not parse — the state an editor is
+in most of the time, and a case the tests pin with `return p.` mid-expression. And the delta encoding is
+guarded by sorting the tokens before encoding and by computing each length from **two positions** rather than
+a byte range: one out-of-order token corrupts every position after it, and a byte length overruns under UTF-16.
+The tests decode the stream back rather than asserting on raw integers, for both reasons.
+
+**§8.4's DWARF row was written from a false premise, and correcting it is the wave's second deliverable.**
+It said "line tables exist"; there is **no DWARF at all** — probed: empty `.debug_line`, no `__DWARF` segment,
+no `gimli` consumer, no source location on any instruction. The README's capability table was right the whole
+time, which is the argument for keeping it. The item is a from-scratch writer and is now **W12 — Debug info**,
+named the way §8.3 named W11 rather than left as a mis-estimated line. **When a plan row and the README
+disagree, probe before planning around either.**
+
 **ADR-0158 reaches 1035** (1036 under gate 7) and adds one corpus file = **250** — PLAN §8.3 items 6 and 7,
 `modules/Process` and `modules/Socket`, which **close W7 — Stdlib**: nine of nine, with `Compiler` delivered
 inside W6 and `Thread` split out to W11.

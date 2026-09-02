@@ -828,6 +828,7 @@ dependencies = [
  "jr-hir",
  "jr-pool",
  "jr-sema",
+ "jr-syntax",
  "lsp-server",
  "lsp-types",
  "salsa",

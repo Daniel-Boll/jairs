@@ -17,6 +17,7 @@ jr-diag.workspace = true
 jr-hir.workspace = true
 jr-pool.workspace = true
 jr-sema.workspace = true
+jr-syntax.workspace = true
 lsp-server.workspace = true
 lsp-types.workspace = true
 salsa.workspace = true

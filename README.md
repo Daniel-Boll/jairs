@@ -18,9 +18,22 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated with **W7 — Stdlib DONE** (W6 — Metaprogram and W8 — Performance are done too), 1035 tests
-green — 1036 with the LLVM back end compiled in. **Three waves remain: W9 — Tooling depth, W10 — Graphics,
-W11 — Concurrency.**
+Last updated with **W7 — Stdlib and W9 — Tooling depth both DONE** (W6 — Metaprogram and W8 — Performance
+were already), 1040 tests green — 1041 with the LLVM back end compiled in. **Three waves remain: W10 —
+Graphics, W11 — Concurrency, and W12 — Debug info.**
+
+**Semantic tokens ship** (ADR-0159), the fourteenth and last LSP capability — and the only one whose whole
+value is information the parser does not have. The tree-sitter grammar colours this language well and cannot
+tell one identifier from another: `Point` and `count` are both `IDENT` to it, and so are a parameter, a field,
+a procedure and a module. The provider classifies by syntactic **context** first and asks the resolver only
+about a bare name, which is what makes it work in a file that does not parse — the state an editor is in most
+of the time.
+
+**And W9's other item turned out to be mis-described, which is the wave's second deliverable.** The plan said
+"line tables exist; locals and layouts do not". There is no DWARF at all: an empty `.debug_line`, no `__DWARF`
+segment, nothing consuming the `gimli` dependency the workspace already declares. This README's own capability
+table said "Not started — no DWARF at all" and was right the whole time. So a debug-info writer is now a named
+wave of its own rather than a line in a wave described as "small, and mostly already done".
 
 **The standard library is complete as scoped** (ADR-0158): `Basic`, `String`, `Sort`, `Array`, `List`, `Map`,
 `Math`, `Random`, `Generic_Types`, `Time`, `Bucket_Array`, `JSON`, `File`, `File_Utilities`, `Process`,
@@ -841,7 +854,7 @@ ignoring the flag a compile error, is owed its own ADR. There is no GC and no RA
 | Neovim integration | **Works** | `editors/nvim/` (ADR-0025), verified against the real editor by a **166**-check script — **not** by CI, which has no Neovim |
 | VS Code integration | **Will not be built** | ADR-0036: the maintainer does not use it, and a packaging target for an unused editor rots. `jr lsp` is editor-agnostic, so any LSP client works |
 | Compilation driver / workspaces | **Partly** | `jr-driver` is still a one-line stub; the workspace *file list* exists in `jr-db::workspace` (ADR-0029): the search paths plus the root tree, walked and watched, bounded at 10 000 files |
-| Debug info | **Not started** | No DWARF at all; a native binary is not debuggable |
+| Debug info | **Not started — now W12** | No DWARF at all; a native binary is not debuggable. This row was right and the plan's was wrong, which ADR-0159 §7 corrected: a `gimli` writer is owed in *both* back ends, and locals need `ValueLabel`s the Cranelift lowering does not emit |
 | Compile throughput | **Measured** | `jr bench --throughput` (ADR-0146). 113 k lines/s checking and 26 k building, on the machine named in the status section — `build` is 4.4× `check`. Not a gate, and not compared against anything: this is the first number, so there is no trend yet |
 | Optimisation levels | **Two** | `--opt-level` takes `0` or `1` (short `-O`) on `jr run` and `jr build`, defaulting to 1 = the pipeline (ADR-0142). `-O0` runs no mid-end pass and is asserted to leave every body byte-identical to what lowering produced. No `-O2` and no `--release`, both deliberately: a level with no pass behind it is a promise, and `--release` is a bundle that would re-couple the safety setting ADR-0058 unbundled. The level does not reach a *back end* yet — Cranelift's own optimisation level is untouched, and selecting a back end is the LLVM sub-wave's business |
 

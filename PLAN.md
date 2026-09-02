@@ -258,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0158. See [`docs/adr/README.md`](docs/adr/README.md). (This line
+Accepted ADRs: 0001–0159. See [`docs/adr/README.md`](docs/adr/README.md). (This line
 said 0001–0128 for thirteen ADRs, which is the argument §7 makes for its own count
 being the one to trust.)
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
@@ -363,6 +363,7 @@ dependency chain requires it. `rust-toolchain.toml` still floats on stable.
 | **W9 — Tooling depth** | Full LSP surface (completion, refs, rename, signature help, semantic tokens, **inlay type hints**, code actions), richer DWARF (locals, struct layouts) for lldb, Neovim packaging (VS Code descoped by ADR-0036; any LSP client works unpackaged) | Incremental all along; this is the "make it excellent" pass | 8–10 wks |
 | **W10 — Graphics, in Jairs** | `Window_Creation` (Cocoa via `#foreign`), GPU layer (Metal, then Vulkan), immediate-mode 2D renderer, image decode, immediate-mode UI, audio (CoreAudio/ALSA) | ~~All *library* work, written in Jairs — no compiler changes.~~ **That was wrong, and §8.5 corrects it**: no aggregate crosses a `#foreign` boundary today (it is a leaked ICE, §8.1.3), and every windowing and GPU API passes structs by value — `CGRect`, `CGPoint`, `MTLViewport` — while `objc_msgSend` is *C-variadic*, which is a third thing neither engine does. So W10 needs **two compiler waves** first and its honest state is **blocked**, not "not started". Gated on W5 (done), W7's `File`, and the FFI work | 6+ months |
 | **W11 — Concurrency** | `Thread`, atomics, and the memory model that says what they mean | **New, split out of W7 by §8.3.** Needs a per-thread stack in the VM, atomics as language operations rather than library calls, and a decision about whether comptime execution may spawn a thread. Named rather than left as a stdlib item that would be quietly dropped or quietly become a quarter of work | not estimated |
+| **W12 — Debug info** | A DWARF writer: `.debug_line` from `MirSpan`, type and struct-layout DIEs from the pool, and locals through Cranelift's value labels | **New, split out of W9 by ADR-0159 §7.** §8.4 claimed "line tables exist" and there is **no DWARF at all** — probed, not argued. Needs a `gimli` unit in *both* back ends (they share no emission path), `ValueLabel`s attached during lowering for locals, and a decision about `__DWARF` versus a `dsymutil` bundle. Named rather than left as a mis-estimated line in a "small, mostly already done" wave | not estimated |
 
 ### 2.2 Wave dependency graph
 
@@ -566,12 +567,17 @@ and W6's static-data decision (ADR-0152/0153/0154) closed that wave.
 merge sort (ADR-0155), `JSON` (ADR-0156), `File` + `File_Utilities` (ADR-0157), and `Process` + `Socket`
 (ADR-0158). `Compiler` shipped inside W6 and `Thread` is W11, both as §8.3 recommended.
 
-**So the remaining waves are W9 — Tooling depth, W10 — Graphics, and W11 — Concurrency.** §8.4 and §8.5 are
-their plans. W9 is the one that needs nothing new: semantic tokens and richer DWARF are both additive, and
-§8.4 calls it "small, and mostly already done". **W10 is still blocked** on §8.1.2 — an aggregate crossing the
-`#foreign` boundary — and that single change now unblocks **three** named things: W10 entirely, `readdir` and
-`stat` in `File_Utilities`, and `getaddrinfo` in `Socket`. That makes it the highest-leverage item left and
-the obvious thing to do before W10 rather than inside it.
+**W9 — Tooling depth is DONE too** (ADR-0159): semantic tokens shipped as the fourteenth and last LSP
+capability, Neovim packaging was already there, and VS Code stays declined (ADR-0036). Its DWARF item was
+described from a **false premise** — §8.4 said "line tables exist" and there is no DWARF at all, probed — so
+it is now **W12 — Debug info**, named in §2.1 the way §8.3 named W11.
+
+**So the remaining waves are W10 — Graphics, W11 — Concurrency, and W12 — Debug info.** §8.5 is W10's plan.
+**W10 is still blocked** on §8.1.2 — an aggregate crossing the `#foreign` boundary — and that single change
+now unblocks **three** named things: W10 entirely, `readdir` and `stat` in `File_Utilities`, and `getaddrinfo`
+in `Socket`. That makes it the highest-leverage item left and the obvious thing to do before W10 rather than
+inside it. W12 has no blocker at all, which makes it the one to reach for while something above is pending —
+the role W9 just played.
 
 > [!IMPORTANT]
 > **The FFI is where the last three waves' surprises came from, and all four were silent.** ADR-0157 found a
@@ -616,8 +622,8 @@ crossing the `#foreign` boundary — which is also W10's hard gate, so one chang
 an `Any` or a procedure handle through `jr-vm`'s untagged `union`; `jr-lsp` path handling — URI
 decoding, `..`, symlinks), which must be done **by hand** because six subagent dispatches returned
 empty; and `tree-sitter test` added to gate 6, which today catches grammar *drift* but not a broken
-grammar *rule*. **1035 workspace tests** (1036 under gate 7) and **250 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
-has ever happened — plus **166** Neovim checks. See §1.5.
+grammar *rule*. **1040 workspace tests** (1041 under gate 7) and **250 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
+has ever happened — plus **170** Neovim checks. See §1.5.
 
 > [!NOTE]
 > **W8's first sub-wave added eight tests and no corpus file**, which is worth naming because it is a
@@ -2550,21 +2556,35 @@ it one item in a stdlib list is the sort of estimate §5 exists to catch.
 atomics out of W7 into a named future wave (W11) rather than leaving it as an item that will be
 quietly dropped or quietly become a quarter of work.
 
-### 8.4 W9 — Tooling depth: small, and mostly already done
+### 8.4 W9 — Tooling depth: **done as re-scoped** (ADR-0159)
 
 | Item | State |
 |---|---|
-| Semantic tokens | the **one** LSP capability absent; thirteen providers already ship |
-| Richer DWARF (locals, struct layouts) for lldb | line tables exist; locals and layouts do not |
-| Neovim packaging | the runtime directory works unpackaged; VS Code declined by ADR-0036 |
+| Semantic tokens | **done — ADR-0159.** The fourteenth and last LSP capability, and the only one whose value is information the parser does not have: a grammar sees `IDENT` where a reader sees a parameter, a field, a type or a module. Context leads and resolution follows, so a file that does not parse still colours |
+| Neovim packaging | **already done** — the runtime directory works unpackaged; VS Code declined by ADR-0036 |
+| Richer DWARF (locals, struct layouts) for lldb | **moved to W12.** This row used to say "line tables exist; locals and layouts do not", and that was **false** |
 
-Semantic tokens are a day's work over the existing CST and the resolution map — the information is all
-present, and the delta-encoding protocol is the only fiddly part. Richer DWARF is the real content, and
-it wants the same `jr-pool` layout data every back end already reads, which is the reason it is
-plausible at all.
+> [!IMPORTANT]
+> **This section's DWARF row was written from a wrong premise, and the correction is the wave's second
+> deliverable.** Probed rather than argued: `jr build` produces a binary with **no DWARF whatsoever** — an
+> empty `.debug_line`, no `__DWARF` segment, no crate consuming `gimli` (which the workspace declares and
+> nothing uses), and no source location set on any instruction. The README's own capability table said
+> "**Not started** — no DWARF at all; a native binary is not debuggable", which was right the whole time.
+>
+> So the item is not "locals and layouts on top of existing line tables"; it is a from-scratch writer, and
+> ADR-0159 §7 lists its five parts. One of them *is* ready — the Cranelift back end already tracks a current
+> `MirSpan` per statement for trap locations (ADR-0020), so a line program needs a second consumer of
+> information that exists. **Locals are the real work**: a location is a frame offset or a register varying by
+> code offset, reported through `CompiledCode::value_labels_ranges`, which is populated only for values the
+> producer *labelled* — and this back end labels none.
+>
+> That is comparable to W9's whole original estimate, so it is **W12 — Debug info** in §2.1 rather than an
+> item that would be quietly dropped or quietly become a quarter of work. Exactly what §8.3 did to `Thread`,
+> and for the same reason. Delivering the line table alone and calling W9 done was **rejected**: it would
+> leave this row half-true in the other direction, which is how it got wrong in the first place.
 
-**W9 is deliberately last-but-one and could be done at any time.** It has no blocker in §8.1, which
-makes it the wave to reach for when a decision above is pending and work should continue anyway.
+**W9 was deliberately last-but-one and could be done at any time.** It had no blocker in §8.1, which made it
+the wave to reach for while a decision above was pending — and that is exactly how it was picked up.
 
 ### 8.5 W10 — Graphics: gated, and honest about what gates it
 
