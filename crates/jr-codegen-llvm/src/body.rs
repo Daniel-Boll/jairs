@@ -70,6 +70,20 @@ use crate::repr::{self, Repr, ScalarRepr, pointer_int};
 /// distinction `jr-vm`'s `Shape` draws, and for the same reason (ADR-0015 §3).
 type Slot<'ctx> = Option<BasicValueEnum<'ctx>>;
 
+/// The alignment this back end claims on a load, a store or a copy.
+///
+/// **One, deliberately, and it is a soundness fix rather than a pessimisation** (ADR-0144 §4).
+/// An LLVM `load ... align N` is a *promise* about the address, and undefined behaviour when the
+/// promise is false. This back end computes every address itself from `jr-pool`'s offsets, and a
+/// `#place`d field may sit at an offset its type's natural alignment does not divide — so claiming
+/// the type's alignment would be claiming something the compiler has not established.
+///
+/// `align 1` is always true. It costs nothing here because the module is emitted at
+/// `OptimizationLevel::None`, where LLVM has no alignment-dependent transform to decline; the
+/// alignment that *is* established — an `alloca`'s — is still requested exactly, because there this
+/// back end is the one making the promise rather than relying on one.
+const CLAIMED_ALIGN: u32 = 1;
+
 /// Turns an inkwell builder failure into this crate's error.
 ///
 /// A builder error means the IR being requested is malformed — a value of the wrong class, a
@@ -405,7 +419,7 @@ impl<'ctx> Translator<'ctx, '_> {
             // The tag is one byte at the variant's own address (ADR-0068 §3).
             Statement::TagCheck { place, case, .. } => {
                 let address = self.address(place)?;
-                let tag = self.load_int(address, self.context.i8_type(), 1, "tag")?;
+                let tag = self.load_int(address, self.context.i8_type(), "tag")?;
                 let expected = self.context.i8_type().const_int(u64::from(*case), false);
                 let wrong =
                     built(
@@ -1194,12 +1208,7 @@ impl<'ctx> Translator<'ctx, '_> {
         let (stack, depth_global) = self.shared.shadow;
 
         let depth_addr = depth_global.as_pointer_value();
-        let depth = self.load_int(
-            depth_addr,
-            word,
-            self.shared.target.pointer_size,
-            "d",
-        )?;
+        let depth = self.load_int(depth_addr, word, "d")?;
 
         let capacity = word.const_int(self.shared.shadow_capacity as u64, false);
         let in_range =
@@ -1244,12 +1253,7 @@ impl<'ctx> Translator<'ctx, '_> {
         let word = pointer_int(self.context, self.shared.target);
         let (_, depth_global) = self.shared.shadow;
         let depth_addr = depth_global.as_pointer_value();
-        let depth = self.load_int(
-            depth_addr,
-            word,
-            self.shared.target.pointer_size,
-            "d",
-        )?;
+        let depth = self.load_int(depth_addr, word, "d")?;
         let one = word.const_int(1, false);
         let dropped = built(self.builder.build_int_sub(depth, one, "dm1"))?;
         self.store_int(depth_addr, dropped, "sd")?;
@@ -1332,12 +1336,7 @@ impl<'ctx> Translator<'ctx, '_> {
                     let elem = self.index_elem(ty)?;
                     if let Item::PointerType(_) = self.shared.pool.item(ty) {
                         let word = pointer_int(self.context, self.shared.target);
-                        let loaded = self.load_int(
-                            address,
-                            word,
-                            self.shared.target.pointer_size,
-                            "data",
-                        )?;
+                        let loaded = self.load_int(address, word, "data")?;
                         address = self.pointer_of(loaded.into(), "dataptr")?;
                     }
                     // The stride is the element size rounded up to its alignment, the same
@@ -1366,8 +1365,7 @@ impl<'ctx> Translator<'ctx, '_> {
                 }
                 Projection::Deref => {
                     let word = pointer_int(self.context, self.shared.target);
-                    let loaded =
-                        self.load_int(address, word, self.shared.target.pointer_size, "p")?;
+                    let loaded = self.load_int(address, word, "p")?;
                     address = self.pointer_of(loaded.into(), "pderef")?;
                     ty = self.pointee(ty)?;
                 }
@@ -1517,12 +1515,10 @@ impl<'ctx> Translator<'ctx, '_> {
                 let llvm = repr
                     .llvm_type(self.context, self.shared.target)
                     .ok_or_else(|| CodegenError::Internal("a scalar with no type".to_owned()))?;
-                let layout = layout_of(self.shared.pool, self.shared.target, ty)
-                    .map_err(|reason| CodegenError::NoLayout { ty, reason })?;
                 let loaded = built(self.builder.build_load(llvm, address, "load"))?;
                 if let Some(instruction) = loaded.as_instruction_value() {
                     instruction
-                        .set_alignment(layout.align.max(1))
+                        .set_alignment(CLAIMED_ALIGN)
                         .map_err(|e| CodegenError::Internal(format!("load alignment: {e}")))?;
                 }
                 Ok(Some(loaded))
@@ -1553,20 +1549,9 @@ impl<'ctx> Translator<'ctx, '_> {
                 let value = source.ok_or_else(|| {
                     CodegenError::Internal("storing void into a scalar place".to_owned())
                 })?;
-                let align = match repr {
-                    Repr::Scalar(ScalarRepr::Int { ty, .. }) => ty.get_bit_width() / 8,
-                    Repr::Scalar(ScalarRepr::Float(ty)) => {
-                        if ty == self.context.f32_type() {
-                            4
-                        } else {
-                            8
-                        }
-                    }
-                    Repr::Void | Repr::Aggregate { .. } => 1,
-                };
                 let store = built(self.builder.build_store(address, value))?;
                 store
-                    .set_alignment(align.max(1))
+                    .set_alignment(CLAIMED_ALIGN)
                     .map_err(|e| CodegenError::Internal(format!("store alignment: {e}")))?;
                 Ok(())
             }
@@ -1598,10 +1583,9 @@ impl<'ctx> Translator<'ctx, '_> {
         value: IntValue<'ctx>,
         _name: &str,
     ) -> Result<(), CodegenError> {
-        let width = value.get_type().get_bit_width() / 8;
         let store = built(self.builder.build_store(address, value))?;
         store
-            .set_alignment(width.max(1))
+            .set_alignment(CLAIMED_ALIGN)
             .map_err(|e| CodegenError::Internal(format!("store alignment: {e}")))?;
         Ok(())
     }
@@ -1611,13 +1595,12 @@ impl<'ctx> Translator<'ctx, '_> {
         &self,
         address: PointerValue<'ctx>,
         ty: IntType<'ctx>,
-        align: u32,
         name: &str,
     ) -> Result<IntValue<'ctx>, CodegenError> {
         let loaded = built(self.builder.build_load(ty, address, name))?;
         if let Some(instruction) = loaded.as_instruction_value() {
             instruction
-                .set_alignment(align.max(1))
+                .set_alignment(CLAIMED_ALIGN)
                 .map_err(|e| CodegenError::Internal(format!("load alignment: {e}")))?;
         }
         Ok(loaded.into_int_value())
@@ -1664,11 +1647,14 @@ impl<'ctx> Translator<'ctx, '_> {
             return Ok(());
         }
         let word = pointer_int(self.context, self.shared.target);
+        // `align` stays a parameter because a caller reads it from `jr-pool`, but what is
+        // *claimed* is `CLAIMED_ALIGN`, for that constant's reason.
+        let _ = align;
         built(self.builder.build_memcpy(
             dest,
-            align.max(1),
+            CLAIMED_ALIGN,
             src,
-            align.max(1),
+            CLAIMED_ALIGN,
             word.const_int(size, false),
         ))?;
         Ok(())
@@ -1685,9 +1671,10 @@ impl<'ctx> Translator<'ctx, '_> {
             return Ok(());
         }
         let word = pointer_int(self.context, self.shared.target);
+        let _ = align;
         built(self.builder.build_memset(
             address,
-            align.max(1),
+            CLAIMED_ALIGN,
             self.context.i8_type().const_zero(),
             word.const_int(size, false),
         ))?;

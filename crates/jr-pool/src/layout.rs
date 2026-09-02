@@ -450,11 +450,21 @@ fn layout_at_depth(
         // A results aggregate lays out exactly as a struct of the same field types, through the
         // *same* function (ADR-0052 §1). The element list is right here, so unlike a struct there
         // is no side table to be unresolved.
-        Item::ResultsType { elems } => sequential_layout(pool, target, elems, depth),
+        Item::ResultsType { elems } => {
+            let placed: Vec<Placement> = elems.iter().copied().map(Placement::plain).collect();
+            sequential_layout(pool, target, &placed, depth)
+        }
 
         // The context's fields are fixed by the compiler (ADR-0057 §1), so they are listed here
         // rather than read from the struct side table — there is no `DeclId` to key one on.
-        Item::ContextType => sequential_layout(pool, target, CONTEXT_FIELD_TYPES, depth),
+        Item::ContextType => {
+            let placed: Vec<Placement> = CONTEXT_FIELD_TYPES
+                .iter()
+                .copied()
+                .map(Placement::plain)
+                .collect();
+            sequential_layout(pool, target, &placed, depth)
+        }
 
         // A union: every field at offset 0, so the size is the **largest** field's rather than
         // the running sum, and the alignment is the strictest (ADR-0045 §3). The size is then
@@ -582,8 +592,8 @@ fn struct_layout_at_depth(
     let fields = pool
         .fields_of(ty)
         .ok_or(LayoutError::UnresolvedStruct(decl))?;
-    let tys: Vec<PoolId> = fields.iter().map(|field| field.ty).collect();
-    sequential_layout(pool, target, &tys, depth)
+    let placed: Vec<Placement> = fields.iter().map(Placement::of).collect();
+    sequential_layout(pool, target, &placed, depth)
 }
 
 /// The field types of [`Item::ContextType`], in order (ADR-0057 §1).
@@ -618,30 +628,81 @@ pub const CONTEXT_FIELD_NAMES: &[&str] = &[
     "temp_mark",
 ];
 
+/// One field's type and its layout attributes, as the fold sees it (ADR-0144 §5).
+///
+/// A struct's fields carry attributes; a results aggregate's and the context's do not, because
+/// neither has a source declaration to write one on. So the fold takes this rather than a bare
+/// [`PoolId`], and the two attribute-free callers build a default — which keeps *one* fold rather
+/// than an attributed one beside a plain one, the duplication ADR-0018 §2 exists to avoid.
+#[derive(Debug, Clone, Copy)]
+struct Placement {
+    /// The field's type.
+    ty: PoolId,
+    /// `#align N`, a minimum (ADR-0144 §3).
+    align: Option<u32>,
+    /// `#place N`, an exact offset (ADR-0144 §4).
+    place: Option<u64>,
+}
+
+impl Placement {
+    /// The placement of a declared field.
+    fn of(field: &crate::Field) -> Self {
+        Self {
+            ty: field.ty,
+            align: field.align,
+            place: field.place,
+        }
+    }
+
+    /// A field with no layout attributes, for an aggregate whose fields cannot carry any.
+    const fn plain(ty: PoolId) -> Self {
+        Self {
+            ty,
+            align: None,
+            place: None,
+        }
+    }
+
+    /// This field's alignment, given its type's own.
+    fn effective_align(self, natural: u32) -> u32 {
+        natural.max(self.align.unwrap_or(1))
+    }
+}
+
 /// The layout of a sequence of fields laid out in order, C-style.
 ///
 /// Shared by a struct's layout and a **results aggregate**'s (ADR-0052 §1), because the two are the
 /// same computation over the same rules. Factored out rather than copied: a second implementation of
 /// field offsets would be a *silent wrong offset* rather than a crash — the failure mode ADR-0018 §2
 /// made one shared layout function to prevent, and which no verifier can catch.
+///
+/// A `#place`d field goes at exactly its offset and the cursor advances to the **maximum** end
+/// reached so far, so placing one field cannot silently move another (ADR-0144 §4). With no
+/// attributes anywhere this is byte-for-byte the fold it replaced, which the unchanged MIR
+/// snapshots are the evidence for.
 fn sequential_layout(
     pool: &Pool,
     target: TargetLayout,
-    tys: &[PoolId],
+    fields: &[Placement],
     depth: u32,
 ) -> Result<Layout, LayoutError> {
-    let mut size = 0u64;
+    let mut end = 0u64;
     let mut align = 1u32;
-    for ty in tys {
-        let field_layout = layout_at_depth(pool, target, *ty, depth + 1)?;
-        size = align_up(size, field_layout.align) + field_layout.size;
-        align = align.max(field_layout.align);
+    for field in fields {
+        let field_layout = layout_at_depth(pool, target, field.ty, depth + 1)?;
+        let field_align = field.effective_align(field_layout.align);
+        let at = match field.place {
+            Some(offset) => offset,
+            None => align_up(end, field_align),
+        };
+        end = end.max(at + field_layout.size);
+        align = align.max(field_align);
     }
     // Rounding the total up to the aggregate's own alignment is what makes an array
     // of it aligned at every element, which is why it is not merely the offset
     // past the last field.
     Ok(Layout {
-        size: align_up(size, align),
+        size: align_up(end, align),
         align,
     })
 }
@@ -696,19 +757,23 @@ pub fn field_offset(
     // `sequential_field_offset` below is what keeps the two from disagreeing: **omitting this
     // returned `NotAType` for every result after the first**, which surfaced as a destructuring
     // statement binding the wrong values rather than as an error.
-    let tys: Vec<PoolId> = match pool.item(ty) {
-        Item::ResultsType { elems } => elems.clone(),
+    let placed: Vec<Placement> = match pool.item(ty) {
+        Item::ResultsType { elems } => elems.iter().copied().map(Placement::plain).collect(),
         // The context's fields, from the one list every consumer reads (ADR-0057 §1).
-        Item::ContextType => CONTEXT_FIELD_TYPES.to_vec(),
+        Item::ContextType => CONTEXT_FIELD_TYPES
+            .iter()
+            .copied()
+            .map(Placement::plain)
+            .collect(),
         Item::StructType { decl, .. } => pool
             .fields_of(ty)
             .ok_or(LayoutError::UnresolvedStruct(*decl))?
             .iter()
-            .map(|field| field.ty)
+            .map(Placement::of)
             .collect(),
         _ => return Err(LayoutError::NotAType(ty)),
     };
-    sequential_field_offset(pool, target, &tys, index).ok_or(LayoutError::NotAType(ty))?
+    sequential_field_offset(pool, target, &placed, index).ok_or(LayoutError::NotAType(ty))?
 }
 
 /// The offset and layout of one field in a sequentially laid-out aggregate.
@@ -717,24 +782,42 @@ pub fn field_offset(
 /// is shared: two implementations of a field offset would be two chances to produce a silent wrong
 /// address, which no verifier catches.
 ///
+/// The cursor rule is [`sequential_layout`]'s, restated in one place rather than two: a `#place`d
+/// field is at its own offset and the cursor takes the maximum end so far (ADR-0144 §4). The two
+/// walks must agree, because one answers "where is field *n*" and the other "how big is the whole
+/// thing", and a disagreement is a field written past the end of its own storage.
+///
+/// The returned [`Layout`] carries the field's **effective** alignment, so a consumer that claims
+/// an alignment claims the one `#align` asked for.
+///
 /// Returns `None` when `index` is out of range, and `Some(Err(..))` when a field's own layout fails.
 fn sequential_field_offset(
     pool: &Pool,
     target: TargetLayout,
-    tys: &[PoolId],
+    fields: &[Placement],
     index: u32,
 ) -> Option<Result<(u64, Layout), LayoutError>> {
-    let mut offset = 0u64;
-    for (position, ty) in tys.iter().enumerate() {
-        let field_layout = match layout_of(pool, target, *ty) {
+    let mut end = 0u64;
+    for (position, field) in fields.iter().enumerate() {
+        let field_layout = match layout_of(pool, target, field.ty) {
             Ok(layout) => layout,
             Err(reason) => return Some(Err(reason)),
         };
-        offset = align_up(offset, field_layout.align);
+        let align = field.effective_align(field_layout.align);
+        let at = match field.place {
+            Some(offset) => offset,
+            None => align_up(end, align),
+        };
         if position == index as usize {
-            return Some(Ok((offset, field_layout)));
+            return Some(Ok((
+                at,
+                Layout {
+                    size: field_layout.size,
+                    align,
+                },
+            )));
         }
-        offset += field_layout.size;
+        end = end.max(at + field_layout.size);
     }
     None
 }
@@ -1124,5 +1207,189 @@ mod tests {
         assert_eq!(align_up(8, 8), 8);
         assert_eq!(align_up(9, 8), 16);
         assert_eq!(align_up(7, 1), 7);
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR-0144: `#align` and `#place`
+    // -----------------------------------------------------------------------
+
+    /// Builds a struct out of `(name, type, align, place)` tuples.
+    fn placed_struct(
+        pool: &mut Pool,
+        interner: &Interner,
+        index: u32,
+        fields: &[(&str, PoolId, Option<u32>, Option<u64>)],
+    ) -> PoolId {
+        let decl = DeclId::new(FileId::from_usize(0), index);
+        let ty = pool.struct_type(decl);
+        pool.set_struct_fields(
+            decl,
+            fields
+                .iter()
+                .map(|(name, field_ty, align, place)| {
+                    Field::new(interner.intern(name), *field_ty).placed(*align, *place)
+                })
+                .collect(),
+        );
+        ty
+    }
+
+    #[test]
+    fn align_raises_a_fields_alignment_and_the_structs() {
+        // The whole of `#align`: the field moves to the requested boundary, the struct inherits
+        // the alignment as the maximum of its fields', and the size rounds up to it so an array of
+        // the struct is aligned at every element.
+        let mut pool = Pool::new();
+        let interner = Interner::new();
+        let ty = placed_struct(
+            &mut pool,
+            &interner,
+            10,
+            &[
+                ("tag", PoolId::U8, None, None),
+                ("value", PoolId::S64, Some(16), None),
+            ],
+        );
+        assert_eq!(
+            layout_of(&pool, T, ty),
+            Ok(Layout {
+                size: 32,
+                align: 16
+            }),
+            "the struct takes the field's requested alignment"
+        );
+        assert_eq!(
+            field_offset(&pool, T, ty, 1),
+            Ok((16, Layout { size: 8, align: 16 })),
+            "the field sits at the requested boundary, and reports that alignment"
+        );
+    }
+
+    #[test]
+    fn align_below_the_natural_alignment_is_already_satisfied() {
+        // ADR-0144 §3: `#align` is a **minimum**, so a value under the type's own is not an error
+        // and not a packing request — it changes nothing. Asserted rather than left implicit,
+        // because the alternative reading (honour it, and underalign the field) is undefined
+        // behaviour in the LLVM back end and merely slow in the other two.
+        let mut pool = Pool::new();
+        let interner = Interner::new();
+        let ty = placed_struct(
+            &mut pool,
+            &interner,
+            11,
+            &[
+                ("a", PoolId::U8, None, None),
+                ("b", PoolId::S64, Some(1), None),
+            ],
+        );
+        assert_eq!(
+            layout_of(&pool, T, ty),
+            Ok(Layout { size: 16, align: 8 }),
+            "`#align 1` on an `s64` leaves an ordinary struct"
+        );
+        assert_eq!(
+            field_offset(&pool, T, ty, 1),
+            Ok((8, Layout { size: 8, align: 8 }))
+        );
+    }
+
+    #[test]
+    fn place_puts_a_field_at_an_exact_offset_and_overlap_is_allowed() {
+        // ADR-0144 §4. Three fields over the same eight bytes, which is what a `union` cannot say:
+        // `header` does not overlap and only the last three do. Every offset is asserted, because
+        // the failure mode of a placement bug is a *wrong address* rather than an error.
+        let mut pool = Pool::new();
+        let interner = Interner::new();
+        let ty = placed_struct(
+            &mut pool,
+            &interner,
+            12,
+            &[
+                ("header", PoolId::S64, None, None),
+                ("lo", PoolId::U8, None, Some(8)),
+                ("hi", PoolId::U8, None, Some(9)),
+                ("both", PoolId::S64, None, Some(8)),
+            ],
+        );
+        assert_eq!(field_offset(&pool, T, ty, 0).map(|(at, _)| at), Ok(0));
+        assert_eq!(field_offset(&pool, T, ty, 1).map(|(at, _)| at), Ok(8));
+        assert_eq!(field_offset(&pool, T, ty, 2).map(|(at, _)| at), Ok(9));
+        assert_eq!(
+            field_offset(&pool, T, ty, 3).map(|(at, _)| at),
+            Ok(8),
+            "two fields may share an offset, which is the point of the attribute"
+        );
+        assert_eq!(
+            layout_of(&pool, T, ty),
+            Ok(Layout { size: 16, align: 8 }),
+            "the size is the maximum end reached, not the sum of the fields"
+        );
+    }
+
+    #[test]
+    fn a_placed_field_does_not_move_the_ones_after_it() {
+        // ADR-0144 §4's cursor rule, which is the part a reader would not guess: the cursor takes
+        // the *maximum* end so far, so placing one field low cannot pull a later one backwards over
+        // it. A running cursor set to the placed field's end would put `tail` at 16 here.
+        let mut pool = Pool::new();
+        let interner = Interner::new();
+        let ty = placed_struct(
+            &mut pool,
+            &interner,
+            13,
+            &[
+                ("wide", PoolId::S64, None, None),
+                ("early", PoolId::U8, None, Some(0)),
+                ("tail", PoolId::S64, None, None),
+            ],
+        );
+        assert_eq!(field_offset(&pool, T, ty, 2).map(|(at, _)| at), Ok(8));
+        assert_eq!(layout_of(&pool, T, ty), Ok(Layout { size: 16, align: 8 }));
+    }
+
+    #[test]
+    fn a_placed_field_may_be_unaligned() {
+        // Deliberately not refused (ADR-0144 §4): every engine computes its own addresses, so an
+        // offset the type's alignment does not divide is slow rather than wrong. Asserted so that
+        // adding a refusal later is a visible decision rather than a silent one.
+        let mut pool = Pool::new();
+        let interner = Interner::new();
+        let ty = placed_struct(
+            &mut pool,
+            &interner,
+            14,
+            &[
+                ("pad", PoolId::U8, None, None),
+                ("value", PoolId::S64, None, Some(3)),
+            ],
+        );
+        assert_eq!(field_offset(&pool, T, ty, 1).map(|(at, _)| at), Ok(3));
+        assert_eq!(
+            layout_of(&pool, T, ty),
+            Ok(Layout { size: 16, align: 8 }),
+            "the end is 11, rounded up to the struct's own alignment"
+        );
+    }
+
+    #[test]
+    fn a_struct_with_no_attributes_lays_out_exactly_as_before() {
+        // The control, and the claim the unchanged MIR snapshots stand for: the rewritten fold is
+        // byte-for-byte the old one when nothing asks for anything.
+        let mut pool = Pool::new();
+        let interner = Interner::new();
+        let ty = placed_struct(
+            &mut pool,
+            &interner,
+            15,
+            &[
+                ("a", PoolId::U8, None, None),
+                ("b", PoolId::S64, None, None),
+                ("c", PoolId::U8, None, None),
+            ],
+        );
+        assert_eq!(layout_of(&pool, T, ty), Ok(Layout { size: 24, align: 8 }));
+        assert_eq!(field_offset(&pool, T, ty, 0).map(|(at, _)| at), Ok(0));
+        assert_eq!(field_offset(&pool, T, ty, 1).map(|(at, _)| at), Ok(8));
+        assert_eq!(field_offset(&pool, T, ty, 2).map(|(at, _)| at), Ok(16));
     }
 }

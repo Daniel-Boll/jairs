@@ -172,16 +172,31 @@ pub struct Field {
     /// offset (ADR-0050 §4), which is what lets `using` be a resolution feature and leaves
     /// `field_offset` untouched.
     pub using: bool,
+    /// `#align N` — this field's alignment is at least `N` bytes (ADR-0144 §3).
+    ///
+    /// A **minimum**, so the effective alignment is `max(natural, N)` and a value below the
+    /// type's own is already satisfied rather than refused. `jr-sema` has checked that it is a
+    /// power of two in range (E0282); this crate applies it.
+    pub align: Option<u32>,
+    /// `#place N` — this field sits at exactly byte `N` of its aggregate (ADR-0144 §4).
+    ///
+    /// **Two fields may share an offset**, deliberately: that is what makes an overlay
+    /// expressible where a `union` cannot say that only *some* fields overlap. Nothing checks for
+    /// overlap, and nothing requires `N` to satisfy the field's alignment — a placed field may be
+    /// unaligned, which every engine handles because each computes its own addresses.
+    pub place: Option<u64>,
 }
 
 impl Field {
-    /// Creates a field.
+    /// Creates a field with no layout attributes.
     #[must_use]
     pub const fn new(name: Symbol, ty: PoolId) -> Self {
         Self {
             name,
             ty,
             using: false,
+            align: None,
+            place: None,
         }
     }
 
@@ -192,7 +207,27 @@ impl Field {
             name,
             ty,
             using: true,
+            align: None,
+            place: None,
         }
+    }
+
+    /// Returns this field with its layout attributes set (ADR-0144).
+    #[must_use]
+    pub const fn placed(mut self, align: Option<u32>, place: Option<u64>) -> Self {
+        self.align = align;
+        self.place = place;
+        self
+    }
+
+    /// The alignment this field is laid out at, given its type's own.
+    ///
+    /// One function rather than a `max` written at each site, because the layout fold and the
+    /// field-offset walk must agree exactly: two spellings of "how aligned is this field" is how
+    /// one of them comes to be wrong by a factor of two, silently.
+    #[must_use]
+    pub fn effective_align(&self, natural: u32) -> u32 {
+        natural.max(self.align.unwrap_or(1))
     }
 }
 

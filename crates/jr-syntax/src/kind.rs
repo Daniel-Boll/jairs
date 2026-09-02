@@ -439,6 +439,29 @@ pub enum SyntaxKind {
     /// code. Its own kind for the reason those three are separate — a consumer that forgets it is a missing
     /// arm rather than a silent fall-through.
     MODIFY_ATTR,
+    /// An `#align N` attribute on a struct field, raising its alignment (ADR-0144 §3).
+    ///
+    /// Holds the directive token and the operand expression — an integer literal or a name
+    /// that resolves to a literal-valued constant (§2). Its own kind beside [`Self::PLACE_ATTR`]
+    /// for the reason `C_CALL_ATTR` and `NO_ABC_ATTR` are separate: a consumer that handles one
+    /// and forgets the other is a missing match arm rather than a string comparison that falls
+    /// through silently.
+    ///
+    /// The value may only **raise** the alignment. `#align 1` on an `s64` is E0282 rather than
+    /// a packing request, because an underaligned field is undefined behaviour in the LLVM back
+    /// end and merely slow in the other two — a feature whose misuse means three different
+    /// things cannot be tested (§3).
+    ALIGN_ATTR,
+    /// A `#place N` attribute on a struct field, giving it an exact byte offset (ADR-0144 §4).
+    ///
+    /// Holds the directive token and the operand expression, exactly as [`Self::ALIGN_ATTR`]
+    /// does.
+    ///
+    /// **Two fields may be placed at the same offset**, deliberately: an overlay of two views
+    /// onto the same bytes is the hardware-register and file-format case, and it is what a
+    /// `union` cannot express when only *some* fields overlap. A placed field does not move the
+    /// ones after it (§4).
+    PLACE_ATTR,
     /// A `@note` on a declaration — metadata a metaprogram can read (ADR-0098 §1).
     ///
     /// Holds the `@`, the name, and an optional string payload: `@deprecated` or `@requires "x"`. Its own

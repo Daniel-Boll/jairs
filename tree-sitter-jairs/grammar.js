@@ -426,8 +426,27 @@ module.exports = grammar({
     field_list: ($) => seq("{", repeat($.field), "}"),
 
     // struct field: `name : type ;`, or `using name : type ;` to embed (ADR-0050 §1).
+    //
+    // The layout attributes `#align N` and `#place N` follow the type (ADR-0144 §1), repeated and
+    // in any order — the parser loops over them for the same reason, since an ordering rule no
+    // reader could predict is worse than none.
     field: ($) =>
-      seq(optional("using"), $.identifier, ":", field("type", $._type), ";"),
+      seq(
+        optional("using"),
+        $.identifier,
+        ":",
+        field("type", $._type),
+        repeat(field("attr", $._field_attr)),
+        ";",
+      ),
+
+    _field_attr: ($) => choice($.align_attr, $.place_attr),
+
+    // #align N — the field's alignment is at least N bytes (ADR-0144 §3).
+    align_attr: ($) => seq(field("directive", "#align"), field("value", $._expr)),
+
+    // #place N — the field sits at exactly byte N (ADR-0144 §4).
+    place_attr: ($) => seq(field("directive", "#place"), field("value", $._expr)),
 
     // -----------------------------------------------------------------------
     // Statements

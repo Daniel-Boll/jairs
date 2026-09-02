@@ -864,8 +864,27 @@ impl Formatter {
         if let Some(ty) = node.children().find(|n| is_type_kind(n.kind())) {
             self.format_type(&ty);
         }
+        // The layout attributes, in source order after the type (ADR-0144 §1). **Dropping one
+        // would change where a field lives** — a silently different offset in three engines,
+        // which is the worst version of the construct-losing failure this file has met in most of
+        // the waves that added a node kind. So the *order* is read from the tree rather than
+        // fixed here: `#place 8 #align 16` round-trips as written.
+        for attr in node.children() {
+            match attr.kind() {
+                ALIGN_ATTR => self.emit_field_attr(&attr, " #align "),
+                PLACE_ATTR => self.emit_field_attr(&attr, " #place "),
+                _ => {}
+            }
+        }
     }
 
+    /// Emits one field layout attribute and its operand (ADR-0144 §1).
+    fn emit_field_attr(&mut self, node: &SyntaxNode, keyword: &str) {
+        self.emit(keyword);
+        if let Some(value) = node.children().find(|n| is_expr_kind(n.kind())) {
+            self.format_expr(&value);
+        }
+    }
     // ---- types -------------------------------------------------------------
 
     fn format_type(&mut self, node: &SyntaxNode) {
@@ -2537,6 +2556,59 @@ mod tests {
         );
         assert_idempotent(both);
         assert_parses(&out);
+    }
+
+    /// `#align` and `#place` on a field (ADR-0144 §1), asserted to *survive* and to keep their
+    /// order.
+    ///
+    /// **The worst version of this trap.** Dropping `using` changes what a program means; dropping
+    /// a layout attribute changes *where a field lives* — a different offset in three engines,
+    /// with no diagnostic anywhere and a program that still compiles and runs. The round-trip and
+    /// idempotence assertions do not catch it on their own: a formatter that emitted `node.text()`
+    /// verbatim would pass both while normalising nothing.
+    ///
+    /// The order assertion is the same one the proc attributes need: the parser loops, so both
+    /// orders are legal input, and a formatter with a fixed order would rewrite one into the other
+    /// and stop being idempotent on source it did not write.
+    #[test]
+    fn field_layout_attributes_survive_and_keep_their_order() {
+        let src = "Odd :: struct {\n    tag: u8;\n    value: s64 #align 16;\n    other: s64 #place 24;\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("value: s64 #align 16;"),
+            "`#align` must survive, after the type: {out}"
+        );
+        assert!(
+            out.contains("other: s64 #place 24;"),
+            "`#place` must survive too — two kinds, two chances to forget one: {out}"
+        );
+        assert_idempotent(src);
+        assert_parses(&out);
+
+        // Both on one field, in each order, each preserved as written.
+        let both =
+            "A :: struct {\n    a: s64 #align 16 #place 32;\n    b: s64 #place 64 #align 32;\n}\n";
+        let out = fmt(both);
+        assert!(
+            out.contains("a: s64 #align 16 #place 32;"),
+            "the written order must be kept: {out}"
+        );
+        assert!(
+            out.contains("b: s64 #place 64 #align 32;"),
+            "and kept in the other direction too, or the formatter is reordering: {out}"
+        );
+        assert_idempotent(both);
+        assert_parses(&out);
+
+        // **Canonicalised**, not echoed. Extra spacing around the attribute is normalised, which is
+        // what says the formatter is emitting the construct rather than copying its source text —
+        // the check that a round-trip assertion alone cannot make.
+        let untidy = "B :: struct {\n    v: s64    #align    8;\n}\n";
+        let out = fmt(untidy);
+        assert!(
+            out.contains("v: s64 #align 8;"),
+            "spacing must be canonicalised rather than echoed: {out}"
+        );
     }
 
     /// `using` in all three positions (ADR-0050 §1), each asserted to *survive*.

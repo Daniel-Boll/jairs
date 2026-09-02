@@ -1,0 +1,26 @@
+// EXPECT: E0283 — a `#place` offset that is not usable (ADR-0144 §4)
+//
+// A field's offset is measured in bytes from the start of its aggregate, so the smallest one is
+// `#place 0` and a negative value names no byte.
+//
+// **One** refusal here, per this directory's contract. The other shape refused by this code is an
+// operand that needs evaluation, for ADR-0018 §3's ordering reason — the same limit `#align` has
+// (`type-errors/075`) and the same one an array length has.
+//
+// Its own code beside E0282 rather than one shared "bad layout attribute", because the two
+// attributes have different rules and a reader filtering by code wants to know which one they got
+// wrong.
+//
+// **What is deliberately not refused**: two fields placed at the *same* offset, which is the point
+// of the attribute (`valid/115` overlays three fields on eight bytes), and an offset that does not
+// satisfy the field's alignment, which every engine handles because each computes its own
+// addresses.
+Negative :: struct {
+    header: s64;
+    value: s64 #place -8;
+}
+
+main :: () {
+    n: Negative;
+    n.header = 1;
+}
