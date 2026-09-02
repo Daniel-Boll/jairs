@@ -13895,3 +13895,367 @@ proc $inst1 -> s64 {
   bb4():
     return v5
 }
+
+========================================
+127-json.jr
+========================================
+proc libc_alloc -> *u8 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: *u8 = call extern proc2(v1)
+    return v2
+}
+proc libc_free -> void {
+  params: v0: *Context, v1: *u8
+  bb0(v0: *Context, v1: *u8):
+    discard call extern proc3(v1)
+    return
+}
+proc parsed_as -> s64 {
+  params: v0: *Context, v1: string, v2: bool
+  slots:
+    s0: string  // temporary
+    s1: (struct, bool)  // temporary
+    s2: struct  // local 0
+  bb0(v0: *Context, v1: string, v2: bool):
+    store s0 <- v1
+    v3: (struct, bool) = call extern proc0(v0, v1)
+    store s1 <- v3
+    v4: struct = load s1.0
+    store s2 <- v4
+    v5: bool = load s1.1
+    v6: bool = v5 == v2
+    branch v6 ? bb1() : bb2()
+  bb1():
+    goto bb3(1_s64)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v8: s64):
+    v7: *struct = addr s2
+    discard call extern proc1(v0, v7)
+    return v8
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: (struct, bool)  // temporary
+    s1: struct  // local 1
+    s2: (struct, bool)  // temporary
+    s3: struct  // local 4
+    s4: string  // local 6
+    s5: (struct, bool)  // temporary
+    s6: struct  // local 7
+    s7: string  // local 9
+    s8: string  // local 10
+    s9: string  // local 11
+    s10: string  // local 12
+    s11: (struct, bool)  // temporary
+    s12: struct  // local 13
+  bb0(v0: *Context):
+    store (v0).*.0 <- proc0
+    store (v0).*.1 <- proc1
+    v1: (struct, bool) = call extern proc0(v0, "{\"a\": 1, \"b\": [10, 20, 30], \"c\": \"hi\", \"d\": true, \"e\": null}")
+    store s0 <- v1
+    v2: struct = load s0.0
+    store s1 <- v2
+    v3: bool = load s0.1
+    branch v3 ? bb1() : bb2()
+  bb1():
+    v4: *struct = addr s1
+    v5: s64 = load s1.1
+    v6: s64 = call extern proc10(v0, v4, v5)
+    v7: bool = v6 == 5_s64
+    branch v7 ? bb4() : bb5()
+  bb4():
+    v8: s64 = 0_s64 + 1_s64
+    goto bb6(v8)
+  bb5():
+    goto bb6(0_s64)
+  bb6(v15: s64):
+    v9: *struct = addr s1
+    v10: *struct = addr s1
+    v11: s64 = load s1.1
+    v12: s64 = call extern proc13(v0, v10, v11, "a")
+    v13: s64 = call extern proc4(v0, v9, v12)
+    v14: bool = v13 == 1_s64
+    branch v14 ? bb7() : bb8()
+  bb7():
+    v16: s64 = v15 + 2_s64
+    goto bb9(v16)
+  bb8():
+    goto bb9(v15)
+  bb9(v23: s64):
+    v17: *struct = addr s1
+    v18: s64 = load s1.1
+    v19: s64 = call extern proc13(v0, v17, v18, "b")
+    v20: *struct = addr s1
+    v21: s64 = call extern proc8(v0, v20, v19)
+    v22: bool = v21 == 3_s64
+    branch v22 ? bb10() : bb11()
+  bb10():
+    v24: s64 = v23 + 4_s64
+    goto bb12(v24)
+  bb11():
+    goto bb12(v23)
+  bb12(v31: s64):
+    v25: *struct = addr s1
+    v26: *struct = addr s1
+    v28: s64 = call extern proc9(v0, v26, v19, 2_s64)
+    v29: s64 = call extern proc4(v0, v25, v28)
+    v30: bool = v29 == 30_s64
+    branch v30 ? bb13() : bb14()
+  bb13():
+    v32: s64 = v31 + 8_s64
+    goto bb15(v32)
+  bb14():
+    goto bb15(v31)
+  bb15(v39: s64):
+    v33: *struct = addr s1
+    v34: *struct = addr s1
+    v35: s64 = load s1.1
+    v36: s64 = call extern proc13(v0, v34, v35, "c")
+    v37: string = call extern proc6(v0, v33, v36)
+    v38: bool = call extern proc2(v0, v37, "hi")
+    branch v38 ? bb16() : bb17()
+  bb16():
+    v40: s64 = v39 + 16_s64
+    goto bb18(v40)
+  bb17():
+    goto bb18(v39)
+  bb18(v52: s64):
+    v41: *struct = addr s1
+    v42: *struct = addr s1
+    v43: s64 = load s1.1
+    v44: s64 = call extern proc13(v0, v42, v43, "d")
+    v45: bool = call extern proc7(v0, v41, v44)
+    branch v45 ? bb19() : bb20()
+  bb19():
+    v46: *struct = addr s1
+    v47: *struct = addr s1
+    v48: s64 = load s1.1
+    v49: s64 = call extern proc13(v0, v47, v48, "e")
+    v50: bool = call extern proc7(v0, v46, v49)
+    v51: bool = !v50
+    branch v51 ? bb22() : bb23()
+  bb22():
+    v53: s64 = v52 + 32_s64
+    goto bb24(v53)
+  bb23():
+    goto bb24(v52)
+  bb24(v71: s64):
+    goto bb21(v71)
+  bb20():
+    goto bb21(v52)
+  bb21(v70: s64):
+    goto bb3(v70)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v69: s64):
+    v54: *struct = addr s1
+    discard call extern proc1(v0, v54)
+    v55: (struct, bool) = call extern proc0(v0, "\"a\\nb\\t\\\"c\\\\\\/\"")
+    store s2 <- v55
+    v56: struct = load s2.0
+    store s3 <- v56
+    v57: bool = load s2.1
+    branch v57 ? bb25() : bb26()
+  bb25():
+    v58: *struct = addr s3
+    v59: s64 = load s3.1
+    v60: string = call extern proc6(v0, v58, v59)
+    store s4 <- v60
+    v61: s64 = load s4.count
+    v62: bool = v61 == 8_s64
+    branch v62 ? bb28() : bb29()
+  bb28():
+    v63: string = load s4
+    v64: s64 = call extern proc0(v0, v63, 1_s64)
+    v65: bool = v64 == 10_s64
+    branch v65 ? bb31() : bb32()
+  bb31():
+    v66: string = load s4
+    v67: s64 = call extern proc0(v0, v66, 3_s64)
+    v68: bool = v67 == 9_s64
+    branch v68 ? bb34() : bb35()
+  bb34():
+    v72: s64 = v69 + 64_s64
+    goto bb36(v72)
+  bb35():
+    goto bb36(v69)
+  bb36(v102: s64):
+    goto bb33(v102)
+  bb32():
+    goto bb33(v69)
+  bb33(v101: s64):
+    goto bb30(v101)
+  bb29():
+    goto bb30(v69)
+  bb30(v100: s64):
+    goto bb27(v100)
+  bb26():
+    goto bb27(v69)
+  bb27(v99: s64):
+    v73: *struct = addr s3
+    discard call extern proc1(v0, v73)
+    v74: (struct, bool) = call extern proc0(v0, "[\"\\u0041\", \"\\u00e9\", \"\\u20ac\", \"\\ud83d\\ude00\"]")
+    store s5 <- v74
+    v75: struct = load s5.0
+    store s6 <- v75
+    v76: bool = load s5.1
+    branch v76 ? bb37() : bb38()
+  bb37():
+    v77: *struct = addr s6
+    v78: *struct = addr s6
+    v79: s64 = load s6.1
+    v80: s64 = call extern proc9(v0, v78, v79, 0_s64)
+    v81: string = call extern proc6(v0, v77, v80)
+    store s7 <- v81
+    v82: *struct = addr s6
+    v83: *struct = addr s6
+    v84: s64 = load s6.1
+    v85: s64 = call extern proc9(v0, v83, v84, 1_s64)
+    v86: string = call extern proc6(v0, v82, v85)
+    store s8 <- v86
+    v87: *struct = addr s6
+    v88: *struct = addr s6
+    v89: s64 = load s6.1
+    v90: s64 = call extern proc9(v0, v88, v89, 2_s64)
+    v91: string = call extern proc6(v0, v87, v90)
+    store s9 <- v91
+    v92: *struct = addr s6
+    v93: *struct = addr s6
+    v94: s64 = load s6.1
+    v95: s64 = call extern proc9(v0, v93, v94, 3_s64)
+    v96: string = call extern proc6(v0, v92, v95)
+    store s10 <- v96
+    v97: s64 = load s7.count
+    v98: bool = v97 == 1_s64
+    branch v98 ? bb40() : bb41()
+  bb40():
+    v103: s64 = v99 + 128_s64
+    goto bb42(v103)
+  bb41():
+    goto bb42(v99)
+  bb42(v106: s64):
+    v104: s64 = load s8.count
+    v105: bool = v104 == 2_s64
+    branch v105 ? bb43() : bb44()
+  bb43():
+    v107: s64 = v106 + 256_s64
+    goto bb45(v107)
+  bb44():
+    goto bb45(v106)
+  bb45(v110: s64):
+    v108: s64 = load s9.count
+    v109: bool = v108 == 3_s64
+    branch v109 ? bb46() : bb47()
+  bb46():
+    v111: s64 = v110 + 512_s64
+    goto bb48(v111)
+  bb47():
+    goto bb48(v110)
+  bb48(v114: s64):
+    v112: s64 = load s10.count
+    v113: bool = v112 == 4_s64
+    branch v113 ? bb49() : bb50()
+  bb49():
+    v115: s64 = v114 + 1024_s64
+    goto bb51(v115)
+  bb50():
+    goto bb51(v114)
+  bb51(v127: s64):
+    goto bb39(v127)
+  bb38():
+    goto bb39(v99)
+  bb39(v126: s64):
+    v116: *struct = addr s6
+    discard call extern proc1(v0, v116)
+    v117: (struct, bool) = call extern proc0(v0, "[1, -2, 3.5, 1e3, 0, 9007199254740993]")
+    store s11 <- v117
+    v118: struct = load s11.0
+    store s12 <- v118
+    v119: bool = load s11.1
+    branch v119 ? bb52() : bb53()
+  bb52():
+    v120: *struct = addr s12
+    v121: *struct = addr s12
+    v122: s64 = load s12.1
+    v123: s64 = call extern proc9(v0, v121, v122, 2_s64)
+    v124: bool = call extern proc5(v0, v120, v123)
+    v125: bool = !v124
+    branch v125 ? bb55() : bb56()
+  bb55():
+    v128: s64 = v126 + 2048_s64
+    goto bb57(v128)
+  bb56():
+    goto bb57(v126)
+  bb57(v135: s64):
+    v129: *struct = addr s12
+    v130: *struct = addr s12
+    v131: s64 = load s12.1
+    v132: s64 = call extern proc9(v0, v130, v131, 3_s64)
+    v133: bool = call extern proc5(v0, v129, v132)
+    v134: bool = !v133
+    branch v134 ? bb58() : bb59()
+  bb58():
+    v136: s64 = v135 + 4096_s64
+    goto bb60(v136)
+  bb59():
+    goto bb60(v135)
+  bb60(v143: s64):
+    v137: *struct = addr s12
+    v138: *struct = addr s12
+    v139: s64 = load s12.1
+    v140: s64 = call extern proc9(v0, v138, v139, 5_s64)
+    v141: s64 = call extern proc4(v0, v137, v140)
+    v142: bool = v141 == 9007199254740993_s64
+    branch v142 ? bb61() : bb62()
+  bb61():
+    v144: s64 = v143 + 8192_s64
+    goto bb63(v144)
+  bb62():
+    goto bb63(v143)
+  bb63(v147: s64):
+    goto bb54(v147)
+  bb53():
+    goto bb54(v126)
+  bb54(v146: s64):
+    v145: *struct = addr s12
+    discard call extern proc1(v0, v145)
+    v148: s64 = call proc2(v0, "[1,]", false)
+    v149: s64 = v148 * 16384_s64
+    v150: s64 = v146 + v149
+    v151: s64 = call proc2(v0, "01", false)
+    v152: s64 = v151 * 32768_s64
+    v153: s64 = v150 + v152
+    v154: s64 = call proc2(v0, "{\"a\":1} x", false)
+    v155: s64 = v154 * 65536_s64
+    v156: s64 = v153 + v155
+    v157: s64 = call proc2(v0, "\"\\ud83d\"", false)
+    v158: s64 = v157 * 131072_s64
+    v159: s64 = v156 + v158
+    v160: s64 = call proc2(v0, "1.", false)
+    v161: s64 = v160 * 262144_s64
+    v162: s64 = v159 + v161
+    v163: s64 = call proc2(v0, "{}", true)
+    v164: bool = v163 == 1_s64
+    branch v164 ? bb64() : bb65()
+  bb64():
+    v165: s64 = call proc2(v0, "[]", true)
+    v166: bool = v165 == 1_s64
+    branch v166 ? bb67() : bb68()
+  bb67():
+    v167: s64 = v162 + 524288_s64
+    goto bb69(v167)
+  bb68():
+    goto bb69(v162)
+  bb69(v169: s64):
+    goto bb66(v169)
+  bb65():
+    goto bb66(v162)
+  bb66(v168: s64):
+    discard call extern proc11(v0, v168)
+    v170: s64 = v168 % 251_s64
+    discard call extern proc1(v170)
+    return
+}

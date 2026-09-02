@@ -1,0 +1,1207 @@
+//! The JSON module: a parser and an inspector, over a flat node store.
+//!
+//! Written in Jairs. PLAN §8.3 called this "the most valuable module for proving the language, because it
+//! exercises tagged unions, containers and strings together", and item 4 in W7's order. It is reachable now
+//! that `#must` exists (ADR-0151), because a parse that can fail needs a way to say that ignoring the
+//! failure is an error.
+//!
+//! # Why a flat node store rather than a recursive value type
+//!
+//! A JSON value is recursive: an array holds values, an object holds named values. The obvious shape is a
+//! `variant` whose cases include a list of itself — and that needs **indirection**, because a type cannot
+//! contain itself by value. So the choice is between a pointer per node and an **index** per node, and this
+//! module takes the index:
+//!
+//! ```text
+//!   document.nodes: [..]Json_Node        one growable array, one allocation policy
+//!   a value        : s64                 an index into it, or NONE
+//!   children       : first / next        a sibling chain of indices
+//! ```
+//!
+//! Three reasons, in the order they mattered. **Freeing is one call**: `free_document` releases the array
+//! and every string in it, where a pointer tree needs a recursive walk that has to be right on the error
+//! path too. **A handle is copyable and comparable**: an `s64` can be stored, compared and passed without
+//! anybody wondering who owns it, and `NONE` is a real absent value rather than a null nobody checked.
+//! And **it is what fast parsers do** — a tape of nodes is cache-friendly in the order a parse produces
+//! and a walk consumes, though that is a claim this project does not measure (ADR-0146 §4) and so is third
+//! rather than first.
+//!
+//! Rejected: **a `variant` of cases with `*Json` children**, the textbook DOM. It reads better at the type
+//! level and is worse everywhere else: a recursive free, an ownership question at every field, and a
+//! partial tree to unwind when a parse fails halfway. Rejected: **a `Map` per object**, which is
+//! `Map(s64, s64)` today and so cannot key on a string at all — and would be slower than a linear scan for
+//! the three-to-five keys a real object usually has. Members are a sibling chain, scanned in order, which
+//! also **preserves source order**, something a hash map destroys and a diff-minded caller wants.
+//!
+//! # Why numbers go through `strtod`
+//!
+//! A JSON number is a decimal in the source and a `float64` in the value model, and converting between
+//! them **exactly** is a genuinely hard problem — the reason `Math` ships no `sqrt` (ADR-0112) applies with
+//! more force here, because a wrong last bit in a parsed number is a wrong *answer* rather than a wrong
+//! approximation. So the platform's correctly-rounded `strtod` does it, which ADR-0114 made reachable by
+//! letting a float cross the `#foreign` boundary.
+//!
+//! Integers are converted **in Jairs**, not by `strtod`, and that is not an inconsistency: an integer's
+//! conversion is exact arithmetic with no rounding question, `s64` is what a caller indexing or counting
+//! wants, and going through `float64` would silently lose precision above 2^53. So a number carries both —
+//! `number_of` for the float, `integer_of` for the exact integer when the source had no fraction or
+//! exponent, and `is_integer` to ask.
+//!
+//! **No serialisation.** Writing a document back out needs to render a `float64` as the shortest decimal
+//! that round-trips, which is a correct `dtoa` — and an approximate one would emit numbers this module
+//! could not read back, which is worse than emitting none. `String`'s allocating half is ready for the rest
+//! of it, so this is a wave's work behind a single missing piece, and it is named rather than half-built.
+//!
+//! **No streaming or incremental parse.** The whole text is in memory already, since a Jairs `string` is
+//! data and a count; a streaming parser answers a different question and would need its own state machine.
+//!
+//! # A caller installs an allocator first
+//!
+//! Parsed strings come from `context.allocator` and are released by `String.free_string`, so a caller
+//! installs one before calling `parse` — the convention ADR-0062 set for `String`'s allocating half, and
+//! forgetting is not silent: `context.allocator` is null until set, and a call through it traps with a
+//! source location.
+//!
+//! The **node store** is `malloc`ed instead, matching `List` and `Map`. That split is the library's, not
+//! this module's — `String` allocates through the context and the containers do not — and JSON is the first
+//! module that needs both halves, so it is the first place the seam is visible. Recorded rather than
+//! papered over: unifying it is a decision about every container at once.
+//!
+//! # What is absent, and why
+//!
+//! **No duplicate-key policy.** A duplicate key is kept, both copies, in source order — `member` finds the
+//! first. JSON itself does not say what a duplicate means, so inventing a rule here would be inventing
+//! semantics; a caller who cares can walk the chain.
+
+#import "Basic";
+#import "String";
+
+/// The absent index — no first child, no next sibling, no such member.
+///
+/// `-1` rather than `0`, because `0` is the root's own index in every non-empty document and a sentinel
+/// that collides with a real value is the bug this constant exists to prevent.
+NONE :: -1;
+
+/// What one node is.
+///
+/// `NULL_`, `TRUE_` and `FALSE_` carry no payload, so the kind *is* the value. They are three kinds rather
+/// than one `BOOLEAN` with a flag because a `switch` over a kind then needs no second question, and because
+/// `null` is not a boolean.
+///
+/// The trailing underscores are there because `null`, `true` and `false` are not available as bare member
+/// names in the surface this module can spell today; recorded rather than silently renamed, so a reader
+/// knows it is a spelling constraint and not a taste.
+Json_Kind :: enum {
+    /// `null`.
+    NULL_;
+    /// `true`.
+    TRUE_;
+    /// `false`.
+    FALSE_;
+    /// A number. `number` holds it; `integer` too when `is_integer` is true.
+    NUMBER;
+    /// A string. `text` holds it, unescaped, and the document owns it.
+    STRING;
+    /// An array. `first` is its first element, or `NONE`.
+    ARRAY;
+    /// An object. `first` is its first member, or `NONE`; each member's `key` is set.
+    OBJECT;
+}
+
+/// One value in the store.
+///
+/// A struct with every field present rather than a `variant`, and that is a deliberate reversal of the
+/// module's own preference for tagged unions: a variant would refuse a read of the wrong case, which is
+/// exactly right — but the *parser* fills fields in an order the tag does not yet know, and a node is 72
+/// bytes either way once a `string` and a `float64` are in it. So the tag is advisory here and the
+/// accessors below do the checking a variant would have done, returning a stated default rather than
+/// trapping, because a caller inspecting untrusted JSON is asking a question rather than asserting a fact.
+Json_Node :: struct {
+    /// Which kind this is.
+    kind: Json_Kind;
+    /// The number, when `kind` is `NUMBER`.
+    number: float64;
+    /// The exact integer, when `kind` is `NUMBER` and `is_integer` is true.
+    integer: s64;
+    /// Whether the source number had no fraction and no exponent, so `integer` is exact.
+    is_integer: bool;
+    /// The string, when `kind` is `STRING`. Owned by the document.
+    text: string;
+    /// This member's name, when the parent is an `OBJECT`. Owned by the document.
+    key: string;
+    /// The first child, when `kind` is `ARRAY` or `OBJECT`; `NONE` when empty.
+    first: s64;
+    /// The next sibling under the same parent; `NONE` when last.
+    next: s64;
+}
+
+/// A parsed document: the node store, plus the root's index.
+///
+/// The document owns every node and every string in them. `free_document` is the only release, and it is
+/// the *whole* release — there is nothing else for a caller to remember.
+Json_Document :: struct {
+    /// Every node, in the order the parse produced them. Read through `view(nodes.data, nodes.count)`,
+    /// because a `[..]T` cannot be indexed directly.
+    nodes: [..]Json_Node;
+    /// The root value's index, or `NONE` when the parse failed.
+    root: s64;
+    /// The byte offset where the parse stopped, when it failed. `-1` on success.
+    ///
+    /// An offset rather than a message, because a message would need formatting this module cannot do
+    /// (see the docs above) and an offset is what a caller renders against their own source anyway.
+    error_at: s64;
+}
+
+/// Parses `text` into a document.
+///
+/// `#must`: the result carries a success flag beside the document, and ignoring it has to be *written*
+/// (ADR-0151). A parse of untrusted input is the case that marker exists for — a caller who ignores the
+/// flag reads `root == NONE` as an empty document and gets silently wrong answers.
+///
+/// On failure the document is still valid and still needs freeing: whatever nodes the parse built before it
+/// stopped are in it, `root` is `NONE`, and `error_at` is the byte offset. Freeing a failed parse the same
+/// way as a successful one is the point of the flat store.
+parse :: (text: string) -> (Json_Document, bool) #must {
+    doc: Json_Document;
+    doc.root = NONE;
+    doc.error_at = -1;
+
+    at := skip_space(text, 0);
+    value, ok, after := parse_value(*doc, text, at);
+    if !ok {
+        doc.error_at = after;
+        return doc, false;
+    }
+
+    // **Trailing content is an error**, not ignored. `{"a":1} garbage` is not a JSON document, and a parser
+    // that accepted it would let a truncated stream through as a valid prefix.
+    rest := skip_space(text, after);
+    if rest != text.count {
+        doc.error_at = rest;
+        return doc, false;
+    }
+
+    doc.root = value;
+    return doc, true;
+}
+
+/// Releases every node and every string the document owns.
+///
+/// Safe on a failed parse and safe to call twice: the array is emptied, so the second call walks nothing.
+free_document :: (doc: *Json_Document) {
+    nodes := view(doc.nodes.data, doc.nodes.count);
+    i := 0;
+    while i < doc.nodes.count {
+        if !is_empty(nodes[i].text) {
+            free_string(nodes[i].text);
+        }
+        if !is_empty(nodes[i].key) {
+            free_string(nodes[i].key);
+        }
+        i = i + 1;
+    }
+    if doc.nodes.data != null {
+        free(untyped(doc.nodes.data));
+    }
+    doc.nodes.data = null;
+    doc.nodes.count = 0;
+    doc.nodes.capacity = 0;
+    doc.root = NONE;
+}
+
+// ---------------------------------------------------------------------------
+// Inspecting
+// ---------------------------------------------------------------------------
+
+/// The kind of node `at`, or `NULL_` when `at` is not a node in this document.
+///
+/// `NULL_` for an out-of-range index rather than a trap, because every accessor here answers a *question*
+/// about possibly-absent data — `kind_of(member(doc, obj, "missing"))` should say "nothing there", not stop
+/// the program. A caller who wants a trap can compare against `NONE` first.
+kind_of :: (doc: *Json_Document, at: s64) -> Json_Kind {
+    if !in_range(doc, at) {
+        return Json_Kind.NULL_;
+    }
+    nodes := view(doc.nodes.data, doc.nodes.count);
+    return nodes[at].kind;
+}
+
+/// The number at `at`, or `0.0` when it is not a number.
+number_of :: (doc: *Json_Document, at: s64) -> float64 {
+    if kind_of(doc, at) != Json_Kind.NUMBER {
+        return 0.0;
+    }
+    nodes := view(doc.nodes.data, doc.nodes.count);
+    return nodes[at].number;
+}
+
+/// The exact integer at `at`, or `0` when it is not an integral number.
+///
+/// Separate from `number_of` because going through `float64` loses precision above 2^53, and a caller
+/// indexing or counting wants the exact value. `is_integer_at` asks whether this is meaningful.
+integer_of :: (doc: *Json_Document, at: s64) -> s64 {
+    if kind_of(doc, at) != Json_Kind.NUMBER {
+        return 0;
+    }
+    nodes := view(doc.nodes.data, doc.nodes.count);
+    if !nodes[at].is_integer {
+        return 0;
+    }
+    return nodes[at].integer;
+}
+
+/// Whether `at` is a number whose source had no fraction and no exponent.
+is_integer_at :: (doc: *Json_Document, at: s64) -> bool {
+    if kind_of(doc, at) != Json_Kind.NUMBER {
+        return false;
+    }
+    nodes := view(doc.nodes.data, doc.nodes.count);
+    return nodes[at].is_integer;
+}
+
+/// The string at `at`, or the empty string when it is not a string.
+///
+/// **Borrowed, not copied**: the document owns it and `free_document` releases it, so a caller who needs it
+/// to outlive the document must `concat` or `substring` it. Returning a copy would make every read allocate
+/// and every caller free, which is the wrong default for an inspector.
+string_of :: (doc: *Json_Document, at: s64) -> string {
+    if kind_of(doc, at) != Json_Kind.STRING {
+        return "";
+    }
+    nodes := view(doc.nodes.data, doc.nodes.count);
+    return nodes[at].text;
+}
+
+/// Whether `at` is `true`. `false` for `false`, and for everything that is not a boolean.
+is_true :: (doc: *Json_Document, at: s64) -> bool {
+    return kind_of(doc, at) == Json_Kind.TRUE_;
+}
+
+/// How many elements the array at `at` has, or `0` when it is not an array.
+///
+/// Walks the sibling chain, so it is `O(n)`. A cached count per node would make it `O(1)` and cost eight
+/// bytes on every node including the scalars; the chain walk is what an `array_at` loop does anyway, so a
+/// caller iterating pays the same either way and a caller merely asking is rare.
+array_count :: (doc: *Json_Document, at: s64) -> s64 {
+    if kind_of(doc, at) != Json_Kind.ARRAY {
+        return 0;
+    }
+    return chain_length(doc, at);
+}
+
+/// Element `index` of the array at `at`, or `NONE`.
+array_at :: (doc: *Json_Document, at: s64, index: s64) -> s64 {
+    if kind_of(doc, at) != Json_Kind.ARRAY {
+        return NONE;
+    }
+    return chain_at(doc, at, index);
+}
+
+/// How many members the object at `at` has, or `0` when it is not an object.
+member_count :: (doc: *Json_Document, at: s64) -> s64 {
+    if kind_of(doc, at) != Json_Kind.OBJECT {
+        return 0;
+    }
+    return chain_length(doc, at);
+}
+
+/// Member `index` of the object at `at`, in **source order**, or `NONE`.
+///
+/// Source order is preserved because members are a chain rather than a hash table — which is the property a
+/// caller comparing two documents, or round-tripping one, needs.
+member_at :: (doc: *Json_Document, at: s64, index: s64) -> s64 {
+    if kind_of(doc, at) != Json_Kind.OBJECT {
+        return NONE;
+    }
+    return chain_at(doc, at, index);
+}
+
+/// The name of the member node `at`, or the empty string. Borrowed, like `string_of`.
+key_of :: (doc: *Json_Document, at: s64) -> string {
+    if !in_range(doc, at) {
+        return "";
+    }
+    nodes := view(doc.nodes.data, doc.nodes.count);
+    return nodes[at].key;
+}
+
+/// The first member of the object at `at` named `name`, or `NONE`.
+///
+/// **First**, because JSON does not say what a duplicate key means and this module refuses to invent a rule;
+/// both copies are in the document and a caller who cares can walk `member_at`.
+///
+/// A linear scan. An object with three keys is faster to scan than to hash, and `Map` cannot key on a
+/// string today in any case (it is `Map(s64, s64)`).
+member :: (doc: *Json_Document, at: s64, name: string) -> s64 {
+    if kind_of(doc, at) != Json_Kind.OBJECT {
+        return NONE;
+    }
+    nodes := view(doc.nodes.data, doc.nodes.count);
+    child := nodes[at].first;
+    while child != NONE {
+        if equal(nodes[child].key, name) {
+            return child;
+        }
+        child = nodes[child].next;
+    }
+    return NONE;
+}
+
+/// Whether the object at `at` has a member named `name`.
+has_member :: (doc: *Json_Document, at: s64, name: string) -> bool {
+    return member(doc, at, name) != NONE;
+}
+
+// ---------------------------------------------------------------------------
+// Internals
+// ---------------------------------------------------------------------------
+
+/// Whether `at` names a node in this document.
+in_range :: (doc: *Json_Document, at: s64) -> bool {
+    if at < 0 {
+        return false;
+    }
+    return at < doc.nodes.count;
+}
+
+/// How many nodes are in the chain under `at`.
+chain_length :: (doc: *Json_Document, at: s64) -> s64 {
+    nodes := view(doc.nodes.data, doc.nodes.count);
+    n := 0;
+    child := nodes[at].first;
+    while child != NONE {
+        n = n + 1;
+        child = nodes[child].next;
+    }
+    return n;
+}
+
+/// The `index`th node in the chain under `at`, or `NONE`.
+chain_at :: (doc: *Json_Document, at: s64, index: s64) -> s64 {
+    if index < 0 {
+        return NONE;
+    }
+    nodes := view(doc.nodes.data, doc.nodes.count);
+    child := nodes[at].first;
+    i := 0;
+    while child != NONE {
+        if i == index {
+            return child;
+        }
+        i = i + 1;
+        child = nodes[child].next;
+    }
+    return NONE;
+}
+
+/// Appends a node and returns its index, or `NONE` when it cannot grow.
+///
+/// Doubling from four, matching `List` (ADR-0107) and `Bucket_Array`'s spine: a fixed increment makes a
+/// sequence of appends `O(n²)`.
+add_node :: (doc: *Json_Document, kind: Json_Kind) -> s64 {
+    if doc.nodes.count == doc.nodes.capacity {
+        grown := 4;
+        if doc.nodes.capacity > 0 {
+            grown = doc.nodes.capacity * 2;
+        }
+        fresh := typed(Json_Node, malloc(grown * size_of(Json_Node)));
+        if fresh == null {
+            return NONE;
+        }
+        old := view(doc.nodes.data, doc.nodes.count);
+        new := view(fresh, doc.nodes.count);
+        i := 0;
+        while i < doc.nodes.count {
+            new[i] = old[i];
+            i = i + 1;
+        }
+        if doc.nodes.data != null {
+            free(untyped(doc.nodes.data));
+        }
+        doc.nodes.data = fresh;
+        doc.nodes.capacity = grown;
+    }
+    slots := view(doc.nodes.data, doc.nodes.capacity);
+    at := doc.nodes.count;
+    fresh_node: Json_Node;
+    fresh_node.kind = kind;
+    fresh_node.number = 0.0;
+    fresh_node.integer = 0;
+    fresh_node.is_integer = false;
+    fresh_node.text = "";
+    fresh_node.key = "";
+    fresh_node.first = NONE;
+    fresh_node.next = NONE;
+    slots[at] = fresh_node;
+    doc.nodes.count = doc.nodes.count + 1;
+    return at;
+}
+
+/// The first offset at or after `from` that is not JSON whitespace.
+///
+/// JSON's whitespace is exactly space, tab, newline and carriage return — not `isspace`'s set, which
+/// includes vertical tab and form feed. Written out rather than delegated, because "whatever the C library
+/// thinks is space" is not the grammar.
+skip_space :: (text: string, from: s64) -> s64 {
+    at := from;
+    while at < text.count {
+        c := byte_at(text, at);
+        if c != 32 {
+            if c != 9 {
+                if c != 10 {
+                    if c != 13 {
+                        return at;
+                    }
+                }
+            }
+        }
+        at = at + 1;
+    }
+    return at;
+}
+
+// ---------------------------------------------------------------------------
+// Parsing
+// ---------------------------------------------------------------------------
+
+/// Parses one value starting at `at`.
+///
+/// Returns its node index, whether it parsed, and the offset just past it — or, on failure, the offset
+/// where it went wrong, which is what `parse` reports as `error_at`. Three results rather than a struct,
+/// because ADR-0052 gave this language multiple returns and a one-use struct would be a name for nothing.
+///
+/// Recursive descent, so nesting depth is stack depth. **No depth limit**, deliberately: the limit that
+/// matters is the caller's stack, a cap would be an arbitrary number in a library, and a caller parsing
+/// untrusted input has to bound the *input size* anyway, which bounds the depth. Recorded because the
+/// absence looks like an oversight otherwise.
+parse_value :: (doc: *Json_Document, text: string, at: s64) -> (s64, bool, s64) {
+    if at >= text.count {
+        return NONE, false, at;
+    }
+    c := byte_at(text, at);
+
+    // `{` and `[` first, because they recurse and the rest are leaves.
+    if c == 123 {
+        return parse_object(doc, text, at);
+    }
+    if c == 91 {
+        return parse_array(doc, text, at);
+    }
+    if c == 34 {
+        return parse_string(doc, text, at);
+    }
+    if literal_at(text, at, "true") {
+        node := add_node(doc, Json_Kind.TRUE_);
+        return node, node != NONE, at + 4;
+    }
+    if literal_at(text, at, "false") {
+        node := add_node(doc, Json_Kind.FALSE_);
+        return node, node != NONE, at + 5;
+    }
+    if literal_at(text, at, "null") {
+        node := add_node(doc, Json_Kind.NULL_);
+        return node, node != NONE, at + 4;
+    }
+    // A number, or nothing. `-` and the digits are the only remaining legal starts; JSON has no leading
+    // `+`, no bare `.5`, and no `Infinity` or `NaN`, and each of those absences is the grammar rather than
+    // a simplification here.
+    if c == 45 {
+        return parse_number(doc, text, at);
+    }
+    if c >= 48 {
+        if c <= 57 {
+            return parse_number(doc, text, at);
+        }
+    }
+    return NONE, false, at;
+}
+
+/// Whether `text` has exactly `word` at `at`.
+literal_at :: (text: string, at: s64, word: string) -> bool {
+    if at + word.count > text.count {
+        return false;
+    }
+    i := 0;
+    while i < word.count {
+        if byte_at(text, at + i) != byte_at(word, i) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/// Parses `[ … ]`, building a sibling chain.
+///
+/// The chain is built by remembering the **last** element and writing its `next`, rather than by walking to
+/// the end each time — which would make an n-element array `O(n²)` for no reason. Written out because the
+/// `last` variable looks redundant until you notice the alternative.
+parse_array :: (doc: *Json_Document, text: string, at: s64) -> (s64, bool, s64) {
+    node := add_node(doc, Json_Kind.ARRAY);
+    if node == NONE {
+        return NONE, false, at;
+    }
+    cursor := skip_space(text, at + 1);
+    if cursor < text.count {
+        if byte_at(text, cursor) == 93 {
+            return node, true, cursor + 1;
+        }
+    }
+
+    last := NONE;
+    while true {
+        element, ok, after := parse_value(doc, text, cursor);
+        if !ok {
+            return NONE, false, after;
+        }
+        // Re-viewed after every `parse_value`, because a nested parse may have **grown the store** and
+        // moved it. A view held across an append is a dangling read, and this is exactly where the flat
+        // store's one sharp edge is — so it is re-taken rather than hoisted, in all four places.
+        nodes := view(doc.nodes.data, doc.nodes.count);
+        if last == NONE {
+            nodes[node].first = element;
+        } else {
+            nodes[last].next = element;
+        }
+        last = element;
+
+        cursor = skip_space(text, after);
+        if cursor >= text.count {
+            return NONE, false, cursor;
+        }
+        c := byte_at(text, cursor);
+        if c == 93 {
+            return node, true, cursor + 1;
+        }
+        if c != 44 {
+            return NONE, false, cursor;
+        }
+        cursor = skip_space(text, cursor + 1);
+        // A trailing comma is an error: `[1,]` is not JSON. Checked here rather than by letting
+        // `parse_value` fail on `]`, so the reported offset is the comma's own position.
+        if cursor < text.count {
+            if byte_at(text, cursor) == 93 {
+                return NONE, false, cursor;
+            }
+        }
+    }
+    return NONE, false, cursor;
+}
+
+/// Parses `{ "k": v, … }`, building a sibling chain whose nodes carry their keys.
+///
+/// A member is the **value's own node** with `key` set, rather than a separate pair node. One node fewer per
+/// member, and `member(doc, obj, "k")` returns something a caller can read directly with `string_of` or
+/// `number_of` — where a pair node would make every read go through a `value_of` nobody wants.
+parse_object :: (doc: *Json_Document, text: string, at: s64) -> (s64, bool, s64) {
+    node := add_node(doc, Json_Kind.OBJECT);
+    if node == NONE {
+        return NONE, false, at;
+    }
+    cursor := skip_space(text, at + 1);
+    if cursor < text.count {
+        if byte_at(text, cursor) == 125 {
+            return node, true, cursor + 1;
+        }
+    }
+
+    last := NONE;
+    while true {
+        if cursor >= text.count {
+            return NONE, false, cursor;
+        }
+        if byte_at(text, cursor) != 34 {
+            return NONE, false, cursor;
+        }
+        name, name_ok, after_name := scan_string(text, cursor);
+        if !name_ok {
+            return NONE, false, after_name;
+        }
+
+        cursor = skip_space(text, after_name);
+        if cursor >= text.count {
+            free_string(name);
+            return NONE, false, cursor;
+        }
+        if byte_at(text, cursor) != 58 {
+            free_string(name);
+            return NONE, false, cursor;
+        }
+        cursor = skip_space(text, cursor + 1);
+
+        value, ok, after := parse_value(doc, text, cursor);
+        if !ok {
+            free_string(name);
+            return NONE, false, after;
+        }
+        nodes := view(doc.nodes.data, doc.nodes.count);
+        nodes[value].key = name;
+        if last == NONE {
+            nodes[node].first = value;
+        } else {
+            nodes[last].next = value;
+        }
+        last = value;
+
+        cursor = skip_space(text, after);
+        if cursor >= text.count {
+            return NONE, false, cursor;
+        }
+        c := byte_at(text, cursor);
+        if c == 125 {
+            return node, true, cursor + 1;
+        }
+        if c != 44 {
+            return NONE, false, cursor;
+        }
+        cursor = skip_space(text, cursor + 1);
+        if cursor < text.count {
+            if byte_at(text, cursor) == 125 {
+                return NONE, false, cursor;
+            }
+        }
+    }
+    return NONE, false, cursor;
+}
+
+/// Parses a string value into a node.
+parse_string :: (doc: *Json_Document, text: string, at: s64) -> (s64, bool, s64) {
+    value, ok, after := scan_string(text, at);
+    if !ok {
+        return NONE, false, after;
+    }
+    node := add_node(doc, Json_Kind.STRING);
+    if node == NONE {
+        free_string(value);
+        return NONE, false, at;
+    }
+    nodes := view(doc.nodes.data, doc.nodes.count);
+    nodes[node].text = value;
+    return node, true, after;
+}
+
+/// Reads a quoted string starting at `at` and returns it **unescaped and allocated**.
+///
+/// Two passes: measure, then fill. One pass into a growable buffer would double-copy on every growth, and
+/// the measured length is exact because unescaping only ever *shrinks* — `\n` is two bytes in and one out.
+///
+/// **`\uXXXX` becomes UTF-8**, which is the one piece of real work here: JSON escapes a code point as
+/// UTF-16, so a surrogate pair has to be recombined before encoding. A lone surrogate is an error rather
+/// than a replacement character, because silently substituting U+FFFD turns malformed input into a valid
+/// document that says something the source did not.
+scan_string :: (text: string, at: s64) -> (string, bool, s64) {
+    if at >= text.count {
+        return "", false, at;
+    }
+    if byte_at(text, at) != 34 {
+        return "", false, at;
+    }
+
+    // Pass one: how long is the unescaped result, and where does the literal end?
+    size := 0;
+    cursor := at + 1;
+    while cursor < text.count {
+        c := byte_at(text, cursor);
+        if c == 34 {
+            break;
+        }
+        if c == 92 {
+            width, ok := escape_width(text, cursor);
+            if !ok {
+                return "", false, cursor;
+            }
+            size = size + width;
+            cursor = cursor + escape_length(text, cursor);
+        } else {
+            // A raw control byte is invalid in a JSON string. Refused rather than passed through, because a
+            // parser that accepts one produces a document whose text cannot be re-emitted as JSON.
+            if c < 32 {
+                return "", false, cursor;
+            }
+            size = size + 1;
+            cursor = cursor + 1;
+        }
+    }
+    if cursor >= text.count {
+        return "", false, cursor;
+    }
+    let_end := cursor;
+
+    // Pass two: fill.
+    //
+    // **Through `context.allocator`, not `malloc`**, because the result is handed to `String.adopt` and
+    // released by `String.free_string`, which frees through `context.allocator_free`. Allocating with
+    // `malloc` here would pair a libc allocation with a context free — invisible while the installed
+    // allocator *is* libc, and corruption the moment a caller installs an arena. The library has a real seam
+    // here, named in the module docs: `List` and `Map` allocate with `malloc`, `String` through the context,
+    // and this module is the first that needs both.
+    data := context.allocator(size + 1);
+    if data == null {
+        return "", false, at;
+    }
+    out := view(data, size + 1);
+    write_at := 0;
+    cursor = at + 1;
+    while cursor < let_end {
+        c := byte_at(text, cursor);
+        if c == 92 {
+            written := write_escape(text, cursor, out, write_at);
+            write_at = write_at + written;
+            cursor = cursor + escape_length(text, cursor);
+        } else {
+            out[write_at] = cast(u8, c);
+            write_at = write_at + 1;
+            cursor = cursor + 1;
+        }
+    }
+    out[write_at] = cast(u8, 0);
+    return adopt(data, write_at), true, let_end + 1;
+}
+
+/// How many bytes the escape at `at` produces, and whether it is a legal escape.
+escape_width :: (text: string, at: s64) -> (s64, bool) {
+    if at + 1 >= text.count {
+        return 0, false;
+    }
+    c := byte_at(text, at + 1);
+    if c == 117 {
+        point, ok := unicode_escape(text, at);
+        if !ok {
+            return 0, false;
+        }
+        return utf8_width(point), true;
+    }
+    // The seven single-character escapes JSON has, and no others: `\a` is not JSON even though C has it.
+    if c == 34 {
+        return 1, true;
+    }
+    if c == 92 {
+        return 1, true;
+    }
+    if c == 47 {
+        return 1, true;
+    }
+    if c == 98 {
+        return 1, true;
+    }
+    if c == 102 {
+        return 1, true;
+    }
+    if c == 110 {
+        return 1, true;
+    }
+    if c == 114 {
+        return 1, true;
+    }
+    if c == 116 {
+        return 1, true;
+    }
+    return 0, false;
+}
+
+/// How many **source** bytes the escape at `at` occupies.
+escape_length :: (text: string, at: s64) -> s64 {
+    if at + 1 >= text.count {
+        return 1;
+    }
+    if byte_at(text, at + 1) != 117 {
+        return 2;
+    }
+    // `\uXXXX`, or twelve for a surrogate pair — the pair is one escape as far as the caller is concerned,
+    // because it produces one code point.
+    if surrogate_pair_at(text, at) {
+        return 12;
+    }
+    return 6;
+}
+
+/// Whether the escape at `at` is a high surrogate followed by a `\u` low surrogate.
+surrogate_pair_at :: (text: string, at: s64) -> bool {
+    high, ok := hex4(text, at + 2);
+    if !ok {
+        return false;
+    }
+    if high < 55296 {
+        return false;
+    }
+    if high > 56319 {
+        return false;
+    }
+    if at + 11 >= text.count {
+        return false;
+    }
+    if byte_at(text, at + 6) != 92 {
+        return false;
+    }
+    if byte_at(text, at + 7) != 117 {
+        return false;
+    }
+    low, low_ok := hex4(text, at + 8);
+    if !low_ok {
+        return false;
+    }
+    if low < 56320 {
+        return false;
+    }
+    return low <= 57343;
+}
+
+/// The code point the `\u` escape at `at` denotes.
+unicode_escape :: (text: string, at: s64) -> (s64, bool) {
+    value, ok := hex4(text, at + 2);
+    if !ok {
+        return 0, false;
+    }
+    if value < 55296 {
+        return value, true;
+    }
+    if value > 57343 {
+        return value, true;
+    }
+    // A surrogate. Only a well-formed high-then-low pair is legal; a lone one is an error.
+    if value > 56319 {
+        return 0, false;
+    }
+    if !surrogate_pair_at(text, at) {
+        return 0, false;
+    }
+    low, low_ok := hex4(text, at + 8);
+    if !low_ok {
+        return 0, false;
+    }
+    return 65536 + (value - 55296) * 1024 + (low - 56320), true;
+}
+
+/// Four hex digits at `at`, as a number.
+hex4 :: (text: string, at: s64) -> (s64, bool) {
+    if at + 4 > text.count {
+        return 0, false;
+    }
+    value := 0;
+    i := 0;
+    while i < 4 {
+        digit, ok := hex_digit(byte_at(text, at + i));
+        if !ok {
+            return 0, false;
+        }
+        value = value * 16 + digit;
+        i = i + 1;
+    }
+    return value, true;
+}
+
+/// One hex digit's value.
+hex_digit :: (c: s64) -> (s64, bool) {
+    if c >= 48 {
+        if c <= 57 {
+            return c - 48, true;
+        }
+    }
+    if c >= 97 {
+        if c <= 102 {
+            return c - 97 + 10, true;
+        }
+    }
+    if c >= 65 {
+        if c <= 70 {
+            return c - 65 + 10, true;
+        }
+    }
+    return 0, false;
+}
+
+/// How many bytes `point` needs in UTF-8.
+utf8_width :: (point: s64) -> s64 {
+    if point < 128 {
+        return 1;
+    }
+    if point < 2048 {
+        return 2;
+    }
+    if point < 65536 {
+        return 3;
+    }
+    return 4;
+}
+
+/// Writes the escape at `at` into `out` starting at `write_at`, and returns how many bytes it wrote.
+write_escape :: (text: string, at: s64, out: []u8, write_at: s64) -> s64 {
+    c := byte_at(text, at + 1);
+    if c == 117 {
+        point, ok := unicode_escape(text, at);
+        if !ok {
+            return 0;
+        }
+        return write_utf8(out, write_at, point);
+    }
+    out[write_at] = cast(u8, single_escape(c));
+    return 1;
+}
+
+/// The byte a single-character escape produces.
+single_escape :: (c: s64) -> s64 {
+    if c == 98 {
+        return 8;
+    }
+    if c == 102 {
+        return 12;
+    }
+    if c == 110 {
+        return 10;
+    }
+    if c == 114 {
+        return 13;
+    }
+    if c == 116 {
+        return 9;
+    }
+    // `"`, `\` and `/` all stand for themselves.
+    return c;
+}
+
+/// Encodes `point` as UTF-8 at `write_at`, returning how many bytes it wrote.
+write_utf8 :: (out: []u8, write_at: s64, point: s64) -> s64 {
+    if point < 128 {
+        out[write_at] = cast(u8, point);
+        return 1;
+    }
+    if point < 2048 {
+        out[write_at] = cast(u8, 192 + point / 64);
+        out[write_at + 1] = cast(u8, 128 + point % 64);
+        return 2;
+    }
+    if point < 65536 {
+        out[write_at] = cast(u8, 224 + point / 4096);
+        out[write_at + 1] = cast(u8, 128 + point / 64 % 64);
+        out[write_at + 2] = cast(u8, 128 + point % 64);
+        return 3;
+    }
+    out[write_at] = cast(u8, 240 + point / 262144);
+    out[write_at + 1] = cast(u8, 128 + point / 4096 % 64);
+    out[write_at + 2] = cast(u8, 128 + point / 64 % 64);
+    out[write_at + 3] = cast(u8, 128 + point % 64);
+    return 4;
+}
+
+/// libc `strtod(3)`, for the exact decimal-to-`float64` conversion.
+///
+/// Reachable because ADR-0114 let a float cross the `#foreign` boundary. The `end` out-parameter is ignored
+/// here — this module has already found the number's extent with its own scanner, which has to happen anyway
+/// to reject what JSON forbids and C accepts (`0x10`, `inf`, a leading `+`).
+strtod :: (text: *u8, end: **u8) -> float64 #foreign libc "strtod";
+
+/// Parses a number, exactly.
+///
+/// The **extent is found by JSON's grammar** and the **value by `strtod`**, and that split is the decision:
+/// `strtod` alone would accept `0x1p3`, `inf`, `nan` and a leading `+`, none of which are JSON, and a
+/// hand-written conversion would be a rounding bug waiting to happen (the argument `Math` makes about
+/// `sqrt`, ADR-0112). So the scanner says what a number *is* and libc says what it *equals*.
+///
+/// An integral number also gets an exact `s64`, computed here rather than from the float, because a
+/// `float64` cannot hold every `s64` above 2^53 and a caller indexing an array wants the value they wrote.
+/// Overflow past `s64` leaves `is_integer` false, so the float remains the only answer — which is honest,
+/// since the exact integer genuinely does not fit.
+parse_number :: (doc: *Json_Document, text: string, at: s64) -> (s64, bool, s64) {
+    cursor := at;
+    negative := false;
+    if byte_at(text, cursor) == 45 {
+        negative = true;
+        cursor = cursor + 1;
+    }
+
+    // An integer part is required, and a leading zero may not be followed by a digit: `01` is not JSON.
+    digits_start := cursor;
+    if cursor >= text.count {
+        return NONE, false, cursor;
+    }
+    if byte_at(text, cursor) == 48 {
+        cursor = cursor + 1;
+        if cursor < text.count {
+            if is_digit(byte_at(text, cursor)) {
+                return NONE, false, cursor;
+            }
+        }
+    } else {
+        if !is_digit(byte_at(text, cursor)) {
+            return NONE, false, cursor;
+        }
+        while cursor < text.count {
+            if !is_digit(byte_at(text, cursor)) {
+                break;
+            }
+            cursor = cursor + 1;
+        }
+    }
+    integer_end := cursor;
+
+    integral := true;
+    if cursor < text.count {
+        if byte_at(text, cursor) == 46 {
+            integral = false;
+            cursor = cursor + 1;
+            // At least one digit after the point: `1.` is not JSON.
+            if cursor >= text.count {
+                return NONE, false, cursor;
+            }
+            if !is_digit(byte_at(text, cursor)) {
+                return NONE, false, cursor;
+            }
+            while cursor < text.count {
+                if !is_digit(byte_at(text, cursor)) {
+                    break;
+                }
+                cursor = cursor + 1;
+            }
+        }
+    }
+    if cursor < text.count {
+        e := byte_at(text, cursor);
+        if e == 101 {
+            integral = false;
+            cursor = cursor + 1;
+        } else {
+            if e == 69 {
+                integral = false;
+                cursor = cursor + 1;
+            }
+        }
+    }
+    if !integral {
+        if cursor < text.count {
+            sign := byte_at(text, cursor);
+            if sign == 43 {
+                cursor = cursor + 1;
+            } else {
+                if sign == 45 {
+                    cursor = cursor + 1;
+                }
+            }
+        }
+        // Only when an exponent marker was actually consumed does a digit become required; a fraction with
+        // no exponent has already been fully scanned. The check is `cursor > integer_end + 1` rather than a
+        // flag, because the fraction path leaves `cursor` past the point either way.
+        if !exponent_well_formed(text, cursor, integer_end) {
+            return NONE, false, cursor;
+        }
+        while cursor < text.count {
+            if !is_digit(byte_at(text, cursor)) {
+                break;
+            }
+            cursor = cursor + 1;
+        }
+    }
+
+    node := add_node(doc, Json_Kind.NUMBER);
+    if node == NONE {
+        return NONE, false, at;
+    }
+    nodes := view(doc.nodes.data, doc.nodes.count);
+    nodes[node].number = decimal_value(text, at, cursor);
+    if integral {
+        value, fits := integer_value(text, digits_start, integer_end);
+        if fits {
+            nodes[node].is_integer = true;
+            if negative {
+                nodes[node].integer = 0 - value;
+            } else {
+                nodes[node].integer = value;
+            }
+        }
+    }
+    return node, true, cursor;
+}
+
+/// Whether the exponent starting at `cursor` has its required digit.
+///
+/// Split out because the condition reads badly inline: an exponent needs a digit, and a plain fraction has
+/// none to need. `integer_end` distinguishes them — a fraction-only number has already consumed everything.
+exponent_well_formed :: (text: string, cursor: s64, integer_end: s64) -> bool {
+    if cursor >= text.count {
+        return integer_end < cursor;
+    }
+    if is_digit(byte_at(text, cursor)) {
+        return true;
+    }
+    // No digit here is fine only if there was no exponent marker — in which case the previous byte is a
+    // digit of the fraction rather than `e`, `+` or `-`.
+    return !exponent_marker_before(text, cursor);
+}
+
+/// Whether an `e`/`E` (possibly with a sign after it) sits just before `cursor`.
+exponent_marker_before :: (text: string, cursor: s64) -> bool {
+    back := cursor - 1;
+    if back < 0 {
+        return false;
+    }
+    c := byte_at(text, back);
+    if c == 43 {
+        back = back - 1;
+    } else {
+        if c == 45 {
+            back = back - 1;
+        }
+    }
+    if back < 0 {
+        return false;
+    }
+    m := byte_at(text, back);
+    if m == 101 {
+        return true;
+    }
+    return m == 69;
+}
+
+/// Whether `c` is an ASCII digit.
+is_digit :: (c: s64) -> bool {
+    if c < 48 {
+        return false;
+    }
+    return c <= 57;
+}
+
+/// The exact `s64` the digits in `[from, to)` spell, and whether it fit.
+///
+/// Compared against the limit **before** multiplying, so overflow is detected rather than wrapped — a
+/// wrapped count is a silently wrong answer, which is the failure mode this project refuses everywhere else.
+integer_value :: (text: string, from: s64, to: s64) -> (s64, bool) {
+    // 922337203685477580 is `s64`'s maximum divided by ten, so a value above it cannot be multiplied.
+    limit :: 922337203685477580;
+    value := 0;
+    i := from;
+    while i < to {
+        digit := byte_at(text, i) - 48;
+        if value > limit {
+            return 0, false;
+        }
+        value = value * 10;
+        if value > 9223372036854775807 - digit {
+            return 0, false;
+        }
+        value = value + digit;
+        i = i + 1;
+    }
+    return value, true;
+}
+
+/// The `float64` the source slice `[from, to)` equals, via `strtod`.
+///
+/// The slice is copied into a NUL-terminated scratch buffer from **temporary storage**, because `strtod`
+/// reads to a NUL and a Jairs `string` is data and a count with no terminator. The arena is right here for
+/// the same reason it is right for a sort's scratch (ADR-0155 §3): the copy is dead the moment the call
+/// returns.
+decimal_value :: (text: string, from: s64, to: s64) -> float64 {
+    n := to - from;
+    scratch := talloc(n + 1);
+    if scratch == null {
+        return 0.0;
+    }
+    bytes := view(scratch, n + 1);
+    i := 0;
+    while i < n {
+        bytes[i] = cast(u8, byte_at(text, from + i));
+        i = i + 1;
+    }
+    bytes[n] = cast(u8, 0);
+    ignored: *u8;
+    return strtod(scratch, *ignored);
+}
