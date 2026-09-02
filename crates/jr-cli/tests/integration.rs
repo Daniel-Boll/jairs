@@ -1693,3 +1693,163 @@ main :: () {
         "every step must succeed; a lower value names which bit failed, and 90-91 name a hard stop"
     );
 }
+
+/// `modules/UI`'s immediate-mode button, driven through SDL's real event queue (ADR-0166).
+///
+/// # What this actually proves
+///
+/// It is the first test here that needs a window, an event queue **and** a renderer at once, so it is the one
+/// that says the graphics stack composes rather than that three modules each work.
+///
+/// The interesting assertions are the negative ones. A button must fire on **release inside after press
+/// inside** — so pressing it, dragging off and releasing elsewhere must fire *nothing*, and a press that begins
+/// outside must not arm it. Returning `true` on press is the naive implementation, and it passes every positive
+/// test while breaking the escape hatch every user expects to work.
+///
+/// A synthetic mouse event survives SDL's queue with its coordinates intact — checked, unlike a synthetic
+/// `KEY_DOWN`, which SDL accepts and drops (ADR-0165 §4). So this drives the real queue rather than building
+/// events locally, which is stronger evidence.
+///
+/// **`is_hot(ui, NONE)` is in here because it was a bug.** `hot` *is* `NONE` when nothing is hot, so a bare
+/// comparison answered `true` for the sentinel on every frame — a widget that does not exist, reported as
+/// hovered. Found by this test, fixed by refusing the sentinel.
+#[test]
+fn an_immediate_mode_button_fires_on_release_inside() {
+    let candidates = [
+        "/opt/homebrew/lib",
+        "/usr/local/lib",
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib",
+    ];
+    let library_dir = candidates.iter().map(PathBuf::from).find(|dir| {
+        dir.join("libSDL2.dylib").exists()
+            || dir.join("libSDL2.so").exists()
+            || dir.join("libSDL2-2.0.so.0").exists()
+    });
+    let Some(library_dir) = library_dir else {
+        return;
+    };
+
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("ui.jr");
+    fs::write(&source, PROGRAM).unwrap();
+
+    let binary = dir.path().join("ui");
+    let code = run_build_with_paths(source, binary.clone(), &[library_dir]);
+    assert_eq!(code, 0, "the program must build and link against SDL2");
+
+    let ran = std::process::Command::new(&binary)
+        .env("SDL_VIDEODRIVER", "dummy")
+        .status()
+        .expect("the linked binary should run");
+    assert_eq!(
+        ran.code(),
+        // 65535 is all sixteen bits, mod 251 because an exit status is a byte.
+        Some(65535 % 251),
+        "every interaction must behave; a lower value names which bit failed, and 90-92 name a hard stop"
+    );
+}
+
+/// The immediate-mode UI program the test above builds.
+///
+/// A constant rather than an inline literal, because it is long enough that the assertions would be lost
+/// after it.
+const PROGRAM: &str = r#"#import "Window";
+#import "UI";
+libc :: #system_library "c";
+exit_now :: (status: s64) #foreign libc "exit";
+
+// Pushes a mouse event and folds every queued event into `ui`.
+send :: (ui: *UI, kind: s64, x: s64, y: s64) {
+    m: Event;
+    m.kind = cast(u32, kind);
+    m.mouse_button = 1;
+    m.mouse_x = cast(s32, x);
+    m.mouse_y = cast(s32, y);
+    _ = push(*m);
+    e: Event;
+    i := 0;
+    while i < 32 {
+        if next_event(*e) { feed(ui, *e); }
+        i = i + 1;
+    }
+}
+
+main :: () {
+    if !start() { exit_now(90); }
+    t := "UI\0";
+    w, ok := open(t.data, 200, 200, HIDDEN);
+    if !ok { exit_now(91); }
+    r, rok := renderer_for(*w, SOFTWARE);
+    if !rok { exit_now(92); }
+
+    ui: UI;
+    total := 0;
+
+    // A press-and-release inside is a click.
+    begin_frame(*ui);
+    send(*ui, MOUSE_DOWN, 20, 20);
+    if !button(*ui, 1, 10, 10, 80, 24) { total = total + 1; }   // not on press
+    if is_active(*ui, 1) { total = total + 2; }
+    if is_hot(*ui, 1) { total = total + 4; }
+
+    begin_frame(*ui);
+    send(*ui, MOUSE_UP, 20, 20);
+    if button(*ui, 1, 10, 10, 80, 24) { total = total + 8; }    // fires on release
+    if !is_active(*ui, 1) { total = total + 16; }
+
+    // Press inside, drag off, release outside: must NOT fire.
+    begin_frame(*ui);
+    send(*ui, MOUSE_DOWN, 20, 20);
+    _ = button(*ui, 1, 10, 10, 80, 24);
+    begin_frame(*ui);
+    send(*ui, MOUSE_UP, 150, 150);
+    if !button(*ui, 1, 10, 10, 80, 24) { total = total + 32; }
+    if !is_active(*ui, 1) { total = total + 64; }
+
+    // A press that begins outside cannot arm the button.
+    begin_frame(*ui);
+    send(*ui, MOUSE_DOWN, 150, 150);
+    _ = button(*ui, 1, 10, 10, 80, 24);
+    begin_frame(*ui);
+    send(*ui, MOUSE_UP, 20, 20);
+    if !button(*ui, 1, 10, 10, 80, 24) { total = total + 128; }
+
+    // Two buttons: only the one under the cursor fires.
+    begin_frame(*ui);
+    send(*ui, MOUSE_DOWN, 20, 50);
+    _ = button(*ui, 1, 10, 10, 80, 24);
+    _ = button(*ui, 2, 10, 44, 80, 24);
+    begin_frame(*ui);
+    send(*ui, MOUSE_UP, 20, 50);
+    if !button(*ui, 1, 10, 10, 80, 24) { total = total + 256; }
+    if button(*ui, 2, 10, 44, 80, 24) { total = total + 512; }
+
+    // Edges are half-open: x + w is outside.
+    begin_frame(*ui);
+    send(*ui, MOUSE_MOTION, 90, 20);
+    _ = button(*ui, 1, 10, 10, 80, 24);
+    if !is_hot(*ui, 1) { total = total + 1024; }
+    begin_frame(*ui);
+    send(*ui, MOUSE_MOTION, 89, 20);
+    _ = button(*ui, 1, 10, 10, 80, 24);
+    if is_hot(*ui, 1) { total = total + 2048; }
+
+    // A zero id fires nothing and is not hot.
+    begin_frame(*ui);
+    send(*ui, MOUSE_DOWN, 20, 20);
+    begin_frame(*ui);
+    send(*ui, MOUSE_UP, 20, 20);
+    if !button(*ui, NONE, 10, 10, 80, 24) { total = total + 4096; }
+    if !is_hot(*ui, NONE) { total = total + 8192; }
+    if !is_active(*ui, NONE) { total = total + 32768; }
+
+    // Drawing composes with all three states.
+    if draw_button(*r, *ui, 1, 10, 10, 80, 24) { total = total + 16384; }
+
+    destroy(*r);
+    close(*w);
+    stop();
+    exit_now(total % 251);
+}
+"#;

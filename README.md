@@ -51,6 +51,20 @@ down — ten steps, in a compiled binary, against real SDL2. It is the seventeen
 `jr run` cannot execute: the compile-time interpreter resolves a foreign symbol from the compiler's own
 process image, so it reaches the C library and nothing else.
 
+**A button works** (ADR-0166), which is the wave that shows the pieces compose rather than merely exist: one
+test holds a window, an event queue and a renderer open together and drives a real click through all three.
+
+It is immediate-mode, so there is no widget tree and nothing is allocated — a caller re-declares every widget
+every frame and keeps three pieces of state on the stack. A click completes on **release inside after press
+inside**, never on press, because pressing a button and then dragging away to cancel is an escape hatch every
+user expects to work, and the implementation that fires on press passes every positive test while breaking it.
+
+One bug in it is worth recording, because the tests caught it and review would not have. Asking "is this widget
+hovered" compared the widget's id against the id of whatever was under the cursor — and when nothing was under
+the cursor, that field held a reserved "nothing" id. So asking about the reserved id itself answered **yes**, on
+every frame, about a widget that does not exist. A sentinel meaning nothing must not be answerable through the
+same accessor as a real value.
+
 **And the window can be closed** (ADR-0165) — which is worth reading because the previous wave recorded, in an
 accepted decision record, that it could not be. The reasoning was that reading an event means reading an
 `SDL_Event`, which is a union, and this compiler refuses a union at a foreign boundary. The refusal is real. It
