@@ -358,10 +358,11 @@ dependency chain requires it. `rust-toolchain.toml` still floats on stable.
 | **W4.5 — Pattern matching** | `switch` with exhaustiveness checking, a bare `.RED` as a case (ADR-0041 §2 step 5), and a **tagged** variant type beside `union` (ADR-0045 §1) | **Was missing from this table entirely.** Two accepted ADRs deferred decisions to it while no wave scheduled it — found while closing W2 (ADR-0054's handoff). **Reordered before W4 by ADR-0067 §0.** This row used to say "placed after W4 because exhaustiveness diagnostics want comptime type info" — a *want*, not a need, and checking disproved it: `Pool::enum_members` is populated during checking (ADR-0041 §4), and `c == .GREEN` already worked, so `switch` and exhaustiveness needed nothing from W4. A wave order justified by a dependency that does not exist is §5's "plans that contradict themselves". Still before W5, because a polymorph over a variant type needs the variant | 4–6 wks |
 | **W5 — Polymorphism** | `$T`, `$$T` **[NOT DELIVERED — E0107]**, `#modify`, `#bake_arguments`, `#expand` macros + hygiene, instantiation caching, **instantiation backtraces** in diagnostics **[single frame DELIVERED by ADR-0128; multi-level chain still owed]** | Depends on W4's InternPool value identity | 8–12 wks |
 | **W6 — Metaprogram** | Workspaces, compiler message loop, `#run build()` build scripts replacing makefiles, plugin hooks, `@note` attributes | The Jai superpower. Build scripts become the build system. | 6–8 wks |
-| **W7 — Stdlib** | In Jairs: `Basic`, `String`, dynamic array / hash table / bucket array, `Sort`, `Math` (vec/mat/quat **DELIVERED — vectors by ADR-0130, `Matrix4` by ADR-0131, `Quaternion` by ADR-0132; ADR-0115 declared `Math` complete when none of the three existed**), `Random`, `File`, `File_Utilities`, `Process`, `Thread` + atomics, `Time`, `Socket`, `JSON`, `Compiler` | Runs partly in parallel with W5/W6; each module is a wave-acceptance test | 14–18 wks |
+| **W7 — Stdlib** | In Jairs: `Basic`, `String`, dynamic array / hash table / bucket array, `Sort`, `Math` (vec/mat/quat **DELIVERED — vectors by ADR-0130, `Matrix4` by ADR-0131, `Quaternion` by ADR-0132; ADR-0115 declared `Math` complete when none of the three existed**), `Random`, `File`, `File_Utilities`, `Process`, ~~`Thread` + atomics~~ **[MOVED OUT to W11 by §8.3 — there is no thread support anywhere in the runtime, and delivering one needs a per-thread VM stack, atomics as language operations, a memory model, and a rule for comptime; that is a wave comparable to W4, not one item in a list]**, `Time`, `Socket`, `JSON`, ~~`Compiler`~~ **[MOVED to W6 by §8.3 — that module *is* the message loop's surface]** | Runs partly in parallel with W5/W6; each module is a wave-acceptance test. **Nine modules shipped; §8.3 orders the remaining seven by what blocks what**, and five of them wait on the error model (§8.1.1) | 14–18 wks |
 | **W8 — Performance** | LLVM backend via `inkwell` (`--release`), inliner maturity, `#soa`, SIMD vectors, `#align`/`#place`, parallel Sema + parallel codegen **[NOT DELIVERED — measured and refused; see ADR-0149]**, published compile-throughput number | Three-way differential testing: VM ≡ Cranelift ≡ LLVM. **DONE in eight sub-waves** (ADR-0142 the optimisation level, ADR-0143 the LLVM back end, ADR-0144 `#align`/`#place`, ADR-0145 inliner maturity, ADR-0146 the throughput number + `heap_sort`, ADR-0147 `#soa`, ADR-0148 `#simd`, ADR-0149 the parallelism measurement). Seven shipped a feature; the eighth shipped a number and a revert — 1.20x against a 2.5x ceiling, because 40% of a check runs inside the pool's exclusive critical sections | 10–14 wks |
 | **W9 — Tooling depth** | Full LSP surface (completion, refs, rename, signature help, semantic tokens, **inlay type hints**, code actions), richer DWARF (locals, struct layouts) for lldb, Neovim packaging (VS Code descoped by ADR-0036; any LSP client works unpackaged) | Incremental all along; this is the "make it excellent" pass | 8–10 wks |
-| **W10 — Graphics, in Jairs** | `Window_Creation` (Cocoa via `#foreign`), GPU layer (Metal, then Vulkan), immediate-mode 2D renderer, image decode, immediate-mode UI, audio (CoreAudio/ALSA) | All *library* work, written in Jairs — no compiler changes. Gated on W5+W7. | 6+ months |
+| **W10 — Graphics, in Jairs** | `Window_Creation` (Cocoa via `#foreign`), GPU layer (Metal, then Vulkan), immediate-mode 2D renderer, image decode, immediate-mode UI, audio (CoreAudio/ALSA) | ~~All *library* work, written in Jairs — no compiler changes.~~ **That was wrong, and §8.5 corrects it**: no aggregate crosses a `#foreign` boundary today (it is a leaked ICE, §8.1.3), and every windowing and GPU API passes structs by value — `CGRect`, `CGPoint`, `MTLViewport` — while `objc_msgSend` is *C-variadic*, which is a third thing neither engine does. So W10 needs **two compiler waves** first and its honest state is **blocked**, not "not started". Gated on W5 (done), W7's `File`, and the FFI work | 6+ months |
+| **W11 — Concurrency** | `Thread`, atomics, and the memory model that says what they mean | **New, split out of W7 by §8.3.** Needs a per-thread stack in the VM, atomics as language operations rather than library calls, and a decision about whether comptime execution may spawn a thread. Named rather than left as a stdlib item that would be quietly dropped or quietly become a quarter of work | not estimated |
 
 ### 2.2 Wave dependency graph
 
@@ -377,12 +378,20 @@ flowchart LR
     W5 --> W6["W6 Metaprogram<br/>build scripts"]
     W3 --> W7["W7 Stdlib in Jairs"]
     W5 --> W7
-    W5 --> W8["W8 Perf + LLVM"]
-    W7 --> W10["W10 Graphics in Jairs"]
+    W5 --> W8["W8 Perf + LLVM<br/>DONE"]
+    W7 --> W10["W10 Graphics in Jairs<br/>BLOCKED"]
     W5 --> W10
     S --> W9["W9 Tooling depth"]
     W9 -.->|"incremental,<br/>every wave"| W7
+    ERR["#must + the error model<br/>ADR-0008's slot"] --> W7
+    FFI["FFI aggregates<br/>+ C-variadics"] --> W10
+    W6 --> W11["W11 Concurrency<br/>split out of W7"]
+    W7 --> W11
 ```
+
+The two unlabelled boxes are §8's blockers, drawn because they are what actually gates the two waves
+they point at: five of W7's seven remaining modules wait on an error model, and W10 cannot start at all
+until a struct can cross a `#foreign` boundary. Neither is a wave in §2.1's list, and both need to be.
 
 ---
 
@@ -542,14 +551,23 @@ Seven shipped a feature and the eighth shipped a number and a revert, which is t
 a performance wave: §2.1's last item was a hypothesis, it was tested, and it did not hold on this
 architecture. ADR-0149 names the two blockers, neither of them a driver change.
 
-**So the waves still open are W7 — Stdlib and W6 — Metaprogram**, and they are what a fresh session
-should pick from. W6's remaining work is one wave-sized architectural decision (a compiler-emitted
-static-data table); W7's remaining modules each want an allocation policy decided first. Both are
-tracked below. **Before either, two cheaper things are owed**: the `354d900` audit's security
-dispatches 2 and 3 (forging an `Any` or a procedure handle through `jr-vm`'s untagged `union`; `jr-lsp`
-path handling — URI decoding, `..`, symlinks), which must be done **by hand** because six subagent
-dispatches returned empty; and `tree-sitter test` added to gate 6, which today catches grammar *drift*
-but not a broken grammar *rule*. **1033 workspace tests** (1034 under gate 7) and **237 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
+**So the waves still open are W6 — Metaprogram and W7 — Stdlib**, and then W9 and W10. **§8 is now the
+completion plan for all four** — read it before picking anything up, because the thing that decides the
+order is not the per-wave item lists but three cross-cutting blockers, and §8 found that two of them
+gate more than one wave and that one of the remaining items is mis-scoped by about a wave.
+
+**§8's recommended first three steps**, in order: (1) **E0286**, a diagnostic for an aggregate at a
+`#foreign` boundary, which today is a *leaked internal error* in both engines — the ninth occurrence of
+that pattern, found by probing while writing §8; (2) **`#must` and the error model**, filling or
+explicitly narrowing ADR-0008's reserved slot, which unblocks five of W7's nine remaining modules; and
+(3) **W6's static-data table and message loop**, which discharges `Type_Info`'s variable-length field
+list at the same time.
+
+**Two cheaper things are owed regardless**: the `354d900` audit's security dispatches 2 and 3 (forging
+an `Any` or a procedure handle through `jr-vm`'s untagged `union`; `jr-lsp` path handling — URI
+decoding, `..`, symlinks), which must be done **by hand** because six subagent dispatches returned
+empty; and `tree-sitter test` added to gate 6, which today catches grammar *drift* but not a broken
+grammar *rule*. **1033 workspace tests** (1034 under gate 7) and **237 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
 has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -2111,6 +2129,16 @@ project defines 94 codes", frozen roughly fifteen waves back.)
       the latter is W6's compiler-emitted static-data table — so it belongs to that wave rather than
       being guessed at. One corpus fixture (`imports/invalid/016`) already relies on a file-level
       variable being *unlowerable*, which is worth knowing before a refusal is written.
+- [ ] **An aggregate at a `#foreign` boundary leaks an internal error** — the **ninth** occurrence, and
+      the newest. `takes :: (p: Pair) -> s64 #foreign libc;` declares and checks clean; *calling* it
+      gives `procedure 0 in file 0 was defined without being declared` from Cranelift and
+      `internal compiler error: no routine for file 0 proc 0` from the VM. Two different internal errors
+      for one legal-looking program. Found by probing while writing §8, and it is the cheapest item in
+      that whole section: `jr-codegen-llvm`'s signature builder *already* refuses this in words
+      (`"an aggregate passed across a #foreign boundary"`), so the fix is to raise that refusal to a
+      sema diagnostic (**E0286**) that fires before lowering, with the note that a pointer is the
+      workaround. It also converts §8.1.2 — W10's hard gate — from a crash into a stated limitation,
+      which is the difference between a missing feature and a broken compiler.
 - [ ] **`check_polymorphic_call` removes rather than restores a shadowed binding**
       (`jr-sema/src/check.rs`), unlike the save/restore idiom beside it in `ctx.rs`. ADR-0124 fixed the
       sibling leak in `resolve_instance_fields_in` and left this one, because it sits in a different
@@ -2259,3 +2287,191 @@ project defines 94 codes", frozen roughly fifteen waves back.)
 - **ADR-0002 is about integers.** Floats saturate; a shift's *count* is checked and its *result*
   is not.
 - **A projection can name a body-local value** (`Projection::Index`).
+
+---
+
+## 8. Finishing the programme: W6, W7, W9, W10
+
+W8 closed on 1 September 2026, so what remains of the plan as written is four waves: **W6 —
+Metaprogram** and **W7 — Stdlib** (both open, both part-shipped), then **W9 — Tooling depth** and
+**W10 — Graphics**, neither started. This section is the completion plan for those four. It exists
+because the per-wave sections above list *items* while the thing that actually decides the order is a
+small number of **cross-cutting blockers**, and three of them block more than one wave.
+
+> [!IMPORTANT]
+> **The rule this section is written under.** Every claim below about what a wave needs was *probed*,
+> not assumed — the habit `AGENTS.md` names, which has now paid off eight times. Two probes while
+> writing this changed the plan, and one of them found a live defect (§8.1.3). A completion plan whose
+> prerequisites were guessed is the same self-contradicting artefact §5 warns about, one level up.
+
+### 8.1 The three blockers that decide the order
+
+Nothing below is a new *feature request*. Each is a thing already deferred, which several remaining
+items independently turn out to need.
+
+#### 8.1.1 There is no error-handling model, and every I/O module wants one
+
+ADR-0008 reserves the slot — an effect-row design — and nothing has filled it. `#must` is named there
+six times and is still owed its own ADR. Today a failure is either a trap (which ends the program) or
+a sentinel return the caller may ignore silently.
+
+**What this blocks:** `File`, `File_Utilities`, `Process`, `Socket`, and the useful half of `JSON` —
+five of W7's nine remaining modules. Every one of them has operations that fail *for reasons the caller
+must handle*, and "return −1 and set nothing" is the C answer this language exists to improve on.
+
+**Why it cannot be dodged.** The multiple-return half already exists, so `open` *can* return
+`(fd: s64, ok: bool)`. What is missing is any way to make ignoring `ok` an error — which is exactly
+what `#must` is for. Ship the modules first and the idiom they establish becomes the de facto model,
+chosen by whichever module was written first rather than by a decision. That is the "a plan's stated
+reason is checkable" failure in reverse: an unmade decision made by accident.
+
+**Recommendation:** this is the next wave, before any more of W7. It is a **language** wave living in
+W7's slot, and it should produce `#must` plus one ADR that either fills ADR-0008's slot or explicitly
+narrows it to "checked multiple returns, effect rows declined". Either answer is fine; leaving it
+implicit is not.
+
+#### 8.1.2 An aggregate cannot cross a `#foreign` boundary
+
+`jr-codegen-llvm`'s signature builder refuses one outright — `"an aggregate passed across a #foreign
+boundary"` — and the Cranelift path never declares the procedure. Only scalars and pointers cross
+today, which is why `modules/Basic` reaches libc with `write(fd, *u8, count)` and nothing else.
+
+**What this blocks:** **W10 entirely.** Cocoa and Metal pass structs by value everywhere — `CGRect`,
+`CGPoint`, `CGSize`, `MTLViewport` — and `objc_msgSend` is variadic on top of that. A graphics wave
+that cannot pass a rectangle to a window call is not startable, however much library code is written
+above it.
+
+**Why it is bigger than it looks.** Passing a struct by value across a C boundary means implementing
+the platform ABI's classification rules — which fields go in which register class, when a struct is
+passed in memory, when a hidden pointer appears. ADR-0051's `sret` did the *return* half for Jairs's
+own calls; this is the argument half, for the C ABI, on two architectures. `libffi` gives the VM its
+half; both native back ends need theirs.
+
+#### 8.1.3 A defect found while probing this: that refusal is an ICE, not a diagnostic
+
+Calling a `#foreign` procedure with a struct by value produces, today:
+
+```
+error: procedure 0 in file 0 was defined without being declared      (Cranelift)
+error: internal compiler error: no routine for file 0 proc 0         (VM)
+```
+
+A legal-looking program, no diagnostic, two different internal errors. This is the **ninth** occurrence
+of the leaked-internal-error pattern this project tracks, and it is the cheapest item in this whole
+section: the refusal already exists in one back end and needs to become a sema diagnostic (E0286) that
+fires before lowering, with the note that a pointer is the workaround.
+
+**Do this first, regardless of wave order.** It is one diagnostic, one corpus fixture, and it converts
+§8.1.2 from a crash into a stated limitation — which is the difference between a language with a
+missing feature and one that looks broken.
+
+### 8.2 W6 — Metaprogram: one decision, then two small items
+
+Four items remain, and they are not four waves — the middle one is the whole wave and the others fall
+out of it.
+
+| # | Item | Blocked on |
+|---|---|---|
+| 1 | **The message loop, for inspection** | the static-data decision below |
+| 2 | `#run build()` build scripts (§2.1's headline) | the loop |
+| 3 | Plugin hooks, workspaces | the loop |
+| 4 | A `Build_Options` struct | nothing — deliberately waiting for a third option to justify it |
+
+**The fork to settle before writing code**, unchanged from §7's standing description and still the
+wave's real content: is the compiler's message table a **declared `[]Declaration` a script indexes**,
+or a **genuine poll** (`compiler_wait_for_message()`)? And what is a "message" as a Jairs value — which
+is ADR-0080 §3's declined `Code` value asked again in a place where it may not be declinable.
+
+**Recommendation:** the declared-table form. A poll implies the metaprogram runs *concurrently with*
+compilation, which needs an execution model this compiler does not have (§8.1 has no threads either),
+while a table is a static-data mechanism `Type_Info`'s variable-length field list already owes
+independently — so the two owed things become one, and ADR-0078's deferral is discharged by the same
+work. Rejected: the poll, because it would make the metaprogram's observable behaviour depend on
+compilation order, which is exactly what salsa's re-execution makes unstable.
+
+### 8.3 W7 — Stdlib: nine modules, in dependency order
+
+Present: `Basic`, `String`, `Sort`, `Array`, `List`, `Map`, `Math`, `Random`, `Generic_Types`. §2.1's
+list still wants nine more. They are **not** equally reachable, and the order below is by what blocks
+what rather than by the order §2.1 happens to list them.
+
+| Order | Module | Needs | Note |
+|---|---|---|---|
+| 1 | **`Time`** | nothing new | `clock_gettime` is scalars and a pointer — the FFI shape that already works. The cheapest real module left, and it gives every later benchmark a clock. |
+| 2 | **Bucket array** | nothing new | Pure library work over `[..]T`, which ADR-0140 delivered. A stable-address container, which is what a UI retains handles into (W10). |
+| 3 | **A merge sort** | an allocation policy | Owed since ADR-0104 §3; ADR-0146 discharged the *faster sort* debt with `heap_sort`, so what remains is the stable one. The decision is where scratch space comes from — `talloc` is the obvious answer and makes the arena's first real customer. |
+| 4 | **`JSON`** | §8.1.1 for parse errors | Otherwise reachable *now*: `variant` (ADR-0068) is exactly a JSON value, `[..]T` is an array, `Map` is an object, and `String`'s allocating half builds output. The most valuable module for proving the language, because it exercises tagged unions, containers and strings together. |
+| 5 | **`File`** | §8.1.1 | Then `File_Utilities` on top of it. |
+| 6 | **`Process`** | §8.1.1 | `fork`/`exec`/`waitpid` are scalars, so the FFI is fine; the error model is the whole difficulty. |
+| 7 | **`Socket`** | §8.1.1, and `File`'s shape | A socket is a descriptor, so it inherits whatever `File` establishes. |
+| 8 | **`Compiler`** | W6's message loop | This module *is* the loop's surface, so it belongs to W6's decision rather than to W7's list. |
+| 9 | **`Thread` + atomics** | **out of reach, and should be said so** | See below. |
+
+**`Thread` cannot be delivered as scoped, and the plan should stop implying it can.** There is no
+thread support anywhere in the runtime — not in the VM, whose `Value` and linear memory region assume
+one execution context, and not in the trap machinery, whose shadow call stack (ADR-0066 §1) is a single
+mutable global in native code. Threads need: a per-thread stack in the VM, atomics as language
+operations rather than library calls, a memory model to say what they mean, and a decision about
+whether comptime execution may spawn one. That is a **wave of its own, comparable to W4**, and calling
+it one item in a stdlib list is the sort of estimate §5 exists to catch.
+
+**Recommendation:** deliver 1–7, move `Compiler` into W6 where it belongs, and split `Thread` +
+atomics out of W7 into a named future wave (W11) rather than leaving it as an item that will be
+quietly dropped or quietly become a quarter of work.
+
+### 8.4 W9 — Tooling depth: small, and mostly already done
+
+| Item | State |
+|---|---|
+| Semantic tokens | the **one** LSP capability absent; thirteen providers already ship |
+| Richer DWARF (locals, struct layouts) for lldb | line tables exist; locals and layouts do not |
+| Neovim packaging | the runtime directory works unpackaged; VS Code declined by ADR-0036 |
+
+Semantic tokens are a day's work over the existing CST and the resolution map — the information is all
+present, and the delta-encoding protocol is the only fiddly part. Richer DWARF is the real content, and
+it wants the same `jr-pool` layout data every back end already reads, which is the reason it is
+plausible at all.
+
+**W9 is deliberately last-but-one and could be done at any time.** It has no blocker in §8.1, which
+makes it the wave to reach for when a decision above is pending and work should continue anyway.
+
+### 8.5 W10 — Graphics: gated, and honest about what gates it
+
+§2.1 describes it as **all library work written in Jairs, no compiler changes**. That description is
+now known to be **wrong**, and this is the plan's most important correction:
+
+- **§8.1.2 blocks it outright.** No struct crosses the FFI boundary, and every windowing and GPU API
+  passes structs by value.
+- **`objc_msgSend` is variadic**, and a Jairs `..T` variadic is *its own* packing convention
+  (ADR-0139), not the C one. Calling into Objective-C needs C-variadic FFI, which is a third thing
+  neither engine does.
+- **Image decode wants `File`** (§8.3 item 5), so it inherits §8.1.1 too.
+
+So W10's real prerequisite list is: E0286 (§8.1.3), then FFI aggregates and C-variadics (§8.1.2), then
+`File`. Until those exist, the honest state of W10 is **blocked, not "not started"** — and the §2.1 row
+should say so rather than describing it as pure library work.
+
+### 8.6 The recommended order, and why
+
+1. **E0286** — a diagnostic for an aggregate at a `#foreign` boundary (§8.1.3). One code, one fixture;
+   turns a crash into a stated limit. Do it first because it is cheap and because it makes the next two
+   items describable.
+2. **`#must` and the error model** (§8.1.1). A language wave that unblocks five modules.
+3. **W6's static-data table and the message loop** (§8.2), which also discharges `Type_Info`'s
+   variable-length field list — two owed things, one mechanism. W6 then closes with build scripts,
+   plugin hooks, workspaces and `Compiler`.
+4. **W7's modules 1–7** in the order given (§8.3), and `Thread` + atomics split out to W11.
+5. **W9** (§8.4), which is small and unblocked.
+6. **FFI aggregates and C-variadics** (§8.1.2) — the largest single piece left, and W10's gate.
+7. **W10** (§8.5).
+
+Steps 1, 2 and 3 are the ones that change what the language *is*; 4, 5 and 7 are then mostly library
+and tooling work. That shape is the argument for this order: the decisions come first, and each one is
+made because something concrete is waiting on it rather than in the abstract.
+
+> [!NOTE]
+> **What this section deliberately does not do.** It does not estimate. §4's timeline is already the
+> project's least reliable table, and adding week counts to four waves whose largest item was just
+> discovered to be mis-scoped (§8.3's `Thread`, §8.5's W10) would be inventing precision. What it does
+> instead is name every blocker and say which wave each one gates, so the *order* is defensible even
+> though the duration is not.
