@@ -212,6 +212,34 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0165 reaches 1057** (1058 under gate 7), still **253** corpus files — and it **amends ADR-0164 §5 by
+contradicting it**, which makes it the most instructive entry in this file.
+
+ADR-0164 §5 recorded that `modules/Window` could not have an event loop, because `SDL_Event` is a union and
+E0286 refuses one at a `#foreign` boundary. The refusal is right and **irrelevant**: E0286 refuses an aggregate
+crossing **by value**, and `SDL_PollEvent` takes a **pointer** — the same shape as the `*Rect` that module had
+been passing successfully for the whole of the preceding wave.
+
+**So the habit this file names — confirm a wave's premise by *writing* the thing before planning around it — is
+now seven for seven, and this is its most valuable catch: against an accepted ADR of this project's own, from
+the same session.** ADR-0164 §5 planned around a premise it never wrote, then built a story on it: "four waves
+at one boundary", plus a claim that settling this fork also settles ADR-0163's Objective-C question. Both are
+withdrawn. The correction cost one probe — four assertions, four passes, **no compiler change**. An ADR is
+evidence of a decision, not evidence of a fact.
+
+**`#place` (ADR-0144) turns out to be the union mechanism**, since two fields at one offset is what a union is.
+`key_sym` and `mouse_x` share offset 20 and the test *asserts* the sharing rather than tolerating it. Fields are
+widened to `s64` and constants never narrowed, because widening a `u32` cannot be wrong.
+
+**Two smaller findings, both from writing rather than reasoning**: SDL does not promise one-push-one-poll — a
+test that polled once per push passed on the first and failed on the second, which is why `wants_to_close`
+drains — and a synthetic `KEY_DOWN` is pushed *successfully* and then dropped by SDL, so the keyboard
+assertions read a locally-built event.
+
+**Two language items are owed**, both found here and neither invented: a **typed constant** (`QUIT : u32 : 256`
+does not parse; one module wants nine), and `size_of` of an **imported** struct from a **file-scope constant**
+(E0230 — `Socket` and `Window` have both moved the check into a procedure instead).
+
 **ADR-0164 reaches 1056** (1057 under gate 7) and adds **no** corpus file — still **253** — for a reason worth
 recording, because it is a *new* one: `modules/Window` is the seventeenth module and **the first that `jr run`
 cannot execute at all.** The VM resolves a foreign symbol from the compiler's own process image, so it reaches
