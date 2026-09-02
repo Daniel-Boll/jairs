@@ -18,6 +18,18 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
+**A struct's layout is visible to a debugger** — its field names, and the byte offset of each one. Those offsets
+come from the very function the compiler uses to generate a field access, so a debugger cannot disagree with the
+running code about where a field is. Computing them separately for the debug info would have been a second
+implementation of layout, which is exactly the kind of duplication that drifts into a wrong answer.
+
+Getting there turned up something the plan had wrong. The type descriptions were written and correct, and the
+debugger tools showed the basic types and no struct at all — which looks precisely like the new code being
+broken. It was not: LLVM discards a type description that nothing *declares*, and a function signature mentioning
+a type does not count as declaring it. What retains a type is a variable of that type. So each parameter is now
+declared, and two items the plan listed separately turn out to be one piece of work: a type nothing declares is
+not emitted, and a declared variable with no type has nothing to point at.
+
 **Both compilers can name a source line, and they agree** — which took two entirely separate implementations. One
 back end's line table is written by hand, byte by byte, including the relocations that let a linker fill in
 function addresses. The other back end's is written by LLVM itself, from metadata attached to each instruction.
@@ -49,7 +61,7 @@ debug section placed outside the segment reserved for it does not merely get ign
 the linker lays it out among real pointers.
 
 Last updated with **W10 — Graphics DONE** (W6 — Metaprogram, W7 — Stdlib, W8 — Performance and W9 — Tooling
-depth were already), 1064 tests green — 1066 with the LLVM back end compiled in, and nineteen library modules.
+depth were already), 1064 tests green — 1067 with the LLVM back end compiled in, and nineteen library modules.
 **Two waves remain: W11 — Concurrency, and W12 — Debug info, which is now under way.**
 
 Graphics arrived in four steps, on a foundation the plan had wrong: a window and a 2D renderer, an event loop,

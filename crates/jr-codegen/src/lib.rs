@@ -112,7 +112,7 @@ pub trait Backend {
         body: &MirBody,
         pool: &Pool,
         layout: TargetLayout,
-        locations: &dyn TrapLocations,
+        locations: &dyn SourceInfo,
     ) -> Result<(), CodegenError>;
 
     /// Produces the artifact, consuming the back end.
@@ -140,7 +140,12 @@ pub trait Backend {
     fn libraries(&self) -> &[String];
 }
 
-/// How a back end learns where a trap is, without seeing the front end.
+/// What a back end learns from the driver, without seeing the front end.
+///
+/// **Named `SourceInfo` until ADR-0171 §2**, when type DIEs needed field *names* as well as trap
+/// locations and the old name became narrower than the job. Renamed rather than extended under a wrong name,
+/// because a trait called `SourceInfo` with a `symbol()` method teaches a reader the wrong thing about
+/// where to add the next such lookup.
 ///
 /// A back end holds a [`jr_mir::MirSpan`] at every trap site and can do nothing with
 /// it: resolving one needs the file's `FileHir`, and rendering it needs a `SourceMap`.
@@ -153,23 +158,34 @@ pub trait Backend {
 /// because a setter is order-dependent hidden state: forget the call and every trap
 /// silently loses its location, which is the class of quiet degradation this project
 /// keeps being bitten by.
-pub trait TrapLocations {
+pub trait SourceInfo {
     /// Where `span` is, as a path plus a one-based line and column.
     ///
     /// `None` when there is nothing to point at — a compiler-invented value, where
     /// [`jr_mir::MirSpan::Synthetic`] is the honest answer. A back end must then
     /// report without a location rather than substituting a nearby one.
     ///
-    /// **The structured form is the one implementors define**, and [`location`](TrapLocations::location)
+    /// **The structured form is the one implementors define**, and [`location`](SourceInfo::location)
     /// formats it. Debug info needs the pieces — a DWARF line program stores a file index and a line
     /// number, not a rendered string — and having the two come from one method is what keeps a trap
     /// message and a `.debug_line` row from ever disagreeing about where a statement is. That is
     /// ADR-0020 §2's argument for a single trap-message formatter, applied one level down.
     fn position(&self, span: jr_mir::MirSpan) -> Option<SourcePosition>;
 
+    /// The text an interned symbol stands for — a field's name, say.
+    ///
+    /// Here for the reason [`FileInput::names`] is supplied by the caller: resolving a `Symbol` needs the
+    /// interner, and this crate has no database to ask (ADR-0171 §2). A struct's DWARF member entries need
+    /// field names and nothing else in a back end does, which is why this arrived with the type DIEs rather
+    /// than at the start.
+    ///
+    /// `None` when the symbol is unknown, which a back end must render as an unnamed member rather than as a
+    /// guess.
+    fn symbol(&self, symbol: jr_base::Symbol) -> Option<String>;
+
     /// The location of `span`, rendered as `path:line:col`.
     ///
-    /// A provided method over [`position`](TrapLocations::position), so an implementor cannot supply one
+    /// A provided method over [`position`](SourceInfo::position), so an implementor cannot supply one
     /// without the other and the rendering exists once.
     fn location(&self, span: jr_mir::MirSpan) -> Option<String> {
         let at = self.position(span)?;
@@ -193,15 +209,19 @@ pub struct SourcePosition {
     pub column: u32,
 }
 
-/// A [`TrapLocations`] that never knows a location.
+/// A [`SourceInfo`] that never knows anything.
 ///
 /// For a caller with no source map — a test that only wants to check that a body
 /// generates — so that "no locations available" is stated rather than achieved by
 /// passing something misleading.
 pub struct NoLocations;
 
-impl TrapLocations for NoLocations {
+impl SourceInfo for NoLocations {
     fn position(&self, _span: jr_mir::MirSpan) -> Option<SourcePosition> {
+        None
+    }
+
+    fn symbol(&self, _symbol: jr_base::Symbol) -> Option<String> {
         None
     }
 }

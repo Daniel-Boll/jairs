@@ -144,6 +144,7 @@ pub fn build_object(
                 let locations = BodyLocations {
                     hir: hir.as_ref(),
                     map: &map,
+                    interner: db.interner(),
                     body: hir
                         .procs
                         .get(proc.index())
@@ -231,9 +232,11 @@ struct BodyLocations<'a> {
     hir: &'a jr_hir::FileHir,
     body: Option<&'a jr_hir::Body>,
     map: &'a jr_base::SourceMap,
+    /// For resolving a field's `Symbol` to text, which a struct's DWARF member entry needs (ADR-0171 §2).
+    interner: &'a jr_base::Interner,
 }
 
-impl jr_codegen::TrapLocations for BodyLocations<'_> {
+impl jr_codegen::SourceInfo for BodyLocations<'_> {
     fn position(&self, span: jr_mir::MirSpan) -> Option<jr_codegen::SourcePosition> {
         let span = jr_mir::resolve_span(self.hir, self.body, span)?;
         let file = self.map.file(span.file);
@@ -243,6 +246,13 @@ impl jr_codegen::TrapLocations for BodyLocations<'_> {
             line: at.line,
             column: at.col,
         })
+    }
+
+    fn symbol(&self, symbol: jr_base::Symbol) -> Option<String> {
+        // The driver has the interner; the back end does not, which is the whole reason this trait exists
+        // (ADR-0171 §2). `resolve` is infallible on a symbol this interner minted, and every symbol a back
+        // end can hold came from a pool this database filled — so `Some` is not optimism.
+        Some(self.interner.resolve(symbol).to_owned())
     }
 }
 

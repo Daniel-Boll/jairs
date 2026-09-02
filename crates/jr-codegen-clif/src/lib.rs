@@ -48,7 +48,7 @@ use cranelift_codegen::settings::{self, Configurable as _};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use jr_codegen::{Backend, CodegenError, ProcDecl, ProcKind, TrapLocations};
+use jr_codegen::{Backend, CodegenError, ProcDecl, ProcKind, SourceInfo};
 use jr_mir::{MirBody, ProcRef};
 use jr_pool::{Item, Layout, Pool, PoolId, StrId, TargetLayout, layout_of};
 use rustc_hash::FxHashMap;
@@ -723,7 +723,7 @@ impl Backend for ClifBackend {
         mir: &MirBody,
         pool: &Pool,
         layout: TargetLayout,
-        locations: &dyn TrapLocations,
+        locations: &dyn SourceInfo,
     ) -> Result<(), CodegenError> {
         let id = *self.ids.get(&proc).ok_or(CodegenError::Undeclared(proc))?;
         if self.foreign.get(&proc).copied().unwrap_or(false) {

@@ -2120,7 +2120,7 @@ fn run_build_emit_object(path: PathBuf, output: PathBuf) -> i32 {
 ///
 /// The two back ends produce debug info by **completely different routes**: Cranelift's is written by this
 /// project with `gimli` (ADR-0169), LLVM's is written by LLVM from `DILocation` metadata. They share only the
-/// `TrapLocations::position` lookup. So a shared test would assert the intersection and miss what is
+/// `SourceInfo::position` lookup. So a shared test would assert the intersection and miss what is
 /// interesting — and what is interesting is that two unrelated emitters agree about which lines exist.
 ///
 /// # What differs from the Cranelift assertions, and why that is not a weaker test
@@ -2225,4 +2225,157 @@ fn the_llvm_back_end_emits_a_line_table_too() {
             "line {expected} is a statement in the program and must appear in LLVM's table; got {lines:?}"
         );
     }
+}
+
+/// A struct's layout reaches DWARF as a `DW_TAG_structure_type` with named members at real offsets
+/// (ADR-0171).
+///
+/// # Why a parameter is what makes this work
+///
+/// LLVM **prunes a type nothing declares**. A `DISubroutineType` listing a struct is not enough: the first
+/// attempt emitted base types and no struct at all, which looked exactly like the struct mapping being broken
+/// and was the *reference* being missing. So each parameter gets a `DILocalVariable`, and that is what pulls
+/// the struct DIE into the object — which is why this test asserts the members rather than merely that a
+/// struct tag exists.
+///
+/// # What it checks, and why the offsets are the point
+///
+/// `Point { x: s64, y: s64, flag: bool }` must appear with `x` at byte 0, `y` at 8 and `flag` at 16, and the
+/// whole thing 24 bytes. Those numbers come from `jr_pool::field_offset` — the same function both engines use
+/// to *compile* a field access — so a wrong DIE offset would mean a debugger showing a field the program does
+/// not have there. Asserting the tag without the offsets would pass on a struct whose every member sat at 0.
+///
+/// The member names come from the interner through `SourceInfo::symbol`, added for this wave. A struct whose
+/// members were `field0`/`field1` would parse identically and be nearly useless, so the names are asserted
+/// too.
+#[cfg(feature = "llvm")]
+#[test]
+fn a_struct_reaches_dwarf_with_named_members_at_real_offsets() {
+    use gimli::EndianSlice;
+    use object::{Object as _, ObjectSection as _};
+
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("layout.jr");
+    fs::write(
+        &source,
+        r#"#import "Basic";
+
+Point :: struct {
+    x: s64;
+    y: s64;
+    flag: bool;
+}
+
+sum :: (p: Point) -> s64 {
+    return p.x + p.y;
+}
+
+main :: () {
+    q: Point;
+    q.x = 9;
+    q.y = 4;
+    q.flag = true;
+    exit(sum(q));
+}
+"#,
+    )
+    .unwrap();
+
+    let object_path = dir.path().join("layout.o");
+    let code = jr_cli::commands::build::run(
+        jr_cli::cli::BuildArgs {
+            path: source,
+            output: Some(object_path.clone()),
+            emit_object: true,
+            backend: jr_cli::cli::BackendArg::Llvm,
+            no_bounds_check: false,
+            opt_level: None,
+            module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
+            library_paths: Vec::new(),
+        },
+        &quiet_global(),
+    )
+    .unwrap_or(1);
+    assert_eq!(code, 0, "the object must be emitted");
+
+    let bytes = fs::read(&object_path).expect("the object should exist");
+    let file = object::File::parse(&*bytes).expect("the object should parse");
+    let endian = if file.is_little_endian() {
+        gimli::RunTimeEndian::Little
+    } else {
+        gimli::RunTimeEndian::Big
+    };
+    let load = |id: gimli::SectionId| -> Result<EndianSlice<'_, gimli::RunTimeEndian>, ()> {
+        let name = id.name();
+        let macho = format!("__{}", name.trim_start_matches('.'));
+        let data = file
+            .sections()
+            .find(|s| matches!(s.name(), Ok(n) if n == name || n == macho.as_str()))
+            .and_then(|s| s.data().ok())
+            .unwrap_or(&[]);
+        Ok(EndianSlice::new(data, endian))
+    };
+    let dwarf = gimli::Dwarf::load(load).expect("the DWARF should load");
+
+    let mut structs = Vec::new();
+    let mut units = dwarf.units();
+    while let Some(header) = units.next().expect("units should parse") {
+        let unit = dwarf.unit(header).expect("the unit should parse");
+        let mut entries = unit.entries();
+        let mut current: Option<(u64, Vec<(String, u64)>)> = None;
+        while let Some(entry) = entries.next_dfs().expect("entries should walk") {
+            match entry.tag() {
+                gimli::DW_TAG_structure_type => {
+                    if let Some(done) = current.take() {
+                        structs.push(done);
+                    }
+                    let size = entry
+                        .attr_value(gimli::DW_AT_byte_size)
+                        .and_then(|v| v.udata_value())
+                        .unwrap_or(0);
+                    current = Some((size, Vec::new()));
+                }
+                gimli::DW_TAG_member => {
+                    if let Some((_, members)) = current.as_mut() {
+                        let name = entry
+                            .attr(gimli::DW_AT_name)
+                            .and_then(|a| a.string_value(&dwarf.debug_str))
+                            .map(|s| String::from_utf8_lossy(s.slice()).into_owned())
+                            .unwrap_or_default();
+                        let offset = entry
+                            .attr_value(gimli::DW_AT_data_member_location)
+                            .and_then(|v| v.udata_value())
+                            .unwrap_or(u64::MAX);
+                        members.push((name, offset));
+                    }
+                }
+                // Any other tag ends the run of members belonging to the struct above it.
+                _ => {
+                    if let Some(done) = current.take() {
+                        structs.push(done);
+                    }
+                }
+            }
+        }
+        if let Some(done) = current.take() {
+            structs.push(done);
+        }
+    }
+
+    let point = structs
+        .iter()
+        .find(|(size, members)| *size == 24 && members.len() == 3)
+        .unwrap_or_else(|| {
+            panic!("a 24-byte struct with three members must appear; got {structs:?}")
+        });
+    assert_eq!(
+        point.1,
+        vec![
+            ("x".to_owned(), 0),
+            ("y".to_owned(), 8),
+            ("flag".to_owned(), 16),
+        ],
+        "the members must carry their source names and the offsets `jr_pool::field_offset` computes, \
+         or a debugger shows a field the program does not have there"
+    );
 }

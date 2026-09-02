@@ -45,6 +45,17 @@ pub struct ProcDecl {
     /// `None` for a procedure no item binds, whose frame is then omitted from a backtrace rather than
     /// printed as a placeholder.
     pub name: Option<String>,
+    /// Each parameter's interned name, in order (ADR-0171 §3).
+    ///
+    /// **Interned `Symbol`s rather than resolved `String`s**, unlike [`name`](ProcDecl::name) just above —
+    /// which looks inconsistent and is the newer, better shape. `name` predates
+    /// [`SourceInfo::symbol`](crate::SourceInfo::symbol) and had to be resolved by the caller because nothing
+    /// could resolve it later; these can be resolved on demand, so they are, and only the back end that wants
+    /// text pays for it. A back end emitting no debug info resolves none of them.
+    ///
+    /// Read straight from the HIR here, which `FileInput` already carries — so this needs nothing new from the
+    /// driver, where `name` needed a whole parallel slice.
+    pub param_names: Vec<jr_base::Symbol>,
 }
 
 /// Whether a procedure is defined in this program or imported from a library.
@@ -180,6 +191,7 @@ pub fn declarations(input: &FileInput<'_>, pool: &Pool, entry: Option<ProcId>) -
             // The source name for a backtrace frame (ADR-0066 §3), resolved by the caller because
             // turning a `Symbol` into text needs the interner.
             name: input.names.get(index).cloned().flatten(),
+            param_names: data.params.iter().map(|param| param.name).collect(),
         });
     }
     out

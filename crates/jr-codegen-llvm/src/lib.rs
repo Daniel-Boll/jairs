@@ -49,9 +49,9 @@ use inkwell::targets::{
 };
 
 use inkwell::values::{FunctionValue, GlobalValue};
-use jr_codegen::{Backend, CodegenError, ProcDecl, ProcKind, TRAP_HELPER, TrapKind, TrapLocations};
+use jr_codegen::{Backend, CodegenError, ProcDecl, ProcKind, SourceInfo, TRAP_HELPER, TrapKind};
 use jr_mir::{MirBody, ProcRef};
-use jr_pool::{Item, Layout, Pool, PoolId, StrId, TargetLayout, layout_of};
+use jr_pool::{Item, Layout, Pool, PoolId, StrId, TargetLayout, field_offset, layout_of};
 use rustc_hash::FxHashMap;
 
 use crate::repr::pointer_int;
@@ -94,6 +94,21 @@ pub struct LlvmBackend<'ctx> {
         inkwell::debug_info::DebugInfoBuilder<'ctx>,
         inkwell::debug_info::DICompileUnit<'ctx>,
     )>,
+    /// Each declared procedure's parameter and return types, for its subprogram's DWARF signature.
+    ///
+    /// Kept because `define` needs them and receives only a `ProcRef`: `declare` is where a `ProcDecl` exists,
+    /// and rediscovering a signature later would mean asking the front end, which ADR-0009 forbids.
+    signature_types: FxHashMap<ProcRef, (Vec<PoolId>, PoolId)>,
+    /// Each declared procedure's parameter names, interned (ADR-0171 §3).
+    ///
+    /// Resolved to text only when debug info is being emitted, which is why they are kept as `Symbol`s.
+    parameter_names: FxHashMap<ProcRef, Vec<jr_base::Symbol>>,
+    /// A `DIType` per pool type, so a struct's DIE is emitted once (ADR-0171).
+    ///
+    /// Keyed by `PoolId`, which the pool already deduplicated by *structure* — two identical struct
+    /// declarations are one `PoolId`, so this cache inherits that and cannot emit a duplicate DIE for a type a
+    /// debugger would then show twice.
+    debug_types: FxHashMap<PoolId, inkwell::debug_info::DIType<'ctx>>,
     /// A `DIFile` per source path, so a body from an imported module names *its* file.
     ///
     /// Without this every subprogram hangs off the compilation unit's file and DWARF attributes an imported
@@ -178,10 +193,185 @@ impl<'ctx> LlvmBackend<'ctx> {
             messages: FxHashMap::default(),
             debug: None,
             debug_files: FxHashMap::default(),
+            debug_types: FxHashMap::default(),
+            signature_types: FxHashMap::default(),
+            parameter_names: FxHashMap::default(),
         };
         backend.emit_strings(pool)?;
         backend.define_trap_helper()?;
         Ok(backend)
+    }
+
+    /// The `DIType` for `ty`, building it and its members if this is the first ask (ADR-0171).
+    ///
+    /// `None` for a type this wave does not describe — see the match's own arms for which and why. A `None`
+    /// propagates: a struct with one undescribable field has no DIE either, because a struct DIE listing
+    /// *some* of its members would show a debugger a type whose fields do not add up to its size, which is
+    /// worse than showing it nothing.
+    ///
+    /// # Why the recursion terminates
+    ///
+    /// A pointer's DIE refers to its pointee, and a struct's to its fields — so a self-referential type
+    /// (`Node :: struct { next: *Node; }`) would recurse forever. It does not, because a **pointer stops the
+    /// walk**: `create_pointer_type` is given the pointee's DIE only when the pointee is already cached, and
+    /// otherwise the pointer is described as opaque. That loses `next.next.value` in a debugger and keeps the
+    /// compiler from hanging, which is the right trade for a first pass and is why this is stated rather than
+    /// assumed.
+    fn debug_type(
+        &mut self,
+        pool: &Pool,
+        ty: PoolId,
+        file: inkwell::debug_info::DIFile<'ctx>,
+        info_names: &dyn SourceInfo,
+    ) -> Option<inkwell::debug_info::DIType<'ctx>> {
+        if let Some(found) = self.debug_types.get(&ty) {
+            return Some(*found);
+        }
+        self.debug.as_ref()?;
+        let layout = layout_of(pool, self.target, ty).ok()?;
+        let bits = layout.size.checked_mul(8)?;
+        let align_bits = layout.align.checked_mul(8)?;
+
+        // DWARF's own encodings. Raw values rather than named constants, because inkwell takes the `u32` and
+        // the numbers are fixed by the standard.
+        const DW_ATE_ADDRESS: u32 = 0x01;
+        const DW_ATE_BOOLEAN: u32 = 0x02;
+        const DW_ATE_FLOAT: u32 = 0x04;
+        const DW_ATE_SIGNED: u32 = 0x05;
+        const DW_ATE_UNSIGNED: u32 = 0x07;
+
+        // **Every recursive call happens before the builder is borrowed.** `self.debug` is behind a shared
+        // borrow while a DIE is built and `debug_type` needs `&mut self` to cache, so holding the builder
+        // across the recursion does not compile — which is a borrow checker enforcing a real ordering rather
+        // than getting in the way: a member's DIE must exist before the struct that lists it.
+        let described = match pool.item(ty) {
+            Item::BoolType => {
+                let (info, _) = self.debug.as_ref()?;
+                info.create_basic_type("bool", bits, DW_ATE_BOOLEAN, 0)
+                    .ok()
+                    .map(|basic| basic.as_type())
+            }
+            Item::IntType { signed, bits: n } => {
+                let (signed, n) = (*signed, *n);
+                let (info, _) = self.debug.as_ref()?;
+                let name = if signed {
+                    format!("s{n}")
+                } else {
+                    format!("u{n}")
+                };
+                let encoding = if signed {
+                    DW_ATE_SIGNED
+                } else {
+                    DW_ATE_UNSIGNED
+                };
+                info.create_basic_type(&name, bits, encoding, 0)
+                    .ok()
+                    .map(|basic| basic.as_type())
+            }
+            Item::FloatType { bits: n } => {
+                let n = *n;
+                let (info, _) = self.debug.as_ref()?;
+                info.create_basic_type(&format!("float{n}"), bits, DW_ATE_FLOAT, 0)
+                    .ok()
+                    .map(|basic| basic.as_type())
+            }
+            Item::PointerType(pointee) => {
+                let pointee = *pointee;
+                // The pointee is described first, then looked up — so `*Point` carries `Point`'s members while
+                // a self-referential `*Node` inside `Node` finds nothing cached yet and falls back to opaque.
+                // That is the recursion's terminator, stated in this method's own docs.
+                let inner = self.debug_type(pool, pointee, file, info_names);
+                let (info, _) = self.debug.as_ref()?;
+                match inner {
+                    Some(inner) => Some(
+                        info.create_pointer_type(
+                            "",
+                            inner,
+                            bits,
+                            align_bits,
+                            inkwell::AddressSpace::default(),
+                        )
+                        .as_type(),
+                    ),
+                    None => info
+                        .create_basic_type("*", bits, DW_ATE_ADDRESS, 0)
+                        .ok()
+                        .map(|basic| basic.as_type()),
+                }
+            }
+            Item::StructType { decl, .. } => {
+                let decl = *decl;
+                let fields = pool.struct_fields(decl)?.to_vec();
+                // Every member's DIE, name and offset, gathered before the builder is borrowed.
+                let mut gathered = Vec::with_capacity(fields.len());
+                for (index, field) in fields.iter().enumerate() {
+                    let member = self.debug_type(pool, field.ty, file, info_names)?;
+                    let (offset, member_layout) =
+                        field_offset(pool, self.target, ty, u32::try_from(index).ok()?).ok()?;
+                    gathered.push((
+                        info_names.symbol(field.name).unwrap_or_default(),
+                        member,
+                        offset.checked_mul(8)?,
+                        member_layout.size.checked_mul(8)?,
+                        member_layout.align.checked_mul(8)?,
+                    ));
+                }
+                let (info, _) = self.debug.as_ref()?;
+                let members: Vec<_> = gathered
+                    .into_iter()
+                    .map(|(name, member, offset, size, align)| {
+                        info.create_member_type(
+                            file.as_debug_info_scope(),
+                            &name,
+                            file,
+                            0,
+                            size,
+                            align,
+                            offset,
+                            0,
+                            member,
+                        )
+                        .as_type()
+                    })
+                    .collect();
+                Some(
+                    info.create_struct_type(
+                        file.as_debug_info_scope(),
+                        // **Anonymous**, because the pool does not record a struct's *declared* name: an
+                        // `Item::StructType` carries a `DeclId`, and the name lives on the HIR item that bound
+                        // it, which a back end cannot see (ADR-0009). DWARF permits an unnamed struct type and
+                        // `lldb` shows it with its members, which is where the value is — a reader wants `p.x`
+                        // and its offset far more than the type's spelling. Recorded as owed rather than faked
+                        // from the `DeclId`, which would print a number no reader recognises.
+                        "",
+                        file,
+                        0,
+                        bits,
+                        align_bits,
+                        0,
+                        None,
+                        &members,
+                        0,
+                        None,
+                        "",
+                    )
+                    .as_type(),
+                )
+            }
+            // Deliberately undescribed, and each for its own reason rather than as one bucket:
+            //
+            // * `VoidType` has no DIE by definition — DWARF spells a void return as an *absent* type, which is
+            //   exactly what `create_subroutine_type` does with a `None` return.
+            // * `StringType`, a view, an array, a union and a variant all have real DWARF spellings
+            //   (`DW_TAG_array_type`, `DW_TAG_union_type`, and a tagged variant is a struct of a discriminant
+            //   and a union). Each needs a decision about *naming* — a `[]s64` has no user-written name — and a
+            //   wave that guessed at four of those at once would be four guesses.
+            // * A procedure type wants a `DW_TAG_subroutine_type` with parameters, which is the same work the
+            //   subprogram already does and is worth sharing rather than duplicating.
+            _ => None,
+        }?;
+        self.debug_types.insert(ty, described);
+        Some(described)
     }
 
     /// Creates the module's debug-info builder and compilation unit for `path`.
@@ -699,6 +889,11 @@ impl<'ctx> Backend for LlvmBackend<'ctx> {
         };
         self.funcs.insert(decl.proc, function);
         self.foreign.insert(decl.proc, foreign);
+        // Kept for the subprogram's DWARF signature, which `define` builds and which has only a `ProcRef`.
+        self.signature_types
+            .insert(decl.proc, (decl.params.clone(), decl.ret));
+        self.parameter_names
+            .insert(decl.proc, decl.param_names.clone());
 
         // The read-only string a backtrace frame names (ADR-0066 §3), one per procedure. The
         // *source* name, not the mangled symbol: a reader wants `countdown`, not `jr$0$3`.
@@ -732,7 +927,7 @@ impl<'ctx> Backend for LlvmBackend<'ctx> {
         mir: &MirBody,
         pool: &Pool,
         layout: TargetLayout,
-        locations: &dyn TrapLocations,
+        locations: &dyn SourceInfo,
     ) -> Result<(), CodegenError> {
         let function = *self
             .funcs
@@ -775,11 +970,57 @@ impl<'ctx> Backend for LlvmBackend<'ctx> {
             .as_ref()
             .and_then(|at| self.debug_files.get(&at.path).copied());
 
+        // The signature's type DIEs, built before the subprogram so the subroutine type can reference them
+        // (ADR-0171 §1). A type no DIE references is dropped by LLVM, so the subprogram's signature is what
+        // makes a struct's layout actually reach the object.
+        let signature = self.debug.as_ref().and_then(|(_, unit)| {
+            let file = body_file.unwrap_or_else(|| unit.get_file());
+            self.signature_types
+                .get(&proc)
+                .cloned()
+                .map(|types| (file, types))
+        });
+        let (return_die, param_dies) = match signature {
+            Some((file, (params, ret))) => {
+                // A `void` return has no DIE by DWARF's own rule — an absent type *is* void — so
+                // `debug_type` returning `None` for it is the right answer rather than a gap.
+                let ret_die = self.debug_type(pool, ret, file, locations);
+                // Holes kept, so an index still lines up with `parameter_names` — a `filter_map` here would
+                // silently shift every later parameter's name onto the wrong type.
+                let param_dies: Vec<Option<_>> = params
+                    .iter()
+                    .map(|ty| self.debug_type(pool, *ty, file, locations))
+                    .collect();
+                (ret_die, param_dies)
+            }
+            None => (None, Vec::new()),
+        };
+
+        // Parameter names, resolved before the builder is borrowed. `arg{n}` when a name is unavailable — the
+        // index is real information, unlike a guessed identifier.
+        let parameter_names: Vec<String> = self
+            .parameter_names
+            .get(&proc)
+            .map(|names| {
+                names
+                    .iter()
+                    .enumerate()
+                    .map(|(index, symbol)| {
+                        locations
+                            .symbol(*symbol)
+                            .unwrap_or_else(|| format!("arg{index}"))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let parameter_line = first.as_ref().map_or(1, |at| at.line);
+
         let scope = self.debug.as_ref().map(|(info, unit)| {
             // This body's own file, falling back to the unit's when the body reported no position — a body
             // with no positions gets no locations either, so the fallback is never what a row points at.
             let file = body_file.unwrap_or_else(|| unit.get_file());
-            let subroutine = info.create_subroutine_type(file, None, &[], 0);
+            let present: Vec<_> = param_dies.iter().flatten().copied().collect();
+            let subroutine = info.create_subroutine_type(file, return_die, &present, 0);
             // The LLVM function's own symbol, rather than a name looked up elsewhere: `self.names` holds the
             // *global* carrying a backtrace string, not a `String`, and a debugger wants the linkage name it
             // will see in the symbol table anyway.
@@ -802,6 +1043,35 @@ impl<'ctx> Backend for LlvmBackend<'ctx> {
                 false,
             );
             function.set_subprogram(subprogram);
+
+            // **A `DILocalVariable` per parameter, which is what makes a type DIE reach the object**
+            // (ADR-0171 §3). LLVM prunes a type nothing *declares*: a `DISubroutineType` listing a struct is
+            // not enough, and without these the struct DIE was silently absent while base types appeared —
+            // which looked like the struct mapping being broken and was the reference being missing.
+            //
+            // A parameter variable earns its place independently too: `lldb` can print `p.x` at a breakpoint.
+            for (index, die) in param_dies.iter().enumerate() {
+                let Some(die) = die else {
+                    continue;
+                };
+                let name = parameter_names
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| format!("arg{index}"));
+                // `arg_no` is one-based in DWARF, and `always_preserve` is true so an unoptimised build keeps
+                // the variable even when nothing reads it — which is the whole point at `-O0`.
+                let _ = info.create_parameter_variable(
+                    subprogram.as_debug_info_scope(),
+                    &name,
+                    u32::try_from(index).unwrap_or(0) + 1,
+                    file,
+                    parameter_line,
+                    *die,
+                    true,
+                    0,
+                );
+            }
+
             body::DebugScope { info, subprogram }
         });
 
