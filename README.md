@@ -18,8 +18,23 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated with **W7 — Stdlib six modules further on** (W8 — Performance and W6 — Metaprogram are
-DONE; W7 is still open), 1034 tests green — 1035 with the LLVM back end compiled in.
+Last updated with **W7 — Stdlib DONE** (W6 — Metaprogram and W8 — Performance are done too), 1035 tests
+green — 1036 with the LLVM back end compiled in. **Three waves remain: W9 — Tooling depth, W10 — Graphics,
+W11 — Concurrency.**
+
+**The standard library is complete as scoped** (ADR-0158): `Basic`, `String`, `Sort`, `Array`, `List`, `Map`,
+`Math`, `Random`, `Generic_Types`, `Time`, `Bucket_Array`, `JSON`, `File`, `File_Utilities`, `Process`,
+`Socket` — all written in Jairs, and `Compiler` delivered inside W6. `Thread` was one line in a stdlib list
+and is really a wave of its own, so it is W11 and said so rather than being quietly dropped.
+
+`Process` and `Socket` drew a boundary worth knowing about. **The compile-time VM cannot pass a pointer to
+memory that itself contains pointers**: it translates a foreign call's pointer argument from its own region to
+a host address, one level deep, and one level is all a type can support — the VM knows a parameter is a
+pointer and cannot know the bytes behind it hold more. `execvp`'s argument vector is exactly an array of
+pointers, so spawning a process works in a compiled binary and fails under `jr run`. Refusing such a call was
+considered and rejected, because the same test would refuse `strtod`'s out-parameter, which works. So that one
+module's test builds a binary, while the socket module — whose address struct holds only integers — is a
+corpus program that opens a real TCP connection to itself in all three engines.
 
 **Files open, read, write and append** (ADR-0157), with paths joined, split and normalised on top. These are
 the first modules whose correctness depends on something outside the program, and that is where the wave got

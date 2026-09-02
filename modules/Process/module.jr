@@ -1,0 +1,337 @@
+//! The Process module: starting a child process, waiting for it, and reading its exit status.
+//!
+//! Written in Jairs. PLAN §8.3 item 6, and the module that row called "the error model is the whole
+//! difficulty" — which was right: `fork` returns twice, `execvp` returns *only* on failure, and `waitpid`
+//! encodes three different outcomes in one integer. Every one of those is a place a caller can be silently
+//! wrong, so every routine here is `#must` and the status is a struct that names what happened.
+//!
+//! # Which `exec` this binds, and why the choice is load-bearing
+//!
+//! **`execvp`**, which is `execvp(const char *file, char *const argv[])` — genuinely **fixed-arity**. Its
+//! siblings `execl`, `execle` and `execlp` are variadic, and ADR-0157 §2 found what happens when a variadic C
+//! function is declared with fixed arity: the extra arguments travel in the wrong place, silently. So the
+//! choice of `execvp` here is not a style preference, it is the only one of the six that can be called
+//! correctly today, and the SDK header was read rather than assumed.
+//!
+//! `execvp` also searches `PATH`, which is what a caller passing `"ls"` expects. A caller who wants no search
+//! passes an absolute path, which `execvp` uses directly.
+//!
+//! # Why `fork` and not `posix_spawn`
+//!
+//! `posix_spawn` is the modern answer and takes **two attribute structs by pointer**, whose layouts are opaque
+//! and platform-specific — this module would have to hard-code sizes and offsets, which is guessing rather
+//! than portability, and E0286 refuses an aggregate at a `#foreign` boundary in any case (ADR-0150). `fork`
+//! plus `execvp` is scalars and pointers throughout, which is the FFI shape that works.
+//!
+//! The cost is stated: between `fork` and `execvp` the child is a copy of this process, and in the comptime
+//! VM that means a copy of the **interpreter**. That is correct — forking an interpreter is well-defined and
+//! the child replaces itself immediately — but it is why `spawn` does as little as possible in the child.
+//!
+//! # Why the status is a struct
+//!
+//! `waitpid` writes a single `int` that encodes "exited with code N", "killed by signal N" and "stopped"
+//! using bit patterns the `W*` macros decode. Those macros are **macros**, so a `#foreign` binding cannot
+//! reach them, and this module decodes the bits itself — which is a platform commitment, named below.
+//!
+//! Returning the raw integer would push that decoding onto every caller, and a caller who compares it
+//! against an exit code directly gets the wrong answer for every non-zero status: `exit(1)` produces 256, not
+//! 1. That is the single most common bug in this area, and a struct with named fields removes it.
+//!
+//! # What is absent, and why
+//!
+//! **No pipes, so no output capture.** `pipe` is two descriptors and would work, but capturing output needs a
+//! *read loop while the child runs* or a deadlock when the pipe fills — which is a concurrency question, and
+//! concurrency is W11. A caller who wants output today redirects the child to a file with `File` and reads it
+//! after `wait`, which is deadlock-free by construction.
+//!
+//! **No environment control.** `execvpe` is not POSIX and `environ` is a global whose declaration differs per
+//! platform. A caller who needs it can `setenv` before `spawn`, since the child inherits.
+//!
+//! **No signals.** Sending one is `kill(2)` and is easy; *handling* one needs a handler installed from Jairs,
+//! which is a procedure pointer called from a signal context — reentrancy this language has said nothing
+//! about. Offering only the easy half would invite the hard half.
+//!
+//! # `spawn` needs a compiled program, and that is a VM limitation rather than a choice
+//!
+//! **`spawn` works in a native binary and fails under `jr run`.** The comptime VM satisfies allocation from
+//! its own linear region (ADR-0061), so a Jairs pointer is an offset into that region and a foreign call
+//! *translates* it to a host address on the way out (ADR-0114's marshalling). That translation is one level
+//! deep, and it can only ever be one level deep: the VM knows a parameter is a pointer, and it cannot know
+//! that the **bytes behind it contain more pointers**.
+//!
+//! `execvp`'s second argument is exactly that — an array of pointers. So libc receives a real host address
+//! for the array and region-relative garbage for every string in it, `execvp` fails, and the child exits
+//! `EXEC_FAILED`. Natively there is no translation and nothing to get wrong, so the same program works.
+//!
+//! Probed rather than assumed, and the probe is why this paragraph exists: a minimal `fork`/`execvp` program
+//! prints 0 as a binary and 90 (the "execvp returned" marker) under `jr run`.
+//!
+//! **So this module's test is a `jr-cli` integration test rather than a corpus program**, because
+//! `tests/corpus/valid/` exists on the premise that both engines agree — the same reasoning ADR-0126 used
+//! when the VM trapped where native code wrote short. Recorded in PLAN's known-defects list.
+//!
+//! Rejected: **refusing a foreign call whose pointee type contains a pointer**, which is decidable and would
+//! turn the silent failure into a diagnostic. It would also refuse `strtod`'s `char **end` out-parameter,
+//! which `JSON` uses and which *works* — the callee writes a pointer there rather than reading one, and no
+//! type can tell those apart. A refusal that breaks working code to describe broken code is the wrong trade.
+//!
+//! Rejected: **`posix_spawn`**, which takes no array of pointers for its file actions — but does take two
+//! opaque attribute structs whose layouts this module would have to hard-code, and E0286 refuses an aggregate
+//! at the boundary anyway (ADR-0150).
+//!
+//! # The platform commitment
+//!
+//! The status bit layout below is the BSD/macOS one, which Linux shares for the two cases this module
+//! decodes: the low seven bits are the terminating signal and `0x7f` means stopped, so `status & 0x7f == 0`
+//! means a normal exit and `(status >> 8) & 0xff` is the code. Named here the way ADR-0155 §1 named
+//! `CLOCK_MONOTONIC` and ADR-0157 named `O_CREAT`: this project has only ever run on macOS (PLAN §1.5), and a
+//! portability claim it cannot test is worth less than a stated one it can.
+
+#import "Basic";
+
+/// A child process.
+Process :: struct {
+    /// The child's process id. Negative when the spawn failed.
+    pid: s64;
+}
+
+/// How a child finished.
+Exit_Status :: struct {
+    /// Whether the child exited normally, rather than being killed.
+    exited: bool;
+    /// The exit code, when `exited`. Zero otherwise.
+    code: s64;
+    /// The signal that killed it, when not `exited`. Zero otherwise.
+    signal: s64;
+}
+
+/// libc `fork(2)`. Returns 0 in the child, the child's pid in the parent, and -1 on failure.
+fork_raw :: () -> s64 #foreign libc "fork";
+
+/// One slot of the C argument vector: a pointer to one NUL-terminated argument.
+///
+/// A **named one-field struct** rather than a bare `*u8`, because `size_of` and `typed` refuse a *structural*
+/// type argument — `size_of(*u8)` is E0261, ADR-0071 §5's still-deferred structural type argument, the same
+/// limit `Bucket_Array` records. A named type is spellable, so `size_of(Argument)` and
+/// `typed(Argument, slots)` work.
+///
+/// It also improves the foreign signature below. C's `char *const argv[]` is "a pointer to the first element
+/// of an array of pointers", and `*Argument` says exactly that — where `**u8` says it in a way that reads as
+/// two levels of indirection rather than one array.
+Argument :: struct {
+    /// The argument's bytes, NUL-terminated.
+    text: *u8;
+}
+
+/// libc `execvp(3)`: `execvp(const char *file, char *const argv[])`, **fixed-arity**.
+///
+/// The vector is a **pointer** to its first element, which is what C's array parameter decays to — and a
+/// pointer crosses the `#foreign` boundary as an ordinary register scalar (ADR-0051). It is the aggregate *by
+/// value* that E0286 refuses (ADR-0150), and nothing here passes one.
+///
+/// Returns only on failure — on success the process image is replaced and there is nothing to return to.
+/// That inverted contract is why `spawn` treats a *return* as the error case.
+execvp_raw :: (file: *u8, argv: *Argument) -> s64 #foreign libc "execvp";
+
+/// libc `waitpid(2)`: `waitpid(pid_t, int *, int)`, fixed 3-arg.
+waitpid_raw :: (pid: s64, status: *s64, options: s64) -> s64 #foreign libc "waitpid";
+
+/// libc `_exit(2)` — exits **without** running atexit handlers or flushing.
+///
+/// The child uses this after a failed `execvp`, and the distinction from `exit` matters: `exit` would flush
+/// the buffers this process inherited from its parent, writing the parent's pending output a second time.
+/// A duplicated line in a log is a real bug and it is the kind nobody suspects the child of.
+underscore_exit_raw :: (status: s64) #foreign libc "_exit";
+
+/// libc `getpid(2)`.
+getpid_raw :: () -> s64 #foreign libc "getpid";
+
+/// libc `kill(2)`.
+kill_raw :: (pid: s64, signal: s64) -> s64 #foreign libc "kill";
+
+/// `SIGKILL` — cannot be caught or ignored.
+SIGKILL :: 9;
+
+/// `SIGTERM` — the polite request, which a process may catch.
+SIGTERM :: 15;
+
+/// The exit code `spawn` gives a child whose `execvp` failed.
+///
+/// 127 is the shell's convention for "command not found", so a caller who sees it recognises it. Using it
+/// means an unspawnable command is reported through the *same* channel as any other failure — a caller who
+/// only ever looks at the status gets a sensible answer rather than a mystery.
+EXEC_FAILED :: 127;
+
+/// Starts `argv[0]` with `argv` as its arguments, searching `PATH`.
+///
+/// `#must`: a caller who ignores the flag holds a `Process` with a negative pid, and `wait` on it fails
+/// forever.
+///
+/// `argv` is the whole argument vector **including the program name**, which is C's convention and not a
+/// quirk to hide: a program reads its own name from `argv[0]`, and a wrapper that inserted it would take that
+/// choice away from a caller who wants `argv[0]` to differ from the path (which is how `busybox` works).
+///
+/// The C vector is built in **temporary storage**: one NUL-terminated copy per argument plus a null pointer to
+/// end the array. It only has to survive until `execvp`, which either replaces the image or fails — so an
+/// arena is exactly right (ADR-0065), and the parent's copy is dead the moment `fork` returns.
+spawn :: (argv: []string) -> (Process, bool) #must {
+    p: Process;
+    p.pid = -1;
+    if argv.count == 0 {
+        return p, false;
+    }
+
+    vector, built := build_argv(argv);
+    if !built {
+        return p, false;
+    }
+
+    child := fork_raw();
+    if child < 0 {
+        return p, false;
+    }
+    if child == 0 {
+        // **The child.** `execvp` returns only on failure, so reaching the next line means it failed — and
+        // the child must not fall back into the caller's code, which would run the rest of `main` twice.
+        _ = execvp_raw(vector[0].text, *vector[0]);
+        underscore_exit_raw(EXEC_FAILED);
+    }
+    p.pid = child;
+    return p, true;
+}
+
+/// Waits for `p` to finish and decodes its status.
+///
+/// `#must`: the status is the whole point of waiting, and a caller who drops it has started a process and
+/// learned nothing.
+///
+/// Blocks. There is no `try_wait`, because `WNOHANG` returns "not finished yet" as a *third* outcome and a
+/// caller polling in a loop is busy-waiting — which wants a condition variable, and that is W11.
+wait :: (p: *Process) -> (Exit_Status, bool) #must {
+    s: Exit_Status;
+    s.exited = false;
+    s.code = 0;
+    s.signal = 0;
+    if p.pid < 0 {
+        return s, false;
+    }
+    raw := 0;
+    done := waitpid_raw(p.pid, *raw, 0);
+    if done < 0 {
+        return s, false;
+    }
+    p.pid = -1;
+    return decode_status(raw), true;
+}
+
+/// Runs `argv` to completion and returns its status — `spawn` then `wait`.
+///
+/// The routine most callers want, because "start it and then wait" is one thought and splitting it invites
+/// forgetting the second half, which leaves a zombie.
+run :: (argv: []string) -> (Exit_Status, bool) #must {
+    s: Exit_Status;
+    s.exited = false;
+    s.code = 0;
+    s.signal = 0;
+    p, ok := spawn(argv);
+    if !ok {
+        return s, false;
+    }
+    return wait(*p);
+}
+
+/// Sends `signal` to `p`.
+///
+/// `#must`: a failed `kill` means the process is still running, and a caller who ignores that goes on to wait
+/// forever.
+signal_to :: (p: *Process, signal: s64) -> bool #must {
+    if p.pid < 0 {
+        return false;
+    }
+    return kill_raw(p.pid, signal) == 0;
+}
+
+/// This process's own id.
+///
+/// Not `#must` — it *is* the answer, and it cannot fail.
+current_id :: () -> s64 {
+    return getpid_raw();
+}
+
+/// Whether `status` means "finished normally with code 0".
+///
+/// The question almost every caller actually has, named so that nobody writes `status.code == 0` and forgets
+/// that a killed process also has `code == 0`. That mistake reads as correct and is the reason this exists.
+succeeded :: (status: Exit_Status) -> bool {
+    if !status.exited {
+        return false;
+    }
+    return status.code == 0;
+}
+
+#scope_module
+
+/// Decodes `waitpid`'s integer. See the module docs for the platform commitment.
+decode_status :: (raw: s64) -> Exit_Status {
+    s: Exit_Status;
+    s.exited = false;
+    s.code = 0;
+    s.signal = 0;
+    low := raw % 128;
+    if low == 0 {
+        s.exited = true;
+        s.code = raw / 256 % 256;
+        return s;
+    }
+    // 0x7f is "stopped", which this module does not report separately: it is not a *finish*, and `waitpid`
+    // without `WUNTRACED` never returns it. Treated as a signal so the struct is never in a fourth state.
+    s.signal = low;
+    return s;
+}
+
+/// Builds the C argument vector in temporary storage.
+///
+/// Returns a view over `argv.count + 1` slots, the last of them null. The view rather than a bare pointer so
+/// the writes are bounds-checked (ADR-0003) — this is the one place in the module where an off-by-one would
+/// hand `execvp` an unterminated array and read past the allocation.
+build_argv :: (argv: []string) -> ([]Argument, bool) {
+    empty: []Argument;
+    slots := talloc((argv.count + 1) * size_of(Argument));
+    if slots == null {
+        return empty, false;
+    }
+    vector := view(typed(Argument, slots), argv.count + 1);
+    i := 0;
+    while i < argv.count {
+        copied, ok := nul_copy(argv[i]);
+        if !ok {
+            return empty, false;
+        }
+        slot: Argument;
+        slot.text = copied;
+        vector[i] = slot;
+        i = i + 1;
+    }
+    // The null that ends the vector. `execvp` reads until it finds this, so an off-by-one here reads past the
+    // allocation — which is why the array is `count + 1` and this write is unconditional.
+    last: Argument;
+    last.text = null;
+    vector[argv.count] = last;
+    return vector, true;
+}
+
+/// A NUL-terminated copy of `s` in temporary storage.
+nul_copy :: (s: string) -> (*u8, bool) {
+    scratch := talloc(s.count + 1);
+    if scratch == null {
+        return null, false;
+    }
+    bytes := view(scratch, s.count + 1);
+    i := 0;
+    while i < s.count {
+        bytes[i] = (s.data + i).*;
+        i = i + 1;
+    }
+    bytes[s.count] = cast(u8, 0);
+    return scratch, true;
+}

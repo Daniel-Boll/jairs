@@ -351,13 +351,10 @@ impl Pool {
     ///
     /// The view type is interned here so callers cannot pass one that disagrees with `elem`.
     pub fn static_array(&mut self, elem: PoolId, values: Vec<PoolId>) -> PoolId {
+        // `view_of` interns `*elem` as well, which is what reading `view[i]` needs (ADR-0158 §1). This
+        // constructor used to do it itself, on the ground that it was the only view with no `[]T` annotation
+        // behind it; it was not, so the obligation moved into `view_of` where no constructor can miss it.
         let view = self.view_of(elem);
-        // **`*elem` is interned too**, because reading `view[i]` needs it: a view's element place is its
-        // `data` word indexed, and both back ends look the pointer type up rather than construct one
-        // (`"a view's element pointer type was never interned"`). Every *other* way of making a view goes
-        // through a type annotation, which interns the pointer as a side effect of resolving `[]T` — this
-        // is the first constructor with no annotation behind it, so it has to do that itself.
-        let _ = self.pointer_to(elem);
         self.intern(Item::StaticArray { view, values })
     }
 
@@ -401,7 +398,18 @@ impl Pool {
     ///
     /// No length, which is the whole difference from [`Pool::array_of`]: a view's length is
     /// runtime data, so `[]s64` is one type however many elements any particular view has.
+    ///
+    /// **`*elem` is interned here too** (ADR-0158 §1). Reading `view[i]` needs it — a view's element place is
+    /// its `data` word indexed, and both back ends *look the pointer type up* rather than construct one, so a
+    /// view whose element pointer was never interned reaches codegen as the internal error "a view's element
+    /// pointer type was never interned". [`Pool::static_array`] used to be the only constructor that knew
+    /// this, on the stated ground that every other way of making a view goes through a `[]T` annotation which
+    /// interns the pointer as a side effect. That was true until `view(p, n)` over a **struct** element type
+    /// with no annotation anywhere — `modules/Process` building a C `argv` — leaked the error out of the
+    /// comptime VM. Moving the obligation into the one constructor every view goes through removes the class
+    /// rather than patching the second site and waiting for the third.
     pub fn view_of(&mut self, elem: PoolId) -> PoolId {
+        let _ = self.pointer_to(elem);
         self.intern(Item::ViewType { elem })
     }
 

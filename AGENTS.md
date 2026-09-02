@@ -212,6 +212,26 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0158 reaches 1035** (1036 under gate 7) and adds one corpus file = **250** — PLAN §8.3 items 6 and 7,
+`modules/Process` and `modules/Socket`, which **close W7 — Stdlib**: nine of nine, with `Compiler` delivered
+inside W6 and `Thread` split out to W11.
+
+**The finding that decides where a test can live: the VM cannot pass a pointer to memory that itself contains
+pointers.** A foreign call's pointer argument is translated from the VM's region-relative address to a host
+address (ADR-0061), one level deep — and one level is all a *type* can support, because the VM knows a
+parameter is a pointer and cannot know the bytes behind it hold more. `execvp`'s `argv` is an array of
+pointers, so `Process.spawn` works in a compiled binary and fails under `jr run`. Refusing such a call was
+considered and rejected: "the pointee contains a pointer" is decidable and would also refuse `strtod`'s
+`char **end`, which `JSON` uses and which works. So `Process`'s test is a **native `jr-cli` integration
+test** — the conclusion ADR-0126 reached for its own case, and the rule generally: a program whose two engines
+legitimately differ has no home in `tests/corpus/valid/`. `Socket` is unaffected, and the contrast inverts the
+intuition — a `sockaddr_in` passed *by pointer* is the easy case, because it holds only integers.
+
+`Pool::view_of` now interns `*elem`. The obligation used to sit in `static_array` alone, on the ground that
+every other view came from a `[]T` annotation; a `view(p, n)` over a **struct** element type did not, and
+leaked "a view's element pointer type was never interned" out of the VM. **An invariant enforced per-caller is
+one a caller will miss** — put it in the single constructor everything goes through.
+
 **ADR-0157 holds at 1034** (1035 under gate 7) and adds one corpus file = **249** — PLAN §8.3 item 5,
 `modules/File` and `modules/File_Utilities`. The first modules whose correctness depends on something outside
 the program, and that changed what the wave found: **two silent defects, neither of them in the modules.**

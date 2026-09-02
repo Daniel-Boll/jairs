@@ -258,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0157. See [`docs/adr/README.md`](docs/adr/README.md). (This line
+Accepted ADRs: 0001–0158. See [`docs/adr/README.md`](docs/adr/README.md). (This line
 said 0001–0128 for thirteen ADRs, which is the argument §7 makes for its own count
 being the one to trust.)
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
@@ -358,7 +358,7 @@ dependency chain requires it. `rust-toolchain.toml` still floats on stable.
 | **W4.5 — Pattern matching** | `switch` with exhaustiveness checking, a bare `.RED` as a case (ADR-0041 §2 step 5), and a **tagged** variant type beside `union` (ADR-0045 §1) | **Was missing from this table entirely.** Two accepted ADRs deferred decisions to it while no wave scheduled it — found while closing W2 (ADR-0054's handoff). **Reordered before W4 by ADR-0067 §0.** This row used to say "placed after W4 because exhaustiveness diagnostics want comptime type info" — a *want*, not a need, and checking disproved it: `Pool::enum_members` is populated during checking (ADR-0041 §4), and `c == .GREEN` already worked, so `switch` and exhaustiveness needed nothing from W4. A wave order justified by a dependency that does not exist is §5's "plans that contradict themselves". Still before W5, because a polymorph over a variant type needs the variant | 4–6 wks |
 | **W5 — Polymorphism** | `$T`, `$$T` **[NOT DELIVERED — E0107]**, `#modify`, `#bake_arguments`, `#expand` macros + hygiene, instantiation caching, **instantiation backtraces** in diagnostics **[single frame DELIVERED by ADR-0128; multi-level chain still owed]** | Depends on W4's InternPool value identity | 8–12 wks |
 | **W6 — Metaprogram** | ~~Workspaces~~ **[DECLINED — ADR-0154 §4: a Jai workspace is the *poll* model, and the file-set half already exists as `reachable_files`]**, compiler message loop, `#run build()` build scripts replacing makefiles, ~~plugin hooks~~ **[DECLINED — ADR-0154 §3: a hook is a poll, and ADR-0153 §1 rejected the poll because its behaviour would depend on compilation order, which salsa makes unstable]**, `@note` attributes | **DONE** (ADR-0098 … ADR-0154). The headline claim is met: a metaprogram finds declarations by note and *iterates* them (ADR-0153), on the compiler-emitted table ADR-0152 built — which delivered `Type_Info.fields` at the same time, owed since ADR-0078. Build scripts name the artefact and choose the optimisation. Two items declined with reasons rather than left ambiguous | 6–8 wks |
-| **W7 — Stdlib** | In Jairs: `Basic`, `String`, dynamic array / hash table / bucket array, `Sort`, `Math` (vec/mat/quat **DELIVERED — vectors by ADR-0130, `Matrix4` by ADR-0131, `Quaternion` by ADR-0132; ADR-0115 declared `Math` complete when none of the three existed**), `Random`, `File`, `File_Utilities`, `Process`, ~~`Thread` + atomics~~ **[MOVED OUT to W11 by §8.3 — there is no thread support anywhere in the runtime, and delivering one needs a per-thread VM stack, atomics as language operations, a memory model, and a rule for comptime; that is a wave comparable to W4, not one item in a list]**, `Time`, `Socket`, `JSON`, ~~`Compiler`~~ **[MOVED to W6 by §8.3 — that module *is* the message loop's surface]** | Runs partly in parallel with W5/W6; each module is a wave-acceptance test. **Nine modules shipped; §8.3 orders the remaining seven by what blocks what**, and five of them wait on the error model (§8.1.1) | 14–18 wks |
+| **W7 — Stdlib** ✔ **DONE — ADR-0158** | In Jairs: `Basic`, `String`, dynamic array / hash table / bucket array, `Sort`, `Math` (vec/mat/quat **DELIVERED — vectors by ADR-0130, `Matrix4` by ADR-0131, `Quaternion` by ADR-0132; ADR-0115 declared `Math` complete when none of the three existed**), `Random`, `File`, `File_Utilities`, `Process`, ~~`Thread` + atomics~~ **[MOVED OUT to W11 by §8.3 — there is no thread support anywhere in the runtime, and delivering one needs a per-thread VM stack, atomics as language operations, a memory model, and a rule for comptime; that is a wave comparable to W4, not one item in a list]**, `Time`, `Socket`, `JSON`, ~~`Compiler`~~ **[MOVED to W6 by §8.3 — that module *is* the message loop's surface]** | Runs partly in parallel with W5/W6; each module is a wave-acceptance test. **Nine modules shipped; §8.3 orders the remaining seven by what blocks what**, and five of them wait on the error model (§8.1.1) | 14–18 wks |
 | **W8 — Performance** | LLVM backend via `inkwell` (`--release`), inliner maturity, `#soa`, SIMD vectors, `#align`/`#place`, parallel Sema + parallel codegen **[NOT DELIVERED — measured and refused; see ADR-0149]**, published compile-throughput number | Three-way differential testing: VM ≡ Cranelift ≡ LLVM. **DONE in eight sub-waves** (ADR-0142 the optimisation level, ADR-0143 the LLVM back end, ADR-0144 `#align`/`#place`, ADR-0145 inliner maturity, ADR-0146 the throughput number + `heap_sort`, ADR-0147 `#soa`, ADR-0148 `#simd`, ADR-0149 the parallelism measurement). Seven shipped a feature; the eighth shipped a number and a revert — 1.20x against a 2.5x ceiling, because 40% of a check runs inside the pool's exclusive critical sections | 10–14 wks |
 | **W9 — Tooling depth** | Full LSP surface (completion, refs, rename, signature help, semantic tokens, **inlay type hints**, code actions), richer DWARF (locals, struct layouts) for lldb, Neovim packaging (VS Code descoped by ADR-0036; any LSP client works unpackaged) | Incremental all along; this is the "make it excellent" pass | 8–10 wks |
 | **W10 — Graphics, in Jairs** | `Window_Creation` (Cocoa via `#foreign`), GPU layer (Metal, then Vulkan), immediate-mode 2D renderer, image decode, immediate-mode UI, audio (CoreAudio/ALSA) | ~~All *library* work, written in Jairs — no compiler changes.~~ **That was wrong, and §8.5 corrects it**: no aggregate crosses a `#foreign` boundary today (it is a leaked ICE, §8.1.3), and every windowing and GPU API passes structs by value — `CGRect`, `CGPoint`, `MTLViewport` — while `objc_msgSend` is *C-variadic*, which is a third thing neither engine does. So W10 needs **two compiler waves** first and its honest state is **blocked**, not "not started". Gated on W5 (done), W7's `File`, and the FFI work | 6+ months |
@@ -552,7 +552,9 @@ a performance wave: §2.1's last item was a hypothesis, it was tested, and it di
 architecture. ADR-0149 names the two blockers, neither of them a driver change.
 
 **W6 — Metaprogram is DONE too** (ADR-0152 the static-data table, ADR-0153 the message loop, ADR-0154 a
-second build option plus two declines). **So the wave still open is W7 — Stdlib**, and then W9 and W10.
+second build option plus two declines). **W7 — Stdlib is DONE too** (ADR-0158 closed it: nine of nine
+modules, with `Compiler` delivered inside W6 and `Thread` split out to W11). **So the waves still open are
+W9 — Tooling depth, W10 — Graphics, and W11 — Concurrency.**
 **§8 is the completion plan** — read it before picking anything up, because the thing that decides the
 order is not the per-wave item lists but three cross-cutting blockers.
 
@@ -560,20 +562,31 @@ order is not the per-wave item lists but three cross-cutting blockers.
 diagnostic; `#must` (ADR-0151) filled ADR-0008's reserved effect-row slot and unblocked five W7 modules;
 and W6's static-data decision (ADR-0152/0153/0154) closed that wave.
 
-**§8.3's module order is six of nine in**: `Time`, `Bucket_Array` and the stable merge sort (ADR-0155),
-`JSON` (ADR-0156), and `File` + `File_Utilities` (ADR-0157). **Next are items 6 and 7, `Process` and
-`Socket`**, both unblocked by the error model and both scalar-only at the FFI boundary. `Compiler` shipped
-inside W6. `Thread` is W11 and is not W7's.
+**§8.3's module order is nine of nine in, so W7 — Stdlib is DONE**: `Time`, `Bucket_Array` and the stable
+merge sort (ADR-0155), `JSON` (ADR-0156), `File` + `File_Utilities` (ADR-0157), and `Process` + `Socket`
+(ADR-0158). `Compiler` shipped inside W6 and `Thread` is W11, both as §8.3 recommended.
+
+**So the remaining waves are W9 — Tooling depth, W10 — Graphics, and W11 — Concurrency.** §8.4 and §8.5 are
+their plans. W9 is the one that needs nothing new: semantic tokens and richer DWARF are both additive, and
+§8.4 calls it "small, and mostly already done". **W10 is still blocked** on §8.1.2 — an aggregate crossing the
+`#foreign` boundary — and that single change now unblocks **three** named things: W10 entirely, `readdir` and
+`stat` in `File_Utilities`, and `getaddrinfo` in `Socket`. That makes it the highest-leverage item left and
+the obvious thing to do before W10 rather than inside it.
 
 > [!IMPORTANT]
-> **`File` found two silent defects and neither was in the module.** A fixed-arity `#foreign` declaration
-> of a **variadic** C function passes the extra argument in the wrong place — `open(path, flags, mode)`
-> created a file with permissions `---------x` on arm64, with no diagnostic in either engine. And freeing a
-> string **literal** aborts natively while running clean under `jr run`, because the VM drops a pointer it
-> does not recognise (ADR-0061). Both are in the known-defects list. The lesson for `Process` and `Socket`:
-> **check each `#foreign` signature against the C declaration's arity**, and **run the native binary**, not
-> just `jr run` — `valid/128` writes to a real `/tmp` for exactly this reason, and a mocked test would have
-> passed in both engines and shipped the abort.
+> **The FFI is where the last three waves' surprises came from, and all four were silent.** ADR-0157 found a
+> fixed-arity declaration of a **variadic** C function passing its extra argument in the wrong place, and a
+> string **literal** freed cleanly in the VM and fatally in a binary. ADR-0158 found that the VM cannot pass a
+> pointer to memory containing **more pointers**, so `Process.spawn` works natively and fails under `jr run`.
+> ADR-0155 found four polymorphic-instantiation defects, every one of which reached an engine as
+> `no routine for file N proc M`.
+>
+> Three habits follow, and W10 will need all of them because it is nothing *but* FFI. **Check each
+> `#foreign` signature against the C declaration's arity.** **Run the native binary**, not just `jr run` —
+> `valid/128` writes to a real `/tmp` and `valid/129` opens a real socket for exactly this reason, and a
+> mocked test would have passed in both engines and shipped the abort. And when a body is refused for "a local
+> has an error type", **check the module's own diagnostics first**: a module's diagnostics are not shown when a
+> *root* file is checked, which turned a missing `#import` into an hour.
 
 **Three things are owed and named, none of them blocking.** `JSON` serialisation needs a correct `dtoa` and
 nothing else. The library has an **allocator seam** — `List` and `Map` allocate with `malloc`, `String`
@@ -603,7 +616,7 @@ crossing the `#foreign` boundary — which is also W10's hard gate, so one chang
 an `Any` or a procedure handle through `jr-vm`'s untagged `union`; `jr-lsp` path handling — URI
 decoding, `..`, symlinks), which must be done **by hand** because six subagent dispatches returned
 empty; and `tree-sitter test` added to gate 6, which today catches grammar *drift* but not a broken
-grammar *rule*. **1034 workspace tests** (1035 under gate 7) and **249 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
+grammar *rule*. **1035 workspace tests** (1036 under gate 7) and **250 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
 has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -615,9 +628,9 @@ has ever happened — plus **166** Neovim checks. See §1.5.
 > one is the clap surface.
 
 > [!NOTE]
-> **What "249 corpus files" counts**, since this number had drifted: the `.jr` files under
-> `tests/corpus/` *outside* `tests/corpus/modules/` — 128 `valid` + 10 `invalid` + 78 `type-errors` +
-> 3 `cfg-errors` + 30 `imports` = 249. Counting the 10 module fixtures too gives 259. This section
+> **What "250 corpus files" counts**, since this number had drifted: the `.jr` files under
+> `tests/corpus/` *outside* `tests/corpus/modules/` — 129 `valid` + 10 `invalid` + 78 `type-errors` +
+> 3 `cfg-errors` + 30 `imports` = 250. Counting the 10 module fixtures too gives 260. This section
 > claimed **214** at a point when 213 was right while `AGENTS.md` claimed 213, so the sentence that
 > tells a reader to trust §7 over any other count was itself pointing at the wrong one. ADR-0125
 > reconciled the numbers and that pair slipped through, which is the argument for the definition
@@ -915,7 +928,7 @@ is addressed by a **measurement and a refusal** (ADR-0149) rather than an implem
       a reversed input — is a test in the differential harness rather than a number needing a footnote.
       The assertion is the *inequality*, since pinning an exact schedule would fail on any tuning.
 
-### W7 — Stdlib, open
+### W7 — Stdlib, **done** (ADR-0103 … ADR-0158)
 
 - [x] **`String`** (ADR-0103, sub-wave 1): `equal`, `compare`, `starts_with`, `ends_with`, `find`, `contains`,
       `byte_at`, `is_empty` — **none of which allocate**. It exists because **ADR-0099 §4 named it**: that
@@ -2175,12 +2188,14 @@ project defines 94 codes", frozen roughly fifteen waves back.)
       all*, for any platform: no CI run has ever happened on this repository.
 - [ ] **Iterate-by-reference, a range as a first-class type, `for` over a user type** (ADR-0049
       §1/§4).
-- [ ] **A `$T` template cannot call another `$T` template**, even with the variable already bound:
-      `sift_down(xs, …)` where `xs: []T` inside a `[]$T` procedure is **E0268**, "cannot infer every
-      `$T`". Found writing `heap_sort` (ADR-0146), which is therefore one loop with a single sift site
-      — a better shape anyway, since the alternative was writing the sift twice, but the limitation is
-      real. Adjacent to ADR-0104 §5's *cross-file* refusal rather than the same thing: this is within
-      one file, where instantiation is available and inference is what fails.
+- [x] ~~**A `$T` template cannot call another `$T` template**, even with the variable already bound~~
+      **fixed — ADR-0155 §4.3 and §4.4.** `sift_down(xs, …)` where `xs: []T` inside a `[]$T` procedure was
+      **E0268**, "cannot infer every `$T`". Found writing `heap_sort` (ADR-0146), which is therefore one loop
+      with a single sift site — a better shape anyway. It took **two** fixes, which is why it looked
+      structural: E0268 had to be *withheld* while checking a template's own copy (nothing can pin the
+      callee's variable there, and each instantiation pins it for real), **and** the inner call had to stop
+      **deleting** the caller's own binding for a variable of the same name. Either fix alone leaves the
+      other's symptom. ADR-0104 §5's *cross-file* refusal is a different thing and still stands.
 - [ ] **A file-level mutable variable leaks an internal error** — the **eighth** occurrence of this
       project's most-recorded failure shape. `counter := 0;` at file scope checks clean and then fails
       in lowering with "the compiler could not lower `main` … this compiler has a gap — please report
@@ -2240,6 +2255,27 @@ project defines 94 codes", frozen roughly fifteen waves back.)
       argument for `valid/128` touching a real filesystem rather than mocking one. Making the VM trap on a
       foreign pointer is the fix and is its own decision: it would also refuse a pointer a `#foreign`
       `malloc` produced at run time, which is legal.
+- [ ] **The comptime VM cannot pass a pointer to memory that itself contains pointers** (ADR-0158 §3). A
+      foreign call's pointer argument is translated from the VM's region-relative address to a host address
+      (ADR-0061), and that translation is one level deep and can only ever be: the VM knows a *parameter* is
+      a pointer and cannot know the **bytes behind it** hold more. So `execvp(file, argv)` receives a real
+      address for the array and garbage for every string in it, and `Process.spawn` works in a compiled
+      binary and fails under `jr run`. Probed: a minimal `fork`/`execvp` program prints 0 as a binary and the
+      "execvp returned" marker in the VM.
+
+      **Not fixable by refusing it**, which was the obvious answer: "the pointee type contains a pointer" is
+      decidable and would also refuse `strtod`'s `char **end` out-parameter, which `JSON` uses and which
+      *works* — the callee writes a pointer there rather than reading one, and no type distinguishes those.
+      A refusal that breaks working code to describe broken code is the wrong trade. The real fix is
+      marshalling the pointee recursively using its known type, which is a `jr-vm` wave: it needs a shadow
+      copy per call (the VM's own memory must keep its region-relative values) and a decision about what an
+      *out*-parameter's pointers mean on the way back.
+
+      Consequence for the corpus: a program using `Process.spawn` has no home in `tests/corpus/valid/`,
+      whose premise is that both engines agree — the same conclusion ADR-0126 reached for its case. The test
+      is `jr-cli`'s `process_run_starts_a_child_and_decodes_its_status`, which builds and runs the binary.
+      `Socket` is unaffected: a `sockaddr_in` holds only integers, so one level is enough and `valid/129`
+      passes in all three engines.
 
 #### Also open, and smaller
 
@@ -2386,7 +2422,7 @@ project defines 94 codes", frozen roughly fifteen waves back.)
 ## 8. Finishing the programme: ~~W6~~, W7, W9, W10
 
 W8 closed on 1 September 2026 and **W6 closed the same day** (ADR-0152 … ADR-0154), so what remains is
-three waves: **W7 — Stdlib** (open, part-shipped), then **W9 — Tooling depth** and **W10 — Graphics**,
+three waves: **W7 — Stdlib** (now **done**, ADR-0158), then **W9 — Tooling depth** and **W10 — Graphics**,
 neither started. §8.2 below is kept as written because its prediction was tested and held — the
 static-data table did discharge two owed things at once — and because §8.3's `Compiler` module still
 belongs to the mechanism it describes. This section is the completion plan for those four. It exists
@@ -2497,10 +2533,10 @@ what rather than by the order §2.1 happens to list them.
 | ~~3~~ | ~~**A merge sort**~~ | — | **done — ADR-0155 §3.** `stable_sort` takes its scratch from the **arena** (ADR-0065's first real customer), falls back to insertion sort when it has no room — both paths stable, so the answer never depends on memory pressure — and merges bottom-up in one procedure. Rejected: `malloc` per call, a caller-supplied buffer (written, then removed), an in-place merge. **It did not compile**, and four instantiation defects came out of finding out why (ADR-0155 §4); `Sort` also gained its first `#import`. |
 | ~~4~~ | ~~**`JSON`**~~ | — | **done — ADR-0156.** And this row's own guesses were wrong twice, which is worth keeping: a `variant` is *not* the right JSON value (a flat `[..]Json_Node` with index handles is — one free, copyable handles, no partial tree to unwind on failure), and `Map` cannot be an object (it is `Map(s64, s64)`, and a chain preserves source order anyway). What did hold is that the module proves the language: `#must`, multiple returns, `[..]T`, `view`, `enum`, both allocators, and a float across `#foreign` for `strtod`. Serialisation is **deferred with a reason** — it needs a correct `dtoa`. |
 | ~~5~~ | ~~**`File`**~~ | — | **done — ADR-0157**, with `File_Utilities` on top as this row expected. Descriptors, not buffered streams; paths as text, not a `Path` type. Everything `#must` except `close`. Two **silent** defects found, neither in the modules: a fixed-arity `#foreign` declaration of a *variadic* C function passes the extra argument in the wrong place (`open`'s mode — creation now goes through `creat`), and freeing a string **literal** aborts natively while running clean in the VM. `size` seeks rather than `stat`s, and `readdir`/metadata are deferred, all three because an aggregate cannot cross the FFI boundary (§8.1.2). |
-| 6 | **`Process`** | §8.1.1 | `fork`/`exec`/`waitpid` are scalars, so the FFI is fine; the error model is the whole difficulty. |
-| 7 | **`Socket`** | §8.1.1, and `File`'s shape | A socket is a descriptor, so it inherits whatever `File` establishes. |
+| ~~6~~ | ~~**`Process`**~~ | — | **done — ADR-0158.** This row was right that the FFI is scalars and the error model is the difficulty, and wrong about one thing: `execvp`'s **argv** is an array of pointers, which the VM's one-level pointer translation cannot carry — so `spawn` works natively and fails under `jr run`, and its test is a `jr-cli` integration test rather than a corpus program. The status is a struct because `waitpid`'s bits are macro-decoded and `exit(1)` produces 256. |
+| ~~7~~ | ~~**`Socket`**~~ | — | **done — ADR-0158**, and it did inherit `File`'s shape as this row expected. A separate type from `File`, so a caller cannot seek a socket. Works in **all three engines**, unlike `Process`: a `sockaddr_in` passed by pointer holds only integers, so one level of translation is enough — the contrast is worth knowing, since "passes a struct by pointer" sounds like the harder case. `parse_ipv4` is hand-written so the refusals are ours. No `getaddrinfo` (pointers inside pointers), no IPv6, no `select` (that is W11). |
 | 8 | **`Compiler`** | W6's message loop | This module *is* the loop's surface, so it belongs to W6's decision rather than to W7's list. |
-| 9 | **`Thread` + atomics** | **out of reach, and should be said so** | See below. |
+| ~~9~~ | ~~**`Thread` + atomics**~~ | **moved to W11** | Split out as this section recommended, and W11 is now the last wave in §2.1's table. |
 
 **`Thread` cannot be delivered as scoped, and the plan should stop implying it can.** There is no
 thread support anywhere in the runtime — not in the VM, whose `Value` and linear memory region assume
