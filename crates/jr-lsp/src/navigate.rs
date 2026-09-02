@@ -378,7 +378,7 @@ pub fn document_symbol(
     let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
     let docs = jr_db::file_docs(db, file);
     let container = container_of(file.path(db).as_ref());
-    let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+    let pool = db.read_pool();
     let decl = Decl {
         hir: hir.as_ref(),
         sigs: sigs.as_ref(),

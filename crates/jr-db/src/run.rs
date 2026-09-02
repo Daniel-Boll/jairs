@@ -113,7 +113,7 @@ pub fn run_main(
         ));
     }
 
-    let pool = crate::sema::lock_pool(db);
+    let pool = crate::sema::read_pool(db);
     let mut program = Program::new(jr_pool::TargetLayout::host());
     for (file_id, hir, mir, signatures) in &inputs {
         jr_vm::add_file(

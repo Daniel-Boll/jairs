@@ -154,7 +154,7 @@ pub fn signature_help(
     let proc = proc_of(hir.as_ref(), item)?;
     let params = hir.procs.get(proc.index())?.params.clone();
 
-    let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+    let pool = db.read_pool();
     let label = Decl {
         hir: hir.as_ref(),
         sigs: sigs.as_ref(),
@@ -277,7 +277,7 @@ pub fn inlay_hints(
     let container = container_of(file.path(db).as_ref());
 
     let mut out = Vec::new();
-    let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+    let pool = db.read_pool();
 
     // `:=` locals. A local with an explicit annotation is skipped: the type is already on
     // screen, and repeating it is noise.

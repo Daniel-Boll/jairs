@@ -190,7 +190,7 @@ use jr_syntax::LexOutput;
 use salsa::Setter as _;
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
 };
 
 // ---------------------------------------------------------------------------
@@ -242,7 +242,26 @@ pub trait Db: salsa::Database {
     /// harmless — see the `sema` module docs for the full argument.
     ///
     /// The lock must never be held across a call into another query.
-    fn pool(&self) -> &std::sync::Mutex<Pool>;
+    fn pool(&self) -> &std::sync::RwLock<Pool>;
+
+    /// A **shared** handle on the pool, with the poison recovered.
+    ///
+    /// Provided rather than left to each consumer, because `jr-lsp` hand-rolled
+    /// `db.pool().lock().unwrap_or_else(|e| e.into_inner())` at four sites — a second copy of a
+    /// discipline `run.rs`'s module docs already describe as deliberately centralised. Two copies of
+    /// one rule is exactly what this project calls two chances to disagree, and the `RwLock`
+    /// conversion (ADR-0149 §1) turned that duplication into four compile errors, which is the good
+    /// outcome.
+    ///
+    /// A **read** guard, because every consumer outside `jr-db` only reads: interning happens in
+    /// sema and const-eval, which are inside. A reader taking this while another thread interns
+    /// simply waits, and several readers share.
+    fn read_pool(&self) -> std::sync::RwLockReadGuard<'_, Pool> {
+        match self.pool().read() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -291,7 +310,7 @@ pub struct JairsDatabase {
     /// table, not an input. Every file analysed by this database interns into it,
     /// which is what makes a type from one file comparable with a type from
     /// another by id alone.
-    pool: Arc<Mutex<Pool>>,
+    pool: Arc<RwLock<Pool>>,
 }
 
 impl Default for JairsDatabase {
@@ -305,7 +324,7 @@ impl Default for JairsDatabase {
             module_search_paths: Arc::new(Mutex::new(None)),
             workspace_files: Arc::new(Mutex::new(None)),
             build_config: Arc::new(Mutex::new(None)),
-            pool: Arc::new(Mutex::new(Pool::new())),
+            pool: Arc::new(RwLock::new(Pool::new())),
         }
     }
 }
@@ -359,7 +378,7 @@ impl JairsDatabase {
             module_search_paths: Arc::new(Mutex::new(None)),
             workspace_files: Arc::new(Mutex::new(None)),
             build_config: Arc::new(Mutex::new(None)),
-            pool: Arc::new(Mutex::new(Pool::new())),
+            pool: Arc::new(RwLock::new(Pool::new())),
         }
     }
 
@@ -378,7 +397,7 @@ impl JairsDatabase {
             module_search_paths: Arc::new(Mutex::new(None)),
             workspace_files: Arc::new(Mutex::new(None)),
             build_config: Arc::new(Mutex::new(None)),
-            pool: Arc::new(Mutex::new(Pool::new())),
+            pool: Arc::new(RwLock::new(Pool::new())),
         }
     }
 
@@ -399,7 +418,7 @@ impl JairsDatabase {
             module_search_paths: Arc::new(Mutex::new(None)),
             workspace_files: Arc::new(Mutex::new(None)),
             build_config: Arc::new(Mutex::new(None)),
-            pool: Arc::new(Mutex::new(Pool::new())),
+            pool: Arc::new(RwLock::new(Pool::new())),
         }
     }
 
@@ -749,7 +768,7 @@ impl Db for JairsDatabase {
         inputs.get(path).copied()
     }
 
-    fn pool(&self) -> &Mutex<Pool> {
+    fn pool(&self) -> &RwLock<Pool> {
         &self.pool
     }
 }

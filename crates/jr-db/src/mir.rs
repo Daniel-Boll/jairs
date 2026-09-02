@@ -628,7 +628,7 @@ fn render(db: &dyn Db, result: MirResult) -> String {
     let hir = result.hir;
     let signatures = result.signatures;
     let interner = db.interner();
-    let pool = crate::sema::lock_pool(db);
+    let pool = crate::sema::read_pool(db);
     jr_mir::dump_file(
         result.mir.as_ref(),
         hir.as_ref(),
@@ -904,7 +904,7 @@ fn evaluate_modify_predicates(
     }
     let file_id = crate::queries::resolve_file_id(db, file);
     let mut out: Vec<jr_diag::Diagnostic> = Vec::new();
-    let pool = crate::sema::lock_pool(db);
+    let pool = crate::sema::read_pool(db);
     let mut program = jr_vm::comptime_program();
     if jr_vm::add_file(&mut program, file_id, hir, mir, signatures, &pool).is_err() {
         // The tree could not be loaded into the comptime program at all. Not a rejection — see this

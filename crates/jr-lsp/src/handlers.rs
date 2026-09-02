@@ -225,7 +225,7 @@ fn declaration_site_card(
             let docs = jr_db::file_docs(db, file);
             let consts = jr_db::file_consts(db, file, search_paths).values;
             let span = item_name_span(hir, item)?;
-            let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+            let pool = db.read_pool();
             let card = Decl {
                 hir,
                 sigs: sigs.as_ref(),
@@ -268,7 +268,7 @@ fn declaration_site_card(
             let ty = sigs
                 .proc_sig(proc)
                 .and_then(|sig| sig.params.get(param.index()).copied());
-            let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+            let pool = db.read_pool();
             let rendered = ty.map(|ty| type_name(&pool, sigs.as_ref(), ty));
             Some((
                 binding_card(&container, db.interner().resolve(name), rendered),
@@ -285,7 +285,7 @@ fn declaration_site_card(
                 .get(local.index())?
                 .name;
             let ty = types.local_type(body, local);
-            let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+            let pool = db.read_pool();
             let rendered = ty.map(|ty| type_name(&pool, sigs.as_ref(), ty));
             Some((
                 binding_card(&container, db.interner().resolve(name), rendered),
@@ -317,7 +317,7 @@ fn declaration_card(
             let docs = jr_db::file_docs(db, file);
             let consts = jr_db::file_consts(db, file, search_paths).values;
             let container = container_of(file.path(db).as_ref());
-            let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+            let pool = db.read_pool();
             Decl {
                 hir,
                 sigs: sigs.as_ref(),
@@ -343,7 +343,7 @@ fn declaration_card(
             let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
             let name = name_at(hir, found)?;
             let container = container_of(file.path(db).as_ref());
-            let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+            let pool = db.read_pool();
             Some(binding_card(
                 &container,
                 db.interner().resolve(name),
@@ -377,7 +377,7 @@ fn imported_card(
     let sigs = jr_db::file_signatures(db, module, search_paths).signatures;
     let docs = jr_db::file_docs(db, module);
     let container = container_of(found.to_string_lossy().as_ref());
-    let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+    let pool = db.read_pool();
 
     Decl {
         hir: other.as_ref(),
@@ -408,7 +408,7 @@ fn type_card(
     let ty = types.expr_type(found.scope, found.expr)?;
     let signatures = jr_db::file_signatures(db, file, search_paths).signatures;
     let container = container_of(file.path(db).as_ref());
-    let pool = db.pool().lock().unwrap_or_else(|e| e.into_inner());
+    let pool = db.read_pool();
 
     Some(Card {
         container,

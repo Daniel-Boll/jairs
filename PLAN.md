@@ -535,7 +535,12 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 
 ## 7. Immediate next actions
 
-**W8 — Performance is OPEN**, seven sub-waves in (ADR-0142, the optimisation level; ADR-0143, the LLVM back end; ADR-0144, `#align`/`#place`; ADR-0145, inliner maturity; ADR-0146, the throughput number and `heap_sort`; ADR-0147, `#soa`; ADR-0148, `#simd`). **W7 — Stdlib is
+**W8 — Performance is DONE**, eight sub-waves (ADR-0142, the optimisation level; ADR-0143, the LLVM back
+end; ADR-0144, `#align`/`#place`; ADR-0145, inliner maturity; ADR-0146, the throughput number and
+`heap_sort`; ADR-0147, `#soa`; ADR-0148, `#simd`; ADR-0149, parallel sema **measured and refused**).
+Seven shipped a feature and the eighth shipped a number and a revert, which is the honest way to close
+a performance wave: §2.1's last item was a hypothesis, it was tested, and it did not hold on this
+architecture. ADR-0149 names the two blockers, neither of them a driver change. **W7 — Stdlib is
 also open**, and **W6 — Metaprogram is open too**: W6's remaining work is one wave-sized
 architectural decision (a compiler-emitted static-data table), while W7's remaining modules each want
 an allocation policy decided first. All three are tracked below, and W8 is the one currently being
@@ -614,12 +619,19 @@ has ever happened — plus **166** Neovim checks. See §1.5.
 > "failed twice" and `AGENTS.md`'s warning that subagents are unreliable on this codebase. The remaining
 > two dispatches are hand work; budget accordingly.
 
-### W8 — Performance, open
+### W8 — Performance, **done** (ADR-0142 … ADR-0149)
 
 §2.1's content for this wave: **LLVM back end via `inkwell` (`--release`), inliner maturity, `#soa`,
 SIMD vectors, `#align`/`#place`, parallel Sema + parallel codegen, a published compile-throughput
-number**, and three-way differential testing — VM ≡ Cranelift ≡ LLVM. W8 depends only on W5, which is
-complete, so nothing blocks it.
+number**, and three-way differential testing — VM ≡ Cranelift ≡ LLVM. All eight are addressed; the last
+is addressed by a **measurement and a refusal** (ADR-0149) rather than an implementation.
+
+> [!IMPORTANT]
+> **Seven of eight shipped a feature; the eighth shipped a number.** Parallel sema was written, worked,
+> and gave 1.20x at the process level against a 2.5x ceiling set by 40% of check running inside the
+> pool's exclusive critical sections — so it was reverted, with the measurements and the two real
+> blockers recorded in ADR-0149. Anyone reaching for it again should re-run those measurements first: the
+> number that has to move is the 40%, and moving it is ADR-0015's identity model, not a driver change.
 
 - [x] **An optimisation level** (ADR-0142, sub-wave 1): `--opt-level 0|1`, short `-O`, on `jr run` and
       `jr build`, defaulting to 1 — today's behaviour, so no existing invocation changes meaning. `-O0`
@@ -782,8 +794,41 @@ complete, so nothing blocks it.
       **The VM loops where native emits one instruction** — the first operator whose engines execute a
       different *number* of operations — and `valid/119` exits 170 in all three. The lane that carries
       that claim is `S32_MAX +% 1`: a saturating engine answers 1 and a trapping one does not finish.
-- [ ] **Parallel Sema and parallel codegen**, which is a salsa question first: what is safe to run
-      concurrently when the pool is behind a mutex the queries lock.
+- [x] **Parallel Sema and parallel codegen** (ADR-0149, sub-wave 8) — **written, measured, and
+      refused**, which closes W8. This entry guessed the shape correctly: it *is* the pool-behind-a-mutex
+      question. What it did not guess is that the answer is a number.
+
+      A parallel `jr check` is sixty lines in one driver function — `salsa::Storage` is `Clone` and
+      `snapshot` has existed since ADR-0024 — and it worked, with byte-identical output at 1, 2, 4, 8
+      and 12 threads. **In-process it gives 1.39x, saturating at four threads. At the process level it
+      gives 1.20x on the clean corpus and 1.01x on a mixed tree**, because the parallelised phase is
+      itself a fraction of the command: reading 194 files, the one-shot `source_map()` clone and
+      rendering every diagnostic are serial, and the process costs 10 ms to start.
+
+      **The binding constraint, instrumented:** 571 pool acquisitions holding the lock for ~30 ms of a
+      74 ms check — **40% serial, so Amdahl caps any driver-level parallelism at 2.5x**. The lock is
+      already coarse *because* of the nested-query rule, so this is not a discipline failure; it is the
+      pattern the rule requires.
+
+      **Not shipped**, because 1.2x buys a failure mode that appears only under threads: a
+      `std::sync::RwLock` is neither reentrant nor upgradable, so a future query holding a guard across
+      a nested call hangs — and `run.rs` already carries a comment about the time that happened, where
+      "the program hung rather than failing, which is worse". A `--threads` flag defaulting to 1 is dead
+      code; defaulting to auto is a tax on every check.
+
+      **Parallel codegen gets a sharper verdict.** The probe that seemed to measure it — 119 roots
+      concurrently, 84% of wall time inside the pool guard — was measuring *duplicated work*, because
+      `build_object` compiles a whole program per root and `jr build` builds one. No program in this
+      project has more than four files, so parallel codegen cannot be measured here at all.
+
+      **What lands:** `Mutex<Pool>` → `RwLock<Pool>` with a `read_pool` for the six read-only sites
+      (Rust found all six — they were already `let pool`, not `let mut pool`). It made *nothing* faster,
+      and is kept because it turned eight hand-rolled `pool().lock().unwrap_or_else(…)` sites in
+      `jr-lsp` into compile errors, now one `Db::read_pool`.
+
+      **Two blockers for any future attempt**, neither a driver change: finer-grained interning, which
+      is ADR-0015's identity model and ADR-0018 §2's single layout computation; and an input large
+      enough that a benchmark can tell the change from noise.
 - [x] **A published compile-throughput number, and the faster sort it justifies** (ADR-0146, sub-wave 5).
       `jr bench --throughput <PATH>…` is a *mode* of the existing subcommand — the same contract, so a
       second subcommand would be a second place to add a threshold — timing `check` and `build`

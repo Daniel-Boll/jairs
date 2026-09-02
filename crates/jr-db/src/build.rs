@@ -97,7 +97,7 @@ pub fn build_object(
         ));
     }
 
-    let pool = crate::sema::lock_pool(db);
+    let pool = crate::sema::read_pool(db);
     // The target's layout, not the host's: a native build is for the target, and the
     // two are the same number today only because the slice cross-compiles nowhere
     // (ADR-0018 §2).
@@ -269,7 +269,7 @@ pub fn declared_build_output(
     })?;
     let consts = crate::consts::file_consts(db, root, search_paths);
     let value = consts.values.item(item)?;
-    let pool = crate::sema::lock_pool(db);
+    let pool = crate::sema::read_pool(db);
     match pool.item(value) {
         jr_pool::Item::StrValue(id) => Some(pool.resolve_str(*id).to_owned()),
         _ => None,
