@@ -258,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0161. See [`docs/adr/README.md`](docs/adr/README.md). (This line
+Accepted ADRs: 0001–0162. See [`docs/adr/README.md`](docs/adr/README.md). (This line
 said 0001–0128 for thirteen ADRs, which is the argument §7 makes for its own count
 being the one to trust.)
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
@@ -585,11 +585,19 @@ That unblocked **three** named things at once, exactly as predicted: **W10 — G
 `readdir`/`stat` in `File_Utilities` and `getaddrinfo` in `Socket` are now expressible — two owed library
 items that need no further language work.
 
-**So W10 is the next wave**, with one prerequisite left of its own: §8.5 lists **C-variadic foreign calls**
-beside the aggregate one, because `objc_msgSend` is variadic. ADR-0157 §2 established what a fixed-arity
-declaration of a variadic C function does — it puts the extra argument in the wrong place, silently — and named
-the honest fix: a `#c_variadic` marker whose absence means "not variadic". That is now W10's only remaining
-gate. **W12 — Debug info has no blocker at all**, which makes it the one to reach for while something above is
+**So W10 is the next wave, and its second gate is now a *stated* limitation** rather than a silent
+miscompile. ADR-0162 built the `#c_variadic` marker: a declaration can say the C signature ended in `...`, and
+a **call** is E0289 in all three engines. Refusing uniformly was chosen over supporting it in the two engines
+that could (libffi has a variadic CIF, LLVM has variadic function types) because `jr build` failing where
+`jr run` succeeds breaks the premise the differential harness rests on.
+
+**Supporting the call is blocked upstream**: Cranelift's `Signature` has no notion of a variadic boundary at
+all — probed, not assumed — so there is no way to say "the arguments past the second belong on the stack". That
+makes `objc_msgSend` uncallable and W10's Objective-C path unavailable, which is a **real constraint on how
+W10 can be built** rather than a task: a Cocoa window cannot be opened through `objc_msgSend` today. §8.5
+should be re-read with that in mind before W10 starts, because it assumed the call would be available.
+
+**W12 — Debug info has no blocker at all**, which makes it the one to reach for while something above is
 pending — the role W9 played.
 
 > [!IMPORTANT]
@@ -635,7 +643,7 @@ crossing the `#foreign` boundary — which is also W10's hard gate, so one chang
 an `Any` or a procedure handle through `jr-vm`'s untagged `union`; `jr-lsp` path handling — URI
 decoding, `..`, symlinks), which must be done **by hand** because six subagent dispatches returned
 empty; and `tree-sitter test` added to gate 6, which today catches grammar *drift* but not a broken
-grammar *rule*. **1054 workspace tests** (1055 under gate 7) and **251 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
+grammar *rule*. **1054 workspace tests** (1055 under gate 7) and **253 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
 has ever happened — plus **170** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -647,9 +655,9 @@ has ever happened — plus **170** Neovim checks. See §1.5.
 > one is the clap surface.
 
 > [!NOTE]
-> **What "251 corpus files" counts**, since this number had drifted: the `.jr` files under
-> `tests/corpus/` *outside* `tests/corpus/modules/` — 130 `valid` + 10 `invalid` + 78 `type-errors` +
-> 3 `cfg-errors` + 30 `imports` = 251. Counting the 10 module fixtures too gives 261. This section
+> **What "253 corpus files" counts**, since this number had drifted: the `.jr` files under
+> `tests/corpus/` *outside* `tests/corpus/modules/` — 131 `valid` + 10 `invalid` + 79 `type-errors` +
+> 3 `cfg-errors` + 30 `imports` = 253. Counting the 10 module fixtures too gives 263. This section
 > claimed **214** at a point when 213 was right while `AGENTS.md` claimed 213, so the sentence that
 > tells a reader to trust §7 over any other count was itself pointing at the wrong one. ADR-0125
 > reconciled the numbers and that pair slipped through, which is the argument for the definition

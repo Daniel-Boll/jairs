@@ -283,16 +283,29 @@ enum ProcAttr {
     /// multiple returns already in the language, this is the half that makes ignoring a failure an
     /// error rather than a habit.
     Must,
+    /// `#c_variadic` — this `#foreign` procedure's declared parameters are its **fixed** ones, and C
+    /// permits more (ADR-0162).
+    ///
+    /// The marker exists because the compiler cannot learn it any other way. A Jairs declaration says what
+    /// the callee takes; it cannot say that the *C* declaration ended in `...`, and the difference is not
+    /// cosmetic: on AArch64 a variadic argument travels on the stack while a fixed one travels in a
+    /// register. ADR-0157 §2 found that out by declaring `open(path, flags, mode)` and creating a file with
+    /// permissions `---------x` — no diagnostic, a plausible file, unreadable.
+    ///
+    /// Its **absence** therefore means "not variadic", which is the safe default: a caller who forgets it
+    /// gets a fixed-arity call, which is what they wrote.
+    CVariadic,
 }
 
 impl ProcAttr {
     /// Every attribute, so a test can check that each is accepted at both sites.
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::CCall,
         Self::NoAbc,
         Self::Expand,
         Self::Modify,
         Self::Must,
+        Self::CVariadic,
     ];
 
     /// The directive text that names this attribute.
@@ -303,6 +316,7 @@ impl ProcAttr {
             Self::Expand => "#expand",
             Self::Modify => "#modify",
             Self::Must => "#must",
+            Self::CVariadic => "#c_variadic",
         }
     }
 
@@ -1130,6 +1144,7 @@ impl<'src> Parser<'src> {
                 // site's* obligation, and that obligation is read from the signature rather than from
                 // anything written here (ADR-0151 §1).
                 ProcAttr::Must => MUST_ATTR,
+                ProcAttr::CVariadic => C_VARIADIC_ATTR,
                 // `#expand` makes the procedure a macro: a call splices its body into the caller's
                 // scope rather than calling it (ADR-0090 §1). Accepted in the same loop, so it may be
                 // written in any order with the other two — the ordering rule ADR-0058 refused to add.

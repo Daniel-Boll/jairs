@@ -437,6 +437,13 @@ pub enum SyntaxKind {
     /// forgets it is a missing arm rather than a silent fall-through, which is what ADR-0058 §3's rule
     /// about silently-ignored directives asks of the tree as well as of the compiler.
     MUST_ATTR,
+    /// `#c_variadic` on a `#foreign` procedure — its declared parameters are the **fixed** ones and C
+    /// permits more (ADR-0162).
+    ///
+    /// Its own kind beside [`MUST_ATTR`](Self::MUST_ATTR), for the reason every attribute here has one: a
+    /// consumer that must react to this and not to the others matches a kind rather than re-reading the
+    /// directive's text.
+    C_VARIADIC_ATTR,
     /// A `#expand` attribute on a procedure, making it a **macro** (ADR-0090 §1).
     ///
     /// Its own node beside `C_CALL_ATTR` and `NO_ABC_ATTR`, for the reason those two are separate: a

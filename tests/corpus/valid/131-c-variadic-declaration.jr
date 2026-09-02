@@ -1,0 +1,58 @@
+// ADR-0162: `#c_variadic` — the marker, and the fact that its declaration is legal.
+//
+// This file is the *positive* half of the feature, and it is deliberately small: a `#c_variadic` binding
+// **declares** cleanly, formats, highlights, and does not disturb anything around it. The refusal is
+// `type-errors/080`, which is where the interesting content is.
+//
+// Why the pair is split this way. A marker whose only observable effect is an error would be a marker nobody
+// could adopt incrementally: a library author wants to annotate `printf` today, so that the day a variadic
+// call becomes possible their binding is already right and the day it does not their caller gets a diagnostic
+// instead of a wrong answer. So declaring must be legal on its own, and `valid/` is where "legal on its own"
+// is asserted.
+//
+// The exit status is a checksum of things that must be unaffected by the marker's presence:
+//
+//   1   an ordinary `#foreign` call beside a marked declaration still works
+//   2   a marked declaration does not change its neighbour's arity or convention
+//   4   the marked procedure's *type* is still a procedure type a reader can name
+//
+// 7, and the exit status is 7.
+#import "Basic";
+
+libc :: #system_library "c";
+
+/// `open(2)` as C declares it: two fixed parameters and `...`.
+///
+/// Marked, and never called — calling it is E0289. The declaration is the point: it records what the C
+/// signature actually is, where an unmarked three-parameter binding would record a lie the compiler cannot
+/// detect (ADR-0157 §2 measured that lie as permissions `---------x`).
+open_variadic :: (path: *u8, flags: s64) -> s64 #c_variadic #foreign libc "open";
+
+/// `creat(2)`, the fixed-arity relative `File` uses instead — genuinely two parameters, no `...`.
+///
+/// Declared beside the marked one so this file asserts the two do not interfere: a marked declaration is not
+/// contagious, and the unmarked neighbour keeps its ordinary convention.
+creat_fixed :: (path: *u8, mode: s64) -> s64 #foreign libc "creat";
+
+main :: () {
+    total := 0;
+
+    // The unmarked neighbour still works. `creat` with a null path fails and returns -1, which is the answer
+    // being checked: a *call happened*, through the ordinary fixed-arity path, and came back.
+    if creat_fixed(null, 420) == -1 {
+        total = total + 1;
+    }
+
+    // And it still takes two arguments. Trivially true, and it is the property a shared-attribute bug would
+    // break: an attribute recorded on the wrong procedure would change this one's signature.
+    if creat_fixed(null, 0) == -1 {
+        total = total + 2;
+    }
+
+    // The marked procedure's type is still nameable — `size_of` of a pointer to it would be a pointer's
+    // width. Checked through the declaration merely existing and this file compiling, since taking a
+    // `#foreign` procedure as a *value* is E0256 (ADR-0059 §5) whether it is variadic or not.
+    total = total + 4;
+
+    exit(total);
+}

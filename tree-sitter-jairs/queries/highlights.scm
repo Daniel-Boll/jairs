@@ -125,6 +125,7 @@
 ; And `#must` (ADR-0151 §1) — the whole node, like the two above, because the rule holds nothing but
 ; the directive token.
 (must_attr) @keyword.directive
+(c_variadic_attr) @keyword.directive
 
 ; And the two field layout attributes (ADR-0144 §1), for the same reason again — `#align` and
 ; `#place` are literal tokens inside their nodes, so nothing else colours them. Only the directive

@@ -45,6 +45,17 @@ and a `long` in two different register files, while AArch64 puts both in general
 correct answers gets refused until it is split — an honest narrower rule beats a wrong wider one, which is the
 same call this project made about `sqrt`.
 
+**The other gate in front of graphics is now a stated limitation** (ADR-0162). A `#foreign` declaration can
+carry `#c_variadic`, meaning its parameters are the *fixed* ones and the C declaration ended in `...` — which
+nothing can infer, since a Jairs signature cannot say that C permits more. Declaring one is legal and
+**calling** one is a diagnostic, so a library author can annotate `printf` today and get an error rather than
+corruption. That matters because the alternative was measured: a fixed-arity declaration of a variadic function
+put the mode argument in the wrong place and created a file with permissions `---------x`, silently.
+
+Refusing it in all three engines was chosen over supporting it in the two that could — the compile-time VM and
+LLVM both can — because a build failing where the interpreter succeeds breaks the premise the two-engine
+harness rests on. The blocker is upstream: Cranelift has no variadic calling convention at all.
+
 **And it is verified against a real C compiler, not against itself.** A test that called a Jairs procedure
 using the C convention would pass with both sides wrong, since one classification would emit the call and read
 it. So the corpus calls libc's `ldiv`, which returns a sixteen-byte struct and whose convention was fixed years
