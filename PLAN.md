@@ -258,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0156. See [`docs/adr/README.md`](docs/adr/README.md). (This line
+Accepted ADRs: 0001–0157. See [`docs/adr/README.md`](docs/adr/README.md). (This line
 said 0001–0128 for thirteen ADRs, which is the argument §7 makes for its own count
 being the one to trust.)
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
@@ -560,16 +560,26 @@ order is not the per-wave item lists but three cross-cutting blockers.
 diagnostic; `#must` (ADR-0151) filled ADR-0008's reserved effect-row slot and unblocked five W7 modules;
 and W6's static-data decision (ADR-0152/0153/0154) closed that wave.
 
-**§8.3's module order is four of nine in**: `Time`, `Bucket_Array` and the stable merge sort (ADR-0155),
-then `JSON` (ADR-0156) — the module §8.3 called the most valuable for proving the language, and it was,
-though two of that row's guesses about *how* were wrong (a `variant` is not the right JSON value; `Map`
-cannot be an object). **Next is item 5, `File`**, then `File_Utilities`, `Process` and `Socket`, all four
-unblocked by the error model. `Compiler` shipped inside W6. `Thread` is W11 and is not W7's.
+**§8.3's module order is six of nine in**: `Time`, `Bucket_Array` and the stable merge sort (ADR-0155),
+`JSON` (ADR-0156), and `File` + `File_Utilities` (ADR-0157). **Next are items 6 and 7, `Process` and
+`Socket`**, both unblocked by the error model and both scalar-only at the FFI boundary. `Compiler` shipped
+inside W6. `Thread` is W11 and is not W7's.
 
-**`JSON` left two things for later, both named.** Serialisation needs a correct `dtoa` and nothing else, so
-it is a wave's work behind one missing piece. And the library has an **allocator seam** — `List` and `Map`
-allocate with `malloc`, `String` through the context — which `JSON` is the first module to straddle;
-unifying it is a decision about every container at once.
+> [!IMPORTANT]
+> **`File` found two silent defects and neither was in the module.** A fixed-arity `#foreign` declaration
+> of a **variadic** C function passes the extra argument in the wrong place — `open(path, flags, mode)`
+> created a file with permissions `---------x` on arm64, with no diagnostic in either engine. And freeing a
+> string **literal** aborts natively while running clean under `jr run`, because the VM drops a pointer it
+> does not recognise (ADR-0061). Both are in the known-defects list. The lesson for `Process` and `Socket`:
+> **check each `#foreign` signature against the C declaration's arity**, and **run the native binary**, not
+> just `jr run` — `valid/128` writes to a real `/tmp` for exactly this reason, and a mocked test would have
+> passed in both engines and shipped the abort.
+
+**Three things are owed and named, none of them blocking.** `JSON` serialisation needs a correct `dtoa` and
+nothing else. The library has an **allocator seam** — `List` and `Map` allocate with `malloc`, `String`
+through the context — which `JSON` is the first module to straddle; unifying it is a decision about every
+container at once. And `readdir`, `stat` and every by-path metadata routine wait on §8.1.2, an aggregate
+crossing the `#foreign` boundary — which is also W10's hard gate, so one change discharges both.
 
 > [!IMPORTANT]
 > **Read ADR-0155 §4 before writing anything polymorphic.** That wave was scheduled as three library
@@ -593,7 +603,7 @@ unifying it is a decision about every container at once.
 an `Any` or a procedure handle through `jr-vm`'s untagged `union`; `jr-lsp` path handling — URI
 decoding, `..`, symlinks), which must be done **by hand** because six subagent dispatches returned
 empty; and `tree-sitter test` added to gate 6, which today catches grammar *drift* but not a broken
-grammar *rule*. **1034 workspace tests** (1035 under gate 7) and **248 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
+grammar *rule*. **1034 workspace tests** (1035 under gate 7) and **249 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
 has ever happened — plus **166** Neovim checks. See §1.5.
 
 > [!NOTE]
@@ -605,9 +615,9 @@ has ever happened — plus **166** Neovim checks. See §1.5.
 > one is the clap surface.
 
 > [!NOTE]
-> **What "248 corpus files" counts**, since this number had drifted: the `.jr` files under
-> `tests/corpus/` *outside* `tests/corpus/modules/` — 127 `valid` + 10 `invalid` + 78 `type-errors` +
-> 3 `cfg-errors` + 30 `imports` = 248. Counting the 10 module fixtures too gives 258. This section
+> **What "249 corpus files" counts**, since this number had drifted: the `.jr` files under
+> `tests/corpus/` *outside* `tests/corpus/modules/` — 128 `valid` + 10 `invalid` + 78 `type-errors` +
+> 3 `cfg-errors` + 30 `imports` = 249. Counting the 10 module fixtures too gives 259. This section
 > claimed **214** at a point when 213 was right while `AGENTS.md` claimed 213, so the sentence that
 > tells a reader to trust §7 over any other count was itself pointing at the wrong one. ADR-0125
 > reconciled the numbers and that pair slipped through, which is the argument for the definition
@@ -2212,6 +2222,24 @@ project defines 94 codes", frozen roughly fifteen waves back.)
       local (`s := mk(); s.count`), and it is what `valid/127` does in four places. Found by writing the
       JSON module's test, which is the third capability gap a *library* has surfaced rather than a compiler
       test (ADR-0104's two leaked internal errors were the first).
+- [ ] **A fixed-arity `#foreign` declaration of a *variadic* C function passes the extra argument in the
+      wrong place, silently** (ADR-0157 §2). Declaring `open(path, flags, mode)` and calling it created a
+      file with permissions `---------x` on arm64 macOS, where a variadic argument goes on the stack while a
+      fixed third argument goes in a register. No diagnostic in either engine, a plausible-looking file, and
+      unreadable. The fix has two halves and they are separable: **refuse** it, which needs the compiler to
+      know which libc symbols are variadic (it cannot, from a Jairs declaration alone — so the honest form is
+      a `#c_variadic` marker whose absence means "not variadic" and whose presence enables the call), and
+      **support** it, which is PLAN §8.5's C-variadic item. `File` works around it by using `creat` for
+      creation, which is genuinely fixed-arity; a module that needs `printf` or `ioctl` cannot.
+- [ ] **The comptime VM ignores a `free` of a pointer it did not allocate; native code aborts**
+      (ADR-0157 §5). The VM satisfies `malloc`/`free` from its own region (ADR-0061) and quietly drops an
+      unrecognised pointer, so freeing a **string literal's** storage runs clean under `jr run` and dies as
+      a binary. Found by writing `out := "";` in a loop that frees `out` — a shape any accumulate-into-a-
+      string routine has, and `String.free_string`'s doc now names it. This is the divergence class the
+      differential harness is *for*, and it only catches it when a corpus program does it, which is the
+      argument for `valid/128` touching a real filesystem rather than mocking one. Making the VM trap on a
+      foreign pointer is the fix and is its own decision: it would also refuse a pointer a `#foreign`
+      `malloc` produced at run time, which is legal.
 
 #### Also open, and smaller
 
@@ -2468,7 +2496,7 @@ what rather than by the order §2.1 happens to list them.
 | ~~2~~ | ~~**Bucket array**~~ | — | **done — ADR-0155 §2.** `modules/Bucket_Array`: fixed buckets appended to a movable spine, so an element's address never moves — the promise `List` cannot make since it copies on growth. `push` returns the stable pointer. No removal (compacting breaks the promise; a tombstone stops `get` being pointer arithmetic). Two language limits recorded: a `[..]T` cannot be indexed, so the spine is read through `view`; and a bucket is a named one-field struct because `size_of(*s64)` is E0261 (ADR-0071 §5). |
 | ~~3~~ | ~~**A merge sort**~~ | — | **done — ADR-0155 §3.** `stable_sort` takes its scratch from the **arena** (ADR-0065's first real customer), falls back to insertion sort when it has no room — both paths stable, so the answer never depends on memory pressure — and merges bottom-up in one procedure. Rejected: `malloc` per call, a caller-supplied buffer (written, then removed), an in-place merge. **It did not compile**, and four instantiation defects came out of finding out why (ADR-0155 §4); `Sort` also gained its first `#import`. |
 | ~~4~~ | ~~**`JSON`**~~ | — | **done — ADR-0156.** And this row's own guesses were wrong twice, which is worth keeping: a `variant` is *not* the right JSON value (a flat `[..]Json_Node` with index handles is — one free, copyable handles, no partial tree to unwind on failure), and `Map` cannot be an object (it is `Map(s64, s64)`, and a chain preserves source order anyway). What did hold is that the module proves the language: `#must`, multiple returns, `[..]T`, `view`, `enum`, both allocators, and a float across `#foreign` for `strtod`. Serialisation is **deferred with a reason** — it needs a correct `dtoa`. |
-| 5 | **`File`** | §8.1.1 | Then `File_Utilities` on top of it. |
+| ~~5~~ | ~~**`File`**~~ | — | **done — ADR-0157**, with `File_Utilities` on top as this row expected. Descriptors, not buffered streams; paths as text, not a `Path` type. Everything `#must` except `close`. Two **silent** defects found, neither in the modules: a fixed-arity `#foreign` declaration of a *variadic* C function passes the extra argument in the wrong place (`open`'s mode — creation now goes through `creat`), and freeing a string **literal** aborts natively while running clean in the VM. `size` seeks rather than `stat`s, and `readdir`/metadata are deferred, all three because an aggregate cannot cross the FFI boundary (§8.1.2). |
 | 6 | **`Process`** | §8.1.1 | `fork`/`exec`/`waitpid` are scalars, so the FFI is fine; the error model is the whole difficulty. |
 | 7 | **`Socket`** | §8.1.1, and `File`'s shape | A socket is a descriptor, so it inherits whatever `File` establishes. |
 | 8 | **`Compiler`** | W6's message loop | This module *is* the loop's surface, so it belongs to W6's decision rather than to W7's list. |

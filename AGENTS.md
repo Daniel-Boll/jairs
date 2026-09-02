@@ -212,6 +212,26 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0157 holds at 1034** (1035 under gate 7) and adds one corpus file = **249** — PLAN §8.3 item 5,
+`modules/File` and `modules/File_Utilities`. The first modules whose correctness depends on something outside
+the program, and that changed what the wave found: **two silent defects, neither of them in the modules.**
+
+**A fixed-arity `#foreign` declaration of a *variadic* C function passes the extra argument in the wrong
+place.** `open(path, flags, mode)` created a file with permissions `---------x` on arm64 macOS — variadic
+arguments go on the stack, a fixed third argument goes in a register — with no diagnostic in either engine.
+Creation now routes through `creat`, which is genuinely fixed-arity. **Check every `#foreign` signature
+against the C declaration's arity**; a plausible-looking result is the failure mode.
+
+**Freeing a string literal aborts natively and runs clean under `jr run`.** The VM satisfies `malloc`/`free`
+from its own region (ADR-0061) and quietly drops a pointer it does not recognise, so `out := "";` followed by
+`free_string(out)` — the shape any accumulate-into-a-string loop has — passed every check and died as a
+binary. Start such a loop with `substring("", 0, 0)`, whose data is null. **Run the native binary, not just
+`jr run`**: this is the divergence class the differential harness is for, and it only catches it when a corpus
+program does it — which is why `valid/128` writes to a real `/tmp` instead of mocking a filesystem.
+
+`String` now exports `borrow` beside `adopt`: one construction, two obligations, so the call site says which.
+The pair exists because this wave wrote a double free *with* the names available.
+
 **Two lessons worth keeping from ADR-0155.** First, `cmd | head -1; echo $?` bit *again* — the note above was
 already in this file, and it still cost several false "silent miscompile" findings, including a spurious
 conclusion that indirect calls through a procedure pointer return the wrong answer (they are fine). Check a

@@ -18,8 +18,26 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated with **W7 — Stdlib four modules further on** (W8 — Performance and W6 — Metaprogram are
+Last updated with **W7 — Stdlib six modules further on** (W8 — Performance and W6 — Metaprogram are
 DONE; W7 is still open), 1034 tests green — 1035 with the LLVM back end compiled in.
+
+**Files open, read, write and append** (ADR-0157), with paths joined, split and normalised on top. These are
+the first modules whose correctness depends on something outside the program, and that is where the wave got
+interesting: **it found two silent defects, and neither was in the modules.**
+
+A fixed-arity `#foreign` declaration of a **variadic** C function passes the extra argument in the wrong
+place. Declaring `open(path, flags, mode)` created a file with permissions `---------x` on arm64 — variadic
+arguments travel on the stack, a fixed third argument in a register — with no diagnostic from either engine
+and a file that existed and could not be read. Creation now goes through `creat`, which is genuinely
+fixed-arity.
+
+And freeing a **string literal** aborts as a native binary while running perfectly under `jr run`, because
+the compile-time VM serves `malloc`/`free` from its own region and quietly drops a pointer it does not
+recognise. The shape that found it — `out := "";` in a loop that later frees `out` — is one any
+accumulate-into-a-string routine has. That is exactly the divergence the two-engine harness exists to catch,
+and it only catches it when a program actually does it: which is why the file module's test writes to a real
+`/tmp` rather than mocking a filesystem. A mocked test would have passed in both engines and shipped the
+abort.
 
 **`JSON` parses** (ADR-0156) — the module the plan called the most valuable for proving the language, and
 the first one here that is not a utility: it has a data model, a grammar, a failure mode and two kinds of

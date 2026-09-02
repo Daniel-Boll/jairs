@@ -1,0 +1,370 @@
+//! The File_Utilities module: paths as text, and whole-file reads and writes.
+//!
+//! Written in Jairs. PLAN §8.3 item 5's second half, on top of `File`. The split is by *what a routine knows
+//! about*: `File` knows about descriptors and syscalls, this knows about **paths** and about the two
+//! whole-file operations every program wants and nobody should write twice.
+//!
+//! # Why paths are strings, not a `Path` type
+//!
+//! A path is a `string`. A `Path` type would buy exactly one thing — refusing a string where a path is wanted
+//! — and cost the conversion at every boundary, including every literal. And it would be a *lie about
+//! validity*: a `Path` that can hold `"\0/../"` proves nothing, so the type would suggest a check it does not
+//! perform. The routines here take strings and say what they do with the separators.
+//!
+//! # Why the separator is `/` and that is not a portability bug
+//!
+//! POSIX only, and this project targets macOS and Linux (PLAN §1.5). Windows accepts `/` in almost every API
+//! anyway, so the day a Windows target exists the separator is not what breaks — `open`'s flags are (`File`'s
+//! `CREATE` already differs between macOS and Linux, and says so). Naming the constant means one place to
+//! change rather than a scattering of `47`s.
+//!
+//! # What is absent, and why
+//!
+//! **No directory listing.** `readdir` returns a `struct dirent` **by value or by pointer to a struct whose
+//! layout differs per platform**, and reading through such a pointer needs field offsets this module would
+//! have to hard-code per OS — which is guessing, not portability. E0286 also refuses an aggregate at a
+//! `#foreign` boundary today (ADR-0150, PLAN §8.1.2's hard gate), so the pointer form is the only shape
+//! available and it is the one that needs the layout. Deferred with the blocker named.
+//!
+//! **No metadata** — no size-by-path, no modification time, no permissions. All of it is `stat`, same reason.
+//! `File.size` works on an *open* file by seeking, which is the shape that needs no aggregate.
+//!
+//! **No canonicalisation.** `realpath` writes into a caller's buffer of `PATH_MAX` bytes, which is a constant
+//! this module would have to invent, and it resolves symlinks against the live filesystem — a different
+//! operation from the textual `normalise` below, which is deliberately *pure*. Two operations, one of them
+//! available; the available one says it is textual.
+
+#import "File";
+#import "String";
+
+/// The path separator.
+SEPARATOR :: 47;
+
+/// The extension separator.
+EXTENSION_SEPARATOR :: 46;
+
+/// Joins `left` and `right` with exactly one separator between them.
+///
+/// "Exactly one" is the whole value of the routine: `join("a/", "b")` and `join("a", "b")` are both `"a/b"`,
+/// and `join("a//", "b")` is too. Every program that concatenates paths by hand gets this wrong eventually,
+/// and the wrong result usually still *opens* — a doubled separator is harmless on POSIX — so the bug
+/// survives until something compares two paths for equality.
+///
+/// **An absolute `right` wins**: `join("a", "/b")` is `"/b"`, and so is `join("a/", "/b")`. That matches
+/// Python's `os.path.join` and Rust's `PathBuf::push`, because a caller who supplied an absolute path meant
+/// it. Rejected: refusing the combination, which turns a decidable case into an error for no gain. Rejected:
+/// treating a leading separator on `right` as *punctuation* to be stripped, which was this routine's first
+/// draft and contradicted the rule two paragraphs apart — `join("a/", "/b")` cannot be both `"a/b"` and
+/// `"/b"`, and the absolute rule is the one worth keeping.
+///
+/// Allocates through `context.allocator`; `String.free_string` releases it.
+join :: (left: string, right: string) -> string {
+    if left.count == 0 {
+        return copy_of(right);
+    }
+    if right.count == 0 {
+        return copy_of(left);
+    }
+    if byte_at(right, 0) == SEPARATOR {
+        return copy_of(right);
+    }
+
+    left_end := left.count;
+    while left_end > 0 {
+        if byte_at(left, left_end - 1) != SEPARATOR {
+            break;
+        }
+        left_end = left_end - 1;
+    }
+    // No stripping of `right`: a leading separator there means it is absolute, which returned above. So the
+    // only trimming is `left`'s trailing separators, and `right` is appended as written.
+    //
+    // A `left` that was only separators is the root, and the root's child has one separator:
+    // `join("/", "a")` is `"/a"`. That falls out of the general path rather than being special-cased,
+    // because `left_end == 0` makes the prefix empty and the separator inserted below *is* the root's.
+    head := substring(left, 0, left_end);
+    tail := copy_of(right);
+    with_separator := concat(head, "/");
+    free_string(head);
+    joined := concat(with_separator, tail);
+    free_string(with_separator);
+    free_string(tail);
+    return joined;
+}
+
+/// Everything after the last separator, or the whole path when there is none.
+///
+/// `base_name("/a/b/c.txt")` is `"c.txt"`; `base_name("/a/b/")` is `""`, which is the honest answer — a path
+/// ending in a separator names a directory and has no base name, and returning `"b"` would be inventing one.
+/// Borrowed from `path`, not allocated: it is a slice of the input, so there is nothing to free.
+base_name :: (path: string) -> string {
+    at := last_separator(path);
+    if at < 0 {
+        return path;
+    }
+    return slice_of(path, at + 1, path.count);
+}
+
+/// Everything before the last separator, or `""` when there is none.
+///
+/// `directory_name("/a/b/c.txt")` is `"/a/b"`; `directory_name("c.txt")` is `""` rather than `"."`. `""`
+/// because it is what the path *says*, where `"."` is an interpretation — and a caller who wants the
+/// interpretation can test for empty, while a caller who got `"."` cannot tell it from a path that really
+/// said `"."`. `directory_name("/a")` is `"/"`, the root, which is the one case where the separator is kept.
+directory_name :: (path: string) -> string {
+    at := last_separator(path);
+    if at < 0 {
+        return "";
+    }
+    if at == 0 {
+        return slice_of(path, 0, 1);
+    }
+    return slice_of(path, 0, at);
+}
+
+/// The extension, without its dot, or `""`.
+///
+/// `extension("a/b.tar.gz")` is `"gz"` — the **last** dot, because that is what an extension is and
+/// `"tar.gz"` is a convention rather than a filename part. A leading dot is not an extension:
+/// `extension(".bashrc")` is `""`, which is the rule every tool uses and the one a naive implementation gets
+/// wrong. A dot in a *directory* name is not one either: `extension("a.b/c")` is `""`.
+extension :: (path: string) -> string {
+    name := base_name(path);
+    at := name.count - 1;
+    while at > 0 {
+        if byte_at(name, at) == EXTENSION_SEPARATOR {
+            return slice_of(name, at + 1, name.count);
+        }
+        at = at - 1;
+    }
+    return "";
+}
+
+/// The base name without its extension.
+///
+/// `stem("a/b.tar.gz")` is `"b.tar"`, matching `extension`'s "last dot" rule so that `stem` and `extension`
+/// partition the base name between them — a property worth having, since the two are almost always used
+/// together.
+stem :: (path: string) -> string {
+    name := base_name(path);
+    at := name.count - 1;
+    while at > 0 {
+        if byte_at(name, at) == EXTENSION_SEPARATOR {
+            return slice_of(name, 0, at);
+        }
+        at = at - 1;
+    }
+    return name;
+}
+
+/// Whether `path` starts at the root.
+is_absolute :: (path: string) -> bool {
+    if path.count == 0 {
+        return false;
+    }
+    return byte_at(path, 0) == SEPARATOR;
+}
+
+/// Resolves `.` and `..` **textually**, and collapses repeated separators.
+///
+/// Pure: it never touches the filesystem, so it is deterministic and cheap. That also makes it **wrong for
+/// symlinks** — `a/link/..` is `a` textually and is whatever `link` points beside in reality — and the name
+/// and this paragraph are the only honest way to ship it, because the filesystem-resolving version is
+/// `realpath` and is deferred above.
+///
+/// A `..` that would escape a **relative** path is kept, because `../x` means something and dropping it would
+/// change it. A `..` at the root is dropped, because `/..` is `/`.
+normalise :: (path: string) -> string {
+    absolute := is_absolute(path);
+    // **A computed empty string, not the `""` literal.** `push_component` and the `..` branch below free
+    // `out`, and freeing a literal releases memory the compiler owns — which aborts natively while the VM's
+    // own region tolerates it, so it is a divergence a test only catches by running the native binary
+    // (ADR-0157 §5). `substring` returns null data for a zero count, so a computed empty is safe to free and
+    // this one line is the whole fix.
+    out := copy_of("");
+    at := 0;
+    while at < path.count {
+        // One component: from `at` to the next separator or the end.
+        end := at;
+        while end < path.count {
+            if byte_at(path, end) == SEPARATOR {
+                break;
+            }
+            end = end + 1;
+        }
+        piece := slice_of(path, at, end);
+        at = end + 1;
+
+        if piece.count == 0 {
+            continue;
+        }
+        if equal(piece, ".") {
+            continue;
+        }
+        if equal(piece, "..") {
+            // Pop, unless there is nothing to pop and the path is relative — in which case the `..` is part
+            // of the answer.
+            if out.count > 0 {
+                popped := pop_component(out);
+                if popped.count != out.count {
+                    free_string(out);
+                    out = popped;
+                    continue;
+                }
+                free_string(popped);
+            }
+            if absolute {
+                continue;
+            }
+            out = push_component(out, piece);
+            continue;
+        }
+        out = push_component(out, piece);
+    }
+
+    if absolute {
+        rooted := concat("/", out);
+        free_string(out);
+        return rooted;
+    }
+    if out.count == 0 {
+        // A relative path that normalised to nothing is `.`, not `""`: `normalise("a/..")` names the current
+        // directory, and `""` names nothing a caller could open.
+        free_string(out);
+        return copy_of(".");
+    }
+    return out;
+}
+
+/// Reads the whole file at `path`.
+///
+/// Returns the contents and whether it worked. `#must`, because a caller who ignores the flag processes an
+/// empty string as though the file were empty — the exact failure `#must` exists for (ADR-0151).
+///
+/// The contents are allocated through `context.allocator`; `String.free_string` releases them.
+///
+/// **The size is read once and the read is looped**, which is the only correct shape: a file can grow between
+/// the size query and the read, and a single `read` of `size` bytes can come up short on any file. A short
+/// result is not an error — the string is exactly what was read.
+read_entire_file :: (path: string) -> (string, bool) #must {
+    f, ok := open_read(path);
+    if !ok {
+        return "", false;
+    }
+    n, n_ok := size(*f);
+    if !n_ok {
+        _ = close(*f);
+        return "", false;
+    }
+    if n == 0 {
+        _ = close(*f);
+        return "", true;
+    }
+    data := context.allocator(n + 1);
+    if data == null {
+        _ = close(*f);
+        return "", false;
+    }
+    got, read_ok := read_all(*f, view(data, n));
+    _ = close(*f);
+    if !read_ok {
+        context.allocator_free(data);
+        return "", false;
+    }
+    // NUL-terminated for the benefit of a caller who passes it to C, even though a Jairs `string` carries its
+    // count. One byte, and it removes a whole class of caller-side copying.
+    bytes := view(data, n + 1);
+    bytes[got] = cast(u8, 0);
+    return adopt(data, got), true;
+}
+
+/// Writes `contents` to `path`, replacing whatever was there.
+///
+/// `#must`: a caller who ignores this has silently not saved the user's work.
+write_entire_file :: (path: string, contents: string) -> bool #must {
+    f, ok := open_write(path);
+    if !ok {
+        return false;
+    }
+    wrote := write_string(*f, contents);
+    status := close(*f);
+    if !wrote {
+        return false;
+    }
+    // The close status *is* checked here, unlike `File.close`'s own contract — because this routine's promise
+    // is "the file now holds these bytes", and a failed close is the one way that promise breaks after a
+    // successful write.
+    return status == 0;
+}
+
+/// Appends `contents` to `path`, creating it if it does not exist.
+append_entire_file :: (path: string, contents: string) -> bool #must {
+    f, ok := open_append(path);
+    if !ok {
+        return false;
+    }
+    wrote := write_string(*f, contents);
+    status := close(*f);
+    if !wrote {
+        return false;
+    }
+    return status == 0;
+}
+
+#scope_module
+
+/// The index of the last separator, or `-1`.
+last_separator :: (path: string) -> s64 {
+    at := path.count - 1;
+    while at >= 0 {
+        if byte_at(path, at) == SEPARATOR {
+            return at;
+        }
+        at = at - 1;
+    }
+    return -1;
+}
+
+/// A borrowed slice of `s`, without allocating.
+///
+/// `String.substring` copies, which is right for a routine returning something a caller keeps. The accessors
+/// here return slices *of their argument*, so they must not — a `base_name` that allocated would make every
+/// caller free, and the borrow is safe because the result never outlives the path it came from.
+slice_of :: (s: string, from: s64, to: s64) -> string {
+    if from >= to {
+        return "";
+    }
+    // **`borrow`, not `adopt`** (ADR-0157 §4): the bytes belong to `s`, so the result must never be freed.
+    // Using `adopt` here would be a double free waiting for the first caller who did the tidy thing.
+    return borrow(s.data + from, to - from);
+}
+
+/// An owned copy of `s`.
+copy_of :: (s: string) -> string {
+    return substring(s, 0, s.count);
+}
+
+/// `out` with `piece` appended after a separator, freeing `out`.
+push_component :: (out: string, piece: string) -> string {
+    if out.count == 0 {
+        free_string(out);
+        return copy_of(piece);
+    }
+    with_separator := concat(out, "/");
+    free_string(out);
+    joined := concat(with_separator, piece);
+    free_string(with_separator);
+    return joined;
+}
+
+/// `out` with its last component removed, or an equal-length copy when there is none to remove.
+///
+/// The equal length is how `normalise` tells "popped" from "nothing to pop" without a second return value —
+/// a component is at least one byte, so a successful pop always shortens.
+pop_component :: (out: string) -> string {
+    at := last_separator(out);
+    if at < 0 {
+        return copy_of("");
+    }
+    return substring(out, 0, at);
+}

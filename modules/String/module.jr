@@ -333,10 +333,21 @@ to_lower :: (s: string) -> string {
 
 /// Releases a string this module allocated.
 ///
-/// **The routine a caller must not forget** — there are no destructors, so nothing else frees it. Safe on a
-/// `""` result (its data is null and `allocator_free` of null is a no-op), so a caller need not special-case the
-/// empty case. Must be given a string from one of the allocating routines above, not a literal: freeing a
-/// literal's storage would release memory the compiler owns.
+/// **The routine a caller must not forget** — there are no destructors, so nothing else frees it.
+///
+/// Safe on an empty string **that an allocating routine returned**: `substring`, `to_upper` and the rest return
+/// `null` data for a zero count, and `allocator_free` of null is a no-op, so a caller need not special-case the
+/// empty case.
+///
+/// **Not** safe on the `""` *literal*, and that distinction is sharper than it looks: a literal's `data` is a
+/// real pointer into the program's own read-only data with a count of zero, so freeing it hands the allocator
+/// something it never allocated. Natively that aborts; the comptime VM satisfies `malloc`/`free` from its own
+/// region (ADR-0061) and quietly ignores a pointer it does not recognise, so the same program **runs under
+/// `jr run` and dies as a binary** — a divergence only a native run can see. ADR-0157 §5 found it by writing
+/// `out := "";` and freeing `out` a few lines later, which is a shape any accumulate-into-a-string loop has.
+/// Start such a loop with `substring("", 0, 0)` instead.
+///
+/// More generally: must be given a string from one of the allocating routines above.
 free_string :: (s: string) {
     if s.data != null {
         context.allocator_free(s.data);
@@ -360,6 +371,24 @@ free_string :: (s: string) {
 /// The name says the contract: `adopt` takes over an allocation, where a `make`/`from_bytes` would suggest
 /// it copies. It does not copy, and a caller who wants a copy wants `substring`.
 adopt :: (data: *u8, count: s64) -> string {
+    return make_string(data, count);
+}
+
+/// Views `count` bytes at `data` as a `string`, **without** taking ownership.
+///
+/// The counterpart to [`adopt`], and the same construction with the opposite contract: the result must
+/// **not** be given to `free_string`, because somebody else owns the bytes. It is what a routine returning a
+/// *slice of its argument* needs — `File_Utilities.base_name` hands back part of the path it was given, and a
+/// version that copied would make every caller free something they did not ask to own.
+///
+/// Two names over one operation, and that is the point: the construction is identical and the **obligation**
+/// is not, so the call site says which one it is. A single `make` would leave every reader working out the
+/// ownership from context, which is how a double free gets written. ADR-0157 §4 records the pair.
+///
+/// A borrowed string is valid exactly as long as the bytes behind it, which for a slice of an argument means
+/// "as long as the argument". Nothing checks that — there is no lifetime system here — so the rule is the
+/// call site's to keep, and naming it is the most the language can do today.
+borrow :: (data: *u8, count: s64) -> string {
     return make_string(data, count);
 }
 
