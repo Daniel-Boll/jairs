@@ -102,6 +102,156 @@ impl LineVocabulary {
     }
 }
 
+/// A DWARF type, described in a form that outlives the body it was discovered in (ADR-0173 §1).
+///
+/// # Why a description and not a gimli DIE
+///
+/// A struct's members need **field names**, and resolving a `Symbol` needs the driver's
+/// [`jr_codegen::SourceInfo`] — which exists only while a body is being defined. The DIEs, meanwhile, can only
+/// be written once the object exists, at `finalise`. So the two are separated: the *description* is built when
+/// names are available and the *DIE* is written when the unit is.
+///
+/// The alternative was threading a `SourceInfo` into `finalise`, which would mean the driver keeping a
+/// per-module name resolver alive beside its per-body one — a second channel for a question the first already
+/// answers, at the wrong granularity.
+#[derive(Clone, PartialEq, Eq)]
+pub enum TypeDescription {
+    /// A `DW_TAG_base_type`: a name, a size in bytes, and a DWARF encoding.
+    Base {
+        /// The type's name, as the language spells it.
+        name: String,
+        /// Size in bytes.
+        size: u64,
+        /// A `DW_ATE_*` encoding.
+        encoding: gimli::DwAte,
+    },
+    /// A `DW_TAG_pointer_type`, with the pointee's description index when it is known.
+    Pointer {
+        /// Size in bytes — the target's pointer width.
+        size: u64,
+        /// The pointee, or `None` for an opaque pointer.
+        ///
+        /// `None` is what breaks a cycle: a self-referential struct's pointer is described without its
+        /// pointee rather than recursing forever, the same terminator ADR-0171 §1 records for LLVM.
+        pointee: Option<usize>,
+    },
+    /// A `DW_TAG_structure_type` with a `DW_TAG_member` per field.
+    Struct {
+        /// Size in bytes, including trailing padding.
+        size: u64,
+        /// Each member's name, byte offset and description index.
+        members: Vec<(String, u64, usize)>,
+    },
+}
+
+/// Every type description a module needs, deduplicated by `PoolId`.
+///
+/// Built during `define`, read during `finalise`. The `PoolId` keying inherits the pool's own structural
+/// deduplication, so two identical struct declarations produce one DIE.
+#[derive(Default)]
+pub struct TypeDescriptions {
+    /// Descriptions in insertion order; an index into this is how one refers to another.
+    entries: Vec<TypeDescription>,
+    /// `PoolId` to index, so a type is described once.
+    index: FxHashMap<jr_pool::PoolId, usize>,
+}
+
+impl TypeDescriptions {
+    /// The index for `ty`, describing it and its members if this is the first ask.
+    ///
+    /// `None` for a type this wave does not describe — the same set LLVM's mapping leaves out, and for the
+    /// same reasons (ADR-0171 §1): `void` has no DIE by definition, and views, arrays, unions, variants and
+    /// procedure types each need a naming decision this wave does not make.
+    pub fn describe(
+        &mut self,
+        pool: &jr_pool::Pool,
+        target: jr_pool::TargetLayout,
+        ty: jr_pool::PoolId,
+        names: &dyn jr_codegen::SourceInfo,
+    ) -> Option<usize> {
+        if let Some(found) = self.index.get(&ty) {
+            return Some(*found);
+        }
+        let layout = jr_pool::layout_of(pool, target, ty).ok()?;
+
+        let described = match pool.item(ty) {
+            jr_pool::Item::BoolType => TypeDescription::Base {
+                name: "bool".to_owned(),
+                size: layout.size,
+                encoding: gimli::DW_ATE_boolean,
+            },
+            jr_pool::Item::IntType { signed, bits } => TypeDescription::Base {
+                name: if *signed {
+                    format!("s{bits}")
+                } else {
+                    format!("u{bits}")
+                },
+                size: layout.size,
+                encoding: if *signed {
+                    gimli::DW_ATE_signed
+                } else {
+                    gimli::DW_ATE_unsigned
+                },
+            },
+            jr_pool::Item::FloatType { bits } => TypeDescription::Base {
+                name: format!("float{bits}"),
+                size: layout.size,
+                encoding: gimli::DW_ATE_float,
+            },
+            jr_pool::Item::PointerType(pointee) => {
+                let pointee = *pointee;
+                TypeDescription::Pointer {
+                    size: layout.size,
+                    // Described first, then referenced — so a cycle finds nothing and yields an opaque
+                    // pointer instead of recursing.
+                    pointee: self.describe(pool, target, pointee, names),
+                }
+            }
+            jr_pool::Item::StructType { decl, .. } => {
+                let decl = *decl;
+                let fields = pool.struct_fields(decl)?.to_vec();
+                let mut members = Vec::with_capacity(fields.len());
+                for (position, field) in fields.iter().enumerate() {
+                    let member = self.describe(pool, target, field.ty, names)?;
+                    let (offset, _) =
+                        jr_pool::field_offset(pool, target, ty, u32::try_from(position).ok()?)
+                            .ok()?;
+                    members.push((names.symbol(field.name).unwrap_or_default(), offset, member));
+                }
+                TypeDescription::Struct {
+                    size: layout.size,
+                    members,
+                }
+            }
+            _ => return None,
+        };
+
+        let at = self.entries.len();
+        self.entries.push(described);
+        self.index.insert(ty, at);
+        Some(at)
+    }
+
+    /// Whether nothing was described.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// One compiled function's DWARF subprogram (ADR-0173 §2).
+pub struct FunctionSubprogram {
+    /// The object symbol the code was defined under, for `DW_AT_low_pc`'s relocation.
+    pub symbol: object::write::SymbolId,
+    /// The code length, for `DW_AT_high_pc`.
+    pub length: u64,
+    /// The source name, or `None` for a procedure no item binds.
+    pub name: Option<String>,
+    /// The declaration line, or 0 when unknown.
+    pub line: u32,
+    /// The return type's description index, when it has one.
+    pub ret: Option<usize>,
+}
+
 /// One compiled function's contribution to the line table.
 pub struct FunctionLines {
     /// The object symbol the function's code was defined under.
@@ -218,11 +368,13 @@ pub fn emit(
     object: &mut object::write::Object<'_>,
     vocabulary: &LineVocabulary,
     functions: &[FunctionLines],
+    types: &TypeDescriptions,
+    subprograms: &[FunctionSubprogram],
     comp_dir: &str,
     primary: &str,
     endian: RunTimeEndian,
 ) -> Result<(), gimli::write::Error> {
-    if vocabulary.is_empty() {
+    if vocabulary.is_empty() && types.is_empty() {
         return Ok(());
     }
 
@@ -295,6 +447,7 @@ pub fn emit(
     let mut unit = DwarfUnit::new(encoding);
     unit.unit.line_program = program;
     let root = unit.unit.root();
+    write_types_and_subprograms(&mut unit, root, types, subprograms, &mut symbols);
     unit.unit.get_mut(root).set(
         gimli::DW_AT_name,
         AttributeValue::String(primary.as_bytes().to_vec()),
@@ -359,6 +512,122 @@ pub fn emit(
     }
 
     Ok(())
+}
+
+/// Writes the type and subprogram DIEs into `unit` (ADR-0173 §2).
+///
+/// # Why the types come first
+///
+/// A subprogram's `DW_AT_type` and a member's are `UnitRef` attributes — a reference to another DIE by its id.
+/// So every type must exist before anything points at one, which is why this makes two passes rather than
+/// interleaving. gimli's ids are stable once handed out, so the first pass's `Vec` is the whole mapping.
+fn write_types_and_subprograms(
+    unit: &mut DwarfUnit,
+    root: gimli::write::UnitEntryId,
+    types: &TypeDescriptions,
+    subprograms: &[FunctionSubprogram],
+    symbols: &mut Vec<object::write::SymbolId>,
+) {
+    // Pass one: a DIE per description, children of the unit root.
+    let mut ids = Vec::with_capacity(types.entries.len());
+    for description in &types.entries {
+        let tag = match description {
+            TypeDescription::Base { .. } => gimli::DW_TAG_base_type,
+            TypeDescription::Pointer { .. } => gimli::DW_TAG_pointer_type,
+            TypeDescription::Struct { .. } => gimli::DW_TAG_structure_type,
+        };
+        ids.push(unit.unit.add(root, tag));
+    }
+
+    // Pass two: fill each in, now that every id exists and a reference can be resolved.
+    for (position, description) in types.entries.iter().enumerate() {
+        let id = ids[position];
+        match description {
+            TypeDescription::Base {
+                name,
+                size,
+                encoding,
+            } => {
+                let die = unit.unit.get_mut(id);
+                die.set(
+                    gimli::DW_AT_name,
+                    AttributeValue::String(name.as_bytes().to_vec()),
+                );
+                die.set(gimli::DW_AT_byte_size, AttributeValue::Udata(*size));
+                die.set(gimli::DW_AT_encoding, AttributeValue::Encoding(*encoding));
+            }
+            TypeDescription::Pointer { size, pointee } => {
+                let target = pointee.and_then(|at| ids.get(at).copied());
+                let die = unit.unit.get_mut(id);
+                die.set(gimli::DW_AT_byte_size, AttributeValue::Udata(*size));
+                if let Some(target) = target {
+                    die.set(gimli::DW_AT_type, AttributeValue::UnitRef(target));
+                }
+            }
+            TypeDescription::Struct { size, members } => {
+                unit.unit
+                    .get_mut(id)
+                    .set(gimli::DW_AT_byte_size, AttributeValue::Udata(*size));
+                // **Anonymous**, for ADR-0171 §4's reason: the pool records no declared name, and faking one
+                // from the `DeclId` would print a number no reader recognises.
+                for (name, offset, member_type) in members {
+                    let member = unit.unit.add(id, gimli::DW_TAG_member);
+                    let target = ids.get(*member_type).copied();
+                    let die = unit.unit.get_mut(member);
+                    die.set(
+                        gimli::DW_AT_name,
+                        AttributeValue::String(name.as_bytes().to_vec()),
+                    );
+                    die.set(
+                        gimli::DW_AT_data_member_location,
+                        AttributeValue::Udata(*offset),
+                    );
+                    if let Some(target) = target {
+                        die.set(gimli::DW_AT_type, AttributeValue::UnitRef(target));
+                    }
+                }
+            }
+        }
+    }
+
+    for subprogram in subprograms {
+        // The same side table the line program's sequences use, appended to rather than duplicated: gimli
+        // addresses a symbol by index into one list per writer, so a second list would resolve to the wrong
+        // function.
+        let symbol = symbols.len();
+        symbols.push(subprogram.symbol);
+        let id = unit.unit.add(root, gimli::DW_TAG_subprogram);
+        let ret = subprogram.ret.and_then(|at| ids.get(at).copied());
+        let die = unit.unit.get_mut(id);
+        if let Some(name) = &subprogram.name {
+            die.set(
+                gimli::DW_AT_name,
+                AttributeValue::String(name.as_bytes().to_vec()),
+            );
+        }
+        // `low_pc` is a relocation against the function's symbol; `high_pc` is a *length*, which is DWARF 4's
+        // form and avoids a second relocation. Getting these wrong makes every frame in a backtrace resolve to
+        // the first function in the object.
+        die.set(
+            gimli::DW_AT_low_pc,
+            AttributeValue::Address(Address::Symbol { symbol, addend: 0 }),
+        );
+        die.set(
+            gimli::DW_AT_high_pc,
+            AttributeValue::Udata(subprogram.length),
+        );
+        if subprogram.line > 0 {
+            die.set(
+                gimli::DW_AT_decl_line,
+                AttributeValue::Udata(u64::from(subprogram.line)),
+            );
+        }
+        if let Some(ret) = ret {
+            die.set(gimli::DW_AT_type, AttributeValue::UnitRef(ret));
+        }
+        // Marked external, so a consumer treats it as a definition rather than a nested declaration.
+        die.set(gimli::DW_AT_external, AttributeValue::Flag(true));
+    }
 }
 
 /// The section name for `id` in `format`.

@@ -212,6 +212,33 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0173 reaches 1065** (**1069** under gate 7) and holds at **254** corpus files. Cranelift now emits a
+`.debug_info` — type DIEs and a subprogram per function — so **both back ends agree about a struct's layout in
+DWARF by two entirely different routes**, and the test asserts the agreement rather than each emitter separately.
+
+**It was the prerequisite PLAN never listed.** "Locals through Cranelift value labels" needs a variable DIE, a
+variable DIE needs a subprogram to live in and a type to point at, and Cranelift had a line program pointing into
+a `.debug_info` that did not exist. Worth generalising: **when a plan item seems to need only one new thing,
+check what that thing needs to live in.**
+
+**§1 is forced structure, not a preference.** A struct's members need field names, which need the driver's
+`SourceInfo` — and that implementor is *per body*, available only during `define`. The DIEs can only be written
+once the object exists, at `finalise`. **The two moments do not overlap**, so a `TypeDescription` is built in the
+first and emitted in the second. Threading a `SourceInfo` into `finalise` was rejected: it needs a second
+module-scoped name resolver beside the per-body one, which is a new channel for a question the existing one
+already answers at the wrong granularity.
+
+**Two DWARF details worth not rediscovering.** `DW_AT_type` is a `UnitRef`, so every type DIE must exist before
+anything points at one — hence two passes rather than interleaving. And `DW_AT_low_pc` is a *relocation* while
+`DW_AT_high_pc` is a *length* (DWARF 4's form, one relocation instead of two); getting them wrong makes every
+backtrace frame resolve to the object's first function. The subprogram's symbol must append to the **same** side
+table the line-program sequences use, because gimli indexes one list per writer.
+
+**And the process note from ADR-0172 needs widening.** It is not only gates 3 and 7 that must not run
+concurrently: **any `cargo` invocation without `--features jr-cli/llvm` races gate 7**, because they share
+`target/debug/jr` and gate 7's differential harness shells out to it. Gate 5 (`cargo run -p jr-cli -- fmt`) broke
+gate 7 this way, after the same trap had already been recorded for gate 3. Run gate 7 alone.
+
 **ADR-0172 holds at 1064** (**1068** under gate 7) and holds at **254** corpus files. W12's third item for LLVM,
 **half delivered — and the partition is the point.** An escaped *scalar* local reaches DWARF with its name, type
 and stack location; `lldb` can print it.
