@@ -127,7 +127,13 @@ fn missing_return(hir: &FileHir, proc: ProcId, mir: &MirBody) -> Diagnostics {
     let reachable = mir.reverse_postorder();
     let fell_off = reachable.iter().any(|block| match mir.block(*block).term {
         Terminator::Unreachable(Unreachable::FellOffEnd) => true,
-        Terminator::Unreachable(Unreachable::Trap | Unreachable::StrayJump)
+        // `Refused` never reaches here: a refused body has no MIR to check, and the stub is
+        // built by the *driver* after this query. Answering `false` rather than matching it
+        // with `FellOffEnd` is the honest reading anyway — a stub did not fall off an end, it
+        // was never lowered.
+        Terminator::Unreachable(
+            Unreachable::Trap | Unreachable::StrayJump | Unreachable::Refused,
+        )
         | Terminator::Goto(_)
         | Terminator::Branch { .. }
         | Terminator::Return(_) => false,

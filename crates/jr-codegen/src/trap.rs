@@ -56,6 +56,13 @@ pub enum TrapKind {
     ShiftOutOfRange,
     /// `Terminator::Unreachable(Unreachable::Trap)` was reached.
     Deliberate,
+    /// The stub a **refused** body gets ([`jr_mir::MirBody::refused`]) was reached.
+    ///
+    /// Its own kind rather than [`Self::Deliberate`], because the two mean opposite things:
+    /// a deliberate trap is the program doing what it asked for, and this is the compiler
+    /// admitting a gap that E0245 already named. Sharing one message told a user their
+    /// program had deliberately trapped when it had done nothing of the kind.
+    Refused,
     /// A `break` or `continue` outside a loop was reached at run time.
     ///
     /// E0229 reports this statically, so reaching it means the program was run
@@ -92,11 +99,20 @@ pub enum TrapKind {
 }
 
 impl TrapKind {
-    /// Every kind, so the driver can emit one message object per kind up front.
+    /// Every kind, as a fixture for the invariants no single site can state.
     ///
-    /// Listed rather than derived, and the array's length is checked by a test, so
-    /// that adding a variant without emitting its message is caught.
-    pub const ALL: [Self; 11] = [
+    /// **Its doc used to say "so the driver can emit one message object per kind up front", and
+    /// that driver does not exist** — a back end interns a message lazily at each trap site
+    /// (`Backend::report`), so nothing outside this file's tests reads `ALL` at all. The stale
+    /// sentence mattered: it made the list look load-bearing, so nobody checked it, and **four
+    /// kinds were missing** — `ShiftOutOfRange`, `IndexOutOfBounds`, `NullCall` and
+    /// `WrongVariantCase`. Found by ADR-0178 replacing a length assertion with an exhaustive match.
+    ///
+    /// The omission was not cosmetic. [`Self::reason`]'s distinctness test iterates this list, and
+    /// its whole purpose is that no two kinds share a sentence — because the corpus differential
+    /// compares *rendered messages*, so two kinds with one wording would make a genuine
+    /// disagreement between the engines invisible. Four kinds were never checked for it.
+    pub const ALL: [Self; 16] = [
         Self::OverflowAdd,
         Self::OverflowSub,
         Self::OverflowMul,
@@ -104,7 +120,12 @@ impl TrapKind {
         Self::OverflowRem,
         Self::OverflowNeg,
         Self::DivideByZero,
+        Self::ShiftOutOfRange,
+        Self::IndexOutOfBounds,
+        Self::NullCall,
+        Self::WrongVariantCase,
         Self::Deliberate,
+        Self::Refused,
         Self::StrayJump,
         Self::FellOffEnd,
         Self::UninitialisedRead,
@@ -141,6 +162,9 @@ impl TrapKind {
             Self::NullCall => "call through a null procedure pointer",
             Self::WrongVariantCase => "read the wrong variant case",
             Self::Deliberate => "reached a deliberate trap",
+            Self::Refused => {
+                "this procedure could not be compiled; the compiler reported a gap in it"
+            }
             Self::StrayJump => "a `break` or `continue` outside a loop was reached",
             Self::FellOffEnd => "control reached the end of a procedure that must return a value",
             Self::UninitialisedRead => "read a value that was never assigned",
@@ -160,10 +184,60 @@ mod tests {
 
     #[test]
     fn every_kind_is_listed_in_all() {
-        // `ALL` is what the driver iterates to emit message objects, so a variant
-        // missing from it would produce a `CodegenError::Internal` at the first trap
-        // site instead of a compile error here.
-        assert_eq!(TrapKind::ALL.len(), 11);
+        // `ALL` is what the driver iterates to emit message objects, so a kind missing from it
+        // produces a `CodegenError::Internal` at the first trap site rather than a failure here.
+        //
+        // **An exhaustive match rather than a count.** This test used to assert
+        // `ALL.len() == 11`, which is a *proxy*: a new variant left out of `ALL` keeps the length
+        // right and the test green, and `[Self; 11]` compiles perfectly well beside an enum with
+        // twelve variants. It fired for ADR-0178 only because that wave happened to bump the array
+        // length first — luck, not enforcement. Naming every variant here makes adding one a
+        // **compile error** in this file, which is the same rule `AGENTS.md` states for match arms
+        // and the reason it is stated.
+        for kind in [
+            TrapKind::OverflowAdd,
+            TrapKind::OverflowSub,
+            TrapKind::OverflowMul,
+            TrapKind::OverflowDiv,
+            TrapKind::OverflowRem,
+            TrapKind::OverflowNeg,
+            TrapKind::DivideByZero,
+            TrapKind::ShiftOutOfRange,
+            TrapKind::IndexOutOfBounds,
+            TrapKind::NullCall,
+            TrapKind::WrongVariantCase,
+            TrapKind::Deliberate,
+            TrapKind::StrayJump,
+            TrapKind::FellOffEnd,
+            TrapKind::UninitialisedRead,
+            TrapKind::Refused,
+        ] {
+            // The exhaustiveness: a variant added to the enum and not to the list below is a
+            // non-exhaustive-match error, and one added here but not to `ALL` fails the assert.
+            let named = match kind {
+                TrapKind::OverflowAdd
+                | TrapKind::OverflowSub
+                | TrapKind::OverflowMul
+                | TrapKind::OverflowDiv
+                | TrapKind::OverflowRem
+                | TrapKind::OverflowNeg
+                | TrapKind::DivideByZero
+                | TrapKind::ShiftOutOfRange
+                | TrapKind::IndexOutOfBounds
+                | TrapKind::NullCall
+                | TrapKind::WrongVariantCase
+                | TrapKind::Deliberate
+                | TrapKind::StrayJump
+                | TrapKind::FellOffEnd
+                | TrapKind::UninitialisedRead
+                | TrapKind::Refused => kind,
+            };
+            assert!(
+                TrapKind::ALL.contains(&named),
+                "{named:?} is not in `ALL`, so no message object is emitted for it"
+            );
+        }
+
         let mut sorted = TrapKind::ALL;
         sorted.sort_unstable();
         sorted.windows(2).for_each(|pair| {

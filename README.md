@@ -51,6 +51,23 @@ one that would have compiled and produced a program that works until it is optim
 The memory model is now written down, and its data-race clause is *measured* rather than promised: the same
 three-thread program with an ordinary increment produced 1000 instead of 3000 on one run of three.
 
+Auditing that wave turned up a defect unrelated to it, and it is the more instructive find. A program
+using a file-scope variable is one the compiler cannot yet compile, and it *says so* clearly, including
+the sentence "calling it is an error; leaving it uncalled is not". Asked to build that program, the
+compiler **crashed** — with an internal message naming a mangled symbol and nothing connecting it to
+the explanation it had just printed. One of the three execution engines had been declining politely all
+along; the other two crashed. Such a procedure now compiles to a stub that stops the program with the
+compiler's own admission if it is ever called, which is that sentence made true when the program runs.
+
+Fixing it required adding one case to an internal list, and a test guarding that list rejected the
+change. That test turned out to be checking the list's *length* — which catches nothing, because
+leaving an entry out keeps the length correct. Replaced with a check the compiler itself enforces, it
+found four entries that had been missing all along, in a list whose description claimed it was used by
+machinery that does not exist. Nobody had audited it because it looked load-bearing. Four kinds of
+runtime error had therefore never been checked for the property that keeps them distinguishable from one
+another. **A count is not a guarantee.** That is the third time this project has found the same shape: a
+hand-kept list, a comment claiming something enforces it, and nothing that does.
+
 **Both compilers now show a local variable at its real place on the stack.** The second one needed a small piece
 of care worth mentioning: it reports a variable's position measured from the bottom of the stack frame, while the
 debug format measures from a reference point near the top. Reconciling those is one subtraction, and getting it
@@ -130,7 +147,7 @@ Two false starts are recorded, and both were a single string. On macOS the secti
 debug section placed outside the segment reserved for it does not merely get ignored: it breaks the link, because
 the linker lays it out among real pointers.
 
-Last updated with **W11 — Concurrency DONE, and with it all twelve waves**, 1069 tests green — 1073 with the
+Last updated with **W11 — Concurrency DONE, and with it all twelve waves**, 1071 tests green — 1075 with the
 LLVM back end compiled in, and twenty library modules. W12 — Debug info has one open item, a register-resident
 local, which is specified rather than vague.
 

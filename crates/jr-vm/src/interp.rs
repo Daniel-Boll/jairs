@@ -693,6 +693,12 @@ impl<'a> Vm<'a> {
                         Unreachable::Trap => Trap::Deliberate,
                         Unreachable::StrayJump => Trap::StrayJump,
                         Unreachable::FellOffEnd => Trap::FellOffEnd,
+                        // Unreachable in practice: the stub is built by the *native* driver
+                        // (`jr_db::build_object`), and this interpreter refuses to run a file
+                        // whose body was refused rather than running a stub. Mapped anyway,
+                        // because the alternative is a `_` arm that would silently mean
+                        // `Deliberate` if that ever changed.
+                        Unreachable::Refused => Trap::Refused,
                     }));
                 }
             }

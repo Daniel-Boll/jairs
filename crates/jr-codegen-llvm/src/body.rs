@@ -2290,6 +2290,10 @@ impl<'ctx> Translator<'ctx, '_> {
                     Unreachable::Trap => TrapKind::Deliberate,
                     Unreachable::StrayJump => TrapKind::StrayJump,
                     Unreachable::FellOffEnd => TrapKind::FellOffEnd,
+                    // The stub a refused body gets (`jr_mir::MirBody::refused`), so that the
+                    // `Export` symbol the declare phase promised exists. Both back ends need this
+                    // arm for the same reason, which is why it is not a Cranelift detail.
+                    Unreachable::Refused => TrapKind::Refused,
                 };
                 self.report(kind)?;
                 built(self.builder.build_unreachable())?;

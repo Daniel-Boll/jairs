@@ -2052,13 +2052,17 @@ impl Translator<'_, '_> {
                 Ok(())
             }
             Terminator::Unreachable(reason) => {
-                // Only `Trap` is a program the compiler believes well-formed; the
-                // other two are statically reported (E0228, E0229) and reaching one
-                // means the program was run without being checked.
+                // Only `Trap` is a program the compiler believes well-formed; `StrayJump` and
+                // `FellOffEnd` are statically reported (E0228, E0229) and reaching one means the
+                // program was run without being checked. `Refused` is the fourth case and the
+                // only one this back end *itself* is handed deliberately: the driver builds a
+                // stub for a body lowering refused, so that the `Export` symbol phase 1 promised
+                // exists (`jr_mir::MirBody::refused`).
                 let kind = match reason {
                     Unreachable::Trap => TrapKind::Deliberate,
                     Unreachable::StrayJump => TrapKind::StrayJump,
                     Unreachable::FellOffEnd => TrapKind::FellOffEnd,
+                    Unreachable::Refused => TrapKind::Refused,
                 };
                 self.report(kind)?;
                 self.builder.ins().trap(TrapCode::user(1).unwrap());
