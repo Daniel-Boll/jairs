@@ -41,7 +41,7 @@ use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
     E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272, E0277,
-    E0278, E0279, E0284, E0285, E0286, E0287, E0288,
+    E0278, E0279, E0284, E0285, E0286, E0287, E0288, E0289,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -1455,6 +1455,34 @@ impl Ctx<'_> {
                     );
                     return PoolId::ERROR;
                 }
+                // **A call to a `#c_variadic` procedure is refused** (E0289, ADR-0162 §2). The declaration
+                // is legal — a marker exists so a binding can *say* it is variadic — and the call is what
+                // cannot be lowered: Cranelift's `Signature` has no variadic boundary, so it places every
+                // declared parameter by the fixed-arity rules, and on AArch64 a variadic argument belongs on
+                // the stack. ADR-0157 §2 measured that as a file created with permissions `---------x`.
+                //
+                // Checked in the *name* path rather than at the call, so it fires whether the procedure is
+                // called or merely mentioned — which matters because being unable to call it is the whole
+                // fact, and a binding nobody calls yet should still say so at its use.
+                if self.is_c_variadic_proc(&res) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            "a `#c_variadic` procedure cannot be called yet",
+                        )
+                        .with_code(E0289)
+                        .with_note(
+                            "the Cranelift back end has no variadic calling convention, so the extra \
+                             arguments would be placed by the fixed-arity rules — which puts them in \
+                             registers where AArch64 wants the stack",
+                        )
+                        .with_help(
+                            "find a fixed-arity relative: `creat` for `open`, `vsnprintf` with a prepared \
+                             `va_list` for `printf`",
+                        ),
+                    );
+                    return PoolId::ERROR;
+                }
                 let ty = self.type_of_name(res);
                 // **A type used where a runtime value is expected is refused** (E0261, ADR-0071 §3).
                 // Before this, `t := Point;` type-checked cleanly and both engines exited 0, lowering
@@ -2065,6 +2093,30 @@ impl Ctx<'_> {
     ///
     /// A same-file item only: a cross-file procedure value resolves to `Res::Imported` and is
     /// refused earlier for a different reason (ADR-0059 §1), so this need not chase imports.
+    /// Whether `res` names a `#c_variadic` procedure (ADR-0162 §2).
+    ///
+    /// Same-file only, deliberately, and the reason differs from [`Self::is_foreign_proc`]'s: an *imported*
+    /// `#c_variadic` procedure cannot be detected from its type, because the marker is a property of how the
+    /// C declaration is spelled and no part of it reaches the pool. That is a real hole and it is named in
+    /// ADR-0162 §3 — a cross-module variadic binding is refused at the *declaration* side instead, since a
+    /// module that declares one is the module that knows.
+    fn is_c_variadic_proc(&mut self, res: &Res) -> bool {
+        match res {
+            Res::Item(item) => self
+                .hir
+                .items
+                .get(item.index())
+                .and_then(|it| match &it.kind {
+                    jr_hir::ItemKind::Const {
+                        value: jr_hir::ConstValue::Proc(proc),
+                    } => self.hir.procs.get(proc.index()),
+                    _ => None,
+                })
+                .is_some_and(|proc| proc.c_variadic),
+            _ => false,
+        }
+    }
+
     fn is_foreign_proc(&mut self, res: &Res) -> bool {
         match res {
             Res::Item(item) => self

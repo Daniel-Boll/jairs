@@ -209,6 +209,8 @@ fn append_one(
         c_call: template.c_call,
         no_abc: template.no_abc,
         must: template.must,
+        // A clone is the same binding specialised, so it is variadic exactly when its template was.
+        c_variadic: template.c_variadic,
         expand: template.expand,
         modify: template.modify,
         notes: template.notes.clone(),
@@ -373,6 +375,8 @@ fn clone_predicate(
         c_call: false,
         no_abc: false,
         must: false,
+        // Synthetic, and never a `#foreign` binding, so never variadic.
+        c_variadic: false,
         expand: false,
         modify: None,
         notes: Vec::new(),

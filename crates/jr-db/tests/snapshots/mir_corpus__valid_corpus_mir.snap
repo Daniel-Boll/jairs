@@ -15135,3 +15135,32 @@ proc main -> void {
     discard call extern proc1(v25)
     return
 }
+
+========================================
+131-c-variadic-declaration.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call proc1(0_*u8, 420_s64)
+    v2: bool = v1 == -1_s64
+    branch v2 ? bb1() : bb2()
+  bb1():
+    v3: s64 = 0_s64 + 1_s64
+    goto bb3(v3)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v6: s64):
+    v4: s64 = call proc1(0_*u8, 0_s64)
+    v5: bool = v4 == -1_s64
+    branch v5 ? bb4() : bb5()
+  bb4():
+    v7: s64 = v6 + 2_s64
+    goto bb6(v7)
+  bb5():
+    goto bb6(v6)
+  bb6(v8: s64):
+    v9: s64 = v8 + 4_s64
+    discard call extern proc1(v9)
+    return
+}

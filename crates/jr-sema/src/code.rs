@@ -486,3 +486,15 @@ pub(crate) const E0287: &str = "E0287";
 /// would leave a reader believing a check is running. ADR-0058 §3's rule about silently-ignored
 /// directives, applied to the newest one.
 pub(crate) const E0288: &str = "E0288";
+
+/// A call to a `#c_variadic` procedure, which no engine here can make (ADR-0162 §2).
+///
+/// The **declaration** is legal — that is the whole point of the marker — and the *call* is what cannot be
+/// lowered: Cranelift's `Signature` has no notion of a variadic boundary, so every declared parameter is
+/// placed by the fixed-arity rules, and on AArch64 a variadic argument belongs on the stack. ADR-0157 §2
+/// measured that as a file created with permissions `---------x`: no diagnostic, a plausible-looking result,
+/// unreadable.
+///
+/// So this code exists to turn that silent miscompile into a refusal. It is the same trade ADR-0150 made for
+/// an aggregate at a foreign boundary, one wave before that boundary opened.
+pub(crate) const E0289: &str = "E0289";

@@ -506,6 +506,12 @@ impl Formatter {
                 // caller that was ignoring a failure silently starts compiling again. Caught by gate 5
                 // on this wave's own corpus file, which is what that gate is for.
                 MUST_ATTR => self.emit(" #must"),
+                // `#c_variadic` (ADR-0162 §1). The **eleventh** consecutive time this loop has had to learn
+                // a construct, and the *most* unsound direction yet: dropping it turns a variadic C call
+                // back into a fixed-arity one, which puts the extra argument in the wrong place with no
+                // diagnostic — ADR-0157 §2 measured that as a file created with permissions `---------x`.
+                // Caught by a round-trip check on this wave's own corpus file, which is what gate 5 is for.
+                C_VARIADIC_ATTR => self.emit(" #c_variadic"),
                 // `#expand` (ADR-0090 §1). The trap again, and this one is the *unsound* direction like
                 // `#c_call`: dropping it turns a macro into an ordinary procedure, so a body meant to be
                 // spliced into the caller's scope — reading the caller's locals — becomes a call that

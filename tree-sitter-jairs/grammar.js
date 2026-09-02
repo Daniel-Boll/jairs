@@ -210,6 +210,7 @@ module.exports = grammar({
         $.c_call_attr,
         $.no_abc_attr,
         $.must_attr,
+        $.c_variadic_attr,
         $.expand_attr,
         $.modify_attr,
         $.note,
@@ -225,6 +226,11 @@ module.exports = grammar({
     // attributes, for the reason each of them has one: two shapes indistinguishable in a query would
     // let a highlight show a reader an obligation the program does not have, or hide one it does.
     must_attr: (_$) => field("directive", "#must"),
+
+    // `#c_variadic` (ADR-0162 §1) — its own rule beside the others for the reason every attribute
+    // here has one: a highlight query names a rule, and a shared rule would make every attribute
+    // one colour.
+    c_variadic_attr: (_$) => field("directive", "#c_variadic"),
 
     // #expand — the procedure is a macro, spliced into the caller's scope rather than called
     // (ADR-0090 §1). Its own rule beside the other two attributes, so a query can tell them apart.

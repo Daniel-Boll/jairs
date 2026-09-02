@@ -1,0 +1,35 @@
+// EXPECT: E0289 — a call to a `#c_variadic` procedure (ADR-0162 §2)
+//
+// **The declaration is legal and the call is not**, which is the whole shape of this feature. `#c_variadic`
+// exists so a binding can *say* that the C declaration ended in `...`; what no engine here can do is make the
+// call.
+//
+// Why the marker is needed at all: nothing can infer it. A Jairs signature says what the callee takes and
+// cannot say that C permits more — and the difference is not cosmetic. On AArch64 a **variadic** argument
+// travels on the stack while a **fixed** one travels in a register, so a fixed-arity declaration of a variadic
+// function puts the extra argument in the wrong place. ADR-0157 §2 measured exactly that: declaring
+// `open(path, flags, mode)` created a file with permissions `---------x`, with no diagnostic from either
+// engine and a file that existed and could not be read.
+//
+// Why the call is refused rather than lowered: Cranelift's `Signature` has **no notion of a variadic
+// boundary**. Every declared parameter is placed by the fixed-arity rules, so there is no way to express "the
+// arguments past the second belong on the stack". libffi *can* do it and LLVM can too, so refusing in all
+// three engines is a deliberate choice over an engine divergence — `jr build` failing where `jr run` works
+// would break the premise the differential harness rests on.
+//
+// The marker's **absence** means "not variadic", which is the safe default: a caller who forgets it gets the
+// fixed-arity call they wrote. That does mean a forgotten marker still miscompiles silently, and the honest
+// statement is that this half of ADR-0157 §2 turns a *known* variadic into a diagnostic and leaves an
+// *unknown* one where it was. Detecting it needs the C declaration, which this compiler never sees.
+libc :: #system_library "c";
+
+open_it :: (path: *u8, flags: s64) -> s64 #c_variadic #foreign libc "open";
+
+main :: () {
+    // A real pointer rather than `null`, and `_ =` rather than a binding. Both avoid a *second* diagnostic
+    // on one mistake: the refused call has an `ERROR` type, so binding it is E0257 and a bare `null` has no
+    // context to take a pointer type from. This directory's contract is exactly one refusal per file, and
+    // getting there is a reminder that a refusal which poisons its expression makes every neighbour speak up.
+    name: [1]u8;
+    _ = open_it(*name[0], 0);
+}

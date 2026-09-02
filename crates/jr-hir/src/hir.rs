@@ -971,6 +971,11 @@ pub struct Proc {
     /// caller finds it by looking at the signature — which is why nothing about this is recorded per
     /// call and why an imported `#must` procedure works with no extra plumbing.
     pub must: bool,
+    /// `#c_variadic` — this `#foreign` procedure's declared parameters are its **fixed** ones (ADR-0162 §1).
+    ///
+    /// Recorded on the procedure rather than in the effect row, unlike `must`: an effect row describes what a
+    /// *call* obliges its caller to do, and this describes how the callee's **signature** is spelled in C.
+    pub c_variadic: bool,
     /// `true` for a `#expand` procedure — a **macro** (ADR-0090 §1).
     ///
     /// A call to one is **spliced**: the macro's statements are lowered into the *caller's* scope rather

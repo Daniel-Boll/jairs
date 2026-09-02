@@ -212,6 +212,28 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0162 holds at 1054** (1055 under gate 7) and adds two corpus files = **253** — the `#c_variadic`
+marker, which is the first half of ADR-0157 §2's two and W10's other gate. A fixed-arity declaration of a
+variadic C function puts the extra argument in the wrong place *silently*, and **nothing can infer
+variadicity**: a Jairs signature cannot say the C one ended in `...`. So it is a marker, its **absence** means
+"not variadic" (the safe default), and a *call* is E0289. **E0290 is now the first free code**, and the
+enforced registry caught the stale claim immediately — which is what it is for.
+
+**Refused in all three engines rather than only Cranelift**, even though libffi has a variadic CIF and LLVM has
+variadic function types: `jr build` failing where `jr run` succeeds breaks the premise the differential harness
+rests on. Cranelift's `Signature` has no variadic boundary at all — probed — so supporting the call is blocked
+upstream, and `objc_msgSend` stays uncallable.
+
+**The formatter trap fired for the eleventh consecutive wave**, and this was the most unsound direction yet:
+`jr fmt` silently *deleted* `#c_variadic`, and dropping it restores the very miscompile the marker exists to
+prevent. Round-trip and idempotence both passed — a formatter re-emitting `node.text()` verbatim passes both.
+**Eleven repetitions in, the rule is: a new node kind must join the emitter, and round-trip assertions do not
+prove it did.**
+
+One smaller lesson: **a refusal that poisons its expression makes every neighbour speak up.** Getting
+`type-errors/080` down to one diagnostic needed a real pointer instead of `null` and `_ =` instead of a
+binding, because the refused call's `ERROR` type drew E0257 and an untyped `null` drew another.
+
 **ADR-0161 reaches 1054** (1055 under gate 7) and adds one corpus file = **251** — PLAN §8.1.2 **part 2**,
 which closes the project's highest-leverage blocker. An aggregate crosses a `#foreign` boundary now, and
 **W10 — Graphics is unblocked** along with `readdir`/`stat` and `getaddrinfo`.
@@ -496,7 +518,7 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0289 is the first free code**; E0134 is the first free *parser* code. E0286 is a `#foreign` signature
+**E0290 is the first free code**; E0134 is the first free *parser* code. E0286 is a `#foreign` signature
 carrying a type with no C representation (ADR-0150), E0287 a discarded `#must` result and E0288 `#must` on
 a `void` procedure (ADR-0151). E0285 is `#simd`'s single
 refusal (ADR-0148) — a width that is not one machine register, an element a lane cannot hold, integer

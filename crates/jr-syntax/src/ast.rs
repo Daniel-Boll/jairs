@@ -731,6 +731,17 @@ impl Proc {
         self.0.children().any(|n| n.kind() == MUST_ATTR)
     }
 
+    /// Whether this procedure is `#c_variadic` — its declared parameters are the **fixed** ones and the C
+    /// declaration ended in `...` (ADR-0162 §1).
+    ///
+    /// A marker rather than something inferred, because nothing can infer it: a Jairs signature says what the
+    /// callee takes and cannot say that C permits more. Its absence means "not variadic", which is the safe
+    /// default — a caller who forgets it gets the fixed-arity call they wrote.
+    #[must_use]
+    pub fn is_c_variadic(&self) -> bool {
+        self.0.children().any(|n| n.kind() == C_VARIADIC_ATTR)
+    }
+
     /// Whether this procedure is `#expand` — a **macro**, spliced into the caller's scope rather than
     /// called (ADR-0090 §1).
     pub fn is_expand(&self) -> bool {
