@@ -18,9 +18,19 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-Last updated with **W7 — Stdlib and W9 — Tooling depth both DONE** (W6 — Metaprogram and W8 — Performance
-were already), 1053 tests green — 1054 with the LLVM back end compiled in. **Three waves remain: W10 —
-Graphics, W11 — Concurrency, and W12 — Debug info.**
+Last updated with **W10 — Graphics DONE** (W6 — Metaprogram, W7 — Stdlib, W8 — Performance and W9 — Tooling
+depth were already), 1059 tests green — 1060 with the LLVM back end compiled in, and nineteen library modules.
+**Two waves remain: W11 — Concurrency and W12 — Debug info.**
+
+Graphics arrived in four steps, on a foundation the plan had wrong: a window and a 2D renderer, an event loop,
+an immediate-mode UI, and image loading. It rests on SDL2's C API rather than on Cocoa, because every Cocoa call
+goes through a variadic function this compiler's back end cannot express — a blocker that turned out to live
+upstream, not here. The cost is a third-party dependency where the plan imagined system frameworks; the gain is
+that it works today and works on Linux.
+
+The plan predicted graphics would need *zero* compiler changes. That was wrong in one direction and then right
+in another: passing a rectangle to a C function needed two compiler waves of its own first, and once those
+landed the four graphics waves needed nothing at all.
 
 **An aggregate crosses a `#foreign` boundary** (ADR-0160, ADR-0161), which was the project's
 highest-leverage open item: it blocked graphics entirely — every windowing and GPU call passes a rectangle by
@@ -50,6 +60,18 @@ a colour, clears the surface, fills and outlines a rectangle, draws a line, pres
 down — ten steps, in a compiled binary, against real SDL2. It is the seventeenth module and the first that
 `jr run` cannot execute: the compile-time interpreter resolves a foreign symbol from the compiler's own
 process image, so it reaches the C library and nothing else.
+
+**An image loads and draws** (ADR-0167). A BMP is decoded, uploaded to the renderer as a texture, and drawn
+scaled into a rectangle. BMP rather than PNG because SDL decodes it in the library already installed, where PNG
+would mean a second dependency or an inflate implementation — the largest single thing this standard library
+would contain. The test builds its own image file rather than committing one, so the decoding path is genuinely
+exercised instead of trusting a blob generated once.
+
+Writing it turned up a real limitation, in the good way. Its routines were first called `fill`, `free`, `destroy`
+— and a program importing it alongside two other modules got four separate ambiguity errors, because an import
+here brings names in flat and there is no way to qualify them. The compiler caught every one. Every routine is
+now prefixed, and qualified imports are written down as owed rather than bolted on to make the inconvenience go
+away.
 
 **A button works** (ADR-0166), which is the wave that shows the pieces compose rather than merely exist: one
 test holds a window, an event queue and a renderer open together and drives a real click through all three.

@@ -212,6 +212,30 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0167 reaches 1059**, still **253** corpus files, adds the **nineteenth** module — and **closes W10 —
+Graphics**, four waves: `Window` + 2D renderer (ADR-0164), the event loop (ADR-0165), `UI` (ADR-0166), `Image`
+(ADR-0167).
+
+**`modules/Image`** is BMP only, and that is a scope decision rather than a shortfall: `SDL_LoadBMP_RW` is in
+SDL's **base** library, so nothing new is depended on. PNG would need `SDL_image` (a second library's version
+skew, for a format that proves nothing extra) or zlib's inflate (the largest single thing this stdlib would
+contain, and it belongs beside a `Compress` module). Deferring images was also rejected: a texture path that has
+never carried a decoded image is untested, and the *decode* is where the interesting failure lives. The test
+**builds its own BMP**, so no binary file is in the repository.
+
+**Two things worth carrying forward.** `Surface_Data` is a second `#place` overlay of somebody else's struct, and
+its guarantee is **explicitly weaker** than `SDL_Event`'s — offset 0 there is documented in SDL's own header,
+`w` at 16 here is only ABI — recorded because a reader seeing both overlays would assume they were equally solid.
+If a third arrives, the pattern deserves a helper that can assert an *offset* rather than only a size.
+
+**And the flat namespace bites for real.** ADR-0166 §7 recorded it as a note; one wave later, `Image` written with
+short names gave a file importing `Window`, `Basic` and `Image` **four E0211 ambiguous-name errors at once** —
+`fill` and `destroy` from `Window`, `free` from `Basic`, `layout_is_sdl2` from `Window`. E0211 firing is the good
+outcome. **The rule: in a flat namespace a module must prefix as though the namespace were its own**, because
+there is no qualification to fall back on and a short exported name is a claim on every importer. `Window` gets
+away with `fill` and `close` only because it was first, which is not a principle. **Qualified imports are owed**,
+and were deliberately not built mid-wave: a feature designed by an inconvenience is the wrong feature.
+
 **ADR-0166 reaches 1058**, still **253** corpus files, and adds the **eighteenth** module — `modules/UI`, an
 immediate-mode widget layer, and the second module `jr run` cannot execute. It is the wave that shows the
 graphics stack **composes**: one test holds a window, an event queue and a renderer open together and drives a

@@ -258,7 +258,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–0166. See [`docs/adr/README.md`](docs/adr/README.md). (This line
+Accepted ADRs: 0001–0167. See [`docs/adr/README.md`](docs/adr/README.md). (This line
 said 0001–0128 for thirteen ADRs, which is the argument §7 makes for its own count
 being the one to trust.)
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
@@ -361,7 +361,7 @@ dependency chain requires it. `rust-toolchain.toml` still floats on stable.
 | **W7 — Stdlib** ✔ **DONE — ADR-0158** | In Jairs: `Basic`, `String`, dynamic array / hash table / bucket array, `Sort`, `Math` (vec/mat/quat **DELIVERED — vectors by ADR-0130, `Matrix4` by ADR-0131, `Quaternion` by ADR-0132; ADR-0115 declared `Math` complete when none of the three existed**), `Random`, `File`, `File_Utilities`, `Process`, ~~`Thread` + atomics~~ **[MOVED OUT to W11 by §8.3 — there is no thread support anywhere in the runtime, and delivering one needs a per-thread VM stack, atomics as language operations, a memory model, and a rule for comptime; that is a wave comparable to W4, not one item in a list]**, `Time`, `Socket`, `JSON`, ~~`Compiler`~~ **[MOVED to W6 by §8.3 — that module *is* the message loop's surface]** | Runs partly in parallel with W5/W6; each module is a wave-acceptance test. **Nine modules shipped; §8.3 orders the remaining seven by what blocks what**, and five of them wait on the error model (§8.1.1) | 14–18 wks |
 | **W8 — Performance** | LLVM backend via `inkwell` (`--release`), inliner maturity, `#soa`, SIMD vectors, `#align`/`#place`, parallel Sema + parallel codegen **[NOT DELIVERED — measured and refused; see ADR-0149]**, published compile-throughput number | Three-way differential testing: VM ≡ Cranelift ≡ LLVM. **DONE in eight sub-waves** (ADR-0142 the optimisation level, ADR-0143 the LLVM back end, ADR-0144 `#align`/`#place`, ADR-0145 inliner maturity, ADR-0146 the throughput number + `heap_sort`, ADR-0147 `#soa`, ADR-0148 `#simd`, ADR-0149 the parallelism measurement). Seven shipped a feature; the eighth shipped a number and a revert — 1.20x against a 2.5x ceiling, because 40% of a check runs inside the pool's exclusive critical sections | 10–14 wks |
 | **W9 — Tooling depth** | Full LSP surface (completion, refs, rename, signature help, semantic tokens, **inlay type hints**, code actions), richer DWARF (locals, struct layouts) for lldb, Neovim packaging (VS Code descoped by ADR-0036; any LSP client works unpackaged) | Incremental all along; this is the "make it excellent" pass | 8–10 wks |
-| **W10 — Graphics, in Jairs** | `Window_Creation` (Cocoa via `#foreign`), GPU layer (Metal, then Vulkan), immediate-mode 2D renderer, image decode, immediate-mode UI, audio (CoreAudio/ALSA) | ~~All *library* work, written in Jairs — no compiler changes.~~ **That was wrong, and §8.5 corrects it**: no aggregate crosses a `#foreign` boundary today (it is a leaked ICE, §8.1.3), and every windowing and GPU API passes structs by value — `CGRect`, `CGPoint`, `MTLViewport` — while `objc_msgSend` is *C-variadic*, which is a third thing neither engine does. So W10 needs **two compiler waves** first and its honest state is **blocked**, not "not started". Gated on W5 (done), W7's `File`, and the FFI work | 6+ months |
+| **W10 — Graphics, in Jairs** | ~~`Window_Creation` (Cocoa via `#foreign`)~~ **`Window` over SDL2** — ADR-0163 replaced the foundation, since `objc_msgSend` is C-variadic and that blocker is *upstream* in Cranelift (ADR-0162). Delivered in four waves: `Window` + 2D renderer (ADR-0164), the event loop (ADR-0165), `UI` (ADR-0166), `Image` (ADR-0167). **DONE.** ~~All *library* work, no compiler changes~~ — that was wrong twice over: §8.1.2's aggregate boundary needed two compiler waves (ADR-0160/0161) and got them, and then the graphics waves themselves needed **none**, which is the prediction finally coming true one level down. A GPU layer (Metal, then Vulkan) and audio remain, both unblocked | 6+ months |
 | **W11 — Concurrency** | `Thread`, atomics, and the memory model that says what they mean | **New, split out of W7 by §8.3.** Needs a per-thread stack in the VM, atomics as language operations rather than library calls, and a decision about whether comptime execution may spawn a thread. Named rather than left as a stdlib item that would be quietly dropped or quietly become a quarter of work | not estimated |
 | **W12 — Debug info** | A DWARF writer: `.debug_line` from `MirSpan`, type and struct-layout DIEs from the pool, and locals through Cranelift's value labels | **New, split out of W9 by ADR-0159 §7.** §8.4 claimed "line tables exist" and there is **no DWARF at all** — probed, not argued. Needs a `gimli` unit in *both* back ends (they share no emission path), `ValueLabel`s attached during lowering for locals, and a decision about `__DWARF` versus a `dsymutil` bundle. Named rather than left as a mis-estimated line in a "small, mostly already done" wave | not estimated |
 
@@ -380,7 +380,7 @@ flowchart LR
     W3 --> W7["W7 Stdlib in Jairs"]
     W5 --> W7
     W5 --> W8["W8 Perf + LLVM<br/>DONE"]
-    W7 --> W10["W10 Graphics in Jairs<br/>BLOCKED"]
+    W7 --> W10["W10 Graphics in Jairs<br/>DONE"]
     W5 --> W10
     S --> W9["W9 Tooling depth"]
     W9 -.->|"incremental,<br/>every wave"| W7
@@ -520,7 +520,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 | **tree-sitter drift** | Two grammars always diverge. | Shared `tests/corpus/`; CI gates both parsers; grammar changes require a corpus file. |
 | **Cranelift API churn** | Explicitly not semver-stable. | Pin exactly; confine all contact to `jr-codegen-clif` behind `Backend`. |
 | **macOS arm64 specifics** | Codesigning, `ld-prime`, DWARF quirks. | Always link through `cc`; ad-hoc codesign in `jr-link`; keep Linux green as a sanity oracle. |
-| **Scope creep into graphics** | Most tempting, most destabilizing. | Hard gate: W10 starts only after W7. It requires *zero* compiler changes — that's the test of readiness. |
+| **Scope creep into graphics** | Most tempting, most destabilizing. | Hard gate: W10 starts only after W7. It requires *zero* compiler changes — that's the test of readiness. **Held, in the end**: the gate was passed after W7, and the four graphics waves needed no compiler change at all. The FFI work they *depended* on (ADR-0160/0161) was its own wave, before them, which is the distinction this row was reaching for. |
 | **Solo burnout** | The real killer of language projects. | Every wave ends in a runnable demo. `fmt` and LSP ship in month 3. |
 
 ---
@@ -572,7 +572,7 @@ capability, Neovim packaging was already there, and VS Code stays declined (ADR-
 described from a **false premise** — §8.4 said "line tables exist" and there is no DWARF at all, probed — so
 it is now **W12 — Debug info**, named in §2.1 the way §8.3 named W11.
 
-**So the remaining waves are W10 — Graphics, W11 — Concurrency, and W12 — Debug info.** §8.5 is W10's plan.
+**So the remaining waves are W11 — Concurrency and W12 — Debug info.** W10 — Graphics is **done** (ADR-0164 through 0167); §8.5 is its record, including the two corrections it needed.
 
 **§8.1.2 is closed** (ADR-0160 part 1, ADR-0161 part 2), which was the project's highest-leverage open item.
 An aggregate crosses a `#foreign` boundary when the shared classification says where its pieces go: at most two
@@ -640,8 +640,22 @@ zero id; the accessors did not, which is the inconsistency that survives review.
 project will meet it again: **a sentinel meaning "nothing" must not be askable about through the same accessor
 as a real value.**
 
-**§8.5's remaining items** are image decode (wants `File`, which exists, plus a decoder) and audio, both library
-work. Two language items are **owed** from these two waves: a
+**And image decode is done** — ADR-0167's `modules/Image`, the nineteenth module: a BMP round trip, a texture
+upload and a scaled draw, with `SDL_LoadBMP_RW` from SDL's **base** library so nothing new is depended on. The
+test **builds its own BMP**, so no binary file lives in the repository and the decode is exercised rather than
+trusted.
+
+Two things it recorded. `Surface_Data` is a second `#place` overlay of somebody else's struct, and **its
+guarantee is explicitly weaker than `SDL_Event`'s** — offset 0 there is documented in SDL's header, `w` at 16
+here is only ABI — because a reader seeing both would otherwise assume they were equally solid. And §4:
+written unprefixed first, a file importing `Window`, `Basic` and this module got **four E0211 ambiguous-name
+errors at once** (`fill`, `destroy`, `free`, `layout_is_sdl2`). Every export is now prefixed, and **qualified
+imports are owed** — promoted from ADR-0166 §7's note by four real collisions, and deliberately *not* built
+mid-wave, since a feature designed by an inconvenience is the wrong feature.
+
+**So W10 — Graphics is DONE**, four waves: `Window` (ADR-0164), its event loop (ADR-0165), `UI` (ADR-0166) and
+`Image` (ADR-0167). §8.5's one remaining entry is **audio**, which is not graphics and is ordinary library work
+whenever a caller wants it. Two language items are **owed** from these two waves: a
 **typed constant** (`QUIT : u32 : 256` does not parse, and one module wants nine of them), and `size_of` of an
 *imported* struct reachable from a **file-scope constant** — E0230 today, which `Socket` and `Window` have both
 worked around by moving the check into a procedure. Read §8.5 before starting one — that section's own correction was
@@ -693,7 +707,7 @@ crossing the `#foreign` boundary — which is also W10's hard gate, so one chang
 an `Any` or a procedure handle through `jr-vm`'s untagged `union`; `jr-lsp` path handling — URI
 decoding, `..`, symlinks), which must be done **by hand** because six subagent dispatches returned
 empty; and `tree-sitter test` added to gate 6, which today catches grammar *drift* but not a broken
-grammar *rule*. **1058 workspace tests** (1059 under gate 7) and **253 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
+grammar *rule*. **1059 workspace tests** (1060 under gate 7) and **253 corpus files**, all six gates green **locally**, plus the new **gate 7** (the LLVM back end, which needs an installed LLVM 21) — no CI run
 has ever happened — plus **170** Neovim checks. See §1.5.
 
 > [!NOTE]

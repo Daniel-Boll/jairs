@@ -1853,3 +1853,119 @@ main :: () {
     exit_now(total % 251);
 }
 "#;
+
+/// `modules/Image`: a BMP round trip, a texture upload, and a draw (ADR-0167).
+///
+/// # Why the fixture is built rather than committed
+///
+/// The program creates a 24x16 surface, fills a rectangle, saves it as a BMP, and loads it back. So there is no
+/// binary file in the repository, and the test exercises the *decode* — which is the step with the interesting
+/// failure — rather than trusting a blob somebody generated once.
+///
+/// The last two assertions are the ones worth having: the one-call `load_texture` path, and a **missing file**,
+/// which must return `false` rather than trap or produce a texture that draws nothing.
+#[test]
+fn a_bmp_round_trips_into_a_texture() {
+    let candidates = [
+        "/opt/homebrew/lib",
+        "/usr/local/lib",
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib",
+    ];
+    let library_dir = candidates.iter().map(PathBuf::from).find(|dir| {
+        dir.join("libSDL2.dylib").exists()
+            || dir.join("libSDL2.so").exists()
+            || dir.join("libSDL2-2.0.so.0").exists()
+    });
+    let Some(library_dir) = library_dir else {
+        return;
+    };
+
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("image.jr");
+    fs::write(&source, IMAGE_PROGRAM).unwrap();
+
+    let binary = dir.path().join("image");
+    let code = run_build_with_paths(source, binary.clone(), &[library_dir]);
+    assert_eq!(code, 0, "the program must build and link against SDL2");
+
+    let ran = std::process::Command::new(&binary)
+        .env("SDL_VIDEODRIVER", "dummy")
+        .status()
+        .expect("the linked binary should run");
+    assert_eq!(
+        ran.code(),
+        Some(65535 % 251),
+        "every step must succeed; a lower value names which bit failed, and 90-93 name a hard stop"
+    );
+}
+
+/// The image program the test above builds.
+const IMAGE_PROGRAM: &str = r#"#import "Window";
+#import "Image";
+libc :: #system_library "c";
+exit_now :: (status: s64) #foreign libc "exit";
+remove_file :: (path: *u8) -> s64 #foreign libc "remove";
+
+main :: () {
+    total := 0;
+    if surface_layout_is_sdl2() { total = total + 1; }
+    if !start() { exit_now(90); }
+    t := "Img\0";
+    w, ok := open(t.data, 200, 200, HIDDEN);
+    if !ok { exit_now(91); }
+    r, rok := renderer_for(*w, SOFTWARE);
+    if !rok { exit_now(92); }
+
+    // Build an image, so nothing binary lives in the repository.
+    s, sok := create_surface(24, 16);
+    if !sok { exit_now(93); }
+    total = total + 2;
+    if width_of(*s) == 24 && height_of(*s) == 16 { total = total + 4; }
+    if pitch_of(*s) >= 24 * 4 { total = total + 8; }
+
+    box := rect(4, 4, 8, 8);
+    if fill_surface(*s, *box, 255) { total = total + 16; }
+
+    path := "/tmp/jr-image-test.bmp\0";
+    if save_bmp(*s, path.data) { total = total + 32; }
+    free_surface(*s);
+    free_surface(*s);
+    total = total + 64;
+
+    // Load it back, and the size must survive the round trip.
+    l, lok := load_bmp(path.data);
+    if lok { total = total + 128; }
+    if width_of(*l) == 24 && height_of(*l) == 16 { total = total + 256; }
+
+    tex, tok := texture_from(*r, *l);
+    if tok { total = total + 512; }
+    free_surface(*l);
+
+    tw: s32;
+    th: s32;
+    if size_of_texture(*tex, *tw, *th) { total = total + 1024; }
+    if cast(s64, tw) == 24 && cast(s64, th) == 16 { total = total + 2048; }
+
+    dst := rect(10, 10, 48, 32);
+    if draw_texture(*r, *tex, *dst) { total = total + 4096; }
+    present(*r);
+    destroy_texture(*tex);
+    destroy_texture(*tex);
+    total = total + 8192;
+
+    // The one-call path, and a missing file must fail rather than trap.
+    t2, t2ok := load_texture(*r, path.data);
+    if t2ok { total = total + 16384; }
+    destroy_texture(*t2);
+    missing := "/tmp/jr-image-absent.bmp\0";
+    t3, t3ok := load_texture(*r, missing.data);
+    if !t3ok { total = total + 32768; }
+
+    _ = remove_file(path.data);
+    destroy(*r);
+    close(*w);
+    stop();
+    exit_now(total % 251);
+}
+"#;
