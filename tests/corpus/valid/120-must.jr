@@ -1,0 +1,77 @@
+// ADR-0151: `#must` — the error-handling marker ADR-0008 chose and never built.
+//
+// This program is the acceptance test for this language's *error model*. ADR-0008 decided it in the
+// vertical slice — multiple return values plus a `#must` marker — and left the marker unimplemented
+// for the whole programme, which is why five of W7's remaining modules were blocked on nothing more
+// than a missing check (PLAN §8.1.1).
+//
+// The shape a fallible operation takes here: a value beside a success flag, and a caller that cannot
+// silently skip the flag.
+//
+// The exit status is a checksum, because each half fails silently on its own:
+//
+//   a received result             10/2 = 5, ok                               = 5
+//   the second return read        the flag is a real value, not a comment    = 1
+//   a single-value #must          only_one(3) = 6                            = 6
+//   a deliberate discard          `_ = …` runs the call for its effect       = 4
+//   #must through a pointer       the obligation is in the *type*            = 20
+//
+// 5 + 1 + 6 + 4 + 20 = 36.
+#import "Basic";
+
+// The canonical fallible shape. `#must` is on the *declaration*, and the obligation lands on every
+// caller — including callers in other files, because the marker lives in the procedure's **type**
+// (ADR-0008's reserved effect-row slot, finally filled) rather than in a side table.
+try_divide :: (a: s64, b: s64) -> (s64, bool) #must {
+    if b == 0 {
+        return 0, false;
+    }
+    return a / b, true;
+}
+
+// `#must` does not require several returns. A single value can be one a caller must look at.
+only_one :: (n: s64) -> s64 #must {
+    return n * 2;
+}
+
+// Writes through a pointer, so the discard below can be *seen* to have run the call rather than
+// deleted it. A discard that silently skipped its call would be a wrong answer, and nothing else in
+// this file would notice.
+//
+// A pointer out-parameter rather than a file-level variable, because a file-level mutable variable
+// still leaks an internal error — the eighth occurrence in PLAN's known-defects list, and it wants
+// W6's static-data mechanism rather than a guess.
+bump_and_fail :: (counter: *s64) -> (s64, bool) #must {
+    counter.* = 4;
+    return 0, false;
+}
+
+main :: () {
+    total := 0;
+
+    // Received, both positions. The flag is an ordinary value: this is the whole error model.
+    quotient, ok := try_divide(10, 2);
+    total = total + quotient;
+    if ok {
+        total = total + 1;
+    }
+
+    // A single-value `#must`, received.
+    total = total + only_one(3);
+
+    // **The deliberate discard**, and the reason it is allowed (ADR-0151 §2): an unbypassable check is
+    // one people route around with a wrapper procedure, which hides the decision instead of recording
+    // it. `_ = …` is visible in the source, greppable, and reviewable — the same trade `#no_abc`
+    // already makes for bounds checks.
+    counter := 0;
+    _ = bump_and_fail(*counter);
+    total = total + counter;
+
+    // **Through a procedure pointer**, which is what putting the marker in the *type* buys: the
+    // pointer and the procedure have the same type, so the obligation survives being taken as a value.
+    // A side table keyed on the declaration would have lost it here.
+    f := only_one;
+    total = total + f(10);
+
+    exit(total);
+}

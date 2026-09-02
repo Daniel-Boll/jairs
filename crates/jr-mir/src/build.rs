@@ -359,7 +359,9 @@ impl Reach {
                     }
                 }
                 Stmt::Item(_, _) => {}
-                Stmt::Expr(expr, _) => expr_work.push(*expr),
+                // A discard evaluates its value exactly as a statement expression does; the only
+                // difference is in sema (ADR-0151 §2), so every MIR arm treats the two alike.
+                Stmt::Expr(expr, _) | Stmt::Discard { value: expr, .. } => expr_work.push(*expr),
                 Stmt::Assign {
                     lhs,
                     op: _,
@@ -559,6 +561,7 @@ fn scan(
             | Stmt::Local(_, _)
             | Stmt::Item(_, _)
             | Stmt::Expr(_, _)
+            | Stmt::Discard { .. }
             | Stmt::Assign { .. }
             | Stmt::If { .. }
             | Stmt::While { .. }
@@ -1169,7 +1172,7 @@ impl Lower<'_> {
             // lowering starts producing it, this arm is the thing to change rather
             // than a silent `_`.
             Stmt::Item(_, _) => {}
-            Stmt::Expr(expr, _) => self.stmt_expr(expr),
+            Stmt::Expr(expr, _) | Stmt::Discard { value: expr, .. } => self.stmt_expr(expr),
             Stmt::Assign {
                 lhs,
                 op,

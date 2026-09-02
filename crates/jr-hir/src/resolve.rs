@@ -1054,6 +1054,11 @@ impl<'a> ResolveCtx<'a> {
             Stmt::Expr(expr_id, _) => {
                 self.resolve_body_expr(body_id, expr_id);
             }
+            // The value is resolved; the `_` is not, because it is a hole rather than a binding — the
+            // same reason a `_` in a target list never enters the resolve map (ADR-0052 §3).
+            Stmt::Discard { value, .. } => {
+                self.resolve_body_expr(body_id, value);
+            }
             Stmt::Assign { lhs, rhs, .. } => {
                 self.resolve_body_expr(body_id, lhs);
                 self.resolve_body_expr(body_id, rhs);

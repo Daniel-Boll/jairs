@@ -287,7 +287,9 @@ fn addr_taken(body: &Body) -> (FxHashSet<LocalId>, FxHashSet<jr_hir::ParamId>) {
             // does construct it, this walk fails to compile instead of silently
             // ignoring a nested declaration's body.
             Stmt::Item(_, _) => {}
-            Stmt::Expr(expr, _) => expr_worklist.push((*expr, false)),
+            Stmt::Expr(expr, _) | Stmt::Discard { value: expr, .. } => {
+                expr_worklist.push((*expr, false));
+            }
             Stmt::Assign { lhs, rhs, .. } => {
                 expr_worklist.push((*lhs, false));
                 expr_worklist.push((*rhs, false));

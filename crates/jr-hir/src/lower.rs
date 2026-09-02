@@ -608,6 +608,7 @@ impl<'a> LowerCtx<'a> {
                 params: Vec::new(),
                 c_call: false,
                 no_abc: false,
+                must: false,
                 expand: false,
                 modify: None,
                 notes: Vec::new(),
@@ -665,6 +666,7 @@ impl<'a> LowerCtx<'a> {
             params,
             c_call: ast_proc.is_c_call(),
             no_abc: ast_proc.is_no_abc(),
+            must: ast_proc.is_must(),
             expand: ast_proc.is_expand(),
             modify: modify_pred,
             notes: ast_proc
@@ -1263,6 +1265,9 @@ impl<'a> LowerCtx<'a> {
             params,
             c_call: template.c_call,
             no_abc: template.no_abc,
+            // A baked clone inherits `#must` for the same reason it inherits the notes below: it *is*
+            // that procedure, specialised, so its caller's obligation cannot differ.
+            must: template.must,
             expand: false,
             modify: None,
             // A baked clone keeps its original's notes: it *is* that procedure, specialised.
@@ -2542,6 +2547,23 @@ impl<'a> BodyLowerCtx<'a> {
     }
 
     fn lower_assign_stmt(&mut self, a: &AssignStmt, span: Span) -> StmtId {
+        // **`_ = expr;` is a discard, not an assignment to a variable named `_`** (ADR-0151 §2).
+        // Recognised here rather than in the parser, because `_` is a perfectly ordinary identifier
+        // token and only its *position* makes it a hole — the same reasoning `lower_targets` uses for
+        // a `_` inside a target list. Before this it resolved as a name and reported E0201.
+        //
+        // Only the plain `=` form: `_ += f()` would have to read `_` first, so it stays an ordinary
+        // assignment and reports the unresolved name it genuinely is.
+        if a.op_token()
+            .is_none_or(|t| lower_assign_op(t.kind()) == AssignOp::Assign)
+            && a.lhs().is_some_and(|e| is_underscore_name(&e))
+        {
+            let value = a
+                .rhs()
+                .map(|e| self.lower_expr(&e))
+                .unwrap_or_else(|| self.alloc_expr(Expr::Error(span), span));
+            return self.alloc_stmt(Stmt::Discard { value, span });
+        }
         let lhs = a
             .lhs()
             .map(|e| self.lower_expr(&e))
@@ -3792,4 +3814,14 @@ fn named_arg_name(node: &SyntaxNode) -> Option<String> {
         return None;
     }
     jr_syntax::ast::NamedArg::cast(node.clone())?.name()?.text()
+}
+
+/// Whether an expression is the bare name `_` — the discard hole (ADR-0151 §2).
+///
+/// A text comparison on the token, matching `lower_targets`'s test for the same thing, because `_` is
+/// an ordinary identifier to the lexer and there is no `UNDERSCORE` kind to match on.
+fn is_underscore_name(expr: &jr_syntax::ast::Expr) -> bool {
+    matches!(expr, jr_syntax::ast::Expr::Name(n) if n
+        .name_token()
+        .is_some_and(|t| t.text() == "_"))
 }

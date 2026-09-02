@@ -501,6 +501,11 @@ impl Formatter {
                 // gets slower rather than unsound. `#c_call` above is the opposite — dropping that
                 // silently changes a calling convention.
                 NO_ABC_ATTR => self.emit(" #no_abc"),
+                // `#must` (ADR-0151 §1). The **tenth** consecutive time this loop has had to learn a
+                // construct, and it is the unsound direction: dropping it deletes a *check*, so every
+                // caller that was ignoring a failure silently starts compiling again. Caught by gate 5
+                // on this wave's own corpus file, which is what that gate is for.
+                MUST_ATTR => self.emit(" #must"),
                 // `#expand` (ADR-0090 §1). The trap again, and this one is the *unsound* direction like
                 // `#c_call`: dropping it turns a macro into an ordinary procedure, so a body meant to be
                 // spliced into the caller's scope — reading the caller's locals — becomes a call that

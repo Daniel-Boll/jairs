@@ -113,15 +113,39 @@ pub enum ContextKind {
     CCall,
 }
 
-/// The effect row of a procedure type. Inert.
+/// The effect row of a procedure type.
 ///
-/// This is defined now (in the vertical slice) even though there is no effects
-/// system, because ADR-0008 requires the slot to exist from the start: adding an
-/// effects system later would otherwise mean re-typing every signature in the
-/// compiler. It is a zero-sized placeholder that participates in procedure-type
-/// identity trivially — all effect rows are currently equal.
+/// ADR-0008 reserved this slot in the vertical slice, before there was anything to put in it, on the
+/// grounds that adding an effects system later would otherwise mean re-typing every signature in the
+/// compiler. **It is no longer inert**: ADR-0151 puts `#must` here, which is the first and smallest
+/// thing the slot was reserved for — "this call's result must be received" is an obligation on the
+/// *call*, which is precisely what an effect is.
+///
+/// # Why `#must` belongs in the type rather than in a side table
+///
+/// A call may cross a module boundary, and the caller's file has no HIR for the callee's declaration.
+/// Types are interned in one pool shared by every file (ADR-0015), so an obligation carried *by the
+/// type* reaches an imported call with no plumbing at all — while a `ProcId`-keyed table would need
+/// the same cross-file threading `imported_procs` exists to do, for one bit.
+///
+/// It also means the obligation survives a procedure being taken as a *value*: `f: (s64) -> (s64, bool)
+/// #must` and a pointer to it have the same type, so calling through the pointer keeps the check.
+/// A side table keyed on the declaration would have lost that.
+///
+/// # Why it is still not an effects system
+///
+/// One flag, not a row of named effects. ADR-0008's door stays open: adding named effects means
+/// growing this struct, which is the change it was reserved to make cheap — and `must` being a field
+/// rather than the whole struct is what keeps that true.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct EffectRow;
+pub struct EffectRow {
+    /// `true` when a call's result must be received (ADR-0151 §1).
+    ///
+    /// **Part of procedure-type identity**, which is deliberate: a `#must` procedure and an otherwise
+    /// identical one that is not are different types, so assigning one to a variable of the other's
+    /// type is a mismatch rather than a silent loss of the obligation.
+    pub must: bool,
+}
 
 // ---------------------------------------------------------------------------
 // Struct fields
@@ -497,7 +521,7 @@ pub enum Item {
         ret: PoolId,
         /// Whether the procedure takes the implicit context.
         context: ContextKind,
-        /// The inert effect row.
+        /// The effect row (ADR-0151 §1 — no longer inert; it carries `#must`).
         effects: EffectRow,
     },
 
@@ -668,13 +692,41 @@ mod tests {
         assert_eq!(size_of::<DeclId>(), 8);
     }
 
+    /// The effect row was zero-sized while it was inert, and this test asserted that.
+    ///
+    /// **That premise is now false by design** (ADR-0151 §1): the row carries `#must`, which is the
+    /// first and smallest thing ADR-0008 reserved the slot for. Asserting emptiness would now be
+    /// asserting that the slot is still unused — so the test asserts what actually matters instead,
+    /// which is that the row participates in procedure-type **identity**.
+    ///
+    /// That is the load-bearing property. If two procedure types differing only in `#must` interned to
+    /// the same `PoolId`, assigning a `#must` procedure to a variable of the unmarked type would
+    /// silently drop the obligation — the exact silent-loss shape this project keeps finding.
     #[test]
-    fn effect_row_is_zero_sized() {
-        assert_eq!(
-            size_of::<EffectRow>(),
-            0,
-            "the reserved effect row must cost nothing while it is inert"
+    fn the_effect_row_is_part_of_procedure_type_identity() {
+        let mut pool = crate::Pool::new();
+        let plain = pool.proc_type(vec![PoolId::S64], PoolId::S64, ContextKind::Jairs);
+        let must = pool.proc_type_with(
+            vec![PoolId::S64],
+            PoolId::S64,
+            ContextKind::Jairs,
+            EffectRow { must: true },
         );
+        assert_ne!(
+            plain, must,
+            "a `#must` procedure type must not intern to the same id as an unmarked one, or the \
+             obligation would be lost by assignment"
+        );
+
+        // And interning is still idempotent with the row present, which is what keeps two calls to the
+        // same `#must` procedure comparable by id.
+        let again = pool.proc_type_with(
+            vec![PoolId::S64],
+            PoolId::S64,
+            ContextKind::Jairs,
+            EffectRow { must: true },
+        );
+        assert_eq!(must, again);
     }
 
     #[test]

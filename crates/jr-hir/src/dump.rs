@@ -288,6 +288,12 @@ impl<'a> Dumper<'a> {
                 let s = self.fmt_body_expr(body, *expr_id);
                 self.line(&format!("Expr {s}"));
             }
+            // Printed as `Discard` rather than as an `Expr`, so a dump can tell an ignored result
+            // from a dropped one — the whole distinction ADR-0151 §2 turns on.
+            Stmt::Discard { value, .. } => {
+                let s = self.fmt_body_expr(body, *value);
+                self.line(&format!("Discard {s}"));
+            }
             Stmt::Assign { lhs, op, rhs, .. } => {
                 let lhs_s = self.fmt_body_expr(body, *lhs);
                 let rhs_s = self.fmt_body_expr(body, *rhs);

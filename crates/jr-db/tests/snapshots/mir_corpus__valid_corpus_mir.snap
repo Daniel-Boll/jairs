@@ -13269,3 +13269,79 @@ proc main -> void {
     discard call extern proc1(v69)
     return
 }
+
+========================================
+120-must.jr
+========================================
+proc try_divide -> (s64, bool) {
+  params: v0: *Context, v1: s64, v2: s64
+  slots:
+    s0: (s64, bool)  // temporary
+    s1: (s64, bool)  // temporary
+  bb0(v0: *Context, v1: s64, v2: s64):
+    v3: bool = v2 == 0_s64
+    branch v3 ? bb1() : bb2()
+  bb1():
+    store s0.0 <- 0_s64
+    store s0.1 <- false
+    v4: (s64, bool) = load s0
+    return v4
+  bb2():
+    goto bb3()
+  bb3():
+    v5: s64 = v1 / v2
+    store s1.0 <- v5
+    store s1.1 <- true
+    v6: (s64, bool) = load s1
+    return v6
+}
+proc only_one -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: s64 = v1 * 2_s64
+    return v2
+}
+proc bump_and_fail -> (s64, bool) {
+  params: v0: *Context, v1: *s64
+  slots:
+    s0: (s64, bool)  // temporary
+  bb0(v0: *Context, v1: *s64):
+    store (v1).* <- 4_s64
+    store s0.0 <- 0_s64
+    store s0.1 <- false
+    v2: (s64, bool) = load s0
+    return v2
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: (s64, bool)  // temporary
+    s1: s64  // local 3
+    s2: (s64) -> s64  // local 4
+  bb0(v0: *Context):
+    v1: (s64, bool) = call proc0(v0, 10_s64, 2_s64)
+    store s0 <- v1
+    v2: s64 = load s0.0
+    v3: bool = load s0.1
+    v4: s64 = 0_s64 + v2
+    branch v3 ? bb1() : bb2()
+  bb1():
+    v5: s64 = v4 + 1_s64
+    goto bb3(v5)
+  bb2():
+    goto bb3(v4)
+  bb3(v6: s64):
+    v7: s64 = call proc1(v0, 3_s64)
+    v8: s64 = v6 + v7
+    store s1 <- 0_s64
+    v9: *s64 = addr s1
+    discard call proc2(v0, v9)
+    v10: s64 = load s1
+    v11: s64 = v8 + v10
+    store s2 <- proc1
+    v12: (s64) -> s64 = load s2
+    v13: s64 = call (v12)(v0, 10_s64)
+    v14: s64 = v11 + v13
+    discard call extern proc1(v14)
+    return
+}

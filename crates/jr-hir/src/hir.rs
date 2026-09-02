@@ -674,6 +674,26 @@ pub enum Stmt {
         /// Span of the whole statement.
         span: Span,
     },
+    /// `_ = f();` — evaluate and deliberately ignore the result (ADR-0151 §2).
+    ///
+    /// A separate variant rather than a [`Stmt::Expr`] with a flag, for the reason [`Stmt::LocalTuple`]
+    /// gives about itself: every exhaustive match over `Stmt` should be forced to consider it. The two
+    /// are semantically identical — evaluate, drop — and differ only in whether the programmer *said*
+    /// so, which is exactly the distinction `#must` turns on.
+    ///
+    /// # Why a single `_` is not a one-element target list
+    ///
+    /// `_, _ = f()` reuses [`Stmt::AssignTuple`]'s `None` hole, and a one-element version of that shape
+    /// looks like it should work — but `destructured_results` refuses a single position outright
+    /// (E0251), because a destructuring statement over a single-return call is a genuine mistake worth
+    /// reporting. So the single discard needs its own form; reusing the tuple would have meant
+    /// weakening a check that catches a real error.
+    Discard {
+        /// The expression to evaluate and drop.
+        value: ExprId,
+        /// Span of the whole statement.
+        span: Span,
+    },
     /// `q, ok := f();` — declares several locals from one multi-result call (ADR-0052 §2).
     ///
     /// A separate variant rather than a generalised [`Stmt::Local`] because a *list* of targets is a
@@ -945,6 +965,12 @@ pub struct Proc {
     /// flag from here to `Projection::Index` through every pass and both back ends. A flag some of
     /// those consumers ignored would be a bounds check silently restored or silently dropped.
     pub no_abc: bool,
+    /// `true` for a `#must` procedure, whose result a call must receive (ADR-0151 §1).
+    ///
+    /// On the *declaration*, read at the **call site**: the obligation belongs to the caller, and the
+    /// caller finds it by looking at the signature — which is why nothing about this is recorded per
+    /// call and why an imported `#must` procedure works with no extra plumbing.
+    pub must: bool,
     /// `true` for a `#expand` procedure — a **macro** (ADR-0090 §1).
     ///
     /// A call to one is **spliced**: the macro's statements are lowered into the *caller's* scope rather

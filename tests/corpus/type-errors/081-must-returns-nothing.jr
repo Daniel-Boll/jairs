@@ -1,0 +1,15 @@
+// EXPECT: E0288 — `#must` on a procedure that returns nothing (ADR-0151 §3)
+//
+// There is no result to receive, so the marker can never be violated and never does anything. Accepted
+// silently, it would leave a reader believing a check is running — which is ADR-0058 §3's rule about
+// silently-ignored directives, applied to the newest one.
+//
+// Reported at the **declaration**, which is the mistake's own site, and the call-site check
+// deliberately stays quiet for a `void` callee so that one error is not also reported at every call.
+log_it :: (n: s64) #must {
+    ignored := n;
+}
+
+main :: () {
+    log_it(0);
+}
