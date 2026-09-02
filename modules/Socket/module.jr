@@ -1,0 +1,447 @@
+//! The Socket module: a TCP client and server, over `AF_INET`.
+//!
+//! Written in Jairs. PLAN §8.3 item 7, and that row said "a socket is a descriptor, so it inherits whatever
+//! `File` establishes" — which held: the descriptor lives in a one-field struct, every routine that can fail
+//! is `#must`, and `close` is not, for the reasons ADR-0157 §3 gives.
+//!
+//! # Why `sockaddr_in` is a Jairs struct passed by pointer
+//!
+//! `connect`, `bind` and `accept` take `struct sockaddr *`. A pointer crosses the `#foreign` boundary as an
+//! ordinary register scalar (ADR-0051) — it is the aggregate *by value* that E0286 refuses (ADR-0150) — so
+//! the address is declared here and its address is passed.
+//!
+//! It also works in **both engines**, unlike `Process.spawn`: the comptime VM translates a pointer argument to
+//! a host address one level deep, and one level is enough because a `Sockaddr_In` contains only integers.
+//! `Process`'s `argv` is an array of *pointers*, which is why that module is native-only (ADR-0158 §3). The
+//! difference is worth naming, because "passes a struct by pointer" sounds like the harder case and is the
+//! easier one.
+//!
+//! # The platform commitment, which is bigger here than elsewhere
+//!
+//! **The layout below is macOS's**, and it differs from Linux's in the first two bytes: BSD has
+//! `{ uint8_t sin_len; sa_family_t sin_family; }` where Linux has `{ uint16_t sin_family; }`. So a Linux build
+//! needs `family` widened to 16 bits and `length` removed — two lines, and wrong silently until then, because
+//! a mis-set family makes `connect` fail with no clue why.
+//!
+//! `AF_INET` is 2 on both. `SOCK_STREAM` is 1 on both. `SOL_SOCKET` is 0xffff on macOS and 1 on Linux;
+//! `SO_REUSEADDR` is 4 on both. Each is a named constant with its value's provenance in its own doc, the
+//! habit ADR-0155 §1 started for `CLOCK_MONOTONIC` and ADR-0157 continued for `O_CREAT`.
+//!
+//! # What is absent, and why
+//!
+//! **No name resolution.** `getaddrinfo` returns a linked list of `struct addrinfo` — pointers inside
+//! pointers — which is the shape neither the FFI refusal (ADR-0150) nor the VM's one-level translation can
+//! handle. So an address is four bytes a caller supplies, and `parse_ipv4` builds them from text. A caller who
+//! needs DNS today runs `dig` through `Process` and parses the answer, which is ugly and is at least
+//! expressible; a proper `Resolver` module wants the aggregate-crossing change (§8.1.2).
+//!
+//! **No IPv6.** `sockaddr_in6` is a bigger struct with a 16-byte address, and adding it means either a second
+//! address type or a union — a real design question, and the wrong one to answer while the aggregate boundary
+//! is still closed.
+//!
+//! **No non-blocking mode and no `select`.** Both exist to wait on several descriptors at once, which is what
+//! concurrency is for, and concurrency is W11. Offering `O_NONBLOCK` without a way to wait would hand a caller
+//! a busy loop.
+//!
+//! **No TLS.** It is not a socket feature. It is a protocol implemented over one, and it needs primitives
+//! (large-integer arithmetic, hashes, constant-time comparison) none of which exist here.
+
+#import "Basic";
+#import "File";
+
+/// A socket.
+///
+/// Deliberately a *different* type from `File.File`, even though both wrap a descriptor: a socket accepts
+/// `send`/`recv`/`shutdown` and a file accepts `seek`, and the type is what stops a caller seeking a socket.
+/// The cost is that a caller wanting `File`'s routines on a socket cannot have them, which is the right way
+/// round — the overlap is smaller than it looks.
+Socket :: struct {
+    /// The OS descriptor. Negative when the socket is not open.
+    fd: s64;
+}
+
+/// A BSD `struct sockaddr_in`, exactly as macOS lays it out. See the module docs for the Linux difference.
+Sockaddr_In :: struct {
+    /// `sin_len` — the structure's own size. BSD only; Linux has no such field.
+    length: u8;
+    /// `sin_family` — `AF_INET`. One byte on BSD, two on Linux.
+    family: u8;
+    /// `sin_port` — the port, in **network byte order**. Use `to_network_port`.
+    port: u16;
+    /// `sin_addr` — the IPv4 address, in network byte order. Use `parse_ipv4` or `ANY_ADDRESS`.
+    address: u32;
+    /// `sin_zero` — eight bytes that must be zero. Present because the structure's size is part of its
+    /// contract: `connect` is told 16 bytes and reads them.
+    zero_a: u32;
+    /// The second half of `sin_zero`.
+    zero_b: u32;
+}
+
+/// `AF_INET` — IPv4. 2 on macOS and Linux.
+AF_INET :: 2;
+
+/// `SOCK_STREAM` — a reliable byte stream, which is TCP here. 1 on macOS and Linux.
+SOCK_STREAM :: 1;
+
+/// `SOL_SOCKET`, for `set_reuse_address`. **0xffff on macOS**, 1 on Linux.
+SOL_SOCKET :: 65535;
+
+/// `SO_REUSEADDR`. 4 on macOS and Linux.
+SO_REUSEADDR :: 4;
+
+/// `SHUT_RD` — stop receiving.
+SHUT_READ :: 0;
+
+/// `SHUT_WR` — stop sending, which sends the peer an end-of-stream.
+SHUT_WRITE :: 1;
+
+/// `SHUT_RDWR` — both.
+SHUT_BOTH :: 2;
+
+/// The size a `sockaddr_in` reports and the syscalls are told.
+///
+/// Sixteen bytes: 1 + 1 + 2 + 4 + 8. `size_of(Sockaddr_In)` would compute it, and this is written out and
+/// *checked against* `size_of` by the corpus program — because the C contract is "16", and a Jairs struct
+/// whose layout drifted from that would be a wrong answer rather than a compile error.
+SOCKADDR_IN_SIZE :: 16;
+
+/// Whether the Jairs `Sockaddr_In` above is laid out as the 16 bytes C's `sockaddr_in` is.
+///
+/// Answered **here**, where the struct is declared, rather than by a caller — for two reasons. It belongs
+/// beside the layout it describes, so any program importing this module can ask without knowing the fields;
+/// and `size_of` of an *imported* type is not available in every context that reads a consumer (the `jr-sema`
+/// corpus harness resolves a file with no module paths, so the type has no size there), which would make a
+/// caller-side check fail for a reason unrelated to the layout.
+///
+/// A **procedure** rather than a file-level constant, which was the first attempt: a file-scope
+/// `LAYOUT :: size_of(Sockaddr_In) == …;` reports "a name failed to resolve at file scope" from const-eval,
+/// because a file-level constant's MIR does not see the struct declaration the way a body does. Recorded
+/// rather than worked around silently — it is a real limit on what a file-scope constant can compute.
+///
+/// It returns a value rather than failing the build because this language has no `#assert`. `valid/129` reads
+/// it, so a layout drift shows up as a failing corpus program rather than as wrong bytes on the wire.
+layout_is_c_compatible :: () -> bool {
+    return size_of(Sockaddr_In) == SOCKADDR_IN_SIZE;
+}
+
+/// Bind to every local address — `INADDR_ANY`, which is zero and so needs no byte-order care.
+ANY_ADDRESS :: 0;
+
+/// The loopback address, `127.0.0.1`, already in network byte order.
+///
+/// Network order is big-endian, so `127.0.0.1` is the bytes `7f 00 00 01` — which read as a little-endian
+/// `u32` is `0x0100007f`. Written as that literal rather than composed with shifts, because composing it
+/// invites getting the direction wrong once and never noticing on a symmetric address.
+LOOPBACK_ADDRESS :: 16777343;
+
+/// libc `socket(2)`.
+socket_raw :: (domain: s64, kind: s64, protocol: s64) -> s64 #foreign libc "socket";
+
+/// libc `connect(2)`. Takes the address **by pointer**, which crosses the boundary fine.
+connect_raw :: (fd: s64, address: *Sockaddr_In, length: s64) -> s64 #foreign libc "connect";
+
+/// libc `bind(2)`.
+bind_raw :: (fd: s64, address: *Sockaddr_In, length: s64) -> s64 #foreign libc "bind";
+
+/// libc `listen(2)`.
+listen_raw :: (fd: s64, backlog: s64) -> s64 #foreign libc "listen";
+
+/// libc `accept(2)`. Both out-parameters are null here — a caller who wants the peer's address can ask the
+/// socket later, and passing null is what C permits for exactly this case.
+accept_raw :: (fd: s64, address: *Sockaddr_In, length: *s64) -> s64 #foreign libc "accept";
+
+/// libc `send(2)`.
+send_raw :: (fd: s64, buffer: *u8, count: s64, flags: s64) -> s64 #foreign libc "send";
+
+/// libc `recv(2)`.
+recv_raw :: (fd: s64, buffer: *u8, count: s64, flags: s64) -> s64 #foreign libc "recv";
+
+/// libc `shutdown(2)`.
+shutdown_raw :: (fd: s64, how: s64) -> s64 #foreign libc "shutdown";
+
+/// libc `setsockopt(2)`. The value is an `int` by pointer, which is a `*s64` here — see `set_reuse_address`.
+setsockopt_raw :: (fd: s64, level: s64, option: s64, value: *u8, length: s64) -> s64 #foreign libc "setsockopt";
+
+/// libc `getsockname(2)`, for reading back the port the OS chose when a caller bound port 0.
+getsockname_raw :: (fd: s64, address: *Sockaddr_In, length: *s64) -> s64 #foreign libc "getsockname";
+
+/// A TCP socket, unconnected and unbound.
+///
+/// `#must`: a caller holding a socket with a negative descriptor gets a failure from every later call, one
+/// level removed from the cause.
+make :: () -> (Socket, bool) #must {
+    s: Socket;
+    s.fd = -1;
+    fd := socket_raw(AF_INET, SOCK_STREAM, 0);
+    if fd < 0 {
+        return s, false;
+    }
+    s.fd = fd;
+    return s, true;
+}
+
+/// An address for `port` on `address`, filled in and ready to pass.
+///
+/// A constructor rather than leaving the six fields to a caller, because `sin_len`, the byte order and the
+/// two zero words are all things a caller would have to know about a C structure to get right — and the two
+/// zero words in particular are invisible until `connect` fails.
+address_for :: (address: u32, port: s64) -> Sockaddr_In {
+    a: Sockaddr_In;
+    a.length = cast(u8, SOCKADDR_IN_SIZE);
+    a.family = cast(u8, AF_INET);
+    a.port = to_network_port(port);
+    a.address = address;
+    a.zero_a = cast(u32, 0);
+    a.zero_b = cast(u32, 0);
+    return a;
+}
+
+/// A port in network (big-endian) byte order.
+///
+/// `htons` by hand rather than by `#foreign`, for two reasons that both matter. `htons` is a **macro** on some
+/// platforms, so there may be no symbol to bind — the same reason `Process` decodes `waitpid`'s status itself.
+/// And the swap is two operations, so a binding would cost a foreign call to save nothing.
+///
+/// This assumes a **little-endian host**, which arm64 and x86-64 both are. On a big-endian host the swap must
+/// not happen, and there is no way to ask at compile time today — named rather than hidden.
+to_network_port :: (port: s64) -> u16 {
+    low := port % 256;
+    high := port / 256 % 256;
+    return cast(u16, low * 256 + high);
+}
+
+/// A port read back from network byte order.
+from_network_port :: (port: u16) -> s64 {
+    raw := cast(s64, port);
+    low := raw % 256;
+    high := raw / 256 % 256;
+    return low * 256 + high;
+}
+
+/// Parses `"a.b.c.d"` into an address in network byte order.
+///
+/// Written here rather than through `inet_pton`, which takes a `void *` out-parameter — passable, but the
+/// parse is fifteen lines and this way the **refusals are ours**: `inet_aton` accepts `"1.2.3"` and `"0x7f.1"`
+/// as addresses, which is a documented historical quirk and not something a caller expects. This takes exactly
+/// four decimal octets.
+parse_ipv4 :: (text: string) -> (u32, bool) {
+    value := 0;
+    octets := 0;
+    at := 0;
+    while octets < 4 {
+        if at >= text.count {
+            return cast(u32, 0), false;
+        }
+        digit_start := at;
+        octet := 0;
+        while at < text.count {
+            c := cast(s64, (text.data + at).*);
+            if c < 48 {
+                break;
+            }
+            if c > 57 {
+                break;
+            }
+            octet = octet * 10 + (c - 48);
+            if octet > 255 {
+                return cast(u32, 0), false;
+            }
+            at = at + 1;
+        }
+        if at == digit_start {
+            return cast(u32, 0), false;
+        }
+        // Network order is big-endian, so the **first** octet is the least significant byte of the
+        // little-endian word the struct field holds. Shifting the other way is the classic mistake and it
+        // produces a valid-looking address that reaches the wrong host.
+        value = value + octet * power_of_256(octets);
+        octets = octets + 1;
+        if octets < 4 {
+            if at >= text.count {
+                return cast(u32, 0), false;
+            }
+            if cast(s64, (text.data + at).*) != 46 {
+                return cast(u32, 0), false;
+            }
+            at = at + 1;
+        }
+    }
+    // Trailing content is a refusal: `"1.2.3.4x"` is not an address, and accepting a prefix is how a typo
+    // becomes a connection to somewhere else.
+    if at != text.count {
+        return cast(u32, 0), false;
+    }
+    return cast(u32, value), true;
+}
+
+/// Connects `s` to `address` on `port`.
+connect_to :: (s: *Socket, address: u32, port: s64) -> bool #must {
+    if s.fd < 0 {
+        return false;
+    }
+    target := address_for(address, port);
+    return connect_raw(s.fd, *target, SOCKADDR_IN_SIZE) == 0;
+}
+
+/// Binds `s` to `port` on `address`, and starts listening with `backlog` pending connections.
+///
+/// One routine rather than `bind` then `listen`, because a bound socket that is not listening refuses every
+/// connection and there is no reason a caller would want that state — and splitting them is how a caller
+/// forgets the second half.
+listen_on :: (s: *Socket, address: u32, port: s64, backlog: s64) -> bool #must {
+    if s.fd < 0 {
+        return false;
+    }
+    local := address_for(address, port);
+    if bind_raw(s.fd, *local, SOCKADDR_IN_SIZE) != 0 {
+        return false;
+    }
+    return listen_raw(s.fd, backlog) == 0;
+}
+
+/// Accepts one connection. Blocks.
+accept_one :: (s: *Socket) -> (Socket, bool) #must {
+    peer: Socket;
+    peer.fd = -1;
+    if s.fd < 0 {
+        return peer, false;
+    }
+    // Null for both out-parameters: C permits it, and a caller who wants the peer's address has no use for
+    // it that this module offers. Assigned explicitly rather than left declared — a declaration alone is
+    // uninitialised and reading it is E0227, which is the checker doing exactly its job here.
+    empty: *Sockaddr_In = null;
+    length: *s64 = null;
+    fd := accept_raw(s.fd, empty, length);
+    if fd < 0 {
+        return peer, false;
+    }
+    peer.fd = fd;
+    return peer, true;
+}
+
+/// The port `s` is bound to.
+///
+/// The routine that makes binding **port 0** usable: the OS chooses a free port and this reads it back, which
+/// is how a test opens a server without picking a number that might be in use. Without it, a caller has to
+/// hard-code a port and hope — which is the shape that makes a test suite fail on a busy machine.
+local_port :: (s: *Socket) -> (s64, bool) #must {
+    if s.fd < 0 {
+        return 0, false;
+    }
+    local: Sockaddr_In;
+    length := SOCKADDR_IN_SIZE;
+    if getsockname_raw(s.fd, *local, *length) != 0 {
+        return 0, false;
+    }
+    return from_network_port(local.port), true;
+}
+
+/// Lets a listening socket rebind a port still in `TIME_WAIT`.
+///
+/// Without it, a server that restarts within a couple of minutes fails to bind — which every server wants and
+/// every first implementation forgets.
+set_reuse_address :: (s: *Socket) -> bool #must {
+    if s.fd < 0 {
+        return false;
+    }
+    // `setsockopt` wants a pointer to an `int` — **four** bytes, not eight. A `*s64` would pass eight and, on
+    // a little-endian host, the low four happen to be right; that accident is exactly what this project calls
+    // a silent wrong answer, so the value is a `u32` and the length says four.
+    on := cast(u32, 1);
+    return setsockopt_raw(s.fd, SOL_SOCKET, SO_REUSEADDR, untyped(*on), 4) == 0;
+}
+
+/// Sends `bytes`, returning how many went and whether the call succeeded.
+///
+/// A short send is success, as it is for `File.write` and for the same reason. `send_all` loops.
+send :: (s: *Socket, bytes: []u8) -> (s64, bool) #must {
+    if s.fd < 0 {
+        return 0, false;
+    }
+    if bytes.count == 0 {
+        return 0, true;
+    }
+    n := send_raw(s.fd, *bytes[0], bytes.count, 0);
+    if n < 0 {
+        return 0, false;
+    }
+    return n, true;
+}
+
+/// Sends every byte of `bytes`.
+send_all :: (s: *Socket, bytes: []u8) -> bool #must {
+    at := 0;
+    while at < bytes.count {
+        n, ok := send(s, view(*bytes[at], bytes.count - at));
+        if !ok {
+            return false;
+        }
+        if n == 0 {
+            return false;
+        }
+        at = at + n;
+    }
+    return true;
+}
+
+/// Sends a string's bytes.
+send_string :: (s: *Socket, text: string) -> bool #must {
+    return send_all(s, view(text.data, text.count));
+}
+
+/// Receives up to `buffer.count` bytes.
+///
+/// **Zero means the peer closed**, which is a success and not an error — the same shape `File.read` has at end
+/// of file, and the reason a caller loops until it sees zero rather than until a failure.
+receive :: (s: *Socket, buffer: []u8) -> (s64, bool) #must {
+    if s.fd < 0 {
+        return 0, false;
+    }
+    if buffer.count == 0 {
+        return 0, true;
+    }
+    n := recv_raw(s.fd, *buffer[0], buffer.count, 0);
+    if n < 0 {
+        return 0, false;
+    }
+    return n, true;
+}
+
+/// Stops one or both directions. `SHUT_WRITE` is how a caller says "I am done sending".
+shutdown_socket :: (s: *Socket, how: s64) -> bool #must {
+    if s.fd < 0 {
+        return false;
+    }
+    return shutdown_raw(s.fd, how) == 0;
+}
+
+/// Closes `s`. Returns the OS status, and is not `#must` — ADR-0157 §3's reasoning, unchanged.
+close_socket :: (s: *Socket) -> s64 {
+    if s.fd < 0 {
+        return 0;
+    }
+    status := close_raw(s.fd);
+    s.fd = -1;
+    return status;
+}
+
+/// Whether `s` is open.
+is_open :: (s: *Socket) -> bool {
+    return s.fd >= 0;
+}
+
+#scope_module
+
+/// 256 to the `n`, for `parse_ipv4`'s octet placement.
+///
+/// A loop rather than a shift, because this language has no `<<` on a `u32` that would read more clearly, and
+/// four iterations is not worth a table.
+power_of_256 :: (n: s64) -> s64 {
+    value := 1;
+    i := 0;
+    while i < n {
+        value = value * 256;
+        i = i + 1;
+    }
+    return value;
+}

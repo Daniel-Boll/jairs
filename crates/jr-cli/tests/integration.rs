@@ -1124,3 +1124,91 @@ fn bench_throughput_measures_a_set_and_refuses_an_empty_one() {
         "the refusal must say what was missing: {error}"
     );
 }
+
+/// `Process.run` starts a child, waits for it, and decodes its status — **in a compiled binary**.
+///
+/// # Why this is not a corpus program
+///
+/// `tests/corpus/valid/` exists on the premise that both engines agree, and `Process.spawn` cannot hold that
+/// premise: `execvp`'s second argument is an **array of pointers**, and the comptime VM translates a foreign
+/// call's pointer argument to a host address one level deep (ADR-0061's own region). It cannot know the bytes
+/// behind that pointer contain more pointers, so libc receives region-relative garbage for every argument
+/// string, `execvp` fails, and the child exits `EXEC_FAILED`. Natively there is no translation and nothing to
+/// get wrong.
+///
+/// So the test builds and runs the binary, which is the same reasoning ADR-0126 used when the VM trapped
+/// where native code wrote short: a program whose two engines legitimately differ has no home in `valid/`.
+/// ADR-0158 §3 records it and PLAN's known-defects list carries the limitation.
+///
+/// # What it asserts
+///
+/// Four bits, through the **exit status**, because that is the one channel a compiled binary and this harness
+/// certainly share: a successful child, a failing child's exact code, a missing command reported as 127
+/// through the same status channel as any other failure, and arguments actually reaching the child.
+#[test]
+fn process_run_starts_a_child_and_decodes_its_status() {
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("spawn.jr");
+    fs::write(
+        &source,
+        r#"#import "Basic";
+#import "Process";
+main :: () {
+    total := 0;
+
+    ok_argv: [1]string;
+    ok_argv[0] = "/usr/bin/true";
+    ok_status, ok_ran := run(view(*ok_argv[0], 1));
+    if ok_ran { if succeeded(ok_status) { total = total + 1; } }
+
+    no_argv: [1]string;
+    no_argv[0] = "/usr/bin/false";
+    no_status, no_ran := run(view(*no_argv[0], 1));
+    if no_ran {
+        if no_status.exited { if no_status.code == 1 { total = total + 2; } }
+    }
+
+    // A command that cannot be executed is reported through the *status*, as 127 — the shell's convention,
+    // so a caller who only looks at the status still gets a sensible answer rather than a mystery.
+    missing: [1]string;
+    missing[0] = "jr-definitely-not-a-command";
+    missing_status, missing_ran := run(view(*missing[0], 1));
+    if missing_ran { if missing_status.code == 127 { total = total + 4; } }
+
+    // Arguments reach the child: `test 1 -eq 1` succeeds and `test 1 -eq 2` exits 1, so the vector is being
+    // built and terminated correctly rather than merely being non-empty.
+    args: [4]string;
+    args[0] = "/bin/test";
+    args[1] = "1";
+    args[2] = "-eq";
+    args[3] = "1";
+    eq_status, eq_ran := run(view(*args[0], 4));
+    args[3] = "2";
+    ne_status, ne_ran := run(view(*args[0], 4));
+    if eq_ran {
+        if ne_ran {
+            if succeeded(eq_status) { if ne_status.code == 1 { total = total + 8; } }
+        }
+    }
+
+    exit(total);
+}
+"#,
+    )
+    .unwrap();
+
+    let binary = dir.path().join("spawn");
+    assert_eq!(
+        run_build(source, Some(binary.clone())),
+        0,
+        "the program must compile"
+    );
+    let status = std::process::Command::new(&binary)
+        .status()
+        .expect("the built binary should run");
+    assert_eq!(
+        status.code(),
+        Some(15),
+        "all four checks must pass in a compiled binary; a lower value names which bit failed"
+    );
+}
