@@ -345,6 +345,15 @@ fn imports_invalid_corpus_fails() {
         // `PoolId::ERROR`, and `ERROR` matches anything) and the missing instantiation leaked out of an
         // engine as "no routine for file 2 proc 0".
         "imports/invalid/017-cross-file-instantiation.jr",
+        // `$$` in a **return** type (ADR-0168 §1). Here for the stage reason E0262 is: E0290 comes out of
+        // **lowering**, so `type-errors/`' harness would fail it for not lowering cleanly before ever checking
+        // the code it declares — which is exactly what happened when this file was filed there first.
+        //
+        // What it pins is a *diagnostic that replaced an ICE*: `-> $$T` checked clean and the call died with
+        // "no routine for file 0 proc 3", the tenth instance of internals leaking for a legal-looking program.
+        // Found by probing PLAN's wave table, which said `$$T` was undelivered while `AGENTS.md` said it
+        // shipped: the *parameter* had shipped (`valid/110`) and the *return* had never been tried.
+        "imports/invalid/018-comptime-poly-return.jr",
     ] {
         let code = check_with_modules(vec![corpus_path(file)], Some("modules"));
         assert_eq!(code, 1, "{file} must report an error");

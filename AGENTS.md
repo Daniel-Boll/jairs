@@ -212,6 +212,39 @@ seam** — `List` and `Map` use `malloc`, `String` uses the context — which `J
 straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field of a call's **result**, does
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
+**ADR-0168 holds at 1059** and adds one corpus file = **254**. Not a wave: a defect found by auditing this file
+and `PLAN.md` against each other at W10's close, and the most instructive entry here for a reader who wants to
+know how much to trust a document.
+
+> **This sentence was wrong when first written**, and the error is the ADR's own subject. It said "holds at 253 —
+> the fixture *moved* directories rather than being added", reasoning that `type-errors/` lost one as
+> `imports/invalid/` gained one. But the fixture was only ever *briefly* in `type-errors/` inside this same
+> session, so that directory's count never changed and the total went 253 → 254. Caught by **measuring** rather
+> than by reasoning, one screen after an ADR arguing that a claim about the code is only as good as the last time
+> someone ran it. The reasoning was plausible and the count was not.
+
+**Three of PLAN's inline `[NOT DELIVERED]` markers were stale** — `it`/`it_index` (ADR-0133/0135), `[..]T`
+(ADR-0136/0140) and `$$T` (ADR-0137) had all shipped. That is this project's rot **one level up from where it is
+usually warned about**: those markers were *added* in one wave to correct a different rot, and then went stale
+themselves.
+
+**Each was re-verified by probe, because this file and PLAN disagreed** — the table said `$$T` was undelivered,
+this file said ADR-0137 delivered it. Both were partly right, and only running it established which part. So:
+**two documents disagreeing is a signal to probe, never to pick**, and a claim about the code is only as good as
+the last time someone ran it.
+
+**The probe found an ICE.** `$$T` as a *parameter* works (`valid/110`); `$$T` as a **return** type checked clean
+and the call died with `internal compiler error: no routine for file 0 proc 3` — the **tenth** instance of the
+leaked-internal-error shape, in a position nobody had ever written. It is now **E0290**, and it is *refused*
+rather than implemented: `$$` is `$` plus "and the argument is a compile-time constant", and a return has no
+argument, so the construct is **meaningless** rather than unimplemented — which is the strongest case there is for
+a diagnostic. The check walks the result list too, so `-> (s64, $$T)` cannot reach the ICE by one extra character.
+
+**The fixture moved from `type-errors/` to `imports/invalid/`**, where it failed two harness assertions first: that
+directory's contract is "parses, lowers and resolves cleanly, rejected by *sema*", and E0290 comes out of
+lowering. The rule was met by **moving the file, not weakening it** — the sixth such move, after E0250, E0262,
+E0271, E0273 and E0276.
+
 **ADR-0167 reaches 1059**, still **253** corpus files, adds the **nineteenth** module — and **closes W10 —
 Graphics**, four waves: `Window` + 2D renderer (ADR-0164), the event loop (ADR-0165), `UI` (ADR-0166), `Image`
 (ADR-0167).
@@ -627,7 +660,12 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0290 is the first free code**; E0134 is the first free *parser* code. E0286 is a `#foreign` signature
+**E0291 is the first free code**; E0134 is the first free *parser* code. **E0290** refuses `$$` in a **return**
+type — **owned by `jr-hir`**, continuing its block, because the validity of a type decoration at a declaration
+site is judged where the signature is built. It was a leaked internal error until an audit of PLAN's wave table
+probed it: that table said `$$T` was "NOT DELIVERED — E0107" while this file said ADR-0137 delivered it, and both
+were partly right — the *parameter* works and is exercised by `valid/110`, the *return* position had never been
+tried and died with `no routine for file 0 proc 3` (ADR-0168). E0286 is a `#foreign` signature
 carrying a type with no C representation (ADR-0150), E0287 a discarded `#must` result and E0288 `#must` on
 a `void` procedure (ADR-0151). E0285 is `#simd`'s single
 refusal (ADR-0148) — a width that is not one machine register, an element a lane cannot hold, integer

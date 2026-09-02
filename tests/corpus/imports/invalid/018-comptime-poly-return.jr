@@ -1,0 +1,33 @@
+// EXPECT: E0290 — `$$` in a return type (ADR-0168 §1)
+//
+// `$$` is `$` plus "and the argument is a compile-time constant" (ADR-0137 §1), so it marks a **parameter** —
+// there is an argument there to bake. A return has no argument, so the second `$` has nothing to say and
+// `-> $$T` is `-> $T` with a typo in front of it.
+//
+// **This file exists because the construct was a leaked internal error.** It checked clean and the *call* died
+// with `internal compiler error: no routine for file 0 proc 3`, which is the shape AGENTS.md records as this
+// project's most frequent and this is its tenth instance. Found while auditing PLAN's wave table: that table
+// said `$$T` was "NOT DELIVERED — E0107" while AGENTS.md said ADR-0137 delivered it, and both were partly
+// right — the parameter works, the return position was never tried.
+//
+// A `$$T` **parameter** is legal and is exercised by `valid/110`, so this file is only about the return. The
+// second refusal below is the result-list form, which a check on a bare type would miss.
+//
+// **Filed here rather than under `type-errors/`** for the stage reason E0262 and E0273 are: that directory's
+// contract is that its files "parse, lower and resolve cleanly" and are rejected by *sema*. E0290 comes out of
+// **lowering**, so that harness failed this file for not lowering cleanly before ever checking the code it
+// declares — which is what happened when it was filed there first, and the rule was met by moving the file
+// rather than by weakening it.
+
+identity :: (x: $$T) -> $$T {
+    return x;
+}
+
+pair :: (x: $$T) -> (s64, $$T) {
+    return 1, x;
+}
+
+main :: () {
+    a := identity(7);
+    b, c := pair(9);
+}
