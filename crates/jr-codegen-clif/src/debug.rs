@@ -250,6 +250,9 @@ pub struct FunctionSubprogram {
     pub line: u32,
     /// The return type's description index, when it has one.
     pub ret: Option<usize>,
+    /// Each named local: its name, its type description index, and its offset from the frame base
+    /// (ADR-0174 §2).
+    pub variables: Vec<(String, usize, i64)>,
 }
 
 /// One compiled function's contribution to the line table.
@@ -373,6 +376,7 @@ pub fn emit(
     comp_dir: &str,
     primary: &str,
     endian: RunTimeEndian,
+    frame_pointer: gimli::Register,
 ) -> Result<(), gimli::write::Error> {
     if vocabulary.is_empty() && types.is_empty() {
         return Ok(());
@@ -447,7 +451,14 @@ pub fn emit(
     let mut unit = DwarfUnit::new(encoding);
     unit.unit.line_program = program;
     let root = unit.unit.root();
-    write_types_and_subprograms(&mut unit, root, types, subprograms, &mut symbols);
+    write_types_and_subprograms(
+        &mut unit,
+        root,
+        types,
+        subprograms,
+        &mut symbols,
+        frame_pointer,
+    );
     unit.unit.get_mut(root).set(
         gimli::DW_AT_name,
         AttributeValue::String(primary.as_bytes().to_vec()),
@@ -527,6 +538,7 @@ fn write_types_and_subprograms(
     types: &TypeDescriptions,
     subprograms: &[FunctionSubprogram],
     symbols: &mut Vec<object::write::SymbolId>,
+    frame_pointer: gimli::Register,
 ) {
     // Pass one: a DIE per description, children of the unit root.
     let mut ids = Vec::with_capacity(types.entries.len());
@@ -627,6 +639,34 @@ fn write_types_and_subprograms(
         }
         // Marked external, so a consumer treats it as a definition rather than a nested declaration.
         die.set(gimli::DW_AT_external, AttributeValue::Flag(true));
+
+        if !subprogram.variables.is_empty() {
+            // **The frame base is the frame-pointer register** (ADR-0174 §2), so each variable's location is
+            // `DW_OP_fbreg <offset from FP>`. `DW_OP_call_frame_cfa` would be more idiomatic and needs
+            // `.eh_frame`, which this compiler does not emit — so the CFA is not available to point at and the
+            // register is the honest base.
+            let mut base = gimli::write::Expression::new();
+            base.op_reg(frame_pointer);
+            unit.unit
+                .get_mut(id)
+                .set(gimli::DW_AT_frame_base, AttributeValue::Exprloc(base));
+
+            for (name, ty, offset) in &subprogram.variables {
+                let target = ids.get(*ty).copied();
+                let variable = unit.unit.add(id, gimli::DW_TAG_variable);
+                let mut location = gimli::write::Expression::new();
+                location.op_fbreg(*offset);
+                let die = unit.unit.get_mut(variable);
+                die.set(
+                    gimli::DW_AT_name,
+                    AttributeValue::String(name.as_bytes().to_vec()),
+                );
+                die.set(gimli::DW_AT_location, AttributeValue::Exprloc(location));
+                if let Some(target) = target {
+                    die.set(gimli::DW_AT_type, AttributeValue::UnitRef(target));
+                }
+            }
+        }
     }
 }
 

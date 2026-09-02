@@ -23,5 +23,6 @@ cranelift-module.workspace = true
 cranelift-native.workspace = true
 cranelift-object.workspace = true
 gimli.workspace = true
+target-lexicon.workspace = true
 object.workspace = true
 rustc-hash.workspace = true

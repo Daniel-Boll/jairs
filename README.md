@@ -18,6 +18,19 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
+**Both compilers now show a local variable at its real place on the stack.** The second one needed a small piece
+of care worth mentioning: it reports a variable's position measured from the bottom of the stack frame, while the
+debug format measures from a reference point near the top. Reconciling those is one subtraction, and getting it
+wrong produces a location that looks perfectly valid and reads the wrong memory — so the test checks the sign of
+the result rather than merely that a location is present.
+
+It also corrected something written an hour earlier. An earlier note concluded, from a single test program, that
+a structure-typed local could never be shown by name. That was too strong: it depends on how the variable is
+used. One passed to a function by value is shown; one only assigned field by field is not. A negative result from
+one program is evidence about that program — generalising it needs a second program that differs in the suspected
+way, and here that program was one line away. This is the second time in one sitting that the project's habit of
+writing the thing before planning around it caught its own freshly written conclusion.
+
 **Both compilers now describe a struct to a debugger, and they agree** — the same field names at the same byte
 offsets, produced by two implementations with nothing in common. One asks LLVM to write the description; the
 other writes the bytes itself. The offsets in both come from the single function the compiler uses to generate a
@@ -85,7 +98,7 @@ debug section placed outside the segment reserved for it does not merely get ign
 the linker lays it out among real pointers.
 
 Last updated with **W10 — Graphics DONE** (W6 — Metaprogram, W7 — Stdlib, W8 — Performance and W9 — Tooling
-depth were already), 1065 tests green — 1069 with the LLVM back end compiled in, and nineteen library modules.
+depth were already), 1066 tests green — 1070 with the LLVM back end compiled in, and nineteen library modules.
 **Two waves remain: W11 — Concurrency, and W12 — Debug info, which is now under way.**
 
 Graphics arrived in four steps, on a foundation the plan had wrong: a window and a 2D renderer, an event loop,

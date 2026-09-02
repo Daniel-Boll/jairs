@@ -2391,12 +2391,13 @@ main :: () {
 /// W12's "locals through value labels" item is for: a register location is a different DWARF expression, not a
 /// missing call.
 ///
-/// The second version added an **aggregate** local, expecting it to escape and be named. It escapes and is
-/// *not* named — its MIR slot carries no `LocalId`, so nothing connects it back to a source name. That is a
-/// MIR-side gap rather than an emission one, and it is asserted **negatively** at the end so the boundary is
-/// pinned rather than rediscovered.
+/// The second version added an **aggregate** local, expecting it to escape and be named. In *this* program it is
+/// not — and ADR-0174 §3 establishes why: whether an aggregate's slot is bound to its local depends on how the
+/// aggregate is **used**. One passed by value to a procedure is bound and *is* named; one only field-assigned
+/// and read, as `pair` is here, is not. So the negative assertion at the end pins this program's shape rather
+/// than aggregates in general — ADR-0172 §3 claimed the general form and was wrong.
 ///
-/// Both were found by writing the test, which is why it names one local and documents two absences.
+/// Both boundaries were found by writing the test, which is why it names one local and pins two shapes.
 ///
 /// # What has to line up
 ///
@@ -2516,14 +2517,14 @@ main :: () {
         !temporary,
         "a compiler temporary must not be declared; got {names:?}"
     );
-    // **Pinned, not accepted quietly**: an aggregate local escapes to a stack slot and is still unnamed,
-    // because that slot carries no `LocalId`. When MIR starts recording it this assertion fails, and whoever
-    // fixed it is told to invert the line — which is the point of asserting an absence rather than omitting
-    // the case and letting the next reader rediscover it.
+    // **Pinned, not accepted quietly.** An aggregate used only by field assignment gets no slot bound to its
+    // local, so it is unnamed — while one *passed to a procedure* is bound and is named (ADR-0174 §3, which
+    // corrects ADR-0172 §3's more general claim). When MIR binds this shape too, the assertion fails and
+    // whoever changed it is told to invert the line.
     assert!(
         !names.contains(&"pair"),
-        "an aggregate local is not yet named — if it now is, MIR started recording its LocalId and this \
-         assertion should be inverted; got {names:?}"
+        "an aggregate used only by field assignment is not yet named — if it now is, MIR started binding \
+         its slot and this assertion should be inverted; got {names:?}"
     );
 }
 
@@ -2690,4 +2691,129 @@ fn read_dies(path: &std::path::Path) -> (Vec<StructLayout>, Vec<String>) {
         }
     }
     (structs, subprograms)
+}
+
+/// A Cranelift-compiled local reaches DWARF with its name and a frame-relative location (ADR-0174).
+///
+/// # Why the location is the assertion that matters
+///
+/// Cranelift reports a stack slot's offset from the **bottom of the frame**, and DWARF's `DW_OP_fbreg` is
+/// relative to whatever the subprogram declares as its frame base — here the frame-pointer register. The two
+/// have to be reconciled by subtracting `frame_to_fp_offset`, and getting that wrong produces a location that
+/// parses perfectly and reads the wrong memory. **A negative offset is the observable consequence of doing it
+/// right**, because every stack slot sits below the frame pointer — so that is what this asserts, rather than
+/// merely that a location attribute exists.
+///
+/// The slot is correlated to its MIR index by a `StackSlotKey`, not by creation order: this back end also
+/// creates unkeyed slots for aggregate temporaries, so order would be an assumption, and a wrong one would name
+/// a local after somebody else's storage.
+#[test]
+fn a_cranelift_local_reaches_dwarf_with_a_frame_location() {
+    use gimli::EndianSlice;
+    use gimli::Reader as _;
+    use object::{Object as _, ObjectSection as _};
+
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("locals.jr");
+    fs::write(
+        &source,
+        r#"#import "Basic";
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+sum :: (p: Point) -> s64 {
+    return p.x + p.y;
+}
+
+main :: () {
+    // Passed by value, so its slot is bound to the local and it is named (ADR-0174 §3).
+    q: Point;
+    q.x = 9;
+    q.y = 4;
+
+    // Address taken, so it escapes to a slot too.
+    total := sum(q);
+    view := *total;
+    exit(view.*);
+}
+"#,
+    )
+    .unwrap();
+
+    let object_path = dir.path().join("locals.o");
+    let code = run_build_emit_object(source, object_path.clone());
+    assert_eq!(code, 0, "the object must be emitted");
+
+    let bytes = fs::read(&object_path).expect("the object should exist");
+    let file = object::File::parse(&*bytes).expect("the object should parse");
+    let endian = if file.is_little_endian() {
+        gimli::RunTimeEndian::Little
+    } else {
+        gimli::RunTimeEndian::Big
+    };
+    let load = |id: gimli::SectionId| -> Result<EndianSlice<'_, gimli::RunTimeEndian>, ()> {
+        let name = id.name();
+        let macho = format!("__{}", name.trim_start_matches('.'));
+        let data = file
+            .sections()
+            .find(|s| matches!(s.name(), Ok(n) if n == name || n == macho.as_str()))
+            .and_then(|s| s.data().ok())
+            .unwrap_or(&[]);
+        Ok(EndianSlice::new(data, endian))
+    };
+    let dwarf = gimli::Dwarf::load(load).expect("the DWARF should load");
+
+    let mut found: Vec<(String, bool)> = Vec::new();
+    let mut frame_bases = 0usize;
+    let mut units = dwarf.units();
+    while let Some(header) = units.next().expect("units should parse") {
+        let unit = dwarf.unit(header).expect("the unit should parse");
+        let mut entries = unit.entries();
+        while let Some(entry) = entries.next_dfs().expect("entries should walk") {
+            if entry.tag() == gimli::DW_TAG_subprogram
+                && entry.attr_value(gimli::DW_AT_frame_base).is_some()
+            {
+                frame_bases += 1;
+            }
+            if entry.tag() != gimli::DW_TAG_variable {
+                continue;
+            }
+            let name = entry
+                .attr(gimli::DW_AT_name)
+                .and_then(|a| a.string_value(&dwarf.debug_str))
+                .map(|s| String::from_utf8_lossy(s.slice()).into_owned())
+                .unwrap_or_default();
+            let negative = match entry.attr_value(gimli::DW_AT_location) {
+                Some(gimli::AttributeValue::Exprloc(expression)) => {
+                    let mut operations = expression.0;
+                    // `0x91` is `DW_OP_fbreg`, followed by a signed LEB128 offset.
+                    let opcode = operations.read_u8().unwrap_or(0);
+                    opcode == 0x91 && operations.read_sleb128().unwrap_or(0) < 0
+                }
+                _ => false,
+            };
+            found.push((name, negative));
+        }
+    }
+
+    assert!(
+        frame_bases > 0,
+        "a subprogram with variables must declare a frame base, or every location is meaningless"
+    );
+    for expected in ["q", "total"] {
+        let (_, negative) = found
+            .iter()
+            .find(|(name, _)| name == expected)
+            .unwrap_or_else(|| {
+                panic!("the local `{expected}` must appear as a DWARF variable; got {found:?}")
+            });
+        assert!(
+            *negative,
+            "`{expected}` must live at a negative `DW_OP_fbreg` offset; a positive one means \
+             `frame_to_fp_offset` was not subtracted and the location reads the wrong memory"
+        );
+    }
 }
