@@ -370,11 +370,8 @@ pub fn resolved(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
         }
     }
 
-    // Build the slice of (&str, &ItemScope) for jr_hir::resolve.
-    let imports_for_resolve: Vec<(&str, &ItemScope)> = import_scopes
-        .iter()
-        .map(|(name, scope)| (name.as_str(), scope.as_ref()))
-        .collect();
+    // One entry per `#import` **item**, so an alias is carried (ADR-0179 §3).
+    let imports_for_resolve = imported_modules_for_resolve(&hir, &import_scopes);
 
     let (resolve_map, resolve_diags) = jr_hir::resolve(&hir, &imports_for_resolve, interner);
     diags.extend(resolve_diags.iter().cloned());
@@ -383,6 +380,35 @@ pub fn resolved(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
         map: Arc::new(resolve_map),
         diagnostics: Arc::new(diags),
     }
+}
+
+/// The `#import`s of a file as [`jr_hir::resolve`] needs them, aliases included (ADR-0179 §3).
+///
+/// `scopes` arrives keyed by module *path*, which is what the module loader can answer; the alias
+/// lives on the file's `#import` item. Walking the **items** is what makes the two agree, and it is
+/// why a module imported both bare and aliased contributes two entries — two lines asked for two
+/// different things (a flat merge and a qualified binding), and both are honoured.
+///
+/// The path is taken from `scopes`' own key rather than from the item, so the returned borrow lives
+/// as long as the scopes do and the HIR need not outlive the call.
+pub(crate) fn imported_modules_for_resolve<'a, K: AsRef<str>>(
+    hir: &jr_hir::FileHir,
+    scopes: &'a [(K, Arc<ItemScope>)],
+) -> Vec<jr_hir::ImportedModule<'a>> {
+    hir.items
+        .iter()
+        .filter_map(|item| {
+            let ItemKind::Import { path, alias, .. } = &item.kind else {
+                return None;
+            };
+            let (key, scope) = scopes.iter().find(|(n, _)| n.as_ref() == path.as_str())?;
+            Some(jr_hir::ImportedModule {
+                path: key.as_ref(),
+                alias: *alias,
+                scope: scope.as_ref(),
+            })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -596,7 +622,9 @@ fn refused_bodies(hir: &FileHir, mir: &jr_mir::FileMir, interner: &Interner) -> 
 /// fallback (should not happen in practice).
 fn find_import_span(hir: &FileHir, name: &str) -> Span {
     for item in &hir.items {
-        if let ItemKind::Import { path, path_span } = &item.kind
+        if let ItemKind::Import {
+            path, path_span, ..
+        } = &item.kind
             && path == name
         {
             return *path_span;

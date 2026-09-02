@@ -821,9 +821,32 @@ impl PolyType {
 }
 
 impl NameType {
-    /// The identifier token naming the type.
+    /// The identifier token naming the type — the **member** of a qualified name.
+    ///
+    /// The *last* `IDENT` rather than the first, so `Window.Event` answers `Event`: every consumer
+    /// that only wants "the type's name" keeps working unchanged, and only a consumer that cares
+    /// which module it came from asks [`Self::module_token`] (ADR-0179 §5).
     pub fn name_token(&self) -> Option<SyntaxToken> {
-        child_token(&self.0, IDENT)
+        self.idents().last()
+    }
+
+    /// The module alias of a **qualified** type name — `Window` in `Window.Event` (ADR-0179 §5).
+    ///
+    /// `None` for an ordinary name. A qualified name keeps the same `NAME_TYPE` node and carries two
+    /// `IDENT` tokens rather than getting a node kind of its own, so no consumer has to learn a new
+    /// type-node kind to keep compiling.
+    pub fn module_token(&self) -> Option<SyntaxToken> {
+        let idents: Vec<SyntaxToken> = self.idents().collect();
+        (idents.len() > 1).then(|| idents[0].clone())
+    }
+
+    /// This node's direct `IDENT` tokens, in order. Type arguments live in a child *node*, so their
+    /// identifiers are not among these.
+    fn idents(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
+        self.0
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .filter(|t| t.kind() == IDENT)
     }
 
     /// The text of the type name as an owned string.

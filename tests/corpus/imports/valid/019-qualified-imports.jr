@@ -1,0 +1,57 @@
+// Qualified imports (ADR-0179): `Alias :: #import "M";` then `Alias.name`.
+//
+// **This file is unwritable one wave earlier.** `Colors` and `Palette` both export `blend`, so with
+// two bare `#import`s naming it is E0211 — "ambiguous name `blend`: provided by multiple imported
+// modules" — and `tests/corpus/imports/invalid/002-ambiguous-imported-name.jr` is that exact program.
+// An aliased import merges nothing into this file's scope, so there is no ambiguity to report and both
+// procedures are reachable, each under the module that declares it.
+//
+// The two positions are exercised deliberately: a qualified **value** (`Colors.blend`, resolved by
+// `jr-hir` to `Res::Imported`) and a qualified **type** (`Shapes.Rect`, resolved by `jr-sema` against
+// that module's signatures). The second is not a nicety — a module that hid its procedures behind an
+// alias and leaked its types would not solve the collision it exists for.
+//
+// No `#import "Basic"` and no `exit`: this directory's modules are `tests/corpus/modules/`, which has
+// no `Basic`, and its harnesses check and resolve rather than run. The *running* proof is
+// `tests/corpus/valid/129-qualified-imports.jr`, which imports the real `modules/` and exits with a
+// checksum of the same calls.
+Colors :: #import "Colors";
+Palette :: #import "Palette";
+Shapes :: #import "Shapes";
+
+// A qualified type in a parameter, and again in the return. Both spellings of one type intern to the
+// same `PoolId`, which is what lets this value be handed to `Shapes.area` below.
+doubled :: (r: Shapes.Rect) -> Shapes.Rect {
+    out: Shapes.Rect;
+    out.w = r.w * 2;
+    out.h = r.h;
+    return out;
+}
+
+main :: () {
+    n := 0;
+    // `Colors.blend(0, 10)` averages: 5. `Palette.blend(7, 10)` returns its first argument: 7.
+    // Two different procedures of one name, in one body.
+    if Colors.blend(0, 10) == 5 {
+        n = n + 1;
+    }
+    if Palette.blend(7, 10) == 7 {
+        n = n + 2;
+    }
+    // A qualified **constant**, which resolves through the same path a procedure does.
+    if Palette.PALETTE_SIZE == 16 {
+        n = n + 4;
+    }
+    if Shapes.SHAPES_VERSION == 1 {
+        n = n + 8;
+    }
+
+    box: Shapes.Rect;
+    box.w = 3;
+    box.h = 4;
+    // A qualified type declared here, handed to a procedure whose parameter is spelled the same way,
+    // and its result to one whose parameter is spelled bare inside its own module.
+    if Shapes.area(doubled(box)) == 24 {
+        n = n + 16;
+    }
+}

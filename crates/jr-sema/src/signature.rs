@@ -556,9 +556,12 @@ impl Ctx<'_> {
             // A `$T` inside a parameterised type reference — `f :: (b: Box($T))` — is nested inference
             // through a nominal type, deferred with the rest of that step (ADR-0085 §5). So `Apply` does
             // not bind here this sub-wave; a `Box(s64)` parameter is an ordinary concrete type.
+            // A qualified name carries no `$T` for the same reason a bare one does not: it names an
+            // existing type rather than introducing a variable (ADR-0179 §5).
             TypeRef::Proc { .. }
             | TypeRef::Results(_)
             | TypeRef::Name(_)
+            | TypeRef::Qualified { .. }
             | TypeRef::Apply { .. }
             | TypeRef::Struct(_)
             | TypeRef::Union(_)

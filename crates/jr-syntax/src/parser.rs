@@ -1407,6 +1407,17 @@ impl<'src> Parser<'src> {
             IDENT => {
                 self.start_node(NAME_TYPE);
                 self.bump();
+                // `Window.Event` — a qualified type name (ADR-0179 §5). Both identifiers land in this
+                // one `NAME_TYPE`, so no consumer meets a new node kind; the AST reads the *last*
+                // `IDENT` as the type's name and the first as the module.
+                //
+                // Guarded on `nth(1) == IDENT` rather than on the `.` alone: a `.` not followed by a
+                // name is not a half-written qualified type worth inventing a node for, and leaving
+                // the `.` unconsumed lets the enclosing construct report it where it means something.
+                if self.at(DOT) && self.nth(1) == IDENT {
+                    self.bump(); // `.`
+                    self.bump(); // the member name
+                }
                 // `Box(s64)` — a parameterised type reference (ADR-0085 §3). The `(` binds tightly to
                 // the name here, so `Box(s64)` is one type; a `(` that begins a *proc-pointer* type is
                 // handled by the `L_PAREN` arm above and never reaches a bare name, so there is no

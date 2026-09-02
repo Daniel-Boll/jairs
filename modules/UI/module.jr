@@ -52,13 +52,13 @@
 //! *policy* decision (does a stack own spacing? does it clip?) rather than a mechanism, so it waits for a
 //! caller with an opinion.
 
-#import "Window";
+Window :: #import "Window";
 
-// `Event`, `Renderer`, `MOUSE_DOWN`, `set_color`, `fill`, `outline` and `rect` below all come from `Window`,
-// unqualified: an `#import` brings names into this file's scope flat, and there is no `Window.Event` syntax
-// (probed — it does not parse). So this module's own names must not collide with that module's, which is why
-// the id sentinel here is `NONE` and not, say, `Event`. Worth stating because the file reads as though it were
-// qualified and is not.
+// Imported **aliased** (ADR-0179 §1), so every name this module borrows says where it comes from:
+// `Window.Event`, `Window.MOUSE_DOWN`, `Window.set_color`. A bare `#import` merges a module's names
+// into this file flat, which is why this file used to have to pick names that did not collide with
+// `Window`'s eleven unprefixed ones — the id sentinel below is called `NONE` for exactly that reason,
+// and it no longer has to be.
 
 /// The reserved widget id meaning "no widget".
 NONE :: 0;
@@ -121,14 +121,14 @@ begin_frame :: (ui: *UI) {
 ///
 /// Only the left button is tracked (`mouse_button == 1`). A right-click is a different interaction with
 /// different conventions on every platform, and guessing at it would be worse than not having it.
-feed :: (ui: *UI, event: *Event) {
+feed :: (ui: *UI, event: *Window.Event) {
     kind := cast(s64, event.kind);
-    if kind == MOUSE_MOTION {
+    if kind == Window.MOUSE_MOTION {
         ui.mouse_x = event.mouse_x;
         ui.mouse_y = event.mouse_y;
         return;
     }
-    if kind == MOUSE_DOWN {
+    if kind == Window.MOUSE_DOWN {
         if cast(s64, event.mouse_button) == 1 {
             // The position comes from the event, not from the last motion: a click can arrive without a
             // preceding motion event — a tap on a trackpad, or a synthetic event — and using a stale position
@@ -140,7 +140,7 @@ feed :: (ui: *UI, event: *Event) {
         }
         return;
     }
-    if kind == MOUSE_UP {
+    if kind == Window.MOUSE_UP {
         if cast(s64, event.mouse_button) == 1 {
             ui.mouse_x = event.mouse_x;
             ui.mouse_y = event.mouse_y;
@@ -235,7 +235,7 @@ is_active :: (ui: *UI, id: s64) -> bool {
 /// draw a button any way they like while keeping the interaction.
 ///
 /// `#must`, because it is drawing and every drawing call here can fail.
-draw_button :: (renderer: *Renderer, ui: *UI, id: s64, x: s64, y: s64, w: s64, h: s64) -> bool #must {
+draw_button :: (renderer: *Window.Renderer, ui: *UI, id: s64, x: s64, y: s64, w: s64, h: s64) -> bool #must {
     shade := 70;
     if is_active(ui, id) {
         shade = 130;
@@ -243,15 +243,15 @@ draw_button :: (renderer: *Renderer, ui: *UI, id: s64, x: s64, y: s64, w: s64, h
         shade = 100;
     }
 
-    if !set_color(renderer, shade, shade, shade, 255) {
+    if !Window.set_color(renderer, shade, shade, shade, 255) {
         return false;
     }
-    box := rect(x, y, w, h);
-    if !fill(renderer, *box) {
+    box := Window.rect(x, y, w, h);
+    if !Window.fill(renderer, *box) {
         return false;
     }
-    if !set_color(renderer, 200, 200, 200, 255) {
+    if !Window.set_color(renderer, 200, 200, 200, 255) {
         return false;
     }
-    return outline(renderer, *box);
+    return Window.outline(renderer, *box);
 }

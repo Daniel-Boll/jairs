@@ -613,6 +613,7 @@ fn scan(
             Expr::Directive { .. } => return Some("a directive has no runtime value"),
             Expr::Name {
                 name: _,
+                module: _,
                 span: _,
                 res,
             } => {
@@ -2484,6 +2485,7 @@ impl Lower<'_> {
             Expr::Literal(literal, _) => Operand::Constant(self.constant(&literal, ty)),
             Expr::Name {
                 name: _,
+                module: _,
                 span: _,
                 res,
             } => self.name(id, res, ty, span),
@@ -3782,6 +3784,7 @@ impl Lower<'_> {
         }
         let Expr::Name {
             name: _,
+            module: _,
             span: _,
             res,
         } = self.body.expr(callee)
@@ -3859,6 +3862,7 @@ impl Lower<'_> {
         }
         let Expr::Name {
             name: _,
+            module: _,
             span: _,
             res,
         } = self.body.expr(expr)
@@ -3893,6 +3897,7 @@ impl Lower<'_> {
             Expr::Context(_) => None,
             Expr::Name {
                 name: _,
+                module: _,
                 span: _,
                 res,
             } => {

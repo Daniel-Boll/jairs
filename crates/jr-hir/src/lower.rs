@@ -147,6 +147,11 @@ struct LowerCtx<'a> {
     ///
     /// Held here so each `BodyLowerCtx` this context creates can be handed it, the same way `operands` is.
     macros: MacroBodies,
+    /// Every name an aliased `#import` binds, collected before any item is lowered (ADR-0179 §4).
+    ///
+    /// A pre-scan for the same reason [`MacroBodies`] needs one: a use of `Simp.foo` may precede the
+    /// `Simp :: #import "Simp";` that binds `Simp` in source order, and lowering walks items once.
+    import_aliases: ImportAliases,
     /// Predicate → guarded template's `$T` names, staged until the `FileHir` is built (ADR-0094 §1).
     predicate_vars: Vec<(ProcId, Vec<Symbol>)>,
 
@@ -176,11 +181,13 @@ impl<'a> LowerCtx<'a> {
         interner: &'a Interner,
         operands: &'a InsertOperands,
         macros: MacroBodies,
+        import_aliases: ImportAliases,
     ) -> Self {
         Self {
             file,
             interner,
             operands,
+            import_aliases,
             macros,
             predicate_vars: Vec::new(),
             diags: Diagnostics::new(),
@@ -275,7 +282,16 @@ impl<'a> LowerCtx<'a> {
                             .collect();
                         self.alloc_top_type_ref(TypeRef::Apply { name: sym, args })
                     }
-                    None => self.alloc_top_type_ref(TypeRef::Name(sym)),
+                    // `Window.Event` — a qualified type name (ADR-0179 §5). The module is the
+                    // *first* `IDENT` of the same `NAME_TYPE` node; `sym` above already reads the
+                    // last, so an unqualified name reaches the `Name` arm unchanged.
+                    None => match n.module_token() {
+                        Some(tok) => {
+                            let module = self.intern(tok.text());
+                            self.alloc_top_type_ref(TypeRef::Qualified { module, name: sym })
+                        }
+                        None => self.alloc_top_type_ref(TypeRef::Name(sym)),
+                    },
                 }
             }
             TypeExpr::Poly(poly) => {
@@ -768,6 +784,7 @@ impl<'a> LowerCtx<'a> {
             self.interner,
             self.operands,
             &self.macros,
+            &self.import_aliases,
             first_pending_item,
         );
 
@@ -900,6 +917,14 @@ impl<'a> LowerCtx<'a> {
         (args, names)
     }
 
+    /// The module alias a field access's receiver names, at file scope (ADR-0179 §4).
+    ///
+    /// No local can shadow an alias here — a file-scope initialiser has no locals — so this is
+    /// [`field_receiver_alias`] with nothing added.
+    fn qualified_receiver(&self, f: &jr_syntax::ast::FieldExpr) -> Option<Symbol> {
+        field_receiver_alias(f, self.interner, &self.import_aliases)
+    }
+
     fn lower_top_expr(&mut self, expr: &AstExpr) -> ExprId {
         let span = self.span_of_node(expr.syntax());
         match expr {
@@ -915,6 +940,7 @@ impl<'a> LowerCtx<'a> {
                 self.alloc_top_expr(
                     Expr::Name {
                         name,
+                        module: None,
                         span,
                         res: Res::Error,
                     },
@@ -991,6 +1017,24 @@ impl<'a> LowerCtx<'a> {
                 )
             }
             AstExpr::Field(f) => {
+                let (name, name_span) = f
+                    .field_name()
+                    .map(|t| (self.intern(t.text()), self.span_of_token(&t)))
+                    .unwrap_or_else(|| (self.intern("<error>"), span));
+                // **`Simp.foo` is a qualified name, not a field access** (ADR-0179 §4). At file scope
+                // there are no locals, so an alias always wins here — the body path additionally
+                // checks that no local shadows it.
+                if let Some(alias) = self.qualified_receiver(f) {
+                    return self.alloc_top_expr(
+                        Expr::Name {
+                            name,
+                            module: Some(alias),
+                            span,
+                            res: Res::Error,
+                        },
+                        span,
+                    );
+                }
                 let receiver = f
                     .object()
                     .map(|e| self.lower_top_expr(&e))
@@ -998,10 +1042,6 @@ impl<'a> LowerCtx<'a> {
                         let err = Expr::Error(span);
                         self.alloc_top_expr(err, span)
                     });
-                let (name, name_span) = f
-                    .field_name()
-                    .map(|t| (self.intern(t.text()), self.span_of_token(&t)))
-                    .unwrap_or_else(|| (self.intern("<error>"), span));
                 self.alloc_top_expr(
                     Expr::Field {
                         receiver,
@@ -1289,7 +1329,12 @@ impl<'a> LowerCtx<'a> {
         let body = template.body.map(|b| {
             let mut cloned = self.bodies[b.index()].clone();
             for index in 0..cloned.exprs.len() {
-                if let Expr::Name { name, span, res } = cloned.exprs[index].clone()
+                if let Expr::Name {
+                    name,
+                    module,
+                    span,
+                    res,
+                } = cloned.exprs[index].clone()
                     && let Res::Param(pid) = res
                 {
                     let i = pid.index();
@@ -1304,6 +1349,7 @@ impl<'a> LowerCtx<'a> {
                         Some(new_i) => {
                             cloned.exprs[index] = Expr::Name {
                                 name,
+                                module,
                                 span,
                                 res: Res::Param(ParamId::from_usize(new_i as usize)),
                             };
@@ -1399,6 +1445,39 @@ impl<'a> LowerCtx<'a> {
             });
             id
         };
+
+        // **`Simp :: #import "Simp";` is an import, not a constant** (ADR-0179 §1).
+        //
+        // The parser sees a constant declaration whose value is a directive expression, which
+        // already parses — so recognition happens here, by the directive's *name*, exactly the way
+        // `#bake_arguments` is recognised rather than given a grammar rule of its own.
+        //
+        // Gated on `insert_in_scope` because that is false for a hoisted nested constant
+        // (ADR-0134): an `#import` inside a body stays E0208, and `check_directive_as_expression`
+        // still reports it because this branch never runs there.
+        if insert_in_scope
+            && let Some(alias) = name
+            && let Some(directive) = import_directive_value(cd)
+        {
+            let (path, path_span) = match directive.string_arg() {
+                Some(tok) => (strip_quotes(tok.text()), self.span_of_token(&tok)),
+                None => (String::new(), span),
+            };
+            // The alias is deliberately **not** left in `hir.scope`. A bare `Simp` is not a value,
+            // and leaving it bound would resolve it to `Res::Item` of an import — which every
+            // consumer downstream would then have to learn to refuse. An unresolved name is the
+            // honest answer, and `Simp.thing` never asks: it lowers to a qualified `Expr::Name`.
+            //
+            // `Item::name` stays `Some`, which is what makes `check_duplicates` report an alias that
+            // collides with a declaration — so the ambiguity needs no code of its own.
+            self.scope.names.remove(&alias);
+            self.items[reserved_id.index()].kind = ItemKind::Import {
+                path,
+                path_span,
+                alias: Some(alias),
+            };
+            return reserved_id;
+        }
 
         let kind = if let Some(proc) = cd.proc() {
             let proc_id = self.lower_proc_with_inherited(&proc, inherited_items);
@@ -1505,7 +1584,11 @@ impl<'a> LowerCtx<'a> {
             name: None,
             span,
             name_span: span,
-            kind: ItemKind::Import { path, path_span },
+            kind: ItemKind::Import {
+                path,
+                path_span,
+                alias: None,
+            },
         });
     }
 
@@ -1569,6 +1652,11 @@ struct BodyLowerCtx<'a> {
     /// Threaded exactly as `operands` is, and empty for a file declaring no macro — so an ordinary
     /// program's lowering is unchanged.
     macros: &'a MacroBodies,
+    /// Every name an aliased `#import` binds (ADR-0179 §4), threaded exactly as `macros` is.
+    ///
+    /// Consulted when a field access's receiver is a bare name: an alias no local shadows makes the
+    /// whole access a *qualified name* rather than a field of a value.
+    import_aliases: &'a ImportAliases,
     /// Names the next macro result local, so two macro calls in one body do not collide (ADR-0090 §2).
     macro_result_counter: u32,
 
@@ -1646,6 +1734,7 @@ impl<'a> BodyLowerCtx<'a> {
         interner: &'a Interner,
         operands: &'a InsertOperands,
         macros: &'a MacroBodies,
+        import_aliases: &'a ImportAliases,
         first_pending_item: usize,
     ) -> Self {
         Self {
@@ -1653,6 +1742,7 @@ impl<'a> BodyLowerCtx<'a> {
             interner,
             operands,
             macros,
+            import_aliases,
             macro_result_counter: 0,
             diags: Diagnostics::new(),
             exprs: Vec::new(),
@@ -1748,7 +1838,16 @@ impl<'a> BodyLowerCtx<'a> {
                             arguments.args().map(|t| self.lower_type_expr(&t)).collect();
                         self.alloc_type_ref(TypeRef::Apply { name: sym, args })
                     }
-                    None => self.alloc_type_ref(TypeRef::Name(sym)),
+                    // `Window.Event` — a qualified type name (ADR-0179 §5). The module is the
+                    // *first* `IDENT` of the same `NAME_TYPE` node; `sym` above already reads the
+                    // last, so an unqualified name reaches the `Name` arm unchanged.
+                    None => match n.module_token() {
+                        Some(tok) => {
+                            let module = self.intern(tok.text());
+                            self.alloc_type_ref(TypeRef::Qualified { module, name: sym })
+                        }
+                        None => self.alloc_type_ref(TypeRef::Name(sym)),
+                    },
                 }
             }
             TypeExpr::Poly(poly) => {
@@ -2559,6 +2658,7 @@ impl<'a> BodyLowerCtx<'a> {
                     let expr = self.alloc_expr(
                         Expr::Name {
                             name: *sym,
+                            module: None,
                             span: *name_span,
                             res,
                         },
@@ -2873,7 +2973,15 @@ impl<'a> BodyLowerCtx<'a> {
                         ScopeEntry::Item(id) => Res::Item(id),
                     })
                     .unwrap_or(Res::Error);
-                self.alloc_expr(Expr::Name { name, span, res }, span)
+                self.alloc_expr(
+                    Expr::Name {
+                        name,
+                        module: None,
+                        span,
+                        res,
+                    },
+                    span,
+                )
             }
             AstExpr::Binary(b) => {
                 let op = lower_bin_op(b);
@@ -2936,14 +3044,31 @@ impl<'a> BodyLowerCtx<'a> {
                 )
             }
             AstExpr::Field(f) => {
-                let receiver = f
-                    .object()
-                    .map(|e| self.lower_expr(&e))
-                    .unwrap_or_else(|| self.alloc_expr(Expr::Error(span), span));
                 let (name, name_span) = f
                     .field_name()
                     .map(|t| (self.intern(t.text()), self.span_of_token(&t)))
                     .unwrap_or_else(|| (self.intern("<error>"), span));
+                // **`Simp.foo` is a qualified name, not a field access** (ADR-0179 §4) — unless a
+                // local or a parameter of that name is in scope, in which case the binding wins and
+                // this is an ordinary field of a value. That is ADR-0014 §3's rule, applied by
+                // *where* the check sits rather than by a rule of its own.
+                if let Some(alias) = field_receiver_alias(f, self.interner, self.import_aliases)
+                    && self.lookup_local(alias).is_none()
+                {
+                    return self.alloc_expr(
+                        Expr::Name {
+                            name,
+                            module: Some(alias),
+                            span,
+                            res: Res::Error,
+                        },
+                        span,
+                    );
+                }
+                let receiver = f
+                    .object()
+                    .map(|e| self.lower_expr(&e))
+                    .unwrap_or_else(|| self.alloc_expr(Expr::Error(span), span));
                 self.alloc_expr(
                     Expr::Field {
                         receiver,
@@ -3506,7 +3631,9 @@ pub fn lower_file_with_inserts(
     // Every `#expand` macro's spliceable shape, collected **before** any body is lowered (ADR-0090 §2):
     // a call needs the macro's text, and a call may precede the declaration in source order.
     let macros = collect_macro_bodies(&source_file, interner);
-    let mut ctx = LowerCtx::new(file, interner, operands, macros);
+    // Every aliased `#import`'s name, for the same reason and by the same shape (ADR-0179 §4).
+    let aliases = collect_import_aliases(&source_file, interner);
+    let mut ctx = LowerCtx::new(file, interner, operands, macros, aliases);
 
     // Walked as **children** rather than through `source_file.items()`, because a `SCOPE_DECL` is
     // not an `Item` kind and that accessor would skip it — so every visibility marker would be
@@ -3615,6 +3742,54 @@ fn collect_macro_bodies(source_file: &SourceFile, interner: &Interner) -> MacroB
     out
 }
 
+/// Every name an aliased `#import` binds in a file (ADR-0179 §4).
+type ImportAliases = rustc_hash::FxHashSet<jr_base::Symbol>;
+
+/// Collects the names the file's aliased `#import`s bind, before any item is lowered.
+///
+/// A pre-scan for [`collect_macro_bodies`]'s reason: `Simp.foo` may be written above the
+/// `Simp :: #import "Simp";` that binds `Simp`, and lowering walks the file once.
+///
+/// Purely syntactic — a file-scope constant whose value is an `#import` directive — so it needs no
+/// resolution and cannot disagree with what [`LowerCtx::lower_const_decl_with_inherited`] then
+/// lowers that declaration to.
+fn collect_import_aliases(source_file: &SourceFile, interner: &Interner) -> ImportAliases {
+    let mut out = ImportAliases::default();
+    for item in source_file.items() {
+        let jr_syntax::ast::Item::Const(decl) = item else {
+            continue;
+        };
+        if import_directive_value(&decl).is_none() {
+            continue;
+        }
+        if let Some(tok) = decl.name().and_then(|n| n.ident_token()) {
+            out.insert(interner.intern(tok.text()));
+        }
+    }
+    out
+}
+
+/// The module alias a field access's receiver names, if it names one (ADR-0179 §4).
+///
+/// `Some(sym)` only when the receiver is a **bare name** an aliased `#import` binds. A receiver that
+/// is anything else — a call, an index, a parenthesised expression — is a value, and a value's field
+/// is a field. The caller in body position additionally checks that no local shadows the alias, so an
+/// ordinary binding always wins, silently, exactly as ADR-0014 §3 has it for every other name.
+fn field_receiver_alias(
+    f: &jr_syntax::ast::FieldExpr,
+    interner: &Interner,
+    aliases: &ImportAliases,
+) -> Option<Symbol> {
+    if aliases.is_empty() {
+        return None;
+    }
+    let AstExpr::Name(n) = f.object()? else {
+        return None;
+    };
+    let sym = interner.intern(n.name_token()?.text());
+    aliases.contains(&sym).then_some(sym)
+}
+
 /// Rewrites a macro body's `return <e>;` into an assignment to the splice's result local (ADR-0090 §2).
 ///
 /// A macro has no frame of its own — its statements land in the caller's — so a `return` in it cannot mean
@@ -3720,6 +3895,19 @@ fn bake_arguments_operand(cd: &ConstDecl) -> Option<jr_syntax::ast::CallExpr> {
         .syntax()
         .children()
         .find_map(jr_syntax::ast::CallExpr::cast)
+}
+
+/// The `#import` directive a constant declaration's value is, if it is one (ADR-0179 §1).
+///
+/// `Simp :: #import "Simp";` — recognised by the directive's name, like
+/// [`bake_arguments_operand`] above, because the aliased form needs no grammar rule: a directive
+/// expression is already a legal constant value as far as the parser is concerned.
+fn import_directive_value(cd: &ConstDecl) -> Option<jr_syntax::ast::DirectiveExpr> {
+    let AstExpr::Directive(directive) = cd.value_expr()? else {
+        return None;
+    };
+    let token = directive.directive_token()?;
+    (token.text().trim_start_matches('#') == "import").then_some(directive)
 }
 
 fn insert_directive(stmt: &jr_syntax::ast::ExprStmt) -> Option<jr_syntax::ast::DirectiveExpr> {

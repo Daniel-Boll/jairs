@@ -354,6 +354,14 @@ fn imports_invalid_corpus_fails() {
         // Found by probing PLAN's wave table, which said `$$T` was undelivered while `AGENTS.md` said it
         // shipped: the *parameter* had shipped (`valid/110`) and the *return* had never been tried.
         "imports/invalid/018-comptime-poly-return.jr",
+        // A qualified name the module does not export — E0292 (ADR-0179 §4). Here for the stage reason
+        // E0262 is: E0292 comes out of **resolution**, so `type-errors/`' harness would fail it for not
+        // resolving cleanly before ever checking the code it declares.
+        //
+        // What it pins is the *distinction* from E0253, its neighbour: `009-not-exported.jr` reports a
+        // name the module declares and hides, which a reader fixes by moving the declaration. This one
+        // reports a name that is not there at all, where there is no `#scope_module` to go looking for.
+        "imports/invalid/019-qualified-name-absent.jr",
     ] {
         let code = check_with_modules(vec![corpus_path(file)], Some("modules"));
         assert_eq!(code, 1, "{file} must report an error");

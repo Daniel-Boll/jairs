@@ -534,6 +534,11 @@ fn fmt_type_ref_impl(
 ) -> String {
     match tr {
         TypeRef::Name(sym) => interner.resolve(*sym).to_owned(),
+        // Printed with its module, so a dump of `Window.Event` cannot be mistaken for a local
+        // `Event` — the two resolve in different scopes (ADR-0179 §5).
+        TypeRef::Qualified { module, name } => {
+            format!("{}.{}", interner.resolve(*module), interner.resolve(*name))
+        }
         // `$T` (ADR-0081 §1), printed with its `$` so a dump distinguishes a polymorphic variable from an
         // ordinary name.
         TypeRef::Poly(sym) => format!("${}", interner.resolve(*sym)),

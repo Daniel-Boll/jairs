@@ -69,10 +69,6 @@
 // lesson is that in a flat namespace a module must prefix as though the namespace were its own, because there is
 // no qualification to fall back on and a short name is a claim on every importer.
 
-/// The SDL2 shared library. Named again here rather than re-exported, because a `#foreign` declaration resolves
-/// its library in **its own file** (ADR-0019 §4) and a name imported from `Window` would not be that.
-sdl :: #system_library "SDL2";
-
 /// An `SDL_Surface` — pixels in ordinary memory — as a `#place` overlay of the fields worth reading.
 ///
 /// **96 bytes**, which `layout_is_sdl2` checks. SDL allocates it, so this struct is never a local: a caller only
@@ -112,38 +108,6 @@ Surface :: struct {
     /// The `SDL_Surface *`. Null when the surface is not loaded.
     handle: *Surface_Data;
 }
-
-/// `SDL_RWFromFile(const char *file, const char *mode)`.
-sdl_rw_from_file :: (path: *u8, mode: *u8) -> *u8 #foreign sdl "SDL_RWFromFile";
-
-/// `SDL_LoadBMP_RW(SDL_RWops *, int freesrc)`.
-///
-/// `SDL_LoadBMP` is a **macro** in the header, not a symbol, so this is what a `#foreign` declaration can name.
-sdl_load_bmp_rw :: (source: *u8, free_source: s64) -> *Surface_Data #foreign sdl "SDL_LoadBMP_RW";
-
-/// `SDL_SaveBMP_RW(SDL_Surface *, SDL_RWops *, int freedst)`.
-sdl_save_bmp_rw :: (surface: *Surface_Data, destination: *u8, free_destination: s64) -> s64 #foreign sdl "SDL_SaveBMP_RW";
-
-/// `SDL_CreateRGBSurfaceWithFormat(Uint32 flags, int w, int h, int depth, Uint32 format)`.
-sdl_create_surface :: (flags: s64, width: s64, height: s64, depth: s64, format: s64) -> *Surface_Data #foreign sdl "SDL_CreateRGBSurfaceWithFormat";
-
-/// `SDL_FreeSurface`.
-sdl_free_surface :: (surface: *Surface_Data) #foreign sdl "SDL_FreeSurface";
-
-/// `SDL_FillRect(SDL_Surface *, const SDL_Rect *, Uint32 color)`.
-sdl_fill_surface :: (surface: *Surface_Data, area: *Rect, colour: s64) -> s64 #foreign sdl "SDL_FillRect";
-
-/// `SDL_CreateTextureFromSurface(SDL_Renderer *, SDL_Surface *)`.
-sdl_texture_from_surface :: (renderer: *u8, surface: *Surface_Data) -> *u8 #foreign sdl "SDL_CreateTextureFromSurface";
-
-/// `SDL_DestroyTexture`.
-sdl_destroy_texture :: (texture: *u8) #foreign sdl "SDL_DestroyTexture";
-
-/// `SDL_QueryTexture(SDL_Texture *, Uint32 *format, int *access, int *w, int *h)`.
-sdl_query_texture :: (texture: *u8, format: *u32, access: *s32, width: *s32, height: *s32) -> s64 #foreign sdl "SDL_QueryTexture";
-
-/// `SDL_RenderCopy(SDL_Renderer *, SDL_Texture *, const SDL_Rect *src, const SDL_Rect *dst)`.
-sdl_render_copy :: (renderer: *u8, texture: *u8, source: *Rect, destination: *Rect) -> s64 #foreign sdl "SDL_RenderCopy";
 
 /// `SDL_PIXELFORMAT_RGBA8888`, the one format this module creates surfaces in.
 ///
@@ -329,3 +293,47 @@ draw_texture :: (renderer: *Renderer, texture: *Texture, area: *Rect) -> bool #m
     // with `destination` above is deliberate: the source has an obvious whole, the destination has none.
     return sdl_render_copy(renderer.handle, texture.handle, null, area) == 0;
 }
+
+// ---------------------------------------------------------------------------
+// Private: the raw SDL2 bindings
+// ---------------------------------------------------------------------------
+
+// Not exported (ADR-0054 §2, ADR-0179 §6). A caller wants `load_bmp`, not `sdl_load_bmp_rw`; this
+// file had no `#scope_module`, so every raw symbol reached every importer's flat namespace.
+#scope_module
+
+/// The SDL2 shared library. Named again here rather than re-exported, because a `#foreign` declaration resolves
+/// its library in **its own file** (ADR-0019 §4) and a name imported from `Window` would not be that.
+sdl :: #system_library "SDL2";
+
+/// `SDL_RWFromFile(const char *file, const char *mode)`.
+sdl_rw_from_file :: (path: *u8, mode: *u8) -> *u8 #foreign sdl "SDL_RWFromFile";
+
+/// `SDL_LoadBMP_RW(SDL_RWops *, int freesrc)`.
+///
+/// `SDL_LoadBMP` is a **macro** in the header, not a symbol, so this is what a `#foreign` declaration can name.
+sdl_load_bmp_rw :: (source: *u8, free_source: s64) -> *Surface_Data #foreign sdl "SDL_LoadBMP_RW";
+
+/// `SDL_SaveBMP_RW(SDL_Surface *, SDL_RWops *, int freedst)`.
+sdl_save_bmp_rw :: (surface: *Surface_Data, destination: *u8, free_destination: s64) -> s64 #foreign sdl "SDL_SaveBMP_RW";
+
+/// `SDL_CreateRGBSurfaceWithFormat(Uint32 flags, int w, int h, int depth, Uint32 format)`.
+sdl_create_surface :: (flags: s64, width: s64, height: s64, depth: s64, format: s64) -> *Surface_Data #foreign sdl "SDL_CreateRGBSurfaceWithFormat";
+
+/// `SDL_FreeSurface`.
+sdl_free_surface :: (surface: *Surface_Data) #foreign sdl "SDL_FreeSurface";
+
+/// `SDL_FillRect(SDL_Surface *, const SDL_Rect *, Uint32 color)`.
+sdl_fill_surface :: (surface: *Surface_Data, area: *Rect, colour: s64) -> s64 #foreign sdl "SDL_FillRect";
+
+/// `SDL_CreateTextureFromSurface(SDL_Renderer *, SDL_Surface *)`.
+sdl_texture_from_surface :: (renderer: *u8, surface: *Surface_Data) -> *u8 #foreign sdl "SDL_CreateTextureFromSurface";
+
+/// `SDL_DestroyTexture`.
+sdl_destroy_texture :: (texture: *u8) #foreign sdl "SDL_DestroyTexture";
+
+/// `SDL_QueryTexture(SDL_Texture *, Uint32 *format, int *access, int *w, int *h)`.
+sdl_query_texture :: (texture: *u8, format: *u32, access: *s32, width: *s32, height: *s32) -> s64 #foreign sdl "SDL_QueryTexture";
+
+/// `SDL_RenderCopy(SDL_Renderer *, SDL_Texture *, const SDL_Rect *src, const SDL_Rect *dst)`.
+sdl_render_copy :: (renderer: *u8, texture: *u8, source: *Rect, destination: *Rect) -> s64 #foreign sdl "SDL_RenderCopy";

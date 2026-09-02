@@ -81,6 +81,22 @@ jr_base::newtype_index! {
 pub enum TypeRef {
     /// A named type, e.g. `s64`, `Point`, `bool`.
     Name(Symbol),
+    /// A qualified named type, `Window.Event` (ADR-0179 §5).
+    ///
+    /// Distinct from [`TypeRef::Name`] because the name is looked up in **one** module's exported
+    /// scope rather than in the flat merge of every bare import — so it can never be ambiguous, and a
+    /// module reached only through an alias is reachable in type position at all.
+    ///
+    /// A variant rather than an extra field on `Name`, because the workspace's exhaustive-match rule
+    /// then makes every consumer that must resolve a type name a compile error until it decides what
+    /// a qualified one means. Two spellings of one type intern to the same `PoolId`: sema resolves
+    /// this through the same signature table the bare form uses.
+    Qualified {
+        /// The module alias — `Window` in `Window.Event`.
+        module: Symbol,
+        /// The member name — `Event` in `Window.Event`.
+        name: Symbol,
+    },
     /// A polymorphic type variable, `$T` (ADR-0081 §1).
     ///
     /// Distinct from [`TypeRef::Name`] because it **binds** a variable a call infers, rather than naming
@@ -466,7 +482,18 @@ pub enum Expr {
     Name {
         /// The interned name.
         name: Symbol,
-        /// The span of the name token.
+        /// The module alias a **qualified** spelling named — `Simp` in `Simp.foo` (ADR-0179 §4).
+        ///
+        /// `None` for an ordinary bare name, which is every name written before qualified imports
+        /// existed. `Some` is produced by lowering when a field access's receiver is a bare name
+        /// that an aliased `#import` binds and no local shadows.
+        ///
+        /// Carried on the *name* rather than left as an `Expr::Field` deliberately: a qualified
+        /// reference resolves to [`Res::Imported`], which is what an imported name has always
+        /// resolved to, so sema, MIR and the LSP need to learn nothing. An `Expr::Field` carrying an
+        /// import resolution would be a new shape at every consumer that reads a callee.
+        module: Option<Symbol>,
+        /// The span of the name token, or of the whole `Alias.name` when `module` is `Some`.
         span: Span,
         /// Resolution result (filled by [`resolve`](fn@crate::resolve)).
         res: Res,
@@ -1230,12 +1257,18 @@ pub enum ItemKind {
         /// `true` if the initialiser is `---`.
         uninit: bool,
     },
-    /// `#import "path";`
+    /// `#import "path";`, or the aliased form `Alias :: #import "path";` (ADR-0179 §1).
     Import {
         /// The module path string (without quotes).
         path: String,
         /// Span of the path string literal.
         path_span: Span,
+        /// The name an aliased import binds — `Simp` in `Simp :: #import "Simp";`.
+        ///
+        /// `None` for a bare `#import "Simp";`, whose names merge into file scope as they always
+        /// have (ADR-0014 §2). `Some` suppresses that merge: the module is reachable only through
+        /// the alias, which is what makes two modules exporting one name usable together.
+        alias: Option<Symbol>,
     },
     /// A top-level `#run expr;`
     Run {

@@ -180,6 +180,7 @@ fn append_one(
                                     (
                                         Expr::Name {
                                             name,
+                                            module: None,
                                             span: span_copy,
                                             res: Res::Param(ParamId::from_usize(new_i as usize)),
                                         },

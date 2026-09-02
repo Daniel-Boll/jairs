@@ -2,8 +2,8 @@
 
 use jr_base::{FileId, Interner};
 use jr_hir::{
-    BinOp, ConstValue, Expr, InsertOperands, ItemKind, Literal, Res, Stmt, UnOp, dump::dump_hir,
-    lower_file, lower_file_with_inserts, resolve,
+    BinOp, ConstValue, Expr, ImportedModule, InsertOperands, ItemKind, Literal, Res, Stmt, UnOp,
+    dump::dump_hir, lower_file, lower_file_with_inserts, resolve,
 };
 use jr_syntax::parse;
 
@@ -725,7 +725,11 @@ main :: () {
     assert!(lower_diags.is_empty());
 
     let basic_scope = make_scope(&["print"], &interner);
-    let (resolve_map, resolve_diags) = resolve(&hir, &[("Basic", &basic_scope)], &interner);
+    let (resolve_map, resolve_diags) = resolve(
+        &hir,
+        &[ImportedModule::bare("Basic", &basic_scope)],
+        &interner,
+    );
     assert!(
         resolve_diags.is_empty(),
         "unexpected diagnostics: {:?}",
@@ -778,7 +782,10 @@ main :: () {
     let shapes_scope = make_scope(&["area", "Rect"], &interner);
     let (resolve_map, resolve_diags) = resolve(
         &hir,
-        &[("Colors", &colors_scope), ("Shapes", &shapes_scope)],
+        &[
+            ImportedModule::bare("Colors", &colors_scope),
+            ImportedModule::bare("Shapes", &shapes_scope),
+        ],
         &interner,
     );
     assert!(
@@ -833,7 +840,11 @@ main :: () {
     assert!(lower_diags.is_empty());
 
     let colors_scope = make_scope(&["blend", "BLACK"], &interner);
-    let (resolve_map, resolve_diags) = resolve(&hir, &[("Colors", &colors_scope)], &interner);
+    let (resolve_map, resolve_diags) = resolve(
+        &hir,
+        &[ImportedModule::bare("Colors", &colors_scope)],
+        &interner,
+    );
     assert!(
         resolve_diags.is_empty(),
         "unexpected diagnostics: {:?}",
@@ -896,7 +907,10 @@ main :: () {
     // Pass the same scope twice (same module name).
     let (resolve_map, resolve_diags) = resolve(
         &hir,
-        &[("Colors", &colors_scope), ("Colors", &colors_scope)],
+        &[
+            ImportedModule::bare("Colors", &colors_scope),
+            ImportedModule::bare("Colors", &colors_scope),
+        ],
         &interner,
     );
     assert!(
@@ -952,7 +966,10 @@ main :: () {
     let palette_scope = make_scope(&["blend", "PALETTE_SIZE"], &interner);
     let (_, resolve_diags) = resolve(
         &hir,
-        &[("Colors", &colors_scope), ("Palette", &palette_scope)],
+        &[
+            ImportedModule::bare("Colors", &colors_scope),
+            ImportedModule::bare("Palette", &palette_scope),
+        ],
         &interner,
     );
     assert!(
@@ -984,7 +1001,10 @@ main :: () {
     let palette_scope = make_scope(&["blend", "PALETTE_SIZE"], &interner);
     let (resolve_map, resolve_diags) = resolve(
         &hir,
-        &[("Colors", &colors_scope), ("Palette", &palette_scope)],
+        &[
+            ImportedModule::bare("Colors", &colors_scope),
+            ImportedModule::bare("Palette", &palette_scope),
+        ],
         &interner,
     );
 
@@ -1078,7 +1098,11 @@ main :: () {
     assert!(lower_diags.is_empty());
 
     let colors_scope = make_scope(&["blend", "BLACK"], &interner);
-    let (_, resolve_diags) = resolve(&hir, &[("Colors", &colors_scope)], &interner);
+    let (_, resolve_diags) = resolve(
+        &hir,
+        &[ImportedModule::bare("Colors", &colors_scope)],
+        &interner,
+    );
 
     let e0201_msgs: Vec<_> = resolve_diags
         .iter()
@@ -1161,7 +1185,11 @@ main :: () {
 
     // Cycle_A's scope (already built, no recursion needed).
     let cycle_a_scope = make_scope(&["a_calls_b", "A_VALUE"], &interner);
-    let (_, resolve_diags) = resolve(&hir, &[("Cycle_A", &cycle_a_scope)], &interner);
+    let (_, resolve_diags) = resolve(
+        &hir,
+        &[ImportedModule::bare("Cycle_A", &cycle_a_scope)],
+        &interner,
+    );
     assert!(
         resolve_diags.is_empty(),
         "cycle modules must resolve cleanly: {:?}",

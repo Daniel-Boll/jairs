@@ -65,11 +65,6 @@
 //! inherits §1's refusal; Vulkan is a C API and would work the way this does. The choice waits for whichever
 //! item needs a shader (ADR-0163 §4).
 
-/// The SDL2 shared library.
-///
-/// Named `"SDL2"`, which becomes `-lSDL2`. Where it lives is the operator's business — see the module docs.
-sdl :: #system_library "SDL2";
-
 /// `SDL_INIT_VIDEO`, the only subsystem this module needs.
 ///
 /// 0x20. The flags are a bitmask and stable across SDL2's lifetime, unlike the `O_*` constants `File` had to
@@ -220,59 +215,6 @@ Renderer :: struct {
     /// The `SDL_Renderer *`. Null when the renderer is not created.
     handle: *u8;
 }
-
-/// libc `SDL_Init`.
-sdl_init :: (flags: s64) -> s64 #foreign sdl "SDL_Init";
-
-/// libc `SDL_Quit`.
-sdl_quit :: () #foreign sdl "SDL_Quit";
-
-/// `SDL_CreateWindow(const char *title, int x, int y, int w, int h, Uint32 flags)`.
-sdl_create_window :: (title: *u8, x: s64, y: s64, w: s64, h: s64, flags: s64) -> *u8 #foreign sdl "SDL_CreateWindow";
-
-/// `SDL_DestroyWindow`.
-sdl_destroy_window :: (window: *u8) #foreign sdl "SDL_DestroyWindow";
-
-/// `SDL_CreateRenderer(SDL_Window *, int index, Uint32 flags)`.
-sdl_create_renderer :: (window: *u8, index: s64, flags: s64) -> *u8 #foreign sdl "SDL_CreateRenderer";
-
-/// `SDL_DestroyRenderer`.
-sdl_destroy_renderer :: (renderer: *u8) #foreign sdl "SDL_DestroyRenderer";
-
-/// `SDL_SetRenderDrawColor(SDL_Renderer *, Uint8 r, Uint8 g, Uint8 b, Uint8 a)`.
-sdl_set_draw_color :: (renderer: *u8, red: s64, green: s64, blue: s64, alpha: s64) -> s64 #foreign sdl "SDL_SetRenderDrawColor";
-
-/// `SDL_RenderClear`.
-sdl_render_clear :: (renderer: *u8) -> s64 #foreign sdl "SDL_RenderClear";
-
-/// `SDL_RenderFillRect(SDL_Renderer *, const SDL_Rect *)`.
-sdl_fill_rect :: (renderer: *u8, rect: *Rect) -> s64 #foreign sdl "SDL_RenderFillRect";
-
-/// `SDL_RenderDrawRect`.
-sdl_draw_rect :: (renderer: *u8, rect: *Rect) -> s64 #foreign sdl "SDL_RenderDrawRect";
-
-/// `SDL_RenderDrawLine`.
-sdl_draw_line :: (renderer: *u8, x1: s64, y1: s64, x2: s64, y2: s64) -> s64 #foreign sdl "SDL_RenderDrawLine";
-
-/// `SDL_RenderPresent`.
-sdl_render_present :: (renderer: *u8) #foreign sdl "SDL_RenderPresent";
-
-/// `SDL_GetNumVideoDrivers`.
-sdl_video_drivers :: () -> s64 #foreign sdl "SDL_GetNumVideoDrivers";
-
-/// `SDL_Delay(Uint32 ms)`.
-sdl_delay :: (milliseconds: s64) #foreign sdl "SDL_Delay";
-
-/// `SDL_PollEvent(SDL_Event *)` — 1 when an event was written, 0 when the queue is empty.
-///
-/// Takes a **pointer**, which is the whole reason ADR-0164 §5's refusal did not apply (ADR-0165 §1).
-sdl_poll_event :: (event: *Event) -> s64 #foreign sdl "SDL_PollEvent";
-
-/// `SDL_PushEvent(SDL_Event *)` — 1 on success.
-sdl_push_event :: (event: *Event) -> s64 #foreign sdl "SDL_PushEvent";
-
-/// `SDL_PumpEvents` — moves pending device state into the queue.
-sdl_pump_events :: () #foreign sdl "SDL_PumpEvents";
 
 /// Starts the video subsystem.
 ///
@@ -533,3 +475,71 @@ wants_to_close :: (limit: s64) -> bool {
     }
     return closing;
 }
+
+// ---------------------------------------------------------------------------
+// Private: the raw SDL2 bindings
+// ---------------------------------------------------------------------------
+
+// Everything below is **not exported** (ADR-0054 §2, ADR-0179 §6). These are the raw C symbols and
+// the library handle; a caller wants `open` and `fill`, not `sdl_create_window`. They used to be
+// exported into every importer's flat namespace, seventeen names deep, because this file had no
+// `#scope_module` — which `modules/Basic`, `File`, `File_Utilities` and `List` all have.
+#scope_module
+
+/// The SDL2 shared library.
+///
+/// Named `"SDL2"`, which becomes `-lSDL2`. Where it lives is the operator's business — see the module docs.
+sdl :: #system_library "SDL2";
+
+/// libc `SDL_Init`.
+sdl_init :: (flags: s64) -> s64 #foreign sdl "SDL_Init";
+
+/// libc `SDL_Quit`.
+sdl_quit :: () #foreign sdl "SDL_Quit";
+
+/// `SDL_CreateWindow(const char *title, int x, int y, int w, int h, Uint32 flags)`.
+sdl_create_window :: (title: *u8, x: s64, y: s64, w: s64, h: s64, flags: s64) -> *u8 #foreign sdl "SDL_CreateWindow";
+
+/// `SDL_DestroyWindow`.
+sdl_destroy_window :: (window: *u8) #foreign sdl "SDL_DestroyWindow";
+
+/// `SDL_CreateRenderer(SDL_Window *, int index, Uint32 flags)`.
+sdl_create_renderer :: (window: *u8, index: s64, flags: s64) -> *u8 #foreign sdl "SDL_CreateRenderer";
+
+/// `SDL_DestroyRenderer`.
+sdl_destroy_renderer :: (renderer: *u8) #foreign sdl "SDL_DestroyRenderer";
+
+/// `SDL_SetRenderDrawColor(SDL_Renderer *, Uint8 r, Uint8 g, Uint8 b, Uint8 a)`.
+sdl_set_draw_color :: (renderer: *u8, red: s64, green: s64, blue: s64, alpha: s64) -> s64 #foreign sdl "SDL_SetRenderDrawColor";
+
+/// `SDL_RenderClear`.
+sdl_render_clear :: (renderer: *u8) -> s64 #foreign sdl "SDL_RenderClear";
+
+/// `SDL_RenderFillRect(SDL_Renderer *, const SDL_Rect *)`.
+sdl_fill_rect :: (renderer: *u8, rect: *Rect) -> s64 #foreign sdl "SDL_RenderFillRect";
+
+/// `SDL_RenderDrawRect`.
+sdl_draw_rect :: (renderer: *u8, rect: *Rect) -> s64 #foreign sdl "SDL_RenderDrawRect";
+
+/// `SDL_RenderDrawLine`.
+sdl_draw_line :: (renderer: *u8, x1: s64, y1: s64, x2: s64, y2: s64) -> s64 #foreign sdl "SDL_RenderDrawLine";
+
+/// `SDL_RenderPresent`.
+sdl_render_present :: (renderer: *u8) #foreign sdl "SDL_RenderPresent";
+
+/// `SDL_GetNumVideoDrivers`.
+sdl_video_drivers :: () -> s64 #foreign sdl "SDL_GetNumVideoDrivers";
+
+/// `SDL_Delay(Uint32 ms)`.
+sdl_delay :: (milliseconds: s64) #foreign sdl "SDL_Delay";
+
+/// `SDL_PollEvent(SDL_Event *)` — 1 when an event was written, 0 when the queue is empty.
+///
+/// Takes a **pointer**, which is the whole reason ADR-0164 §5's refusal did not apply (ADR-0165 §1).
+sdl_poll_event :: (event: *Event) -> s64 #foreign sdl "SDL_PollEvent";
+
+/// `SDL_PushEvent(SDL_Event *)` — 1 on success.
+sdl_push_event :: (event: *Event) -> s64 #foreign sdl "SDL_PushEvent";
+
+/// `SDL_PumpEvents` — moves pending device state into the queue.
+sdl_pump_events :: () #foreign sdl "SDL_PumpEvents";

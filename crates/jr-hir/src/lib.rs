@@ -67,4 +67,4 @@ pub use hir::{
 };
 pub use instantiate::{Instantiation, InstantiationSite, expand_instantiations};
 pub use lower::{lower_file, lower_file_with_inserts};
-pub use resolve::{ExprScope, ResolveMap, resolve};
+pub use resolve::{ExprScope, ImportedModule, ResolveMap, resolve};

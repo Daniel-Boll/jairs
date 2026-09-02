@@ -255,6 +255,7 @@ fn resolve_callee(
     // good call.
     let Some(Expr::Name {
         name: _,
+        module: _,
         span: _,
         res,
     }) = exprs.get(callee.index()).cloned()
@@ -342,6 +343,7 @@ impl Thunk<'_> {
 
             Expr::Name {
                 name: _,
+                module: _,
                 span: _,
                 res,
             } => {
