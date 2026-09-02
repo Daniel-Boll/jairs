@@ -22,6 +22,7 @@ use jr_codegen::{Backend, FileInput, declarations};
 use jr_codegen_clif::ClifBackend;
 use jr_hir::ProcId;
 use jr_pool::TargetLayout;
+use rustc_hash::FxHashMap;
 
 use crate::{
     BuildConfig, Db, SourceFile, mir::optimized_file_mir, module_loader::ModuleSearchPaths,
@@ -110,6 +111,11 @@ pub fn build_object(
     // being declared", the failure the phase split exists to prevent.
     let drive = |backend: &mut dyn Backend| -> Result<(), String> {
         // Phase 1: declare everything, so a cross-file call has a symbol to reference.
+        //
+        // The declared shape of every *local* procedure is kept, because phase 2 needs it for a
+        // refused body's stub: the entry block's arguments must match the signature emitted here.
+        let mut declared: FxHashMap<jr_mir::ProcRef, (Vec<jr_pool::PoolId>, jr_pool::PoolId)> =
+            FxHashMap::default();
         for (file_id, hir, _, signatures) in &inputs {
             // The source name of every procedure this file binds, for a backtrace frame
             // (ADR-0066 §3). Built here because resolving a `Symbol` needs the interner, which
@@ -124,19 +130,40 @@ pub fn build_object(
             };
             let own_entry = (*file_id == entry.file).then_some(entry.proc);
             for decl in declarations(&input, &pool, own_entry) {
+                if matches!(decl.kind, jr_codegen::ProcKind::Local { .. }) {
+                    declared.insert(decl.proc, (decl.params.clone(), decl.ret));
+                }
                 backend
                     .declare(&decl, &pool, layout)
                     .map_err(|e| e.to_string())?;
             }
         }
 
-        // Phase 2: define every body MIR produced. A body MIR refused is skipped rather
-        // than reported: the refusal is ADR-0017 §4 working, and something upstream
-        // already reported the cause.
+        // Phase 2: define every body. A body MIR **refused** gets a trapping stub rather than
+        // being skipped, because phase 1 already declared it and `cranelift-object` panics on an
+        // `Export` symbol nothing defines — `function "jr$0$0" with linkage Export must be
+        // defined but is not`, exit 101, with no hint that the cause was already diagnosed as
+        // E0245. A stub is what that diagnostic's own last note promises: calling it is an
+        // error, leaving it uncalled is not.
+        //
+        // The refusal itself is still not re-reported here: ADR-0017 §4 is working, and something
+        // upstream said why.
         for (file_id, hir, mir, _) in &inputs {
             for (proc, outcome) in mir.iter() {
-                let Ok(body) = outcome else { continue };
                 let reference = jr_mir::ProcRef::new(*file_id, proc);
+                let stub;
+                let body = match outcome {
+                    Ok(body) => body,
+                    Err(_) => {
+                        // Not declared means not called and not exported, so nothing needs a
+                        // definition — the only way to reach this is a procedure the plan skipped.
+                        let Some((params, ret)) = declared.get(&reference) else {
+                            continue;
+                        };
+                        stub = jr_mir::MirBody::refused(reference, params, *ret);
+                        &stub
+                    }
+                };
                 // The back end holds a `MirSpan` at every trap site and can resolve
                 // none of them: that needs the file's HIR and a source map, neither of
                 // which ADR-0009 lets it see. So the resolution happens here and arrives

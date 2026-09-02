@@ -109,6 +109,13 @@ pub enum Trap {
     ShiftOutOfRange,
     /// `Terminator::Unreachable(Unreachable::Trap)` was reached.
     Deliberate,
+    /// The stub a **refused** body gets (`jr_mir::MirBody::refused`) was reached.
+    ///
+    /// Its own kind rather than [`Self::Deliberate`], because the two mean opposite things:
+    /// a deliberate trap is the program doing what it asked for, and this is the compiler
+    /// admitting a gap that E0245 already named. Sharing one message told a user their
+    /// program had deliberately trapped when it had done nothing of the kind.
+    Refused,
     /// A `break` or `continue` outside a loop was reached at run time.
     ///
     /// E0229 reports this statically, so reaching it means the program was run
@@ -174,6 +181,10 @@ impl fmt::Display for Trap {
             Self::DivideByZero => write!(f, "division by zero"),
             Self::ShiftOutOfRange => write!(f, "shift count out of range"),
             Self::Deliberate => write!(f, "reached a deliberate trap"),
+            Self::Refused => write!(
+                f,
+                "this procedure could not be compiled; the compiler reported a gap in it"
+            ),
             Self::StrayJump => write!(f, "a `break` or `continue` outside a loop was reached"),
             Self::FellOffEnd => write!(
                 f,

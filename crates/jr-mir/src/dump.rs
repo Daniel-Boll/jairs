@@ -405,6 +405,7 @@ impl Dumper<'_> {
                     Unreachable::Trap => "trap",
                     Unreachable::StrayJump => "stray jump",
                     Unreachable::FellOffEnd => "fell off the end",
+                    Unreachable::Refused => "refused",
                 };
                 format!("unreachable // {why}")
             }

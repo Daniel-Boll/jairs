@@ -949,6 +949,14 @@ pub enum Unreachable {
     /// Whether this is *reachable* is the missing-`return` diagnostic, which
     /// needs the CFG and so was deferred by `jr-sema`.
     FellOffEnd,
+    /// The procedure's body was **refused** by lowering, so this is the stub the
+    /// declare phase's promise is kept with (see [`MirBody::refused`]).
+    ///
+    /// Its own variant rather than [`Self::Trap`], because the two mean opposite
+    /// things to a reader of the message: a `Trap` is the program doing what it asked
+    /// for, and this is the *compiler* admitting a gap. Sharing `Trap` printed
+    /// "reached a deliberate trap" for a program that had deliberately done nothing.
+    Refused,
 }
 
 /// How a basic block ends. Every block has exactly one.
@@ -1179,6 +1187,37 @@ impl MirBody {
             facts: Facts::default(),
             cache: Arc::new(CfgCache::default()),
         }
+    }
+
+    /// Creates the body a **refused** procedure gets: the declared parameters, and a
+    /// single block that traps.
+    ///
+    /// The declare phase promises the back end a definition for every procedure it
+    /// declared (ADR-0019 §1), and a refused body used to be *skipped* instead — which
+    /// left an `Export` symbol nothing defined, and `cranelift-object` **panicked**
+    /// with `function "jr$0$0" with linkage Export must be defined but is not`. Exit
+    /// 101, a mangled symbol, and no hint that the cause was already diagnosed.
+    ///
+    /// A stub is what E0245's own last note promises: *"calling it is an error; leaving
+    /// it uncalled is not."* Trapping when called makes that true at run time, where
+    /// refusing the whole build would break the second half of it and skipping the
+    /// definition breaks the first.
+    ///
+    /// **Parameters are declared even though nothing reads them**, because the entry
+    /// block's arguments must match the signature the declare phase already emitted —
+    /// an empty entry block against a two-parameter signature is a verifier error
+    /// rather than a trap.
+    #[must_use]
+    pub fn refused(proc: ProcRef, params: &[PoolId], ret: PoolId) -> Self {
+        let mut body = Self::new(proc, ret);
+        let entry = body.entry();
+        body.set_terminator(entry, Terminator::Unreachable(Unreachable::Refused));
+        let values = params
+            .iter()
+            .map(|ty| body.push_value(*ty, MirSpan::Synthetic))
+            .collect();
+        body.set_params(values);
+        body
     }
 
     // -----------------------------------------------------------------
@@ -1692,6 +1731,27 @@ mod tests {
             ProcRef::new(FileId::from_usize(0), ProcId::from_usize(0)),
             PoolId::VOID,
         )
+    }
+
+    /// A refused stub declares one parameter per declared parameter.
+    ///
+    /// Load-bearing rather than obvious: the declare phase has already emitted a signature, so an
+    /// entry block with no arguments against a two-parameter signature is a *verifier* error rather
+    /// than the trap the stub exists to be. Nothing else in the stub reads these values.
+    #[test]
+    fn a_refused_stub_carries_the_declared_parameters_and_traps() {
+        let proc = ProcRef::new(FileId::from_usize(0), ProcId::from_usize(0));
+        let stub = MirBody::refused(proc, &[PoolId::S64, PoolId::BOOL], PoolId::VOID);
+
+        assert_eq!(stub.params().len(), 2);
+        assert_eq!(stub.value(stub.params()[0]).ty, PoolId::S64);
+        assert_eq!(stub.value(stub.params()[1]).ty, PoolId::BOOL);
+        assert_eq!(stub.block_count(), 1);
+        assert_eq!(
+            stub.block(stub.entry()).term,
+            Terminator::Unreachable(Unreachable::Refused),
+            "a refused stub must be distinguishable from a deliberate trap"
+        );
     }
 
     #[test]

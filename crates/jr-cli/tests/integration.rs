@@ -2913,3 +2913,56 @@ main :: () {
         );
     }
 }
+
+/// A program whose body lowering refused still **builds**, and traps with the compiler's own
+/// admission rather than panicking inside `cranelift-object`.
+///
+/// # Why this is a build test and not a corpus program
+///
+/// `tests/corpus/valid` asserts that all three engines agree on an exit code, and the bytecode VM
+/// refuses to *run* a file whose body was refused — it reports "the compiler could not lower
+/// `main`" and exits without producing one. So the asymmetry this test pins has no home there: it
+/// exists precisely because the VM refused honestly while the native path did not.
+///
+/// # The bug it pins
+///
+/// Phase 1 declares every procedure with `Linkage::Export`; phase 2 used to *skip* a refused body.
+/// `cranelift-object` then panicked with `function "jr$0$0" with linkage Export must be defined but
+/// is not` — exit 101, a mangled symbol, and nothing connecting it to the E0245 already reported.
+///
+/// A file-scope mutable variable is the shortest program that reaches it today.
+#[test]
+fn a_refused_body_builds_and_traps_instead_of_panicking() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let source = dir.path().join("refused.jr");
+    std::fs::write(
+        &source,
+        "#import \"Basic\";\ncounter: s64;\nmain :: () {\n    counter = 5;\n    exit(counter);\n}\n",
+    )
+    .expect("the source should be writable");
+    let binary = dir.path().join("refused");
+
+    // Zero, not 101: the build succeeds, which is the half of E0245's promise that says leaving a
+    // refused procedure uncalled is not an error.
+    let code = run_build(source, Some(binary.clone()));
+    assert_eq!(code, 0, "a refused body must not fail the build");
+
+    let output = std::process::Command::new(&binary)
+        .output()
+        .expect("the binary should run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // And the other half: calling one *is* an error, said in words a reader can act on.
+    assert!(
+        stderr.contains("this procedure could not be compiled"),
+        "the trap must name the compiler's gap, got {stderr:?}"
+    );
+    assert!(
+        !stderr.contains("deliberate"),
+        "a refused stub is not a deliberate trap, got {stderr:?}"
+    );
+    assert!(
+        stderr.contains("in main"),
+        "the trap must name its frame, got {stderr:?}"
+    );
+}

@@ -255,6 +255,27 @@ grammar reported an `ERROR` node over it (gate 6, which is what that gate exists
 the type, verified by writing it; and `codes.rs` caught a code collision when this wave first reached for E0290,
 which `jr-hir` owns.
 
+**ADR-0178 reaches 1071** (**1075** under gate 7) with no new corpus file, and fixes a defect the W11
+audit turned up rather than a planned one. `jr check` on a file-scope mutable variable is **good** —
+E0245, and a note reading *"calling it is an error; leaving it uncalled is not."* `jr build` **panicked**:
+`function "jr$0$0" with linkage Export must be defined but is not`, exit 101. Phase 1 declares every
+procedure `Export`; phase 2 *skipped* a refused body, under a comment reasoning about **diagnostics** in
+a place whose problem was **linkage**. The bytecode VM refused honestly the whole time, which is what
+made this an asymmetry rather than a shared gap. A refused body now gets a trapping stub, which is that
+note made true at run time.
+
+**And the second finding is the one to remember.** `TrapKind::ALL`'s guard asserted `len() == 11` — a
+**proxy**, since a variant left out of `ALL` keeps the length right and `[Self; 11]` compiles beside a
+twelve-variant enum. It fired only because this wave happened to bump the array length first. Replaced
+with an exhaustive match, it *immediately* found that **four of fifteen kinds were never in `ALL`** —
+and that `ALL`'s doc comment described a driver loop that **does not exist**, which is exactly what let
+the omission stand: the list looked load-bearing, so nobody audited it. Those four were therefore never
+checked by `reasons_are_distinct`, whose purpose is that no two kinds share a sentence — because the
+corpus differential compares *rendered messages*, so one shared wording hides a real engine
+disagreement. **Third instance of one shape: a hand-maintained list, a comment claiming something
+enforces it, and nothing that does** — after the E0290 collision and `file_consts`'s feature list.
+**A count is not an enforcement. An exhaustive match is.**
+
 **W12's last item was probed and respecified, and ADR-0173 §4's premise was wrong.** That section said the
 blocker was `enable_value_labels` in Cranelift's ISA flags. **That flag does not exist** in `cranelift-codegen`
 0.134 — not in `settings.rs`, not in the meta crate, nowhere. The real gate is one `func.dfg.collect_debug_info()`
