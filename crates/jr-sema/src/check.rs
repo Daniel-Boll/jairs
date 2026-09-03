@@ -5032,6 +5032,26 @@ impl Ctx<'_> {
     /// is perfectly well known, and the objection is that it is a value rather than a type. Returning
     /// `None` lets the caller raise E0261, which says exactly that.
     fn described_type(&mut self, scope: ExprScope, arg: ExprId) -> Option<PoolId> {
+        // **A pointer type argument** — `any_as(a, *Point)`, `size_of(*u8)` (ADR-0191 §1). In *type*
+        // position `*T` is a `TypeRef::Pointer`; as an intrinsic's argument it is an **expression**, so the
+        // parser reads prefix `*` as address-of applied to the name `Point`. Recognised here for the same
+        // reason the parameterised form below is: only the intrinsic knows its argument is a type.
+        //
+        // This is the read-back half of ADR-0189 §2, which made an implicitly coerced argument describe
+        // **itself** — so an `Any` holding a `*Point` became the *common* case, and `any_as(a, Point)`
+        // correctly traps on one. Without this arm there was no spelling that recovered it, which a
+        // migrated differential test had to work around rather than use.
+        if let Expr::Unary {
+            op: jr_hir::UnOp::AddrOf,
+            operand,
+            ..
+        } = self.expr_of(scope, arg)
+        {
+            self.type_position.insert((scope, operand));
+            let inner = self.described_type(scope, operand)?;
+            self.types.set_expr(scope, operand, PoolId::TYPE);
+            return Some(self.pool.pointer_to(inner));
+        }
         // **A parameterised type argument** — `size_of(Slot(s64, s64))` (ADR-0119 §1). In *type* position that is
         // a `TypeRef::Apply`, but an intrinsic's argument is an **expression**, so it parses as a call: the
         // constructor is the callee name and the arguments are ordinary expressions. Recognised here rather than

@@ -16438,3 +16438,133 @@ proc main -> void {
     discard call extern proc1(v17)
     return
 }
+
+========================================
+142-pointer-type-argument.jr
+========================================
+proc sum_through_pointer -> s64 {
+  params: v0: *Context, v1: Any
+  slots:
+    s0: Any  // temporary
+    s1: **Point  // temporary
+  bb0(v0: *Context, v1: Any):
+    store s0 <- v1
+    v2: *struct = load s0.0
+    v3: s64 = load (v2).*.0
+    v4: bool = v3 == 1137_s64
+    branch v4 ? bb1() : bb2()
+  bb1():
+    v5: **Point = load s0.1
+    store s1 <- v5
+    v6: **Point = load s1
+    v7: *Point = load (v6).*
+    v8: s64 = load (v7).*.0
+    v9: s64 = load (v7).*.1
+    v10: s64 = v8 + v9
+    return v10
+  bb2():
+    unreachable // trap
+}
+proc sum_through_value -> s64 {
+  params: v0: *Context, v1: Any
+  slots:
+    s0: Any  // temporary
+    s1: Point  // local 0
+    s2: *Point  // temporary
+  bb0(v0: *Context, v1: Any):
+    store s0 <- v1
+    v2: *struct = load s0.0
+    v3: s64 = load (v2).*.0
+    v4: bool = v3 == 1136_s64
+    branch v4 ? bb1() : bb2()
+  bb1():
+    v5: *Point = load s0.1
+    store s2 <- v5
+    v6: *Point = load s2
+    v7: Point = load (v6).*
+    store s1 <- v7
+    v8: s64 = load s1.0
+    v9: s64 = load s1.1
+    v10: s64 = v8 + v9
+    return v10
+  bb2():
+    unreachable // trap
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: Point  // local 1
+    s1: *Point  // temporary
+    s2: struct  // temporary
+    s3: Any  // temporary
+    s4: struct  // temporary
+    s5: Any  // temporary
+    s6: struct  // temporary
+    s7: struct  // temporary
+    s8: struct  // temporary
+  bb0(v0: *Context):
+    zero s0
+    store s0.0 <- 3_s64
+    store s0.1 <- 4_s64
+    v1: *Point = addr s0
+    store s1 <- v1
+    v2: **Point = addr s1
+    store s2 <- {1137_s64, 5_enum, "pointer", 8_s64, 8_s64, 0_s64, 1136_s64, static[0], false}
+    v3: *struct = addr s2
+    zero s3
+    store s3.0 <- v3
+    store s3.1 <- v2
+    v4: Any = load s3
+    v5: s64 = call proc0(v0, v4)
+    v6: s64 = 0_s64 + v5
+    v7: *Point = addr s0
+    store s4 <- {1136_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false}
+    v8: *struct = addr s4
+    zero s5
+    store s5.0 <- v8
+    store s5.1 <- v7
+    v9: Any = load s5
+    v10: s64 = call proc1(v0, v9)
+    v11: s64 = v6 + v10
+    v12: bool = 8_s64 == 8_s64
+    branch v12 ? bb1() : bb2()
+  bb1():
+    v13: s64 = v11 + 100_s64
+    goto bb3(v13)
+  bb2():
+    goto bb3(v11)
+  bb3(v15: s64):
+    v14: bool = 8_s64 == 8_s64
+    branch v14 ? bb4() : bb5()
+  bb4():
+    v16: s64 = v15 + 200_s64
+    goto bb6(v16)
+  bb5():
+    goto bb6(v15)
+  bb6(v19: s64):
+    store s6 <- {1137_s64, 5_enum, "pointer", 8_s64, 8_s64, 0_s64, 1136_s64, static[0], false}
+    v17: enum = load s6.1
+    v18: bool = v17 == 5_enum
+    branch v18 ? bb7() : bb8()
+  bb7():
+    v20: s64 = v19 + 1000_s64
+    goto bb9(v20)
+  bb8():
+    goto bb9(v19)
+  bb9(v24: s64):
+    store s7 <- {1137_s64, 5_enum, "pointer", 8_s64, 8_s64, 0_s64, 1136_s64, static[0], false}
+    v21: s64 = load s7.0
+    store s8 <- {1136_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false}
+    v22: s64 = load s8.0
+    v23: bool = v21 != v22
+    branch v23 ? bb10() : bb11()
+  bb10():
+    v25: s64 = v24 + 2000_s64
+    goto bb12(v25)
+  bb11():
+    goto bb12(v24)
+  bb12(v26: s64):
+    v27: s64 = v26 % 251_s64
+    discard call extern proc1(v27)
+    return
+}
