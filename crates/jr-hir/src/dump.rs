@@ -171,9 +171,17 @@ impl<'a> Dumper<'a> {
                         self.indent -= 1;
                         self.line("}");
                     }
-                    ConstValue::Expr(eid) => {
-                        let expr_str = self.fmt_top_expr(*eid);
-                        self.line(&format!("Item[{i}] Const {name} :: {expr_str}"));
+                    ConstValue::Expr { expr, ty } => {
+                        let expr_str = self.fmt_top_expr(*expr);
+                        // The annotation is printed, because a typed constant and an untyped one with the
+                        // same initialiser are *different* declarations and a dump that cannot tell them
+                        // apart would make a snapshot blind to the difference (ADR-0190 §2).
+                        match ty {
+                            Some(_) => {
+                                self.line(&format!("Item[{i}] Const {name} : <ty> : {expr_str}"))
+                            }
+                            None => self.line(&format!("Item[{i}] Const {name} :: {expr_str}")),
+                        }
                     }
                 },
                 ItemKind::Var { ty, init, uninit } => {

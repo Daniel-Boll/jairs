@@ -352,7 +352,7 @@ fn is_run_constant(hir: &FileHir, item: jr_hir::ItemId) -> bool {
         return false;
     };
     let ItemKind::Const {
-        value: jr_hir::ConstValue::Expr(expr),
+        value: jr_hir::ConstValue::Expr { expr, .. },
     } = &item.kind
     else {
         return false;

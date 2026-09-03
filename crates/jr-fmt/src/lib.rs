@@ -339,7 +339,29 @@ impl Formatter {
             .map(|n| n.text().to_string())
             .unwrap_or_default();
         self.emit(&name);
-        self.emit(" :: ");
+        // **A typed constant keeps its annotation** (ADR-0190 §4). Dropping it turned
+        // `THICK : float32 : 1.0` into `THICK :: 1.0`, which is the *unsound* direction — the reformatted
+        // file no longer type-checks, because the constant becomes an `s64`. Fourteenth wave in sixteen to
+        // need this line, and round-trip plus idempotence both passed without it: a formatter that
+        // re-emits every other child verbatim satisfies both while deleting one.
+        //
+        // **Discriminated on the token, not on the children.** The first attempt asked whether any child
+        // was a type kind, and `Array :: struct($T) { … }` has one — its *value* — so it emitted
+        // `Array : struct($T) {` and gate 5 caught it immediately. An ordinary constant carries one
+        // `::` token and a typed one carries two `:`, which is the only place the difference is recorded.
+        let typed = !node.children_with_tokens().any(|c| c.kind() == COLON_COLON);
+        match node
+            .children()
+            .find(|n| is_type_kind(n.kind()))
+            .filter(|_| typed)
+        {
+            Some(ty) => {
+                self.emit(" : ");
+                self.format_type(&ty);
+                self.emit(" : ");
+            }
+            None => self.emit(" :: "),
+        }
 
         // The value: PROC, STRUCT_TYPE, ENUM_TYPE, or an expression.
         //

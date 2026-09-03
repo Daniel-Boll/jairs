@@ -58,19 +58,19 @@
 #insert #run gl_library();
 
 /// `GL_COLOR_BUFFER_BIT`, for `clear`.
-COLOR_BUFFER_BIT :: 16384;
+COLOR_BUFFER_BIT : u32 : 16384;
 
 /// `GL_DEPTH_BUFFER_BIT`.
-DEPTH_BUFFER_BIT :: 256;
+DEPTH_BUFFER_BIT : u32 : 256;
 
 /// `GL_VERSION`, for `version_string`.
-VERSION :: 7938;
+VERSION : u32 : 7938;
 
 /// `GL_VENDOR`.
-VENDOR :: 7936;
+VENDOR : u32 : 7936;
 
 /// `GL_RENDERER`.
-RENDERER :: 7937;
+RENDERER : u32 : 7937;
 
 /// `GL_NO_ERROR` — what `error_code` returns when nothing has gone wrong.
 NO_ERROR :: 0;
@@ -84,8 +84,11 @@ set_clear_color :: (r: float32, g: float32, b: float32, a: float32) {
 }
 
 /// Clears the buffers named by `mask` — `COLOR_BUFFER_BIT`, or it and `DEPTH_BUFFER_BIT` together.
-clear :: (mask: s64) {
-    gl_clear(cast(u32, mask));
+///
+/// Takes a `u32` rather than an `s64` because that is what a `GLbitfield` is, and since ADR-0190 the
+/// constants say so too — so the cast this used to need at the boundary has nowhere left to be.
+clear :: (mask: u32) {
+    gl_clear(mask);
 }
 
 /// Sets the viewport, in pixels from the lower-left.
@@ -131,10 +134,10 @@ finish :: () {
 // highest-value small language item this library still wants.
 
 /// `GL_VERTEX_SHADER`.
-VERTEX_SHADER :: 35633;
+VERTEX_SHADER : u32 : 35633;
 
 /// `GL_FRAGMENT_SHADER`.
-FRAGMENT_SHADER :: 35632;
+FRAGMENT_SHADER : u32 : 35632;
 
 /// `GL_BLEND`, for `enable`/`disable`.
 BLEND :: 3042;
@@ -146,20 +149,23 @@ SRC_ALPHA :: 770;
 ONE_MINUS_SRC_ALPHA :: 771;
 
 /// `GL_TEXTURE_2D`.
-TEXTURE_2D :: 3553;
+TEXTURE_2D : u32 : 3553;
 
 /// `GL_RGBA`, a texture format.
-RGBA :: 6408;
+RGBA : u32 : 6408;
 
 /// `GL_UNSIGNED_BYTE`, a texture component type.
-UNSIGNED_BYTE :: 5121;
+UNSIGNED_BYTE : u32 : 5121;
 
 /// `GL_LINEAR`, a texture filter.
-LINEAR :: 9729;
+LINEAR : s32 : 9729;
 
 /// Creates a shader of `kind` — `VERTEX_SHADER` or `FRAGMENT_SHADER`. Zero on failure.
-create_shader :: (kind: s64) -> u32 {
-    return gl_create_shader(cast(u32, kind));
+///
+/// `kind` is a `u32` because that is what a `GLenum` is (ADR-0190 §3); the cast this wrapper used to make
+/// existed only because a Jairs constant could not say so.
+create_shader :: (kind: u32) -> u32 {
+    return gl_create_shader(kind);
 }
 
 /// Hands `source` to `shader`, **with its length**.
@@ -192,7 +198,7 @@ compile_shader :: (shader: u32) {
 /// and a caller that wants the log asks `shader_log`.
 shader_compiled :: (shader: u32) -> bool {
     status: s32 = 0;
-    gl_get_shader_iv(shader, cast(u32, COMPILE_STATUS), *status);
+    gl_get_shader_iv(shader, COMPILE_STATUS, *status);
     return status != 0;
 }
 
@@ -230,7 +236,7 @@ link_program :: (program: u32) {
 /// Whether `program` linked.
 program_linked :: (program: u32) -> bool {
     status: s32 = 0;
-    gl_get_program_iv(program, cast(u32, LINK_STATUS), *status);
+    gl_get_program_iv(program, LINK_STATUS, *status);
     return status != 0;
 }
 
@@ -273,7 +279,7 @@ create_buffer :: () -> u32 {
 
 /// Binds a buffer as the array buffer.
 bind_array_buffer :: (buffer: u32) {
-    gl_bind_buffer(cast(u32, ARRAY_BUFFER), buffer);
+    gl_bind_buffer(ARRAY_BUFFER, buffer);
 }
 
 /// Uploads `bytes` from `data` into the bound array buffer, replacing its contents.
@@ -288,7 +294,7 @@ bind_array_buffer :: (buffer: u32) {
 /// the caller can produce; the meaning of the bytes belongs to the caller's vertex layout, which this
 /// module cannot check anyway.
 upload_array_buffer :: (bytes: s64, data: *u8) {
-    gl_buffer_data(cast(u32, ARRAY_BUFFER), bytes, data, cast(u32, STREAM_DRAW));
+    gl_buffer_data(ARRAY_BUFFER, bytes, data, STREAM_DRAW);
 }
 
 /// Enables a float vertex attribute at `index`, reading `components` floats every `stride` bytes.
@@ -296,7 +302,7 @@ upload_array_buffer :: (bytes: s64, data: *u8) {
 /// `normalised = false`: these are real coordinates and real 0..1 colours, not integers to be scaled.
 enable_vertex_attribute :: (index: s64, components: s64, stride: s64, offset: s64) {
     gl_enable_vertex_attrib_array(cast(u32, index));
-    gl_vertex_attrib_pointer(cast(u32, index), cast(s32, components), cast(u32, FLOAT), cast(u8, 0), cast(s32, stride), offset);
+    gl_vertex_attrib_pointer(cast(u32, index), cast(s32, components), FLOAT, cast(u8, 0), cast(s32, stride), offset);
 }
 
 /// Disables the vertex attribute at `index`.
@@ -306,7 +312,7 @@ disable_vertex_attribute :: (index: s64) {
 
 /// Draws `count` vertices as triangles from the bound array buffer.
 draw_triangles :: (count: s64) {
-    gl_draw_arrays(cast(u32, TRIANGLES), 0, cast(s32, count));
+    gl_draw_arrays(TRIANGLES, 0, cast(s32, count));
 }
 
 /// Enables a capability — pass `BLEND`.
@@ -336,8 +342,8 @@ create_texture :: () -> u32 {
 /// Unit 0 only, because this library's renderer samples one texture at a time. A multi-texture path would
 /// take the unit as an argument, and nothing needs it yet.
 bind_texture_unit_0 :: (texture: u32) {
-    gl_active_texture(cast(u32, TEXTURE0));
-    gl_bind_texture(cast(u32, TEXTURE_2D), texture);
+    gl_active_texture(TEXTURE0);
+    gl_bind_texture(TEXTURE_2D, texture);
 }
 
 /// Deletes a texture object.
@@ -359,7 +365,7 @@ delete_texture :: (texture: u32) {
 /// RGB row is 9 bytes, GL reads 12, and the picture skews progressively — the classic symptom. A caller
 /// uploading anything but tightly-packed RGBA sets this to 1 first.
 set_unpack_alignment :: (bytes: s64) {
-    gl_pixel_store_i(cast(u32, UNPACK_ALIGNMENT), cast(s32, bytes));
+    gl_pixel_store_i(UNPACK_ALIGNMENT, cast(s32, bytes));
 }
 
 /// Uploads RGBA pixels into the bound 2D texture and sets linear filtering.
@@ -367,9 +373,13 @@ set_unpack_alignment :: (bytes: s64) {
 /// Linear rather than nearest, matching Jai's `Simp` default for a loaded image. `pixels` is
 /// `width * height * 4` bytes, tightly packed.
 upload_texture_rgba :: (width: s64, height: s64, pixels: *u8) {
-    gl_tex_image_2d(cast(u32, TEXTURE_2D), 0, cast(s32, RGBA), cast(s32, width), cast(s32, height), 0, cast(u32, RGBA), cast(u32, UNSIGNED_BYTE), pixels);
-    gl_tex_parameter_i(cast(u32, TEXTURE_2D), cast(u32, TEXTURE_MIN_FILTER), cast(s32, LINEAR));
-    gl_tex_parameter_i(cast(u32, TEXTURE_2D), cast(u32, TEXTURE_MAG_FILTER), cast(s32, LINEAR));
+    // **The `cast(s32, RGBA)` is real and stays.** `internalformat` is a `GLint` while `format` is a
+    // `GLenum`, so the same constant crosses at two widths in one call — which is exactly what a cast is
+    // for, and what it could not say while every constant was an `s64` and every argument needed one
+    // (ADR-0190 §3).
+    gl_tex_image_2d(TEXTURE_2D, 0, cast(s32, RGBA), cast(s32, width), cast(s32, height), 0, RGBA, UNSIGNED_BYTE, pixels);
+    gl_tex_parameter_i(TEXTURE_2D, TEXTURE_MIN_FILTER, LINEAR);
+    gl_tex_parameter_i(TEXTURE_2D, TEXTURE_MAG_FILTER, LINEAR);
 }
 
 // ---------------------------------------------------------------------------
@@ -433,31 +443,31 @@ gl_library :: () -> string {
 // module's exported names are a claim on every importer's flat namespace (ADR-0179 §6).
 
 /// `GL_COMPILE_STATUS`.
-COMPILE_STATUS :: 35713;
+COMPILE_STATUS : u32 : 35713;
 
 /// `GL_LINK_STATUS`.
-LINK_STATUS :: 35714;
+LINK_STATUS : u32 : 35714;
 
 /// `GL_ARRAY_BUFFER`.
-ARRAY_BUFFER :: 34962;
+ARRAY_BUFFER : u32 : 34962;
 
 /// `GL_STREAM_DRAW`.
-STREAM_DRAW :: 35040;
+STREAM_DRAW : u32 : 35040;
 
 /// `GL_FLOAT`.
-FLOAT :: 5126;
+FLOAT : u32 : 5126;
 
 /// `GL_TRIANGLES`.
-TRIANGLES :: 4;
+TRIANGLES : u32 : 4;
 
 /// `GL_TEXTURE0`.
-TEXTURE0 :: 33984;
+TEXTURE0 : u32 : 33984;
 
 /// `GL_TEXTURE_MIN_FILTER`.
-TEXTURE_MIN_FILTER :: 10241;
+TEXTURE_MIN_FILTER : u32 : 10241;
 
 /// `GL_TEXTURE_MAG_FILTER`.
-TEXTURE_MAG_FILTER :: 10240;
+TEXTURE_MAG_FILTER : u32 : 10240;
 
 /// Copies `text` into NUL-terminated scratch from temporary storage.
 ///
@@ -564,7 +574,7 @@ gl_bind_texture :: (target: u32, texture: u32) #foreign gl "glBindTexture";
 gl_tex_image_2d :: (target: u32, level: s32, internal_format: s32, width: s32, height: s32, border: s32, format: u32, kind: u32, pixels: *u8) #foreign gl "glTexImage2D";
 
 /// `GL_UNPACK_ALIGNMENT`.
-UNPACK_ALIGNMENT :: 3317;
+UNPACK_ALIGNMENT : u32 : 3317;
 
 /// `glDeleteTextures(GLsizei, const GLuint *)`.
 gl_delete_textures :: (count: s32, names: *u32) #foreign gl "glDeleteTextures";

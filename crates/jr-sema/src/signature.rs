@@ -343,16 +343,31 @@ impl Ctx<'_> {
                         proc: None,
                     })
                 }
-                ConstValue::Expr(expr) => {
+                ConstValue::Expr { expr, ty: declared } => {
                     // A `::` initialiser is the one position that may **name a type**: `T :: Point;`
                     // binds a type value (ADR-0071 §1, §2). Recorded before typing it, the same
                     // mechanism a field-access receiver uses, so the `Name` arm's E0261 refusal skips
                     // this expression while still typing it.
                     self.type_position.insert((ExprScope::TopLevel, expr));
-                    // No annotation exists on a `::` declaration, so the
-                    // initialiser types itself and an untyped integer literal
-                    // lands on the default (ADR-0016 §1).
-                    let ty = self.check_expr(ExprScope::TopLevel, expr, None);
+                    // **The annotation of a typed constant is the expectation** (ADR-0190 §2). This used
+                    // to pass `None` unconditionally, under a comment reading "No annotation exists on a
+                    // `::` declaration" — true until `X : u32 : 5` could be written, and the reason every
+                    // GLenum in `modules/GL` was `cast(u32, X)` at each use.
+                    //
+                    // Resolved through the same `resolve_type` the `Var` arm below uses, so a typed
+                    // constant and a typed variable cannot disagree about what `u32` means.
+                    let annotation =
+                        declared.map(|id| self.resolve_type(ExprScope::TopLevel, id, span));
+                    let ty = self.check_expr(ExprScope::TopLevel, expr, annotation);
+                    // **The declared type wins where there is one**, exactly as it does for a variable
+                    // three arms below — which is the reason to do it rather than a preference: a typed
+                    // constant and a typed variable that disagreed about whose type was authoritative
+                    // would be two rules for one annotation.
+                    //
+                    // Nothing is hidden by this. A value that does not fit has already been reported by
+                    // `check_expr`; overriding only affects *recovery*, and recovering as the type the
+                    // declaration asked for gives every later use one honest error instead of a cascade.
+                    let ty = annotation.unwrap_or(ty);
                     // **A type-valued constant is an alias**, and its entry carries the type it
                     // denotes rather than only `PoolId::TYPE` — which is what makes `T` usable in a
                     // type annotation, since `resolve_type_name` reads exactly this field. Taken from
@@ -905,7 +920,7 @@ impl Ctx<'_> {
         let hir = self.hir;
         let item = hir.scope.get(name)?;
         let ItemKind::Const {
-            value: ConstValue::Expr(expr),
+            value: ConstValue::Expr { expr, .. },
         } = &hir.items.get(item.index())?.kind
         else {
             return None;

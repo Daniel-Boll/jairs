@@ -272,7 +272,7 @@ fn wanted(
         let id = ItemId::from_usize(index);
         match &item.kind {
             ItemKind::Const {
-                value: ConstValue::Expr(expr),
+                value: ConstValue::Expr { expr, .. },
             } => {
                 if is_directive(hir, *expr) {
                     // Excluded, per this function's docs.

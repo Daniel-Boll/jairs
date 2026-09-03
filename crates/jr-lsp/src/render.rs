@@ -118,7 +118,7 @@ impl Decl<'_> {
                 ConstValue::Union(_) => Some(self.struct_signature(&name, "union")),
                 ConstValue::Variant(_) => Some(self.struct_signature(&name, "variant")),
                 ConstValue::Enum(id) => Some(self.enum_signature(&name, *id)),
-                ConstValue::Expr(_) => Some(self.const_signature(&name, item_id)),
+                ConstValue::Expr { .. } => Some(self.const_signature(&name, item_id)),
             },
             ItemKind::Var { .. } => Some(format!("{name}: {}", self.declared_type(&name))),
             // Rendered because hovering the path of an `#import` is a reasonable thing

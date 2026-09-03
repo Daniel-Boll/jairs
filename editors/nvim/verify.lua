@@ -1288,11 +1288,19 @@ if config then
 
     -- The card that prompted the whole wave: container, signature, rule, prose — from
     -- another file. Line 30 is `        print(MESSAGE);`.
+    --
+    -- **Asserted by parts rather than by whole-string equality.** It used to compare the entire card,
+    -- including `print`'s complete doc comment, so ADR-0189 broke it by *documenting* the procedure
+    -- better — a check that fails when prose improves is measuring the wrong thing. These four parts are
+    -- what the check's own name claims: the module, the signature, the rule that separates them, and
+    -- some documentation after it.
     local imported_hover = hover_at(30, 8)
     check(
       "hover on an imported procedure shows its module and its documentation",
-      imported_hover
-        == "```jr\nBasic\nprint :: (s: string)\n```\n\n---\n\nWrites a string to standard output.",
+      imported_hover:sub(1, 12) == "```jr\nBasic\n"
+        and imported_hover:find("print :: (fmt: string, args: []Any) -> s64", 1, true) ~= nil
+        and imported_hover:find("\n---\n", 1, true) ~= nil
+        and imported_hover:find("standard output", 1, true) ~= nil,
       imported_hover
     )
 
@@ -1376,10 +1384,13 @@ if config then
       local docs = resolved
         and resolved.documentation
         and (resolved.documentation.value or resolved.documentation)
+      -- **Compared against the hover card itself**, which is what this check's name claims and what the
+      -- previous whole-string literal only approximated: the two must agree, and pinning the text twice
+      -- meant ADR-0189 had to update both — so a drift between them could have been "fixed" by editing
+      -- one. Now nothing here knows what `print`'s documentation says.
       check(
         "resolve supplies the same card the hover shows",
-        docs
-          == "```jr\nBasic\nprint :: (s: string)\n```\n\n---\n\nWrites a string to standard output.",
+        docs == imported_hover,
         docs
       )
     end

@@ -543,7 +543,7 @@ fn symbol_kind(kind: &ItemKind) -> SymbolKind {
             value: ConstValue::Enum(_),
         } => SymbolKind::ENUM,
         ItemKind::Const {
-            value: ConstValue::Expr(_),
+            value: ConstValue::Expr { .. },
         } => SymbolKind::CONSTANT,
         ItemKind::Var { .. } => SymbolKind::VARIABLE,
         ItemKind::Import { .. } => SymbolKind::MODULE,

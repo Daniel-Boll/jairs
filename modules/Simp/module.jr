@@ -503,7 +503,7 @@ compile_shaders :: () -> bool {
 /// reads each string to a NUL, and a Jairs `string` is `{data, count}` with no terminator — so passing
 /// null made the shader compile to nothing while `glGetError` reported success. Recorded in this
 /// module's own docs because the failure looks like a broken shader rather than a broken call.
-compile_shader :: (kind: s64, source: string) -> u32 {
+compile_shader :: (kind: u32, source: string) -> u32 {
     shader := GL.create_shader(kind);
     if shader == 0 {
         return 0;

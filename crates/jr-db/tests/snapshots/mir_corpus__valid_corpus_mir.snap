@@ -16253,7 +16253,7 @@ proc main -> void {
     v63: Point = load s51
     store s52 <- v63
     v64: *Point = addr s52
-    store s53 <- {1102_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false}
+    store s53 <- {1105_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false}
     v65: *struct = addr s53
     zero s54
     store s54.0 <- v65
@@ -16323,7 +16323,7 @@ proc main -> void {
     discard call extern proc6(v0, "long\n", v83)
     store s72 <- 2_Colour
     v84: *Colour = addr s72
-    store s73 <- {1103_s64, 11_enum, "Colour", 8_s64, 8_s64, 0_s64, 0_s64, static[0], false}
+    store s73 <- {1106_s64, 11_enum, "Colour", 8_s64, 8_s64, 0_s64, 0_s64, static[0], false}
     v85: *struct = addr s73
     zero s74
     store s74.0 <- v85
@@ -16370,5 +16370,71 @@ proc main -> void {
     goto bb3()
   bb3():
     discard call extern proc1(64_s64)
+    return
+}
+
+========================================
+141-typed-constants.jr
+========================================
+proc takes_u32 -> s64 {
+  params: v0: *Context, v1: u32
+  bb0(v0: *Context, v1: u32):
+    v2: s64 = convert v1 from u32
+    return v2
+}
+proc takes_u8 -> s64 {
+  params: v0: *Context, v1: u8
+  bb0(v0: *Context, v1: u8):
+    v2: s64 = convert v1 from u8
+    return v2
+}
+proc takes_s16 -> s64 {
+  params: v0: *Context, v1: s16
+  bb0(v0: *Context, v1: s16):
+    v2: s64 = convert v1 from s16
+    return v2
+}
+proc takes_f32 -> s64 {
+  params: v0: *Context, v1: float32
+  bb0(v0: *Context, v1: float32):
+    v2: s64 = convert v1 from float32
+    return v2
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: string  // temporary
+    s1: [4]u8  // local 1
+  bb0(v0: *Context):
+    v1: s64 = call proc0(v0, 256_u32)
+    v2: s64 = 0_s64 + v1
+    v3: s64 = call proc1(v0, 200_u8)
+    v4: s64 = v2 + v3
+    v5: s64 = call proc2(v0, -300_s16)
+    v6: s64 = v4 + v5
+    v7: s64 = call proc3(v0, 1.5_float32)
+    v8: s64 = v6 + v7
+    v9: bool = 18446744073709551615_u64 == 18446744073709551615_u64
+    branch v9 ? bb1() : bb2()
+  bb1():
+    v10: s64 = v8 + 1000_s64
+    goto bb3(v10)
+  bb2():
+    goto bb3(v8)
+  bb3(v13: s64):
+    store s0 <- "gl"
+    v11: s64 = load s0.count
+    v12: bool = v11 == 2_s64
+    branch v12 ? bb4() : bb5()
+  bb4():
+    v14: s64 = v13 + 2000_s64
+    goto bb6(v14)
+  bb5():
+    goto bb6(v13)
+  bb6(v15: s64):
+    zero s1
+    v16: s64 = v15 + 4_s64
+    v17: s64 = v16 % 251_s64
+    discard call extern proc1(v17)
     return
 }

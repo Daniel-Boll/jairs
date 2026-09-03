@@ -29,7 +29,7 @@ fn decimal_integer_literal() {
     assert!(diags.is_empty());
     let item = &hir.items[0];
     let ItemKind::Const {
-        value: ConstValue::Expr(eid),
+        value: ConstValue::Expr { expr: eid, .. },
     } = &item.kind
     else {
         panic!("expected const expr");
@@ -56,7 +56,7 @@ fn hex_integer_literal() {
     assert!(diags.is_empty());
     let item = &hir.items[0];
     let ItemKind::Const {
-        value: ConstValue::Expr(eid),
+        value: ConstValue::Expr { expr: eid, .. },
     } = &item.kind
     else {
         panic!("expected const expr");
@@ -83,7 +83,7 @@ fn binary_integer_literal() {
     assert!(diags.is_empty());
     let item = &hir.items[0];
     let ItemKind::Const {
-        value: ConstValue::Expr(eid),
+        value: ConstValue::Expr { expr: eid, .. },
     } = &item.kind
     else {
         panic!("expected const expr");
@@ -101,7 +101,7 @@ fn octal_integer_literal() {
     assert!(diags.is_empty());
     let item = &hir.items[0];
     let ItemKind::Const {
-        value: ConstValue::Expr(eid),
+        value: ConstValue::Expr { expr: eid, .. },
     } = &item.kind
     else {
         panic!("expected const expr");
@@ -119,7 +119,7 @@ fn underscore_separator_in_integer() {
     assert!(diags.is_empty());
     let item = &hir.items[0];
     let ItemKind::Const {
-        value: ConstValue::Expr(eid),
+        value: ConstValue::Expr { expr: eid, .. },
     } = &item.kind
     else {
         panic!("expected const expr");
@@ -136,7 +136,7 @@ fn max_s64_integer_literal() {
     assert!(diags.is_empty());
     let item = &hir.items[0];
     let ItemKind::Const {
-        value: ConstValue::Expr(eid),
+        value: ConstValue::Expr { expr: eid, .. },
     } = &item.kind
     else {
         panic!("expected const expr");
@@ -173,7 +173,7 @@ fn a_literal_past_s64_is_kept_verbatim_and_not_judged_here() {
     );
     let item = &hir.items[0];
     let ItemKind::Const {
-        value: ConstValue::Expr(eid),
+        value: ConstValue::Expr { expr: eid, .. },
     } = &item.kind
     else {
         panic!("expected const expr");
@@ -198,7 +198,7 @@ fn a_leading_minus_is_folded_into_the_literal() {
     let (hir, diags, _) = lower("X :: -128;");
     assert!(diags.is_empty(), "{diags:?}");
     let ItemKind::Const {
-        value: ConstValue::Expr(eid),
+        value: ConstValue::Expr { expr: eid, .. },
     } = &hir.items[0].kind
     else {
         panic!("expected const expr");
@@ -238,7 +238,7 @@ fn string_literal_plain() {
     assert!(diags.is_empty());
     let item = &hir.items[0];
     let ItemKind::Const {
-        value: ConstValue::Expr(eid),
+        value: ConstValue::Expr { expr: eid, .. },
     } = &item.kind
     else {
         panic!("expected const expr");
@@ -255,7 +255,7 @@ fn string_literal_escape_sequences() {
     assert!(diags.is_empty());
     let item = &hir.items[0];
     let ItemKind::Const {
-        value: ConstValue::Expr(eid),
+        value: ConstValue::Expr { expr: eid, .. },
     } = &item.kind
     else {
         panic!("expected const expr");
@@ -272,7 +272,7 @@ fn string_literal_unicode_escape() {
     assert!(diags.is_empty());
     let item = &hir.items[0];
     let ItemKind::Const {
-        value: ConstValue::Expr(eid),
+        value: ConstValue::Expr { expr: eid, .. },
     } = &item.kind
     else {
         panic!("expected const expr");
@@ -290,7 +290,7 @@ fn string_literal_all_escapes() {
     assert!(diags.is_empty());
     let item = &hir.items[0];
     let ItemKind::Const {
-        value: ConstValue::Expr(eid),
+        value: ConstValue::Expr { expr: eid, .. },
     } = &item.kind
     else {
         panic!("expected const expr");
@@ -324,7 +324,7 @@ fn wrapping_operators_are_distinct_from_trapping() {
     assert!(diags.is_empty());
     let item = &hir.items[0];
     let ItemKind::Const {
-        value: ConstValue::Expr(eid),
+        value: ConstValue::Expr { expr: eid, .. },
     } = &item.kind
     else {
         panic!("expected const expr");
@@ -345,7 +345,7 @@ fn trapping_add_is_distinct_from_wrapping() {
     assert!(diags.is_empty());
     let item = &hir.items[0];
     let ItemKind::Const {
-        value: ConstValue::Expr(eid),
+        value: ConstValue::Expr { expr: eid, .. },
     } = &item.kind
     else {
         panic!("expected const expr");
@@ -389,7 +389,7 @@ fn paren_expr_is_dropped() {
     assert!(diags.is_empty());
     let item = &hir.items[0];
     let ItemKind::Const {
-        value: ConstValue::Expr(eid),
+        value: ConstValue::Expr { expr: eid, .. },
     } = &item.kind
     else {
         panic!("expected const expr");
@@ -503,7 +503,7 @@ fn file_level_name_resolves_to_item() {
         .find(|i| i.name.map(|s| interner.resolve(s) == "X").unwrap_or(false))
         .expect("X item");
     let ItemKind::Const {
-        value: ConstValue::Expr(eid),
+        value: ConstValue::Expr { expr: eid, .. },
     } = &x_item.kind
     else {
         panic!("expected const expr");

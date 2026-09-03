@@ -1551,19 +1551,28 @@ impl<'a> LowerCtx<'a> {
                 None => {
                     let err = self.alloc_top_expr_error(span);
                     ItemKind::Const {
-                        value: ConstValue::Expr(err),
+                        value: ConstValue::Expr {
+                            expr: err,
+                            ty: None,
+                        },
                     }
                 }
             }
         } else if let Some(expr) = cd.value_expr() {
             let expr_id = self.lower_top_expr(&expr);
+            // **The annotation of a typed constant** (ADR-0190 §2). `cd.ty()` is `Some` only for
+            // `name : T : value`, which the parser wraps as a `CONST_DECL` carrying a type child.
+            let ty = cd.ty().map(|t| self.lower_type_expr_top(&t));
             ItemKind::Const {
-                value: ConstValue::Expr(expr_id),
+                value: ConstValue::Expr { expr: expr_id, ty },
             }
         } else {
             let err_id = self.alloc_top_expr(Expr::Error(span), span);
             ItemKind::Const {
-                value: ConstValue::Expr(err_id),
+                value: ConstValue::Expr {
+                    expr: err_id,
+                    ty: None,
+                },
             }
         };
 

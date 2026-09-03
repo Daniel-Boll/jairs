@@ -155,11 +155,26 @@ module.exports = grammar({
       ),
 
     // name :: ConstValue
+    // name : Type : ConstValue    (a typed constant, ADR-0190 §1)
+    //
+    // Two alternatives in one rule rather than a second node kind, matching the compiler: a typed
+    // constant *is* a constant, and the hand-written parser wraps both as `CONST_DECL`. A separate
+    // `typed_const_decl` would need its own highlight, fold, indent and locals entries for a node that
+    // behaves identically in all four.
     const_decl: ($) =>
-      seq(
-        field("name", $.name),
-        "::",
-        field("value", $._const_value),
+      choice(
+        seq(
+          field("name", $.name),
+          "::",
+          field("value", $._const_value),
+        ),
+        seq(
+          field("name", $.name),
+          ":",
+          field("type", $._type),
+          ":",
+          field("value", $._const_value),
+        ),
       ),
 
     // name := expr;

@@ -360,7 +360,7 @@ fn item_completion(
             value: jr_hir::ConstValue::Operator(_, _),
         } => return None,
         ItemKind::Const {
-            value: jr_hir::ConstValue::Expr(_),
+            value: jr_hir::ConstValue::Expr { .. },
         } => (CompletionItemKind::CONSTANT, None, None),
         ItemKind::Var { .. } => (CompletionItemKind::VARIABLE, None, None),
         // An insert marker binds no name, so there is nothing to complete. The declarations its text

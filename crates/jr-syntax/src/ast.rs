@@ -565,6 +565,15 @@ impl ConstDecl {
         child_node(&self.0)
     }
 
+    /// The declared type of a **typed constant** — the `u32` of `X : u32 : 5` (ADR-0190 §1).
+    ///
+    /// `None` for the ordinary `name :: value`, which carries no annotation. A `TypeExpr` is a distinct
+    /// node kind from an `Expr`, so this cannot collide with [`ConstDecl::value_expr`] below even though
+    /// both read the first child of their own kind.
+    pub fn ty(&self) -> Option<TypeExpr> {
+        child_node(&self.0)
+    }
+
     /// The value (a proc, struct type, or expression).
     ///
     /// Returns the first child that is an expression, proc, or struct type.

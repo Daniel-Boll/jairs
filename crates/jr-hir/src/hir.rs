@@ -1329,8 +1329,22 @@ pub enum ConstValue {
     Operator(ProcId, BinOp),
     /// An enum type: `name :: enum { members }` (ADR-0041).
     Enum(EnumId),
-    /// An arbitrary expression: `name :: expr`.
-    Expr(ExprId),
+    /// An arbitrary expression: `name :: expr`, or `name : T : expr` with an annotation (ADR-0190 §2).
+    ///
+    /// A **struct field rather than a new variant**, deliberately. A `TypedExpr` variant would leave every
+    /// one of the thirty existing `ConstValue::Expr` sites silently not matching a typed constant, which is
+    /// the silent-skip failure this project has been bitten by before (ADR-0186 §3's `let-else`). Changing
+    /// the shape makes all thirty a compile error, so each one is read and decides.
+    Expr {
+        /// The initialiser.
+        expr: ExprId,
+        /// The declared type, if the constant was written `name : T : expr`.
+        ///
+        /// `None` for the ordinary `name :: expr`, where the initialiser types itself and an untyped
+        /// integer literal lands on the default (ADR-0016 §1). `Some` makes that annotation the
+        /// expectation, which is the whole point: `X : u32 : 5` is a `u32` and not an `s64`.
+        ty: Option<TypeRefId>,
+    },
 }
 
 /// A file-level item.
