@@ -110,7 +110,7 @@
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
   metric("Tests", "1076", "workspace; 1080 with LLVM in"),
-  metric("Corpus", "265", "jr files, all three engines"),
+  metric("Corpus", "266", "jr files, all three engines"),
   metric("ADRs", "184", "0001 to 0184, immutable"),
   metric("Diagnostics", "130", "declared codes, E0295 next"),
   metric("Editor checks", "170", "Neovim, verified not gated"),
@@ -437,7 +437,7 @@
   [
     #sub[Per-OS support becomes library code — and the Simp programme before it]
     #text(size: 7.4pt)[
-      ADR-0183 and 0184. Test count 1073 to *1076* (1080 with LLVM in), corpus 262 to *265* files, ADRs
+      ADR-0183 and 0184. Test count 1073 to *1076* (1080 with LLVM in), corpus 262 to *266* files, ADRs
       182 to *184*. `jr-link` learned `-framework` beside `-l`, and `#insert` learned file scope, so a
       module selects a library, a link form, a flag or a value per operating system in ordinary Jairs.
       `modules/GL` is the proof: three library names and *two argument forms*, chosen by a `#run` that
@@ -561,7 +561,7 @@
   Sources: PLAN.md §1.5 and §7, the ADR directory, `docs/decisions/DECISIONS.md`, and all seven gates
   run today on `main` *after* the merge, not on a branch. Every number was measured rather than carried
   forward — the test count from a full workspace run (1076, zero failures) and a second under
-  `--features jr-cli/llvm` (1080), the corpus count from a file walk (265 `.jr` files under
+  `--features jr-cli/llvm` (1080), the corpus count from a file walk (266 `.jr` files under
   `tests/corpus/` outside `tests/corpus/modules/`), the ADR count from `docs/adr/`, and the editor-check
   count from a real `verify.lua` run (170). The diagnostic count is *every* `const NAME: &str = "E0nnn"`
   across the crates, which is 130 — and the counting rule is written down here because the previous number

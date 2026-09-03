@@ -126,6 +126,29 @@ the shape the user asked for: *"per-OS belongs at compile time"*.
 every GL call needs a current context and `glGetString` with none *segfaults* on macOS rather than returning
 null — measured, not assumed. The claim under test is that the symbols resolved, which is what linking means.
 
+**The generator takes the OS rather than reading it, and that is the section's real content.** Written the
+obvious way — `gl_library :: () -> string` consulting `os()` internally — the module has exactly **one
+executable path per machine**, so the Linux and Windows declarations are text no test on this host can look at.
+Two of three branches permanently unexecuted is not a portability claim. So the mapping is
+`gl_library_for(target)` and the choice is `gl_library() = gl_library_for(os())`: the *choice* is still the
+module's, and the *mapping* is now a pure function a corpus program can call three times.
+
+`tests/corpus/valid/137-per-os-library-text.jr` does, on whatever host runs it, and asserts four things. Each
+string exactly, through `String.equal` since `==` on a `string` is E0278 by design (ADR-0099 §4). That macOS
+differs in its **directive** and not merely its name, because that asymmetry is the whole reason ADR-0183
+exists and a name-only comparison would miss it. That the three are **pairwise different** — which catches the
+mistake a reader would really make, editing one branch and leaving another aliased, a module that looks
+plausible and links against the wrong library on one platform. And that the host's own `gl_library()` agrees
+with the mapping, tying the tested function back to what the `#insert` actually compiled with.
+
+**Verified load-bearing rather than assumed so**: aliasing the Windows branch to Linux's text drops the exit
+code from 15 to 3. ADR-0055's rule is that a test which passes without the code it tests is worse than none,
+and the cheapest way to know is to break the code and watch.
+
+`gl_library_for` is therefore the one name in this module **above** `#scope_module`. That is deliberate: a
+module's exported names are a claim on every importer's flat namespace (ADR-0179 §6), so exporting is not free
+— but a per-OS claim about three platforms that no test can reach is worth less than the namespace costs.
+
 ### §6 — `modules/File`'s hedged flags are unhedged
 
 `CREATE`, `TRUNCATE` and `APPEND` were macOS numbers with a comment saying they were wrong on Linux — the
@@ -146,6 +169,9 @@ measurement that matters: the mechanism changed and the behaviour did not.
 
 ## Verification
 
+- **`tests/corpus/valid/137-per-os-library-text.jr`**, exit **15**, runs *all three* per-OS declarations on one
+  host — see §5 for why the generator is parameterised and for the aliasing check that proves the file is
+  load-bearing.
 - **`tests/corpus/valid/136-file-scope-insert.jr`**, exit **63**, seven independent bits so a failure names
   itself: a generated constant, struct, procedure, two inserts in one file, a declaration generated *after*
   its use, a nested insert, and an empty one. Both engines run it, and there is nothing here for one to do

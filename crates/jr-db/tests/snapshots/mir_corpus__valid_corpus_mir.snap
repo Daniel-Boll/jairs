@@ -15607,3 +15607,90 @@ proc quadruple -> s64 {
     v2: s64 = v1 * 4_s64
     return v2
 }
+
+========================================
+137-per-os-library-text.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: string  // local 1
+    s1: string  // local 2
+    s2: string  // local 3
+  bb0(v0: *Context):
+    v1: string = call extern proc6(v0, 0_enum)
+    v2: bool = call extern proc2(v0, v1, "gl :: #framework \"OpenGL\";")
+    branch v2 ? bb1() : bb2()
+  bb1():
+    v3: s64 = 0_s64 + 1_s64
+    goto bb3(v3)
+  bb2():
+    goto bb3(0_s64)
+  bb3(v6: s64):
+    v4: string = call extern proc6(v0, 1_enum)
+    v5: bool = call extern proc2(v0, v4, "gl :: #system_library \"GL\";")
+    branch v5 ? bb4() : bb5()
+  bb4():
+    v7: s64 = v6 + 2_s64
+    goto bb6(v7)
+  bb5():
+    goto bb6(v6)
+  bb6(v10: s64):
+    v8: string = call extern proc6(v0, 2_enum)
+    v9: bool = call extern proc2(v0, v8, "gl :: #system_library \"opengl32\";")
+    branch v9 ? bb7() : bb8()
+  bb7():
+    v11: s64 = v10 + 4_s64
+    goto bb9(v11)
+  bb8():
+    goto bb9(v10)
+  bb9(v36: s64):
+    v12: string = call extern proc6(v0, 0_enum)
+    store s0 <- v12
+    v13: string = call extern proc6(v0, 1_enum)
+    store s1 <- v13
+    v14: string = call extern proc6(v0, 2_enum)
+    store s2 <- v14
+    v15: string = load s0
+    v16: string = load s1
+    v17: bool = call extern proc2(v0, v15, v16)
+    v18: bool = !v17
+    branch v18 ? bb10() : bb11()
+  bb10():
+    v20: string = load s1
+    v21: string = load s2
+    v22: bool = call extern proc2(v0, v20, v21)
+    v23: bool = !v22
+    goto bb12(v23)
+  bb11():
+    goto bb12(false)
+  bb12(v19: bool):
+    branch v19 ? bb13() : bb14()
+  bb13():
+    v25: string = load s0
+    v26: string = load s2
+    v27: bool = call extern proc2(v0, v25, v26)
+    v28: bool = !v27
+    goto bb15(v28)
+  bb14():
+    goto bb15(false)
+  bb15(v24: bool):
+    branch v24 ? bb16() : bb17()
+  bb16():
+    v30: string = call extern proc7(v0)
+    v31: string = call extern proc6(v0, 0_enum)
+    v32: bool = call extern proc2(v0, v30, v31)
+    goto bb18(v32)
+  bb17():
+    goto bb18(false)
+  bb18(v29: bool):
+    branch v29 ? bb19() : bb20()
+  bb19():
+    v37: s64 = v36 + 8_s64
+    goto bb21(v37)
+  bb20():
+    goto bb21(v36)
+  bb21(v38: s64):
+    discard call extern proc1(v38)
+    return
+}

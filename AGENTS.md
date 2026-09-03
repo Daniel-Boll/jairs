@@ -256,7 +256,7 @@ grammar reported an `ERROR` node over it (gate 6, which is what that gate exists
 the type, verified by writing it; and `codes.rs` caught a code collision when this wave first reached for E0290,
 which `jr-hir` owns.
 
-**ADR-0183 and ADR-0184 reach 1076** (**1080** under gate 7) and **265** corpus files — per-OS support moved out
+**ADR-0183 and ADR-0184 reach 1076** (**1080** under gate 7) and **266** corpus files — per-OS support moved out
 of the compiler and into the library. A module now selects a library, a link form, a flag or a value per operating
 system in ordinary Jairs, and `modules/GL` is the proof: `#framework "OpenGL"` on macOS, `#system_library "GL"` on
 Linux, `#system_library "opengl32"` on Windows, chosen by a `#run` reading `os()` and spliced by a file-scope

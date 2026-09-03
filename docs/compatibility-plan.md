@@ -1,6 +1,33 @@
 # Remaining Jai-compatibility features — a plan grounded in probes, not in memory
 
-**Status:** proposal. Nothing here is built.
+**Status:** **Wave A is BUILT** (ADR-0183, ADR-0184, commit `e622f40`). Waves B, C and D remain proposals.
+
+> [!IMPORTANT]
+> **Wave A is delivered, and building it corrected §0's own correction.** This document already led with "the
+> correction that reorders everything" — that OpenGL is unreachable because a per-OS library *name* is
+> circular. That cycle is real and it is **second in line**. Two commands, which cost less than reading this
+> paragraph:
+>
+> ```
+> $ cc probe.c -o probe -lOpenGL           ld: library 'OpenGL' not found   (exit 1)
+> $ cc probe.c -o probe -framework OpenGL                                   (exit 0)
+> ```
+>
+> `jr-link`'s whole flag vocabulary was `-L` and `-l`, so **a perfect name mechanism would have emitted a name
+> that does not link.** The first blocker was a missing *argument form* — smaller and far more tractable than
+> what §0 describes. A2 was listed here as the *second* item of Wave A; it was the first.
+>
+> **A1 and A2 are both built, and A3 is done for the case that motivated it.** `modules/GL` exists and links,
+> `modules/File`'s hedged `O_*` flags select per OS, and E0294 records the one shape a computed operand cannot
+> generate. `Socket`'s constants and `Thread`'s pthread sizes are the remaining A3 work and **need no compiler
+> change** — they are ordinary module edits now.
+>
+> **What A1 turned out to cost, versus what §A1 estimated.** §A1 guessed "one arm in the dispatcher plus
+> lowering", and the arm was right. What it missed is that `checked_expanded` reused the **unexpanded**
+> signatures under a comment reading *"because `#insert` adds no items"* — true only while an insert could not
+> add declarations. A generated procedure therefore had no signature and the failure blamed its *caller* with
+> an internal compiler error. Three further sites had to learn "a file insert is pending". **An estimate that
+> counts the code to add and not the assumptions to break is the estimate this project keeps getting wrong.**
 **Measured against:** `main` at the merge of ADR-0179–0182 (1073 tests, 262 corpus files, 182 ADRs).
 
 ---
@@ -65,12 +92,12 @@ all hedged with comments admitting they are one platform's numbers.
 
 ---
 
-## 1. Wave A — the comptime platform layer (the enabling wave)
+## 1. ~~Wave A~~ — the comptime platform layer — **BUILT** (ADR-0183, ADR-0184)
 
 **Everything else in this document is cheaper after this wave, and three later items become library edits
 rather than compiler work.** It is two compiler changes and then Jairs code.
 
-### A1 — `#insert` at file scope, producing declarations
+### ~~A1~~ — `#insert` at file scope, producing declarations — **BUILT** (ADR-0184)
 
 The one capability gap. `#insert` works in a body (ADR-0072), takes a computed operand (ADR-0073), and is
 already driven by `os()` — probed above. It is absent from the file-scope dispatcher only.
@@ -84,6 +111,17 @@ gl_library :: () -> string {
 }
 #insert #run gl_library();
 ```
+
+> [!NOTE]
+> **What shipped differs from this sketch in one place, and the difference is a decision.** A framework is
+> `#framework "OpenGL"` — a **separate directive** — not `#system_library "OpenGL" #framework`, a modifier on
+> the library form. ADR-0183 §1 argues it: a framework is a different kind of linkable thing rather than a
+> style of naming one, and interning the form *into* the library value makes `#system_library "X"` and
+> `#framework "X"` two different values, so a program that wrote one meaning the other cannot silently be
+> handed the other's `PoolId`. The modifier spelling would have made that collision representable.
+>
+> The four forks in the table below were settled as recommended, all four. See `modules/GL/module.jr` for the
+> shipped version of this sketch.
 
 **Design forks this wave must settle, each with a real cost:**
 
@@ -99,7 +137,7 @@ item-count invariant nested-item hoisting relies on (ADR-0134: "no other item is
 drain") is the thing most likely to break, and it is asserted rather than merely assumed — so it will fail
 loudly rather than miscompile.
 
-### A2 — `jr-link` learns the framework form
+### ~~A2~~ — `jr-link` learns the framework form — **BUILT** (ADR-0183), and it was the *first* blocker, not the second
 
 `-framework NAME`, macOS-only, from a `#system_library "X" #framework` marker. Two lines in the flag loop and
 one attribute in the parser.
@@ -112,20 +150,26 @@ flag that is wrong on another platform, which is ADR-0163 §2's rule about `-L`.
 **Also close the sibling hole this exposes:** `jr-link` has no full-path form either, so a library outside the
 `-L` search path is unreachable. Out of scope here; recorded so it is not rediscovered.
 
-### A3 — Then use it: stop the standard library hedging
+### A3 — Then use it: stop the standard library hedging — **partly done**, and the rest needs no compiler change
 
 Pure Jairs after A1/A2, one module at a time, each a corpus file that asserts the *host's* numbers:
 
-- **`modules/File`** — the `O_*` flags. `CREATE :: 512` is macOS's; Linux is 64, `TRUNCATE` is 512 vs 1024,
-  `APPEND` 8 vs 1024. ADR-0157 §1 already says these are hedged. **The highest-value item in this wave**,
-  because a wrong flag silently creates a file with wrong permissions — which ADR-0157 §2 *measured* as
-  `---------x`.
+- ~~**`modules/File`** — the `O_*` flags~~ **DONE** (ADR-0184 §6). `CREATE`, `TRUNCATE` and `APPEND` select
+  per OS through `#run` and `os()`. The corpus program that uses them exits **124 before and after**, which is
+  the measurement that matters for a change like this: the mechanism changed and the behaviour did not.
+  Notably it did **not** need a generated *declaration* at all — a per-OS **value** (ADR-0181) was enough, and
+  this section had assumed otherwise. A per-OS number is cheaper than a per-OS declaration, so check which one
+  a case actually wants before reaching for the bigger tool.
 - **`modules/Socket`** — `AF_INET`, `SOCK_STREAM` and the `sockaddr_in` layout differ; `sockaddr_in` has a
   `sin_len` byte on macOS that Linux does not have, so the struct is genuinely a different shape.
 - **`modules/Thread`** — ADR-0177 chose a spin lock because `pthread_mutex_t` is "64 opaque platform-sized
   bytes and this language cannot spell that without hard-coding N per platform". **A1 removes that
-  objection**: the size becomes a generated constant. Whether to then swap the spin lock for a real mutex is a
-  separate decision with its own tradeoffs.
+  objection** — but check the cheaper route first, as `modules/File` turned out to need: a per-OS **constant**
+  is a `#run` (ADR-0181) and needs no insert, and a size is a number. Whether to then swap the spin lock for a
+  real mutex is a separate decision with its own tradeoffs.
+
+**Both remaining items are ordinary module edits now.** Neither is blocked, and neither needs a compiler
+change — which is the whole point of Wave A having landed.
 
 ---
 
@@ -196,16 +240,27 @@ tested on the other OS — and Wave A's whole output is per-OS code.
 
 ## 6. Recommended order, and why
 
-1. **A1 + A2** — one parser arm and one linker flag. Unlocks per-OS library naming, per-OS constants, per-OS
-   bindings, and OpenGL, and turns three later items into library edits. Everything else is cheaper after it.
-2. **C1** (typed constants) — smallest item with real daily value, and it removes ~a dozen casts that A3 would
-   otherwise add more of.
-3. **A3** — the library stops hedging. `File`'s flags first, because a wrong flag is a silent wrong file.
-4. **D3** (CI) — before trusting any of A3's Linux numbers.
+1. ~~**A1 + A2**~~ — **DONE** (ADR-0183, ADR-0184). One parser arm and one linker argument form, in that
+   order of *difficulty* and the reverse of the order this list put them in: A2 was the first blocker. `File`'s
+   half of A3 came with it.
+2. **C1** (typed constants) — **now the top item**, and its case grew rather than shrank: `modules/GL`'s
+   constants are all untyped, so every one crossing a C boundary is `cast` at the call site. Smallest item with
+   real daily value.
+3. **A3's remainder** — `Socket`'s constants and `Thread`'s pthread sizes. Ordinary module edits now, not
+   compiler work.
+4. **D3** (CI) — before trusting any of A3's Linux numbers. **Its priority rose**: `modules/GL` and `File`'s
+   flags both now contain Linux and Windows branches that **no machine has ever executed**, so the library's
+   per-OS claims are untested rather than merely unverified. This is the first work in this project whose
+   correctness genuinely depends on a second platform running it.
 5. **B** (OpenGL) — the largest, and the one with a real unanswered question about what "two backends agree"
-   means.
+   means. Unblocked now: the library links.
 
-**One habit to carry:** this document's own §0 exists because the plan it corrects was written from memory. The
-score for probing before planning is now **fourteen for fourteen** in this project, and its two most valuable
-catches were both against freshly written conclusions. Every claim above that could be probed, was — and the
+**One habit to carry:** this document's own §0 exists because the plan it corrects was written from memory —
+**and §0 was itself wrong**, corrected by two `cc` invocations at the top of this file. The score for probing
+before planning is now **fifteen for fifteen**, and its two most valuable catches were both against
+conclusions written minutes earlier in the same session. Every claim above that could be probed, was, and the
 probe commands are in §0 so the next reader can re-run them rather than trust them.
+
+**A second habit this wave adds: check whether the cheaper mechanism suffices.** §A3 assumed `modules/File`
+needed a generated *declaration*; it needed a per-OS **value**, which already existed (ADR-0181). The plan
+reached for the tool it was building rather than the one already there.

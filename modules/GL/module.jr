@@ -121,12 +121,16 @@ finish :: () {
 }
 
 // ---------------------------------------------------------------------------
-// Private: the per-OS library choice, and the raw GL bindings
+// The per-OS library choice — exported, then the raw bindings, which are not
 // ---------------------------------------------------------------------------
 
-#scope_module
+// `gl_library_for` sits **above** `#scope_module` deliberately, and it is the only thing here that does. The
+// per-OS mapping is the claim this module makes about three platforms, and a claim no test can reach is not
+// one — see its own docs for why it takes the OS rather than reading it. Everything below the marker is
+// private: the raw `#foreign` bindings are the module's implementation, and ADR-0179 §6's rule is that a
+// module's exported names are a claim on every importer's flat namespace.
 
-/// The text of this platform's OpenGL library declaration (ADR-0184 §5).
+/// The text of a given platform's OpenGL library declaration (ADR-0184 §5).
 ///
 /// Run at compile time by the `#insert` above. Three targets, **two different linker arguments**, and the
 /// difference is why `jr-link` needed a second form at all (ADR-0183 §1):
@@ -143,15 +147,35 @@ finish :: () {
 /// A procedure returning text rather than a `#if`, because `os()` is a compile-time *value* and this
 /// language has no item-level conditional — deliberately, since generating the declaration is strictly more
 /// general and needed no new syntax (ADR-0184 §1).
-gl_library :: () -> string {
-    if os() == Operating_System.MACOS {
+///
+/// **It takes the OS rather than reading `os()` itself, so that every branch is reachable on any host.** That
+/// is the whole reason for the split with `gl_library` below, and it is not a stylistic one: a generator that
+/// reads `os()` internally has exactly *one* executable path per machine, so the Linux and Windows branches
+/// of this module would be text no test could ever look at. Two of three branches permanently unexecuted is
+/// not a portability claim, it is a hope. Parameterised, `tests/corpus/valid/137-per-os-library-text.jr`
+/// asserts all three strings on whatever host runs it — and asserts they are *different*, which is what
+/// catches the mistake a reader would actually make here: editing one branch and leaving another aliased to
+/// the same text.
+gl_library_for :: (target: Operating_System) -> string {
+    if target == Operating_System.MACOS {
         return "gl :: #framework \"OpenGL\";";
     }
-    if os() == Operating_System.LINUX {
+    if target == Operating_System.LINUX {
         return "gl :: #system_library \"GL\";";
     }
     return "gl :: #system_library \"opengl32\";";
 }
+
+/// This host's declaration — `gl_library_for` applied to `os()`.
+///
+/// The `#insert` calls *this*, so the module still picks its own library and nothing about the compile-time
+/// path changed. It exists only to keep the choice (`os()`) apart from the mapping (which text per OS), so
+/// the mapping is testable.
+gl_library :: () -> string {
+    return gl_library_for(os());
+}
+
+#scope_module
 
 /// `glClearColor(GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha)`.
 ///
