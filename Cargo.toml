@@ -7,7 +7,7 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.94"
 license = "Unlicense"
-repository = "https://github.com/dboll/jairs"
+repository = "https://github.com/Daniel-Boll/jairs"
 authors = ["Jairs contributors"]
 
 # ---------------------------------------------------------------------------
