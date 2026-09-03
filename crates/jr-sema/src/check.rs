@@ -4141,6 +4141,14 @@ impl Ctx<'_> {
             );
             return PoolId::ERROR;
         };
+        // **A poisoned described type is silence, not a refusal** (ADR-0192 §4, ADR-0017 §4). The arm above
+        // already does this for the *name* `T` inside a `$T` body; `size_of(type_of(v))` reaches the same
+        // situation one level deeper, because `v`'s type is `ERROR` until a call site binds it. Without this
+        // it reported "`size_of` cannot measure `<unknown>`" on a template that every instantiation types
+        // perfectly — an error about the compiler's own placeholder, shown to the author.
+        if described == PoolId::ERROR {
+            return PoolId::ERROR;
+        }
         let Ok(layout) = jr_pool::layout_of(self.pool, jr_pool::TargetLayout::LP64, described)
         else {
             let text = self.describe(described);
@@ -5051,6 +5059,46 @@ impl Ctx<'_> {
             let inner = self.described_type(scope, operand)?;
             self.types.set_expr(scope, operand, PoolId::TYPE);
             return Some(self.pool.pointer_to(inner));
+        }
+        // **`type_of(x)` names the type of a value** (ADR-0192 §1), and it is the one type argument whose
+        // own argument is *not* a type. So it is matched before the parameterised form below, and its
+        // operand is deliberately **not** marked a type position: `x` is a value, and marking it would
+        // suppress the E0261 that should fire for `type_of(s64)`.
+        //
+        // Placed in this function rather than as an ordinary intrinsic arm because every intrinsic that
+        // takes a type asks here — so `size_of(type_of(x))`, `type_info(type_of(x))` and
+        // `any_as(a, type_of(x))` all work from one arm, and a nested `Slot(type_of(a), type_of(b))` does
+        // too, since the parameterised arm resolves its arguments through this same function.
+        if let Expr::Call { callee, args, .. } = self.expr_of(scope, arg)
+            && let Expr::Name { name, .. } = self.expr_of(scope, callee)
+            && self.interner.resolve(name) == "type_of"
+            && matches!(self.resolve.get(scope, callee), None | Some(Res::Error))
+        {
+            self.types.set_expr(scope, callee, PoolId::VOID);
+            if args.len() != 1 {
+                self.wrong_intrinsic_arity(
+                    "type_of",
+                    1,
+                    args.len(),
+                    self.expr_of(scope, arg).span(),
+                );
+                for &a in &args {
+                    self.check_expr(scope, a, None);
+                }
+                return None;
+            }
+            let ty = self.check_expr(scope, args[0], None);
+            // **A type argument, not a value.** `type_of(s64)` is refused by answering `None`, which lets the
+            // enclosing intrinsic raise its own E0261 rather than inventing a second message for one mistake.
+            if ty == PoolId::TYPE {
+                return None;
+            }
+            // **Poison propagates rather than refusing** (ADR-0017 §4). Inside a `$T` template the parameter's
+            // type is `ERROR` until a call site binds it, and every other operation on such a value is
+            // silently tolerated — `v.x` and `cast(s64, v)` report nothing in a template body. Answering
+            // `None` here instead made `size_of(type_of(v))` report "`size_of` needs a type" on a template
+            // that is perfectly well formed, and the instantiation would have typed it fine.
+            return Some(ty);
         }
         // **A parameterised type argument** — `size_of(Slot(s64, s64))` (ADR-0119 §1). In *type* position that is
         // a `TypeRef::Apply`, but an intrinsic's argument is an **expression**, so it parses as a call: the

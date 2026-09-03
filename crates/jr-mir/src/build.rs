@@ -571,6 +571,15 @@ fn scan(
                 // An `atomic_*` call names no procedure either (ADR-0176 §3), so refusing the body for its
                 // unresolved callee would refuse every program that uses one.
                 || consts.atomic(scope, *call).is_some()
+                // **A call that denotes a *type* is never emitted either** (ADR-0192 §3) — `type_of(x)`,
+                // whose whole result is consumed by the enclosing intrinsic at compile time.
+                //
+                // Asked of the **type map** rather than added to the list above, and that is the point: every
+                // other line here names one feature, so this condition is a list nothing enforces and each
+                // new intrinsic family has had to discover it. "The call's type is `type`" is a *property*
+                // that covers any future type-denoting call without an entry — the same reasoning the
+                // `denotes_a_type` check below already uses for a bare type *name*.
+                || types.expr_type(scope, *call) == Some(PoolId::TYPE)
         })
         .map(|(callee, _)| *callee)
         .collect();

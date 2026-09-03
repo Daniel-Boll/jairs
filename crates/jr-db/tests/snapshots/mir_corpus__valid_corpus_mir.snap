@@ -16568,3 +16568,97 @@ proc main -> void {
     discard call extern proc1(v27)
     return
 }
+
+========================================
+143-type-of.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: s32  // local 1
+    s1: Point  // local 2
+    s2: string  // local 3
+    s3: struct  // temporary
+    s4: struct  // temporary
+    s5: struct  // temporary
+    s6: struct  // temporary
+    s7: struct  // temporary
+    s8: struct  // temporary
+    s9: struct  // temporary
+  bb0(v0: *Context):
+    store s0 <- 5_s32
+    zero s1
+    store s2 <- "text"
+    v1: *s32 = addr s0
+    v2: s64 = 0_s64 + 4_s64
+    v3: s64 = v2 + 16_s64
+    v4: s64 = v3 + 16_s64
+    v5: s64 = v4 + 8_s64
+    store s3 <- {89_s64, 2_enum, "s32", 4_s64, 4_s64, 0_s64, 0_s64, static[0], true}
+    v6: s64 = load s3.0
+    store s4 <- {89_s64, 2_enum, "s32", 4_s64, 4_s64, 0_s64, 0_s64, static[0], true}
+    v7: s64 = load s4.0
+    v8: bool = v6 == v7
+    branch v8 ? bb1() : bb2()
+  bb1():
+    v9: s64 = v5 + 1000_s64
+    goto bb3(v9)
+  bb2():
+    goto bb3(v5)
+  bb3(v13: s64):
+    store s5 <- {1144_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false}
+    v10: s64 = load s5.0
+    store s6 <- {1144_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false}
+    v11: s64 = load s6.0
+    v12: bool = v10 == v11
+    branch v12 ? bb4() : bb5()
+  bb4():
+    v14: s64 = v13 + 2000_s64
+    goto bb6(v14)
+  bb5():
+    goto bb6(v13)
+  bb6(v18: s64):
+    store s7 <- {89_s64, 2_enum, "s32", 4_s64, 4_s64, 0_s64, 0_s64, static[0], true}
+    v15: s64 = load s7.0
+    store s8 <- {93_s64, 2_enum, "u32", 4_s64, 4_s64, 0_s64, 0_s64, static[0], false}
+    v16: s64 = load s8.0
+    v17: bool = v15 != v16
+    branch v17 ? bb7() : bb8()
+  bb7():
+    v19: s64 = v18 + 4000_s64
+    goto bb9(v19)
+  bb8():
+    goto bb9(v18)
+  bb9(v22: s64):
+    store s9 <- {90_s64, 5_enum, "pointer", 8_s64, 8_s64, 0_s64, 89_s64, static[0], false}
+    v20: enum = load s9.1
+    v21: bool = v20 == 5_enum
+    branch v21 ? bb10() : bb11()
+  bb10():
+    v23: s64 = v22 + 8000_s64
+    goto bb12(v23)
+  bb11():
+    goto bb12(v22)
+  bb12(v24: s64):
+    v25: Point = load s1
+    v26: s64 = call proc2(v0, v25)
+    v27: s64 = v24 + v26
+    v28: bool = v27 != 15060_s64
+    branch v28 ? bb13() : bb14()
+  bb13():
+    discard call extern proc1(1_s64)
+    goto bb15()
+  bb14():
+    goto bb15()
+  bb15():
+    discard call extern proc1(77_s64)
+    return
+}
+proc $inst0 -> s64 {
+  params: v0: *Context, v1: Point
+  slots:
+    s0: Point  // temporary
+  bb0(v0: *Context, v1: Point):
+    store s0 <- v1
+    return 16_s64
+}

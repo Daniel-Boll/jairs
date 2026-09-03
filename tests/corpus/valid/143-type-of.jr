@@ -1,0 +1,75 @@
+// **`type_of(x)` — the type of a value, as a type** (ADR-0192).
+//
+// # Why this file exists
+//
+// Reading the three real Jai repositories for ADR-0185 counted `type_of` **14 times**, which made it the
+// fourth most used construct Jairs lacked. It is the inverse of every other type argument: `size_of(T)`
+// takes a type and gives a number, `type_of(x)` takes a value and gives a type.
+//
+// One arm in `described_type` — the single function every intrinsic asks for its type argument — so
+// `size_of`, `type_info` and `any_as` all gain it at once. What this file exercises is that composition,
+// and that the type it yields is *the same interned type* the name would have given: an implementation
+// that returned a fresh equivalent type would pass a size check and fail the id comparisons below.
+//
+// The exit code is a checksum, so a wrong type fails the run rather than only looking wrong.
+
+#import "Basic";
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+// A polymorphic procedure is where `type_of` earns its keep in real code: the parameter's type has no
+// spelling at the call site, so nothing else can name it.
+size_of_argument :: (v: $T) -> s64 {
+    return size_of(type_of(v));
+}
+
+main :: () {
+    total := 0;
+
+    n: s32 = 5;
+    p: Point;
+    s := "text";
+    ptr := *n;
+
+    // Every shape a value can have: a narrow integer, an aggregate, a `string`, a pointer.
+    total = total + size_of(type_of(n));
+    total = total + size_of(type_of(p));
+    total = total + size_of(type_of(s));
+    total = total + size_of(type_of(ptr));
+
+    // **The identity, not just the size.** `type_of(n)` must be *the* `s32`, not something the same size
+    // — which is what makes it usable as a type rather than only as a measurement.
+    if type_info(type_of(n)).id == type_info(s32).id {
+        total = total + 1000;
+    }
+    if type_info(type_of(p)).id == type_info(Point).id {
+        total = total + 2000;
+    }
+    // And it must not collide with a different type of the same size: `s32` and `u32` are both four
+    // bytes, so an implementation keyed on width alone passes everything above and fails here.
+    if type_info(type_of(n)).id != type_info(u32).id {
+        total = total + 4000;
+    }
+
+    // Composed with ADR-0191's pointer form: `type_of(ptr)` is `*s32`, so its kind is POINTER.
+    if type_info(type_of(ptr)).kind == Type_Info_Kind.POINTER {
+        total = total + 8000;
+    }
+
+    // Through a polymorphic parameter, where the type has no other spelling.
+    total = total + size_of_argument(p);
+
+    // 4 + 16 + 16 + 8 + 1000 + 2000 + 4000 + 8000 + 16 = 15060.
+    //
+    // **Asserted, then a distinctive exit code** — not `total % 251`, which this file used first and which
+    // is exactly 0 for 15060 (251 * 60). An exit code of 0 is what a program that did nothing also
+    // produces, so a checksum that lands on it proves nothing. Worth remembering for the next corpus file:
+    // check the modulus before trusting it.
+    if total != 15060 {
+        exit(1);
+    }
+    exit(77);
+}
