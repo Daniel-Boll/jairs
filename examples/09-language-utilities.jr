@@ -1,0 +1,61 @@
+// Array literals, typed constants, and `type_of` — the five utilities of ADR-0190 to ADR-0194.
+//
+// Verified: `cargo run -q -p jr-cli -- run examples/09-language-utilities.jr -I modules`
+// prints the six lines below and exits 0.
+#import "Basic";
+
+// A **typed constant**: the value is a `u32` at every use, so nothing casts at a C boundary. Before this
+// existed, every one of `modules/GL`'s twenty-one `GLenum` constants was `cast(u32, X)` at each use.
+COLOR_BUFFER_BIT : u32 : 16384;
+
+// The annotation is not integer-only.
+THICKNESS : float32 : 1.5;
+
+Colour :: enum {
+    RED;
+    GREEN;
+    BLUE;
+}
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+// `type_of(v)` is the only way to name a polymorphic parameter's type — there is no spelling for it at
+// the call site.
+describe :: (v: $T) -> s64 {
+    return size_of(type_of(v));
+}
+
+main :: () {
+    // An **array literal**. The element type is named, so the length is the element count and each
+    // element is checked against that type — `u8.[…]` holds `u8`s where a bare `[1, 2, 3]` would have
+    // needed the context to reach through the literal into every element.
+    primes := s64.[2, 3, 5, 7, 11];
+    print("primes = %, count = %\n", primes, primes.count);
+
+    bytes := u8.[255, 128, 0];
+    print("bytes = %\n", bytes);
+
+    // Elements are ordinary expressions, not constants.
+    n := 6;
+    triples := s64.[n, n * 2, n * 3];
+    print("triples = %\n", triples);
+
+    // Iterating one works: MIR spills a sequence that is a value rather than a place.
+    total := 0;
+    for p: primes {
+        total = total + p;
+    }
+    print("sum = %, flag = %, thickness = %\n", total, COLOR_BUFFER_BIT, THICKNESS);
+
+    // Reflection reaches an **enum's member names** now, so this prints `BLUE` and not `2`.
+    print("colour = %, members = %\n", Colour.BLUE, type_info(Colour).members.count);
+
+    // `type_of` composes with every intrinsic that takes a type, because they all ask one function.
+    p: Point;
+    print("sizes: Point %, *Point %, poly %\n", size_of(type_of(p)), size_of(*Point), describe(p));
+
+    exit(0);
+}

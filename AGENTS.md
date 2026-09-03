@@ -93,8 +93,9 @@ silently skips. **Run gate 7 in any wave that touches MIR, `jr-pool`'s layout, `
 either back end** — those are exactly the places where a third engine has something to say.
 
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
-visible. **It is 1082 today, with 270 corpus files** (ADR-0189, which held the test count and moved only
-the corpus one — the pattern every library wave here follows, and the reason the two are tracked apart). It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
+visible. **It is 1082 today, with 277 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
+only the corpus one, which is the pattern every wave whose deliverable a `.jr` program can observe
+follows, and the reason the two counts are tracked apart. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
 → 969 (W5 sub-waves 1–4) → 974 (W5 sub-wave 5, polymorphic structs) → 976 (W5 sub-wave 6a, `$N` surface)
 → 977 (W5 sub-wave 6b, `$N` instantiation) → 978 (W5 sub-wave 6c, `[N]T` over `$N`; 7a `#expand` surface) → 979 (W5 sub-wave 7b, the `#expand` splice) → 980 (W5 sub-wave 7c, reflecting a bound type)
 → 981 (W5 sub-wave 7h, `#bake_arguments` specialisation — **W5 complete**). It reaches **1073** after the
@@ -257,7 +258,51 @@ grammar reported an `ERROR` node over it (gate 6, which is what that gate exists
 the type, verified by writing it; and `codes.rs` caught a code collision when this wave first reached for E0290,
 which `jr-hir` owns.
 
-**ADR-0189 holds at 1082** and adds one corpus file = **270**, and adds **no** diagnostic code — E0295
+**ADR-0190 through ADR-0194 hold at 1082** and add seven corpus files = **277**, with **one** new
+diagnostic code (E0295, an empty array literal) after four stretches with none. Five language utilities the
+plan had owed: typed constants, a pointer type as an intrinsic's argument, `type_of(x)`, an enum's member
+names and a view's elements, and **array literals** — 39 uses in real Jai code, the most used construct
+this language lacked.
+
+**Read this stretch for how much each wave paid the next, because that is the transferable part.**
+ADR-0191 put a pointer arm in `described_type`; ADR-0192 put a `type_of` arm in the same function;
+ADR-0194 routed an array literal's element type through it and got `Point.[…]`, `(*u8).[…]`,
+`Slot(s64, s64).[…]` and `type_of(x).[…]` for **no code at all**. Choosing *where* the first arm went is
+what made the last wave small. `described_type` is now the one place four intrinsics and one literal all
+ask "what type is this argument?", and the next construct that takes a type should go there too.
+
+**A plausible fix that made the probe pass was still the wrong fix** (ADR-0192 §2). `type_of`'s argument
+is a value, so the type-position flag looked like it needed clearing for it — and clearing it was
+*unnecessary* (a local is resolved during lowering, so the flag never decided anything) **and worse**
+(`type_of(s64)` then reported "unresolved name `s64`", a name that is perfectly well known, on top of the
+honest E0261). Found by probing the **refusal** case after the success case already passed. The rule:
+after a fix makes the good input work, run the bad input before believing the diagnosis.
+
+**Two absent things looked like one** (ADR-0193 §2). A view's `element` had never been populated — the
+`(count, element)` match handled arrays and pointers and a view fell through to `(0, 0)` — and that was
+invisible for waves because nothing *used* `element` for a view. Adding the stride beside it is what
+surfaced it, as a formatter that had a stride and no element type printing `[.., ..]`. **A gap nothing
+consumes is a gap nothing can find.**
+
+**The prescribed fix for the biggest owed item does not work, and writing it is how that was learned.**
+ADR-0189 §6 said a `*Type_Info` per type, nested per member. That **diverges** on
+`Node :: struct { next: *Node; }` — which is precisely why ADR-0077 chose opaque ids. Three of its four
+gaps then turned out to need no table at all, and the fourth needs a **flat** one. A plan entry naming a
+mechanism is worth checking against the first recursive type anybody would write.
+
+**The formatter needed three constructs in one stretch, and the array literal was the worst so far**: not
+a dropped attribute but the **value** — `a := s64.[1, 2, 3];` formatted to `a := ;`. It also needed **two**
+entries, the arm *and* `is_expr_kind`, because the arm alone leaves it unemitted at every nesting site.
+And the typed constant's first fix was wrong in a way gate 5 caught immediately: it asked whether any
+child was a type kind, and `Array :: struct($T)` has one — its *value* — so it emitted
+`Array : struct($T) {`. **The discriminator was the token all along** (one `::` versus two `:`), which is
+the only place the difference is recorded.
+
+**A checksum that lands on zero proves nothing** (ADR-0192 §5). `valid/143`'s total is 15060 and its first
+version exited `total % 251`, which is **exactly 0** — the same status a program that did nothing exits.
+Check the modulus before trusting it.
+
+**Historical: ADR-0189 holds at 1082** and adds one corpus file = **270**, and adds **no** diagnostic code — E0295
 is still the first free one, for the fifth consecutive stretch. `print(fmt, args: ..Any) -> s64`: Go's `%`,
 Go's `%!(MISSING)`/`%!(EXTRA …)`, written in Jairs.
 

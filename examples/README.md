@@ -19,6 +19,7 @@ cargo run -q -p jr-cli -- run examples/<name>.jr -I modules
 | [`06-array.jr`](06-array.jr) | A fixed-size `[N]T` array: indexing, `.count`, bounds checks. |
 | [`07-file-read.jr`](07-file-read.jr) | Installs an allocator, then writes and reads a whole file. |
 | [`08-print-formatted.jr`](08-print-formatted.jr) | `%` placeholders over any type, and what a wrong argument count does. |
+| [`09-language-utilities.jr`](09-language-utilities.jr) | Array literals, typed constants, `type_of`, and an enum printed by name. |
 
 A drawing program (`Simp`, `Window`, `Input`) needs SDL2 and cannot run under `jr run` —
 the compile-time VM reaches libc and nothing else. None is included here; see
