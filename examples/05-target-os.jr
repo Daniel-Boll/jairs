@@ -1,0 +1,18 @@
+// The compile-time target operating system. `os()` folds to a `Basic.Operating_System`
+// member before any code generator sees it, so this `switch` picks its branch at
+// compile time and the two branches that do not match the host generate no code.
+//
+// Verified: `cargo run -q -p jr-cli -- run examples/05-target-os.jr -I modules`
+// prints "compiled for macOS" on this machine and exits 0.
+#import "Basic";
+
+main :: () {
+    switch os() {
+        case .MACOS;
+            print_line("compiled for macOS");
+        case .LINUX;
+            print_line("compiled for Linux");
+        case .WINDOWS;
+            print_line("compiled for Windows");
+    }
+}

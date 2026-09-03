@@ -4314,9 +4314,21 @@ impl Lower<'_> {
                 // gives the projection an address, exactly as `Res::Item` does for an aggregate
                 // *constant*. Only aggregates: a scalar with no place is a real refusal (there is
                 // nothing to project), and this must not paper over it.
+                //
+                // **`StringType` belongs here, and its absence was a real gap** (ADR-0185 §1). A `string`
+                // is a two-word `{data, count}` aggregate (ADR-0004) that both back ends already
+                // materialise into a stack slot to build a literal — so the address this arm needs was
+                // always available, and only this guard withheld it. Without it `"literal".data` refused
+                // the whole body while `s := "literal"; s.data` worked, which is a one-line surprise with
+                // no rule behind it: a literal and a local holding one are the same two words. Found by
+                // hitting it in the first SDL call of the GL-context probe, where `title.data` is the
+                // idiomatic way to pass a C string.
                 None if matches!(
                     self.pool.item(receiver_ty),
-                    Item::StructType { .. } | Item::UnionType { .. } | Item::VariantType { .. }
+                    Item::StructType { .. }
+                        | Item::UnionType { .. }
+                        | Item::VariantType { .. }
+                        | Item::StringType
                 ) =>
                 {
                     let operand = self.expr(receiver);

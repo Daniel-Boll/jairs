@@ -1,0 +1,26 @@
+// A fixed-size array: declaration, indexing, `.count`, and bounds-checked writes.
+//
+// Verified: `cargo run -q -p jr-cli -- run examples/06-array.jr -I modules`
+// prints 30 and exits 0.
+#import "Basic";
+
+main :: () {
+    squares: [5]s64;
+
+    i := 0;
+    while i < squares.count {
+        squares[i] = i * i;
+        i = i + 1;
+    }
+
+    total := 0;
+    i = 0;
+    while i < squares.count {
+        total = total + squares[i];
+        i = i + 1;
+    }
+
+    // 0 + 1 + 4 + 9 + 16 = 30
+    print_int(total);
+    print_line("");
+}

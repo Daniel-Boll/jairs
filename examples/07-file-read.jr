@@ -1,0 +1,41 @@
+// A whole file: write it, then read it back. `read_entire_file` allocates through
+// `context.allocator`, so a program that calls it must install one first — a `#foreign`
+// procedure cannot fill a procedure-pointer field directly, hence the two wrappers.
+//
+// Verified: `cargo run -q -p jr-cli -- run examples/07-file-read.jr -I modules`
+// prints "hello from a Jairs program" and exits 0.
+#import "Basic";
+#import "File";
+#import "File_Utilities";
+#import "String";
+
+libc_alloc :: (n: s64) -> *u8 {
+    return malloc(n);
+}
+
+libc_free :: (p: *u8) {
+    free(p);
+}
+
+main :: () {
+    context.allocator = libc_alloc;
+    context.allocator_free = libc_free;
+
+    path := "/tmp/jr-example-07.txt";
+
+    if !write_entire_file(path, "hello from a Jairs program") {
+        exit(1);
+    }
+
+    contents, ok := read_entire_file(path);
+    if !ok {
+        exit(2);
+    }
+
+    print_line(contents);
+    free_string(contents);
+
+    if !remove(path) {
+        exit(3);
+    }
+}
