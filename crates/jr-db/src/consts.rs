@@ -165,6 +165,19 @@ enum Wanted {
     /// as a [`Wanted::Run`] — same arena, same thunk — and keyed additionally by the directive's span,
     /// which is the one identifier stable across the re-lowering that consumes the text.
     FileInsertOperand(ItemId, ExprId, jr_base::Span),
+    /// The **initialiser of a file-scope mutable variable** (ADR-0186 §2).
+    ///
+    /// `counter: s64 = 5;` needs its `5` as a value, because the native path puts those bytes in the
+    /// object file and the VM writes them into its globals region before `main` runs. So a global's
+    /// initialiser is a const-eval target, and a *non-constant* one is refused — which is not a
+    /// limitation borrowed from this compiler's shape but the same rule Jai has: there is no moment
+    /// before `main` at which arbitrary code could run to produce the value.
+    ///
+    /// Its own variant rather than a [`Wanted::Item`], because an `Item` is keyed as a **constant** and
+    /// a global is not one: `consts.item(id)` answering `Some` for a global would make every reader
+    /// that asks "is this a compile-time constant?" say yes about storage a procedure can write. That
+    /// is the well-typed-placeholder shape, so the two are kept apart at the type level.
+    GlobalInit(ItemId, ExprId),
     /// The **argument to a `$N` comptime-value parameter** at a call site (ADR-0088 §2).
     ///
     /// `make(5)` — the call needs `5` evaluated to a constant at compile time so the instantiation can
@@ -198,7 +211,8 @@ impl Wanted {
             | Self::BodyRun(_, _, expr)
             | Self::TypeAlias(_, expr)
             | Self::InsertOperand(_, _, expr, _)
-            | Self::FileInsertOperand(_, expr, _) => expr,
+            | Self::FileInsertOperand(_, expr, _)
+            | Self::GlobalInit(_, expr) => expr,
             // The *argument* is what to evaluate; the call id is auxiliary and lives in the last fields.
             Self::ComptimeArg(_, _, _, arg, _) => arg,
         }
@@ -212,6 +226,7 @@ impl Wanted {
             | Self::TypeAlias(item, _)
             | Self::InsertOperand(item, _, _, _)
             | Self::FileInsertOperand(item, _, _)
+            | Self::GlobalInit(item, _)
             | Self::ComptimeArg(item, _, _, _, _) => item,
         }
     }
@@ -225,7 +240,10 @@ impl Wanted {
             Self::Item(_, _)
             | Self::Run(_, _)
             | Self::TypeAlias(_, _)
-            | Self::FileInsertOperand(_, _, _) => ExprScope::TopLevel,
+            | Self::FileInsertOperand(_, _, _)
+            // A global's initialiser is written at file scope, so it indexes the file's arena — the
+            // same reason a file-scope insert's operand does (ADR-0186 §2).
+            | Self::GlobalInit(_, _) => ExprScope::TopLevel,
             Self::BodyRun(_, body, _) | Self::InsertOperand(_, body, _, _) => ExprScope::Body(body),
             Self::ComptimeArg(_, scope, _, _, _) => scope,
         }
@@ -277,8 +295,14 @@ fn wanted(
                 operand: Some(op),
                 span,
             } => out.push(Wanted::FileInsertOperand(id, *op, *span)),
+            // **A global's initialiser is a target** (ADR-0186 §2): the native path needs its bytes
+            // in the object file and the VM needs them in its globals region, and neither can run
+            // code to produce them. A `x: T;` or `x: T = ---;` has nothing to evaluate and is zeroed.
+            ItemKind::Var {
+                init: Some(expr), ..
+            } => out.push(Wanted::GlobalInit(id, *expr)),
             ItemKind::Const { .. }
-            | ItemKind::Var { .. }
+            | ItemKind::Var { init: None, .. }
             | ItemKind::Import { .. }
             | ItemKind::Insert { operand: None, .. } => {}
         }
@@ -828,6 +852,9 @@ pub fn insert_operands(
         let (scope, expr, span) = match target {
             Wanted::InsertOperand(_, body, expr, span) => (ExprScope::Body(body), expr, span),
             Wanted::FileInsertOperand(_, expr, span) => (ExprScope::TopLevel, expr, span),
+            // A global initialiser is not an insert operand, so this query skips it — the `_` arm
+            // below already does, and this comment says so out loud because the arm is a catch-all
+            // that a new variant joins silently (ADR-0186 §2).
             _ => continue,
         };
         // **A folded operand is found by span first** (ADR-0101 §3). `noted_insert(…)` and the other note
@@ -875,6 +902,10 @@ fn known(values: &ConstValues, target: Wanted) -> bool {
         // A comptime argument is stored under the same `(scope, expr)` key `Run`/`BodyRun` use, because
         // it *is* a run-shape evaluation of one expression — see `record` (ADR-0088 §2).
         Wanted::ComptimeArg(_, scope, _, arg, _) => values.run(scope, arg).is_some(),
+        // **A global's initial value has its own map** (ADR-0186 §2), so this asks that map and not
+        // `values.item`. Asking `item` would answer for a *constant* of the same `ItemId`, and the
+        // whole reason the two maps are separate is that a global is not a constant.
+        Wanted::GlobalInit(item, _) => values.global_init(item).is_some(),
     }
 }
 
@@ -897,6 +928,14 @@ fn record(values: &mut ConstValues, target: Wanted, value: PoolId) {
         // instantiation pass reads it back by `(scope, argument ExprId)` while walking `comptime_calls`,
         // so there is only one lookup pattern.
         Wanted::ComptimeArg(_, scope, _, arg, _) => values.set_run(scope, arg, value),
+        // **A global's initial value, and its initialiser expression too** (ADR-0186 §2). The second
+        // key is what `Wanted::Item` above does and for the same reason: a `#run` *inside* the
+        // initialiser — `state: s64 = #run compute();` — must fold where lowering walks it rather
+        // than be evaluated a second time.
+        Wanted::GlobalInit(item, expr) => {
+            values.set_global_init(item, value);
+            values.set_run(ExprScope::TopLevel, expr, value);
+        }
     }
 }
 

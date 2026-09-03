@@ -835,6 +835,32 @@ fn run_build(path: PathBuf, output: Option<PathBuf>) -> i32 {
     .expect("build should not fail at the io layer")
 }
 
+/// Builds with one **extra module directory** beside the repository's `modules`.
+///
+/// `run_build` above passes only the repository's `modules`, so a test whose program imports a module it
+/// wrote into a temporary directory cannot use it: `#import` does **not** search the importing file's own
+/// directory (measured — E0210, module not found). This helper is the one-line difference, and it exists
+/// for the refused-body test, whose construct now needs a second file (ADR-0186's cross-file gap).
+fn run_build_with_module_dir(path: PathBuf, output: Option<PathBuf>, extra: PathBuf) -> i32 {
+    jr_cli::commands::build::run(
+        jr_cli::cli::BuildArgs {
+            path,
+            output,
+            emit_object: false,
+            backend: jr_cli::cli::BackendArg::Cranelift,
+            no_bounds_check: false,
+            opt_level: None,
+            module_paths: vec![
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules"),
+                extra,
+            ],
+            library_paths: Vec::new(),
+        },
+        &quiet_global(),
+    )
+    .expect("build should not fail at the io layer")
+}
+
 /// `BUILD_OPT_LEVEL :: 0;` is honoured, and `-O` outranks it (ADR-0154 §1).
 ///
 /// Asserted through the **backtrace**, which is the one observable difference between the levels
@@ -1491,7 +1517,7 @@ fn run_build_with_paths(path: PathBuf, output: PathBuf, library_paths: &[PathBuf
     .unwrap_or(1)
 }
 
-/// `modules/Window` opens a window and draws through SDL2, in a compiled binary (ADR-0163 §1).
+/// `modules/Window` opens a window and draws through OpenGL, in a compiled binary (ADR-0187).
 ///
 /// # Why this is not a corpus program
 ///
@@ -1507,8 +1533,23 @@ fn run_build_with_paths(path: PathBuf, output: PathBuf, library_paths: &[PathBuf
 /// first and returns if it is absent. The skip is narrow on purpose: it checks for the *library*, and every
 /// assertion after that point is unconditional.
 ///
-/// The program exercises ten steps and sums a distinct bit for each, so a failure names which one broke
-/// rather than only that something did.
+/// # Why this runs against the real video driver
+///
+/// `Window.create_window` asks for `SDL_WINDOW_OPENGL` first, because a window `Simp` will draw to must be
+/// able to carry a GL context and SDL decides that at creation. **Measured**: SDL's dummy driver refuses
+/// that outright — `SDL_GetError` reports "OpenGL support is either not configured in SDL or not available
+/// in current SDL video driver (dummy) or platform". `create_window` **falls back to a plain window** on
+/// that failure rather than returning null, so a program that only reads events works headless again (see
+/// `an_event_loop_reads_the_sdl_event_union`) — but this program draws, and `Simp.is_ready()` reports the
+/// fallback window's missing GL context as its own failure at that point rather than at window creation.
+/// So this test still needs the real platform driver, and the failure is now where the requirement
+/// actually is.
+///
+/// The program exercises eleven steps and sums a distinct bit for each, so a failure names which one broke
+/// rather than only that something did. Four of them used to read a `bool #must` return from `Simp` and now
+/// read `GL.error_code()` instead, because `clear_render_target`, `set_shader_for_color` and
+/// `immediate_flush` return nothing in the real API (ADR-0187 §3) — a flush is checked for *drawing having
+/// happened cleanly*, not merely for the program having exited.
 #[test]
 fn a_window_opens_and_draws_through_sdl2() {
     // The directories `-L` would search, in the order a developer on either supported platform would have
@@ -1535,6 +1576,7 @@ fn a_window_opens_and_draws_through_sdl2() {
         &source,
         r#"Window :: #import "Window";
 Simp :: #import "Simp";
+GL :: #import "GL";
 
 libc :: #system_library "c";
 exit_now :: (status: s64) #foreign libc "exit";
@@ -1548,52 +1590,63 @@ main :: () {
     if !Window.start() { exit_now(90); }
     total = total + 2;
 
-    // `HIDDEN`, so the whole creation path runs with no display. `SOFTWARE`, because `ACCELERATED` fails
-    // on a machine with no GPU driver and this must pass on a CI runner.
-    title := "Jairs\0";
-    w, ok := Window.create_window(title.data, 320, 240, Window.HIDDEN);
-    if !ok { exit_now(91); }
+    // `create_window` takes width, height, title now — Jai's order — and returns one value. There is no
+    // `HIDDEN` flag any more: every window is `OPENGL | SHOWN`, because `Simp` needs a GL-capable window
+    // and SDL decides that at creation.
+    w := Window.create_window(320, 240, "Jairs");
+    if !Window.is_open(*w) { exit_now(91); }
     total = total + 4;
 
-    simp: Simp.Renderer;
-    if !Simp.set_render_target(*simp, *w, Window.SOFTWARE) { exit_now(92); }
-    total = total + 8;
+    // `set_render_target` returns nothing and creates the GL context on first use; `is_ready` is the
+    // question a caller who wants to know asks. `RIGHT_HANDED` (the default) is fine here: this program
+    // has no hit-testing to keep aligned with drawing.
+    Simp.set_render_target(*w);
+    if Simp.is_ready() { total = total + 8; }
 
-    // Colours are floats in 0..1 now, as Simp's are, where `set_color` took 0-255 integers.
-    if Simp.clear_render_target(*simp, 0.08, 0.12, 0.16, 1.0) { total = total + 16; }
-    if Simp.set_shader_for_color(*simp, true) { total = total + 32; }
+    // Colours are floats in 0..1 now, as Simp's are, where `set_color` took 0-255 integers. `clear_render_target`
+    // returns nothing, so success is read from `GL.error_code()` — the check the assignment names for "did the
+    // GL call succeed" once there is no boolean to receive.
+    Simp.clear_render_target(0.08, 0.12, 0.16, 1.0);
+    if GL.error_code() == GL.NO_ERROR { total = total + 16; }
+    Simp.set_shader_for_color(true);
+    if GL.error_code() == GL.NO_ERROR { total = total + 32; }
 
-    // A batch of two quads in *different colours*, which the old renderer-global colour could not do in one
-    // draw call. The second one is deliberately not axis-aligned: `SDL_RenderFillRect` cannot draw it.
-    Simp.immediate_begin(*simp);
-    Simp.immediate_quad(*simp, 10.0, 20.0, 110.0, 70.0, Simp.vector4(1.0, 0.4, 0.4, 1.0));
-    Simp.immediate_quad_uv(*simp,
-                           Simp.vector2(160.0, 20.0), Simp.vector2(220.0, 60.0),
-                           Simp.vector2(180.0, 120.0), Simp.vector2(120.0, 80.0),
-                           Simp.vector2(0.0, 0.0), Simp.vector2(1.0, 0.0),
-                           Simp.vector2(1.0, 1.0), Simp.vector2(0.0, 1.0),
-                           Simp.vector4(0.3, 0.9, 0.4, 1.0));
-    if Simp.immediate_flush(*simp) { total = total + 64; }
+    // A batch of two quads in *different colours*, which a renderer-global colour could not do in one draw
+    // call. The second one is deliberately not axis-aligned: the two-corner `immediate_quad` cannot express
+    // it, so it goes through `immediate_quad_corners` — the four-arbitrary-point form.
+    Simp.immediate_begin();
+    Simp.immediate_quad(10.0, 20.0, 110.0, 70.0, Simp.vector4(1.0, 0.4, 0.4, 1.0));
+    Simp.immediate_quad_corners(
+        Simp.vector2(160.0, 20.0), Simp.vector2(220.0, 60.0),
+        Simp.vector2(180.0, 120.0), Simp.vector2(120.0, 80.0),
+        Simp.vector4(0.3, 0.9, 0.4, 1.0),
+        Simp.vector2(0.0, 0.0), Simp.vector2(1.0, 0.0),
+        Simp.vector2(1.0, 1.0), Simp.vector2(0.0, 1.0));
+    Simp.immediate_flush();
+    if GL.error_code() == GL.NO_ERROR { total = total + 64; }
 
     // An empty flush succeeds: a frame that drew nothing must not read as a failure.
-    Simp.immediate_begin(*simp);
-    if Simp.immediate_flush(*simp) { total = total + 128; }
+    Simp.immediate_begin();
+    Simp.immediate_flush();
+    if GL.error_code() == GL.NO_ERROR { total = total + 128; }
 
     // The render target's size, which is `Simp`'s question because it needs the renderer. The *window*'s is
-    // `Window.get_window_size`, and on a high-DPI display the two differ.
-    pw, ph := Simp.get_render_dimensions(*simp);
+    // `Window.get_window_size`, and on a high-DPI display the two differ — measured equal on this machine
+    // because this window carries no `SDL_WINDOW_ALLOW_HIGHDPI` flag.
+    pw, ph := Simp.get_render_dimensions(*w);
     if pw == 320 && ph == 240 { total = total + 256; }
     ww, wh := Window.get_window_size(*w);
     if ww == 320 && wh == 240 { total = total + 512; }
 
-    Simp.swap_buffers(*simp);
+    Simp.swap_buffers(*w);
     Window.delay(1);
 
     // Closing twice must be safe, so a caller can close on every path without tracking whether they got one.
-    // The renderer goes first: SDL destroys a window's renderer with it.
-    Simp.destroy_render_target(*simp);
+    // The renderer goes first: `Simp` holds the one process-wide GL context, and `destroy_render_target` is
+    // safe to call more than once.
+    Simp.destroy_render_target();
     Window.close(*w);
-    Simp.destroy_render_target(*simp);
+    Simp.destroy_render_target();
     Window.close(*w);
     total = total + 1024;
 
@@ -1609,8 +1662,8 @@ main :: () {
     assert_eq!(code, 0, "the program must build and link against SDL2");
 
     let ran = std::process::Command::new(&binary)
-        // The dummy driver, so no display is needed and a headless runner behaves like a desktop.
-        .env("SDL_VIDEODRIVER", "dummy")
+        // No `SDL_VIDEODRIVER` override — this program draws, and drawing needs a real GL context, which
+        // `dummy`'s fallback window does not have (see the doc comment above).
         .status()
         .expect("the linked binary should run");
     assert_eq!(
@@ -1618,7 +1671,7 @@ main :: () {
         // 2047 is all eleven bits; the exit status is a byte, so the program takes it mod 251 the way every
         // other corpus program does.
         Some(2047 % 251),
-        "every step must succeed; a lower value names which bit failed, and 90-92 name a hard stop"
+        "every step must succeed; a lower value names which bit failed, and 90-91 name a hard stop"
     );
 }
 
@@ -1644,6 +1697,16 @@ main :: () {
 /// a single poll can return nothing while an event is pending. A one-poll version of this test passed on the
 /// first push and failed on the second, which is exactly the bug `wants_to_close` exists to stop a caller
 /// writing.
+///
+/// # Why this runs headless again
+///
+/// This test opens no renderer and reads no pixel. `Window.create_window` asks for
+/// `SDL_WINDOW_OPENGL` first, and SDL's `dummy` driver refuses that outright — measured: `SDL_GetError`
+/// reports "OpenGL support is either not configured in SDL or not available in current SDL video driver
+/// (dummy) or platform". But `create_window` **falls back to a plain window** on that failure rather than
+/// returning null, so a program that never touches `Simp` or GL — this one — still opens a window and
+/// reads events under `SDL_VIDEODRIVER=dummy`, which matters because this project wants a Linux CI run
+/// with no display attached.
 #[test]
 fn an_event_loop_reads_the_sdl_event_union() {
     let candidates = [
@@ -1678,9 +1741,9 @@ main :: () {
     if Input.EVENT_LAYOUT_IS_SDL2 { total = total + 1; }
 
     if !Window.start() { exit_now(90); }
-    title := "Events";
-    w, ok := Window.create_window(title.data, 200, 150, Window.HIDDEN);
-    if !ok { exit_now(91); }
+    // `create_window` takes width, height, title now, and returns one value — a null handle is the failure.
+    w := Window.create_window(200, 150, "Events");
+    if !Window.is_open(*w) { exit_now(91); }
     total = total + 2;
 
     // Nothing pending on a fresh queue.
@@ -1749,6 +1812,9 @@ main :: () {
     assert_eq!(code, 0, "the program must build and link against SDL2");
 
     let ran = std::process::Command::new(&binary)
+        // The dummy driver: this program never touches `Simp` or GL, and `create_window`'s fallback (see
+        // the doc comment above) means it opens a plain window under `dummy` even though every graphics
+        // test in this file needs the real driver to draw.
         .env("SDL_VIDEODRIVER", "dummy")
         .status()
         .expect("the linked binary should run");
@@ -1779,6 +1845,21 @@ main :: () {
 /// **`is_hot(ui, NONE)` is in here because it was a bug.** `hot` *is* `NONE` when nothing is hot, so a bare
 /// comparison answered `true` for the sentinel on every frame — a widget that does not exist, reported as
 /// hovered. Found by this test, fixed by refusing the sentinel.
+///
+/// # Coordinates, and why the render target is `LEFT_HANDED`
+///
+/// `UI`'s hit-testing is y-down, top-left origin — the convention every mouse event on every platform
+/// reports — and it never touches `Simp`, so it cannot convert. `Simp`'s default is `RIGHT_HANDED`
+/// (bottom-left, y up), so a caller drawing this UI must pass `Simp.LEFT_HANDED` to `set_render_target` to
+/// keep what is drawn aligned with what is hit-tested; this program does.
+///
+/// # Why this needs the real video driver
+///
+/// `Window.create_window` falls back to a plain window when SDL's `dummy` driver refuses an
+/// OpenGL-capable one (see `an_event_loop_reads_the_sdl_event_union`'s doc comment), so window creation
+/// itself would succeed here too. But this program draws through `Simp`, and a fallback window has no GL
+/// context — `Simp.is_ready()` would report that failure instead — so it still needs the real platform
+/// driver.
 #[test]
 fn an_immediate_mode_button_fires_on_release_inside() {
     let candidates = [
@@ -1805,7 +1886,8 @@ fn an_immediate_mode_button_fires_on_release_inside() {
     assert_eq!(code, 0, "the program must build and link against SDL2");
 
     let ran = std::process::Command::new(&binary)
-        .env("SDL_VIDEODRIVER", "dummy")
+        // No `SDL_VIDEODRIVER` override — `create_window` needs an OpenGL-capable window, which `dummy`
+        // refuses to create.
         .status()
         .expect("the linked binary should run");
     assert_eq!(
@@ -1850,11 +1932,13 @@ send :: (ui: *UI, kind: s64, x: s64, y: s64) {
 
 main :: () {
     if !Window.start() { exit_now(90); }
-    t := "UI\0";
-    w, ok := Window.create_window(t.data, 200, 200, Window.HIDDEN);
-    if !ok { exit_now(91); }
-    simp: Simp.Renderer;
-    if !Simp.set_render_target(*simp, *w, Window.SOFTWARE) { exit_now(92); }
+    // `create_window` takes width, height, title now, and returns one value.
+    w := Window.create_window(200, 200, "UI");
+    if !Window.is_open(*w) { exit_now(91); }
+    // `LEFT_HANDED` keeps drawing aligned with `UI`'s y-down hit-testing (see the doc comment above).
+    // `set_render_target` returns nothing now; `is_ready` is the question a caller who wants to know asks.
+    Simp.set_render_target(*w, Simp.LEFT_HANDED);
+    if !Simp.is_ready() { exit_now(92); }
 
     ui: UI;
     total := 0;
@@ -1917,11 +2001,18 @@ main :: () {
     if !is_hot(*ui, NONE) { total = total + 8192; }
     if !is_active(*ui, NONE) { total = total + 32768; }
 
-    // Drawing composes with all three states — five quads and two colours in one batch now, where it was
-    // a fill and an outline with a renderer-global colour between them.
-    if draw_button(*simp, *ui, 1, 10, 10, 80, 24) { total = total + 16384; }
+    // `draw_button` now performs the interaction itself and reports whether the button fired — Jai's
+    // `GetRect.button` shape, drawing and reporting the click in one call — so it is exercised through a
+    // fresh press-and-release sequence of its own rather than through a separate `button` call: calling
+    // both for one widget in one frame would double the state machine's press.
+    begin_frame(*ui);
+    send(*ui, Input.MOUSE_DOWN, 20, 20);
+    _ = draw_button(*ui, 1, 10, 10, 80, 24);
+    begin_frame(*ui);
+    send(*ui, Input.MOUSE_UP, 20, 20);
+    if draw_button(*ui, 1, 10, 10, 80, 24) { total = total + 16384; }
 
-    Simp.destroy_render_target(*simp);
+    Simp.destroy_render_target();
     Window.close(*w);
     Window.stop();
     exit_now(total % 251);
@@ -1938,6 +2029,21 @@ main :: () {
 ///
 /// The last two assertions are the ones worth having: the one-call `load_texture` path, and a **missing file**,
 /// which must return `false` rather than trap or produce a texture that draws nothing.
+///
+/// # `size_of_texture` and `draw_texture` are gone
+///
+/// `Image` no longer holds an SDL texture handle to query or copy — `texture_from`/`load_texture` now
+/// produce a `Simp.Texture` whose `width`/`height` are populated straight from the surface, and drawing
+/// goes through `Simp.set_shader_for_images` plus `immediate_quad`, exactly as any other quad does. So this
+/// test reads `tex.width`/`tex.height` directly instead of round-tripping through a query call, and draws
+/// through `Simp` and checks `GL.error_code()` instead of a `draw_texture` return.
+///
+/// # Why this runs against the real video driver
+///
+/// `create_window` falls back to a plain window when SDL's `dummy` driver refuses an OpenGL-capable one
+/// (see `an_event_loop_reads_the_sdl_event_union`'s doc comment), so window creation alone would succeed
+/// under `dummy`. But this program draws through `Simp`, and a fallback window has no GL context —
+/// `Simp.is_ready()` reports that failure instead — so it still needs the real platform driver.
 #[test]
 fn a_bmp_round_trips_into_a_texture() {
     let candidates = [
@@ -1964,7 +2070,7 @@ fn a_bmp_round_trips_into_a_texture() {
     assert_eq!(code, 0, "the program must build and link against SDL2");
 
     let ran = std::process::Command::new(&binary)
-        .env("SDL_VIDEODRIVER", "dummy")
+        // No `SDL_VIDEODRIVER` override — `create_window` needs an OpenGL-capable window.
         .status()
         .expect("the linked binary should run");
     assert_eq!(
@@ -1977,6 +2083,7 @@ fn a_bmp_round_trips_into_a_texture() {
 /// The image program the test above builds.
 const IMAGE_PROGRAM: &str = r#"Window :: #import "Window";
 Simp :: #import "Simp";
+GL :: #import "GL";
 #import "Image";
 libc :: #system_library "c";
 exit_now :: (status: s64) #foreign libc "exit";
@@ -1986,11 +2093,11 @@ main :: () {
     total := 0;
     if SURFACE_LAYOUT_IS_SDL2 { total = total + 1; }
     if !Window.start() { exit_now(90); }
-    t := "Img\0";
-    w, ok := Window.create_window(t.data, 200, 200, Window.HIDDEN);
-    if !ok { exit_now(91); }
-    simp: Simp.Renderer;
-    if !Simp.set_render_target(*simp, *w, Window.SOFTWARE) { exit_now(92); }
+    // `create_window` takes width, height, title now, and returns one value.
+    w := Window.create_window(200, 200, "Img");
+    if !Window.is_open(*w) { exit_now(91); }
+    Simp.set_render_target(*w);
+    if !Simp.is_ready() { exit_now(92); }
 
     // Build an image, so nothing binary lives in the repository.
     s, sok := create_surface(24, 16);
@@ -2013,32 +2120,40 @@ main :: () {
     if lok { total = total + 128; }
     if width_of(*l) == 24 && height_of(*l) == 16 { total = total + 256; }
 
-    tex, tok := texture_from(*simp, *l);
+    // `texture_from` no longer takes a renderer — `Simp` keeps the one process-wide GL context, so there
+    // is nothing to pass.
+    tex, tok := texture_from(*l);
     if tok { total = total + 512; }
     free_surface(*l);
 
-    tw: s32;
-    th: s32;
-    if size_of_texture(*tex, *tw, *th) { total = total + 1024; }
-    if cast(s64, tw) == 24 && cast(s64, th) == 16 { total = total + 2048; }
+    // `size_of_texture` is gone: `Simp.Texture` carries its own size, populated from the surface, and
+    // `handle` is the GL texture name — non-zero is the check that the upload actually produced one.
+    if tex.handle != 0 { total = total + 1024; }
+    if tex.width == 24 && tex.height == 16 { total = total + 2048; }
 
-    dst := Window.rect(10, 10, 48, 32);
-    if draw_texture(*simp, *tex, *dst) { total = total + 4096; }
-    Simp.swap_buffers(*simp);
+    // `draw_texture` is gone too — `Simp` owns drawing now, through the textured shader and a batch, the
+    // same as every other quad. `GL.error_code()` is the check that the draw actually happened cleanly,
+    // where `draw_texture`'s `bool` used to be.
+    Simp.set_shader_for_images(*tex);
+    Simp.immediate_begin();
+    Simp.immediate_quad(10.0, 10.0, 58.0, 42.0, Simp.vector4(1.0, 1.0, 1.0, 1.0));
+    Simp.immediate_flush();
+    if GL.error_code() == GL.NO_ERROR { total = total + 4096; }
+    Simp.swap_buffers(*w);
     destroy_texture(*tex);
     destroy_texture(*tex);
     total = total + 8192;
 
     // The one-call path, and a missing file must fail rather than trap.
-    t2, t2ok := load_texture(*simp, path.data);
+    t2, t2ok := load_texture(path.data);
     if t2ok { total = total + 16384; }
     destroy_texture(*t2);
     missing := "/tmp/jr-image-absent.bmp\0";
-    t3, t3ok := load_texture(*simp, missing.data);
+    t3, t3ok := load_texture(missing.data);
     if !t3ok { total = total + 32768; }
 
     _ = remove_file(path.data);
-    Simp.destroy_render_target(*simp);
+    Simp.destroy_render_target();
     Window.close(*w);
     Window.stop();
     exit_now(total % 251);
@@ -2063,6 +2178,13 @@ main :: () {
 /// Each earlier failure exits with its own number, so a failure **names the call that broke**: 1-3 are the
 /// three layout claims, then window creation, the render target, the clear, the shader mode, the flush, the
 /// dimensions, and the per-frame event drain. 42 means every one succeeded.
+///
+/// # Why this runs against the real video driver
+///
+/// `create_window` falls back to a plain window when SDL's `dummy` driver refuses an OpenGL-capable one
+/// (see `an_event_loop_reads_the_sdl_event_union`'s doc comment), so window creation alone would succeed
+/// under `dummy`. But this program draws through `Simp`, and a fallback window has no GL context —
+/// `Simp.is_ready()` reports that failure instead — so it still needs the real platform driver.
 #[test]
 fn the_simp_stack_draws_a_frame_end_to_end() {
     let candidates = [
@@ -2089,7 +2211,7 @@ fn the_simp_stack_draws_a_frame_end_to_end() {
     assert_eq!(code, 0, "the program must build and link against SDL2");
 
     let ran = std::process::Command::new(&binary)
-        .env("SDL_VIDEODRIVER", "dummy")
+        // No `SDL_VIDEODRIVER` override — `create_window` needs an OpenGL-capable window.
         .status()
         .expect("the linked binary should run");
     assert_eq!(
@@ -2104,43 +2226,65 @@ const SIMP_PROGRAM: &str = r#"#import "Basic";
 Window :: #import "Window";
 Input :: #import "Input";
 Simp :: #import "Simp";
+GL :: #import "GL";
 File :: #import "File";
 
 main :: () {
     // The three layout claims, each about somebody else's ABI. Nothing below means anything if one is false.
+    // `Simp.Vertex` is not an SDL layout claim any more — it is the GLSL shaders' own vertex format now
+    // (ADR-0187 §3), so its constant is named `VERTEX_LAYOUT_IS_32` rather than `..._IS_SDL2`.
     if !Window.RECT_LAYOUT_IS_SDL2 { exit(1); }
     if !Input.EVENT_LAYOUT_IS_SDL2 { exit(2); }
-    if !Simp.VERTEX_LAYOUT_IS_SDL2 { exit(3); }
+    if !Simp.VERTEX_LAYOUT_IS_32 { exit(3); }
 
     if !Window.start() { exit(4); }
-    title := "simp";
-    w, ok := Window.create_window(title.data, 320, 240, Window.HIDDEN);
-    if !ok { exit(5); }
+    // `create_window` takes width, height, title now, and returns one value.
+    w := Window.create_window(320, 240, "simp");
+    if !Window.is_open(*w) { exit(5); }
 
-    simp: Simp.Renderer;
-    if !Simp.set_render_target(*simp, *w, Window.SOFTWARE) { exit(6); }
-    if !Simp.clear_render_target(*simp, 0.15, 0.08, 0.08, 1.0) { exit(7); }
-    if !Simp.set_shader_for_color(*simp, true) { exit(8); }
+    // `set_render_target`, `clear_render_target`, `set_shader_for_color` and `immediate_flush` all return
+    // nothing now (ADR-0187 §3) — the GL calls underneath them are `void`, where `SDL_RenderGeometry` and
+    // friends could fail and report it. `is_ready` and `GL.error_code()` are the questions this program asks
+    // instead.
+    Simp.set_render_target(*w);
+    if !Simp.is_ready() { exit(6); }
+    Simp.clear_render_target(0.15, 0.08, 0.08, 1.0);
+    if GL.error_code() != GL.NO_ERROR { exit(7); }
+    Simp.set_shader_for_color(true);
+    if GL.error_code() != GL.NO_ERROR { exit(8); }
 
-    Simp.immediate_begin(*simp);
-    Simp.immediate_quad(*simp, 10.0, 10.0, 110.0, 60.0, Simp.vector4(1.0, 0.5, 0.5, 1.0));
-    Simp.immediate_quad(*simp, 120.0, 10.0, 220.0, 60.0, Simp.vector4(0.2, 0.9, 0.3, 1.0));
-    if !Simp.immediate_flush(*simp) { exit(9); }
-    Simp.swap_buffers(*simp);
+    Simp.immediate_begin();
+    Simp.immediate_quad(10.0, 10.0, 110.0, 60.0, Simp.vector4(1.0, 0.5, 0.5, 1.0));
+    Simp.immediate_quad(120.0, 10.0, 220.0, 60.0, Simp.vector4(0.2, 0.9, 0.3, 1.0));
+    Simp.immediate_flush();
+    if GL.error_code() != GL.NO_ERROR { exit(9); }
+    Simp.swap_buffers(*w);
 
-    pw, ph := Simp.get_render_dimensions(*simp);
+    pw, ph := Simp.get_render_dimensions(*w);
     if pw != 320 { exit(10); }
     if ph != 240 { exit(11); }
 
+    // The window is always shown now — there is no `HIDDEN` flag any more — so opening it queues real
+    // `SDL_WINDOWEVENT`s (shown, exposed) before this program ever polls; measured, they can take a few
+    // calls to fully drain rather than arriving on the first one, the same one-push-one-poll caveat
+    // `Input`'s own docs record for a pushed event. Draining to steady state is the honest step: the
+    // assertion this test wants is that nothing is pending and nothing wants to close *once the queue is
+    // caught up*, not that opening a real window produces no window-manager events at all.
     events: Input.Events;
-    if Input.update_window_events(*events, 64) != 0 { exit(12); }
+    drained := 1;
+    i := 0;
+    while drained != 0 && i < 32 {
+        drained = Input.update_window_events(*events, 64);
+        i = i + 1;
+    }
+    if Input.event_count(*events) != 0 { exit(12); }
     if Input.frame_wants_to_close(*events) { exit(13); }
 
     // `File` is imported and used beside `Window`, which is the E0211 that could not be written before
     // ADR-0179: `Window` used to export `open` and `close`, and `File` still does.
     if File.READ_WRITE != 2 { exit(14); }
 
-    Simp.destroy_render_target(*simp);
+    Simp.destroy_render_target();
     Window.close(*w);
     Window.stop();
     exit(42);
@@ -2153,14 +2297,21 @@ main :: () {
 ///
 /// It is the check that the new API expresses something the old one could not, rather than the same thing
 /// differently. `SDL_RenderFillRect` takes an `SDL_Rect` of four integers: it cannot draw a quad whose corners
-/// are not axis-aligned, at any angle, with any amount of care. `immediate_quad_uv` takes four arbitrary
-/// points and four texture coordinates, which is `SDL_RenderGeometry`'s shape and Jai's four-point
-/// `immediate_quad`'s.
+/// are not axis-aligned, at any angle, with any amount of care. `Simp.immediate_quad_corners` takes four
+/// arbitrary points and four texture coordinates, which is Jai's four-point `immediate_quad` overload's
+/// shape.
 ///
 /// The texture is **built by the program**, so no binary fixture lives in the repository and the *decode* is
-/// exercised — the step with the interesting failure. It comes back through `Image.load_texture`, which now
-/// yields a `Simp.Texture` carrying `width` and `height` (ADR-0182 §4), and those are read: a texture whose
-/// dimensions have to be queried separately makes the common case two calls.
+/// exercised — the step with the interesting failure. It comes back through `Image.load_texture`, which
+/// yields a `Simp.Texture` carrying `width` and `height`, and those are read directly: they are populated
+/// from the surface at load time rather than queried back from a texture handle.
+///
+/// # Why this runs against the real video driver
+///
+/// `create_window` falls back to a plain window when SDL's `dummy` driver refuses an OpenGL-capable one
+/// (see `an_event_loop_reads_the_sdl_event_union`'s doc comment), so window creation alone would succeed
+/// under `dummy`. But this program draws through `Simp`, and a fallback window has no GL context —
+/// `Simp.is_ready()` reports that failure instead — so it still needs the real platform driver.
 #[test]
 fn a_rotated_textured_quad_draws_through_render_geometry() {
     let candidates = [
@@ -2187,7 +2338,7 @@ fn a_rotated_textured_quad_draws_through_render_geometry() {
     assert_eq!(code, 0, "the program must build and link against SDL2");
 
     let ran = std::process::Command::new(&binary)
-        .env("SDL_VIDEODRIVER", "dummy")
+        // No `SDL_VIDEODRIVER` override — `create_window` needs an OpenGL-capable window.
         .status()
         .expect("the linked binary should run");
     assert_eq!(
@@ -2201,6 +2352,7 @@ fn a_rotated_textured_quad_draws_through_render_geometry() {
 const ROTATED_PROGRAM: &str = r#"#import "Basic";
 Window :: #import "Window";
 Simp :: #import "Simp";
+GL :: #import "GL";
 Image :: #import "Image";
 
 libc :: #system_library "c";
@@ -2208,12 +2360,13 @@ remove_file :: (path: *u8) -> s64 #foreign libc "remove";
 
 main :: () {
     if !Window.start() { exit(1); }
-    title := "rotated";
-    w, ok := Window.create_window(title.data, 320, 240, Window.HIDDEN);
-    if !ok { exit(2); }
+    // `create_window` takes width, height, title now, and returns one value.
+    w := Window.create_window(320, 240, "rotated");
+    if !Window.is_open(*w) { exit(2); }
 
-    simp: Simp.Renderer;
-    if !Simp.set_render_target(*simp, *w, Window.SOFTWARE) { exit(3); }
+    // `set_render_target` returns nothing now; `is_ready` is the question a caller who wants to know asks.
+    Simp.set_render_target(*w);
+    if !Simp.is_ready() { exit(3); }
 
     // Build a texture rather than committing one: this exercises the decode, and it keeps the repository
     // free of binary fixtures.
@@ -2225,45 +2378,54 @@ main :: () {
     if !Image.save_bmp(*surface, path.data) { exit(6); }
     Image.free_surface(*surface);
 
-    texture, tok := Image.load_texture(*simp, path.data);
+    // `load_texture` no longer takes a renderer — `Simp` keeps the one process-wide GL context.
+    texture, tok := Image.load_texture(path.data);
     if !tok { exit(7); }
-    // `Simp.Texture` carries its own size, which `Image`'s one-field `Texture` could not.
+    // `Simp.Texture` carries its own size, populated from the surface at load time.
     if texture.width != 32 { exit(8); }
     if texture.height != 16 { exit(9); }
 
-    if !Simp.clear_render_target(*simp, 0.0, 0.0, 0.0, 1.0) { exit(10); }
-    if !Simp.set_shader_for_images(*simp, *texture) { exit(11); }
+    // `clear_render_target` and `set_shader_for_images` return nothing now; `GL.error_code()` is the check
+    // that each actually succeeded.
+    Simp.clear_render_target(0.0, 0.0, 0.0, 1.0);
+    if GL.error_code() != GL.NO_ERROR { exit(10); }
+    Simp.set_shader_for_images(*texture);
+    if GL.error_code() != GL.NO_ERROR { exit(11); }
 
     // Four corners of a quad rotated roughly 20 degrees about (160, 120), and four texture coordinates in
     // the same order. `SDL_RenderFillRect` cannot express this at all — which is the whole point.
-    Simp.immediate_begin(*simp);
-    Simp.immediate_quad_uv(*simp,
-                           Simp.vector2(145.0, 105.0), Simp.vector2(175.0, 110.0),
-                           Simp.vector2(172.0, 135.0), Simp.vector2(142.0, 130.0),
-                           Simp.vector2(0.0, 0.0), Simp.vector2(1.0, 0.0),
-                           Simp.vector2(1.0, 1.0), Simp.vector2(0.0, 1.0),
-                           Simp.vector4(1.0, 1.0, 1.0, 1.0));
-    if !Simp.immediate_flush(*simp) { exit(12); }
+    // `immediate_quad_corners` takes the colour before the four uvs, not after: Jai's own parameter order.
+    Simp.immediate_begin();
+    Simp.immediate_quad_corners(
+        Simp.vector2(145.0, 105.0), Simp.vector2(175.0, 110.0),
+        Simp.vector2(172.0, 135.0), Simp.vector2(142.0, 130.0),
+        Simp.vector4(1.0, 1.0, 1.0, 1.0),
+        Simp.vector2(0.0, 0.0), Simp.vector2(1.0, 0.0),
+        Simp.vector2(1.0, 1.0), Simp.vector2(0.0, 1.0));
+    Simp.immediate_flush();
+    if GL.error_code() != GL.NO_ERROR { exit(12); }
 
     // And the same geometry under the *colour* shader, which must flush the batch it finds open rather than
     // drawing the queued vertices in the new mode.
-    Simp.immediate_begin(*simp);
-    Simp.immediate_quad_uv(*simp,
-                           Simp.vector2(45.0, 55.0), Simp.vector2(95.0, 45.0),
-                           Simp.vector2(105.0, 95.0), Simp.vector2(55.0, 105.0),
-                           Simp.vector2(0.0, 0.0), Simp.vector2(1.0, 0.0),
-                           Simp.vector2(1.0, 1.0), Simp.vector2(0.0, 1.0),
-                           Simp.vector4(0.9, 0.2, 0.4, 1.0));
-    if !Simp.set_shader_for_color(*simp, false) { exit(13); }
+    Simp.immediate_begin();
+    Simp.immediate_quad_corners(
+        Simp.vector2(45.0, 55.0), Simp.vector2(95.0, 45.0),
+        Simp.vector2(105.0, 95.0), Simp.vector2(55.0, 105.0),
+        Simp.vector4(0.9, 0.2, 0.4, 1.0),
+        Simp.vector2(0.0, 0.0), Simp.vector2(1.0, 0.0),
+        Simp.vector2(1.0, 1.0), Simp.vector2(0.0, 1.0));
+    Simp.set_shader_for_color(false);
+    if GL.error_code() != GL.NO_ERROR { exit(13); }
     // The mode change flushed and closed the batch, so this flush has nothing to draw — and must still
     // succeed, because flushing nothing is not a failure.
-    if !Simp.immediate_flush(*simp) { exit(14); }
+    Simp.immediate_flush();
+    if GL.error_code() != GL.NO_ERROR { exit(14); }
 
-    Simp.swap_buffers(*simp);
+    Simp.swap_buffers(*w);
 
     _ = remove_file(path.data);
     Image.destroy_texture(*texture);
-    Simp.destroy_render_target(*simp);
+    Simp.destroy_render_target();
     Window.close(*w);
     Window.stop();
     exit(42);
@@ -3369,21 +3531,39 @@ main :: () {
 /// `cranelift-object` then panicked with `function "jr$0$0" with linkage Export must be defined but
 /// is not` — exit 101, a mangled symbol, and nothing connecting it to the E0245 already reported.
 ///
-/// A file-scope mutable variable is the shortest program that reaches it today.
+/// # Why the program changed
+///
+/// This test used to use a **file-scope mutable variable**, and its own comment said that was "the
+/// shortest program that reaches it today". ADR-0186 implemented file-scope variables, so that program
+/// now compiles and the test failed with *"the trap must name the compiler's gap, got \"\""* — the
+/// build succeeded and there was no trap to read.
+///
+/// **A test naming an unimplemented thing has a one-wave shelf life**, which AGENTS.md already records
+/// about this very test: it has "had its construct replaced twice, both times because the wave after it
+/// implemented the gap it named". This is the third time.
+///
+/// The construct now is an **imported** global read directly — `S.shared` where another module declares
+/// `shared: s64 = 5;`. ADR-0186 built same-file globals only, so this refuses honestly with *"an
+/// imported constant has no value that const-eval could compute"*. Note what does **not** refuse: a
+/// procedure in the declaring module reading its own global, called across the boundary. That is the
+/// case `modules/Simp` needs and it works; only reading the storage from outside is deferred.
 #[test]
 fn a_refused_body_builds_and_traps_instead_of_panicking() {
     let dir = tempfile::tempdir().expect("a temporary directory");
+    // The module that declares the global. Its own name is what the import string must match.
+    std::fs::write(dir.path().join("Shared.jr"), "shared: s64 = 5;\n")
+        .expect("the module should be writable");
     let source = dir.path().join("refused.jr");
     std::fs::write(
         &source,
-        "#import \"Basic\";\ncounter: s64;\nmain :: () {\n    counter = 5;\n    exit(counter);\n}\n",
+        "#import \"Basic\";\nS :: #import \"Shared\";\nmain :: () {\n    exit(S.shared);\n}\n",
     )
     .expect("the source should be writable");
     let binary = dir.path().join("refused");
 
     // Zero, not 101: the build succeeds, which is the half of E0245's promise that says leaving a
     // refused procedure uncalled is not an error.
-    let code = run_build(source, Some(binary.clone()));
+    let code = run_build_with_module_dir(source, Some(binary.clone()), dir.path().to_path_buf());
     assert_eq!(code, 0, "a refused body must not fail the build");
 
     let output = std::process::Command::new(&binary)

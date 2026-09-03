@@ -1,0 +1,54 @@
+// **Default and named arguments across a module boundary** (ADR-0188 §2).
+//
+// # Why this file exists
+//
+// `callee_sig` returned `None` for an imported callee, under a comment saying this crate does not hold
+// the other file's signatures. It does — `Ctx::imports` carries every imported module's
+// `FileSignatures`, and `entry_for_import` twelve lines away reads them. What was missing was the index
+// from a *name* to a `ProcId`, and the comment described that absence as a design decision.
+//
+// The cost was that a **default argument silently did not apply across a module boundary** while working
+// inside a file, so the gap looked like a property of the call rather than of the import. That is what
+// blocked `modules/Simp` from having Jai's signatures at all: `set_shader_for_color()` and
+// `swap_buffers(*w)` both rely on a default.
+//
+// # What is pinned
+//
+//   * an imported call **omitting** a defaulted trailing parameter;
+//   * an imported call **supplying** it, so the default does not override a real argument;
+//   * an imported call using a **named** argument, which was refused by the same gap;
+//   * a named argument that **reorders**, since the whole point of ADR-0053's fill is that sema puts
+//     arguments in parameter order and MIR never sees the written order;
+//   * two defaults where only the *second* is omitted, which is the case an off-by-one in the fill
+//     would pass while getting the first wrong.
+//
+// # Why it computes rather than exits
+//
+// This directory's harness puts only `tests/corpus/modules` on the module path, so `Basic` is not
+// importable here and there is no `exit` to call. The contract it checks is that a file **parses, lowers
+// and resolves cleanly**, so every result is bound to a local and folded into one that the last
+// statement reads. That keeps each call load-bearing: an unused binding would let a wrong default pass
+// unnoticed, which is the whole failure this file exists for.
+D :: #import "Defaults";
+
+main :: () {
+    // The default applies: 4 + 3.
+    with_default := D.add(4);
+
+    // A supplied argument beats the default: 4 + 10.
+    explicit := D.add(4, 10);
+
+    // A named argument on an imported call: 4 + 20.
+    named := D.add(4, b = 20);
+
+    // Named and reordered, which is the shape that proves sema is filling rather than the caller: 5 + 30.
+    reordered := D.add(b = 30, a = 5);
+
+    // Two defaults, only the second omitted: 1 + 2 + 100.
+    two_defaults := D.three(1, 2);
+
+    // 7 + 14 + 24 + 35 + 103 = 183. Read into one local so nothing above is dead.
+    total := with_default + explicit + named + reordered + two_defaults;
+    checked := total == 183;
+    _ = checked;
+}

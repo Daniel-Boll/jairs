@@ -1,0 +1,16 @@
+// A module whose procedures have defaulted parameters, for `imports/valid/020` (ADR-0188 §2).
+//
+// Deliberately trivial arithmetic: the file is about the *call* mechanics across a boundary, and any
+// interesting body would make a failure ambiguous between the default and the computation.
+
+/// Adds two numbers; `b` defaults to 3.
+add :: (a: s64, b: s64 = 3) -> s64 {
+    return a + b;
+}
+
+/// Adds three numbers; `c` defaults to 100, `b` does not default.
+///
+/// The asymmetry is the point: a fill that is off by one would satisfy `add` and get this wrong.
+three :: (a: s64, b: s64, c: s64 = 100) -> s64 {
+    return a + b + c;
+}

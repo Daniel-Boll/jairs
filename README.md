@@ -12,12 +12,21 @@ names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
 compile-time reflection, `#insert`/`#code` metaprogramming, an
 atomics-and-threads memory model, DWARF debug info in both native back ends,
-and a Simp-shaped 2D graphics stack on SDL2. Every one of those claims has a
-capability table behind it, kept honest at the end of every wave — if a table
-and the code disagree, the code is right and the table has a bug.
+file-scope mutable state, and a 2D graphics stack that draws through OpenGL
+with the same API as Jai's `Simp`. Every one of those claims has a capability
+table behind it, kept honest at the end of every wave — if a table and the code
+disagree, the code is right and the table has a bug.
 
-- **1076** workspace tests (**1080** with the LLVM back end compiled in).
-- **266** `.jr` corpus files, **184** accepted ADRs, **23** standard library
+That graphics API was not designed here. Its signatures came from copies of
+Jai's own module source that two open-source projects carry verbatim, read and
+compared against each other rather than taken from documentation. Eight were
+wrong, and two of those were not cosmetic: the coordinate origin was upside
+down, and every call took a state argument the original does not have.
+Removing that argument needed a language feature first — a variable at the top
+level of a file, which the compiler could parse and could not compile.
+
+- **1082** workspace tests, all seven gates green.
+- **269** `.jr` corpus files, **188** accepted ADRs, **23** standard library
   modules.
 - macOS arm64 is verified; Linux x86-64 is configured in CI and has never
   actually run, because `main` has never been pushed.
@@ -91,7 +100,7 @@ before: two gates run at once and race a shared binary.
   absent, and the sharp edges.
 - **[`docs/architecture.md`](docs/architecture.md)** — the compiler pipeline
   and crate layout.
-- **[`docs/adr/README.md`](docs/adr/README.md)** — all 184 accepted decision
+- **[`docs/adr/README.md`](docs/adr/README.md)** — all 188 accepted decision
   records.
 - **[`docs/spec/`](docs/spec/)** — the language specification chapters.
 - **[`examples/`](examples/)** — runnable programs, each verified.

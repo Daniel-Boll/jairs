@@ -55,8 +55,8 @@ use inkwell::values::{
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 use jr_codegen::{CodegenError, SourceInfo, TrapKind};
 use jr_mir::{
-    BinOp, BlockId, Callee, MirBody, MirSpan, NumKind, Operand, Place, PlaceBase, ProcRef,
-    Projection, Rvalue, Statement, Target, Terminator, UnOp, Unreachable, ValueId,
+    BinOp, BlockId, Callee, GlobalRef, MirBody, MirSpan, NumKind, Operand, Place, PlaceBase,
+    ProcRef, Projection, Rvalue, Statement, Target, Terminator, UnOp, Unreachable, ValueId,
 };
 use jr_pool::{
     Item, Pool, PoolId, StrId, TargetLayout, field_offset, layout_of, string_count, string_data,
@@ -138,6 +138,10 @@ pub struct Shared<'ctx, 'a> {
     pub strings: &'a FxHashMap<StrId, GlobalValue<'ctx>>,
     /// The constant global holding each compiler-emitted table's bytes (ADR-0152 §1).
     pub static_arrays: &'a FxHashMap<jr_pool::PoolId, GlobalValue<'ctx>>,
+    /// Storage for each declared file-scope mutable variable, and its declared type (ADR-0186
+    /// §4) — the type is kept alongside the value because a bare `PlaceBase::Global` place, with
+    /// no projection, still needs to know what it denotes.
+    pub globals: &'a FxHashMap<GlobalRef, (GlobalValue<'ctx>, PoolId)>,
     /// The runtime helper a trap calls, `jr_trap(message, length)`.
     pub trap_helper: FunctionValue<'ctx>,
     /// How to render a trap's source location (ADR-0020 §3).
@@ -1815,6 +1819,19 @@ impl<'ctx> Translator<'ctx, '_> {
                 let pointee = self.pointee(self.operand_type(*operand))?;
                 (self.pointer_of(value.into(), "deref")?, pointee)
             }
+            // A global's storage is a memory root exactly like a slot's `alloca` — the same
+            // reason `Place::global` carries no projection of its own — so its address is just
+            // the global's own pointer, and every later projection step runs unchanged.
+            PlaceBase::Global(global) => {
+                let (value, ty) = *self.shared.globals.get(global).ok_or_else(|| {
+                    CodegenError::Internal(format!(
+                        "global g{} in file {} was referenced without being declared",
+                        global.item.index(),
+                        global.file.index()
+                    ))
+                })?;
+                (value.as_pointer_value(), ty)
+            }
         };
 
         for step in &place.projection {
@@ -1973,6 +1990,18 @@ impl<'ctx> Translator<'ctx, '_> {
         let mut ty = match &place.base {
             PlaceBase::Slot(slot) => self.body.slot(*slot).ty,
             PlaceBase::Deref(operand) => self.pointee(self.operand_type(*operand))?,
+            PlaceBase::Global(global) => self
+                .shared
+                .globals
+                .get(global)
+                .map(|(_, ty)| *ty)
+                .ok_or_else(|| {
+                    CodegenError::Internal(format!(
+                        "global g{} in file {} was referenced without being declared",
+                        global.item.index(),
+                        global.file.index()
+                    ))
+                })?,
         };
         for step in &place.projection {
             ty = match step {

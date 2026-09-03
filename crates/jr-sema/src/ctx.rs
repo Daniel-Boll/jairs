@@ -1585,6 +1585,35 @@ impl<'a> Ctx<'a> {
             .and_then(|(_, sigs)| sigs.lookup(sym))
     }
 
+    /// The full [`crate::ProcSig`] of an imported procedure — parameter defaults included (ADR-0188 §2).
+    ///
+    /// # Why this could not be written before
+    ///
+    /// [`crate::FileSignatures::proc_sig`] is keyed by [`jr_hir::ProcId`], and an importer holds the
+    /// exporting module's `FileSignatures` but **not** its HIR — so there was no route from a name to a
+    /// `ProcId`. `SigEntry::proc` is that route, added for this.
+    ///
+    /// The visible consequence of its absence was that a **default argument did not apply across a
+    /// module boundary**: `callee_sig` returned `None` for `Res::Imported` under a comment saying the
+    /// other file's signatures were unavailable. They were passed in all along; only the index was
+    /// missing, which is why the comment read as a design decision rather than as a gap.
+    pub(crate) fn imported_proc_sig(
+        &mut self,
+        import: ItemId,
+        sym: Symbol,
+    ) -> Option<crate::ProcSig> {
+        let hir = self.hir;
+        let ItemKind::Import { path, .. } = &hir.item(import).kind else {
+            return None;
+        };
+        let (_, sigs) = self
+            .imports
+            .iter()
+            .find(|(name, _)| *name == path.as_str())?;
+        let entry = sigs.lookup(sym)?;
+        sigs.proc_sig(entry.proc?).cloned()
+    }
+
     // -----------------------------------------------------------------------
     // Type predicates and rendering
     // -----------------------------------------------------------------------

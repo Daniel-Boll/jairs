@@ -119,6 +119,22 @@ pub fn build_object(
         // refused body's stub: the entry block's arguments must match the signature emitted here.
         let mut declared: FxHashMap<jr_mir::ProcRef, (Vec<jr_pool::PoolId>, jr_pool::PoolId)> =
             FxHashMap::default();
+        // **Every global is declared before any body is defined** (ADR-0186 §4), in the same phase
+        // and for the same reason a procedure is: a body can read a global declared *later* in item
+        // order, and a forward reference must resolve to real storage rather than to a patch-up list.
+        //
+        // Its own loop over `inputs`, before the procedure loop, rather than a second statement
+        // inside it. The two are independent, and a global must be declared before the *first* body
+        // that could reference it — which, with one interleaved loop, would be a body in an earlier
+        // file than the global's own declaration.
+        for (file_id, _, mir, _) in &inputs {
+            for (item, data) in mir.globals() {
+                backend
+                    .declare_global(jr_mir::GlobalRef::new(*file_id, item), data, &pool, layout)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+
         for (file_id, hir, _, signatures) in &inputs {
             // The source name of every procedure this file binds, for a backtrace frame
             // (ADR-0066 §3). Built here because resolving a `Symbol` needs the interner, which

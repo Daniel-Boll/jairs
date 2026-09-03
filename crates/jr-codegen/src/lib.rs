@@ -97,6 +97,40 @@ pub trait Backend {
         layout: TargetLayout,
     ) -> Result<(), CodegenError>;
 
+    /// Declares storage for one file-scope mutable variable (ADR-0186 §4).
+    ///
+    /// Called in the **declare** phase, once per global, before any body is defined — for exactly
+    /// the reason [`declare`](Backend::declare) is: a body can read a global whose declaration comes
+    /// later in item order, and a forward reference must resolve to real storage rather than to a
+    /// patch-up list.
+    ///
+    /// `pool` and `layout` are passed for the same reason every other method takes them. A global's
+    /// initial bytes need its type's size and alignment, and a back end must never compute those
+    /// itself (ADR-0009): it hands the [`PoolId`] back to `jr-pool`.
+    ///
+    /// # Why the default is an error and not a no-op
+    ///
+    /// A back end that cannot hold a global — none today, but this trait outlives the wave — is
+    /// better off failing at the declaration than accepting it and then emitting a body that reads
+    /// storage nobody allocated. A no-op default is how an unimplemented feature becomes a wrong
+    /// answer instead of a message.
+    ///
+    /// # Errors
+    /// [`CodegenError`] when the global's type has no layout, or when its initial value cannot be
+    /// rendered into bytes.
+    fn declare_global(
+        &mut self,
+        global: jr_mir::GlobalRef,
+        data: jr_mir::GlobalData,
+        pool: &Pool,
+        layout: TargetLayout,
+    ) -> Result<(), CodegenError> {
+        let _ = (global, data, pool, layout);
+        Err(CodegenError::Internal(
+            "this back end has no storage for a file-scope variable".to_owned(),
+        ))
+    }
+
     /// Generates code for one procedure body.
     ///
     /// `layout` is passed rather than assumed so that the back end hands it back to

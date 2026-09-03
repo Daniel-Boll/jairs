@@ -154,6 +154,7 @@ pub fn file_signatures(
                 type_value: Some(ty),
                 kind: SigKind::Struct,
                 item: item_id,
+                proc: None,
             },
         );
     }
@@ -197,6 +198,7 @@ impl Ctx<'_> {
                 type_value: None,
                 kind: SigKind::Const,
                 item,
+                proc: None,
             });
         }
 
@@ -242,6 +244,9 @@ impl Ctx<'_> {
                         type_value: None,
                         kind: SigKind::Proc,
                         item,
+                        // The index an importer needs to reach this procedure's `ProcSig`, and with it
+                        // its parameter defaults (ADR-0188 §2).
+                        proc: Some(proc),
                     })
                 }
                 // An overload is an ordinary procedure with two extra checks: the operator must be
@@ -255,6 +260,7 @@ impl Ctx<'_> {
                         type_value: None,
                         kind: SigKind::Operator,
                         item,
+                        proc: Some(proc),
                     })
                 }
                 ConstValue::Struct(sid) => {
@@ -282,6 +288,7 @@ impl Ctx<'_> {
                         type_value: Some(ty),
                         kind: SigKind::Struct,
                         item,
+                        proc: None,
                     })
                 }
                 // The struct arm with one line changed — `union_type` rather than
@@ -299,6 +306,7 @@ impl Ctx<'_> {
                         type_value: Some(ty),
                         kind: SigKind::Union,
                         item,
+                        proc: None,
                     })
                 }
                 // The same shape a third time (ADR-0068 §1): a variant's cases are a field list, so
@@ -315,6 +323,7 @@ impl Ctx<'_> {
                         type_value: Some(ty),
                         kind: SigKind::Variant,
                         item,
+                        proc: None,
                     })
                 }
                 // The same shape as the struct arm, and for the same reasons: the type name is
@@ -331,6 +340,7 @@ impl Ctx<'_> {
                         type_value: Some(ty),
                         kind: SigKind::Enum,
                         item,
+                        proc: None,
                     })
                 }
                 ConstValue::Expr(expr) => {
@@ -360,6 +370,7 @@ impl Ctx<'_> {
                         type_value,
                         kind: SigKind::Const,
                         item,
+                        proc: None,
                     })
                 }
             },
@@ -390,6 +401,7 @@ impl Ctx<'_> {
                     type_value: None,
                     kind: SigKind::Var,
                     item,
+                    proc: None,
                 })
             }
             // Neither has a name, so neither has a signature. `#run` is typed by

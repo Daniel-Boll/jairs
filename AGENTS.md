@@ -256,7 +256,69 @@ grammar reported an `ERROR` node over it (gate 6, which is what that gate exists
 the type, verified by writing it; and `codes.rs` caught a code collision when this wave first reached for E0290,
 which `jr-hir` owns.
 
-**ADR-0183 and ADR-0184 reach 1076** (**1080** under gate 7) and **266** corpus files — per-OS support moved out
+**ADR-0185 through ADR-0188 reach 1082** and **269** corpus files, and add **no** diagnostic code —
+E0295 is still the first free one. Four ADRs: a string literal's `.data` (0185), file-scope mutable
+variables (0186), `Simp` and `Window` on Jai's **real** API over OpenGL (0187), and two stale claims in
+the compiler (0188).
+
+**Read this stretch for one thing above all: the exhaustive-match rule has a hole, and it is a
+`let-else`.** ADR-0186 added `PlaceBase::Global` and nine sites in `jr-mir` failed to compile, each
+having to *decide* what a global means to it — which is the rule working. The tenth site,
+`forward::participating_slot`, is a `let PlaceBase::Slot(slot) = place.base else { return None; }`, so it
+compiled silently and skipped globals **by luck**. It happens to be the right answer, and getting it
+wrong would have been a real miscompile: store-to-load forwarding across a global drops the store the
+callee was meant to see. So the guarantee this project trusts most — "adding a variant is a compile
+error at every site that must change" — holds only where a `match` is written. **A `let-else` on an enum
+is a silent `_` arm.**
+
+**The API was recovered from source, not from documentation, and that is why ADR-0182 was wrong.** Jai's
+compiler is a closed beta and its `modules/` tree is unpublished, but two open-source Jai applications
+vendor it verbatim — `valignatev/hitboxer` and `focus-editor/focus` — so the copies were read and
+**diffed against each other**. A divergence between them is visible rather than silently inherited, and
+one exists: Focus changes `draw_text`'s colour from a `Vector4` to a `u8` index, so Focus is not a
+source for that routine. Eight of Jairs' signatures were wrong. Two not cosmetically: the coordinate
+origin was **mirrored** (Jai's default is bottom-left, y up; the SDL renderer used top-left) and every
+call carried a state handle Jai does not have.
+
+**ADR-0182 §1 claimed a caller-owned renderer was the *better* API. That is withdrawn.** It was a
+limitation described as a choice: the reason two renderers looked like a feature is that one was
+impossible, because a file-scope `var` was E0245. ADR-0186 removed the impossibility.
+
+**Two stale claims cost a working program each (ADR-0188), and they are entries 5 and 6 in the family
+this file tracks.** A constant's value is keyed by `ItemId`; a computed `#insert` adds an item and
+renumbers every later one, so `modules/GL`'s last constants lost their values while earlier ones kept
+them — and **moving a constant earlier broke a different procedure**, which is what named the cause.
+ADR-0184 §2 *wrote that hazard down*, and the code three lines away already cleared and re-recorded the
+other map keyed the same way. So the rule this earns is not "write better comments": **when a fix
+re-keys one map because an identity moved, every map keyed by that identity is suspect.** Asking "what
+else is keyed by `ItemId`?" at that moment was cheap and was not asked, because a fix that makes the
+symptom go away feels finished.
+
+The sixth was `callee_sig` returning `None` for an imported callee under a comment reading *"the other
+file's signatures, which this crate does not hold"*. It holds them, and always did —
+`entry_for_import` twelve lines away reads them. What was missing was an *index* from a name to a
+`ProcId`. The cost: **a default argument silently did not apply across a module boundary**, so
+`Simp.set_shader_for_color()` was "takes 1 argument, but 0 were supplied" while the identical call inside
+the module worked. The gap looked like a property of the *call*.
+
+**Three traps worth knowing before touching graphics.** A Jairs `string` is `{data, count}` with **no
+NUL**, and `glShaderSource` with a null length array reads to a NUL — so the shaders compiled from
+whatever followed them in memory, `GL_COMPILE_STATUS` was 0, and **`glGetError` said `GL_NO_ERROR`**.
+Identical C succeeded, which is what proved it was this side. `SDL_PIXELFORMAT_RGBA8888` is **not** byte
+order R,G,B,A on a little-endian host — `SDL_PIXELFORMAT_ABGR8888` is, and every target here is
+little-endian, so the obvious constant would have swapped red and blue in every texture (found by a
+sibling agent with a C probe, then verified by reading bytes back). And `SDL_VIDEODRIVER=dummy` **has no
+GL at all**: `SDL_CreateWindow` with `SDL_WINDOW_OPENGL` fails outright, so always setting that flag
+broke every headless test — `create_window` now asks for GL and **falls back** to a plain window, which
+moves the failure to `Simp.is_ready()` where the requirement actually is.
+
+**And a test naming an unimplemented thing has a one-wave shelf life — third instance, same test.**
+`a_refused_body_builds_and_traps_instead_of_panicking` used a file-scope mutable variable and its own
+comment called it "the shortest program that reaches it today". ADR-0186 implemented it, so the test
+failed with *"the trap must name the compiler's gap, got \"\""*. Its construct is now an **imported**
+global read directly, which ADR-0186 deliberately did not build.
+
+**Historical: ADR-0183 and ADR-0184 reach 1076** (**1080** under gate 7) and **266** corpus files — per-OS support moved out
 of the compiler and into the library. A module now selects a library, a link form, a flag or a value per operating
 system in ordinary Jairs, and `modules/GL` is the proof: `#framework "OpenGL"` on macOS, `#system_library "GL"` on
 Linux, `#system_library "opengl32"` on Windows, chosen by a `#run` reading `os()` and spliced by a file-scope

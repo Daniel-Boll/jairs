@@ -553,6 +553,13 @@ impl Splice {
             base: match &place.base {
                 PlaceBase::Slot(slot) => PlaceBase::Slot(self.slots[slot]),
                 PlaceBase::Deref(operand) => PlaceBase::Deref(self.operand(operand)),
+                // **A global is copied unchanged, and that is the point of naming it globally**
+                // (ADR-0186 §1). Every other base in an inlined body is rewritten because it is
+                // relative to the callee — a slot becomes the caller's slot, an operand becomes the
+                // caller's value. A `GlobalRef` is absolute: it already carries the declaring
+                // `FileId`, so the inlined copy reads the same storage the callee did. Rewriting it
+                // would be the bug.
+                PlaceBase::Global(global) => PlaceBase::Global(*global),
             },
             // A projection used to be only a field index or a deref step, neither of
             // which names anything body-local — so cloning the path was correct.

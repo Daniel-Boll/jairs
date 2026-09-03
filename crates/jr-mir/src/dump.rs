@@ -471,6 +471,11 @@ impl Dumper<'_> {
         let mut text = match &place.base {
             PlaceBase::Slot(slot) => format!("s{}", slot.index()),
             PlaceBase::Deref(operand) => format!("({}).*", self.operand(*operand)),
+            // **Printed by item index and never by `FileId`** — the rule this crate's own docs give
+            // for `extern proc3`: a `FileId` is assigned in database load order, so one new corpus
+            // file would renumber every occurrence and churn the snapshots that exist to catch real
+            // change. The `g` prefix keeps it distinct from a slot's `s`.
+            PlaceBase::Global(global) => format!("g{}", global.item.index()),
         };
         for step in &place.projection {
             match step {

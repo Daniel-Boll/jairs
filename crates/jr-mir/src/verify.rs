@@ -367,6 +367,13 @@ impl Verifier<'_> {
                 }
             }
             PlaceBase::Deref(operand) => self.check_operand_ids(at, *operand),
+            // **A global carries no id this body can range-check** (ADR-0186 §3). A slot index is
+            // checked against `slot_count` because a stale index reads another slot; a `GlobalRef`
+            // is a `(FileId, ItemId)` pair, and whether that item really is a global is decided when
+            // the place is *built*, against the declaring file's HIR. Re-deciding it here would need
+            // this crate to hold every file's items, which is the cross-body dependency ADR-0017 §3
+            // keeps out of the built-MIR query.
+            PlaceBase::Global(_) => {}
         }
         // An index operand is a `ValueId` like any other and can dangle like any other —
         // which is the whole reason `dce.rs`, `ssa.rs` and `inline.rs` all had to learn to
@@ -986,7 +993,9 @@ impl Verifier<'_> {
 
     fn check_place_types(&mut self, at: BlockId, place: &Place) {
         match &place.base {
-            PlaceBase::Slot(_) => {}
+            // A global's type comes from its declaration, exactly as a slot's comes from
+            // `SlotData` — neither is a claim this pass can contradict (ADR-0186 §3).
+            PlaceBase::Slot(_) | PlaceBase::Global(_) => {}
             PlaceBase::Deref(operand) => {
                 if let Some(ty) = self.operand_type(*operand)
                     && !self.is_pointer(ty)
@@ -1064,7 +1073,9 @@ fn mark_operand(operand: Operand, used: &mut [bool]) {
 
 fn mark_place(place: &Place, used: &mut [bool]) {
     match &place.base {
-        PlaceBase::Slot(_) => {}
+        // Neither marks an SSA value as used: a slot is an index and a global is a symbol
+        // (ADR-0186 §3).
+        PlaceBase::Slot(_) | PlaceBase::Global(_) => {}
         PlaceBase::Deref(operand) => mark_operand(*operand, used),
     }
     for projection in &place.projection {

@@ -19,7 +19,7 @@
 
 use jr_base::{FileId, Interner};
 use jr_diag::Diagnostics;
-use jr_mir::{ConstValues, ImportedProcs, ProcRef};
+use jr_mir::{ConstValues, ImportedProcs, Poisoned, ProcRef};
 use jr_pool::{Pool, TargetLayout};
 use jr_vm::{Mode, Program, Trap, Value, Vm, VmError};
 
@@ -77,12 +77,38 @@ impl Fixture {
         let mut types = signatures.types;
         types.absorb(&checked.types);
 
+        // A global's initial value is a const-eval target in the real compiler
+        // (`Wanted::GlobalInit`, resolved by `jr-db`'s round-based `evaluate` in `consts.rs`), and
+        // this harness has no database to run that loop — deliberately, per its own module docs.
+        // Every global a test in this file declares is initialised with a bare integer literal, so
+        // a literal fold stands in for the real fixpoint: interning the literal's own value is
+        // exactly what one round of `evaluate` would produce for it, with no dependency on any
+        // other constant.
+        let mut values = ConstValues::new();
+        for (index, item) in hir.items.iter().enumerate() {
+            let jr_hir::ItemKind::Var {
+                init: Some(expr), ..
+            } = &item.kind
+            else {
+                continue;
+            };
+            let jr_hir::Expr::Literal(jr_hir::Literal::Int { value, .. }, _) =
+                &hir.exprs[expr.index()]
+            else {
+                continue;
+            };
+            // Every global this harness declares is `s64`; a test needing another width would
+            // have to read it from `signatures` rather than assume one.
+            let init = pool.int_value(jr_pool::PoolId::S64, *value as u64);
+            values.set_global_init(jr_hir::ItemId::from_usize(index), init);
+        }
+
         let mir = jr_mir::lower_file(
             &hir,
             &resolve,
             &types,
             &signatures.signatures,
-            &ConstValues::new(),
+            &values,
             &ImportedProcs::new(),
             // Empty, and **correct** rather than a shortcut: this harness resolves against `&[]`
             // imports, so no name in any of its programs is an imported one and there is nothing for
@@ -632,4 +658,162 @@ fn a_loop_containing_a_call_does_not_leak_a_frame_per_iteration() {
          go :: () -> s64 { i := 0; total := 0; while i < 2000 { total = total + one(); i = i + 1; } return total; }",
     );
     assert_eq!(fixture.int("go", vec![]), 2000);
+}
+
+// ---------------------------------------------------------------------------
+// Globals — program-lifetime storage (ADR-0186)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_global_reads_its_initial_value_writes_and_reads_it_back() {
+    let fixture = Fixture::build(
+        "counter: s64 = 5;\n\
+         read_counter :: () -> s64 { return counter; }\n\
+         write_counter :: (v: s64) -> s64 { counter = v; return counter; }",
+    );
+    // The initial value is `5`, not zero — the failure mode ADR-0186's contract calls out
+    // explicitly: a global that reads zero when it should read five is the bug this feature
+    // actually has.
+    let mut vm = Vm::new(&fixture.program, &fixture.pool, Mode::Comptime)
+        .expect("room for the string constants and the globals");
+    let args = fixture.with_context(&mut vm, "read_counter", Vec::new());
+    let initial = vm
+        .call(fixture.proc("read_counter"), args)
+        .expect("read_counter failed")
+        .as_int(jr_vm::IntKind::S64)
+        .expect("read_counter did not return an integer");
+    assert_eq!(initial, 5);
+
+    let args = fixture.with_context(&mut vm, "write_counter", vec![s64(9)]);
+    let written = vm
+        .call(fixture.proc("write_counter"), args)
+        .expect("write_counter failed")
+        .as_int(jr_vm::IntKind::S64)
+        .expect("write_counter did not return an integer");
+    assert_eq!(written, 9);
+
+    let args = fixture.with_context(&mut vm, "read_counter", Vec::new());
+    let after = vm
+        .call(fixture.proc("read_counter"), args)
+        .expect("read_counter failed")
+        .as_int(jr_vm::IntKind::S64)
+        .expect("read_counter did not return an integer");
+    assert_eq!(after, 9);
+}
+
+#[test]
+fn a_second_procedure_observes_the_first_procedures_write() {
+    // The property a global exists for, and the one a per-frame (slot-shaped) implementation
+    // would get wrong: `increment`'s write must be visible to `run`, a *different* procedure —
+    // not to a second call of `increment` itself, which a body-local slot could also satisfy by
+    // accident. `run` calls `increment` and then reads `counter` directly, so the only way its
+    // answer can be `15` is if the two procedures' frames share the same storage.
+    let fixture = Fixture::build(
+        "counter: s64 = 10;\n\
+         increment :: () { counter = counter + 5; }\n\
+         run :: () -> s64 { increment(); return counter; }",
+    );
+    assert_eq!(fixture.int("run", vec![]), 15);
+}
+
+#[test]
+fn a_global_with_no_initialiser_is_zeroed_not_undefined() {
+    let fixture = Fixture::build(
+        "flag: s64 = ---;\n\
+         read_flag :: () -> s64 { return flag; }",
+    );
+    assert_eq!(fixture.int("read_flag", vec![]), 0);
+}
+
+#[test]
+fn a_globals_initialiser_cannot_read_another_global() {
+    // `a: s64 = 5; b: s64 = a;` — ADR-0186 §2's example of the construct it refuses: "there is no
+    // moment before `main` at which arbitrary code could run to produce the value", and a global's
+    // *current* value is exactly such a thing. The refusal is not in this crate at all — it never
+    // reaches `jr_vm::compile`. `jr-db`'s `consts.rs` evaluates a global's initialiser through
+    // `jr_mir::thunk_ref` + `jr_mir::lower_const`, and `b`'s reference to `a` resolves to
+    // `Res::Item`, which that thunk's `consts.item(a)` — deliberately never populated for a global
+    // (ADR-0186 §2's whole point: a global is not a constant) — answers `None` for. So this is a
+    // clean `Poisoned::Here`, not a panic and not a wrong value, and it happens one call before
+    // this crate would ever see a `PlaceBase::Global`.
+    //
+    // This test calls the same two functions `jr-db` does, with `a`'s own value already known —
+    // standing in for "after round 1 of the real fixpoint has already resolved `a`" — because nothing
+    // in this crate runs that fixpoint itself.
+    let interner = Interner::new();
+    let mut pool = Pool::new();
+    let source = "a: s64 = 5;\nb: s64 = a;\n";
+    let parsed = jr_syntax::parse(source, FILE);
+    let (hir, _) = jr_hir::lower_file(&parsed, FILE, &interner);
+    let (resolve, _) = jr_hir::resolve(&hir, &[], &interner);
+    let signatures = jr_sema::file_signatures(&hir, FILE, &resolve, &[], &mut pool, &interner);
+    let checked = jr_sema::check_file(
+        &hir,
+        FILE,
+        &resolve,
+        &signatures.signatures,
+        &[],
+        &[],
+        &mut pool,
+        &interner,
+    );
+    let mut types = signatures.types;
+    types.absorb(&checked.types);
+
+    let (a_item, a_init_expr) = hir
+        .items
+        .iter()
+        .enumerate()
+        .find_map(|(index, item)| {
+            let jr_hir::ItemKind::Var {
+                init: Some(expr), ..
+            } = &item.kind
+            else {
+                return None;
+            };
+            let name = item.name?;
+            (interner.resolve(name) == "a").then_some((jr_hir::ItemId::from_usize(index), *expr))
+        })
+        .expect("`a` is a global with an initialiser");
+    let (_, b_init_expr) = hir
+        .items
+        .iter()
+        .enumerate()
+        .find_map(|(index, item)| {
+            let jr_hir::ItemKind::Var {
+                init: Some(expr), ..
+            } = &item.kind
+            else {
+                return None;
+            };
+            let name = item.name?;
+            (interner.resolve(name) == "b").then_some((jr_hir::ItemId::from_usize(index), *expr))
+        })
+        .expect("`b` is a global with an initialiser");
+
+    let mut values = ConstValues::new();
+    let jr_hir::Expr::Literal(jr_hir::Literal::Int { value, .. }, _) =
+        &hir.exprs[a_init_expr.index()]
+    else {
+        panic!("`a`'s initialiser was not the literal this test assumes");
+    };
+    values.set_global_init(a_item, pool.int_value(jr_pool::PoolId::S64, *value as u64));
+
+    let thunk_proc = jr_mir::thunk_ref(&hir, FILE, b_init_expr.index());
+    let outcome = jr_mir::lower_const(
+        &hir,
+        FILE,
+        thunk_proc,
+        b_init_expr,
+        jr_hir::ExprScope::TopLevel,
+        &resolve,
+        &types,
+        &values,
+        &ImportedProcs::new(),
+        &mut pool,
+    );
+    assert!(
+        matches!(outcome, Err(Poisoned::Here(_))),
+        "reading `a` from `b`'s initialiser must be a clean refusal, got {outcome:?}"
+    );
 }

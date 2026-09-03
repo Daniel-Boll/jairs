@@ -442,7 +442,7 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
         // the ids MIR will use. Clearing matters as much as re-recording: a stale entry the expanded check
         // does not replace is exactly the wrong value at a live id.
         let base = match &expanded {
-            Some((_, _, check, _, _)) => {
+            Some((expanded_hir, _, check, _, _)) => {
                 let mut values = (*base).clone();
                 for (scope, expr) in checked(db, file, search_paths).folded_calls.keys() {
                     values.clear_run(*scope, *expr);
@@ -450,6 +450,45 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
                 for ((scope, expr), value) in check.folded_calls.iter() {
                     values.set_run(*scope, *expr, *value);
                 }
+                // **A constant's value is keyed by `ItemId`, and an expansion renumbers those too**
+                // (ADR-0188 §1). This is the same staleness the `folded_calls` clearing above fixes,
+                // one map over: `file_consts` evaluated the *unexpanded* tree, a file-scope `#insert`
+                // then added items, and every `ItemId` after the splice moved. So `consts.item(id)`
+                // missed, and lowering refused the body with "a file-level item has no value until
+                // jr-vm" — for a constant that had a perfectly good value under its old id.
+                //
+                // Measured, not reasoned: in `modules/GL`, whose library declaration is a computed
+                // `#insert`, the *last* constants in the file lost their values while the earlier ones
+                // kept them, and moving a constant earlier broke a *different* procedure. A one-line
+                // repro is `#insert #run gen();` followed by any `A :: 11;` that a body reads.
+                //
+                // **Re-keyed by name rather than by an offset.** An insert only *adds* items, so a
+                // declaration's name is the one identity that survives the re-lowering — the same
+                // reasoning ADR-0072 §2 uses to key an insert by its *span*. An offset would have to
+                // know how many items each splice contributed and where, which nothing records, and
+                // would be wrong the moment a file had two inserts.
+                let unexpanded = crate::file_hir(db, file);
+                let mut rekeyed: FxHashMap<jr_hir::ItemId, jr_pool::PoolId> = FxHashMap::default();
+                for (old_id, value) in values.items() {
+                    let Some(name) = unexpanded
+                        .items
+                        .get(old_id.index())
+                        .and_then(|item| item.name)
+                    else {
+                        continue;
+                    };
+                    // The expanded tree's item of that name. A name declared twice is already E0200,
+                    // so the first match is the only match in a program that compiles.
+                    let Some(new_id) = expanded_hir
+                        .items
+                        .iter()
+                        .position(|item| item.name == Some(name))
+                    else {
+                        continue;
+                    };
+                    rekeyed.insert(jr_hir::ItemId::from_usize(new_id), value);
+                }
+                values.set_items(rekeyed);
                 Arc::new(values)
             }
             None => base,
@@ -793,6 +832,20 @@ pub fn optimized_file_mir(
             Ok(body) => out.push(proc, Ok(body.clone())),
             Err(poisoned) => out.push(proc, Err(*poisoned)),
         }
+    }
+
+    // **The globals must be carried across, and forgetting them was a real bug** (ADR-0186 §4). This
+    // query rebuilds a `FileMir` from the bodies it rewrote, so anything a `FileMir` holds *besides*
+    // bodies is silently dropped unless it is copied here. The globals list was, and the symptom was
+    // `internal compiler error: no global for item 1` from the VM — which resolves the global against
+    // a table `add_file` fills from `mir.globals()`, empty because this query had emptied it.
+    //
+    // The optimiser rewrites bodies, never the set of globals, which is the same reasoning the
+    // `hir`/`signatures` fields below are carried through with. A pass that *could* delete an unused
+    // global would have to decide that here, and none does: a global is observable by any procedure,
+    // so "unused" is not a property one file's MIR can establish.
+    for (item, data) in built.mir.globals() {
+        out.push_global(item, data);
     }
     drop(pool);
 

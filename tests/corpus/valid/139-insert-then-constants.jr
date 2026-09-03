@@ -1,0 +1,78 @@
+// **A computed file-scope `#insert` followed by constants that a body reads** (ADR-0188 §1).
+//
+// # Why this file exists, and why it did not before
+//
+// A constant's value is keyed by `ItemId`. `file_consts` evaluates the **unexpanded** tree, and a
+// computed `#insert` then adds an item, so every `ItemId` after the splice moves — and the lookup
+// missed. The symptom was E0245, *"a file-level item has no value until jr-vm"*, on a body reading a
+// constant declared plainly as `A :: 11;`.
+//
+// ADR-0184 §2 wrote that hazard down, and the code beside it already cleared and re-recorded the
+// *other* map keyed the same way. This one was missed. So the defect was not a surprise about how
+// expansion works — it was one of two maps fixed.
+//
+// **Nothing could have caught it**, which is the point of this file: it needs a computed insert *and*
+// constants after it *and* a body that reads one, and no corpus program combined the three. ADR-0184's
+// own coverage (`valid/136`) uses a **literal** insert, which expands before const-eval and so shifts
+// nothing that matters.
+//
+// # What is pinned
+//
+//   * four constants declared **after** the splice, each read by a body — the case that failed;
+//   * a constant declared **before** the splice, which never shifted and must still work;
+//   * a *procedure* declared after the splice and called, since a proc is reached by `ProcId` rather
+//     than by the const map and must be unaffected;
+//   * the generated declaration itself being **used**, so the insert is load-bearing rather than
+//     decorative — a splice nothing consumes could be silently dropped and this file would still pass.
+//
+// Exit code 31 = 1 + 2 + 4 + 8 + 16.
+#import "Basic";
+
+// Declared before the splice: its `ItemId` cannot move, so it is the control.
+BEFORE :: 7;
+
+// The generated declaration. A `#system_library` is what a computed operand may generate (ADR-0184 §4),
+// and `"c"` is a name that links on every target this project builds for.
+generated :: () -> string {
+    return "libc :: #system_library \"c\";";
+}
+
+#insert #run generated();
+
+// Every one of these has an `ItemId` **after** the splice. Before the fix, a body reading any of them
+// was refused.
+A :: 11;
+B :: 22;
+C :: 33;
+D :: 44;
+
+// A procedure after the splice too, called below. Reached by `ProcId`, so it should never have been
+// affected — asserted rather than assumed, because "should never" is how the other map got missed.
+after_splice :: (n: s64) -> s64 {
+    return n * 2;
+}
+
+// Uses the generated library declaration, so the splice is load-bearing. `abs` is in libc everywhere.
+c_abs :: (n: s32) -> s32 #foreign libc "abs";
+
+main :: () {
+    n := 0;
+
+    if BEFORE == 7 {
+        n = n + 1;
+    }
+    if A == 11 && B == 22 {
+        n = n + 2;
+    }
+    if C == 33 && D == 44 {
+        n = n + 4;
+    }
+    if after_splice(21) == 42 {
+        n = n + 8;
+    }
+    if c_abs(-5) == 5 {
+        n = n + 16;
+    }
+
+    exit(n);
+}

@@ -402,6 +402,19 @@ fn store_relation(
 /// `None` for a place based on a `Deref`, and for one whose projection contains a
 /// `Deref` step: both name memory somewhere else, whatever the base was.
 fn participating_slot(place: &Place) -> Option<SlotId> {
+    // **A global answers `None`, and that is a decision rather than a consequence** (ADR-0186 §3).
+    //
+    // Store-to-load forwarding across a global is *unsound in general*: any callee can read or write
+    // one, so a store this pass would forward past a call is exactly the store the callee was meant
+    // to see. That is the reasoning ADR-0176 §2 gives for an atomic, and a global is the same
+    // problem without the marker — `modules/Simp` keeps its renderer state in one precisely so that
+    // two procedures share it.
+    //
+    // **The exhaustive-match rule did not protect this site**, and that is worth knowing: this is a
+    // `let ... else`, not a `match`, so adding `PlaceBase::Global` compiled here with no error and
+    // the pass skipped globals by luck rather than by judgement. Nine other sites in this crate did
+    // fail to compile. A `let-else` on an enum is a silent `_` arm, so the guarantee "a new variant
+    // is a compile error everywhere" holds only where a `match` is written.
     let PlaceBase::Slot(slot) = place.base else {
         return None;
     };
