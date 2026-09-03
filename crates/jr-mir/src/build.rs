@@ -994,7 +994,7 @@ impl Lower<'_> {
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
-            | Item::ForeignLibraryValue(_)
+            | Item::ForeignLibraryValue(_, _)
             // An aggregate *value* is not a pointer type, like every other value (ADR-0074 §1).
             | Item::AggregateValue { .. } => None,
         }
@@ -1511,7 +1511,7 @@ impl Lower<'_> {
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
-            | Item::ForeignLibraryValue(_)
+            | Item::ForeignLibraryValue(_, _)
             // An aggregate *value* is not a pointer type, like every other value (ADR-0074 §1).
             | Item::AggregateValue { .. } => None,
         }

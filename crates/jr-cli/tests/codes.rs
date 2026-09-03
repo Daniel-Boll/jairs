@@ -230,7 +230,7 @@ fn the_first_free_code_is_what_agents_md_claims() {
     // `AGENTS.md` names the first free code, and that sentence has been wrong before — ADR-0047
     // found it stale once already, and the audit found it stale in two more places. It is checkable,
     // so it is checked: the claim is only trustworthy if something fails when it rots.
-    const FIRST_FREE: u32 = 294;
+    const FIRST_FREE: u32 = 295;
 
     let highest = declared_codes()
         .iter()

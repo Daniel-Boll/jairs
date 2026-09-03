@@ -259,6 +259,33 @@ impl Field {
 // Item
 // ---------------------------------------------------------------------------
 
+/// Which linker argument a foreign library's name becomes (ADR-0183 §1).
+///
+/// Two variants because there are two *forms*, not two styles: `-lSDL2` searches the `-L` paths for a
+/// `libSDL2` archive or shared object, and `-framework OpenGL` asks the macOS linker for a framework
+/// bundle. They are not interchangeable and neither is a fallback for the other — measured:
+///
+/// ```text
+/// $ cc probe.c -lOpenGL           ld: library 'OpenGL' not found
+/// $ cc probe.c -framework OpenGL  (links)
+/// ```
+///
+/// So a compiler that emitted only `-l` could not link OpenGL on macOS *at all*, whatever name it was
+/// given. That is what made this the first blocker rather than the per-OS name it was mistaken for.
+///
+/// Part of the interned value rather than a flag beside it, so the pool tells the two apart: a program
+/// that named a library both ways has named two different things and must get two values.
+///
+/// An enum rather than a `bool` for the house reason — a third form (`-l:libfoo.so.1`, a full path, a
+/// Windows `.lib`) becomes a compile error at every site that has to decide what it means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LinkKind {
+    /// `-lNAME`, searched for in the `-L` paths. Every target supports this form.
+    Library,
+    /// `-framework NAME`, a macOS framework bundle. Nothing else accepts it.
+    Framework,
+}
+
 /// One interned entry: either a type or a compile-time value.
 ///
 /// `Item` is simultaneously the storage and the interning key — there is no
@@ -614,11 +641,15 @@ pub enum Item {
     },
     /// A specific foreign library, e.g. `#system_library "c"` (ADR-0016 §3).
     ///
-    /// Keyed on the library name, so two constants naming the same library are
-    /// the same value.
+    /// Keyed on the library name **and its link form**, so two constants naming the
+    /// same library are the same value — and `#system_library "OpenGL"` and
+    /// `#framework "OpenGL"` are *not*, which is right: they are two different
+    /// linker arguments and on macOS only one of them resolves (ADR-0183 §1).
     ForeignLibraryValue(
         /// The library name, as written.
         StrId,
+        /// Which linker argument the name becomes.
+        LinkKind,
     ),
     /// A struct or fixed-array compile-time value: its **element values, in order** (ADR-0074 §1).
     ///
@@ -693,7 +724,7 @@ impl Item {
             | Self::StrValue(_)
             | Self::TypeValue(_)
             | Self::ProcValue { .. }
-            | Self::ForeignLibraryValue(_)
+            | Self::ForeignLibraryValue(_, _)
             // An aggregate constant is a value (ADR-0074 §1), whatever its elements are.
             | Self::AggregateValue { .. } => false,
         }

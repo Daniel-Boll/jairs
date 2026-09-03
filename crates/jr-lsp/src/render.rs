@@ -127,6 +127,9 @@ impl Decl<'_> {
             // A top-level `#run` has no name, so `item.name?` above already returned.
             // Kept exhaustive so that a new item kind is a compile error here.
             ItemKind::Run { .. } => None,
+            // Nothing to hover: the marker has no name and no type. Hovering a *generated* declaration
+            // works, because it is an ordinary item (ADR-0184 §1).
+            ItemKind::Insert { .. } => None,
         }
     }
 
@@ -338,7 +341,7 @@ impl Decl<'_> {
             Item::VoidValue
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
-            | Item::ForeignLibraryValue(_)
+            | Item::ForeignLibraryValue(_, _)
             | Item::VoidType
             | Item::BoolType
             | Item::IntType { .. }
@@ -499,7 +502,7 @@ pub fn type_name(pool: &Pool, signatures: &FileSignatures, ty: PoolId) -> String
         | Item::StrValue(_)
         | Item::TypeValue(_)
         | Item::ProcValue { .. }
-        | Item::ForeignLibraryValue(_)
+        | Item::ForeignLibraryValue(_, _)
         // A value where a *type* was expected (ADR-0074 §1).
         | Item::AggregateValue { .. } => String::from("<value>"),
     }

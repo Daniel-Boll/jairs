@@ -62,20 +62,24 @@ READ_WRITE :: 2;
 
 /// Create the file if it does not exist. Combine with `WRITE` or `READ_WRITE`.
 ///
-/// The numeric values are the BSD/macOS ones, which Linux shares for these four: `O_CREAT` is 0x200 on macOS
-/// and 0x40 on Linux, so **this constant is not portable** and says so where ADR-0155 §1 said the same about
-/// `CLOCK_MONOTONIC`. The three access modes above *are* portable (0, 1, 2 everywhere).
-CREATE :: 512;
+/// **Selected for the target** (ADR-0184 §6), where it used to be macOS's number under a comment admitting
+/// so: `O_CREAT` is 0x200 on macOS and 0x40 on Linux. The three access modes above *are* portable — 0, 1, 2
+/// everywhere — which is why only these three flags need selecting.
+///
+/// **This is the flag whose being wrong is worst.** ADR-0157 §2 measured a mis-declared `open` producing a
+/// file with permissions `---------x`: no diagnostic, a plausible-looking result, unreadable. A wrong
+/// `O_CREAT` is the same failure shape one step earlier — the call succeeds and does something else.
+CREATE :: #run create_flag();
 
 /// Truncate the file to nothing on open. Combine with `WRITE` or `READ_WRITE`.
 ///
-/// 0x400 on macOS, 0x200 on Linux — the same portability gap as `CREATE`.
-TRUNCATE :: 1024;
+/// 0x400 on macOS, 0x200 on Linux — selected for the same reason `CREATE` is.
+TRUNCATE :: #run truncate_flag();
 
 /// Append every write to the end. Combine with `WRITE` or `READ_WRITE`.
 ///
-/// 0x8 on macOS, 0x400 on Linux — the same gap again.
-APPEND :: 8;
+/// 0x8 on macOS, 0x400 on Linux — selected for the same reason.
+APPEND :: #run append_flag();
 
 /// Default permissions for a created file: `0644`, owner-writable and world-readable.
 ///
@@ -91,6 +95,40 @@ SEEK_CURRENT :: 1;
 
 /// Seek from the end of the file.
 SEEK_END :: 2;
+
+/// `O_CREAT` for the target (ADR-0184 §6).
+///
+/// A procedure a `#run` evaluates, which is the file-scope idiom `modules/Random`'s
+/// `GOLDEN :: #run golden_seed();` established and ADR-0181 used for `CLOCK_MONOTONIC`. No `#if` and no
+/// generated declaration: the *value* differs and nothing else does, so a value is what is selected.
+///
+/// **Windows gets Linux's number and that is a placeholder, not a fact.** Windows has no POSIX `open`
+/// flags at all — its `_open` uses `_O_CREAT` = 0x100 — and this module's `#foreign` bindings name POSIX
+/// symbols that a Windows libc does not export under these names. So a Windows build fails to *link*
+/// rather than opening a file with the wrong flag, which is the failure mode to prefer: naming a number
+/// that would let a wrong call succeed is what ADR-0181 §2 refused to do for `clock_gettime`.
+create_flag :: () -> s64 {
+    if os() == Operating_System.MACOS {
+        return 512;
+    }
+    return 64;
+}
+
+/// `O_TRUNC` for the target — 0x400 on macOS, 0x200 on Linux (ADR-0184 §6).
+truncate_flag :: () -> s64 {
+    if os() == Operating_System.MACOS {
+        return 1024;
+    }
+    return 512;
+}
+
+/// `O_APPEND` for the target — 0x8 on macOS, 0x400 on Linux (ADR-0184 §6).
+append_flag :: () -> s64 {
+    if os() == Operating_System.MACOS {
+        return 8;
+    }
+    return 1024;
+}
 
 /// libc `open(2)`, called with **only its fixed arguments**.
 ///

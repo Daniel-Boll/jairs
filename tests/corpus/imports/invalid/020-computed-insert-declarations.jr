@@ -1,0 +1,37 @@
+// EXPECT: E0294 — a computed file-scope `#insert` generating anything but a library declaration
+// (ADR-0184 §4)
+//
+//
+// **Filed in `imports/invalid/` rather than `type-errors/`**, and the reason is a stage rather than an
+// import: E0294 comes out of the **expanded lowering**, so `type-errors/`' harness — which runs sema on the
+// *unexpanded* tree — reported `[]` for this file and failed it for not declaring what it declares. That is
+// exactly why E0262, E0263, E0273 and E0290 live here too. The rule was met by moving the file, not by
+// weakening the harness; this is the seventh such move.
+//
+// **The boundary is a phase order, not a policy**, and that is the whole content of this refusal.
+//
+// A **literal** `#insert "…";` at file scope expands during `file_hir` — before signatures, before
+// const-eval, before anything — so what it generates is indistinguishable from what the file wrote and
+// *every* declaration works. `tests/corpus/valid/136-file-scope-insert.jr` generates a constant, a struct,
+// a procedure and a nested insert that way, and exits 63.
+//
+// A **computed** operand cannot expand until it has been evaluated, which is *after* const-eval. So a
+// generated **procedure** has no signature by the time one is wanted — which leaked out as
+// "called a procedure taking 2 arguments with 1", a compiler internal for a program that looks correct, and
+// the well-typed-placeholder family AGENTS.md names.
+//
+// What a computed operand *may* generate is a `#system_library` or `#framework` declaration, because that
+// needs neither a signature nor a value: `wanted()` excludes a directive from const-eval by design, and the
+// library is read from the pool by whoever links. That is the case the whole wave exists for — a per-OS
+// OpenGL — and it is covered by a `jr-cli` integration test, since proving it needs a linker.
+//
+// One refused item per file, because this directory's harness asserts a file reports *exactly* the codes it
+// declares, once. Its sibling `085-computed-insert-constant.jr` is the constant half.
+generated :: () -> string {
+    return "helper :: (n: s64) -> s64 { return n + 1; }";
+}
+
+#insert #run generated();
+
+main :: () {
+}

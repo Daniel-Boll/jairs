@@ -1,0 +1,175 @@
+//! The GL module: OpenGL, with the library **chosen and linked per operating system** at compile time.
+//!
+//! ADR-0184 §5 — the first module whose *declarations* are generated rather than written, and the reason
+//! Wave A exists. OpenGL is the case that could not be bound at all before it:
+//!
+//! | Target | Link form | Why |
+//! |---|---|---|
+//! | macOS | `-framework OpenGL` | it is a **framework**, and `-lOpenGL` does not resolve — measured |
+//! | Linux | `-lGL` | an ordinary shared object |
+//! | Windows | `-lopengl32` | a different name again |
+//!
+//! Three names *and* two argument forms, where `modules/Window`'s SDL2 is one name everywhere. That is
+//! precisely why the graphics stack was built on SDL2 first (ADR-0182 §2) and why this module needed two
+//! compiler changes before a line of it could be written:
+//!
+//!   * `jr-link` could emit only `-L` and `-l` (ADR-0183). It emits `-framework` now.
+//!   * `#insert` was not a file-scope directive, so comptime code could generate *statements* and not
+//!     *declarations* (ADR-0184). It can now.
+//!
+//! # How the declaration is chosen
+//!
+//! ```text
+//! #insert #run gl_library();
+//! ```
+//!
+//! `gl_library` is ordinary Jairs, run at compile time, returning the text of one declaration. There is no
+//! `#if` in this language and none was added: `os()` is a compile-time **value** (ADR-0180), so choosing
+//! between declarations is choosing between strings.
+//!
+//! **The generated text contains a string *literal*, and that is load-bearing.** The Simp plan concluded a
+//! per-OS library name was unreachable because `#system_library` needs a bare literal and a computed
+//! operand cannot be evaluated before the library must be known — a real cycle. Generating the declaration
+//! side-steps it entirely: by the time the compiler resolves this library, the operand *is* a literal
+//! (ADR-0184 §4).
+//!
+//! # What is bound, and what is not
+//!
+//! **OpenGL 1.1 only.** Every entry point below is in the 1.1 core, which means it is exported by the
+//! library itself on all three targets and needs no loader. Anything later — shaders, VBOs, framebuffers —
+//! is reached on Windows through `wglGetProcAddress` rather than by linking, so a `#foreign` declaration of
+//! `glCreateShader` links on macOS and Linux and fails on Windows. That is a **loader**, it is its own
+//! wave, and `SDL_GL_GetProcAddress` is the portable way to write it — which keeps SDL2 as the platform
+//! layer exactly as Jai's `Simp` keeps `Window_Creation`.
+//!
+//! **No context creation.** A GL call needs a current context, and creating one is per-OS window-system
+//! work (`CGL`, `GLX`, `WGL`) or one SDL2 call. `Window`/`Simp` own the window, so context creation belongs
+//! there when a GL backend is written (ADR-0182 §6 left that as a later swap behind an unchanged API).
+//!
+//! **Every call here is undefined without a current context**, and that is not a Jairs limitation but
+//! OpenGL's contract. `glGetString` with no context **segfaults** on macOS rather than returning null —
+//! measured while writing this module. So nothing here is called by this module's own test; what the test
+//! asserts is that the symbols *linked*, which is the claim this module makes.
+
+#import "Basic";
+
+// The library declaration, chosen per OS at compile time. This is the whole per-OS surface of the module:
+// every binding below names `gl` and does not care which of the three it turned out to be.
+#insert #run gl_library();
+
+/// `GL_COLOR_BUFFER_BIT`, for `clear`.
+COLOR_BUFFER_BIT :: 16384;
+
+/// `GL_DEPTH_BUFFER_BIT`.
+DEPTH_BUFFER_BIT :: 256;
+
+/// `GL_VERSION`, for `version_string`.
+VERSION :: 7938;
+
+/// `GL_VENDOR`.
+VENDOR :: 7936;
+
+/// `GL_RENDERER`.
+RENDERER :: 7937;
+
+/// `GL_NO_ERROR` — what `error_code` returns when nothing has gone wrong.
+NO_ERROR :: 0;
+
+/// Sets the colour `clear` fills with, each channel 0..1.
+///
+/// Floats in 0..1, matching both OpenGL's own signature and `Simp`'s convention (ADR-0182 §3) — so a
+/// caller moving between the two renderers does not change numeric range.
+set_clear_color :: (r: float32, g: float32, b: float32, a: float32) {
+    gl_clear_color(r, g, b, a);
+}
+
+/// Clears the buffers named by `mask` — `COLOR_BUFFER_BIT`, or it and `DEPTH_BUFFER_BIT` together.
+clear :: (mask: s64) {
+    gl_clear(cast(u32, mask));
+}
+
+/// Sets the viewport, in pixels from the lower-left.
+///
+/// **Lower-left, not upper-left**: OpenGL's origin is the opposite of `Simp`'s and of every window
+/// system's. Stated because it is the single most common source of an upside-down first frame, and a
+/// wrapper that silently flipped it would be lying about which API a reader is using.
+set_viewport :: (x: s64, y: s64, width: s64, height: s64) {
+    gl_viewport(cast(s32, x), cast(s32, y), cast(s32, width), cast(s32, height));
+}
+
+/// The last error, or `NO_ERROR`.
+///
+/// OpenGL's errors are a *queue* a caller drains, so one call reports one error and clears it. Not `#must`:
+/// `NO_ERROR` is the answer on every well-behaved call and a marker there would make every frame carry a
+/// ceremony for a non-event — ADR-0151's line.
+error_code :: () -> s64 {
+    return cast(s64, gl_get_error());
+}
+
+/// One of the driver's descriptive strings — pass `VERSION`, `VENDOR` or `RENDERER`.
+///
+/// A NUL-terminated `*u8` the driver owns, valid for the life of the context. **Null, or a crash, with no
+/// current context**: on macOS this segfaults rather than returning null, which is OpenGL's contract and
+/// not something this module can guard.
+version_string :: (name: s64) -> *u8 {
+    return gl_get_string(cast(u32, name));
+}
+
+/// Blocks until every issued command has completed.
+finish :: () {
+    gl_finish();
+}
+
+// ---------------------------------------------------------------------------
+// Private: the per-OS library choice, and the raw GL bindings
+// ---------------------------------------------------------------------------
+
+#scope_module
+
+/// The text of this platform's OpenGL library declaration (ADR-0184 §5).
+///
+/// Run at compile time by the `#insert` above. Three targets, **two different linker arguments**, and the
+/// difference is why `jr-link` needed a second form at all (ADR-0183 §1):
+///
+///   * macOS ships OpenGL as a *framework*, so `-lOpenGL` fails with `ld: library 'OpenGL' not found`
+///     while `-framework OpenGL` links. Measured, not assumed.
+///   * Linux has `libGL.so`, an ordinary `-lGL`.
+///   * Windows has `opengl32.lib`, a different name and the ordinary form.
+///
+/// **Windows is unverified.** `-lopengl32` is what a Unix-shaped driver would emit and whether `clang` on
+/// Windows resolves it to `opengl32.lib` has never been tried — PLAN records it. The declaration is right
+/// on paper and the link is not evidence yet.
+///
+/// A procedure returning text rather than a `#if`, because `os()` is a compile-time *value* and this
+/// language has no item-level conditional — deliberately, since generating the declaration is strictly more
+/// general and needed no new syntax (ADR-0184 §1).
+gl_library :: () -> string {
+    if os() == Operating_System.MACOS {
+        return "gl :: #framework \"OpenGL\";";
+    }
+    if os() == Operating_System.LINUX {
+        return "gl :: #system_library \"GL\";";
+    }
+    return "gl :: #system_library \"opengl32\";";
+}
+
+/// `glClearColor(GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha)`.
+///
+/// `GLclampf` is a C `float`, so these are `float32` — the width matters at a C boundary for the reason
+/// `Window`'s own `Rect` docs give at length (ADR-0182 §2).
+gl_clear_color :: (r: float32, g: float32, b: float32, a: float32) #foreign gl "glClearColor";
+
+/// `glClear(GLbitfield mask)` — `GLbitfield` is a `Uint32`.
+gl_clear :: (mask: u32) #foreign gl "glClear";
+
+/// `glViewport(GLint x, GLint y, GLsizei width, GLsizei height)` — four C `int`s.
+gl_viewport :: (x: s32, y: s32, width: s32, height: s32) #foreign gl "glViewport";
+
+/// `glGetError()` -> `GLenum`, a `Uint32`.
+gl_get_error :: () -> u32 #foreign gl "glGetError";
+
+/// `glGetString(GLenum name)` -> `const GLubyte *`.
+gl_get_string :: (name: u32) -> *u8 #foreign gl "glGetString";
+
+/// `glFinish()`.
+gl_finish :: () #foreign gl "glFinish";

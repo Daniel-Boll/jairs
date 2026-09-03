@@ -116,7 +116,7 @@ pub struct LlvmBackend<'ctx> {
     /// one entry and `modules/Basic`'s lines were blamed on `024-hello.jr`.
     debug_files: FxHashMap<String, inkwell::debug_info::DIFile<'ctx>>,
     /// Every library a `#foreign` declaration named, for the link line.
-    libraries: Vec<String>,
+    libraries: Vec<jr_codegen::LinkLibrary>,
     /// The Jairs procedure the `main` shim calls, its return type, and whether it takes a
     /// context.
     entry: Option<(ProcRef, PoolId, bool)>,
@@ -1178,7 +1178,7 @@ impl<'ctx> Backend for LlvmBackend<'ctx> {
         Ok(buffer.as_slice().to_vec())
     }
 
-    fn libraries(&self) -> &[String] {
+    fn libraries(&self) -> &[jr_codegen::LinkLibrary] {
         &self.libraries
     }
 }
@@ -1199,7 +1199,7 @@ pub fn build(
     target: TargetLayout,
     name: &str,
     drive: &dyn Fn(&mut dyn Backend) -> Result<(), String>,
-) -> Result<(Vec<u8>, Vec<String>), String> {
+) -> Result<(Vec<u8>, Vec<jr_codegen::LinkLibrary>), String> {
     let context = Context::create();
     let mut backend = LlvmBackend::new(&context, pool, target, name).map_err(|e| e.to_string())?;
     drive(&mut backend)?;

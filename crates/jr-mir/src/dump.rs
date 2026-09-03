@@ -630,7 +630,7 @@ impl Dumper<'_> {
                     format!("extern proc{}", decl.index)
                 }
             }
-            Item::ForeignLibraryValue(str_id) => {
+            Item::ForeignLibraryValue(str_id, _) => {
                 format!("library({:?})", self.pool.resolve_str(*str_id))
             }
             // An aggregate constant prints its **elements**, recursively (ADR-0074 §1) — which is what a
@@ -781,7 +781,7 @@ impl Dumper<'_> {
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
-            | Item::ForeignLibraryValue(_)
+            | Item::ForeignLibraryValue(_, _)
             // A value where a *type* was being rendered (ADR-0074 §1).
             | Item::AggregateValue { .. } => format!("<value {}>", id.index()),
         }

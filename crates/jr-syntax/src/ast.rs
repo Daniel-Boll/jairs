@@ -119,6 +119,7 @@ ast_node!(OperatorDecl, OPERATOR_DECL);
 ast_node!(VarDecl, VAR_DECL);
 ast_node!(ImportDecl, IMPORT_DECL);
 ast_node!(RunDecl, RUN_DECL);
+ast_node!(InsertDecl, INSERT_DECL);
 ast_node!(Name, NAME);
 ast_node!(Proc, PROC);
 ast_node!(ParamList, PARAM_LIST);
@@ -203,13 +204,15 @@ pub enum Item {
     Import(ImportDecl),
     /// `#run expr;`
     Run(RunDecl),
+    /// `#insert "…";` at file scope, whose text becomes declarations (ADR-0184 §1).
+    Insert(InsertDecl),
 }
 
 impl AstNode for Item {
     fn can_cast(kind: SyntaxKind) -> bool {
         matches!(
             kind,
-            CONST_DECL | OPERATOR_DECL | VAR_DECL | IMPORT_DECL | RUN_DECL
+            CONST_DECL | OPERATOR_DECL | VAR_DECL | IMPORT_DECL | RUN_DECL | INSERT_DECL
         )
     }
 
@@ -220,6 +223,7 @@ impl AstNode for Item {
             VAR_DECL => Some(Self::Var(VarDecl(node))),
             IMPORT_DECL => Some(Self::Import(ImportDecl(node))),
             RUN_DECL => Some(Self::Run(RunDecl(node))),
+            INSERT_DECL => Some(Self::Insert(InsertDecl(node))),
             _ => None,
         }
     }
@@ -231,6 +235,7 @@ impl AstNode for Item {
             Self::Var(n) => n.syntax(),
             Self::Import(n) => n.syntax(),
             Self::Run(n) => n.syntax(),
+            Self::Insert(n) => n.syntax(),
         }
     }
 }
@@ -625,6 +630,16 @@ impl ImportDecl {
 impl RunDecl {
     /// The expression to run at compile time.
     pub fn expr(&self) -> Option<Expr> {
+        child_node(&self.0)
+    }
+}
+
+impl InsertDecl {
+    /// The operand — a string literal of Jairs declarations, or an expression yielding one.
+    ///
+    /// One accessor for both shapes, because a literal *is* an expression; lowering reads which arrived
+    /// (ADR-0184 §1).
+    pub fn operand(&self) -> Option<Expr> {
         child_node(&self.0)
     }
 }

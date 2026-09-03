@@ -256,7 +256,60 @@ grammar reported an `ERROR` node over it (gate 6, which is what that gate exists
 the type, verified by writing it; and `codes.rs` caught a code collision when this wave first reached for E0290,
 which `jr-hir` owns.
 
-**ADR-0179 through ADR-0182 reach 1073** (1077 under gate 7) and **262** corpus files — the Simp-shaped-graphics
+**ADR-0183 and ADR-0184 reach 1076** (**1080** under gate 7) and **265** corpus files — per-OS support moved out
+of the compiler and into the library. A module now selects a library, a link form, a flag or a value per operating
+system in ordinary Jairs, and `modules/GL` is the proof: `#framework "OpenGL"` on macOS, `#system_library "GL"` on
+Linux, `#system_library "opengl32"` on Windows, chosen by a `#run` reading `os()` and spliced by a file-scope
+`#insert`. Built, linked, run, and the framework read back out of the binary with `otool -L`.
+
+**Read this one before trusting a plan's stated blocker, because two shell commands demolished one.**
+`docs/compatibility-plan.md` ruled OpenGL out on a query-order cycle: a per-OS library *name* needs a computed
+`#system_library` operand, and library resolution happens inside `file_signatures` which `file_consts` depends on.
+The cycle is real. It is also **second in line** — `cc probe.c -lOpenGL` fails on macOS (`library 'OpenGL' not
+found`) and `cc probe.c -framework OpenGL` succeeds, and `jr-link`'s whole flag vocabulary was `-L` and `-l`. **A
+perfect name mechanism would have emitted a name that does not link.** The real first blocker was a missing
+*argument form*: two lines in the linker plus an enum, far smaller than the plan described.
+
+**And the other half was one match arm.** The file-scope directive dispatcher had four — `#import`, `#run`,
+`#scope_module`, `#scope_export` — so `#insert "X :: 7;";` at file scope was `error[E0101]: unexpected token at top
+level`, while the *same* directive with a *computed* operand already chose per OS inside a body. That single gap is
+what made per-OS support look like a compiler feature instead of a library one.
+
+**The most instructive finding is a comment that expired.** `checked_expanded` reused the **unexpanded**
+signatures under a comment reading *"because `#insert` adds no items"* — true when an insert could only splice
+statements, false the moment it could add declarations. A generated procedure therefore had no signature, and it
+surfaced as **"internal compiler error: called a procedure taking 2 arguments with 1"** — blaming the caller. The
+polymorphic branch three lines away already recomputed signatures over *its* expanded tree for the same reason one
+phase earlier, so the correct shape was visible from the wrong code. **Third instance in this project of a
+hand-maintained claim with nothing enforcing it**, after the E0290 collision and `file_consts`' feature list, and
+the same lesson each time: the enforcement is an arrangement in which the wrong input cannot be chosen, never a
+better comment.
+
+**The boundary is a phase order, and it is refused rather than left to leak.** A **literal** insert expands during
+`file_hir`, before signatures and before const-eval, so it generates anything — `valid/136` generates a constant, a
+struct, a procedure, a nested insert and an empty one, and exits 63. A **computed** operand expands *after*
+const-eval, so a generated constant has no value and a generated procedure no signature; both were leaked
+internals ("a file-level item has no value until jr-vm" was the other) and are now **E0294**, whose help names the
+two things that work. What a computed operand *may* generate is a library declaration, needing neither — the case
+the wave exists for.
+
+**Three withholding sites had to learn "a file insert is pending"**: name resolution, unknown types, and the
+`#foreign` library lookup. Each was found by running the feature's own probe and reading a diagnostic about a name
+the generated text had not produced yet. `body_has_pending_insert` had established the pattern for statements; the
+file-scope twin is `file_has_pending_insert`, and a fourth site will want it too.
+
+**One rule this wave did not have to relearn, and one it re-proved.** The formatter did **not** drop the new
+construct — the first wave in thirteen — because `#insert` at file scope reuses `RUN_DECL`'s node shape, so
+tree-sitter needed no grammar rule either and gate 6 was clean first time. And the house exhaustive-match rule
+earned its keep instantly: interning `LinkKind` into `ForeignLibraryValue` turned **nine crates'** pattern sites
+into compile errors, each of which had to be reasoned about rather than defaulted.
+
+**A process trap fired again, exactly as this file warns.** Gate 7 failed with *"this compiler was built without
+LLVM support"* because a plain `cargo test --workspace` was running concurrently and rebuilt `target/debug/jr`
+underneath the differential harness. **Run gate 7 alone** — it is the third recorded occurrence, after gates 3 and
+5.
+
+**Historical: ADR-0179 through ADR-0182 reach 1073** (1077 under gate 7) and **262** corpus files — the Simp-shaped-graphics
 programme, on top of the twelve closed waves. Qualified imports (ADR-0179), the target OS as a compile-time value
 (ADR-0180), a per-OS library value (ADR-0181), the graphics modules restructured onto `SDL_RenderGeometry`
 (ADR-0182).
@@ -970,7 +1023,16 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0294 is the first free code**; E0134 is the first free *parser* code. **E0293** refuses a
+**E0295 is the first free code**; E0134 is the first free *parser* code. **E0294** refuses a **computed**
+file-scope `#insert` generating anything but a library declaration (ADR-0184 §4) — **owned by `jr-hir`**,
+continuing its `#insert` block (E0262–E0264), because it is judged in lowering where the generated items are
+built. The boundary is a *phase order* and not a policy: a **literal** insert expands during `file_hir`, before
+signatures and before const-eval, so anything it generates is indistinguishable from what the file wrote and
+every declaration works — verified, a struct and a procedure from a literal insert run to 42. A **computed** one
+cannot expand until its operand is evaluated, which is *after* const-eval, so a generated procedure has no
+signature when one is wanted and a generated constant has no value; both leaked internals before this code
+existed ("called a procedure taking 2 arguments with 1", "a file-level item has no value until jr-vm"). A
+`#system_library`/`#framework` needs neither, which is why the per-OS library case works. **E0293** refuses a
 `#system_library` declaration that names no linkable library (ADR-0180 §5) — **owned by `jr-sema`**,
 continuing its block, raised at the *declaration* because a `#library` nobody calls is still wrong. Two
 conditions, one code, each a way of "which library is this" being unanswerable: `#system_library` with no

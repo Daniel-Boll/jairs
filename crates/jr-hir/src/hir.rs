@@ -1275,6 +1275,31 @@ pub enum ItemKind {
         /// The expression to run at compile time.
         expr: ExprId,
     },
+    /// A top-level `#insert "…";` whose text becomes **declarations** (ADR-0184 §1).
+    ///
+    /// The generated declarations are **not** held here. They are allocated straight into the file's
+    /// item arena and its scope, because that is what makes them ordinary declarations — reachable by
+    /// name, exported, resolvable from anywhere in the file. Nesting them inside this item would make
+    /// them a second class of declaration that every consumer had to learn about, which is exactly what
+    /// ADR-0072 §1 avoided for statements by splicing into the enclosing scope.
+    ///
+    /// So this item is a **marker**: it records that an insert happened here, and whether it is still
+    /// waiting for its operand.
+    Insert {
+        /// The operand expression, when the text is **not yet known**.
+        ///
+        /// `None` means expanded — either from a literal, or from an operand the pre-pass evaluated
+        /// (ADR-0073 §1's rule, restated for items): the declarations are in the arena and there is
+        /// nothing left to do. `Some` is the *pending* state, which `jr-db` refuses rather than treating
+        /// as "insert nothing" — the well-typed-placeholder failure AGENTS.md names.
+        operand: Option<ExprId>,
+        /// The directive's span, which the operand map is keyed by.
+        ///
+        /// A span rather than an `ExprId` for ADR-0072 §2's reason: expanding an insert renumbers every
+        /// item and expression after it, so an id is not stable across the re-lowering that consumes the
+        /// evaluated text and a span is.
+        span: Span,
+    },
 }
 
 /// The value of a compile-time constant.

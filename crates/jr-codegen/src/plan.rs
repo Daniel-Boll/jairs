@@ -94,11 +94,25 @@ pub struct ForeignSymbol {
     /// The library it lives in, e.g. `"c"`, resolved once by `jr-sema` and read
     /// from the pool (ADR-0019 §4).
     ///
-    /// `None` when the declaration named no library, or named something that is not
-    /// a `#system_library` — already an E0225. A back end must **refuse** rather
-    /// than default to a likely library: guessing emits a link against a library the
+    /// `None` when the declaration named no library, or named something that is neither a
+    /// `#system_library` nor a `#framework` — already an E0225 or E0293. A back end must **refuse**
+    /// rather than default to a likely library: guessing emits a link against a library the
     /// source never named, which is a build that succeeds for the wrong reason.
-    pub library: Option<String>,
+    pub library: Option<LinkLibrary>,
+}
+
+/// A library a `#foreign` declaration named, and the linker argument it becomes (ADR-0183 §1).
+///
+/// The name alone was enough while `-l` was the only form this compiler could emit. It is not enough
+/// now: `-lOpenGL` does not resolve on macOS and `-framework OpenGL` does, so a back end that
+/// collected names and let the driver pick a flag would pick the wrong one for exactly the library
+/// this form was added for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkLibrary {
+    /// The name as written, e.g. `"c"`, `"SDL2"`, `"OpenGL"`.
+    pub name: String,
+    /// Which linker argument the name becomes.
+    pub kind: jr_pool::LinkKind,
 }
 
 /// Every procedure declaration one file contributes.
@@ -167,11 +181,13 @@ pub fn declarations(input: &FileInput<'_>, pool: &Pool, entry: Option<ProcId>) -
                 };
                 ProcKind::Foreign(ForeignSymbol {
                     symbol,
-                    library: input
-                        .signatures
-                        .foreign_library(proc)
-                        .and_then(|id| pool.foreign_library_name(id))
-                        .map(str::to_owned),
+                    // The name **and** the kind, both read from the one interned value: reading them
+                    // separately would let a caller pair a name with the wrong form (ADR-0183 §1).
+                    library: input.signatures.foreign_library(proc).and_then(|id| {
+                        let name = pool.foreign_library_name(id)?.to_owned();
+                        let kind = pool.foreign_library_kind(id)?;
+                        Some(LinkLibrary { name, kind })
+                    }),
                 })
             }
             None => ProcKind::Local {

@@ -491,6 +491,19 @@ struct ResolveCtx<'a> {
     /// Scoped to the body, not the file: a name unresolved in a body *without* an insert is reported as
     /// always.
     body_has_pending_insert: bool,
+    /// Whether **this file** holds a `#insert` at file scope whose operand is not yet evaluated
+    /// (ADR-0184 §2).
+    ///
+    /// The file-level twin of `body_has_pending_insert`, and it must be file-scoped rather than
+    /// body-scoped because what a file-scope insert generates is a **declaration** — visible to every
+    /// body in the file, so a name it provides can be referenced anywhere. Reporting E0201 while the
+    /// text is unknown would make every working computed insert an error.
+    ///
+    /// The expanded pass (`file_mir`'s branch, ADR-0073 step 6) re-resolves the real tree with the
+    /// generated declarations present, so a name that truly does not resolve is still caught. And a
+    /// *still*-pending insert there means its operand failed to evaluate, which `file_consts` already
+    /// reported as E0230 — so nothing is silently accepted, and one mistake produces one diagnostic.
+    file_has_pending_insert: bool,
     /// Whether the name being resolved is the argument of a `type_info` call (ADR-0075 §2).
     ///
     /// Such a name denotes a **type**, and a builtin type name resolves to no declaration at all — the
@@ -514,6 +527,17 @@ impl<'a> ResolveCtx<'a> {
             map: ResolveMap::new(),
             promotions: Vec::new(),
             body_has_pending_insert: false,
+            // Computed once from the item list, because it is a property of the file rather than of
+            // where resolution currently is.
+            file_has_pending_insert: hir.items.iter().any(|item| {
+                matches!(
+                    item.kind,
+                    ItemKind::Insert {
+                        operand: Some(_),
+                        ..
+                    }
+                )
+            }),
             in_type_info_argument: false,
         }
     }
@@ -623,7 +647,10 @@ impl<'a> ResolveCtx<'a> {
             ItemKind::Const { .. }
             | ItemKind::Import { .. }
             | ItemKind::Var { .. }
-            | ItemKind::Run { .. } => {
+            | ItemKind::Run { .. }
+            // An insert marker has no name, so `using` cannot reach one — listed rather than `_`-armed,
+            // which is what made adding the variant a compile error here at all.
+            | ItemKind::Insert { .. } => {
                 let text = self.interner.resolve(name);
                 self.diags.push(
                     Diagnostic::error(span, format!("cannot `using` `{text}`: it is not a struct"))
@@ -903,6 +930,11 @@ impl<'a> ResolveCtx<'a> {
                 // `body_has_pending_insert` for why this pass cannot simply resolve the expanded tree, and
                 // for what still catches a name that genuinely does not resolve.
                 if self.body_has_pending_insert {
+                    return Res::Error;
+                }
+                // **Withheld for a pending file-scope insert too** (ADR-0184 §2). The declarations it
+                // will generate are not in this tree yet, and one of them may be exactly this name.
+                if self.file_has_pending_insert {
                     return Res::Error;
                 }
                 // **`type_info` is a compiler intrinsic and has no declaration to find** (ADR-0075 §2),

@@ -764,6 +764,11 @@ impl<'src> Parser<'src> {
                 match text {
                     "#import" => self.parse_import_decl(),
                     "#run" => self.parse_run_decl(),
+                    // **`#insert` at file scope produces declarations** (ADR-0184 §1). Absent from
+                    // this dispatcher until now, which made it a stray token — E0101 — so comptime code
+                    // could generate statements and not items. That one missing arm is what kept per-OS
+                    // support a compiler question instead of a library one.
+                    "#insert" => self.parse_insert_decl(),
                     // Visibility markers (ADR-0054 §1). A bare directive on its own line, taking no
                     // argument and needing no `;` — it is a *position* in the file rather than a
                     // declaration, so there is nothing for a terminator to end.
@@ -828,6 +833,20 @@ impl<'src> Parser<'src> {
     fn parse_run_decl(&mut self) {
         self.start_node(RUN_DECL);
         self.bump(); // #run
+        self.parse_expr();
+        self.expect(SEMICOLON);
+        self.finish_node();
+    }
+
+    /// `#insert "X :: 7;";` or `#insert OPERAND;` at file scope (ADR-0184 §1).
+    ///
+    /// The operand is parsed as an **expression** in both cases rather than special-casing the literal:
+    /// a string literal *is* an expression, so one path handles both and lowering reads whichever shape
+    /// arrived. That is what the body-level insert does, and having the two agree is worth more than
+    /// saving a node here.
+    fn parse_insert_decl(&mut self) {
+        self.start_node(INSERT_DECL);
+        self.bump(); // #insert
         self.parse_expr();
         self.expect(SEMICOLON);
         self.finish_node();

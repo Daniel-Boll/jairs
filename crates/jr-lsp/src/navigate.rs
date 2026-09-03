@@ -548,6 +548,9 @@ fn symbol_kind(kind: &ItemKind) -> SymbolKind {
         ItemKind::Var { .. } => SymbolKind::VARIABLE,
         ItemKind::Import { .. } => SymbolKind::MODULE,
         ItemKind::Run { .. } => SymbolKind::EVENT,
+        // `EVENT` for the same reason a `#run` gets it: compile-time work that happens at a position in
+        // the file rather than a thing with a name (ADR-0184 §1).
+        ItemKind::Insert { .. } => SymbolKind::EVENT,
     }
 }
 

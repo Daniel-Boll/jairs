@@ -651,7 +651,7 @@ impl Verifier<'_> {
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
-            | Item::ForeignLibraryValue(_)
+            | Item::ForeignLibraryValue(_, _)
             // A value, not a type: this predicate asks about types (ADR-0074 §1).
             | Item::AggregateValue { .. } => false,
         }
@@ -710,7 +710,7 @@ impl Verifier<'_> {
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
-            | Item::ForeignLibraryValue(_)
+            | Item::ForeignLibraryValue(_, _)
             // A value, not a type: this predicate asks about types (ADR-0074 §1).
             | Item::AggregateValue { .. } => false,
         }

@@ -57,7 +57,7 @@ mod plan;
 mod trap;
 
 pub use error::CodegenError;
-pub use plan::{ForeignSymbol, ProcDecl, ProcKind, declarations, symbol_for};
+pub use plan::{ForeignSymbol, LinkLibrary, ProcDecl, ProcKind, declarations, symbol_for};
 pub use trap::{TRAP_HELPER, TrapKind};
 
 /// One native back end.
@@ -137,7 +137,7 @@ pub trait Backend {
     ///
     /// Collected during the declare phase, so this is meaningful from then on and complete
     /// once every file has been declared.
-    fn libraries(&self) -> &[String];
+    fn libraries(&self) -> &[crate::LinkLibrary];
 }
 
 /// What a back end learns from the driver, without seeing the front end.

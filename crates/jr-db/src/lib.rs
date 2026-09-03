@@ -171,7 +171,12 @@ pub use module_loader::{
 pub use build::{
     BackendChoice, BuildOutput, build_object, declared_build_output, declared_opt_level, entry_of,
 };
+// **Re-exported so the driver can read `BuildOutput::libraries` without depending on `jr-pool`**
+// (ADR-0183 §1). `jr-cli` needs the link *kind* to translate it for `jr-link`, and adding a whole
+// dependency for a two-variant enum would widen the driver's reach for nothing.
 pub use consts::{ConstResult, file_consts};
+pub use jr_codegen::LinkLibrary;
+pub use jr_pool::LinkKind;
 // Re-exported because `ConstResult::values` is an `Arc<ConstValues>` in this crate's
 // public API: a consumer could not name the type it is handed without depending on
 // `jr-mir` for nothing else, which is what `jr-lsp` would otherwise have had to do.

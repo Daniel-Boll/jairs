@@ -183,6 +183,17 @@ pub(crate) struct Ctx<'a> {
     /// see and report, while a missed *illegal* one is the silent placeholder this wave exists to
     /// remove. `call_position` above is the same mechanism for the same kind of reason.
     pub(crate) type_position: FxHashSet<(ExprScope, jr_hir::ExprId)>,
+    /// Whether this file holds a file-scope `#insert` whose operand is not yet evaluated (ADR-0184 §2).
+    ///
+    /// The checker's copy of the flag `jr-hir`'s resolver keeps, and it exists for one refusal:
+    /// `check_foreign_binding` looks a `#foreign`'s library up in this file's scope, and a library
+    /// *generated* by a pending insert is not there yet. Reporting E0225 then made
+    /// `#insert #run gl_decl();` followed by a `#foreign gl "…"` an error on a correct program.
+    ///
+    /// File-scoped, not body-scoped, because what an insert generates at file scope is a **declaration**
+    /// — visible to the whole file. The expanded pass re-checks with the declaration present, so a library
+    /// that genuinely does not exist is still E0225 there.
+    pub(crate) file_has_pending_insert: bool,
     /// Which type each `type_info(T)` call describes (ADR-0075 §2).
     ///
     /// Recorded here because the argument is a *type*, and a type is not an operand: by the time
@@ -299,6 +310,15 @@ impl<'a> Ctx<'a> {
         Self {
             call_position: FxHashSet::default(),
             type_position: FxHashSet::default(),
+            file_has_pending_insert: hir.items.iter().any(|item| {
+                matches!(
+                    item.kind,
+                    jr_hir::ItemKind::Insert {
+                        operand: Some(_),
+                        ..
+                    }
+                )
+            }),
             type_info_calls: FxHashMap::default(),
             folded_calls: FxHashMap::default(),
             pointer_views: FxHashMap::default(),
@@ -1109,7 +1129,14 @@ impl<'a> Ctx<'a> {
 
         match providers.as_slice() {
             [] => {
-                self.unknown_type(sym, span);
+                // **Withheld while a file-scope `#insert` is pending** (ADR-0184 §2), the third place
+                // this rule is needed after the resolver's unresolved-name and the `#foreign` library
+                // check: a generated declaration can be a *type*, and `p: Point;` before the splice has
+                // no `Point` to find. The expanded pass re-checks with it present, so a type that really
+                // does not exist is still E0212 there.
+                if !self.file_has_pending_insert {
+                    self.unknown_type(sym, span);
+                }
                 PoolId::ERROR
             }
             [(module, entry)] => match entry.type_value {
@@ -1852,7 +1879,7 @@ impl<'a> Ctx<'a> {
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
-            | Item::ForeignLibraryValue(_)
+            | Item::ForeignLibraryValue(_, _)
             // An aggregate constant falls through like every other value: a diagnostic naming a "type"
             // wants `Point`, not a rendering of the constant's contents (ADR-0074 §1).
             | Item::AggregateValue { .. } => self.describe(self.pool.type_of(ty)),

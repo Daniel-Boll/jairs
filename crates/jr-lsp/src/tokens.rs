@@ -439,6 +439,9 @@ fn item_kind(hir: &FileHir, item: jr_hir::ItemId) -> Kind {
         ItemKind::Var { .. } => Kind::Variable,
         ItemKind::Import { .. } => Kind::Namespace,
         ItemKind::Run { .. } => Kind::Macro,
+        // `Macro` for the same reason a `#run` is one: this is the token for compile-time machinery, and
+        // an insert is the most macro-like thing the language has (ADR-0184 §1).
+        ItemKind::Insert { .. } => Kind::Macro,
     }
 }
 

@@ -386,9 +386,13 @@ pub(crate) fn checked_expanded(
     file: SourceFile,
     search_paths: ModuleSearchPaths,
     expanded: &jr_hir::FileHir,
-) -> (Arc<jr_hir::ResolveMap>, CheckResult, Diagnostics) {
+) -> (
+    Arc<jr_hir::ResolveMap>,
+    CheckResult,
+    Diagnostics,
+    Arc<FileSignatures>,
+) {
     let file_id = crate::queries::resolve_file_id(db, file);
-    let own = file_signatures(db, file, search_paths);
     let interner = db.interner();
 
     // The same import scopes `resolved` gathers, over the expanded tree.
@@ -434,12 +438,49 @@ pub(crate) fn checked_expanded(
         .map(|(id, hir)| (*id, hir.as_ref()))
         .collect();
 
+    // **Signatures are recomputed over the expanded tree** (ADR-0184 §3), and this is a *correction*:
+    // the comment here used to say `#insert` reuses the unexpanded signatures "because it adds no
+    // items", which was true for the statement-level insert and is false for the file-scope one. A
+    // generated declaration had no signature, so every reference to it typed as `PoolId::ERROR` and the
+    // failure surfaced as `jr-mir` refusing `main` with "an expression has an error type" — a compiler
+    // internal for a correct program, and the well-typed-placeholder family AGENTS.md names.
+    //
+    // Recomputed unconditionally rather than only when items were added, because "did this expansion add
+    // an item" is a question the caller would have to answer and keep answering correctly; recomputing is
+    // one line and cannot be wrong. The cost falls only on files that actually have a computed insert.
+    let sig_inputs: Vec<ImportedInputs> = imported_module_files(db, file, search_paths)
+        .into_iter()
+        .map(|(name, module)| ImportedInputs {
+            name,
+            file: crate::queries::resolve_file_id(db, module),
+            hir: file_hir(db, module),
+            resolve: resolved(db, module, search_paths).map,
+        })
+        .collect();
+    let sig_imports: Vec<ImportedFile<'_>> = sig_inputs
+        .iter()
+        .map(|input| ImportedFile {
+            name: input.name.as_ref(),
+            file: input.file,
+            hir: input.hir.as_ref(),
+            resolve: input.resolve.as_ref(),
+        })
+        .collect();
+
     let mut pool = lock_pool(db);
+    let sig_output = jr_sema::file_signatures(
+        expanded,
+        file_id,
+        &resolve_map,
+        &sig_imports,
+        &mut pool,
+        interner,
+    );
     let output = jr_sema::check_file(
         expanded,
         file_id,
         &resolve_map,
-        own.signatures.as_ref(),
+        &sig_output.signatures,
         &imports,
         &imported_hirs,
         &mut pool,
@@ -450,10 +491,21 @@ pub(crate) fn checked_expanded(
     // The resolve's and the check's diagnostics together: the expanded tree is the only place either can
     // see the inserted statements, so both are the caller's to report.
     let mut diags = resolve_diags;
-    let result = translate_check_output(output, own.types.as_ref());
+    // The **expanded** tree's signature types, not the unexpanded file's: a generated declaration's type
+    // exists only in the recomputed table (ADR-0184 §3).
+    let result = translate_check_output(output, &sig_output.types);
     diags.extend(result.diagnostics.iter().cloned());
 
-    (Arc::new(resolve_map), result, diags)
+    // The **recomputed** signatures travel with the rest, because a file-scope `#insert` adds items and
+    // the declare phase must see them (ADR-0184 §3): a generated `#system_library` that codegen never
+    // learned about is a library the link line omits, which surfaced as `Undefined symbols` for a symbol
+    // the compiler had happily emitted.
+    (
+        Arc::new(resolve_map),
+        result,
+        diags,
+        Arc::new(sig_output.signatures),
+    )
 }
 
 /// The expanded HIR for a file whose polymorphic calls need instantiating, plus its recomputed

@@ -363,7 +363,9 @@ fn item_completion(
             value: jr_hir::ConstValue::Expr(_),
         } => (CompletionItemKind::CONSTANT, None, None),
         ItemKind::Var { .. } => (CompletionItemKind::VARIABLE, None, None),
-        ItemKind::Import { .. } | ItemKind::Run { .. } => return None,
+        // An insert marker binds no name, so there is nothing to complete. The declarations its text
+        // produced are separate items and each is offered on its own (ADR-0184 §1).
+        ItemKind::Import { .. } | ItemKind::Run { .. } | ItemKind::Insert { .. } => return None,
     };
 
     Some(CompletionItem {

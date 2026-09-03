@@ -133,7 +133,7 @@ pub struct ClifBackend {
     /// The runtime helper a trap calls.
     trap_helper: FuncId,
     /// Every library a `#foreign` declaration named, for the link line.
-    libraries: Vec<String>,
+    libraries: Vec<jr_codegen::LinkLibrary>,
     /// The Jairs procedure the `main` shim calls, its return type, and whether it takes a context.
     entry: Option<(ProcRef, PoolId, bool)>,
     /// The context struct's layout and the target, remembered when the entry is declared so the
@@ -1019,7 +1019,7 @@ impl Backend for ClifBackend {
     /// exactly once and this is the third consumer reading it. On the trait since
     /// ADR-0143 §6, because a driver that names a concrete back end to ask can drive
     /// only one.
-    fn libraries(&self) -> &[String] {
+    fn libraries(&self) -> &[jr_codegen::LinkLibrary] {
         &self.libraries
     }
 }
