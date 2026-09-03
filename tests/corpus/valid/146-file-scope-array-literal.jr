@@ -1,0 +1,36 @@
+// **An array literal at file scope is refused, and the refusal is the honest one** (ADR-0194 §4).
+//
+// # Why this file exists
+//
+// It does not exercise a feature; it pins a *message*. `A :: s64.[1, 2];` first reported
+// `unresolved name s64` — a name that is perfectly well known — because the top-level expression arena is
+// walked **flat** (ADR-0180 §4), so the loop reached `s64` as an expression in its own right before ever
+// reaching the literal that makes it a type. That was worse than a bad message: it *masked* the real
+// refusal behind it, so a reader would have gone hunting for a misspelled type.
+//
+// The array literal is the second construct to need both halves of that fix — an entry in the flat walk's
+// skip set *and* a flag in the recursive walk — which is what makes the shape worth a corpus file rather
+// than only a comment: anything that puts a type in an expression arena at file scope needs both.
+//
+// What is asserted here is that the *body* form works while the file-scope form is refused, in one
+// program: a file that only showed the refusal could not tell a working feature from a broken one.
+
+#import "Basic";
+
+// The element type resolves cleanly at file scope even though the literal cannot be evaluated there —
+// which is the whole point. `size_of` is what proves the name was understood.
+ELEMENT_SIZE :: size_of(s64);
+
+main :: () {
+    // The body form, which is every counted use in real Jai code.
+    xs := s64.[1, 2, 3];
+    total := 0;
+    for x: xs {
+        total = total + x;
+    }
+    // 6 + 8 = 14.
+    if total + ELEMENT_SIZE != 14 {
+        exit(1);
+    }
+    exit(66);
+}

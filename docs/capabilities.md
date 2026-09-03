@@ -10,7 +10,7 @@ the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrat
 behind them — that narrative is not duplicated here):
 
 - **1082** workspace tests, all seven gates green.
-- **277** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
+- **279** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
   (276 counting those).
 - **188** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **23** standard library modules under `modules/`.

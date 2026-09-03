@@ -17072,3 +17072,51 @@ proc main -> void {
     discard call extern proc1(99_s64)
     return
 }
+
+========================================
+146-file-scope-array-literal.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: [3]s64  // local 0
+    s1: [3]s64  // temporary
+    s2: s64  // temporary
+  bb0(v0: *Context):
+    store s1[0_s64] <- 1_s64
+    store s1[1_s64] <- 2_s64
+    store s1[2_s64] <- 3_s64
+    v1: [3]s64 = load s1
+    store s0 <- v1
+    store s2 <- 0_s64
+    goto bb1(0_s64)
+  bb1(v6: s64):
+    v2: s64 = load s2
+    v3: bool = v2 < 3_s64
+    branch v3 ? bb2() : bb4()
+  bb2():
+    v4: s64 = load s2
+    bounds_check v4 < 3_s64
+    v5: s64 = load s0[v4]
+    v7: s64 = v6 + v5
+    goto bb3()
+  bb3():
+    v8: s64 = load s2
+    v9: s64 = v8 + 1_s64
+    store s2 <- v9
+    goto bb1(v7)
+  bb4():
+    goto bb5()
+  bb5():
+    v10: s64 = v6 + 8_s64
+    v11: bool = v10 != 14_s64
+    branch v11 ? bb6() : bb7()
+  bb6():
+    discard call extern proc1(1_s64)
+    goto bb8()
+  bb7():
+    goto bb8()
+  bb8():
+    discard call extern proc1(66_s64)
+    return
+}

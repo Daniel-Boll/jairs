@@ -836,12 +836,12 @@ existed**.
 
 ### The numbers
 
-Tests **hold at 1082**; the workspace corpus **270 → 277** `.jr` files under `tests/corpus/` outside
+Tests **hold at 1082**; the workspace corpus **270 → 279** `.jr` files under `tests/corpus/` outside
 `tests/corpus/modules/`. ADRs 189 → **194**. **One** new diagnostic code — E0295, an empty array literal —
 after four stretches with none, and `jr-cli`'s `codes.rs` caught the stale "first free code" claim the
 moment it was declared, which is exactly what that test is for.
 
-Seven corpus files for five waves, and the test count holding again: every one of these waves is
+Nine corpus files for five waves, and the test count holding again: every one of these waves is
 exercised by a program the differential and snapshot harnesses already iterate. The two that touched a
 *refusal* added a `type-errors` fixture each.
 

@@ -93,7 +93,7 @@ silently skips. **Run gate 7 in any wave that touches MIR, `jr-pool`'s layout, `
 either back end** — those are exactly the places where a third engine has something to say.
 
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
-visible. **It is 1082 today, with 277 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
+visible. **It is 1082 today, with 279 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
 only the corpus one, which is the pattern every wave whose deliverable a `.jr` program can observe
 follows, and the reason the two counts are tracked apart. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
 → 969 (W5 sub-waves 1–4) → 974 (W5 sub-wave 5, polymorphic structs) → 976 (W5 sub-wave 6a, `$N` surface)
@@ -258,7 +258,7 @@ grammar reported an `ERROR` node over it (gate 6, which is what that gate exists
 the type, verified by writing it; and `codes.rs` caught a code collision when this wave first reached for E0290,
 which `jr-hir` owns.
 
-**ADR-0190 through ADR-0194 hold at 1082** and add seven corpus files = **277**, with **one** new
+**ADR-0190 through ADR-0194 hold at 1082** and add nine corpus files = **279**, with **one** new
 diagnostic code (E0295, an empty array literal) after four stretches with none. Five language utilities the
 plan had owed: typed constants, a pointer type as an intrinsic's argument, `type_of(x)`, an enum's member
 names and a view's elements, and **array literals** — 39 uses in real Jai code, the most used construct
@@ -297,6 +297,19 @@ And the typed constant's first fix was wrong in a way gate 5 caught immediately:
 child was a type kind, and `Array :: struct($T)` has one — its *value* — so it emitted
 `Array : struct($T) {`. **The discriminator was the token all along** (one `::` versus two `:`), which is
 the only place the difference is recorded.
+
+**The flat top-level walk needs an entry for every construct that puts a type in an expression arena, and
+the array literal is the second** (ADR-0194 §2, ADR-0180 §4). `A :: s64.[1, 2];` at file scope reported
+`unresolved name s64` — a name that is perfectly well known — because the top-level arena is walked flat and
+reached `s64` as an expression in its own right before ever reaching the literal that makes it a type. Worse
+than a bad message: it **masked** the honest "an array literal has no compile-time value yet" refusal behind
+it, so a reader would have gone hunting for a misspelled type.
+
+The fix needs **both halves** — an entry in `intrinsic_argument_exprs`' skip set *and* the flag in the
+recursive walk — and only the second was written first, because the body form is what every test exercised.
+**Found by auditing the refusal at file scope after the feature was already merged.** So: when a construct
+can appear at file scope *and* in a body, check both, because the top-level arena reaches expressions by a
+different route.
 
 **A checksum that lands on zero proves nothing** (ADR-0192 §5). `valid/143`'s total is 15060 and its first
 version exited `total % 251`, which is **exactly 0** — the same status a program that did nothing exits.

@@ -1,0 +1,22 @@
+// EXPECT: E0230 — an array literal has no compile-time value (ADR-0194 §4)
+//
+// A thunk produces one `Operand`, and an array's value is a run of bytes that would have to be interned as
+// a static array and referred to by address. The pool *can* build one — `static_array` is what the field
+// and member tables use — but wiring it here means deciding what a `ConstValue` holding an aggregate is,
+// which no caller has needed: every one of the 39 uses counted in real Jai code is inside a body.
+//
+// **This fixture exists for the message, not the refusal.** It first reported `unresolved name s64`,
+// because the top-level expression arena is walked flat (ADR-0180 §4) and reached `s64` before the literal
+// that makes it a type — masking this refusal behind a complaint about a name that is perfectly well
+// known. `valid/146` pins the other half, that the body form still works.
+//
+// **In `imports/invalid/` rather than `type-errors/`**, and the file moved rather than the rule bending:
+// E0230 is `jr-db`'s const-eval code, and `type-errors/`'s harness runs *sema* only, so it saw no
+// diagnostic at all. `012-run-reads-an-imported-constant.jr` is the precedent — same code, same purpose of
+// pinning an honest message. Seventh time a fixture has moved to meet a directory's contract instead of
+// weakening it.
+
+A :: s64.[1, 2];
+
+main :: () {
+}

@@ -53,6 +53,16 @@ chasing the first would go looking for a misspelled type name.
 Resolution needs the element type in a **type position** and the elements not, which is the one
 asymmetry inside the node: without the flag, `s64.[1, 2]` is `unresolved name s64`.
 
+**And that needed two halves, not one — found after the feature was merged.** The recursive walk's flag
+makes the *body* form work, which is what every test exercised. At **file scope** the top-level expression
+arena is walked **flat** (ADR-0180 §4), so the loop reached `s64` as an expression in its own right before
+ever reaching the literal that makes it a type: `A :: s64.[1, 2];` reported `unresolved name s64`, and worse,
+that **masked** §4's honest refusal behind it. `intrinsic_argument_exprs`' skip set gained the element type.
+
+The array literal is the **second** construct to need both halves, so the shape is now stateable: anything
+that puts a type in an expression arena at file scope needs an entry in the skip set *and* a flag in the
+recursive walk. `valid/146` pins the working half and `imports/invalid/022` the message.
+
 ### 3. MIR: a slot, one store per element, and a spill that fixed something older
 
 The literal lowers to a slot of the array's type, a `Store` per element at a constant index, and a
@@ -99,6 +109,10 @@ parser's chain, and the checked-in Neovim parser needed rebuilding — the step 
 - The most used construct real Jai code has and Jairs lacked now works: as an initialiser, a call
   argument, a `for` sequence, and with any element type an intrinsic can name.
 - `for x: f()` over an array-returning call works, which it did not before and which nothing asked for.
+- `valid/146` and `imports/invalid/022` pin the file-scope behaviour together: one that the body form
+  works, one that the refusal reports itself honestly. The fixture is in `imports/invalid/` because E0230 is
+  `jr-db`'s const-eval code and `type-errors/`'s harness runs sema only — the file moved to meet a
+  directory's contract rather than the contract bending, for the seventh time in this project.
 - Still owed: a **compile-time** array literal (§4), and a struct literal `Point.{1, 2}` — ADR-0039 §6's
   other half, which needs field-order decisions this wave's element-count answer does not supply.
 

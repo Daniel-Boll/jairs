@@ -374,6 +374,14 @@ fn imports_invalid_corpus_fails() {
         // arguments with 1" and "a file-level item has no value until jr-vm".
         "imports/invalid/020-computed-insert-declarations.jr",
         "imports/invalid/021-computed-insert-constant.jr",
+        // **An array literal at file scope** (ADR-0194 §4), here rather than in `type-errors/` because
+        // E0230 is `jr-db`'s const-eval code and that directory's harness runs *sema* only — the file
+        // moved to meet a contract rather than the contract bending, for the seventh time.
+        //
+        // It pins a *message*: the refusal first reported "unresolved name `s64`", because the top-level
+        // expression arena is walked flat (ADR-0180 §4) and reached `s64` before the literal that makes it
+        // a type — masking this refusal behind a complaint about a perfectly well known name.
+        "imports/invalid/022-file-scope-array-literal.jr",
     ] {
         let code = check_with_modules(vec![corpus_path(file)], Some("modules"));
         assert_eq!(code, 1, "{file} must report an error");

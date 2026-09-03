@@ -110,7 +110,7 @@
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
   metric("Tests", "1082", "workspace, all seven gates"),
-  metric("Corpus", "277", "jr files, all three engines"),
+  metric("Corpus", "279", "jr files, all three engines"),
   metric("ADRs", "194", "0001 to 0194, immutable"),
   metric("Diagnostics", "131", "declared codes, E0296 next"),
   metric("Editor checks", "170", "Neovim, verified not gated"),
@@ -443,7 +443,7 @@
   [
     #sub[Five language utilities the plan had owed]
     #text(size: 7.4pt)[
-      ADR-0190 to 0194. Tests *hold at 1082*, corpus 270 to *277*, ADRs 189 to *194*, one new diagnostic
+      ADR-0190 to 0194. Tests *hold at 1082*, corpus 270 to *279*, ADRs 189 to *194*, one new diagnostic
       code (E0295). Typed constants `FLAG : u32 : 256` — twenty casts gone from `modules/GL`; a pointer
       type as an intrinsic's argument; `type_of(x)`; an enum's *member names* and a view's elements in
       reflection; and *array literals* `s64.[1, 2, 3]`, which real Jai code uses 39 times and which was
@@ -600,7 +600,7 @@
   Sources: PLAN.md §1.5 and §7, the ADR directory, `docs/decisions/DECISIONS.md`, and all seven gates
   run today on `main` *after* the merge, not on a branch. Every number was measured rather than carried
   forward — the test count from a full workspace run (1082, zero failures) and a second under
-  `--features jr-cli/llvm` (1088), the corpus count from a file walk (277 `.jr` files under
+  `--features jr-cli/llvm` (1088), the corpus count from a file walk (279 `.jr` files under
   `tests/corpus/` outside `tests/corpus/modules/`), the ADR count from `docs/adr/`, and the editor-check
   count from a real `verify.lua` run (170). The diagnostic count is *every* `const NAME: &str = "E0nnn"`
   across the crates, which is 131 — and the counting rule is written down here because the previous number

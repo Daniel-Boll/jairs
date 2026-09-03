@@ -981,25 +981,38 @@ impl<'a> ResolveCtx<'a> {
         }
     }
 
-    /// Every top-level expression that lies inside an **intrinsic call's argument** (ADR-0180 §4).
+    /// Every top-level expression that lies inside a **type position** — an intrinsic call's argument, or
+    /// an array literal's element type (ADR-0180 §4, ADR-0194 §2).
     ///
     /// Transitive, matching `in_type_info_argument`'s stickiness: `size_of(Slot(s64, s64))` has a call
     /// as its argument and every name below it is a type, which is why ADR-0119 §2 made the flag `outer
     /// || intrinsic` rather than an assignment.
     ///
-    /// Returns an empty set for a file with no intrinsic at file scope, which is almost every file, so
+    /// Returns an empty set for a file with neither at file scope, which is almost every file, so
     /// the flat walk below pays one arena scan and no lookups.
+    ///
+    /// **The array literal's element type had to be added here as well as to the recursive walk**, and the
+    /// symptom is the one ADR-0180 §4 describes: `A :: s64.[1, 2];` at file scope reported "unresolved name
+    /// `s64`" — a name that is perfectly well known — because the flat loop reached `s64` as an expression
+    /// in its own right before ever reaching the literal that makes it a type. Worse than a bad message: it
+    /// *masked* the honest "an array literal has no compile-time value yet" refusal behind it.
+    ///
+    /// Second construct to need both halves, so the shape is now known: **anything that puts a type in an
+    /// expression arena at file scope needs an entry here and a flag in the recursive walk.**
     fn intrinsic_argument_exprs(&self) -> rustc_hash::FxHashSet<ExprId> {
         let mut out = rustc_hash::FxHashSet::default();
         let mut work: Vec<ExprId> = Vec::new();
         for expr in &self.hir.exprs {
-            let Expr::Call { callee, args, .. } = expr else {
-                continue;
-            };
-            if !self.callee_is_intrinsic(ExprScope::TopLevel, *callee) {
-                continue;
+            match expr {
+                Expr::Call { callee, args, .. } => {
+                    if self.callee_is_intrinsic(ExprScope::TopLevel, *callee) {
+                        work.extend(args.iter().copied());
+                    }
+                }
+                // Only the element *type*; the elements are values and must keep their own errors.
+                Expr::ArrayLit { elem_ty, .. } => work.push(*elem_ty),
+                _ => {}
             }
-            work.extend(args.iter().copied());
         }
         while let Some(id) = work.pop() {
             if !out.insert(id) {
