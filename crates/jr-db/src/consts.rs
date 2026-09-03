@@ -1202,8 +1202,8 @@ pub(crate) fn type_info_value(
     // A **declared** type's name comes from the signatures, which recorded it; a builtin has no
     // declaration, so its spelling is derived from its `Item`. Only the shapes a `Type_Info` can describe
     // need a name here, because the others were refused above.
-    let name = type_spelling(pool, signatures, described, 0)
-        .unwrap_or_else(|| kind_name.to_lowercase());
+    let name =
+        type_spelling(pool, signatures, described, 0).unwrap_or_else(|| kind_name.to_lowercase());
 
     // The `kind` field's own type and value, read from the `Type_Info_Kind` enum declared beside
     // `Type_Info` in `Basic`. Read rather than assumed: the member values are the enum's, so a

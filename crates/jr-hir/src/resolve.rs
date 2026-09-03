@@ -1184,6 +1184,20 @@ impl<'a> ResolveCtx<'a> {
                 }
                 self.in_type_info_argument = outer;
             }
+            // **The element type is resolved in a type position; the elements are not** (ADR-0194 §2).
+            // That asymmetry is the whole node: `s64.[1, 2]` has a builtin type name where an expression
+            // would be, and without the flag it is `unresolved name s64` — the same withholding every
+            // intrinsic's type argument needs, for the same reason.
+            Expr::ArrayLit { elem_ty, elems, .. } => {
+                let (elem_ty, elems) = (*elem_ty, elems.clone());
+                let outer = self.in_type_info_argument;
+                self.in_type_info_argument = true;
+                self.resolve_top_expr(elem_ty);
+                self.in_type_info_argument = outer;
+                for e in elems {
+                    self.resolve_top_expr(e);
+                }
+            }
             Expr::Field { receiver, .. } => {
                 let receiver = *receiver;
                 self.resolve_top_expr(receiver);
@@ -1447,6 +1461,16 @@ impl<'a> ResolveCtx<'a> {
                 }
                 self.in_type_info_argument = outer;
             }
+            // See the top-level twin for why only the element type is a type position.
+            Expr::ArrayLit { elem_ty, elems, .. } => {
+                let outer = self.in_type_info_argument;
+                self.in_type_info_argument = true;
+                self.resolve_body_expr(body_id, elem_ty);
+                self.in_type_info_argument = outer;
+                for e in elems {
+                    self.resolve_body_expr(body_id, e);
+                }
+            }
             Expr::Field { receiver, .. } => {
                 self.resolve_body_expr(body_id, receiver);
             }
@@ -1548,6 +1572,11 @@ fn top_child_exprs(expr: &Expr) -> Vec<ExprId> {
         Expr::Unary { operand, .. } | Expr::Autocast { operand, .. } => vec![*operand],
         Expr::Cast { operand, .. } => vec![*operand],
         Expr::Run(inner, _) => vec![*inner],
+        Expr::ArrayLit { elem_ty, elems, .. } => {
+            let mut out = vec![*elem_ty];
+            out.extend(elems.iter().copied());
+            out
+        }
         Expr::Field { receiver, .. } => vec![*receiver],
         Expr::Index { base, index, .. } => vec![*base, *index],
         Expr::Slice { base, .. } => vec![*base],

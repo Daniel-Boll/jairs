@@ -1173,7 +1173,13 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0295 is the first free code**; E0134 is the first free *parser* code. **E0294** refuses a **computed**
+**E0296 is the first free code**; E0134 is the first free *parser* code. **E0295** refuses an array literal
+with no elements — `T.[]` (ADR-0194 §2) — **owned by `jr-sema`**, continuing its block. A `[0]T` has no
+use a caller could name: it cannot be indexed, `size_of` is zero, and a `for` over it runs no iterations,
+so every operation on one is an error or a no-op. Its own code rather than E0261's, which is the
+neighbouring refusal for a literal whose element *type* cannot be resolved: that one means "I do not know
+what this holds" and this one means "it holds nothing", and a reader chasing the first would go looking
+for a misspelled type name. **E0294** refuses a **computed**
 file-scope `#insert` generating anything but a library declaration (ADR-0184 §4) — **owned by `jr-hir`**,
 continuing its `#insert` block (E0262–E0264), because it is judged in lowering where the generated items are
 built. The boundary is a *phase order* and not a policy: a **literal** insert expands during `file_hir`, before

@@ -1,0 +1,67 @@
+// **`T.[a, b, c]` — a fixed array literal** (ADR-0194).
+//
+// # Why this file exists
+//
+// Reading the three real Jai repositories for ADR-0185 counted this **39 times**, the single most used
+// construct Jairs lacked. ADR-0039 §6 deferred `[1, 2, 3]` over three questions — inferred versus
+// declared length, whether elements must be constant, and how ADR-0016 §1's context typing reaches an
+// element — and naming the element type answers all three by construction: the length *is* the element
+// count, the elements are ordinary expressions, and each is checked against the named type using the
+// expectation mechanism that already exists.
+//
+// The exit code is a checksum, so a wrong element or a wrong length fails the run.
+
+#import "Basic";
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+takes_three :: (a: [3]s64) -> s64 {
+    return a[0] + a[1] + a[2];
+}
+
+main :: () {
+    total := 0;
+
+    // The base case: an initialiser, whose type is `[3]s64` because three elements were written.
+    a := s64.[10, 20, 30];
+    total = total + a[0] + a[1] + a[2];
+    total = total + a.count;
+
+    // **The narrow-width case, which is what makes the named type more than decoration.** Each element is
+    // checked against `u8`, so these are `u8` literals — under ADR-0016 §1 an untyped integer literal
+    // would otherwise land on `s64`, and `b` would be the wrong array entirely.
+    b := u8.[1, 2, 3, 4];
+    total = total + cast(s64, b[3]) + b.count;
+
+    // Elements need not be constant. This is the half `[1, 2, 3]`'s deferral was unsure about, and a
+    // named type makes it a non-question: an element is an expression like any other.
+    n := 5;
+    c := s64.[n, n * 2, n * 3];
+    total = total + c[2];
+
+    // As a **call argument**, passed by value like any other array.
+    total = total + takes_three(s64.[1, 2, 3]);
+
+    // As a **`for` sequence**. This needed MIR to spill a sequence that is a value rather than a place —
+    // an array literal has no place, by the same rule that refuses `s64.[1, 2][0] = 5`.
+    for v: s64.[7, 8, 9] {
+        total = total + v;
+    }
+
+    // A **declared struct** as the element type, through the same `described_type` every intrinsic uses.
+    // The elements are struct *values*, since a struct literal is still ADR-0039 §6's other deferral.
+    p: Point;
+    p.x = 1;
+    p.y = 2;
+    ps := Point.[p, p];
+    total = total + ps.count + ps[1].y;
+
+    // 60 + 3 + 4 + 4 + 15 + 6 + 24 + 2 + 2 = 120.
+    if total != 120 {
+        exit(1);
+    }
+    exit(99);
+}

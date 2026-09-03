@@ -41,7 +41,7 @@ use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
     E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272, E0277,
-    E0278, E0279, E0284, E0285, E0286, E0287, E0288, E0289, E0291, E0293,
+    E0278, E0279, E0284, E0285, E0286, E0287, E0288, E0289, E0291, E0293, E0295,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -1632,6 +1632,15 @@ impl Ctx<'_> {
             }
             Expr::Slice { base, span } => {
                 let ty = self.check_slice(scope, base, span);
+                self.expect(expected, ty, span)
+            }
+            // **A fixed array literal** (ADR-0194 §2).
+            Expr::ArrayLit {
+                elem_ty,
+                elems,
+                span,
+            } => {
+                let ty = self.check_array_literal(scope, elem_ty, &elems, span);
                 self.expect(expected, ty, span)
             }
             // Both take `expected` **directly** rather than through `expect`: the context is
@@ -4112,6 +4121,65 @@ impl Ctx<'_> {
     /// It arrives now because **typed allocation asked for it**: a caller allocating `n` elements needs
     /// `n * size_of(T)` bytes, and until this sub-wave nothing could name that number. A facility with no
     /// caller is what ADR-0080 §3 declined to build; this one has one.
+    /// Types `T.[a, b, c]` — a fixed array literal (ADR-0194 §2).
+    ///
+    /// The element type goes through [`Ctx::described_type`], the one function every intrinsic asks for a
+    /// type argument, so `Point.[…]`, `Slot(s64, s64).[…]`, `(*u8).[…]` and `type_of(x).[…]` all work
+    /// without a line here. Each element is then checked with that type as its **expectation**, which is
+    /// ADR-0016 §1's existing mechanism rather than a new inference — so `u8.[1, 2, 3]` types its literals
+    /// as `u8` and one that does not fit is E0204 at the element that overflows.
+    ///
+    /// The length is the element count. ADR-0039 §6 deferred `[1, 2, 3]` over three questions — inferred
+    /// versus declared length, whether elements must be constant, and how context typing reaches an
+    /// element — and naming the type answers all three by construction.
+    ///
+    /// An empty literal is refused: `T.[]` would be a `[0]T`, which has no use a caller could name and
+    /// would make `size_of` zero. Refused here rather than allowed and left to surprise someone.
+    fn check_array_literal(
+        &mut self,
+        scope: ExprScope,
+        elem_ty: ExprId,
+        elems: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        self.type_position.insert((scope, elem_ty));
+        let described = self.described_type(scope, elem_ty);
+        self.types.set_expr(scope, elem_ty, PoolId::TYPE);
+        let Some(described) = described else {
+            self.diags.push(
+                Diagnostic::error(span, "an array literal needs an element type")
+                    .with_code(E0261)
+                    .with_note("the type before `.[` is the element type, e.g. `s64.[1, 2, 3]`"),
+            );
+            for &e in elems {
+                self.check_expr(scope, e, None);
+            }
+            return PoolId::ERROR;
+        };
+        // Poison propagates rather than refusing, exactly as ADR-0192 §4 established for `size_of`: inside
+        // a `$T` template the element type is not yet bound, and every element still wants typing.
+        if described == PoolId::ERROR {
+            for &e in elems {
+                self.check_expr(scope, e, None);
+            }
+            return PoolId::ERROR;
+        }
+        for &e in elems {
+            self.check_expr(scope, e, Some(described));
+        }
+        if elems.is_empty() {
+            self.diags.push(
+                Diagnostic::error(span, "an array literal needs at least one element")
+                    .with_code(E0295)
+                    .with_note(
+                        "a `[0]T` has no use a caller could name; declare `a: [N]T;` instead",
+                    ),
+            );
+            return PoolId::ERROR;
+        }
+        self.pool.array_of(described, elems.len() as u64)
+    }
+
     fn check_size_of(
         &mut self,
         scope: ExprScope,
@@ -6613,6 +6681,11 @@ impl Ctx<'_> {
     /// pointer is assignable and deciding that needs the receiver's type.
     fn is_place(&mut self, scope: ExprScope, id: ExprId) -> bool {
         match self.expr_of(scope, id) {
+            // **An array literal is a value, not a place** (ADR-0194 §2). It has no storage a program can
+            // name: MIR materialises one to build it, and that slot is an implementation detail, so
+            // `s64.[1, 2][0] = 5` must be refused rather than assigning into a temporary nobody can read
+            // back.
+            Expr::ArrayLit { .. } => false,
             // **`context` itself is not a place** — it is the pointer value, not storage — but
             // `context.allocator` is, because `Expr::Field` on a pointer receiver is assignable and
             // that arm decides it from the receiver's *type*. So writing the field works and
@@ -6694,6 +6767,10 @@ impl Ctx<'_> {
     /// a mismatch against a defaulted `s64`.
     fn is_untyped_literal(&self, scope: ExprScope, id: ExprId) -> bool {
         match self.expr_of(scope, id) {
+            // **Not untyped**, despite the name: an array literal names its element type, so it has one
+            // answer regardless of context. That is the whole reason `T.[…]` was buildable where
+            // ADR-0039 §6's `[1, 2, 3]` was not (ADR-0194 §1).
+            Expr::ArrayLit { .. } => false,
             Expr::Literal(literal, _) => match literal {
                 // A float literal is untyped for the same reason an integer one is
                 // (ADR-0040 §5): it takes its type from context, so `1.5 + x` where `x` is a

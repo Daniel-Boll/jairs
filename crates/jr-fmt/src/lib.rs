@@ -1681,6 +1681,24 @@ impl Formatter {
                     self.format_arg_list(&arg_list);
                 }
             }
+            // **`T.[a, b, c]`** (ADR-0194 §5). Without this arm the whole literal vanished —
+            // `a := s64.[1, 2, 3];` formatted to `a := ;`, which is the same silent deletion `cast`
+            // suffered in ADR-0037's wave and `ENUM_TYPE` in another. Fifteenth wave in seventeen to need
+            // an emitter entry, and the most destructive so far: not a dropped attribute but the value.
+            ARRAY_LITERAL => {
+                let mut children = node.children().filter(|n| is_expr_kind(n.kind()));
+                if let Some(ty) = children.next() {
+                    self.format_expr(&ty);
+                }
+                self.emit(".[");
+                for (index, element) in children.enumerate() {
+                    if index > 0 {
+                        self.emit(", ");
+                    }
+                    self.format_expr(&element);
+                }
+                self.emit("]");
+            }
             FIELD_EXPR => {
                 if let Some(obj) = node.children().find(|n| is_expr_kind(n.kind())) {
                     self.format_expr(&obj);
@@ -1901,6 +1919,10 @@ fn is_expr_kind(kind: SyntaxKind) -> bool {
             | PAREN_EXPR
             | CALL_EXPR
             | FIELD_EXPR
+            // A literal is an expression wherever one goes — as an initialiser, an argument, a `for`
+            // sequence. Omitting it here would leave it unemitted at every *nesting* site even with the
+            // arm above, which is the second half of the trap that comment describes.
+            | ARRAY_LITERAL
             | DEREF_EXPR
             | UNINIT_EXPR
             // Omitting this is how the formatter *deleted* every `cast` outright: an

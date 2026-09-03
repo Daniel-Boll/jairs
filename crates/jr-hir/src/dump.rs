@@ -517,6 +517,10 @@ fn fmt_expr_impl(expr: &Expr, interner: &Interner, is_top: bool, body: Option<&B
             let args_str: Vec<String> = args.iter().map(|a| sub_expr(*a)).collect();
             format!("{}({})", sub_expr(*callee), args_str.join(", "))
         }
+        Expr::ArrayLit { elem_ty, elems, .. } => {
+            let parts: Vec<String> = elems.iter().map(|e| sub_expr(*e)).collect();
+            format!("{}.[{}]", sub_expr(*elem_ty), parts.join(", "))
+        }
         Expr::Field { receiver, name, .. } => {
             format!("{}.{}", sub_expr(*receiver), sym(*name))
         }

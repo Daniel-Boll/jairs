@@ -16944,3 +16944,131 @@ proc main -> void {
     discard call extern proc1(88_s64)
     return
 }
+
+========================================
+145-array-literals.jr
+========================================
+proc takes_three -> s64 {
+  params: v0: *Context, v1: [3]s64
+  slots:
+    s0: [3]s64  // temporary
+  bb0(v0: *Context, v1: [3]s64):
+    store s0 <- v1
+    bounds_check 0_s64 < 3_s64
+    v2: s64 = load s0[0_s64]
+    bounds_check 1_s64 < 3_s64
+    v3: s64 = load s0[1_s64]
+    v4: s64 = v2 + v3
+    bounds_check 2_s64 < 3_s64
+    v5: s64 = load s0[2_s64]
+    v6: s64 = v4 + v5
+    return v6
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: [3]s64  // local 1
+    s1: [3]s64  // temporary
+    s2: [4]u8  // local 2
+    s3: [4]u8  // temporary
+    s4: [3]s64  // local 4
+    s5: [3]s64  // temporary
+    s6: [3]s64  // temporary
+    s7: [3]s64  // temporary
+    s8: [3]s64  // temporary
+    s9: s64  // temporary
+    s10: Point  // local 6
+    s11: [2]Point  // local 7
+    s12: [2]Point  // temporary
+  bb0(v0: *Context):
+    store s1[0_s64] <- 10_s64
+    store s1[1_s64] <- 20_s64
+    store s1[2_s64] <- 30_s64
+    v1: [3]s64 = load s1
+    store s0 <- v1
+    bounds_check 0_s64 < 3_s64
+    v2: s64 = load s0[0_s64]
+    v3: s64 = 0_s64 + v2
+    bounds_check 1_s64 < 3_s64
+    v4: s64 = load s0[1_s64]
+    v5: s64 = v3 + v4
+    bounds_check 2_s64 < 3_s64
+    v6: s64 = load s0[2_s64]
+    v7: s64 = v5 + v6
+    v8: s64 = v7 + 3_s64
+    store s3[0_s64] <- 1_u8
+    store s3[1_s64] <- 2_u8
+    store s3[2_s64] <- 3_u8
+    store s3[3_s64] <- 4_u8
+    v9: [4]u8 = load s3
+    store s2 <- v9
+    bounds_check 3_s64 < 4_s64
+    v10: u8 = load s2[3_s64]
+    v11: s64 = convert v10 from u8
+    v12: s64 = v8 + v11
+    v13: s64 = v12 + 4_s64
+    store s5[0_s64] <- 5_s64
+    v14: s64 = 5_s64 * 2_s64
+    store s5[1_s64] <- v14
+    v15: s64 = 5_s64 * 3_s64
+    store s5[2_s64] <- v15
+    v16: [3]s64 = load s5
+    store s4 <- v16
+    bounds_check 2_s64 < 3_s64
+    v17: s64 = load s4[2_s64]
+    v18: s64 = v13 + v17
+    store s6[0_s64] <- 1_s64
+    store s6[1_s64] <- 2_s64
+    store s6[2_s64] <- 3_s64
+    v19: [3]s64 = load s6
+    v20: s64 = call proc0(v0, v19)
+    v21: s64 = v18 + v20
+    store s7[0_s64] <- 7_s64
+    store s7[1_s64] <- 8_s64
+    store s7[2_s64] <- 9_s64
+    v22: [3]s64 = load s7
+    store s8 <- v22
+    store s9 <- 0_s64
+    goto bb1(v21)
+  bb1(v27: s64):
+    v23: s64 = load s9
+    v24: bool = v23 < 3_s64
+    branch v24 ? bb2() : bb4()
+  bb2():
+    v25: s64 = load s9
+    bounds_check v25 < 3_s64
+    v26: s64 = load s8[v25]
+    v28: s64 = v27 + v26
+    goto bb3()
+  bb3():
+    v29: s64 = load s9
+    v30: s64 = v29 + 1_s64
+    store s9 <- v30
+    goto bb1(v28)
+  bb4():
+    goto bb5()
+  bb5():
+    zero s10
+    store s10.0 <- 1_s64
+    store s10.1 <- 2_s64
+    v31: Point = load s10
+    store s12[0_s64] <- v31
+    v32: Point = load s10
+    store s12[1_s64] <- v32
+    v33: [2]Point = load s12
+    store s11 <- v33
+    v34: s64 = v27 + 2_s64
+    bounds_check 1_s64 < 2_s64
+    v35: s64 = load s11[1_s64].1
+    v36: s64 = v34 + v35
+    v37: bool = v36 != 120_s64
+    branch v37 ? bb6() : bb7()
+  bb6():
+    discard call extern proc1(1_s64)
+    goto bb8()
+  bb7():
+    goto bb8()
+  bb8():
+    discard call extern proc1(99_s64)
+    return
+}

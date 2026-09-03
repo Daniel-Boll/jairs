@@ -469,6 +469,12 @@ impl Reach {
             }
             out.exprs.push(id);
             match body.expr(id) {
+                // **The element type is deliberately not walked** (ADR-0194 §3): it denotes a type, folds
+                // to nothing, and pushing it here would put a bare type name into the scan that checks
+                // every reached expression has a runtime type. The elements are ordinary expressions.
+                Expr::ArrayLit { elems, .. } => {
+                    expr_work.extend(elems.iter().copied());
+                }
                 Expr::Literal(_, _)
                 | Expr::Name { .. }
                 | Expr::Context(_)
@@ -645,6 +651,9 @@ fn scan(
         }
         match body.expr(*id) {
             Expr::Error(_) => return Some("the body contains recovered syntax"),
+            // Representable: a fixed array literal lowers to a slot and one store per element
+            // (ADR-0194 §3), all of which MIR already has.
+            Expr::ArrayLit { .. } => {}
             // Representable: `context` lowers to a load of the hidden parameter (ADR-0057 §2), which
             // is an ordinary place read and needs nothing new.
             Expr::Context(_) => {}
@@ -2133,8 +2142,27 @@ impl Lower<'_> {
                     let operand = self.expr(*expr);
                     let pointee = self.pointee(seq_ty)?;
                     (Place::deref(operand), pointee)
+                } else if let Some(found) = self.place(*expr) {
+                    found
                 } else {
-                    self.place(*expr)?
+                    // **A sequence that is a value, not a place, is spilled to a slot** (ADR-0194 §3).
+                    // `for x: s64.[1, 2, 3]` is the case that wanted it — an array literal materialises
+                    // its own slot and hands back a *load*, so there is no place to project — and
+                    // `for x: f()` over an array-returning call is the same shape, which used to
+                    // report "a `for` over something with no length" on a program with an obvious length.
+                    //
+                    // Spilled once, before the loop, which is where a sequence's length is already
+                    // evaluated: the element source has to outlive the header, so a temporary inside the
+                    // body would be a different array each iteration.
+                    let value = self.expr(*expr);
+                    let slot = self.mir.push_slot(seq_ty, None, span);
+                    let spilled = Place::slot(slot);
+                    self.emit(Statement::Store {
+                        place: spilled.clone(),
+                        value,
+                        span,
+                    });
+                    (spilled, seq_ty)
                 };
                 while let Some(pointee) = self.pointee(ty) {
                     place = place.project(Projection::Deref);
@@ -2545,6 +2573,27 @@ impl Lower<'_> {
         let ty = self.ty(id);
         let span = self.span(id);
         match self.body.expr(id).clone() {
+            // **A fixed array literal** (ADR-0194 §3): a slot of the array's type, one store per element
+            // at a constant index, then a load of the whole slot as the value.
+            //
+            // No `BoundsCheck` is emitted, and that is safe by construction rather than by omission: the
+            // indices are `0..n` where `n` *is* the array's length, both from the same `elems` list, so
+            // there is no input that could put one out of range. Emitting them would be checks the
+            // optimiser then removes, and a reader of the MIR would have to work out why they were there.
+            Expr::ArrayLit { elems, .. } => {
+                let slot = self.mir.push_slot(ty, None, span);
+                let place = Place::slot(slot);
+                for (index, elem) in elems.iter().enumerate() {
+                    let value = self.expr(*elem);
+                    let idx = Operand::Constant(self.pool.int_value(PoolId::S64, index as u64));
+                    self.emit(Statement::Store {
+                        place: place.clone().project(Projection::Index(idx)),
+                        value,
+                        span,
+                    });
+                }
+                self.define(ty, Rvalue::Load(place), span)
+            }
             // The hidden parameter's value: a `*Context` (ADR-0057 §2). Sema refused `context` in a
             // `#c_call` procedure (E0254), so `None` here would mean sema and lowering disagree —
             // `give_up` says so rather than emitting a placeholder, which is ADR-0017 §4's rule and
@@ -4044,6 +4093,9 @@ impl Lower<'_> {
             return None;
         }
         match self.body.expr(expr).clone() {
+            // **An array literal has no place**, matching sema's `is_place`: the slot MIR materialises to
+            // build one is an implementation detail, not storage a program can name (ADR-0194 §3).
+            Expr::ArrayLit { .. } => None,
             // **`context` has no place of its own** — it is the pointer *value*. `context.allocator`
             // reaches storage through `field_place`, which dereferences a pointer receiver exactly as
             // `p.x` does (ADR-0057 §2), so the field is assignable and `context` itself is not.

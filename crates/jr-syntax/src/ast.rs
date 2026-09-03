@@ -177,6 +177,7 @@ ast_node!(ParenExpr, PAREN_EXPR);
 ast_node!(CallExpr, CALL_EXPR);
 ast_node!(ArgList, ARG_LIST);
 ast_node!(FieldExpr, FIELD_EXPR);
+ast_node!(ArrayLiteral, ARRAY_LITERAL);
 ast_node!(IndexExpr, INDEX_EXPR);
 ast_node!(SliceExpr, SLICE_EXPR);
 ast_node!(DerefExpr, DEREF_EXPR);
@@ -451,6 +452,8 @@ pub enum Expr {
     Call(CallExpr),
     /// `a.b`
     Field(FieldExpr),
+    /// `T.[a, b, c]` — a fixed array literal (ADR-0194 §1).
+    ArrayLiteral(ArrayLiteral),
     /// `a[i]`
     Index(IndexExpr),
     /// `a[]` (ADR-0044 §2)
@@ -509,6 +512,7 @@ impl AstNode for Expr {
             PAREN_EXPR => Some(Self::Paren(ParenExpr(node))),
             CALL_EXPR => Some(Self::Call(CallExpr(node))),
             FIELD_EXPR => Some(Self::Field(FieldExpr(node))),
+            ARRAY_LITERAL => Some(Self::ArrayLiteral(ArrayLiteral(node))),
             INDEX_EXPR => Some(Self::Index(IndexExpr(node))),
             SLICE_EXPR => Some(Self::Slice(SliceExpr(node))),
             CONTEXT_EXPR => Some(Self::Context(ContextExpr(node))),
@@ -533,6 +537,7 @@ impl AstNode for Expr {
             Self::Paren(n) => n.syntax(),
             Self::Call(n) => n.syntax(),
             Self::Field(n) => n.syntax(),
+            Self::ArrayLiteral(n) => n.syntax(),
             Self::Index(n) => n.syntax(),
             Self::Slice(n) => n.syntax(),
             Self::Context(n) => n.syntax(),
@@ -556,6 +561,26 @@ impl SourceFile {
     /// All top-level items.
     pub fn items(&self) -> impl Iterator<Item = Item> + '_ {
         child_nodes::<Item>(&self.0)
+    }
+}
+
+impl ArrayLiteral {
+    /// The expression naming the **element type** — the `s64` of `s64.[1, 2, 3]`.
+    ///
+    /// An expression rather than a `TypeExpr`, because the parser reads it as the receiver of a postfix
+    /// `.` before knowing what follows. Sema resolves it through `described_type`, the one function every
+    /// intrinsic asks for a type argument (ADR-0194 §2) — which is why `Point.[…]` and a parameterised
+    /// element type work without a line of extra code.
+    pub fn element_type(&self) -> Option<Expr> {
+        self.0.children().find_map(Expr::cast)
+    }
+
+    /// The element expressions, in order.
+    ///
+    /// Skips the first child, which is [`ArrayLiteral::element_type`]: both are `Expr`s in one node, so
+    /// position is what separates them, exactly as a `CALL_EXPR`'s callee is separated from its arguments.
+    pub fn elements(&self) -> impl Iterator<Item = Expr> + '_ {
+        self.0.children().filter_map(Expr::cast).skip(1)
     }
 }
 

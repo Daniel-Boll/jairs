@@ -736,6 +736,7 @@ module.exports = grammar({
         $.unary_expr,
         $.deref_expr,
         $.field_expr,
+        $.array_literal,
         $.index_expr,
         $.slice_expr,
         $.call_expr,
@@ -859,6 +860,29 @@ module.exports = grammar({
     // optional index, for the reason `view_type` is separate from `array_type`.
     slice_expr: ($) =>
       prec.left(7, seq(field("operand", $._expr), "[", "]")),
+
+    // `T.[a, b, c]` — a fixed array literal (ADR-0194 §5).
+    //
+    // Precedence 7, the same as `field_expr`, because it *is* a postfix on the element type expression and
+    // the hand-written parser puts it in the same chain. Unambiguous against `field_expr` on one token: a
+    // field name is an identifier and this is a `[`.
+    array_literal: ($) =>
+      prec.left(
+        7,
+        seq(
+          field("element_type", $._expr),
+          ".",
+          "[",
+          optional(
+            seq(
+              field("element", $._expr),
+              repeat(seq(",", field("element", $._expr))),
+              optional(","),
+            ),
+          ),
+          "]",
+        ),
+      ),
 
     // Field access: expr.name
     field_expr: ($) =>

@@ -333,6 +333,18 @@ impl Thunk<'_> {
         match node {
             Expr::Literal(literal, _) => Ok(Operand::Constant(self.literal(&literal, ty))),
 
+            // **A fixed array literal is refused at compile time** (ADR-0194 §4), and refused rather than
+            // left to a placeholder: a thunk produces one `Operand`, and an array's value is a run of
+            // bytes that would have to be interned as a static array and referred to by address. The pool
+            // *can* build one — `static_array` is what the field and member tables use — but wiring it
+            // here means deciding what a `ConstValue` holding an aggregate is, which no caller has needed.
+            //
+            // So `A :: s64.[1, 2, 3];` at file scope says so, and `a := s64.[1, 2, 3];` inside a body —
+            // which is every counted use in real Jai code — lowers to a slot and works.
+            Expr::ArrayLit { .. } => Err(Poisoned::Here(
+                "an array literal has no compile-time value yet (ADR-0194 §4)",
+            )),
+
             // A `#run` whose value is already known folds to it; otherwise evaluating
             // the `#run` *is* evaluating its inner expression, which is what makes a
             // thunk for `COMPUTED :: #run add(2, 3)` compute `add(2, 3)`.
@@ -601,6 +613,11 @@ fn child_exprs(expr: &Expr) -> Vec<ExprId> {
         Expr::Unary { operand, .. } | Expr::Autocast { operand, .. } => vec![*operand],
         Expr::Cast { operand, .. } => vec![*operand],
         Expr::Run(inner, _) => vec![*inner],
+        Expr::ArrayLit { elem_ty, elems, .. } => {
+            let mut out = vec![*elem_ty];
+            out.extend(elems.iter().copied());
+            out
+        }
         Expr::Field { receiver, .. } => vec![*receiver],
         Expr::Index { base, index, .. } => vec![*base, *index],
         Expr::Slice { base, .. } => vec![*base],

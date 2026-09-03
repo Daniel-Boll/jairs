@@ -549,6 +549,21 @@ pub enum Expr {
         /// Span of the whole expression.
         span: Span,
     },
+    /// `T.[a, b, c]` — a fixed array literal whose element type is named (ADR-0194 §1).
+    ///
+    /// The element type is carried as an **expression**, not a `TypeRefId`, and that is the decision the
+    /// rest of the wave rests on: sema resolves it through `described_type`, the one function every
+    /// intrinsic already asks for a type argument. So `Point.[…]`, `Slot(s64, s64).[…]` and even
+    /// `type_of(x).[…]` work with no extra code, and the parser needs no way to tell a type from a value
+    /// before the `.` — which it cannot, since both are a bare name.
+    ArrayLit {
+        /// The expression naming the element type.
+        elem_ty: ExprId,
+        /// The elements, in order. The array's length *is* this count (ADR-0194 §1).
+        elems: Vec<ExprId>,
+        /// Span of the whole literal.
+        span: Span,
+    },
     /// `a[]` — a view over the whole of `a` (ADR-0044 §2).
     ///
     /// A distinct expression rather than sugar for anything: it takes the *address* of its
@@ -649,6 +664,7 @@ impl Expr {
             Expr::Unary { span, .. } => *span,
             Expr::Call { span, .. } => *span,
             Expr::Field { span, .. } => *span,
+            Expr::ArrayLit { span, .. } => *span,
             Expr::Index { span, .. } => *span,
             Expr::Slice { span, .. } => *span,
             Expr::Deref(_, span) => *span,

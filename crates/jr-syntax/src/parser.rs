@@ -2469,6 +2469,28 @@ impl<'src> Parser<'src> {
 
             match self.current() {
                 DOT => {
+                    // **`T.[a, b, c]` is an array literal** (ADR-0194 §1), not a field access. One token of
+                    // lookahead past the `.` decides it, and that is enough: a field name is always an
+                    // `IDENT` and can never be a `[`.
+                    if self.nth(1) == L_BRACK {
+                        self.start_node_at(cp, ARRAY_LITERAL);
+                        self.bump(); // `.`
+                        self.bump(); // `[`
+                        while !self.at(R_BRACK) && !self.at(EOF) {
+                            if !self.at_set(EXPR_START) {
+                                let span = self.current_span();
+                                self.error(span, "expected an element in the array literal", E0118);
+                                break;
+                            }
+                            self.parse_expr();
+                            if !self.eat(COMMA) {
+                                break;
+                            }
+                        }
+                        self.expect(R_BRACK);
+                        self.finish_node();
+                        continue;
+                    }
                     self.start_node_at(cp, FIELD_EXPR);
                     self.bump(); // `.`
                     if !self.eat(IDENT) {
