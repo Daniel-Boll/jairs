@@ -1202,17 +1202,13 @@ pub(crate) fn type_info_value(
     // A **declared** type's name comes from the signatures, which recorded it; a builtin has no
     // declaration, so its spelling is derived from its `Item`. Only the shapes a `Type_Info` can describe
     // need a name here, because the others were refused above.
-    let name = signatures
-        .iter()
-        .find_map(|sigs| sigs.type_name(described))
-        .map(ToOwned::to_owned)
-        .or_else(|| builtin_type_name(pool, described))
+    let name = type_spelling(pool, signatures, described, 0)
         .unwrap_or_else(|| kind_name.to_lowercase());
 
     // The `kind` field's own type and value, read from the `Type_Info_Kind` enum declared beside
     // `Type_Info` in `Basic`. Read rather than assumed: the member values are the enum's, so a
     // reordering of the declaration changes the numbers and this follows it.
-    let info_ty = type_info_struct_type(interner, signatures)
+    let info_ty = library_struct_type(interner, signatures, "Type_Info")
         .ok_or_else(|| "the standard library's `Type_Info` is not usable".to_owned())?;
     let fields = struct_fields_of(pool, info_ty)
         .ok_or_else(|| "`Type_Info`'s fields are not recorded".to_owned())?;
@@ -1249,6 +1245,18 @@ pub(crate) fn type_info_value(
     let (count, element) = match *pool.item(described) {
         jr_pool::Item::ArrayType { elem, len } => (len, u64::from(elem.as_u32())),
         jr_pool::Item::PointerType(pointee) => (0, u64::from(pointee.as_u32())),
+        // **A view and a dynamic array have an element too** (ADR-0193 §2), and this arm was missing —
+        // both fell through to `(0, 0)`, so `element` was type id 0 and nothing could say what a view held.
+        // The omission was invisible until something *used* `element` for a view, which is what adding
+        // `element_size` beside it made possible: the stride arrived, the element type did not, and the
+        // formatter printed `[.., ..]` — the placeholder for "an element type I cannot name".
+        //
+        // `count` stays 0 for both, and that is not an oversight: a view's count is a **runtime** property
+        // held in its own header, so a static answer would be a lie. A fixed array's length is static and
+        // is reported.
+        jr_pool::Item::ViewType { elem } | jr_pool::Item::DynamicArrayType { elem } => {
+            (0, u64::from(elem.as_u32()))
+        }
         jr_pool::Item::StructType { .. }
         | jr_pool::Item::UnionType { .. }
         | jr_pool::Item::VariantType { .. } => {
@@ -1265,6 +1273,24 @@ pub(crate) fn type_info_value(
     // view *inside* an interned value would mean interning a pointer — the ADR-0074 defect.
     let field_table = type_info_field_table(pool, interner, signatures, described)?;
 
+    // **The enum member table** (ADR-0193 §1), by the same mechanism and for the same reason: a view over
+    // a compiler-emitted table, because a view inside an interned value would intern a pointer.
+    let member_table = type_info_member_table(pool, interner, signatures, described)?;
+
+    // **One element's size** (ADR-0193 §2). Computed from the *element type's* own layout rather than by
+    // dividing the aggregate's size, because only a fixed array makes that division exact — a view's own
+    // size is its header's, which is what left a view's elements unreachable.
+    let element_size = match *pool.item(described) {
+        jr_pool::Item::ArrayType { elem, .. }
+        | jr_pool::Item::ViewType { elem }
+        | jr_pool::Item::DynamicArrayType { elem } => {
+            jr_pool::layout_of(pool, target, elem).map_or(0, |l| l.size)
+        }
+        // A pointer deliberately answers 0 rather than its pointee's size: a pointer holds one address,
+        // not a sequence, so a stride would invite pointer arithmetic reflection cannot justify.
+        _ => 0,
+    };
+
     let elements = vec![
         pool.int_value(PoolId::S64, id),
         pool.int_value(kind_ty, kind_value),
@@ -1278,8 +1304,51 @@ pub(crate) fn type_info_value(
         // non-integer, which is what a caller wants: the field is only meaningful where `kind` is
         // `INTEGER`, and a `bool` that is `false` for a `string` reads better than one left undefined.
         pool.bool_value(is_signed),
+        // **The enum member table and the element stride** (ADR-0193), appended in this order to match the
+        // declaration in `Basic` — which E0265 checks, so a swap here is a diagnostic rather than two
+        // members silently reading each other's bytes.
+        member_table,
+        pool.int_value(PoolId::S64, element_size),
     ];
     Ok(pool.aggregate_value(info_ty, elements))
+}
+
+/// The `[]Type_Info_Member` table for `described`, when it is an enum (ADR-0193 §1).
+///
+/// Empty for every other kind, which is a real answer rather than a sentinel: only an enum has values with
+/// names. The names and values come from the pool's own `enum_members`, so reflection and a
+/// `Colour.BLUE` expression cannot disagree about what `BLUE` is — the same reasoning that makes the field
+/// table read `jr_pool::field_offset` rather than recomputing offsets.
+///
+/// # Errors
+/// When `Basic`'s `Type_Info_Member` is missing or unusable, which sema has already refused with E0265.
+fn type_info_member_table(
+    pool: &mut Pool,
+    interner: &jr_base::Interner,
+    signatures: &[&jr_sema::FileSignatures],
+    described: PoolId,
+) -> Result<PoolId, String> {
+    let member_ty = library_struct_type(interner, signatures, "Type_Info_Member")
+        .ok_or_else(|| "the standard library's `Type_Info_Member` is not usable".to_owned())?;
+
+    let members: Vec<(jr_base::Symbol, i64)> = match *pool.item(described) {
+        jr_pool::Item::EnumType { decl, .. } => pool
+            .enum_members(decl)
+            .map(|ms| ms.iter().map(|m| (m.name, m.value)).collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+
+    let mut entries = Vec::with_capacity(members.len());
+    for (name, value) in &members {
+        let text = interner.resolve(*name).to_owned();
+        let name_value = pool.str_value(&text);
+        // `as u64` rather than a checked conversion: a negative member is legal (ADR-0041 §3) and its
+        // bits are what a caller compares against, so wrapping is the correct reinterpretation here.
+        let member_value = pool.int_value(PoolId::S64, *value as u64);
+        entries.push(pool.aggregate_value(member_ty, vec![name_value, member_value]));
+    }
+    Ok(pool.static_array(member_ty, entries))
 }
 
 /// The `[]Type_Info_Field` table for `described`, emitted once and shared (ADR-0152 §3).
@@ -1294,7 +1363,7 @@ fn type_info_field_table(
     described: PoolId,
 ) -> Result<PoolId, String> {
     let target = jr_pool::TargetLayout::LP64;
-    let field_ty = type_info_field_struct_type(interner, signatures)
+    let field_ty = library_struct_type(interner, signatures, "Type_Info_Field")
         .ok_or_else(|| "the standard library's `Type_Info_Field` is not usable".to_owned())?;
 
     let fields: Vec<(jr_base::Symbol, PoolId)> = match *pool.item(described) {
@@ -1322,11 +1391,48 @@ fn type_info_field_table(
     Ok(pool.static_array(field_ty, entries))
 }
 
-/// The source spelling of a **builtin** type, which has no declaration to have recorded a name.
+/// The source spelling of a type, composed from its shape (ADR-0193 §3).
 ///
-/// Only the scalar builtins are answered. A composite — `*Point`, `[2]s64` — would need its element
-/// rendered too, and ADR-0075 §3 leaves per-kind detail out of this wave, so such a type falls back to
-/// its kind rather than to a half-built spelling that looks like a real name.
+/// A **declared** type answers with its declared name, so `Node` is `Node` however deeply it refers to
+/// itself. A **structural** one is composed from its element's spelling: `*Point`, `[3]s64`, `[]u8`,
+/// `[..]Vertex`. Everything else answers `None` and the caller falls back to the lowercased kind, which is
+/// what a procedure type gets.
+///
+/// This used to answer scalars only, and ADR-0075 §3 gave the reason: "a composite would need its element
+/// rendered too", left out of that wave. The cost was visible in every printed value — a `[3]s64` reported
+/// its name as `array`, which reads like a type nobody wrote.
+///
+/// # Why the recursion terminates
+///
+/// A cycle needs a **declared** type in it — `Node :: struct { next: *Node; }` — and a declared type is
+/// answered by name without looking at its members, so `*Node` is two steps. `depth` is belt-and-braces
+/// against a structural cycle the pool should not be able to build, and it degrades to the kind name
+/// rather than to a truncated spelling that would look real.
+fn type_spelling(
+    pool: &Pool,
+    signatures: &[&jr_sema::FileSignatures],
+    ty: PoolId,
+    depth: u32,
+) -> Option<String> {
+    if depth > 8 {
+        return None;
+    }
+    // A declared name wins, and is checked first: `Vector4` is not `[4]float32` to a reader even when it
+    // is structurally identical, and the declaration is what they wrote.
+    if let Some(declared) = signatures.iter().find_map(|sigs| sigs.type_name(ty)) {
+        return Some(declared.to_owned());
+    }
+    let element = |elem: PoolId| type_spelling(pool, signatures, elem, depth + 1);
+    match *pool.item(ty) {
+        jr_pool::Item::PointerType(pointee) => Some(format!("*{}", element(pointee)?)),
+        jr_pool::Item::ArrayType { elem, len } => Some(format!("[{len}]{}", element(elem)?)),
+        jr_pool::Item::ViewType { elem } => Some(format!("[]{}", element(elem)?)),
+        jr_pool::Item::DynamicArrayType { elem } => Some(format!("[..]{}", element(elem)?)),
+        _ => builtin_type_name(pool, ty),
+    }
+}
+
+/// The source spelling of a **builtin** scalar type, which has no declaration to have recorded a name.
 fn builtin_type_name(pool: &Pool, ty: PoolId) -> Option<String> {
     match *pool.item(ty) {
         jr_pool::Item::VoidType => Some("void".to_owned()),
@@ -1401,22 +1507,18 @@ fn type_info_kind_name(pool: &Pool, ty: PoolId) -> Option<&'static str> {
 /// Looked up rather than named as a constant for the reason `Type_Info` itself is: a declared type's
 /// `PoolId` depends on its declaration site, so the compiler cannot know it in advance. Sema has already
 /// validated the shape (E0265) by the time this runs.
-fn type_info_field_struct_type(
+/// The `PoolId` of a struct `modules/Basic` declares and this crate has to emit values of.
+///
+/// One function for what were three identical copies — `Type_Info`, `Type_Info_Field`, and
+/// `Type_Info_Member` would have been a fourth (ADR-0193 §3). They are looked up rather than named
+/// because a declared type's id depends on its declaration site (ADR-0075 §2), and sema has already
+/// validated the shape against its own table, so a miss here is a library that E0265 refused.
+fn library_struct_type(
     interner: &jr_base::Interner,
     signatures: &[&jr_sema::FileSignatures],
+    type_name: &str,
 ) -> Option<PoolId> {
-    let name = interner.intern("Type_Info_Field");
-    signatures
-        .iter()
-        .find_map(|sigs| sigs.lookup(name))
-        .and_then(|entry| entry.type_value)
-}
-
-fn type_info_struct_type(
-    interner: &jr_base::Interner,
-    signatures: &[&jr_sema::FileSignatures],
-) -> Option<PoolId> {
-    let name = interner.intern("Type_Info");
+    let name = interner.intern(type_name);
     signatures
         .iter()
         .find_map(|sigs| sigs.lookup(name))

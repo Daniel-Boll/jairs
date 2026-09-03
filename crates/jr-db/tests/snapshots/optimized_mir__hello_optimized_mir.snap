@@ -34,19 +34,19 @@ proc main -> void {
   bb13(v20: *Context, v22: []Any):
     goto bb17(v20)
   bb17(v29: *Context):
-    store g23 <- 0_s64
-    store g24 <- 1_s64
-    store g25 <- 0_s64
+    store g24 <- 0_s64
+    store g25 <- 1_s64
+    store g26 <- 0_s64
     goto bb16()
   bb16():
-    discard call extern proc26(v20, "hello from Jairs\n", v22)
+    discard call extern proc28(v20, "hello from Jairs\n", v22)
     goto bb21(v20)
   bb21(v33: *Context):
-    v34: s64 = load g23
+    v34: s64 = load g24
     v35: bool = v34 > 0_s64
     branch v35 ? bb22() : bb23()
   bb22():
-    v37: s64 = load g24
+    v37: s64 = load g25
     v38: bool = v37 != -1_s64
     goto bb24(v38)
   bb23():
@@ -54,17 +54,17 @@ proc main -> void {
   bb24(v36: bool):
     branch v36 ? bb25() : bb26()
   bb25():
-    v39: s64 = load g24
+    v39: s64 = load g25
     bounds_check 0_s64 < 4096_s64
-    v40: *u8 = addr g22[0_s64]
-    v41: s64 = load g23
+    v40: *u8 = addr g23[0_s64]
+    v41: s64 = load g24
     discard call extern proc0(v39, v40, v41)
-    store g23 <- 0_s64
+    store g24 <- 0_s64
     goto bb27()
   bb26():
     goto bb27()
   bb27():
-    v42: s64 = load g25
+    v42: s64 = load g26
     goto bb20(v42)
   bb20(v23: s64):
     goto bb12()
@@ -96,19 +96,19 @@ proc main -> void {
   bb15(v24: *Context, v26: []Any):
     goto bb19(v24)
   bb19(v31: *Context):
-    store g23 <- 0_s64
-    store g24 <- 1_s64
-    store g25 <- 0_s64
+    store g24 <- 0_s64
+    store g25 <- 1_s64
+    store g26 <- 0_s64
     goto bb18()
   bb18():
-    discard call extern proc26(v24, "arithmetic and pointers agree", v26)
+    discard call extern proc28(v24, "arithmetic and pointers agree", v26)
     goto bb29(v24)
   bb29(v43: *Context):
-    v45: s64 = load g23
+    v45: s64 = load g24
     v46: bool = v45 >= 4096_s64
     branch v46 ? bb30() : bb31()
   bb30():
-    v47: s64 = load g24
+    v47: s64 = load g25
     v48: bool = v47 == -1_s64
     branch v48 ? bb33() : bb34()
   bb33():
@@ -116,34 +116,34 @@ proc main -> void {
   bb34():
     goto bb35()
   bb35():
-    v49: s64 = load g24
+    v49: s64 = load g25
     bounds_check 0_s64 < 4096_s64
-    v50: *u8 = addr g22[0_s64]
-    v51: s64 = load g23
+    v50: *u8 = addr g23[0_s64]
+    v51: s64 = load g24
     discard call extern proc0(v49, v50, v51)
-    store g23 <- 0_s64
+    store g24 <- 0_s64
     goto bb32()
   bb31():
     goto bb32()
   bb32():
-    v52: s64 = load g23
+    v52: s64 = load g24
     bounds_check v52 < 4096_s64
-    store g22[v52] <- 10_u8
-    v53: s64 = load g23
+    store g23[v52] <- 10_u8
+    v53: s64 = load g24
     v54: s64 = v53 + 1_s64
-    store g23 <- v54
-    v55: s64 = load g25
+    store g24 <- v54
+    v55: s64 = load g26
     v56: s64 = v55 + 1_s64
-    store g25 <- v56
+    store g26 <- v56
     goto bb28()
   bb28():
     goto bb37(v24)
   bb37(v57: *Context):
-    v58: s64 = load g23
+    v58: s64 = load g24
     v59: bool = v58 > 0_s64
     branch v59 ? bb38() : bb39()
   bb38():
-    v61: s64 = load g24
+    v61: s64 = load g25
     v62: bool = v61 != -1_s64
     goto bb40(v62)
   bb39():
@@ -151,17 +151,17 @@ proc main -> void {
   bb40(v60: bool):
     branch v60 ? bb41() : bb42()
   bb41():
-    v63: s64 = load g24
+    v63: s64 = load g25
     bounds_check 0_s64 < 4096_s64
-    v64: *u8 = addr g22[0_s64]
-    v65: s64 = load g23
+    v64: *u8 = addr g23[0_s64]
+    v65: s64 = load g24
     discard call extern proc0(v63, v64, v65)
-    store g23 <- 0_s64
+    store g24 <- 0_s64
     goto bb43()
   bb42():
     goto bb43()
   bb43():
-    v66: s64 = load g25
+    v66: s64 = load g26
     goto bb36(v66)
   bb36(v28: s64):
     goto bb14()

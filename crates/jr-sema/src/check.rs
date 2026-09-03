@@ -183,6 +183,14 @@ const TYPE_INFO_FIELDS: &[(&str, TypeInfoField)] = &[
     // name is always one of `s8`..`u64`. Depending on a compiler limitation for correctness is how a
     // `u64` above 2^63 comes to print as negative the day that limitation is fixed.
     ("signed", TypeInfoField::Exact(PoolId::BOOL)),
+    // **An enum's members** (ADR-0193 §1), and the second `ViewOfStruct` in this table — which is why that
+    // descriptor is shape-checked rather than naming a `PoolId`: `Type_Info_Member`'s id depends on its
+    // declaration site just as `Type_Info_Field`'s does, so neither can be named here in advance.
+    ("members", TypeInfoField::ViewOfStruct),
+    // **One element's size** (ADR-0193 §2), for an array, view or dynamic array. A plain number rather
+    // than a `*Type_Info`, because a stride is all a caller needs to walk elements and a pointer would
+    // need a per-type table with a cycle rule (§4).
+    ("element_size", TypeInfoField::Exact(PoolId::S64)),
 ];
 
 // ---------------------------------------------------------------------------
