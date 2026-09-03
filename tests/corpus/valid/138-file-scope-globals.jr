@@ -1,0 +1,114 @@
+// **A file-scope mutable variable** (ADR-0186) — the construct `modules/Simp` needs so that a
+// renderer can hold its own state instead of threading a handle through every call.
+//
+// # Why this file exists at all
+//
+// Until this wave, `counter: s64 = 5;` at file scope was legal to *write* and impossible to *use*:
+// any body that touched it was refused with E0245, *"a file-level item has no value until jr-vm"*.
+// ADR-0178 gave that refusal an honest trapping stub. This is the wave that removes the reason for it.
+//
+// # What is pinned, and why each bit is separate
+//
+//   * a **scalar** global read before anything writes it, so its *initial value* is checked rather
+//     than assumed — a global that reads zero when it should read five is the failure this feature
+//     will really have, and it passes every type check;
+//   * a **write, then a read in a different procedure**, which is the entire point of the construct
+//     and the property a per-frame or per-body implementation would get wrong while looking correct;
+//   * a global initialised by a **compile-time call** rather than a literal, since the initialiser is
+//     a const-eval target and a call is the interesting case;
+//   * an **aggregate** global, field-assigned and field-read, because a struct global takes the
+//     projection path rather than the scalar one, and those are different code in all three engines;
+//   * an **uninitialised** global (`---`), which must read as **zero** and not as undefined bytes:
+//     ADR-0186 §2 makes that a promise rather than an accident of the loader, so it is asserted;
+//   * a global **mutated in a loop**, which is what catches an engine that reloads a stale value or
+//     an optimiser that forwards a store across the call that observes it.
+//
+// The three engines must agree, and this is a file where they easily might not: the VM bump-allocates
+// a region, Cranelift emits a writable data object and takes its address with `symbol_value`, and LLVM
+// emits an internal mutable global. Three different mechanisms for one meaning.
+//
+// Exit code 63 = 1 + 2 + 4 + 8 + 16 + 32, so one failing bit names itself.
+#import "Basic";
+
+// A scalar with a literal initialiser — the simplest form.
+counter: s64 = 5;
+
+// An initialiser that is a **call**, evaluated at compile time. There is no moment before `main` at
+// which arbitrary code could run, so the value has to exist by then; this proves it does.
+computed: s64 = triple(7);
+
+// An aggregate global. Its fields are written and read through the projection path.
+origin: Point;
+
+// Explicitly uninitialised. ADR-0186 §2 promises **zero**, not undefined bytes, so that the native
+// path and the VM cannot differ about a program that never assigns it first.
+untouched: s64 = ---;
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+triple :: (n: s64) -> s64 {
+    return n * 3;
+}
+
+// A *different* procedure from the one that reads it below. That separation is the test: a global
+// exists so that two procedures share storage.
+bump :: () {
+    counter = counter + 1;
+}
+
+read_counter :: () -> s64 {
+    return counter;
+}
+
+// Mutation in a loop, through a procedure call each time. An engine that caches the global in a
+// register across the call, or an optimiser that forwards the store past it, gives the wrong total.
+accumulate :: (times: s64) {
+    i := 0;
+    while i < times {
+        bump();
+        i = i + 1;
+    }
+}
+
+main :: () {
+    n := 0;
+
+    // The initial value, read before any write.
+    if read_counter() == 5 {
+        n = n + 1;
+    }
+
+    // A write in one procedure, observed by another.
+    bump();
+    if read_counter() == 6 {
+        n = n + 2;
+    }
+
+    // The compile-time call initialiser.
+    if computed == 21 {
+        n = n + 4;
+    }
+
+    // An aggregate global, field-assigned then field-read.
+    origin.x = 3;
+    origin.y = 4;
+    if origin.x * origin.y == 12 {
+        n = n + 8;
+    }
+
+    // `---` reads as zero.
+    if untouched == 0 {
+        n = n + 16;
+    }
+
+    // Ten more increments, each through a call.
+    accumulate(10);
+    if read_counter() == 16 {
+        n = n + 32;
+    }
+
+    exit(n);
+}

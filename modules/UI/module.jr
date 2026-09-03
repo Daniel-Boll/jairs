@@ -4,22 +4,48 @@
 //! module that proves the graphics stack **composes**, since it is the first thing here that needs a window,
 //! an event queue and a renderer at once.
 //!
-//! # Migrated onto `Simp` (ADR-0182 §5)
+//! # Migrated onto `Simp` twice (ADR-0182 §5, then this session)
 //!
-//! This module used to draw through `Window.set_color`, `fill`, `outline` and `rect`, and Group D deleted all
-//! four — `Simp` owns the renderer now, and leaving a second way to draw would be the opposite of a clean
-//! cutover. So `draw_button` is a batch of quads.
+//! This module first drew through `Window.set_color`, `fill`, `outline` and `rect`. Group D deleted all
+//! four — `Simp` owned the renderer from that point on, and leaving a second way to draw would have been
+//! the opposite of a clean cutover. That migration made `draw_button` take a `*Simp.Renderer` and draw
+//! through `SDL_RenderGeometry`.
+//!
+//! **This session's rewrite removes the renderer handle.** `Simp` matches Jai's real signatures now —
+//! `set_render_target`, `immediate_begin`, `immediate_quad` and the rest take no state argument, because
+//! ADR-0186 gave the language file-scope globals and `Simp` keeps its GL context and vertex batch in one
+//! (ADR-0187). So `draw_button` drops its `simp` parameter along with the handle it pointed at, and every
+//! call it makes returns nothing rather than `bool #must`: `Simp`'s calls no longer report failure, because
+//! the GL calls underneath them are `void` in the same way `Window`'s wrappers never were `bool`.
 //!
 //! **The interaction is untouched.** `button`, `feed`, the hot/active state machine and the id rules are
 //! exactly what they were, and the integration test's assertions are unchanged: the same button, clicked the
-//! same way, produces the same exit code while every pixel now goes through `SDL_RenderGeometry`. An
-//! unchanged assertion over a replaced backend is the only check that a migration preserved behaviour rather
-//! than merely compiling.
+//! same way, produces the same exit code while every pixel now goes through OpenGL with real GLSL 1.20
+//! shaders instead of `SDL_RenderGeometry`. An unchanged assertion over a replaced backend is the only check
+//! that a migration preserved behaviour rather than merely compiling.
 //!
-//! **The outline is four thin quads**, because `SDL_RenderGeometry` draws triangles and has no line
-//! primitive. That is a real cost of the new backend and it is written down rather than glossed: one quad
-//! became five. What it buys is that the body and the outline are now *different colours in one batch* —
-//! `SDL_SetRenderDrawColor` forced one draw call per colour, and a per-vertex colour does not.
+//! **The outline is four thin quads**, because a batch of triangles has no line primitive — true of both
+//! `SDL_RenderGeometry` and the GL triangles that replaced it. That is a real cost of the batch-of-quads
+//! shape and it is written down rather than glossed: one outline became four quads. What it buys is that
+//! the body and the outline are now *different colours in one batch* — a renderer-global colour would force
+//! one draw call per colour, and a per-vertex colour does not.
+//!
+//! # The coordinate convention, and why `draw_button` does not flip anything
+//!
+//! `Simp`'s default is `RIGHT_HANDED`: origin bottom-left, y upwards. This module's own coordinates stay
+//! **y-down, origin top-left** — `feed` copies `event.mouse_x`/`mouse_y` straight from `Input.Event`, which
+//! reports window pixels the way every mouse event on every platform does, and `inside`, `button`, `is_hot`
+//! and `is_active` all compare against that same convention without ever touching `Simp`. Converting inside
+//! `draw_button` would fix the picture only: the widget would be drawn where the mouse thinks it is not,
+//! because nothing here has, or should have, the render target's height to convert with — `draw_button`
+//! takes a rectangle and an id, not a window.
+//!
+//! **So the contract is the caller's, not this module's**: whatever draws through this UI must call
+//! `Simp.set_render_target(window, Simp.LEFT_HANDED)`, which keeps origin top-left, y downwards — SDL's
+//! convention and the one every coordinate in this file already assumes. That keeps `is_hot`/`inside`
+//! agreeing with where the button is actually drawn, which matters more than which way up the window is:
+//! a UI whose hit test and drawing disagree is a UI that is broken, where one that is merely upside down
+//! (the rejected alternative) is not.
 //!
 //! # Immediate mode, and what that buys
 //!
@@ -261,14 +287,36 @@ is_active :: (ui: *UI, id: s64) -> bool {
 /// state machine be exercised with no display at all — which is how this module's tests run — and lets a caller
 /// draw a button any way they like while keeping the interaction.
 ///
-/// **One batch, five quads, two colours** (ADR-0182 §5). The body is a filled quad and the outline is four
-/// thin ones, because `SDL_RenderGeometry` draws triangles and has no line primitive. All five go in one
-/// `immediate_begin`/`immediate_flush` pair, which the old `SDL_SetRenderDrawColor` path could not do: a
-/// per-vertex colour means one flush can carry quads of different colours where a renderer-global colour
-/// forced a draw call each.
+/// **One batch, five quads, two colours.** The body is a filled quad and the outline is four thin ones,
+/// because a batch of triangles has no line primitive. All five go in one `immediate_begin`/
+/// `immediate_flush` pair, which a renderer-global colour could not do: a per-vertex colour means one
+/// flush can carry quads of different colours where the old `SDL_SetRenderDrawColor` path forced a draw
+/// call each.
 ///
-/// `#must`, because it is drawing and every drawing call here can fail.
-draw_button :: (simp: *Simp.Renderer, ui: *UI, id: s64, x: s64, y: s64, w: s64, h: s64) -> bool #must {
+/// Coordinates are `x`/`y`/`w`/`h` as the caller and `button` already use them — top-left origin, y
+/// downwards — and are drawn as written, with no flip. See the module doc's coordinate-convention
+/// section: the caller's `Simp.set_render_target` call, not this procedure, is what keeps that agreeing
+/// with the pixels `Simp` actually draws.
+///
+/// **Returns whether the button fired**, which is what a caller wants and what Jai's `GetRect.button`
+/// does: it draws and reports the click in one call.
+///
+/// It used to return `bool #must`, and that bool was the *flush's* success — `return
+/// Simp.immediate_flush(simp);` — which is not a thing a caller can act on and is no longer reported at
+/// all, since the new `Simp` calls return nothing. Dropping the return entirely was the first migration,
+/// and it was wrong: it left a caller unable to know whether the button was pressed without a second
+/// `button` call, and it turned an integration test's `if draw_button(…)` into an unconditional
+/// assertion. So the value returned changed *meaning* rather than disappearing.
+///
+/// The interaction is still `button`'s, called once here. Calling both `button` and `draw_button` for one
+/// widget in one frame is a mistake — the state machine would see two presses — so a caller uses one or
+/// the other, and this one is the shape Jai has.
+draw_button :: (ui: *UI, id: s64, x: s64, y: s64, w: s64, h: s64) -> bool {
+    // Read the interaction **before** drawing, so the shades below reflect the state this frame ends in
+    // rather than the one it started in. A button clicked this frame draws as active, which is what a
+    // user sees in any immediate-mode UI; drawing first would show the previous frame's state and feel
+    // like a one-frame lag.
+    fired := button(ui, id, x, y, w, h);
     shade := 70;
     if is_active(ui, id) {
         shade = 130;
@@ -283,17 +331,15 @@ draw_button :: (simp: *Simp.Renderer, ui: *UI, id: s64, x: s64, y: s64, w: s64, 
     body := Simp.vector4(level, level, level, 1.0);
     edge := Simp.vector4(0.78, 0.78, 0.78, 1.0);
 
-    if !Simp.set_shader_for_color(simp, false) {
-        return false;
-    }
-    Simp.immediate_begin(simp);
+    Simp.set_shader_for_color(false);
+    Simp.immediate_begin();
 
     left := cast(float32, x);
     top := cast(float32, y);
     right := cast(float32, x + w);
     bottom := cast(float32, y + h);
 
-    Simp.immediate_quad(simp, left, top, right, bottom, body);
+    Simp.immediate_quad(left, top, right, bottom, body);
 
     // The outline, inset nowhere: four quads one pixel thick along the edges, drawn *after* the body so they
     // win where they overlap. `OUTLINE_THICKNESS` rather than a bare `1.0` because a hairline is invisible on
@@ -302,10 +348,11 @@ draw_button :: (simp: *Simp.Renderer, ui: *UI, id: s64, x: s64, y: s64, w: s64, 
     // `OUTLINE_THICKNESS : float32 : 1.0` does not parse — which is the typed-constant gap ADR-0165 §5 already
     // owed for `QUIT : u32 : 256`. The narrowing is exact for a small integral value, so this cannot be wrong.
     t := cast(float32, OUTLINE_THICKNESS);
-    Simp.immediate_quad(simp, left, top, right, top + t, edge);
-    Simp.immediate_quad(simp, left, bottom - t, right, bottom, edge);
-    Simp.immediate_quad(simp, left, top, left + t, bottom, edge);
-    Simp.immediate_quad(simp, right - t, top, right, bottom, edge);
+    Simp.immediate_quad(left, top, right, top + t, edge);
+    Simp.immediate_quad(left, bottom - t, right, bottom, edge);
+    Simp.immediate_quad(left, top, left + t, bottom, edge);
+    Simp.immediate_quad(right - t, top, right, bottom, edge);
 
-    return Simp.immediate_flush(simp);
+    Simp.immediate_flush();
+    return fired;
 }

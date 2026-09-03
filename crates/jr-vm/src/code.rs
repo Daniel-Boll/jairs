@@ -43,7 +43,9 @@
 //! `PlacePlan` are the same numbers Cranelift will emit, because they come from the
 //! same function.
 
-use jr_mir::{BinOp, BlockId, Callee, MirSpan, NumKind, ProcRef, UnOp, Unreachable, ValueId};
+use jr_mir::{
+    BinOp, BlockId, Callee, GlobalRef, MirSpan, NumKind, ProcRef, UnOp, Unreachable, ValueId,
+};
 use jr_pool::PoolId;
 
 /// A register index. Identical to a MIR [`ValueId`], deliberately (ADR-0018 §1).
@@ -92,6 +94,14 @@ pub enum PlaceRoot {
     Slot(usize),
     /// The address held in an operand — the base of ADR-0011's postfix `.*`.
     Address(Operand),
+    /// A file-scope mutable variable, resolved against [`crate::Vm`]'s program-wide global table
+    /// rather than against the current frame (ADR-0186 §1, ADR-0186 §3).
+    ///
+    /// Carried symbolically rather than as a resolved [`crate::Address`]: lowering compiles one
+    /// body at a time and has no [`crate::Memory`] to allocate from, so the byte address is not
+    /// known until [`crate::Vm::new`] lays out every global — the same reason [`Self::Address`]
+    /// carries an [`Operand`] rather than a byte offset, one step later in the pipeline.
+    Global(GlobalRef),
 }
 
 /// One step of a [`PlacePlan`].

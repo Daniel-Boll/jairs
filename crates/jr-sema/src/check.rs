@@ -5249,14 +5249,19 @@ impl Ctx<'_> {
         let res = self.resolve.get(scope, callee).unwrap_or(res);
         let item = match res {
             Res::Item(item) => item,
-            // A call to an imported procedure resolves through the other file's signatures, which
-            // this crate does not hold — so a named argument on a cross-file call is not supported
-            // and says so rather than silently ignoring the name.
-            Res::Imported(_, _)
-            | Res::Local(_)
-            | Res::Param(_)
-            | Res::Promoted { .. }
-            | Res::Error => return None,
+            // **An imported callee's signature is reachable, and this used to claim otherwise**
+            // (ADR-0188 §2). The comment here read "the other file's signatures ... this crate does
+            // not hold", and that was wrong: `self.imports` carries them, and it always has. What was
+            // missing was the index from a name to a `ProcId`, which `SigEntry::proc` now supplies.
+            //
+            // The cost of the stale comment was that **a default argument silently did not apply
+            // across a module boundary**, and a named argument was refused. `Simp.set_shader_for_color()`
+            // was "takes 1 argument, but 0 were supplied" while the identical call inside the module
+            // worked — so the gap looked like a property of the *call* rather than of the boundary.
+            Res::Imported(import, imported) => {
+                return self.imported_proc_sig(import, imported);
+            }
+            Res::Local(_) | Res::Param(_) | Res::Promoted { .. } | Res::Error => return None,
         };
         let jr_hir::ItemKind::Const {
             value: jr_hir::ConstValue::Proc(proc),

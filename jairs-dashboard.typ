@@ -95,9 +95,9 @@
 #v(0.4em)
 #pill[7/7 gates green]
 #h(4pt)
-#pill[1076 tests]
+#pill[1082 tests]
 #h(4pt)
-#pill[ADR-0184 latest]
+#pill[ADR-0188 latest]
 #h(4pt)
 #pill(fill: rgb("#eaf5ee"), stroke: good)[ALL TWELVE WAVES DONE]
 #h(4pt)
@@ -109,9 +109,9 @@
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "1076", "workspace; 1080 with LLVM in"),
-  metric("Corpus", "266", "jr files, all three engines"),
-  metric("ADRs", "184", "0001 to 0184, immutable"),
+  metric("Tests", "1082", "workspace, all seven gates"),
+  metric("Corpus", "269", "jr files, all three engines"),
+  metric("ADRs", "188", "0001 to 0188, immutable"),
   metric("Diagnostics", "130", "declared codes, E0295 next"),
   metric("Editor checks", "170", "Neovim, verified not gated"),
 )
@@ -186,9 +186,10 @@
       ]
     - #text(size: 7.4pt, fill: warn)[
         *A test naming an unimplemented thing has a one-wave shelf life.* The refused-body test has now
-        had its construct replaced twice, both times because the wave after it implemented the gap it
-        named. It uses something refused *by design* now. And one of this wave's own new tests passed
-        vacuously until it was teeth-checked.
+        had its construct replaced *three* times, each because the wave after it implemented the gap it
+        named — most recently the file-scope mutable variable, which its own comment had called "the
+        shortest program that reaches it today". It reads an imported global now, which is deliberately
+        not built. And one of this wave's own new tests passed vacuously until it was teeth-checked.
       ]
     - #text(size: 7.4pt, fill: warn)[
         *A count is not an enforcement.* The test guarding `TrapKind::ALL` asserted `len() == 11` — which
@@ -225,7 +226,8 @@
   ("struct #soa(N) — one array per field, and e[i].x means e.x[i]", "a bare e[i]; using inside one"),
   ("#simd [N]T — a vector at one of the six register widths; elementwise +% -% *% on integers, + - * / on floats, lane indexing, .count", "any other width; integer /; comparisons (need a mask type); swizzles"),
   ("Per-field #align N (a minimum, power of two up to 4096) and #place N (an exact offset, may overlap, may be unaligned)", "a struct-level #align; any packing form; an operand needing evaluation"),
-  ("..T variadics, including ..Any — arguments are pointers", "a bare value coercing to Any"),
+  ("a file-scope mutable variable: counter: s64 = 5; shared by every procedure in the file, const-evaluated initialiser, --- reads as zero
+..T variadics, including ..Any — arguments are pointers", "a bare value coercing to Any"),
   ("#c_variadic — a C-convention variadic a #foreign declaration may take", "a Jairs procedure being one"),
   ("An aggregate crosses a #foreign boundary, by the platform C ABI, in all three engines", ""),
   ("A (T) -> U #c_call procedure *type*, so a body can be handed to C", "a #c_call procedure inside a #run"),
@@ -390,6 +392,10 @@
     "DONE in six waves (ADR-0169 to ADR-0174), and §8.4 had claimed line tables already existed when dwarfdump on a built binary printed an empty section. So it started from zero. A .debug_line for Cranelift written by hand with gimli — a SourceLoc indexing a (path, line) vocabulary, a relocation writer for sequence addresses — and then for LLVM, where NONE of that is reusable because LLVM writes DWARF itself from !dbg metadata. Both verified by PARSING the section the way lldb does rather than grepping dwarfdump. Items 2 and 3 turned out COUPLED: a struct mapping was written, was correct, and dwarfdump showed no struct, because LLVM prunes a type nothing declares and a signature is not a declaration — what retains a type is a VARIABLE of it. One item remains and is specified rather than vague: a register-resident local, whose plan entry named an ISA flag that does not exist.",
   ),
   (
+    "Jai graphics API", "done",
+    "DONE in four ADRs (ADR-0185 to ADR-0188). The Simp programme above got the SHAPE right and the SIGNATURES wrong, because it worked from documentation; these worked from Jai's own module source, vendored verbatim by two open-source projects and diffed against each other. Eight signatures were wrong. Two not cosmetically: the coordinate origin was mirrored (Jai is bottom-left y-up, the SDL renderer was top-left y-down) and every call carried a state handle Jai does not have. Removing that handle needed file-scope mutable variables in all three engines, which this plan had owed since ADR-0178 and which exposed the let-else hole in the exhaustive-match rule. Pixels now go through GL 2.1 with two real GLSL 1.20 shaders and glDrawArrays, not SDL_RenderGeometry. Two compiler defects came out of it: a constant's value is keyed by ItemId and a computed #insert renumbers those, and a default argument silently did not apply across a module boundary.",
+  ),
+  (
     "Simp programme", "done",
     "DONE in four ADRs (ADR-0179 to ADR-0182), on top of the twelve. Qualified imports first, because the graphics restructure could not be written without them: Window and File both exported open, so a program that both drew and read a file was E0211 and unwritable. Then the target OS as a compile-time value — the compiler had NO notion of an operating system anywhere, its whole notion of a target being two numbers in TargetLayout — and one library use of it, Time's CLOCK_MONOTONIC, which had been macOS's number under a comment saying so. Then the renderer, on SDL_RenderGeometry rather than SDL_RenderFillRect: a batch opened, quads carrying their own colour, flushed — so a ROTATED quad is one call, which the old rectangle fill could not draw at any angle. Simp's own shape was verified from primary sources and SDL_Vertex's 20 bytes measured with a cc-compiled offsetof before a line of the module existed.",
   ),
@@ -435,6 +441,33 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
+    #sub[The graphics API becomes Jai's, over OpenGL]
+    #text(size: 7.4pt)[
+      ADR-0185 to 0188. Test count 1076 to *1082*, corpus 266 to *269* files, ADRs 184 to *188*, and
+      *no new diagnostic code* — four ADRs and not one new refusal, because every defect here was a gap
+      to close rather than a construct to refuse. `Simp` and `Window` now have Jai's real signatures and
+      draw through GL 2.1 with GLSL 1.20 shaders.
+    ]
+
+    #v(0.3em)
+    #text(size: 7.4pt)[
+      *The signatures came from source, not documentation, and that is why the previous attempt was
+      wrong.* Jai's module tree is unpublished, but two open-source projects vendor it verbatim, so both
+      copies were read and diffed against each other. Eight signatures were wrong. Two not
+      cosmetically: the coordinate origin was mirrored, and every call carried a state handle Jai does
+      not have. Removing it needed file-scope mutable variables in all three engines first.
+    ]
+
+    #v(0.3em)
+    #text(size: 7.4pt)[
+      *The exhaustive-match rule has a hole, and it is a `let-else`.* Adding `PlaceBase::Global` made
+      nine sites in `jr-mir` fail to compile, each having to decide what a global means. The tenth was a
+      `let ... else`, so it compiled silently and skipped globals by luck — and the wrong answer there
+      would have been a real miscompile, because forwarding a store to a global across a call drops the
+      store the callee was meant to see.
+    ]
+
+    #v(0.3em)
     #sub[Per-OS support becomes library code — and the Simp programme before it]
     #text(size: 7.4pt)[
       ADR-0183 and 0184. Test count 1073 to *1076* (1080 with LLVM in), corpus 262 to *266* files, ADRs
@@ -459,7 +492,7 @@
     #text(size: 7.4pt)[
       ADR-0179 through 0182. Test count 1071 to *1073*, corpus 255 to *262* files. Qualified imports,
       the target OS as a compile-time value, a per-OS clock id, and the graphics modules restructured
-      onto `SDL_RenderGeometry`.
+      onto `SDL_RenderGeometry` — which ADR-0187 has since replaced with OpenGL.
     ]
 
     #v(0.3em)
@@ -560,8 +593,8 @@
 #text(size: 6.6pt, fill: muted)[
   Sources: PLAN.md §1.5 and §7, the ADR directory, `docs/decisions/DECISIONS.md`, and all seven gates
   run today on `main` *after* the merge, not on a branch. Every number was measured rather than carried
-  forward — the test count from a full workspace run (1076, zero failures) and a second under
-  `--features jr-cli/llvm` (1080), the corpus count from a file walk (266 `.jr` files under
+  forward — the test count from a full workspace run (1082, zero failures) and a second under
+  `--features jr-cli/llvm`, the corpus count from a file walk (269 `.jr` files under
   `tests/corpus/` outside `tests/corpus/modules/`), the ADR count from `docs/adr/`, and the editor-check
   count from a real `verify.lua` run (170). The diagnostic count is *every* `const NAME: &str = "E0nnn"`
   across the crates, which is 130 — and the counting rule is written down here because the previous number

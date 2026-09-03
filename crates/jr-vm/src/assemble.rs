@@ -26,14 +26,14 @@
 
 use jr_base::FileId;
 use jr_hir::{FileHir, ProcId};
-use jr_mir::{FileMir, ProcRef};
+use jr_mir::{FileMir, GlobalRef, ProcRef};
 use jr_pool::{Pool, TargetLayout};
 use jr_sema::FileSignatures;
 
 use crate::code::{ForeignProc, Routine};
 use crate::error::VmError;
 use crate::interp::Program;
-use crate::lower::compile;
+use crate::lower::compile_in_file;
 
 /// Adds every routine one file provides to `program`.
 ///
@@ -56,8 +56,17 @@ pub fn add_file(
 ) -> Result<(), VmError> {
     for (_proc, outcome) in mir.iter() {
         if let Ok(body) = outcome {
-            program.insert(Routine::Bytecode(compile(body, pool, program.target())?));
+            program.insert(Routine::Bytecode(compile_in_file(
+                body,
+                mir,
+                pool,
+                program.target(),
+            )?));
         }
+    }
+
+    for (item, data) in mir.globals() {
+        program.insert_global(GlobalRef::new(file, item), data);
     }
 
     for index in 0..hir.procs.len() {

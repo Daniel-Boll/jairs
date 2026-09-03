@@ -142,6 +142,15 @@ impl OperatorCalls {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConstValues {
     items: FxHashMap<ItemId, PoolId>,
+    /// The initial value of each file-scope mutable variable (ADR-0186 §2).
+    ///
+    /// **A separate map from `items`, deliberately.** `items` answers "what compile-time constant is
+    /// this?", and a global is not one — a procedure can write it. Putting a global's initial value
+    /// there would make every reader that asks `consts.item(id)` believe a global is constant, and at
+    /// least three do: the MIR place path spills an aggregate constant into a slot, `scan_name` treats
+    /// a value's existence as permission to lower, and const-prop folds. Each would then read the
+    /// *initial* value where the current one was meant, which is a wrong answer that type-checks.
+    global_inits: FxHashMap<ItemId, PoolId>,
     runs: FxHashMap<(ExprScope, ExprId), PoolId>,
     any_ops: FxHashMap<(ExprScope, ExprId), AnyLowering>,
     /// The pointer type each `typed`/`untyped` call produces (ADR-0106 §1).
@@ -221,6 +230,17 @@ impl ConstValues {
         self.items.insert(item, value);
     }
 
+    /// Records the initial value of one file-scope mutable variable (ADR-0186 §2).
+    pub fn set_global_init(&mut self, item: ItemId, value: PoolId) {
+        self.global_inits.insert(item, value);
+    }
+
+    /// The initial value of a file-scope mutable variable, if const-eval produced one.
+    #[must_use]
+    pub fn global_init(&self, item: ItemId) -> Option<PoolId> {
+        self.global_inits.get(&item).copied()
+    }
+
     /// Records the value of one `#run` expression.
     ///
     /// Keyed by [`ExprScope`] as well as [`ExprId`] for the reason
@@ -294,6 +314,24 @@ impl ConstValues {
     #[must_use]
     pub fn item(&self, item: ItemId) -> Option<PoolId> {
         self.items.get(&item).copied()
+    }
+
+    /// Every file-level item value, for re-keying after an expansion (ADR-0188 §1).
+    ///
+    /// Iteration order is a `FxHashMap`'s and so is arbitrary. That is fine for the one caller — it
+    /// rebuilds a map — and it is called out because anything that *emitted* from this order would be
+    /// nondeterministic, which is the rule this crate follows for MIR dumps.
+    pub fn items(&self) -> impl Iterator<Item = (ItemId, PoolId)> + '_ {
+        self.items.iter().map(|(item, value)| (*item, *value))
+    }
+
+    /// Replaces the file-level item values wholesale (ADR-0188 §1).
+    ///
+    /// **Replaces rather than merges**, and that is the point: after an expansion every old `ItemId` is
+    /// potentially wrong, so a stale entry left behind is a *wrong value at a live id* — the failure
+    /// this exists to fix, and the same reasoning `clear_run` carries for a folded call.
+    pub fn set_items(&mut self, items: FxHashMap<ItemId, PoolId>) {
+        self.items = items;
     }
 
     /// The value of a `#run` expression, if one is known.

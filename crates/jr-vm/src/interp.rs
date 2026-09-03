@@ -37,7 +37,7 @@
 
 use jr_base::FileId;
 use jr_hir::ProcId;
-use jr_mir::{BinOp, Callee, NumKind, ProcRef, UnOp, Unreachable};
+use jr_mir::{BinOp, Callee, GlobalData, GlobalRef, NumKind, ProcRef, UnOp, Unreachable};
 use jr_pool::{Item, Pool, PoolId, StrId, TargetLayout, string_count, string_data, string_layout};
 use rustc_hash::FxHashMap;
 
@@ -45,6 +45,7 @@ use crate::code::{
     Code, ForeignProc, Instr, Operand, PlacePlan, PlaceRoot, PlaceStep, Routine, Shape,
 };
 use crate::error::{Trap, TrapSite, VmError, ice};
+use crate::lower::shape_of;
 use crate::memory::Memory;
 use crate::value::{Address, IntKind, Value};
 
@@ -99,6 +100,8 @@ pub enum Mode {
 #[derive(Debug, Clone)]
 pub struct Program {
     routines: FxHashMap<ProcRef, Routine>,
+    /// Every file-scope global the program declares, keyed by its cross-file identity (ADR-0186 §1).
+    globals: FxHashMap<GlobalRef, GlobalData>,
     target: TargetLayout,
 }
 
@@ -108,6 +111,7 @@ impl Program {
     pub fn new(target: TargetLayout) -> Self {
         Self {
             routines: FxHashMap::default(),
+            globals: FxHashMap::default(),
             target,
         }
     }
@@ -119,6 +123,28 @@ impl Program {
             Routine::Foreign(foreign) => foreign.proc,
         };
         self.routines.insert(proc, routine);
+    }
+
+    /// Records one file-scope global's type and initial value, replacing any already registered
+    /// for the same [`GlobalRef`].
+    pub fn insert_global(&mut self, global: GlobalRef, data: GlobalData) {
+        self.globals.insert(global, data);
+    }
+
+    /// Every global the program declares, in [`GlobalRef`]'s `Ord` order.
+    ///
+    /// Sorted rather than left in hash order: `Vm::emit_globals` lays each one out at a fixed
+    /// offset in the globals region, and that offset must be the same on every run of the same
+    /// program — a `HashMap`'s iteration order is not (ADR-0186 §3).
+    #[must_use]
+    pub fn globals(&self) -> Vec<(GlobalRef, GlobalData)> {
+        let mut globals: Vec<(GlobalRef, GlobalData)> = self
+            .globals
+            .iter()
+            .map(|(global, data)| (*global, *data))
+            .collect();
+        globals.sort_by_key(|(global, _)| *global);
+        globals
     }
 
     /// The routine for a procedure, if the program has one.
@@ -174,6 +200,10 @@ pub struct Vm<'a> {
     /// Keyed on the table's `PoolId`, not on its contents: the pool deduplicated by contents when it
     /// interned the item, so two identical tables are one id and get one emission.
     static_arrays: FxHashMap<PoolId, Address>,
+    /// Where each file-scope global's storage lives — one program-lifetime address per
+    /// [`GlobalRef`], shared by every frame (ADR-0186 §1). Complete before execution starts, by
+    /// `Vm::emit_globals`, the same way [`Self::strings`] is.
+    globals: FxHashMap<GlobalRef, Address>,
     /// Bytes a foreign write produced, when the bridge is capturing rather than
     /// writing through. Empty under [`Mode::Runtime`].
     captured: Vec<u8>,
@@ -200,10 +230,11 @@ pub struct Vm<'a> {
 }
 
 impl<'a> Vm<'a> {
-    /// Creates a VM over `program`, interning every string constant into memory.
+    /// Creates a VM over `program`, interning every string constant and laying out every global,
+    /// both before any frame mark exists.
     ///
     /// # Errors
-    /// [`VmError::Exhausted`] if the string constants alone do not fit.
+    /// [`VmError::Exhausted`] if the string constants and globals alone do not fit.
     pub fn new(program: &'a Program, pool: &'a Pool, mode: Mode) -> Result<Self, VmError> {
         let mut vm = Self {
             program,
@@ -213,6 +244,7 @@ impl<'a> Vm<'a> {
             depth: 0,
             strings: FxHashMap::default(),
             static_arrays: FxHashMap::default(),
+            globals: FxHashMap::default(),
             captured: Vec::new(),
             at: None,
             frames: Vec::new(),
@@ -223,6 +255,7 @@ impl<'a> Vm<'a> {
             },
         };
         vm.intern_strings()?;
+        vm.emit_globals()?;
         Ok(vm)
     }
 
@@ -298,6 +331,50 @@ impl<'a> Vm<'a> {
             }
             let address = self.memory.allocate_bytes(&bytes, layout.align)?;
             self.static_arrays.insert(id, address);
+        }
+        Ok(())
+    }
+
+    /// Lays out and initialises every global the program declares, before any frame mark exists.
+    ///
+    /// # Why this runs after strings and static tables
+    ///
+    /// A global's initialiser can itself intern a string or a compiler-emitted table — `g: string
+    /// = "hi";` folds to an `Item::StrValue`, and [`Self::constant`] resolves one through
+    /// [`Self::strings`]. Both passes must already hold real addresses before a global's bytes are
+    /// rendered, or the render finds nothing there. This runs from [`Self::new`] right after
+    /// [`Self::intern_strings`] (which itself runs [`Self::emit_static_arrays`]), so the ordering
+    /// holds by construction.
+    ///
+    /// # Where the region lands, and why the offsets are stable
+    ///
+    /// There is no separate "globals region" type: a global is bump-allocated from the same
+    /// [`Memory`] a call frame is, and it is the **first** thing ever allocated in a fresh `Vm` — a
+    /// call frame's mark is always taken after this runs, so [`Memory::release`] can only ever
+    /// rewind *down to* the end of this region, never through it. That is what gives a global
+    /// program lifetime rather than frame lifetime (ADR-0186 §1) with no new machinery: the bump
+    /// allocator's existing "never reclaimed below the caller's mark" guarantee already covers it,
+    /// the same way it already covers an interned string constant.
+    ///
+    /// Each global's offset is therefore fixed by [`Program::globals`]'s sorted order plus every
+    /// earlier global's `jr-pool` layout — deterministic across runs of the same program, though
+    /// nothing needs it to be a *particular* number, only a stable one shared by every place lowered
+    /// against this program.
+    fn emit_globals(&mut self) -> Result<(), VmError> {
+        let target = self.program.target;
+        for (global, data) in self.program.globals() {
+            let layout = jr_pool::layout_of(self.pool, target, data.ty)
+                .map_err(|e| VmError::internal(format!("a global's type has no layout: {e}")))?;
+            let address = self.memory.allocate(layout.size, layout.align)?;
+            self.globals.insert(global, address);
+            let Some(init) = data.init else {
+                // Zero-initialised (ADR-0186 §2): `Memory::allocate` hands out bytes the region
+                // already zero-filled and this is the first thing ever written there, so there is
+                // nothing left to do.
+                continue;
+            };
+            let value = self.constant(init)?;
+            self.write_value(address, shape_of(self.pool, data.ty), layout.size, &value)?;
         }
         Ok(())
     }
@@ -1170,6 +1247,13 @@ impl<'a> Vm<'a> {
                 .get(*index)
                 .ok_or_else(|| VmError::internal(format!("no slot s{index} in this frame")))?,
             PlaceRoot::Address(operand) => self.operand(frame, *operand)?.scalar()?,
+            // Looked up in the program-wide table [`Self::emit_globals`] filled before execution
+            // started, not in `frame.slots`: a global has program lifetime, so its address does not
+            // come from *this* call's frame at all (ADR-0186 §1, ADR-0186 §3).
+            PlaceRoot::Global(global) => *self
+                .globals
+                .get(global)
+                .ok_or_else(|| VmError::internal("a global was referenced but never laid out"))?,
         };
         for step in &plan.steps {
             address = match step {
@@ -1200,18 +1284,31 @@ impl<'a> Vm<'a> {
     }
 
     fn store(&mut self, address: Address, plan: &PlacePlan, value: &Value) -> Result<(), VmError> {
-        match plan.shape {
+        self.write_value(address, plan.shape, plan.size, value)
+    }
+
+    /// Writes `value` at `address` as `size` bytes of `shape`.
+    ///
+    /// The shared tail of [`Self::store`] and [`Self::emit_globals`]: a global's initial value and
+    /// an ordinary store through a place are the same operation on the same [`Memory`], and giving
+    /// each its own copy is exactly the kind of duplication that drifts the day one of them gains a
+    /// case the other does not (ADR-0018 §2's argument, one level up from layout).
+    fn write_value(
+        &mut self,
+        address: Address,
+        shape: Shape,
+        size: u64,
+        value: &Value,
+    ) -> Result<(), VmError> {
+        match shape {
             Shape::Void => Ok(()),
-            Shape::Scalar => self
-                .memory
-                .write_scalar(address, plan.size, value.scalar()?),
+            Shape::Scalar => self.memory.write_scalar(address, size, value.scalar()?),
             Shape::Aggregate => {
                 let bytes = value.aggregate()?;
-                if bytes.len() as u64 != plan.size {
+                if bytes.len() as u64 != size {
                     return Err(VmError::internal(format!(
-                        "storing {} bytes into a {}-byte place",
-                        bytes.len(),
-                        plan.size
+                        "storing {} bytes into a {size}-byte place",
+                        bytes.len()
                     )));
                 }
                 let bytes = bytes.to_vec();

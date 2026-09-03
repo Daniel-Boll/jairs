@@ -41,7 +41,8 @@
 //! That is the concrete payoff ADR-0017 promised for enforcing the invariant.
 
 use jr_mir::{
-    Callee, MirBody, MirSpan, Place, PlaceBase, Projection, Rvalue, Statement, Target, Terminator,
+    Callee, FileMir, GlobalData, GlobalRef, MirBody, MirSpan, Place, PlaceBase, Projection, Rvalue,
+    Statement, Target, Terminator,
 };
 use jr_pool::{
     Item, Pool, PoolId, TargetLayout, field_offset, layout_of, string_count, string_data,
@@ -52,16 +53,64 @@ use crate::code::{
 };
 use crate::error::VmError;
 
-/// Compiles one MIR body to bytecode.
+/// Compiles one MIR body to bytecode, with no globals in scope.
+///
+/// For a body that structurally cannot read one — `jr-db`'s const-eval bodies, the only other
+/// caller of this function, are exactly that: a global's own initialiser, a `#run`, or a thunked
+/// top-level constant. ADR-0186 §2 makes a global's initialiser a compile-time constant, and
+/// nothing runs before `main` to read *another* global's current value from, so every one of
+/// those refuses a [`PlaceBase::Global`] rather than reading through it. `compile_in_file` is
+/// the version [`crate::assemble::add_file`] uses for an ordinary body, which can reference one.
+///
+/// A thin wrapper rather than a fourth parameter on this function, because `jr-db` calls this one
+/// directly with its historical three arguments and does not have a file's [`FileMir`] in hand at
+/// that call site to supply as a fourth.
 ///
 /// # Errors
 /// [`VmError::Internal`] when MIR, the pool and the target layout disagree — an
 /// unresolved struct, a projection of a non-struct, a pointer dereference of a
 /// non-pointer. `jr-mir`'s verifier is meant to make all of these unreachable, and
 /// returning rather than panicking is what makes a hole in it diagnosable.
+///
+/// [`VmError::Unsupported`] — not [`VmError::Internal`] — for the [`PlaceBase::Global`] this
+/// function's contract says cannot occur: reading one here is not a compiler bug, it is exactly
+/// the construct ADR-0186 §2 refuses, reached in the one place refusing it matters (`jr-db`'s
+/// `consts.rs` turns this into a diagnostic naming the construct, and degrades the global's own
+/// initial value to zero — see `global_data`).
 pub fn compile(body: &MirBody, pool: &Pool, target: TargetLayout) -> Result<Code, VmError> {
     Compiler {
         body,
+        file_mir: None,
+        pool,
+        target,
+        instrs: Vec::new(),
+        spans: Vec::new(),
+        current: MirSpan::Synthetic,
+        addresses: BlockAddresses::with_blocks(body.block_count()),
+        fixups: Vec::new(),
+        types: (0..body.value_count())
+            .map(|index| body.value(jr_mir::ValueId::from_usize(index)).ty)
+            .collect(),
+    }
+    .run()
+}
+
+/// Compiles one MIR body to bytecode, resolving any [`PlaceBase::Global`] it contains against
+/// `file_mir` — the body's own file, per ADR-0186 §1's same-file contract.
+///
+/// # Errors
+/// As [`compile`], minus the global refusal: every global this body can name is in `file_mir`, by
+/// construction of the caller ([`crate::assemble::add_file`] passes the same file's own
+/// [`FileMir`]).
+pub fn compile_in_file(
+    body: &MirBody,
+    file_mir: &FileMir,
+    pool: &Pool,
+    target: TargetLayout,
+) -> Result<Code, VmError> {
+    Compiler {
+        body,
+        file_mir: Some(file_mir),
         pool,
         target,
         instrs: Vec::new(),
@@ -86,12 +135,19 @@ enum Hole {
 
 struct Compiler<'a> {
     body: &'a MirBody,
+    /// This body's file's globals, looked up by `global_data` (ADR-0186 §1).
+    ///
+    /// `None` for [`compile`]'s const-eval bodies, which cannot read one at all — see
+    /// `global_data` for what that produces. `Some`, from `compile_in_file`, holds not
+    /// the whole program but just the one [`FileMir`] the caller already has in hand: `jr-mir`'s
+    /// contract keeps every [`jr_mir::GlobalRef`] this wave produces same-file, so the body's own
+    /// file is enough.
+    file_mir: Option<&'a FileMir>,
     pool: &'a Pool,
     target: TargetLayout,
     instrs: Vec<Instr>,
     addresses: BlockAddresses,
     fixups: Vec<(usize, Hole, jr_mir::BlockId)>,
-    /// The type of every register, growing as temporaries are added.
     ///
     /// Doubles as the register count: `types.len()` *is* the frame size, so a
     /// temporary cannot be allocated without giving it a type — which matters,
@@ -542,6 +598,47 @@ impl Compiler<'_> {
         }
     }
 
+    /// This body's file's declaration of `global`.
+    ///
+    /// # Why a missing [`Self::file_mir`] is refused rather than internal (ADR-0186 §2)
+    ///
+    /// `None` means this body was compiled by [`compile`] — a const-eval body, which by
+    /// construction can never legitimately name a global at all: a global's own initialiser, a
+    /// `#run`, and a thunked top-level constant all run with no globals laid out yet, because
+    /// nothing runs before `main`. So reaching a [`PlaceBase::Global`] here is not this compiler
+    /// disagreeing with itself — it is the one place ADR-0186 §2's refusal actually happens.
+    /// [`VmError::Unsupported`] says so in the wording a reader outside this crate sees: `jr-db`'s
+    /// `consts.rs` turns an `Err` from a failed `Wanted::GlobalInit` into exactly this — a
+    /// diagnostic at the global's own declaration, and the global's initial value degrading to
+    /// zero, the third of ADR-0186 §2's three `None` cases.
+    ///
+    /// # Why the file must be the body's own
+    ///
+    /// `GlobalRef::file` names where the variable is declared, but ADR-0186 §1 keeps every
+    /// reference this wave produces same-file — cross-file is deliberately not built. So this
+    /// checks that rather than trusting it, because [`Self::file_mir`] is the *body's* file: a
+    /// mismatched `file` would silently look the item up in the wrong file's item numbering,
+    /// which is a wrong-storage bug rather than a diagnosable one if it went unchecked — and
+    /// unlike the missing-`file_mir` case above, a real per-file compile naming the wrong file
+    /// *is* this compiler disagreeing with `jr-mir`, so it stays [`VmError::Internal`].
+    fn global_data(&self, global: GlobalRef) -> Result<GlobalData, VmError> {
+        let Some(file_mir) = self.file_mir else {
+            return Err(VmError::unsupported(
+                "a global variable's current value cannot be read here: nothing runs before \
+                 `main` to have set one, so a global's own initialiser and other compile-time-only \
+                 evaluation can never observe one (ADR-0186 §2)",
+            ));
+        };
+        if global.file != self.body.proc().file {
+            return Err(VmError::internal(
+                "a cross-file global reference, which this engine does not yet support",
+            ));
+        }
+        file_mir
+            .global(global.item)
+            .ok_or_else(|| VmError::internal(format!("no global for item {}", global.item.index())))
+    }
+
     /// Resolves a MIR place into a plan with every offset computed.
     fn plan(&mut self, place: &Place) -> Result<PlacePlan, VmError> {
         let (root, mut ty) = match &place.base {
@@ -549,6 +646,9 @@ impl Compiler<'_> {
             PlaceBase::Deref(operand) => {
                 let pointer_ty = self.operand_type(*operand);
                 (PlaceRoot::Address(*operand), self.pointee(pointer_ty)?)
+            }
+            PlaceBase::Global(global) => {
+                (PlaceRoot::Global(*global), self.global_data(*global)?.ty)
             }
         };
 
@@ -692,7 +792,7 @@ impl Compiler<'_> {
             base: root,
             steps,
             size: layout.size,
-            shape: self.shape(ty),
+            shape: shape_of(self.pool, ty),
         })
     }
 
@@ -727,66 +827,72 @@ impl Compiler<'_> {
             .map(|field| field.ty)
             .ok_or_else(|| VmError::internal(format!("no field {index}")))
     }
+}
 
-    /// What reading a value of `ty` produces.
-    ///
-    /// Matched exhaustively so that a new [`Item`] is a compile error here rather
-    /// than silently classified as an aggregate — which would read the wrong number
-    /// of bytes rather than failing.
-    fn shape(&self, ty: PoolId) -> Shape {
-        match self.pool.item(ty) {
-            Item::VoidType => Shape::Void,
-            // A float is a scalar: fixed, small, register-sized. Which *interpretation* its
-            // bits carry comes from the type, which every consumer already has.
-            // An enum is its backing integer at run time (ADR-0041 §3).
-            Item::BoolType
-            | Item::IntType { .. }
-            | Item::FloatType { .. }
-            | Item::EnumType { .. }
-            | Item::PointerType(_)
-            | Item::ProcType { .. } => Shape::Scalar,
-            // A view is two words, so it reads as an aggregate — the same classification
-            // `StringType` gets, and for the same reason (ADR-0044 §1).
-            Item::StringType
-            // A compiler-emitted table is held as the view it materialises to — two words, so an
-            // aggregate, exactly as a `string` constant is (ADR-0152 §1).
-            | Item::StaticArray { .. }
-            | Item::ArrayType { .. }
-            // **A vector reads as an aggregate**, which is the whole shape of ADR-0148 §4: the VM's
-            // `Value` is one scalar, so sixteen bytes live in memory and an elementwise operation is
-            // a loop over them. That is deliberately a *different number of operations* from the one
-            // instruction the native engines emit, and it is what the three-way differential is
-            // there to hold together.
-            | Item::VectorType { .. }
-            | Item::ViewType { .. }
-            | Item::DynamicArrayType { .. }
-            | Item::StructType { .. }
+/// What reading a value of `ty` produces.
+///
+/// A free function rather than a [`Compiler`] method, because [`crate::interp::Vm`] needs the
+/// same classification to lay out a global's initial value before any body exists to lower — the
+/// bytecode compiler and the interpreter must agree byte for byte about what is a register value
+/// and what lives in memory, and a second copy of this match is exactly the kind of drift that
+/// would let them disagree silently.
+///
+/// Matched exhaustively so that a new [`Item`] is a compile error here rather
+/// than silently classified as an aggregate — which would read the wrong number
+/// of bytes rather than failing.
+pub(crate) fn shape_of(pool: &Pool, ty: PoolId) -> Shape {
+    match pool.item(ty) {
+        Item::VoidType => Shape::Void,
+        // A float is a scalar: fixed, small, register-sized. Which *interpretation* its
+        // bits carry comes from the type, which every consumer already has.
+        // An enum is its backing integer at run time (ADR-0041 §3).
+        Item::BoolType
+        | Item::IntType { .. }
+        | Item::FloatType { .. }
+        | Item::EnumType { .. }
+        | Item::PointerType(_)
+        | Item::ProcType { .. } => Shape::Scalar,
+        // A view is two words, so it reads as an aggregate — the same classification
+        // `StringType` gets, and for the same reason (ADR-0044 §1).
+        Item::StringType
+        // A compiler-emitted table is held as the view it materialises to — two words, so an
+        // aggregate, exactly as a `string` constant is (ADR-0152 §1).
+        | Item::StaticArray { .. }
+        | Item::ArrayType { .. }
+        // **A vector reads as an aggregate**, which is the whole shape of ADR-0148 §4: the VM's
+        // `Value` is one scalar, so sixteen bytes live in memory and an elementwise operation is
+        // a loop over them. That is deliberately a *different number of operations* from the one
+        // instruction the native engines emit, and it is what the three-way differential is
+        // there to hold together.
+        | Item::VectorType { .. }
+        | Item::ViewType { .. }
+        | Item::DynamicArrayType { .. }
+        | Item::StructType { .. }
         | Item::UnionType { .. }
         | Item::VariantType { .. }
-            // A results aggregate is bytes laid out like a struct's (ADR-0052 §1), so it reads as
-            // one. Classifying it as a scalar would read one word where several live — a wrong
-            // number of bytes rather than a failure, which is what this match is exhaustive to
-            // prevent.
-            | Item::ResultsType { .. }
-            // A context is an aggregate: its fields live in memory and it is reached through a
-            // pointer (ADR-0057 §2).
-            | Item::ContextType
-            | Item::TypeType
-            | Item::ErrorType
-            | Item::ForeignLibraryType
-            | Item::VoidValue
-            | Item::BoolValue(_)
-            | Item::IntValue { .. }
-            | Item::FloatValue { .. }
-            | Item::StrValue(_)
-            | Item::TypeValue(_)
-            | Item::ProcValue { .. }
-            | Item::ForeignLibraryValue(_, _)
-            // A value reaching a *type* classifier is already a compiler fault, and this arm's
-            // conservative answer is the safe one: an aggregate is read by size, so a wrong
-            // classification here reads too few bytes rather than too many (ADR-0074 §1).
-            | Item::AggregateValue { .. } => Shape::Aggregate,
-        }
+        // A results aggregate is bytes laid out like a struct's (ADR-0052 §1), so it reads as
+        // one. Classifying it as a scalar would read one word where several live — a wrong
+        // number of bytes rather than a failure, which is what this match is exhaustive to
+        // prevent.
+        | Item::ResultsType { .. }
+        // A context is an aggregate: its fields live in memory and it is reached through a
+        // pointer (ADR-0057 §2).
+        | Item::ContextType
+        | Item::TypeType
+        | Item::ErrorType
+        | Item::ForeignLibraryType
+        | Item::VoidValue
+        | Item::BoolValue(_)
+        | Item::IntValue { .. }
+        | Item::FloatValue { .. }
+        | Item::StrValue(_)
+        | Item::TypeValue(_)
+        | Item::ProcValue { .. }
+        | Item::ForeignLibraryValue(_, _)
+        // A value reaching a *type* classifier is already a compiler fault, and this arm's
+        // conservative answer is the safe one: an aggregate is read by size, so a wrong
+        // classification here reads too few bytes rather than too many (ADR-0074 §1).
+        | Item::AggregateValue { .. } => Shape::Aggregate,
     }
 }
 

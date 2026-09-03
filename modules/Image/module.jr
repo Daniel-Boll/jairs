@@ -1,4 +1,4 @@
-//! The Image module: BMP files, surfaces and textures, on `Window`'s renderer.
+//! The Image module: BMP files, surfaces and GL textures for `Simp`.
 //!
 //! Written in Jairs. PLAN §8.5's image-decode item, and the last graphics-shaped one — the remaining §8.5 entry
 //! is audio, which is not.
@@ -23,42 +23,83 @@
 //!
 //! # Surface, then texture, and why both exist
 //!
-//! A **surface** is pixels in ordinary memory. A **texture** is pixels the renderer can draw from, which on an
-//! accelerated renderer means pixels on the GPU. Loading produces a surface; drawing needs a texture; so a
-//! caller does both and frees the surface. That is SDL's shape and this module does not hide it, because hiding
-//! it would mean either keeping every surface alive forever or deciding for the caller when to convert.
+//! A **surface** is pixels in ordinary memory. A **texture** is pixels the renderer can draw from, which is
+//! now always pixels on the GPU: `Simp` has one backend, OpenGL (ADR-0187 §2), and there is no other kind of
+//! texture to produce. Loading produces a surface; drawing needs a texture; so a caller does both and frees
+//! the surface. That is SDL's shape and this module does not hide it, because hiding it would mean either
+//! keeping every surface alive forever or deciding for the caller when to convert.
 //!
 //! `load_texture` does the whole sequence for the common case, and `load_bmp` plus `texture_from` are there for a
 //! caller who wants the pixels.
 //!
-//! # Reading a surface's size means overlaying `SDL_Surface`
+//! # A texture upload needs a live GL context
 //!
-//! `SDL_Surface` is a struct SDL allocates and hands back a pointer to, and its `w`, `h`, `pitch` and `pixels`
-//! are at fixed offsets. So `Surface_Data` is a `#place` overlay (ADR-0144), exactly as `Window.Event` is
-//! (ADR-0165 §1) — and for the same reason it is legal: a pointer to it crosses the `#foreign` boundary, and a
-//! pointer is just a pointer.
+//! `texture_from` and `load_texture` call straight into `modules/GL`, which is undefined without a context
+//! current on the calling thread (`GL`'s own docs say so). `Simp.set_render_target` is what creates one, so a
+//! caller must have called that at least once before either of these — exactly the order every graphics
+//! program already establishes before it draws anything.
 //!
-//! **The offsets are ABI, not contract**, and this module says so rather than implying otherwise. `w` at 16 and
-//! `h` at 20 are where SDL2 puts them on both supported targets, read from `offsetof` rather than guessed;
-//! `layout_is_sdl2` checks the struct's size so a platform that disagrees fails a test instead of reading
-//! rubbish. That is a weaker guarantee than `SDL_Event`'s offset 0, which SDL's own header documents — and the
-//! difference is worth stating, because a reader who saw both would otherwise assume they were equally solid.
+//! # Format conversion, and the byte-order trap in SDL's own naming
+//!
+//! `SDL_LoadBMP` gives back whatever format the file holds — a 24-bit BMP decodes to 24-bit BGR pixels, not
+//! RGBA — and `GL.upload_texture_rgba` wants 32-bit RGBA, tightly packed, **bytes in memory in the order
+//! R, G, B, A**: that is what `glTexImage2D(format = GL_RGBA, type = GL_UNSIGNED_BYTE)` reads. So
+//! `texture_from` reads the loaded surface's own `SDL_PixelFormat` and, when it does not already match
+//! `GL_UPLOAD_FORMAT`, hands the surface to `SDL_ConvertSurfaceFormat` before uploading anything. SDL owns
+//! the channel-order and bit-depth tables for every format it can decode; reshuffling bytes by hand here
+//! would be re-deriving what SDL already got right, for every format this module has never been tested
+//! against. **A failed conversion fails the load** — this module never uploads pixels it has not made a
+//! matching byte array first.
+//!
+//! **`SDL_PIXELFORMAT_RGBA8888` is not that byte array**, on this machine or on any little-endian target
+//! this library claims — and macOS, Linux and Windows on x86 and ARM64 are all little-endian, the same
+//! fact `modules/GL`'s own per-OS split never has to branch on because none of the three differs on it.
+//! SDL's *packed* format names describe a 32-bit integer's bit layout most-significant-byte first, and a
+//! little-endian host stores that integer's bytes in the opposite order, so `RGBA8888`'s bytes in memory
+//! are **A, B, G, R** — reversed. SDL's header states the fix directly: `SDL_PIXELFORMAT_RGBA32`, its own
+//! "a byte array of R, G, B, A on the current platform" alias, is defined as `SDL_PIXELFORMAT_ABGR8888` on
+//! a little-endian host and `SDL_PIXELFORMAT_RGBA8888` only on a big-endian one. `GL_UPLOAD_FORMAT` below
+//! is that alias's value, **measured** by compiling three lines of C against the installed
+//! `SDL_pixels.h` — `376840196`, `SDL_PIXELFORMAT_ABGR8888` — not the tempting-but-wrong literal
+//! `SDL_PIXELFORMAT_RGBA8888` (`373694468`), which would have every upload read each pixel's channels
+//! reversed: a pixel drawn solid red would upload as solid blue with the wrong alpha, silently. This
+//! library has no endianness axis — `os()` is the only per-host value (ADR-0180) — so the value is
+//! hardcoded for the little-endian hosts every target here is.
+//!
+//! # Pitch, and why `GL.set_unpack_alignment` is never called
+//!
+//! SDL pads a surface's rows for alignment, so a row's `pitch` is not always `width * 4` even for a 32-bit
+//! surface. `GL.set_unpack_alignment`'s own doc names the failure this causes — a *3*-byte-per-pixel row
+//! whose width is not a multiple of 4 — but this module never uploads 3 bytes per pixel: every upload here is
+//! RGBA, 4 bytes per pixel, and `width * 4` is always a multiple of GL's default 4-byte alignment. So the
+//! alignment is never wrong; what can still be wrong is the *source* row being longer than `width * 4`. When a
+//! converted surface's `pitch` disagrees with `width * 4`, `texture_from` **repacks** the rows into a
+//! tightly-packed scratch buffer from temporary storage before uploading, rather than either trusting the gap
+//! away or calling an alignment knob that cannot fix a source stride. Measured on this machine: a
+//! `create_surface`-built surface's `pitch` already equals `width * 4`, so the repack path exists for
+//! a converted surface this module has not seen, not for the one it built itself.
 //!
 //! # What is absent, and why
 //!
-//! **No pixel access.** `pixels` is exposed as a `*u8` and deliberately nothing reads it: doing so needs the
-//! surface's pixel *format*, which is a second pointer into a second SDL struct, and a caller who wants to poke
-//! pixels wants a whole format-conversion API rather than one accessor.
+//! **No public pixel access.** `pixels` is exposed as a `*u8` on `Surface_Data` and no exported procedure
+//! hands a caller its bytes — `texture_from` reads them internally only to repack a padded row, never to
+//! interpret a colour. A caller who wants to poke pixels wants a whole format-conversion API rather than one
+//! accessor.
 //!
-//! **No rotation or flipping.** `SDL_RenderCopyEx` takes an angle and a `SDL_Point` centre **by pointer**, so it
-//! would work — but a rotation API wants a decision about the pivot convention, and this module has no caller
-//! with an opinion yet.
+//! **No drawing.** This module used to draw through `Window`'s renderer directly; it no longer does, because
+//! `Simp` is the one module that draws (ADR-0182 §4). A caller draws a loaded texture with
+//! `Simp.set_shader_for_images` and `Simp.immediate_quad`/`immediate_quad_corners`, which is also the only way
+//! to draw a texture at four arbitrary corners — the old `draw_texture` copied to an axis-aligned rectangle and
+//! could not express that at all.
 //!
-//! **No sub-rectangle source.** `draw_texture` copies the whole texture. A sprite sheet needs a source rect, which is
-//! one more `*Rect` argument and no new mechanism, so it is a small addition rather than a design.
+//! **No sub-rectangle source.** Nothing here crops before uploading. A sprite sheet wants the whole texture
+//! uploaded once and then a UV sub-rectangle at draw time, which is `Simp.immediate_quad_corners`'s job, not
+//! this module's.
 
 Window :: #import "Window";
 Simp :: #import "Simp";
+GL :: #import "GL";
+#import "Basic";
 
 // Imported **aliased** (ADR-0179 §1). `Window.Rect` is a real spelling now — it was not when this module was
 // written, and this comment used to say so: *"an `#import` is flat and there is no `Window.Rect` syntax"*.
@@ -68,6 +109,21 @@ Simp :: #import "Simp";
 // `Basic` and this module got **four E0211 ambiguous-name errors** at once. A qualified import makes that
 // survivable; it does not make a short exported name a good idea, because a name this module exports is a
 // claim on every importer that spells it bare (ADR-0167 §7).
+//
+// `Basic` stays a **bare** import — `talloc` is the one thing this module needs from it, for the row-repack
+// scratch buffer, and a bare import is what every other private-`talloc` module here already does
+// (`modules/GL`, `modules/Window`).
+
+/// An `SDL_PixelFormat`, overlaid for the one field this module reads.
+///
+/// SDL's real struct is `{Uint32 format; SDL_Palette *palette; Uint8 BitsPerPixel; Uint8 BytesPerPixel;
+/// Uint8 padding[2]; Uint32 Rmask; Uint32 Gmask; Uint32 Bmask; Uint32 Amask; ...}` — more fields than this
+/// module reads. Only `format`, the `SDL_PixelFormatEnum` value at offset 0, is read: it is what decides
+/// whether `texture_from` must convert before uploading.
+Pixel_Format_Data :: struct {
+    /// The `SDL_PixelFormatEnum` value. Compare against `GL_UPLOAD_FORMAT`.
+    format: u32 #place 0;
+}
 
 /// An `SDL_Surface` — pixels in ordinary memory — as a `#place` overlay of the fields worth reading.
 ///
@@ -77,6 +133,10 @@ Simp :: #import "Simp";
 /// The offsets are SDL2's ABI rather than a documented contract — see the module docs, which is where that
 /// distinction is argued.
 Surface_Data :: struct {
+    /// The surface's pixel format — `SDL_PixelFormat *`. Offset 8: `flags` is a `Uint32` at offset 0, padded
+    /// to 8 for this pointer, exactly the gap `width` at 16 already implied existed and nothing before this
+    /// module named.
+    pixel_format: *Pixel_Format_Data #place 8;
     /// Width in pixels.
     width: s32 #place 16;
     /// Height in pixels.
@@ -86,7 +146,7 @@ Surface_Data :: struct {
     /// Exposed because a caller who ever does read pixels needs it, and because its absence is the single most
     /// common source of a skewed image.
     pitch: s32 #place 24;
-    /// The pixels. Nothing here reads them — see the module docs.
+    /// The pixels. Nothing exported here reads them — see the module docs.
     pixels: *u8 #place 32;
     /// The rest of the struct, so the overlay is the 96 bytes SDL allocated.
     ///
@@ -99,6 +159,10 @@ Surface_Data :: struct {
 // `Texture :: struct { handle: *u8; }`, and `Simp.Texture` carries `width` and `height` too — because
 // Simp's does, and because every caller sizing a quad needs them. Two texture types would mean a caller
 // converting between them at every boundary, so this module produces `Simp.Texture` and there is one.
+//
+// `Simp.Texture.handle` is a **GL texture name** (`u32`), not an SDL texture pointer — `Simp`'s only backend
+// is OpenGL now, so this module's job is to get decoded pixels into a `glTexImage2D` call, not an
+// `SDL_CreateTextureFromSurface` one.
 
 /// A loaded image's pixels, before it becomes a texture.
 Surface :: struct {
@@ -106,11 +170,14 @@ Surface :: struct {
     handle: *Surface_Data;
 }
 
-/// `SDL_PIXELFORMAT_RGBA8888`, the one format this module creates surfaces in.
+/// `SDL_PIXELFORMAT_RGBA32`'s value on a little-endian host (`SDL_PIXELFORMAT_ABGR8888`) — the format this
+/// module creates surfaces in and the one every upload to GL converts to first. See the module docs for why
+/// the literal `SDL_PIXELFORMAT_RGBA8888` is the wrong constant here.
 ///
 /// The value rather than the macro, since a `#foreign` declaration cannot name a macro and the header computes
-/// this from a bitfield. Checked against the C value rather than transcribed from the formula.
-FORMAT_RGBA8888 :: 373694468;
+/// this from a bitfield, and rather than `SDL_PIXELFORMAT_RGBA8888`'s formula for the reason above. Checked
+/// against the C value rather than transcribed from either formula.
+GL_UPLOAD_FORMAT :: 376840196;
 
 /// Whether `Surface_Data` is the 96 bytes SDL2 allocates.
 ///
@@ -152,15 +219,17 @@ load_bmp :: (path: *u8) -> (Surface, bool) #must {
 /// nothing binary lives in the repository. A caller building an image procedurally wants it too.
 create_surface :: (width: s64, height: s64) -> (Surface, bool) #must {
     s: Surface;
-    s.handle = sdl_create_surface(0, cast(s32, width), cast(s32, height), 32, cast(u32, FORMAT_RGBA8888));
+    s.handle = sdl_create_surface(0, cast(s32, width), cast(s32, height), 32, cast(u32, GL_UPLOAD_FORMAT));
     return s, s.handle != null;
 }
 
 /// Fills `area` of `surface` with a packed 32-bit colour.
 ///
-/// The colour is packed in the *surface's* format, which for a `create_surface` surface is RGBA8888 — so `0xFF0000FF`
-/// is opaque red. A caller mixing this with a surface loaded from a file must know that file's format, which is
-/// the honest reason this module has no `set_pixel`.
+/// `colour` is written to memory exactly as given — `SDL_FillRect` does not reinterpret it through the
+/// surface's format — so on this (little-endian) host `0xRRGGBBAA` lands as bytes `R, G, B, A` in that
+/// order, which is `GL_UPLOAD_FORMAT`'s own byte order: for a `create_surface` surface, `0xFF0000FF` is
+/// opaque red. A caller mixing this with a surface loaded from a file must know that file's format, which
+/// is the honest reason this module has no `set_pixel`.
 fill_surface :: (surface: *Surface, area: *Window.Rect, colour: s64) -> bool #must {
     if surface.handle == null {
         return false;
@@ -220,29 +289,86 @@ free_surface :: (surface: *Surface) {
     surface.handle = null;
 }
 
-/// Uploads `surface` to a texture the renderer can draw from.
+/// Uploads `surface` to a GL texture `Simp` can draw from.
 ///
-/// The surface stays valid and is the caller's to `free_surface`: SDL copies out of it, and freeing it here would make
-/// `load_bmp` plus `texture_from` unusable for a caller who wanted both.
-texture_from :: (simp: *Simp.Renderer, surface: *Surface) -> (Simp.Texture, bool) #must {
+/// The surface stays valid and is the caller's to `free_surface`: this reads out of it and never frees it,
+/// so `load_bmp` plus `texture_from` stays usable for a caller who wanted both.
+///
+/// Needs a GL context already current — see the module docs. Converts to `GL_UPLOAD_FORMAT` first when the
+/// surface is not already in it, and repacks a padded row into temporary storage when a converted surface's
+/// `pitch` still is not `width * 4` — see the module docs for why both exist and why `GL.set_unpack_alignment`
+/// does not.
+texture_from :: (surface: *Surface) -> (Simp.Texture, bool) #must {
     t: Simp.Texture;
-    t.handle = null;
+    t.handle = 0;
     t.width = 0;
     t.height = 0;
     if surface.handle == null {
         return t, false;
     }
-    // **The renderer is asked for, not reached into** (ADR-0182 §4). This used to read `renderer.handle`,
-    // so the module depended on another module's *struct layout* rather than on its procedures. It is a
-    // call now, which means `Simp.Renderer` can change shape without this file noticing.
-    t.handle = sdl_texture_from_surface(Simp.current_renderer(simp), surface.handle);
-    if t.handle == null {
+
+    // Step 1: make sure the pixels are RGBA8888. `converted` is this procedure's own temporary — never the
+    // caller's surface — and is freed before returning on every path once it exists.
+    working := surface.handle;
+    converted: *Surface_Data = null;
+    if working.pixel_format == null || working.pixel_format.format != cast(u32, GL_UPLOAD_FORMAT) {
+        converted = sdl_convert_surface_format(working, cast(u32, GL_UPLOAD_FORMAT), 0);
+        if converted == null {
+            return t, false;
+        }
+        working = converted;
+    }
+
+    width := cast(s64, working.width);
+    height := cast(s64, working.height);
+    pitch := cast(s64, working.pitch);
+    tight_pitch := width * 4;
+
+    // Step 2: get a tightly-packed RGBA buffer. Already tight is the common case — measured, see the module
+    // docs — so the repack only runs for a surface this module did not build itself.
+    pixels := working.pixels;
+    if pitch != tight_pitch {
+        scratch := talloc(tight_pitch * height);
+        if scratch == null {
+            if converted != null {
+                sdl_free_surface(converted);
+            }
+            return t, false;
+        }
+        source := view(working.pixels, pitch * height);
+        dest := view(scratch, tight_pitch * height);
+        row := 0;
+        while row < height {
+            column := 0;
+            while column < tight_pitch {
+                dest[row * tight_pitch + column] = source[row * pitch + column];
+                column = column + 1;
+            }
+            row = row + 1;
+        }
+        pixels = scratch;
+    }
+
+    // Step 3: upload. `GL.set_unpack_alignment` is not called — `pixels` is tightly-packed RGBA by this point
+    // on every path, and `width * 4` is always a multiple of GL's default 4-byte alignment, so the knob that
+    // exists for a 3-channel row has nothing to correct here.
+    handle := GL.create_texture();
+    if handle == 0 {
+        if converted != null {
+            sdl_free_surface(converted);
+        }
         return t, false;
     }
-    // Filled from the surface this came out of, which already has them — a `SDL_QueryTexture` round trip
-    // would ask SDL for a number we are holding.
-    t.width = cast(s64, surface.handle.width);
-    t.height = cast(s64, surface.handle.height);
+    GL.bind_texture_unit_0(handle);
+    GL.upload_texture_rgba(width, height, pixels);
+
+    if converted != null {
+        sdl_free_surface(converted);
+    }
+
+    t.handle = handle;
+    t.width = width;
+    t.height = height;
     return t, true;
 }
 
@@ -250,62 +376,31 @@ texture_from :: (simp: *Simp.Renderer, surface: *Surface) -> (Simp.Texture, bool
 ///
 /// The common case in one call. It frees the surface **on both paths**, including when the upload fails, which
 /// is the leak a caller writing this sequence by hand gets wrong — the failure path is the one nobody runs.
-load_texture :: (simp: *Simp.Renderer, path: *u8) -> (Simp.Texture, bool) #must {
+///
+/// Needs a GL context already current — see the module docs.
+load_texture :: (path: *u8) -> (Simp.Texture, bool) #must {
     t: Simp.Texture;
     s, ok := load_bmp(path);
     if !ok {
-        t.handle = null;
+        t.handle = 0;
         t.width = 0;
         t.height = 0;
         return t, false;
     }
-    t, uploaded := texture_from(simp, *s);
+    t, uploaded := texture_from(*s);
     free_surface(*s);
     return t, uploaded;
 }
 
 /// Destroys `texture` and marks it destroyed. Safe on an already-destroyed one.
+///
+/// Deletes the **GL** texture (`GL.delete_texture`, which is itself safe on the zero handle a destroyed or
+/// never-loaded texture carries) — there is no SDL texture any more to destroy instead.
 destroy_texture :: (texture: *Simp.Texture) {
-    if texture.handle != null {
-        sdl_destroy_texture(texture.handle);
-    }
-    texture.handle = null;
+    GL.delete_texture(texture.handle);
+    texture.handle = 0;
     texture.width = 0;
     texture.height = 0;
-}
-
-/// The texture's size, and whether it could be asked.
-///
-/// Two out-parameters rather than a returned struct, because a struct returned *from* a Jairs procedure is
-/// ordinary but the two `s32`s SDL writes are not a Jairs type — the pointers go straight to SDL and nothing is
-/// copied.
-///
-/// `#must`: a destroyed texture reports an error rather than trapping, and a caller who ignores it draws with a
-/// zero size, which is invisible.
-size_of_texture :: (texture: *Simp.Texture, width: *s32, height: *s32) -> bool #must {
-    if texture.handle == null {
-        return false;
-    }
-    format: u32;
-    access: s32;
-    return sdl_query_texture(texture.handle, *format, *access, width, height) == 0;
-}
-
-/// Draws the whole of `texture` into `area`.
-///
-/// Scales to fit `area`, which is SDL's behaviour and the useful default: a caller who wants one-to-one passes
-/// the texture's own size, which `size_of_texture` gives them.
-///
-/// **Rejected: a null `destination` meaning "fill the window"**, which SDL supports. It reads well and it makes
-/// the one argument that matters optional, so a caller who forgot it gets a full-window stretch instead of a
-/// diagnostic.
-draw_texture :: (simp: *Simp.Renderer, texture: *Simp.Texture, area: *Window.Rect) -> bool #must {
-    if texture.handle == null {
-        return false;
-    }
-    // A null source rect is "the whole texture", which is what this routine means by its name — the asymmetry
-    // with `destination` above is deliberate: the source has an obvious whole, the destination has none.
-    return sdl_render_copy(Simp.current_renderer(simp), texture.handle, null, area) == 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -340,14 +435,9 @@ sdl_free_surface :: (surface: *Surface_Data) #foreign sdl "SDL_FreeSurface";
 /// `SDL_FillRect(SDL_Surface *, const SDL_Rect *, Uint32 color)`.
 sdl_fill_surface :: (surface: *Surface_Data, area: *Window.Rect, colour: u32) -> s32 #foreign sdl "SDL_FillRect";
 
-/// `SDL_CreateTextureFromSurface(SDL_Renderer *, SDL_Surface *)`.
-sdl_texture_from_surface :: (renderer: *u8, surface: *Surface_Data) -> *u8 #foreign sdl "SDL_CreateTextureFromSurface";
-
-/// `SDL_DestroyTexture`.
-sdl_destroy_texture :: (texture: *u8) #foreign sdl "SDL_DestroyTexture";
-
-/// `SDL_QueryTexture(SDL_Texture *, Uint32 *format, int *access, int *w, int *h)`.
-sdl_query_texture :: (texture: *u8, format: *u32, access: *s32, width: *s32, height: *s32) -> s32 #foreign sdl "SDL_QueryTexture";
-
-/// `SDL_RenderCopy(SDL_Renderer *, SDL_Texture *, const SDL_Rect *src, const SDL_Rect *dst)`.
-sdl_render_copy :: (renderer: *u8, texture: *u8, source: *Window.Rect, destination: *Window.Rect) -> s32 #foreign sdl "SDL_RenderCopy";
+/// `SDL_ConvertSurfaceFormat(SDL_Surface *src, Uint32 pixel_format, Uint32 flags)`.
+///
+/// `flags` is unused by SDL today and must be `0` — the header says so. Returns a **new** surface the caller
+/// (here, `texture_from`) owns and must free; the source surface is untouched, which is what lets `texture_from`
+/// free only the surface it created and never the caller's.
+sdl_convert_surface_format :: (surface: *Surface_Data, format: u32, flags: u32) -> *Surface_Data #foreign sdl "SDL_ConvertSurfaceFormat";

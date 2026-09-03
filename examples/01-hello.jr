@@ -1,0 +1,9 @@
+// Hello, Jairs.
+//
+// Verified: `cargo run -q -p jr-cli -- run examples/01-hello.jr -I modules` prints
+// "Hello, Jairs!" and exits 0.
+#import "Basic";
+
+main :: () {
+    print_line("Hello, Jairs!");
+}

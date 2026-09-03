@@ -510,7 +510,12 @@ fn substitute_value(body: &mut MirBody, value: ValueId, with: Operand) {
 
 fn substitute_place(place: &mut Place, subst: &impl Fn(&mut Operand)) {
     match &mut place.base {
-        PlaceBase::Slot(_) => {}
+        // Neither root holds an operand to substitute into: a slot is an index and a global is a
+        // symbol the linker resolves (ADR-0186 §3). Nothing about folding is decided here — `fold`
+        // answers `None` for *every* `Rvalue::Load`, so a load from a global is already safe in this
+        // pass for the reason an atomic load is. The pass that has to think about globals is
+        // `forward`, which moves a stored value to a later load.
+        PlaceBase::Slot(_) | PlaceBase::Global(_) => {}
         PlaceBase::Deref(operand) => subst(operand),
     }
     // Projections held no operands before `Projection::Index`, so this loop did not

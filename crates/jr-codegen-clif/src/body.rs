@@ -46,8 +46,8 @@ use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataDescription, DataId, Linkage, Module};
 use jr_codegen::{CodegenError, SourceInfo};
 use jr_mir::{
-    BinOp, BlockId, Callee, MirBody, MirSpan, NumKind, Operand, Place, PlaceBase, ProcRef,
-    Projection, Rvalue, Statement, Target, Terminator, UnOp, Unreachable, ValueId,
+    BinOp, BlockId, Callee, GlobalRef, MirBody, MirSpan, NumKind, Operand, Place, PlaceBase,
+    ProcRef, Projection, Rvalue, Statement, Target, Terminator, UnOp, Unreachable, ValueId,
 };
 use jr_pool::{
     Item, Pool, PoolId, TargetLayout, field_offset, layout_of, string_count, string_data,
@@ -99,6 +99,14 @@ pub struct Context<'a> {
     /// foreign call would be passed as the pointer a Jairs-to-Jairs call wants — which compiles, and puts an
     /// address where C expects a struct.
     pub foreign: &'a FxHashMap<ProcRef, bool>,
+    /// The data object and type of every file-scope global this program declared (ADR-0186 §4),
+    /// keyed by its `GlobalRef`.
+    ///
+    /// A tuple rather than a bare `DataId`, because `PlaceBase::Global` carries only the
+    /// `GlobalRef` — where `PlaceBase::Slot` can ask the body for `body.slot(*slot).ty`, a global
+    /// has no body-local record of its own type, so the type has to travel with the data object or
+    /// be unrecoverable at the two `Place` sites that need it.
+    pub globals: &'a FxHashMap<GlobalRef, (DataId, PoolId)>,
 }
 
 /// Translates one body into the function `builder` is building.
@@ -1663,6 +1671,20 @@ impl Translator<'_, '_> {
                 let pointee = self.pointee(self.operand_type(*operand))?;
                 (value, pointee)
             }
+            // A global is a memory root exactly like a slot, so it produces `(address, ty)` the
+            // same way — the only difference is *where* the address comes from: `symbol_value`
+            // over a data object the declare phase already created (ADR-0186 §4), rather than
+            // `stack_addr` over a slot this body owns. Every projection below runs unchanged.
+            PlaceBase::Global(global) => {
+                let (data, ty) = *self.ctx.globals.get(global).ok_or_else(|| {
+                    CodegenError::Internal(format!(
+                        "no data object for global g{}",
+                        global.item.index()
+                    ))
+                })?;
+                let handle = self.module.declare_data_in_func(data, self.builder.func);
+                (self.builder.ins().symbol_value(pointer, handle), ty)
+            }
         };
 
         for step in &place.projection {
@@ -1796,6 +1818,17 @@ impl Translator<'_, '_> {
         let mut ty = match &place.base {
             PlaceBase::Slot(slot) => self.body.slot(*slot).ty,
             PlaceBase::Deref(operand) => self.pointee(self.operand_type(*operand))?,
+            PlaceBase::Global(global) => self
+                .ctx
+                .globals
+                .get(global)
+                .map(|(_, ty)| *ty)
+                .ok_or_else(|| {
+                    CodegenError::Internal(format!(
+                        "no data object for global g{}",
+                        global.item.index()
+                    ))
+                })?,
         };
         for step in &place.projection {
             ty = match step {

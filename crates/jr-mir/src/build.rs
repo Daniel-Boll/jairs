@@ -173,6 +173,42 @@ pub fn lower_file(
         );
         out.push(proc, lowered);
     }
+
+    // **Every file-scope mutable variable becomes a global** (ADR-0186 §2), collected after the
+    // bodies rather than before them for one reason: nothing here depends on the bodies, so the
+    // order is free, and putting the loop last keeps the body loop's shape unchanged for a reader
+    // who came here about a body.
+    //
+    // The **type** comes from the signature phase, which already resolved the annotation or inferred
+    // it from the initialiser (`SigKind::Var`). Re-deriving it here would be a second answer to a
+    // question sema settled, which is what ADR-0009's confinement rule exists to stop.
+    //
+    // The **initial value** comes from const-eval. `None` covers three cases that are one case in
+    // the object file: no initialiser, `= ---`, and an initialiser const-eval refused. All three are
+    // zeroed, because a `.bss` global is zeroed by the loader and inventing undefined bytes for the
+    // third would make the native path differ from the VM about a program that is already refused.
+    for index in 0..hir.items.len() {
+        let item = jr_hir::ItemId::from_usize(index);
+        let jr_hir::ItemKind::Var { .. } = &hir.items[index].kind else {
+            continue;
+        };
+        let Some(name) = hir.items[index].name else {
+            continue;
+        };
+        let Some(entry) = signatures.lookup(name) else {
+            continue;
+        };
+        if entry.item != item || !matches!(entry.kind, jr_sema::SigKind::Var) {
+            continue;
+        }
+        out.push_global(
+            item,
+            crate::mir::GlobalData {
+                ty: entry.ty,
+                init: consts.global_init(item),
+            },
+        );
+    }
     out
 }
 
@@ -246,6 +282,7 @@ pub fn lower_body(
         file,
         resolve,
         types,
+        signatures,
         consts,
         imports,
         imported_values,
@@ -784,8 +821,22 @@ fn scan_name(
                 // ADR-0047 §1). Refusing here would refuse every body that names an enum
                 // member, which is exactly what it did until this arm existed.
                 None
+            } else if item_data
+                .name
+                .and_then(|name| signatures.lookup(name))
+                .is_some_and(|entry| {
+                    entry.item == item && matches!(entry.kind, jr_sema::SigKind::Var)
+                })
+            {
+                // **A file-scope mutable variable now lowers** (ADR-0186 §2). This arm is why the
+                // refusal below existed at all: a `var` at file scope had no value *and* no storage,
+                // so a body that read one had nothing to read. It has storage now — a `PlaceBase::Global`
+                // — and `place()` builds it.
+                //
+                // `signatures` was `let _ = signatures;` here for the whole life of that refusal,
+                // parked against the day this arm was written. This is the day.
+                None
             } else {
-                let _ = signatures;
                 Some("a file-level item has no value until jr-vm")
             }
         }
@@ -848,6 +899,13 @@ struct Lower<'a> {
     file: FileId,
     resolve: &'a ResolveMap,
     types: &'a TypeMap,
+    /// This file's signatures, held for one question: is a file-level name a **global**?
+    ///
+    /// A global's type is sema's answer (`SigKind::Var`), and asking the HIR instead would be a
+    /// second answer to a settled question (ADR-0186 §2). Every other consumer of a signature in
+    /// this crate is a free function that receives one as an argument; this is the first that needs
+    /// it deep inside expression lowering, where threading it through every call would be worse.
+    signatures: &'a FileSignatures,
     consts: &'a ConstValues,
     imports: &'a ImportedProcs,
     /// Values of imported constants (ADR-0055 §1).
@@ -2738,6 +2796,31 @@ impl Lower<'_> {
             };
             return self.define(field_ty, Rvalue::Load(place), span);
         }
+        // **A global is the second arm that needs the place machinery** (ADR-0186 §2), and it is
+        // here for a reason worth reading: without it, reading a global produced `Rvalue::Undef`.
+        //
+        // The `Res::Item` arm below asks `consts.item`, then `proc_value_of`, then falls to `undef` —
+        // and a global answers `None` to both **by design**, because ADR-0186 §2 keeps a global's
+        // initial value out of the constants map precisely so that nothing mistakes one for a
+        // constant. So the safeguard against one bug walked straight into another: the *write* path
+        // built a real `PlaceBase::Global` through `place()`, while the *read* path emitted a
+        // legitimate-looking undefined value. `store g0 <- v1` beside `v2: s64 = undef`.
+        //
+        // That is this project's first named failure mode — a construct the grammar allows, no
+        // representation on one lowering path, filled in with a value that is legal — and neither the
+        // verifier nor ADR-0017 §4's poison gate can catch it. **Found by a sibling agent dumping the
+        // MIR for a three-line program**, not by any test: the corpus had no global to read yet.
+        //
+        // Checked before the match rather than inside the `Res::Item` arm, so that it cannot be
+        // reached *after* a `consts.item` hit. A name is a global or a constant, never both, and the
+        // order says which question is asked first.
+        if let Res::Item(item) = &res
+            && let Expr::Name { name, .. } = self.body.expr(id)
+            && let Some(global_ty) = self.global_of(*name, *item)
+        {
+            let place = Place::global(crate::mir::GlobalRef::new(self.file, *item));
+            return self.define(global_ty, Rvalue::Load(place), span);
+        }
         match res {
             Res::Local(local) => {
                 if self.promotable.is_promotable(local) {
@@ -3840,6 +3923,16 @@ impl Lower<'_> {
         Some(self.pool.proc_value(ty, decl))
     }
 
+    /// The type of the file-scope mutable variable `name` names, if that is what it is (ADR-0186 §2).
+    ///
+    /// Answers `None` for a constant, a procedure, a type — anything a program cannot assign to. The
+    /// `item` argument is checked against the signature's own, so a *shadowed* name cannot resolve to
+    /// a global of the same spelling declared elsewhere.
+    fn global_of(&self, name: jr_base::Symbol, item: jr_hir::ItemId) -> Option<PoolId> {
+        let entry = self.signatures.lookup(name)?;
+        (entry.item == item && matches!(entry.kind, jr_sema::SigKind::Var)).then_some(entry.ty)
+    }
+
     fn proc_value_of(&mut self, item: jr_hir::ItemId, ty: PoolId) -> Option<PoolId> {
         let ItemKind::Const {
             value: ConstValue::Proc(proc),
@@ -3896,7 +3989,7 @@ impl Lower<'_> {
             // `p.x` does (ADR-0057 §2), so the field is assignable and `context` itself is not.
             Expr::Context(_) => None,
             Expr::Name {
-                name: _,
+                name,
                 module: _,
                 span: _,
                 res,
@@ -3936,6 +4029,22 @@ impl Lower<'_> {
                     // A **scalar** constant still has none, and must not: it is an operand, and giving it
                     // a slot would put every `LIMIT :: 4096;` in memory for nothing.
                     Res::Item(item) => {
+                        // **A file-scope mutable variable is a global, and it is checked first**
+                        // (ADR-0186 §2). Before the constant path below, because a global has no
+                        // constant value at all: `consts.item` answers `None` for one, so falling
+                        // through would return `None` and refuse the body — which is exactly the
+                        // "a file-level item has no value until jr-vm" refusal this construct
+                        // replaces.
+                        //
+                        // Keyed on the **signature**, not on the HIR item kind alone: sema is what
+                        // decided this name is assignable storage of that type (`SigKind::Var`), and
+                        // asking the HIR a second time would be a second answer to one question.
+                        if let Some(global) = self.global_of(name, item) {
+                            return Some((
+                                Place::global(crate::mir::GlobalRef::new(self.file, item)),
+                                global,
+                            ));
+                        }
                         let value = self.consts.item(item)?;
                         if !matches!(
                             self.pool.item(value),
@@ -4314,9 +4423,21 @@ impl Lower<'_> {
                 // gives the projection an address, exactly as `Res::Item` does for an aggregate
                 // *constant*. Only aggregates: a scalar with no place is a real refusal (there is
                 // nothing to project), and this must not paper over it.
+                //
+                // **`StringType` belongs here, and its absence was a real gap** (ADR-0185 §1). A `string`
+                // is a two-word `{data, count}` aggregate (ADR-0004) that both back ends already
+                // materialise into a stack slot to build a literal — so the address this arm needs was
+                // always available, and only this guard withheld it. Without it `"literal".data` refused
+                // the whole body while `s := "literal"; s.data` worked, which is a one-line surprise with
+                // no rule behind it: a literal and a local holding one are the same two words. Found by
+                // hitting it in the first SDL call of the GL-context probe, where `title.data` is the
+                // idiomatic way to pass a C string.
                 None if matches!(
                     self.pool.item(receiver_ty),
-                    Item::StructType { .. } | Item::UnionType { .. } | Item::VariantType { .. }
+                    Item::StructType { .. }
+                        | Item::UnionType { .. }
+                        | Item::VariantType { .. }
+                        | Item::StringType
                 ) =>
                 {
                     let operand = self.expr(receiver);

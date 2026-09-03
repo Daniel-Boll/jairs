@@ -218,7 +218,10 @@ fn note_operand(operand: &Operand, used: &mut FxHashSet<ValueId>) {
 
 fn note_place(place: &Place, used: &mut FxHashSet<ValueId>) {
     match &place.base {
-        PlaceBase::Slot(_) => {}
+        // A global's base names no `ValueId` — it is a symbol, not a value (ADR-0186 §3) — so it
+        // keeps nothing alive on its own. What a *store* to one keeps alive is decided in
+        // `live_statement`, not here.
+        PlaceBase::Slot(_) | PlaceBase::Global(_) => {}
         PlaceBase::Deref(operand) => note_operand(operand, used),
     }
     // Projections used to hold no operands, so this walk did not exist.
@@ -421,7 +424,10 @@ fn note_place_slots(place: &Place, used: &mut FxHashSet<SlotId>) {
         PlaceBase::Slot(slot) => {
             used.insert(*slot);
         }
-        PlaceBase::Deref(_) => {}
+        // A global is not a slot, so it cannot make one live. It is also never *dropped* by this
+        // pass: slot liveness decides which stack slots survive, and a global's storage is the
+        // program's rather than this body's (ADR-0186 §3).
+        PlaceBase::Deref(_) | PlaceBase::Global(_) => {}
     }
 }
 

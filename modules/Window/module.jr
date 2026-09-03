@@ -51,6 +51,11 @@
 //!
 //! **No texture or image loading.** `modules/Image` owns that.
 
+// `talloc` for the NUL-terminated title copy (ADR-0187 §2). This module deliberately imported nothing
+// before: it was pure `#foreign` declarations over SDL2. Taking a `string` rather than a `*u8` in
+// `create_window` — which is what Jai does — is what makes temporary storage necessary here.
+#import "Basic";
+
 /// `SDL_INIT_VIDEO`, the only subsystem this module needs.
 ///
 /// 0x20. The flags are a bitmask and stable across SDL2's lifetime, unlike the `O_*` constants `File` had to
@@ -74,6 +79,12 @@ HIDDEN :: 8;
 
 /// `SDL_WINDOW_RESIZABLE`.
 RESIZABLE :: 32;
+
+/// `SDL_WINDOW_OPENGL` — the window can carry a GL context (ADR-0187 §2).
+///
+/// Always set by `create_window`, and it must be set at *creation*: `SDL_GL_CreateContext` on a window
+/// made without it fails, and fails with a message about the context rather than about the window.
+OPENGL :: 2;
 
 /// `SDL_RENDERER_ACCELERATED` — prefer a GPU-backed renderer.
 ACCELERATED :: 2;
@@ -135,29 +146,66 @@ stop :: () {
     sdl_quit();
 }
 
-/// Opens a window `width` by `height`, centred, with `flags`.
+/// Opens a window `width` by `height`, titled `window_name` (ADR-0187 §2).
 ///
-/// **Jai's `create_window`**, and the name is a correction rather than a rename: this was `open`, which
-/// collided with `File.open` — so a program that both drew and read a file could not name either
-/// (`error[E0211]: ambiguous name `open``). ADR-0179 makes a qualified import the general answer; the name
-/// changes anyway, because `create_window` says what it does and because an exported name is a claim on
-/// every importer that spells it bare.
+/// **The argument order is Jai's**, and it is `width, height, title` rather than the `title, width,
+/// height` this module used to take. That is not a cosmetic change: a Jai programmer writing
+/// `create_window(800, 600, "demo")` against the old signature got a type error at best, and the
+/// order comes from a *declaration* in Jai's own `Window_Creation/osx.jai:85`, cross-checked against
+/// the Linux and Windows files, rather than from a call site.
 ///
-/// `title` must be NUL-terminated, which is why it is a `*u8` and not a `string`: SDL reads to a NUL and a
-/// Jairs `string` carries a count instead. `File.nul_terminated`'s trick — a scratch copy from temporary
-/// storage — is the way to pass a computed title, and it is deliberately not done here: a window title
-/// usually outlives the call, and temporary storage does not.
+/// `window_name` is a `string` and not a `*u8`, also matching Jai. SDL needs a NUL terminator and a
+/// Jairs `string` carries a count instead, so the title is copied into temporary storage here — which
+/// is exactly what Jai's own version does with `temp_c_string`.
 ///
-/// `#must`, and the flag is the honest answer rather than a null check: SDL fails to create a window for
-/// reasons a caller can act on — no display, an unsupported flag combination — and a null handle read as
-/// "not yet" instead of "never" is how a draw loop spins forever.
-create_window :: (title: *u8, width: s64, height: s64, flags: s64) -> (Window, bool) #must {
+/// `window_x` and `window_y` default to `0`, which this module reads as **centred** rather than as the
+/// top-left corner. Jai's macOS and Linux versions default both to `0` and its Windows version to
+/// `-1`; neither documents a centring rule, so this maps `0` to SDL's `CENTERED` because a window at
+/// the very corner of the screen is nobody's intent and a caller who wants it can pass `1`.
+///
+/// # Why it returns no success flag
+///
+/// Jai's returns a bare `Window_Type` and a caller checks it. This used to return `(Window, bool)`
+/// with `#must`, which is a better shape in the abstract — and it is dropped anyway, because a
+/// library whose whole purpose is to match another library's API does not get to improve one call in
+/// isolation. A null `handle` is the failure, `is_open` asks the question, and every routine here is
+/// already safe on a closed window.
+create_window :: (width: s64, height: s64, window_name: string, window_x: s64 = 0, window_y: s64 = 0) -> Window {
     w: Window;
+    // SDL wants a NUL-terminated title and a Jairs `string` carries a count instead, so the title is
+    // copied into temporary storage. The pointer is valid until the next `reset_temporary_storage`,
+    // which outlives the call SDL makes with it — SDL copies the title itself.
+    c_title, ok := nul_terminated(window_name);
+    if !ok {
+        return w;
+    }
+    x := window_position(window_x);
+    y := window_position(window_y);
     // Every constant is cast at the boundary, which is the discipline the private section's own
     // comment argues for: a Jairs constant is `s64` and there is no syntax to annotate one narrower
     // (probed — `CENTERED : s32 : 805240832` does not parse), so the narrowing is explicit here.
-    w.handle = sdl_create_window(title, cast(s32, CENTERED), cast(s32, CENTERED), cast(s32, width), cast(s32, height), cast(u32, flags));
-    return w, w.handle != null;
+    //
+    // **GL is asked for first and then fallen back on, and the fallback is not a convenience**
+    // (ADR-0187 §2). SDL decides GL capability at *creation* time, so a window made without
+    // `SDL_WINDOW_OPENGL` cannot get a context later — which is why the flag is not optional.
+    //
+    // But `SDL_VIDEODRIVER=dummy` **has no GL at all**: `SDL_CreateWindow` with the flag fails
+    // outright, reporting *"OpenGL support is either not configured in SDL or not available in
+    // current SDL video driver (dummy) or platform"*. Measured with a C program against the installed
+    // SDL2, and confirmed independently twice. Without the fallback, every headless program that
+    // merely opens a window to **read events** would fail at creation, even though it never draws —
+    // and this library's event tests are exactly that.
+    //
+    // So: ask for GL, and on failure open a plain window. A program that only reads events then works
+    // headless, and a program that draws finds out from `Simp.is_ready()` rather than from a null
+    // window — which puts the failure where the requirement is. The rejected alternative was a flags
+    // argument, which is what this module used to have: it makes every caller decide a question only
+    // the renderer knows the answer to, and Jai's `create_window` has no such flag.
+    w.handle = sdl_create_window(c_title, cast(s32, x), cast(s32, y), cast(s32, width), cast(s32, height), cast(u32, OPENGL | SHOWN));
+    if w.handle == null {
+        w.handle = sdl_create_window(c_title, cast(s32, x), cast(s32, y), cast(s32, width), cast(s32, height), cast(u32, SHOWN));
+    }
+    return w;
 }
 
 /// Closes `window` and marks it closed.
@@ -190,6 +238,15 @@ get_window_size :: (window: *Window) -> (s64, s64) {
     h: s32;
     sdl_get_window_size(window.handle, *w, *h);
     return cast(s64, w), cast(s64, h);
+}
+
+/// Whether `window` is open.
+///
+/// The question `create_window`'s missing success flag turns into a predicate (ADR-0187 §2). A closed
+/// window is a null handle, and every routine here is already safe on one, so this exists for the
+/// caller who wants to *branch* rather than to be safe.
+is_open :: (window: *Window) -> bool {
+    return window.handle != null;
 }
 
 /// Sleeps for `milliseconds`.
@@ -242,6 +299,38 @@ video_driver_count :: () -> s64 {
 ///
 /// Named `"SDL2"`, which becomes `-lSDL2` — the same name on macOS, Linux and Windows, which is the whole
 /// reason this library and not OpenGL. Where it lives is the operator's business; see the module docs.
+/// Maps a caller's `0` to SDL's `CENTERED`, and anything else through unchanged (ADR-0187 §2).
+///
+/// Jai's `create_window` defaults `window_x`/`window_y` to `0` on macOS and Linux and to `-1` on
+/// Windows, and documents no centring rule for either. A window at the very corner of the screen is
+/// nobody's intent, so `0` centres and a caller who genuinely wants the corner passes `1`.
+window_position :: (requested: s64) -> s64 {
+    if requested == 0 {
+        return CENTERED;
+    }
+    return requested;
+}
+
+/// Copies `text` into NUL-terminated scratch from temporary storage.
+///
+/// The same routine `File` keeps module-private for the same reason (ADR-0157 §1): the pointer is valid
+/// only until the next `reset_temporary_storage`, and that contract belongs inside the module rather
+/// than in its surface. SDL copies a window title, so the lifetime is long enough.
+nul_terminated :: (text: string) -> (*u8, bool) {
+    scratch := talloc(text.count + 1);
+    if scratch == null {
+        return null, false;
+    }
+    bytes := view(scratch, text.count + 1);
+    i := 0;
+    while i < text.count {
+        bytes[i] = cast(u8, (text.data + i).*);
+        i = i + 1;
+    }
+    bytes[text.count] = cast(u8, 0);
+    return scratch, true;
+}
+
 sdl :: #system_library "SDL2";
 
 /// `SDL_Init(Uint32 flags)`.

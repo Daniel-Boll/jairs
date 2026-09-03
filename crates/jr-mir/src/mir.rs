@@ -53,7 +53,7 @@
 use std::sync::{Arc, OnceLock};
 
 use jr_base::FileId;
-use jr_hir::{BodyId, ExprId, ExprScope, LocalId, ProcId, StmtId};
+use jr_hir::{BodyId, ExprId, ExprScope, ItemId, LocalId, ProcId, StmtId};
 use jr_pool::{IntCmp, IntOp, PoolId};
 
 // ---------------------------------------------------------------------------
@@ -87,6 +87,42 @@ impl ProcRef {
     #[must_use]
     pub const fn new(file: FileId, proc: ProcId) -> Self {
         Self { file, proc }
+    }
+}
+
+/// A file-scope mutable variable, named across file boundaries (ADR-0186 §1).
+///
+/// Deliberately the same shape as [`ProcRef`], and for the same reason: a bare `ItemId` indexes
+/// *one* file's `FileHir::items`, so it cannot name a variable an imported module declares. A
+/// module's exported global is the case that matters — `modules/Simp` keeps its renderer state in
+/// one, and every importer reads it through this.
+///
+/// # Why a global is not a slot
+///
+/// A [`SlotId`] belongs to a [`MirBody`] and dies with the call. A global outlives every body and
+/// is shared by all of them, so it cannot be a slot without inventing a body that owns it. Naming
+/// it here, at program scope, is what lets two procedures in different files read the same storage
+/// — which is the entire point of the construct.
+///
+/// # Why not a pointer constant
+///
+/// A global's address is not known when MIR is built: it is assigned by the linker. Modelling the
+/// access as a dereference of an interned pointer would need that address, so the base is named
+/// symbolically and each back end resolves it — `symbol_value` for Cranelift, a
+/// `GlobalValue` for LLVM, and an offset into one region for the VM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GlobalRef {
+    /// The file the variable is declared in.
+    pub file: FileId,
+    /// Its index within that file's items.
+    pub item: ItemId,
+}
+
+impl GlobalRef {
+    /// Names a file-scope variable.
+    #[must_use]
+    pub const fn new(file: FileId, item: ItemId) -> Self {
+        Self { file, item }
     }
 }
 
@@ -416,6 +452,15 @@ pub enum PlaceBase {
     Slot(SlotId),
     /// The address held in an operand — the base of a postfix `.*` (ADR-0011).
     Deref(Operand),
+    /// A file-scope mutable variable, shared by every body (ADR-0186 §1).
+    ///
+    /// A third root rather than a `Deref` of a pointer constant, because the address is the
+    /// linker's to choose and MIR is built long before it exists. Adding a variant makes every
+    /// exhaustive match over `PlaceBase` a compile error, which is exactly what was wanted here:
+    /// nine passes and three engines each had to decide what a global means to them, and a `_` arm
+    /// would have let the optimiser treat one as a stack slot — forwarding a store across a call
+    /// that another procedure can observe.
+    Global(GlobalRef),
 }
 
 /// One step of a memory reference, applied left to right.
@@ -550,6 +595,15 @@ impl Place {
     pub const fn deref(pointer: Operand) -> Self {
         Self {
             base: PlaceBase::Deref(pointer),
+            projection: Vec::new(),
+        }
+    }
+
+    /// A place naming a whole file-scope variable (ADR-0186 §1).
+    #[must_use]
+    pub const fn global(global: GlobalRef) -> Self {
+        Self {
+            base: PlaceBase::Global(global),
             projection: Vec::new(),
         }
     }
@@ -1605,6 +1659,10 @@ fn remap_place_slots(place: &mut Place, remap: &[Option<SlotId>]) {
             *slot = remap[slot.index()].expect("a live place named a dropped slot");
         }
         PlaceBase::Deref(operand) => remap_operand_slots(operand, remap),
+        // Slot renumbering does not reach a global: its identity is a `(FileId, ItemId)` pair that
+        // no slot table indexes (ADR-0186 §1). Remapping it through `remap` would panic on an index
+        // that means something else entirely.
+        PlaceBase::Global(_) => {}
     }
     // `Projection::Index` carries an operand, and an operand can name a slot address.
     for projection in &mut place.projection {
@@ -1667,14 +1725,36 @@ fn remap_rvalue_slots(rvalue: &mut Rvalue, remap: &[Option<SlotId>]) {
 // A file's worth of bodies
 // ---------------------------------------------------------------------------
 
-/// Every procedure body in one file, lowered or refused.
+/// Every procedure body in one file, lowered or refused, plus the file's own globals.
 ///
 /// A `Vec` in [`ProcId`] order rather than a map, so that iteration — and
 /// therefore a snapshot of a MIR dump — is deterministic by construction rather
-/// than by remembering to sort.
+/// than by remembering to sort. The globals list follows the same rule in
+/// [`ItemId`] order, for the same reason.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileMir {
     bodies: Vec<(ProcId, Result<MirBody, Poisoned>)>,
+    globals: Vec<(ItemId, GlobalData)>,
+}
+
+/// One file-scope mutable variable's type and its initial value (ADR-0186 §2).
+///
+/// # Why the initial value is a `PoolId` and not bytes
+///
+/// Turning a value into bytes needs a layout, and ADR-0017 §5 keeps layout out of this crate. So
+/// the initialiser stays the interned constant that const-eval produced, and each engine renders it
+/// with the layout it already uses for a constant of that type — which is what stops a global's
+/// initial bytes from disagreeing with the same literal written inside a body.
+///
+/// `init` is `None` for `x: T = ---`, an explicitly uninitialised global. That is *zero* bytes
+/// rather than undefined ones, because a `.bss` global is zeroed by the loader and pretending
+/// otherwise would make the native path differ from the VM for no benefit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlobalData {
+    /// The variable's type.
+    pub ty: PoolId,
+    /// Its initial value, interned; `None` for `---`.
+    pub init: Option<PoolId>,
 }
 
 impl FileMir {
@@ -1687,6 +1767,25 @@ impl FileMir {
     /// Records the outcome for one procedure. Callers push in [`ProcId`] order.
     pub fn push(&mut self, proc: ProcId, body: Result<MirBody, Poisoned>) {
         self.bodies.push((proc, body));
+    }
+
+    /// Records one file-scope variable. Callers push in [`ItemId`] order.
+    pub fn push_global(&mut self, item: ItemId, data: GlobalData) {
+        self.globals.push((item, data));
+    }
+
+    /// One file-scope variable's type and initial value, if this file declares it.
+    #[must_use]
+    pub fn global(&self, item: ItemId) -> Option<GlobalData> {
+        self.globals
+            .iter()
+            .find(|(id, _)| *id == item)
+            .map(|(_, data)| *data)
+    }
+
+    /// Every file-scope variable, in [`ItemId`] order.
+    pub fn globals(&self) -> impl Iterator<Item = (ItemId, GlobalData)> + '_ {
+        self.globals.iter().map(|(item, data)| (*item, *data))
     }
 
     /// The outcome for one procedure, if it has a body at all.

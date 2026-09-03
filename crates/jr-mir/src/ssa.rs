@@ -510,7 +510,9 @@ fn replace_operand(operand: &mut Operand, old: Operand, new: Operand) {
 
 fn replace_in_place(place: &mut crate::mir::Place, old: Operand, new: Operand) {
     match &mut place.base {
-        crate::mir::PlaceBase::Slot(_) => {}
+        // Neither names an operand that SSA construction can have replaced: a slot is an index, a
+        // global a symbol (ADR-0186 §3).
+        crate::mir::PlaceBase::Slot(_) | crate::mir::PlaceBase::Global(_) => {}
         crate::mir::PlaceBase::Deref(operand) => replace_operand(operand, old, new),
     }
     // A projection held no operands before `Projection::Index`, so this walk did not

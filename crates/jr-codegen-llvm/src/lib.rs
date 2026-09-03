@@ -50,7 +50,7 @@ use inkwell::targets::{
 
 use inkwell::values::{FunctionValue, GlobalValue};
 use jr_codegen::{Backend, CodegenError, ProcDecl, ProcKind, SourceInfo, TRAP_HELPER, TrapKind};
-use jr_mir::{MirBody, ProcRef};
+use jr_mir::{GlobalData, GlobalRef, MirBody, ProcRef};
 use jr_pool::{Item, Layout, Pool, PoolId, StrId, TargetLayout, field_offset, layout_of};
 use rustc_hash::FxHashMap;
 
@@ -83,6 +83,10 @@ pub struct LlvmBackend<'ctx> {
     strings: FxHashMap<StrId, GlobalValue<'ctx>>,
     /// The constant global holding each compiler-emitted table's bytes (ADR-0152 §1).
     static_arrays: FxHashMap<PoolId, GlobalValue<'ctx>>,
+    /// Storage for each declared file-scope mutable variable, and its declared type — the type
+    /// is kept alongside the value because a place with no projection still needs to know what
+    /// it denotes, exactly as a slot's type is kept on [`jr_mir::SlotData`] (ADR-0186 §4).
+    globals: FxHashMap<GlobalRef, (GlobalValue<'ctx>, PoolId)>,
     /// The runtime helper a trap calls.
     trap_helper: FunctionValue<'ctx>,
     /// The module's debug-info builder and compilation unit, once a body has told us the file (ADR-0170).
@@ -184,6 +188,7 @@ impl<'ctx> LlvmBackend<'ctx> {
             foreign: FxHashMap::default(),
             strings: FxHashMap::default(),
             static_arrays: FxHashMap::default(),
+            globals: FxHashMap::default(),
             trap_helper,
             libraries: Vec::new(),
             entry: None,
@@ -476,55 +481,8 @@ impl<'ctx> LlvmBackend<'ctx> {
             let elem = pool.view_elem(pool.type_of(id)).ok_or_else(|| {
                 CodegenError::Internal("a static table with no element".to_owned())
             })?;
-
-            // **A string's pointer is a constant expression, not a byte.** LLVM has no
-            // post-hoc relocation API on a byte initialiser, so the global is built as a *packed
-            // struct of chunks*: the bytes before each pointer, then the pointer as a
-            // `ptrtoint` of the string's own global, then the bytes after. LLVM emits the
-            // relocation for that itself.
-            //
-            // The chunk offsets come from the pool's image walk, so the layout is still the one
-            // shared computation — this back end differs only in how it *expresses* an address it
-            // cannot know yet, which is the same thing Cranelift's `write_data_addr` does.
-            let mut patches: Vec<(u64, StrId)> = Vec::new();
-            let bytes = {
-                let mut resolve = |str_id: StrId, at: u64| {
-                    patches.push((at, str_id));
-                    0
-                };
-                jr_pool::static_image(pool, self.target, elem, &values, &mut resolve)
-                    .map_err(|reason| CodegenError::NoLayout { ty: elem, reason })?
-            };
-            let bytes = if bytes.is_empty() { vec![0u8] } else { bytes };
-            patches.sort_unstable_by_key(|(at, _)| *at);
-
-            let pointer_width = usize::try_from(self.target.pointer_size).unwrap_or(8);
+            let initializer = self.image_constant(pool, elem, &values)?;
             let symbol = format!("jr$table${}", id.index());
-            let mut chunks: Vec<inkwell::values::BasicValueEnum<'ctx>> = Vec::new();
-            let mut cursor = 0usize;
-            for (at, str_id) in &patches {
-                let at = usize::try_from(*at).unwrap_or(0);
-                if at > cursor && at <= bytes.len() {
-                    chunks.push(self.context.const_string(&bytes[cursor..at], false).into());
-                }
-                let string_global = *self.strings.get(str_id).ok_or_else(|| {
-                    CodegenError::Internal("a table names a string with no global".to_owned())
-                })?;
-                let pointer_int_ty = pointer_int(self.context, self.target);
-                chunks.push(
-                    string_global
-                        .as_pointer_value()
-                        .const_to_int(pointer_int_ty)
-                        .into(),
-                );
-                cursor = at + pointer_width;
-            }
-            if cursor < bytes.len() {
-                chunks.push(self.context.const_string(&bytes[cursor..], false).into());
-            }
-
-            // Packed, so LLVM inserts no padding of its own: the pool already placed every byte.
-            let initializer = self.context.const_struct(&chunks, true);
             let global = self
                 .module
                 .add_global(initializer.get_type(), None, &symbol);
@@ -534,6 +492,71 @@ impl<'ctx> LlvmBackend<'ctx> {
             self.static_arrays.insert(id, global);
         }
         Ok(())
+    }
+
+    /// Builds a packed byte-image constant for `values`, each of type `elem` (ADR-0152 §2, ADR-0186 §4).
+    ///
+    /// Shared by [`Self::emit_static_arrays`] (many elements, one table) and [`Self::declare_global`]
+    /// (one element, one variable): a variable's initial value is exactly a one-element table, so the
+    /// same [`jr_pool::static_image`] walk answers both, and a global carrying a `string` gets the
+    /// identical constant-expression relocation this table code already worked out — the reason this is
+    /// pulled out rather than a second, slightly different renderer written for globals.
+    ///
+    /// **A string's pointer is a constant expression, not a byte.** LLVM has no post-hoc relocation API
+    /// on a byte initialiser, so the result is a *packed struct of chunks*: the bytes before each
+    /// pointer, then the pointer as a `ptrtoint` of the string's own global, then the bytes after. LLVM
+    /// emits the relocation for that itself. The chunk offsets come from the pool's image walk, so the
+    /// layout is still the one shared computation — this back end differs only in how it *expresses* an
+    /// address it cannot know yet, which is the same thing Cranelift's `write_data_addr` does.
+    ///
+    /// # Errors
+    /// [`CodegenError::NoLayout`] when `elem` has no layout, or [`CodegenError::Internal`] when a
+    /// referenced string was never given a global — `emit_strings` always runs before either caller, so
+    /// that would be this back end's own bug rather than a program fault.
+    fn image_constant(
+        &self,
+        pool: &Pool,
+        elem: PoolId,
+        values: &[PoolId],
+    ) -> Result<inkwell::values::StructValue<'ctx>, CodegenError> {
+        let mut patches: Vec<(u64, StrId)> = Vec::new();
+        let bytes = {
+            let mut resolve = |str_id: StrId, at: u64| {
+                patches.push((at, str_id));
+                0
+            };
+            jr_pool::static_image(pool, self.target, elem, values, &mut resolve)
+                .map_err(|reason| CodegenError::NoLayout { ty: elem, reason })?
+        };
+        let bytes = if bytes.is_empty() { vec![0u8] } else { bytes };
+        patches.sort_unstable_by_key(|(at, _)| *at);
+
+        let pointer_width = usize::try_from(self.target.pointer_size).unwrap_or(8);
+        let mut chunks: Vec<inkwell::values::BasicValueEnum<'ctx>> = Vec::new();
+        let mut cursor = 0usize;
+        for (at, str_id) in &patches {
+            let at = usize::try_from(*at).unwrap_or(0);
+            if at > cursor && at <= bytes.len() {
+                chunks.push(self.context.const_string(&bytes[cursor..at], false).into());
+            }
+            let string_global = *self.strings.get(str_id).ok_or_else(|| {
+                CodegenError::Internal("an image constant names a string with no global".to_owned())
+            })?;
+            let pointer_int_ty = pointer_int(self.context, self.target);
+            chunks.push(
+                string_global
+                    .as_pointer_value()
+                    .const_to_int(pointer_int_ty)
+                    .into(),
+            );
+            cursor = at + pointer_width;
+        }
+        if cursor < bytes.len() {
+            chunks.push(self.context.const_string(&bytes[cursor..], false).into());
+        }
+
+        // Packed, so LLVM inserts no padding of its own: the pool already placed every byte.
+        Ok(self.context.const_struct(&chunks, true))
     }
 
     /// A read-only global holding `bytes`, under `symbol`.
@@ -921,6 +944,62 @@ impl<'ctx> Backend for LlvmBackend<'ctx> {
         Ok(())
     }
 
+    /// Declares storage for one file-scope mutable variable (ADR-0186 §4).
+    ///
+    /// The LLVM type is an opaque `i8` array of the variable's layout size, never a native LLVM
+    /// struct type — the same rule this crate's docs state once: LLVM must not compute a Jairs
+    /// aggregate's layout (ADR-0143 §4). `data.init`'s bytes come from this back end's own
+    /// `image_constant` helper, the same renderer `emit_static_arrays` uses for a compiler-
+    /// emitted table — a variable's initial value is exactly a one-element table. `None`
+    /// zero-initialises; LLVM's own object emission decides which section an all-zero global
+    /// lands in, and this back end does not choose one.
+    ///
+    /// Idempotent, so a driver walking every file's `FileMir::globals()` need not track which it
+    /// has already declared.
+    fn declare_global(
+        &mut self,
+        global: GlobalRef,
+        data: GlobalData,
+        pool: &Pool,
+        layout: TargetLayout,
+    ) -> Result<(), CodegenError> {
+        if self.globals.contains_key(&global) {
+            return Ok(());
+        }
+        let global_layout =
+            layout_of(pool, layout, data.ty).map_err(|reason| CodegenError::NoLayout {
+                ty: data.ty,
+                reason,
+            })?;
+        let symbol = format!("jr$global${}${}", global.file.index(), global.item.index());
+
+        let value = match data.init {
+            Some(id) => {
+                let initializer = self.image_constant(pool, data.ty, &[id])?;
+                let value = self
+                    .module
+                    .add_global(initializer.get_type(), None, &symbol);
+                value.set_initializer(&initializer);
+                value
+            }
+            None => {
+                let size = u32::try_from(global_layout.size.max(1))
+                    .map_err(|_| CodegenError::Internal("a global larger than a u32".to_owned()))?;
+                let ty = self.context.i8_type().array_type(size);
+                let value = self.module.add_global(ty, None, &symbol);
+                value.set_initializer(&ty.const_zero());
+                value
+            }
+        };
+        // Never `set_constant(true)` — this is the whole point of the feature, and matches the
+        // shadow call stack's own only-mutable-data precedent in `new`.
+        value.set_linkage(Linkage::Internal);
+        value.set_constant(false);
+        value.set_alignment(global_layout.align.max(1));
+        self.globals.insert(global, (value, data.ty));
+        Ok(())
+    }
+
     fn define(
         &mut self,
         proc: ProcRef,
@@ -1110,6 +1189,7 @@ impl<'ctx> Backend for LlvmBackend<'ctx> {
             funcs: &self.funcs,
             strings: &self.strings,
             static_arrays: &self.static_arrays,
+            globals: &self.globals,
             trap_helper: self.trap_helper,
             locations,
             shadow: self.shadow,
@@ -1231,4 +1311,121 @@ fn split_path(path: &str) -> (String, String) {
             |p| p.display().to_string(),
         );
     (name, directory)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jr_hir::{ItemId, ProcId};
+    use jr_mir::{MirSpan, Operand, Place, Rvalue, Statement, Terminator};
+
+    /// A global round-trips: its declared initial value reads back, a write through it is
+    /// visible to a later read, and the module the two produce passes LLVM's verifier
+    /// (ADR-0186 §4).
+    #[test]
+    fn global_round_trips_through_llvm() {
+        let mut pool = Pool::new();
+        let ty = PoolId::S64;
+        let initial = pool.intern(Item::IntValue { ty, bits: 5 });
+        let written = pool.intern(Item::IntValue { ty, bits: 7 });
+
+        let file = jr_base::FileId::from_usize(0);
+        let global = GlobalRef::new(file, ItemId::from_usize(0));
+        let data = GlobalData {
+            ty,
+            init: Some(initial),
+        };
+
+        let proc = ProcRef::new(file, ProcId::from_usize(0));
+        let decl = ProcDecl {
+            proc,
+            params: Vec::new(),
+            ret: ty,
+            receives_context: false,
+            kind: ProcKind::Local {
+                symbol: "jr$0$0".to_owned(),
+                entry: false,
+            },
+            name: Some("round_trip".to_owned()),
+            param_names: Vec::new(),
+        };
+
+        let mut mir = MirBody::new(proc, ty);
+        let entry = mir.entry();
+        let place = Place::global(global);
+        let first_read = mir.push_value(ty, MirSpan::Synthetic);
+        mir.stmts_mut(entry).push(Statement::Assign {
+            dest: first_read,
+            rvalue: Rvalue::Load(place.clone()),
+            span: MirSpan::Synthetic,
+        });
+        mir.stmts_mut(entry).push(Statement::Store {
+            place: place.clone(),
+            value: Operand::Constant(written),
+            span: MirSpan::Synthetic,
+        });
+        let second_read = mir.push_value(ty, MirSpan::Synthetic);
+        mir.stmts_mut(entry).push(Statement::Assign {
+            dest: second_read,
+            rvalue: Rvalue::Load(place),
+            span: MirSpan::Synthetic,
+        });
+        mir.set_terminator(entry, Terminator::Return(Some(Operand::Value(second_read))));
+
+        let context = Context::create();
+        let mut backend =
+            LlvmBackend::new(&context, &pool, TargetLayout::LP64, "global_test").unwrap();
+        backend
+            .declare_global(global, data, &pool, TargetLayout::LP64)
+            .unwrap();
+        backend.declare(&decl, &pool, TargetLayout::LP64).unwrap();
+        backend
+            .define(
+                proc,
+                &mir,
+                &pool,
+                TargetLayout::LP64,
+                &jr_codegen::NoLocations,
+            )
+            .unwrap();
+
+        let ir = backend.print_ir();
+        assert!(ir.contains("jr$global$0$0"), "missing global symbol:\n{ir}");
+
+        // `finalise` runs `info.finalize()` before LLVM's verifier when the module carries debug
+        // info; this one carries none (`NoLocations`), so the verifier alone is exercised.
+        Box::new(backend)
+            .finalise()
+            .expect("a global's storage must pass LLVM's verifier");
+    }
+
+    /// A declared global with no initial value is zero, not undefined — ADR-0186 §2's contract,
+    /// and the failure this feature would actually have if it were wrong.
+    #[test]
+    fn uninitialised_global_is_zero_not_undefined() {
+        let pool = Pool::new();
+        let ty = PoolId::S64;
+        let file = jr_base::FileId::from_usize(0);
+        let global = GlobalRef::new(file, ItemId::from_usize(1));
+        let data = GlobalData { ty, init: None };
+
+        let context = Context::create();
+        let mut backend =
+            LlvmBackend::new(&context, &pool, TargetLayout::LP64, "zero_test").unwrap();
+        backend
+            .declare_global(global, data, &pool, TargetLayout::LP64)
+            .unwrap();
+
+        let ir = backend.print_ir();
+        // LLVM prints an all-zero array-of-`i8` initialiser as `zeroinitializer`, never a byte
+        // list, so this also pins that `None` took the zero-fill path and not `image_constant`'s.
+        assert!(
+            ir.contains("jr$global$0$1") && ir.contains("zeroinitializer"),
+            "expected a zero-initialised global:\n{ir}"
+        );
+
+        Box::new(backend)
+            .finalise()
+            .expect("a zero-initialised global must pass LLVM's verifier");
+    }
 }

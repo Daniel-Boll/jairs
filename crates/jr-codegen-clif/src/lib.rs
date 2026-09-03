@@ -49,8 +49,8 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use jr_codegen::{Backend, CodegenError, ProcDecl, ProcKind, SourceInfo};
-use jr_mir::{MirBody, ProcRef};
-use jr_pool::{Item, Layout, Pool, PoolId, StrId, TargetLayout, layout_of};
+use jr_mir::{GlobalData, GlobalRef, MirBody, ProcRef};
+use jr_pool::{Item, Layout, Pool, PoolId, StrId, TargetLayout, layout_of, static_image};
 use rustc_hash::FxHashMap;
 
 /// One defined function's subprogram, before its `FuncId` becomes an object symbol.
@@ -155,6 +155,14 @@ pub struct ClifBackend {
     /// procedure called from twenty places has one string, and the shadow stack stores its address.
     /// The length rides along because the string is not NUL-terminated and the helper has no `strlen`.
     names: FxHashMap<ProcRef, (DataId, usize)>,
+    /// The data object and type of every file-scope global declared so far (ADR-0186 §4), keyed
+    /// by its `GlobalRef`.
+    ///
+    /// Populated by [`Backend::declare_global`], one global at a time, during the declare phase —
+    /// before any body that might reference one of these globals through a `PlaceBase::Global` is
+    /// defined. A tuple rather than a bare `DataId` because [`body::Context::globals`] needs the
+    /// type too; see that field's docs for why.
+    globals: FxHashMap<GlobalRef, (DataId, PoolId)>,
 }
 
 /// How many frames the shadow call stack holds (ADR-0066 §1).
@@ -238,6 +246,7 @@ impl ClifBackend {
             shadow_stack,
             shadow_depth,
             names: FxHashMap::default(),
+            globals: FxHashMap::default(),
             target,
             lines: debug::LineVocabulary::default(),
             function_lines: Vec::new(),
@@ -760,6 +769,98 @@ impl Backend for ClifBackend {
         Ok(())
     }
 
+    /// Declares and defines the writable data object backing one file-scope global
+    /// (ADR-0186 §4).
+    ///
+    /// Idempotent per [`GlobalRef`], so a driver that (for whatever reason) calls this twice
+    /// for the same global does not re-declare a symbol `cranelift-object` would then reject as
+    /// a duplicate. Called during the declare phase, before any body — `jr_mir::PlaceBase::Global`
+    /// gives a body no way to distinguish "declared later in this file" from "never declared",
+    /// so every global must exist before the first body that might read one is defined, exactly
+    /// as [`Backend::declare`]'s own docs require for a procedure.
+    fn declare_global(
+        &mut self,
+        global: GlobalRef,
+        data: GlobalData,
+        pool: &Pool,
+        layout: TargetLayout,
+    ) -> Result<(), CodegenError> {
+        if self.globals.contains_key(&global) {
+            return Ok(());
+        }
+
+        let mut description = DataDescription::new();
+        match data.init {
+            // `---`: the loader's zero fill, not an undefined value (`GlobalData::init`'s own
+            // contract) — so this is `define_zeroinit`, not a skipped definition.
+            None => {
+                let global_layout =
+                    layout_of(pool, layout, data.ty).map_err(|reason| CodegenError::NoLayout {
+                        ty: data.ty,
+                        reason,
+                    })?;
+                let size = usize::try_from(global_layout.size).unwrap_or(0).max(1);
+                description.define_zeroinit(size);
+            }
+            // The same renderer `emit_static_arrays` uses for a compiler-emitted table's
+            // elements, asked for exactly one: a global's initial value and one element of a
+            // table are the same problem, an interned constant becoming bytes in `layout`'s
+            // widths, and this crate keeps one such renderer rather than a second (ADR-0018 §2).
+            Some(value) => {
+                let mut patches: Vec<(u64, StrId)> = Vec::new();
+                let bytes = {
+                    let mut resolve = |str_id: StrId, at: u64| {
+                        patches.push((at, str_id));
+                        0
+                    };
+                    static_image(pool, layout, data.ty, &[value], &mut resolve).map_err(
+                        |reason| CodegenError::NoLayout {
+                            ty: data.ty,
+                            reason,
+                        },
+                    )?
+                };
+                let bytes = if bytes.is_empty() { vec![0u8] } else { bytes };
+                description.define(bytes.into_boxed_slice());
+                // A relocation per embedded string, for the reason `emit_static_arrays` records:
+                // the address is the linker's to choose, so a number written here would be a
+                // compile-time address baked into a run-time program (ADR-0074).
+                for (at, str_id) in patches {
+                    let target_data = *self.strings.get(&str_id).ok_or_else(|| {
+                        CodegenError::Internal(
+                            "a global names a string with no data object".to_owned(),
+                        )
+                    })?;
+                    let reloc = self
+                        .module
+                        .declare_data_in_data(target_data, &mut description);
+                    description.write_data_addr(
+                        u32::try_from(at).map_err(|_| {
+                            CodegenError::Internal("a global larger than a u32".to_owned())
+                        })?,
+                        reloc,
+                        0,
+                    );
+                }
+            }
+        }
+
+        // **Writable**, unlike every other data object this back end emits except the shadow
+        // call stack: a `var` is assignable storage, and `Linkage::Local` is right for the same
+        // reason it is for a string or a table — ADR-0186 §4's contract keeps a global private to
+        // the file that declares it for now, so nothing outside this object needs the symbol.
+        let symbol = format!("jr$global${}${}", global.file.index(), global.item.index());
+        let id = self
+            .module
+            .declare_data(&symbol, Linkage::Local, true, false)
+            .map_err(|e| CodegenError::Internal(format!("cannot declare global {symbol}: {e}")))?;
+        self.module
+            .define_data(id, &description)
+            .map_err(|e| CodegenError::Internal(format!("cannot define global {symbol}: {e}")))?;
+        self.globals.insert(global, (id, data.ty));
+        Ok(())
+    }
+
     fn define(
         &mut self,
         proc: ProcRef,
@@ -810,6 +911,7 @@ impl Backend for ClifBackend {
             shadow: (self.shadow_stack, self.shadow_depth),
             names: &self.names,
             foreign: &self.foreign,
+            globals: &self.globals,
         };
         body::translate(
             &mut builder,
@@ -1045,4 +1147,132 @@ fn trap_signature(module: &ObjectModule) -> cranelift_codegen::ir::Signature {
 /// struct did not, which is why the corpus program returns both sizes.
 fn default_libcall_names() -> Box<dyn Fn(cranelift_codegen::ir::LibCall) -> String + Send + Sync> {
     cranelift_module::default_libcall_names()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jr_hir::{ItemId, ProcId};
+    use jr_mir::{MirSpan, Operand, Place, ProcRef, Rvalue, Statement, Terminator};
+
+    /// A global round-trips through a write and a read, and the emitted function verifies
+    /// (ADR-0186 §4).
+    ///
+    /// The body reads the global first — asserting the *initial* value matters, not only the
+    /// final one, since a global that reads zero when it should read the interned `5` is the
+    /// failure this feature will actually have — writes `7`, reads again, and returns the second
+    /// read. `ClifBackend::declare_global` must give the read its storage before
+    /// `ClifBackend::define` translates a body that references it, exactly as `declare` must
+    /// precede `define` for a procedure (ADR-0019 §1).
+    #[test]
+    fn a_global_round_trips_through_a_write_and_a_read() {
+        let mut pool = Pool::new();
+        let five = pool.int_value(PoolId::S64, 5);
+        let seven = pool.int_value(PoolId::S64, 7);
+
+        let file = jr_base::FileId::from_usize(0);
+        let item = ItemId::from_usize(0);
+        let global = GlobalRef::new(file, item);
+
+        let mut backend = ClifBackend::new(&pool, TargetLayout::LP64, "globals_test")
+            .expect("a fresh back end must construct");
+        backend
+            .declare_global(
+                global,
+                GlobalData {
+                    ty: PoolId::S64,
+                    init: Some(five),
+                },
+                &pool,
+                TargetLayout::LP64,
+            )
+            .expect("an `s64` global with an interned initial value must declare");
+
+        let proc = ProcRef::new(file, ProcId::from_usize(0));
+        let decl = ProcDecl {
+            proc,
+            params: Vec::new(),
+            ret: PoolId::S64,
+            receives_context: false,
+            kind: ProcKind::Local {
+                symbol: "jr$0$0".to_owned(),
+                entry: false,
+            },
+            name: Some("roundtrip".to_owned()),
+            param_names: Vec::new(),
+        };
+        backend
+            .declare(&decl, &pool, TargetLayout::LP64)
+            .expect("a parameterless procedure must declare");
+
+        let mut body = MirBody::new(proc, PoolId::S64);
+        let entry = body.entry();
+        let first_read = body.push_value(PoolId::S64, MirSpan::Synthetic);
+        let second_read = body.push_value(PoolId::S64, MirSpan::Synthetic);
+        body.stmts_mut(entry).push(Statement::Assign {
+            dest: first_read,
+            rvalue: Rvalue::Load(Place::global(global)),
+            span: MirSpan::Synthetic,
+        });
+        body.stmts_mut(entry).push(Statement::Store {
+            place: Place::global(global),
+            value: Operand::Constant(seven),
+            span: MirSpan::Synthetic,
+        });
+        body.stmts_mut(entry).push(Statement::Assign {
+            dest: second_read,
+            rvalue: Rvalue::Load(Place::global(global)),
+            span: MirSpan::Synthetic,
+        });
+        body.set_terminator(entry, Terminator::Return(Some(Operand::Value(second_read))));
+
+        backend
+            .define(
+                proc,
+                &body,
+                &pool,
+                TargetLayout::LP64,
+                &jr_codegen::NoLocations,
+            )
+            .expect("a global read, written, and read back again must verify");
+    }
+
+    /// `init: None` zero-fills rather than being skipped: `GlobalData`'s own contract is that
+    /// `---` means the loader's zero fill, not an undefined value, and `declare_global`'s `None`
+    /// arm is a branch the round-trip test above never reaches (it always supplies `Some`).
+    #[test]
+    fn an_uninitialised_global_declares_as_zero_filled() {
+        let pool = Pool::new();
+        let file = jr_base::FileId::from_usize(0);
+        let item = ItemId::from_usize(0);
+        let global = GlobalRef::new(file, item);
+
+        let mut backend = ClifBackend::new(&pool, TargetLayout::LP64, "uninit_global_test")
+            .expect("a fresh back end must construct");
+        backend
+            .declare_global(
+                global,
+                GlobalData {
+                    ty: PoolId::S64,
+                    init: None,
+                },
+                &pool,
+                TargetLayout::LP64,
+            )
+            .expect("an uninitialised `s64` global must still declare, zero-filled");
+
+        // A second `declare_global` for the same `GlobalRef` must not re-declare the symbol —
+        // `cranelift-object` rejects a duplicate `declare_data` outright.
+        backend
+            .declare_global(
+                global,
+                GlobalData {
+                    ty: PoolId::S64,
+                    init: None,
+                },
+                &pool,
+                TargetLayout::LP64,
+            )
+            .expect("declaring the same global twice must be idempotent");
+    }
 }

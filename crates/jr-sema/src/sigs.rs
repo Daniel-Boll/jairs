@@ -88,6 +88,21 @@ pub struct SigEntry {
     pub kind: SigKind,
     /// The declaring item, for diagnostics that want to point at it.
     pub item: ItemId,
+    /// The procedure, for [`SigKind::Proc`] and [`SigKind::Operator`]; `None` otherwise.
+    ///
+    /// # Why this field exists
+    ///
+    /// It is the missing link from an **imported name** to that module's [`ProcSig`] (ADR-0188 §2).
+    /// [`FileSignatures::proc_sig`] is keyed by [`ProcId`], and an importer holds the exporting module's
+    /// `FileSignatures` but not its HIR — so before this field there was no way to get from
+    /// `Res::Imported(import, name)` to the callee's parameter defaults, and `callee_sig` returned
+    /// `None` with a comment claiming the signatures were unavailable. They were available; only the
+    /// index was missing.
+    ///
+    /// The consequence was that **a default argument silently did not apply across a module boundary**:
+    /// `Simp.set_shader_for_color()` was "takes 1 argument, but 0 were supplied" while the same call in
+    /// the same file worked. Jai's API leans on defaults heavily, so this blocked matching it.
+    pub proc: Option<ProcId>,
 }
 
 impl SigEntry {
