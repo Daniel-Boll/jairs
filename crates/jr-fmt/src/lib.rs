@@ -339,7 +339,29 @@ impl Formatter {
             .map(|n| n.text().to_string())
             .unwrap_or_default();
         self.emit(&name);
-        self.emit(" :: ");
+        // **A typed constant keeps its annotation** (ADR-0190 §4). Dropping it turned
+        // `THICK : float32 : 1.0` into `THICK :: 1.0`, which is the *unsound* direction — the reformatted
+        // file no longer type-checks, because the constant becomes an `s64`. Fourteenth wave in sixteen to
+        // need this line, and round-trip plus idempotence both passed without it: a formatter that
+        // re-emits every other child verbatim satisfies both while deleting one.
+        //
+        // **Discriminated on the token, not on the children.** The first attempt asked whether any child
+        // was a type kind, and `Array :: struct($T) { … }` has one — its *value* — so it emitted
+        // `Array : struct($T) {` and gate 5 caught it immediately. An ordinary constant carries one
+        // `::` token and a typed one carries two `:`, which is the only place the difference is recorded.
+        let typed = !node.children_with_tokens().any(|c| c.kind() == COLON_COLON);
+        match node
+            .children()
+            .find(|n| is_type_kind(n.kind()))
+            .filter(|_| typed)
+        {
+            Some(ty) => {
+                self.emit(" : ");
+                self.format_type(&ty);
+                self.emit(" : ");
+            }
+            None => self.emit(" :: "),
+        }
 
         // The value: PROC, STRUCT_TYPE, ENUM_TYPE, or an expression.
         //
@@ -1659,6 +1681,24 @@ impl Formatter {
                     self.format_arg_list(&arg_list);
                 }
             }
+            // **`T.[a, b, c]`** (ADR-0194 §5). Without this arm the whole literal vanished —
+            // `a := s64.[1, 2, 3];` formatted to `a := ;`, which is the same silent deletion `cast`
+            // suffered in ADR-0037's wave and `ENUM_TYPE` in another. Fifteenth wave in seventeen to need
+            // an emitter entry, and the most destructive so far: not a dropped attribute but the value.
+            ARRAY_LITERAL => {
+                let mut children = node.children().filter(|n| is_expr_kind(n.kind()));
+                if let Some(ty) = children.next() {
+                    self.format_expr(&ty);
+                }
+                self.emit(".[");
+                for (index, element) in children.enumerate() {
+                    if index > 0 {
+                        self.emit(", ");
+                    }
+                    self.format_expr(&element);
+                }
+                self.emit("]");
+            }
             FIELD_EXPR => {
                 if let Some(obj) = node.children().find(|n| is_expr_kind(n.kind())) {
                     self.format_expr(&obj);
@@ -1879,6 +1919,10 @@ fn is_expr_kind(kind: SyntaxKind) -> bool {
             | PAREN_EXPR
             | CALL_EXPR
             | FIELD_EXPR
+            // A literal is an expression wherever one goes — as an initialiser, an argument, a `for`
+            // sequence. Omitting it here would leave it unemitted at every *nesting* site even with the
+            // arm above, which is the second half of the trap that comment describes.
+            | ARRAY_LITERAL
             | DEREF_EXPR
             | UNINIT_EXPR
             // Omitting this is how the formatter *deleted* every `cast` outright: an

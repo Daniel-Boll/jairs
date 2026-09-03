@@ -10,7 +10,7 @@ the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrat
 behind them — that narrative is not duplicated here):
 
 - **1082** workspace tests, all seven gates green.
-- **270** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
+- **277** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
   (276 counting those).
 - **188** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **23** standard library modules under `modules/`.
@@ -33,7 +33,7 @@ behind them — that narrative is not duplicated here):
 | Inspect tokens or the CST | `jr parse file.jr` | Debug aid |
 | Measure language-server latency | `jr bench file.jr` | Reports min/median/p95 cold, warm and after an edit. **Reports, never judges** — no threshold, not a gate (ADR-0033), so a performance regression is invisible to CI by construction |
 | Measure compile throughput | `jr bench --throughput paths…` | Lines and bytes per second for `check` and `build`, cold only — a compiler is a process, so there is no warm throughput to report (ADR-0146). Same contract: reports, never judges |
-| Print anything | `print("x = %, ok = %\n", 42, true)` from `modules/Basic` | Written in Jairs (ADR-0189). Every integer width signed and unsigned including `S64_MIN`, floats, `bool`, `string`, pointers as hex, a struct one level deep, a fixed array's elements. An enum prints its **ordinal** and a view prints `<view>`: `Type_Info` carries type *ids*, and an id cannot be resolved to a `*Type_Info` |
+| Print anything | `print("x = %, ok = %\n", 42, true)` from `modules/Basic` | Written in Jairs (ADR-0189, ADR-0193). Every integer width signed and unsigned including `S64_MIN`, floats, `bool`, `string`, pointers as hex, a struct one level deep, an array's and a view's elements, and an enum by **member name**. A nested aggregate or enum *field* still prints `..`: a field's type is an *id* and an id cannot be resolved to a `*Type_Info` |
 | Call libc from Jairs | `#foreign` / `#system_library` | Through libffi at run time (refused at comptime, ADR-0006). `modules/Basic` binds `write`, `exit`, `malloc`, `free`; the VM satisfies `malloc`/`free` from its own region (ADR-0061) so a pointer round-trips there too. A library is named by `#system_library "SDL2"` or, on macOS, `#framework "OpenGL"` — **two different linker arguments**, and neither is a fallback for the other, because a compiler cannot know which a name means and guessing would link a program for a reason its source never stated (ADR-0183) |
 | Fold a compile-time call | `COMPUTED :: #run add(2, 3)`, or `n := #run add(2, 3)` in a body | Nested calls, arithmetic around a call, a loop in the callee and an **imported** callee all work (ADR-0069). Still refused: a `#foreign` call (ADR-0006), an operator overload, a default or named argument, and reading another file's constant — all because const-eval precedes the check phase |
 | Import a module | `#import "Basic";` or `Simp :: #import "Simp";` | One module = one file, cycles legal. A **bare** import merges the module's names into the file flat; an **aliased** one merges nothing and is reached as `Simp.name` — in value *and* type position, so `e: Input.Event` is a spelling (ADR-0179). That is what makes two modules exporting the same name usable together: before it, a program that both drew a window and read a file could not name `open` at all. Procedures, types, enum members and **constants' values** all cross the boundary; an imported struct's *fields* do not, so `using` on one is refused. `#scope_module` hides a declaration from importers |
@@ -86,10 +86,10 @@ The authoritative version of this list is
 | `[..]T` dynamic arrays — surface and layout (ADR-0136); `modules/List` operates on them natively | growth operations beyond what `List` provides |
 | calls, nested; a discarded call is a statement | |
 | integer literals (dec/hex/bin/oct, `_`), string literals + escapes | |
-| float literals: `1.5`, `1e9`, `1.5e-3`, `1_000.5`; float **printing** via `print("%", x)` (ADR-0189) | a chosen precision or field width — `%` renders shortest-ish and takes no modifiers |
+| float literals: `1.5`, `1e9`, `1.5e-3`, `1_000.5`; float **printing** via `print("%", x)` (ADR-0189); a **typed** float constant `X : float32 : 1.5` (ADR-0190) | a chosen precision or field width — `%` renders shortest-ish and takes no modifiers |
 | nesting block comments; `///` and `//!` doc comments, shown on hover | doc generation (`jr doc`) — nothing consumes docs but the language server |
 | `#run` at file scope or in a body, calling local or **imported** procedures, with loops and nested calls; bounded by a **step budget** (ADR-0121), so a non-terminating one reports E0230 rather than hanging the compiler | a `#run` reading **another file's constant**; a `#foreign` call (ADR-0006); an operator overload, a default or a named argument |
-| a `#run` returning a **struct or array**, interned as its element values and materialised by both engines (ADR-0074), including one holding a **string** (ADR-0075) | a `#run` returning a **union** — untagged storage makes "which field is valid" unanswerable; a struct or array *literal* (`P.{1, 2}`), which is a separate syntax question |
+| a `#run` returning a **struct or array**, interned as its element values and materialised by both engines (ADR-0074), including one holding a **string** (ADR-0075) | a `#run` returning a **union** — untagged storage makes "which field is valid" unanswerable; a **struct** literal (`P.{1, 2}`), which needs field-order decisions an element count does not supply |
 | **`type_info(T)`** — a type's kind, name, size, alignment, a stable `id`, and the fixed-size per-kind facts `count` and `element`; `Type_Info` is declared in `Basic` and validated on lookup (ADR-0075, ADR-0077, ADR-0078) | following an `element` id back to a `Type_Info`; `type_info([4]s64)`, blocked on structural type aliases |
 | **`Any`** — `any_of(*x)` erases a value to a `{*Type_Info, *u8}` pair, `any_as(a, T)` reads it back and traps unless the type's `id` matches (ADR-0076) | a bare **value** coercing to `Any` implicitly; an `Any` in a compile-time constant |
 | `#insert "…"` of a **string literal**, lowered where it is written (ADR-0072). **Also at file scope**, where it generates *declarations* (ADR-0184): the generated items go straight into the file's arena, so a generated constant, struct or procedure is an ordinary one | `#code` and the `Code` type |
@@ -236,6 +236,12 @@ missing feature.
   `buf: [20]u8;` zeroes, `buf: [20]u8 = ---;` does not — MIR tracks definedness per *slot*.
 - **An index trap names the line but not the index.** Naming the value would need a formatting
   trap helper touching every trap kind at once.
+- **An array literal is `T.[a, b, c]`, and there is no struct literal.** Naming the element type is
+  what made the array form buildable (ADR-0194): the length is the element count and the type is each
+  element's expectation, so `u8.[1, 2, 3]` holds `u8`s where a bare `[1, 2, 3]` would have needed the
+  context to reach through the literal into each element. `Point.{1, 2}` is still absent — it needs
+  field-order decisions an element count does not supply. An array literal has no **compile-time**
+  value either, so `A :: s64.[1, 2];` is refused with a message saying so.
 - **An array length must be a literal.** `[20]u8` works and `[COUNT]u8` does not: constant
   evaluation lives downstream of where a type annotation is resolved, so sema cannot ask for
   `COUNT`'s value without inverting that dependency. `[N]T` sized by a `$N` comptime parameter

@@ -549,6 +549,21 @@ pub enum Expr {
         /// Span of the whole expression.
         span: Span,
     },
+    /// `T.[a, b, c]` — a fixed array literal whose element type is named (ADR-0194 §1).
+    ///
+    /// The element type is carried as an **expression**, not a `TypeRefId`, and that is the decision the
+    /// rest of the wave rests on: sema resolves it through `described_type`, the one function every
+    /// intrinsic already asks for a type argument. So `Point.[…]`, `Slot(s64, s64).[…]` and even
+    /// `type_of(x).[…]` work with no extra code, and the parser needs no way to tell a type from a value
+    /// before the `.` — which it cannot, since both are a bare name.
+    ArrayLit {
+        /// The expression naming the element type.
+        elem_ty: ExprId,
+        /// The elements, in order. The array's length *is* this count (ADR-0194 §1).
+        elems: Vec<ExprId>,
+        /// Span of the whole literal.
+        span: Span,
+    },
     /// `a[]` — a view over the whole of `a` (ADR-0044 §2).
     ///
     /// A distinct expression rather than sugar for anything: it takes the *address* of its
@@ -649,6 +664,7 @@ impl Expr {
             Expr::Unary { span, .. } => *span,
             Expr::Call { span, .. } => *span,
             Expr::Field { span, .. } => *span,
+            Expr::ArrayLit { span, .. } => *span,
             Expr::Index { span, .. } => *span,
             Expr::Slice { span, .. } => *span,
             Expr::Deref(_, span) => *span,
@@ -1329,8 +1345,22 @@ pub enum ConstValue {
     Operator(ProcId, BinOp),
     /// An enum type: `name :: enum { members }` (ADR-0041).
     Enum(EnumId),
-    /// An arbitrary expression: `name :: expr`.
-    Expr(ExprId),
+    /// An arbitrary expression: `name :: expr`, or `name : T : expr` with an annotation (ADR-0190 §2).
+    ///
+    /// A **struct field rather than a new variant**, deliberately. A `TypedExpr` variant would leave every
+    /// one of the thirty existing `ConstValue::Expr` sites silently not matching a typed constant, which is
+    /// the silent-skip failure this project has been bitten by before (ADR-0186 §3's `let-else`). Changing
+    /// the shape makes all thirty a compile error, so each one is read and decides.
+    Expr {
+        /// The initialiser.
+        expr: ExprId,
+        /// The declared type, if the constant was written `name : T : expr`.
+        ///
+        /// `None` for the ordinary `name :: expr`, where the initialiser types itself and an untyped
+        /// integer literal lands on the default (ADR-0016 §1). `Some` makes that annotation the
+        /// expectation, which is the whole point: `X : u32 : 5` is a `u32` and not an `s64`.
+        ty: Option<TypeRefId>,
+    },
 }
 
 /// A file-level item.

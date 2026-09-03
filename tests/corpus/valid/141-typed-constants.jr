@@ -1,0 +1,82 @@
+// **A typed constant** — `name : T : value` (ADR-0190).
+//
+// # Why this file exists
+//
+// Every constant crossing a C boundary used to be `cast(u32, X)` at each use, because a Jairs constant
+// took its type from its initialiser and an untyped integer literal lands on `s64` (ADR-0016 §1).
+// `modules/GL` carried twenty such casts for twenty-one constants that are all `GLenum`, and three
+// separate handoffs named this the highest-value *small* item owed.
+//
+// What is exercised here is that the annotation is the **expectation**, not a comment: the constant is
+// the declared type at every use, a value that does not fit is refused where it is written rather than
+// where it is used, and the width is what the type says even when the literal would have fitted a
+// narrower one.
+//
+// The width is asserted through the **parameter types** rather than through `size_of`: `size_of` takes a
+// type and a builtin cannot be aliased at file scope (`P :: u8;` is E0201), so there is no way to hand it
+// a constant's type. A call to `takes_u8` is the stronger assertion anyway — it fails at compile time.
+//
+// The exit code is a checksum, so a constant that silently reverted to `s64` fails the run.
+
+#import "Basic";
+
+// A `GLenum`-shaped constant: the case the whole feature exists for.
+FLAG : u32 : 256;
+
+// Every width, so a wrong one shows. `size_of` reads the *constant's* type, not the literal's.
+TINY : u8 : 200;
+SMALL : s16 : -300;
+WIDE : u64 : 18446744073709551615;
+
+// Not only integers: a float constant and a string constant carry their annotation too.
+THICKNESS : float32 : 1.5;
+DRIVER : string : "gl";
+
+// An annotated constant is still a constant, so it still works where only a constant may appear —
+// an array length (ADR-0070 §1) reads the initialiser, and the annotation does not get in the way.
+COUNT : s64 : 4;
+
+takes_u32 :: (v: u32) -> s64 {
+    return cast(s64, v);
+}
+
+takes_u8 :: (v: u8) -> s64 {
+    return cast(s64, v);
+}
+
+takes_s16 :: (v: s16) -> s64 {
+    return cast(s64, v);
+}
+
+takes_f32 :: (v: float32) -> s64 {
+    return cast(s64, v);
+}
+
+main :: () {
+    total := 0;
+
+    // Each of these calls is the assertion: the parameter type is exact, so passing an `s64` would be
+    // E0214 and this file would not build.
+    total = total + takes_u32(FLAG);
+    total = total + takes_u8(TINY);
+    total = total + takes_s16(SMALL);
+    total = total + takes_f32(THICKNESS);
+
+    // A `u64` above `2^63` is only expressible because the constant is unsigned. An `s64` constant
+    // could not hold it, which is why this line is here rather than a smaller number.
+    if WIDE == 18446744073709551615 {
+        total = total + 1000;
+    }
+
+    // A string constant is unremarkable and that is the point: the annotation is not integer-only.
+    if DRIVER.count == 2 {
+        total = total + 2000;
+    }
+
+    // The array length still works.
+    buf: [COUNT]u8;
+    total = total + buf.count;
+
+    // 256 + 200 + (-300) + 1 + 1000 + 2000 + 4 = 3161, and 3161 % 251 = 149.
+    exit(total % 251);
+}

@@ -155,11 +155,26 @@ module.exports = grammar({
       ),
 
     // name :: ConstValue
+    // name : Type : ConstValue    (a typed constant, ADR-0190 §1)
+    //
+    // Two alternatives in one rule rather than a second node kind, matching the compiler: a typed
+    // constant *is* a constant, and the hand-written parser wraps both as `CONST_DECL`. A separate
+    // `typed_const_decl` would need its own highlight, fold, indent and locals entries for a node that
+    // behaves identically in all four.
     const_decl: ($) =>
-      seq(
-        field("name", $.name),
-        "::",
-        field("value", $._const_value),
+      choice(
+        seq(
+          field("name", $.name),
+          "::",
+          field("value", $._const_value),
+        ),
+        seq(
+          field("name", $.name),
+          ":",
+          field("type", $._type),
+          ":",
+          field("value", $._const_value),
+        ),
       ),
 
     // name := expr;
@@ -721,6 +736,7 @@ module.exports = grammar({
         $.unary_expr,
         $.deref_expr,
         $.field_expr,
+        $.array_literal,
         $.index_expr,
         $.slice_expr,
         $.call_expr,
@@ -844,6 +860,29 @@ module.exports = grammar({
     // optional index, for the reason `view_type` is separate from `array_type`.
     slice_expr: ($) =>
       prec.left(7, seq(field("operand", $._expr), "[", "]")),
+
+    // `T.[a, b, c]` — a fixed array literal (ADR-0194 §5).
+    //
+    // Precedence 7, the same as `field_expr`, because it *is* a postfix on the element type expression and
+    // the hand-written parser puts it in the same chain. Unambiguous against `field_expr` on one token: a
+    // field name is an identifier and this is a `[`.
+    array_literal: ($) =>
+      prec.left(
+        7,
+        seq(
+          field("element_type", $._expr),
+          ".",
+          "[",
+          optional(
+            seq(
+              field("element", $._expr),
+              repeat(seq(",", field("element", $._expr))),
+              optional(","),
+            ),
+          ),
+          "]",
+        ),
+      ),
 
     // Field access: expr.name
     field_expr: ($) =>

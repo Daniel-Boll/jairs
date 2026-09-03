@@ -138,6 +138,16 @@ fn is_intrinsic_name(name: &str) -> bool {
             | "typed"
             | "untyped"
             | "view"
+            // `type_of(x)` — the type of a value, as a type (ADR-0192 §1). Its argument is the one type
+            // argument that is *not* a type, which changes nothing here: the **callee** still has no
+            // declaration to resolve to, which is all this list decides.
+            //
+            // **The sixth entry this list has needed after the fact**, and the failure was exactly what
+            // the doc comment above predicts: `size_of(type_of(n))` reported "the compiler could not lower
+            // `main` (a name failed to resolve)" — a legal program, blamed on the user, because sema knew
+            // `type_of` and this did not. The comment has described that failure for several waves without
+            // preventing it, which is the argument for one list rather than a better warning.
+            | "type_of"
             // `os()` — the target operating system, as a `Basic.Operating_System` (ADR-0180 §2). An
             // intrinsic rather than a constant `modules/Basic` declares, because the value comes from
             // the *compiler*, not from source: no Jairs expression can compute which OS it is being
@@ -1160,11 +1170,33 @@ impl<'a> ResolveCtx<'a> {
                 // intrinsic's argument, and its own callee is not an intrinsic — so assigning `intrinsic` here
                 // would clear the flag and `s64` inside it would be an unresolved name. `outer ||` keeps it set,
                 // which is right because a type argument's arguments are types all the way down.
+                //
+                // **`type_of` looks like an exception to this and is not** (ADR-0192 §2). Its argument is a
+                // *value*, so clearing the flag for it was the obvious fix and was written first — and it was
+                // unnecessary *and* worse. A local is resolved during lowering, so the flag never decided
+                // anything for `type_of(n)`; the refusal came from MIR, where a type-denoting call's callee
+                // was not exempt. And clearing it made `type_of(s64)` report "unresolved name `s64`" — a
+                // name that is perfectly well known — on top of the honest E0261. Left sticky, that case is
+                // one clean diagnostic.
                 self.in_type_info_argument = outer || intrinsic;
                 for arg in args {
                     self.resolve_top_expr(arg);
                 }
                 self.in_type_info_argument = outer;
+            }
+            // **The element type is resolved in a type position; the elements are not** (ADR-0194 §2).
+            // That asymmetry is the whole node: `s64.[1, 2]` has a builtin type name where an expression
+            // would be, and without the flag it is `unresolved name s64` — the same withholding every
+            // intrinsic's type argument needs, for the same reason.
+            Expr::ArrayLit { elem_ty, elems, .. } => {
+                let (elem_ty, elems) = (*elem_ty, elems.clone());
+                let outer = self.in_type_info_argument;
+                self.in_type_info_argument = true;
+                self.resolve_top_expr(elem_ty);
+                self.in_type_info_argument = outer;
+                for e in elems {
+                    self.resolve_top_expr(e);
+                }
             }
             Expr::Field { receiver, .. } => {
                 let receiver = *receiver;
@@ -1415,11 +1447,29 @@ impl<'a> ResolveCtx<'a> {
                 // intrinsic's argument, and that call's own callee is not an intrinsic — so assigning `intrinsic`
                 // would clear the flag and `s64` inside it would be an unresolved name. `outer ||` keeps it set,
                 // which is right because a type argument's own arguments are types all the way down.
+                //
+                // **`type_of` looks like an exception to this and is not** (ADR-0192 §2). Its argument is a
+                // *value*, so clearing the flag for it was the obvious fix and was written first — and it was
+                // unnecessary *and* worse. A local is resolved during lowering, so the flag never decided
+                // anything for `type_of(n)`; the refusal came from MIR, where a type-denoting call's callee
+                // was not exempt. And clearing it made `type_of(s64)` report "unresolved name `s64`" — a
+                // name that is perfectly well known — on top of the honest E0261. Left sticky, that case is
+                // one clean diagnostic.
                 self.in_type_info_argument = outer || intrinsic;
                 for arg in args {
                     self.resolve_body_expr(body_id, arg);
                 }
                 self.in_type_info_argument = outer;
+            }
+            // See the top-level twin for why only the element type is a type position.
+            Expr::ArrayLit { elem_ty, elems, .. } => {
+                let outer = self.in_type_info_argument;
+                self.in_type_info_argument = true;
+                self.resolve_body_expr(body_id, elem_ty);
+                self.in_type_info_argument = outer;
+                for e in elems {
+                    self.resolve_body_expr(body_id, e);
+                }
             }
             Expr::Field { receiver, .. } => {
                 self.resolve_body_expr(body_id, receiver);
@@ -1522,6 +1572,11 @@ fn top_child_exprs(expr: &Expr) -> Vec<ExprId> {
         Expr::Unary { operand, .. } | Expr::Autocast { operand, .. } => vec![*operand],
         Expr::Cast { operand, .. } => vec![*operand],
         Expr::Run(inner, _) => vec![*inner],
+        Expr::ArrayLit { elem_ty, elems, .. } => {
+            let mut out = vec![*elem_ty];
+            out.extend(elems.iter().copied());
+            out
+        }
         Expr::Field { receiver, .. } => vec![*receiver],
         Expr::Index { base, index, .. } => vec![*base, *index],
         Expr::Slice { base, .. } => vec![*base],

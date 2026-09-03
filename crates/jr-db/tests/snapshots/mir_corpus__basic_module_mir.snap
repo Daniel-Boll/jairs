@@ -58,7 +58,7 @@ proc print -> s64 {
     store s0 <- v1
     store s1 <- v2
     discard call proc10(v0, 1_s64)
-    discard call proc26(v0, v1, v2)
+    discard call proc28(v0, v1, v2)
     v3: s64 = call proc11(v0)
     return v3
 }
@@ -71,7 +71,7 @@ proc print_error -> s64 {
     store s0 <- v1
     store s1 <- v2
     discard call proc10(v0, 2_s64)
-    discard call proc26(v0, v1, v2)
+    discard call proc28(v0, v1, v2)
     v3: s64 = call proc11(v0)
     return v3
 }
@@ -84,7 +84,7 @@ proc print_line -> s64 {
     store s0 <- v1
     store s1 <- v2
     discard call proc10(v0, 1_s64)
-    discard call proc26(v0, v1, v2)
+    discard call proc28(v0, v1, v2)
     v3: u8 = convert 10_s64 from s64
     discard call proc12(v0, v3)
     v4: s64 = call proc11(v0)
@@ -101,8 +101,8 @@ proc format -> s64 {
     store s1 <- v2
     store s2 <- v3
     discard call proc10(v0, -1_s64)
-    discard call proc26(v0, v2, v3)
-    v4: s64 = load g23
+    discard call proc28(v0, v2, v3)
+    v4: s64 = load g24
     v5: s64 = load s0.view_count
     v6: bool = v4 > v5
     branch v6 ? bb1() : bb2()
@@ -120,32 +120,32 @@ proc format -> s64 {
     v11: s64 = load s0.view_count
     bounds_check v8 < v11
     bounds_check v8 < 4096_s64
-    v12: u8 = load g22[v8]
+    v12: u8 = load g23[v8]
     store s0.view_data[v8] <- v12
     v13: s64 = v8 + 1_s64
     goto bb4(v13)
   bb6():
     goto bb7()
   bb7():
-    store g23 <- 0_s64
+    store g24 <- 0_s64
     return v14
 }
 proc out_reset -> void {
   params: v0: *Context, v1: s64
   bb0(v0: *Context, v1: s64):
-    store g23 <- 0_s64
-    store g24 <- v1
-    store g25 <- 0_s64
+    store g24 <- 0_s64
+    store g25 <- v1
+    store g26 <- 0_s64
     return
 }
 proc out_flush -> s64 {
   params: v0: *Context
   bb0(v0: *Context):
-    v1: s64 = load g23
+    v1: s64 = load g24
     v2: bool = v1 > 0_s64
     branch v2 ? bb1() : bb2()
   bb1():
-    v4: s64 = load g24
+    v4: s64 = load g25
     v5: bool = v4 != -1_s64
     goto bb3(v5)
   bb2():
@@ -153,27 +153,27 @@ proc out_flush -> s64 {
   bb3(v3: bool):
     branch v3 ? bb4() : bb5()
   bb4():
-    v6: s64 = load g24
+    v6: s64 = load g25
     bounds_check 0_s64 < 4096_s64
-    v7: *u8 = addr g22[0_s64]
-    v8: s64 = load g23
+    v7: *u8 = addr g23[0_s64]
+    v8: s64 = load g24
     discard call proc0(v6, v7, v8)
-    store g23 <- 0_s64
+    store g24 <- 0_s64
     goto bb6()
   bb5():
     goto bb6()
   bb6():
-    v9: s64 = load g25
+    v9: s64 = load g26
     return v9
 }
 proc out_byte -> void {
   params: v0: *Context, v1: u8
   bb0(v0: *Context, v1: u8):
-    v2: s64 = load g23
+    v2: s64 = load g24
     v3: bool = v2 >= 4096_s64
     branch v3 ? bb1() : bb2()
   bb1():
-    v4: s64 = load g24
+    v4: s64 = load g25
     v5: bool = v4 == -1_s64
     branch v5 ? bb4() : bb5()
   bb4():
@@ -181,25 +181,25 @@ proc out_byte -> void {
   bb5():
     goto bb6()
   bb6():
-    v6: s64 = load g24
+    v6: s64 = load g25
     bounds_check 0_s64 < 4096_s64
-    v7: *u8 = addr g22[0_s64]
-    v8: s64 = load g23
+    v7: *u8 = addr g23[0_s64]
+    v8: s64 = load g24
     discard call proc0(v6, v7, v8)
-    store g23 <- 0_s64
+    store g24 <- 0_s64
     goto bb3()
   bb2():
     goto bb3()
   bb3():
-    v9: s64 = load g23
+    v9: s64 = load g24
     bounds_check v9 < 4096_s64
-    store g22[v9] <- v1
-    v10: s64 = load g23
+    store g23[v9] <- v1
+    v10: s64 = load g24
     v11: s64 = v10 + 1_s64
-    store g23 <- v11
-    v12: s64 = load g25
+    store g24 <- v11
+    v12: s64 = load g26
     v13: s64 = v12 + 1_s64
-    store g25 <- v13
+    store g26 <- v13
     return
 }
 proc out_str -> void {
@@ -718,52 +718,163 @@ proc format_any -> void {
     v39: bool = v3 == 11_Type_Info_Kind
     branch v39 ? bb25() : bb26()
   bb25():
-    v40: *u8 = load s0.1
-    v41: *Type_Info = load s0.0
-    v42: s64 = load (v41).*.3
-    v43: s64 = call proc20(v0, v40, v42)
-    discard call proc15(v0, v43)
+    discard call proc23(v0, v1)
     return
   bb26():
     goto bb27()
   bb27():
-    v44: bool = v3 == 8_Type_Info_Kind
-    branch v44 ? bb29() : bb28()
+    v40: bool = v3 == 8_Type_Info_Kind
+    branch v40 ? bb29() : bb28()
   bb29():
     goto bb30(true)
   bb28():
-    v46: bool = v3 == 9_Type_Info_Kind
-    goto bb30(v46)
-  bb30(v45: bool):
-    branch v45 ? bb32() : bb31()
+    v42: bool = v3 == 9_Type_Info_Kind
+    goto bb30(v42)
+  bb30(v41: bool):
+    branch v41 ? bb32() : bb31()
   bb32():
     goto bb33(true)
   bb31():
-    v49: bool = v3 == 10_Type_Info_Kind
-    goto bb33(v49)
-  bb33(v47: bool):
-    branch v47 ? bb34() : bb35()
+    v45: bool = v3 == 10_Type_Info_Kind
+    goto bb33(v45)
+  bb33(v43: bool):
+    branch v43 ? bb34() : bb35()
   bb34():
-    discard call proc24(v0, v1)
+    discard call proc26(v0, v1)
     return
   bb35():
     goto bb36()
   bb36():
-    v51: bool = v3 == 6_Type_Info_Kind
-    branch v51 ? bb37() : bb38()
+    v47: bool = v3 == 6_Type_Info_Kind
+    branch v47 ? bb37() : bb38()
   bb37():
-    discard call proc23(v0, v1)
+    discard call proc25(v0, v1)
     return
   bb38():
     goto bb39()
   bb39():
-    v52: u8 = convert 60_u8 from u8
-    discard call proc12(v0, v52)
-    v53: *Type_Info = load s0.0
-    v54: string = load (v53).*.2
-    discard call proc13(v0, v54)
-    v55: u8 = convert 62_u8 from u8
-    discard call proc12(v0, v55)
+    v48: bool = v3 == 7_Type_Info_Kind
+    branch v48 ? bb41() : bb40()
+  bb41():
+    goto bb42(true)
+  bb40():
+    v50: bool = v3 == 13_Type_Info_Kind
+    goto bb42(v50)
+  bb42(v49: bool):
+    branch v49 ? bb43() : bb44()
+  bb43():
+    discard call proc24(v0, v1)
+    return
+  bb44():
+    goto bb45()
+  bb45():
+    v51: u8 = convert 60_u8 from u8
+    discard call proc12(v0, v51)
+    v52: *Type_Info = load s0.0
+    v53: string = load (v52).*.2
+    discard call proc13(v0, v53)
+    v54: u8 = convert 62_u8 from u8
+    discard call proc12(v0, v54)
+    return
+}
+proc format_enum -> void {
+  params: v0: *Context, v1: Any
+  slots:
+    s0: Any  // temporary
+    s1: []Type_Info_Member  // local 1
+  bb0(v0: *Context, v1: Any):
+    store s0 <- v1
+    v2: *u8 = load s0.1
+    v3: *Type_Info = load s0.0
+    v4: s64 = load (v3).*.3
+    v5: s64 = call proc20(v0, v2, v4)
+    v6: *Type_Info = load s0.0
+    v7: []Type_Info_Member = load (v6).*.9
+    store s1 <- v7
+    goto bb1(0_s64)
+  bb1(v8: s64):
+    v9: s64 = load s1.view_count
+    v10: bool = v8 < v9
+    branch v10 ? bb2() : bb3()
+  bb2():
+    v11: s64 = load s1.view_count
+    bounds_check v8 < v11
+    v12: s64 = load s1.view_data[v8].1
+    v14: bool = v12 == v5
+    branch v14 ? bb5() : bb6()
+  bb5():
+    v15: s64 = load s1.view_count
+    bounds_check v8 < v15
+    v16: string = load s1.view_data[v8].0
+    discard call proc13(v0, v16)
+    return
+  bb6():
+    goto bb7()
+  bb7():
+    v17: s64 = v8 + 1_s64
+    goto bb1(v17)
+  bb3():
+    goto bb4()
+  bb4():
+    discard call proc15(v0, v5)
+    return
+}
+proc format_sequence -> void {
+  params: v0: *Context, v1: Any
+  slots:
+    s0: Any  // temporary
+    s1: **u8  // temporary
+    s2: *u8  // temporary
+    s3: *u8  // temporary
+  bb0(v0: *Context, v1: Any):
+    store s0 <- v1
+    v2: *u8 = load s0.1
+    store s1 <- v2
+    v3: **u8 = load s1
+    v4: *u8 = load (v3).*
+    v5: *u8 = load s0.1
+    store s2 <- v5
+    v6: *u8 = addr s2[8_s64]
+    v7: s64 = call proc20(v0, v6, 8_s64)
+    v8: *Type_Info = load s0.0
+    v9: s64 = load (v8).*.10
+    v10: u8 = convert 91_u8 from u8
+    discard call proc12(v0, v10)
+    v11: bool = v9 == 0_s64
+    branch v11 ? bb1() : bb2()
+  bb1():
+    v12: u8 = convert 63_u8 from u8
+    discard call proc12(v0, v12)
+    goto bb3()
+  bb2():
+    goto bb4(0_s64)
+  bb4(v13: s64):
+    v15: bool = v13 < v7
+    branch v15 ? bb5() : bb6()
+  bb5():
+    v16: bool = v13 > 0_s64
+    branch v16 ? bb8() : bb9()
+  bb8():
+    discard call proc13(v0, ", ")
+    goto bb10()
+  bb9():
+    goto bb10()
+  bb10():
+    v22: s64 = v13 * v9
+    store s3 <- v4
+    v23: *u8 = addr s3[v22]
+    v24: *Type_Info = load s0.0
+    v25: s64 = load (v24).*.6
+    discard call proc27(v0, v23, v25)
+    v26: s64 = v13 + 1_s64
+    goto bb4(v26)
+  bb6():
+    goto bb7()
+  bb7():
+    goto bb3()
+  bb3():
+    v28: u8 = convert 93_u8 from u8
+    discard call proc12(v0, v28)
     return
 }
 proc format_array -> void {
@@ -802,7 +913,7 @@ proc format_array -> void {
     v18: *u8 = addr s1[v17]
     v19: *Type_Info = load s0.0
     v20: s64 = load (v19).*.6
-    discard call proc25(v0, v18, v20)
+    discard call proc27(v0, v18, v20)
     v21: s64 = v9 + 1_s64
     goto bb4(v21)
   bb6():
@@ -857,7 +968,7 @@ proc format_aggregate -> void {
     v16: s64 = load s1.view_count
     bounds_check v5 < v16
     v17: s64 = load s1.view_data[v5].1
-    discard call proc25(v0, v15, v17)
+    discard call proc27(v0, v15, v17)
     v18: s64 = v5 + 1_s64
     goto bb1(v18)
   bb3():
@@ -893,7 +1004,7 @@ proc format_field -> void {
     s20: Type_Info  // temporary
     s21: *string  // temporary
   bb0(v0: *Context, v1: *u8, v2: s64):
-    store s0 <- {2_s64, 2_Type_Info_Kind, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0], true}
+    store s0 <- {2_s64, 2_Type_Info_Kind, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0], true, static[0], 0_s64}
     v3: s64 = load s0.0
     v4: bool = v2 == v3
     branch v4 ? bb1() : bb2()
@@ -906,7 +1017,7 @@ proc format_field -> void {
   bb2():
     goto bb3()
   bb3():
-    store s2 <- {57_s64, 2_Type_Info_Kind, "s32", 4_s64, 4_s64, 0_s64, 0_s64, static[0], true}
+    store s2 <- {60_s64, 2_Type_Info_Kind, "s32", 4_s64, 4_s64, 0_s64, 0_s64, static[0], true, static[0], 0_s64}
     v7: s64 = load s2.0
     v8: bool = v2 == v7
     branch v8 ? bb4() : bb5()
@@ -920,7 +1031,7 @@ proc format_field -> void {
   bb5():
     goto bb6()
   bb6():
-    store s4 <- {55_s64, 2_Type_Info_Kind, "s16", 2_s64, 2_s64, 0_s64, 0_s64, static[0], true}
+    store s4 <- {58_s64, 2_Type_Info_Kind, "s16", 2_s64, 2_s64, 0_s64, 0_s64, static[0], true, static[0], 0_s64}
     v12: s64 = load s4.0
     v13: bool = v2 == v12
     branch v13 ? bb7() : bb8()
@@ -934,7 +1045,7 @@ proc format_field -> void {
   bb8():
     goto bb9()
   bb9():
-    store s6 <- {53_s64, 2_Type_Info_Kind, "s8", 1_s64, 1_s64, 0_s64, 0_s64, static[0], true}
+    store s6 <- {56_s64, 2_Type_Info_Kind, "s8", 1_s64, 1_s64, 0_s64, 0_s64, static[0], true, static[0], 0_s64}
     v17: s64 = load s6.0
     v18: bool = v2 == v17
     branch v18 ? bb10() : bb11()
@@ -948,7 +1059,7 @@ proc format_field -> void {
   bb11():
     goto bb12()
   bb12():
-    store s8 <- {39_s64, 2_Type_Info_Kind, "u64", 8_s64, 8_s64, 0_s64, 0_s64, static[0], false}
+    store s8 <- {42_s64, 2_Type_Info_Kind, "u64", 8_s64, 8_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
     v22: s64 = load s8.0
     v23: bool = v2 == v22
     branch v23 ? bb13() : bb14()
@@ -961,7 +1072,7 @@ proc format_field -> void {
   bb14():
     goto bb15()
   bb15():
-    store s10 <- {62_s64, 2_Type_Info_Kind, "u32", 4_s64, 4_s64, 0_s64, 0_s64, static[0], false}
+    store s10 <- {65_s64, 2_Type_Info_Kind, "u32", 4_s64, 4_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
     v26: s64 = load s10.0
     v27: bool = v2 == v26
     branch v27 ? bb16() : bb17()
@@ -975,7 +1086,7 @@ proc format_field -> void {
   bb17():
     goto bb18()
   bb18():
-    store s12 <- {60_s64, 2_Type_Info_Kind, "u16", 2_s64, 2_s64, 0_s64, 0_s64, static[0], false}
+    store s12 <- {63_s64, 2_Type_Info_Kind, "u16", 2_s64, 2_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
     v31: s64 = load s12.0
     v32: bool = v2 == v31
     branch v32 ? bb19() : bb20()
@@ -989,7 +1100,7 @@ proc format_field -> void {
   bb20():
     goto bb21()
   bb21():
-    store s14 <- {3_s64, 2_Type_Info_Kind, "u8", 1_s64, 1_s64, 0_s64, 0_s64, static[0], false}
+    store s14 <- {3_s64, 2_Type_Info_Kind, "u8", 1_s64, 1_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
     v36: s64 = load s14.0
     v37: bool = v2 == v36
     branch v37 ? bb22() : bb23()
@@ -1001,7 +1112,7 @@ proc format_field -> void {
   bb23():
     goto bb24()
   bb24():
-    store s15 <- {41_s64, 3_Type_Info_Kind, "float64", 8_s64, 8_s64, 0_s64, 0_s64, static[0], false}
+    store s15 <- {44_s64, 3_Type_Info_Kind, "float64", 8_s64, 8_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
     v40: s64 = load s15.0
     v41: bool = v2 == v40
     branch v41 ? bb25() : bb26()
@@ -1014,7 +1125,7 @@ proc format_field -> void {
   bb26():
     goto bb27()
   bb27():
-    store s17 <- {66_s64, 3_Type_Info_Kind, "float32", 4_s64, 4_s64, 0_s64, 0_s64, static[0], false}
+    store s17 <- {69_s64, 3_Type_Info_Kind, "float32", 4_s64, 4_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
     v44: s64 = load s17.0
     v45: bool = v2 == v44
     branch v45 ? bb28() : bb29()
@@ -1028,7 +1139,7 @@ proc format_field -> void {
   bb29():
     goto bb30()
   bb30():
-    store s19 <- {1_s64, 1_Type_Info_Kind, "bool", 1_s64, 1_s64, 0_s64, 0_s64, static[0], false}
+    store s19 <- {1_s64, 1_Type_Info_Kind, "bool", 1_s64, 1_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
     v49: s64 = load s19.0
     v50: bool = v2 == v49
     branch v50 ? bb31() : bb32()
@@ -1047,7 +1158,7 @@ proc format_field -> void {
   bb32():
     goto bb33()
   bb33():
-    store s20 <- {4_s64, 4_Type_Info_Kind, "string", 16_s64, 8_s64, 0_s64, 0_s64, static[0], false}
+    store s20 <- {4_s64, 4_Type_Info_Kind, "string", 16_s64, 8_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
     v53: s64 = load s20.0
     v54: bool = v2 == v53
     branch v54 ? bb37() : bb38()
@@ -1186,7 +1297,7 @@ proc print_int -> void {
   bb0(v0: *Context, v1: s64):
     store s0 <- v1
     v2: *s64 = addr s0
-    store s1 <- {2_s64, 2_Type_Info_Kind, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0], true}
+    store s1 <- {2_s64, 2_Type_Info_Kind, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0], true, static[0], 0_s64}
     v3: *Type_Info = addr s1
     zero s2
     store s2.0 <- v3

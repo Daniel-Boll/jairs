@@ -1,0 +1,25 @@
+// EXPECT: E0295 E0204 — an array literal's two refusals (ADR-0194 §2)
+//
+// **An empty literal.** `T.[]` would be a `[0]T`, on which every operation is either an error or a
+// no-op: it cannot be indexed, `size_of` is zero, and a `for` over it runs no iterations. Refused where
+// it is written rather than left to surprise whoever measures it. Its own code rather than E0261's,
+// because that one means "I do not know what this holds" and this one means "it holds nothing" — a
+// reader chasing the first would go looking for a misspelled type name.
+//
+// **An element that does not fit.** The named type is the *expectation* for every element (ADR-0016 §1),
+// so a literal too large is caught at the element that overflows rather than at the array. That is the
+// whole reason naming the type made this construct buildable where `[1, 2, 3]` was deferred: context
+// typing had nowhere to come from.
+//
+// No `#import "Basic"` and no `exit`: this directory's harness runs without a module path.
+
+EMPTY :: () {
+    _ = s64.[];
+}
+
+TOO_BIG :: () {
+    _ = u8.[1, 2, 300];
+}
+
+main :: () {
+}

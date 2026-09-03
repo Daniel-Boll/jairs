@@ -187,6 +187,22 @@ Declaration :: struct {
 /// a view inside an interned value used to mean interning a *pointer* — which ADR-0074 found gives the
 /// evaluator's own address. `fields` is a view over a compiler-emitted read-only table instead, so no
 /// address is ever interned.
+/// One member of an enum, as reflection sees it (ADR-0193 §1).
+///
+/// Deliberately not `Type_Info_Field` reused: a field has an *offset* into a value and a member has a
+/// *value* of its own, so a shared struct would leave one member meaningless in each use and a reader
+/// could not tell which. Two small structs cost one declaration and no ambiguity.
+Type_Info_Member :: struct {
+    /// The member's source name — the `BLUE` of `Colour.BLUE`.
+    name: string;
+
+    /// The member's value, widened to `s64`.
+    ///
+    /// Every member of every enum shares one backing type (ADR-0041 §3), so a single width holds them
+    /// all and reflection needs no per-member type.
+    value: s64;
+}
+
 Type_Info_Field :: struct {
     /// The field's source name.
     name: string;
@@ -246,6 +262,24 @@ Type_Info :: struct {
     /// Appended last, so no existing member's offset moves — the discipline `Type_Info_Kind`'s
     /// `DYNAMIC_ARRAY` member records at length.
     signed: bool;
+
+    /// The members of an **enum**, in declaration order (ADR-0193 §1).
+    ///
+    /// Empty for every other kind — an enum is the only shape whose values have *names*. The view points
+    /// into a read-only table the compiler emitted, exactly as `fields` does, so it is valid for the life
+    /// of the program and must not be written through.
+    ///
+    /// This is what lets `print` show `Colour.BLUE` instead of `2`. Before it there was no member table
+    /// anywhere in the language, so an enum's ordinal was the most anything could say.
+    members: []Type_Info_Member;
+
+    /// The size of one element of an array, view or dynamic array (ADR-0193 §2).
+    ///
+    /// Zero for every other kind. Needed because `element` is a type **id** and ADR-0077 §1 makes an id
+    /// opaque — so nothing could compute a *stride*, and a view's elements were unreachable even though
+    /// its header holds `data` and `count`. A fixed array escaped that only by arithmetic (`size / count`),
+    /// which a view cannot do because its `size` is the header's.
+    element_size: s64;
 }
 
 /// A value whose type is carried alongside it (ADR-0076 §3).
@@ -732,10 +766,7 @@ format_any :: (a: Any) {
         return;
     }
     if kind == Type_Info_Kind.ENUM {
-        // The **numeric** value. An enum's member names are not in `Type_Info` — `fields` describes a
-        // struct's members and `count` is 0 for an enum — so printing `Colour.RED` needs a member table
-        // the compiler does not emit. Recorded in ADR-0189 §6 as owed rather than faked.
-        out_s64(read_signed(a.data, a.type.size));
+        format_enum(a);
         return;
     }
     if kind == Type_Info_Kind.STRUCT || kind == Type_Info_Kind.UNION || kind == Type_Info_Kind.VARIANT {
@@ -746,18 +777,77 @@ format_any :: (a: Any) {
         format_array(a);
         return;
     }
-    // Everything left — a view, a dynamic array, a procedure, `void`. Its type name is the most a caller
-    // can be told, and for a structural type that name is the lowercased *kind* rather than a spelling
-    // (`<view>`, not `<[]s64>`), because the compiler records no name for one. ADR-0189 §6 records both
-    // that and the deeper blocker.
-    //
-    // **A view is not here for a different reason than a procedure is**, and the difference is worth
-    // knowing: a view's elements are reachable — its header holds `data` and `count` — but its *stride*
-    // is not, because `Type_Info.element` is an id and an id yields no size. An array escapes that only
-    // because its own `size` divided by its `count` is the stride.
+    if kind == Type_Info_Kind.VIEW || kind == Type_Info_Kind.DYNAMIC_ARRAY {
+        format_sequence(a);
+        return;
+    }
+    // Everything left — a procedure, `void`, a vector. Its type name is the most a caller can be told, and
+    // for a structural type that name is the lowercased *kind* rather than a spelling (`<procedure>`),
+    // because the compiler records no name for one.
     out_byte(cast(u8, 60));
     out_str(a.type.name);
     out_byte(cast(u8, 62));
+}
+
+/// Appends an enum as its **member name**, or as its number when no member has that value.
+///
+/// The names come from `Type_Info.members`, a table the compiler emits from the same `enum_members` a
+/// `Colour.BLUE` expression reads (ADR-0193 §1) — so reflection and the compiled program cannot disagree
+/// about what `BLUE` is. Before that table existed this printed the ordinal, which is what an enum is
+/// stored as and not what anybody wants to read.
+///
+/// A value with no matching member prints as a number rather than as `<invalid>`: an enum's storage can
+/// hold one (a cast, or a flags enum's combination), and the number is the only true thing to say about it.
+format_enum :: (a: Any) {
+    value := read_signed(a.data, a.type.size);
+    members := a.type.members;
+    i := 0;
+    while i < members.count {
+        if members[i].value == value {
+            out_str(members[i].name);
+            return;
+        }
+        i = i + 1;
+    }
+    out_s64(value);
+}
+
+/// Appends a view or dynamic array as `[a, b, c]`.
+///
+/// Both begin with the same two words — a `*T` and a count — so one routine reads either, and a dynamic
+/// array's third word (its capacity) is simply not read. That is a layout fact from ADR-0136 §1 rather
+/// than a coincidence, and the alternative was two routines that must agree about the first two words.
+///
+/// The stride is `Type_Info.element_size` (ADR-0193 §2). A view could not be printed at all before that
+/// member existed: its elements are reachable through its own header, but `element` is a type **id** and
+/// an id yields no size, so nothing could compute where the second element starts. A fixed array escaped
+/// that only by arithmetic its own `size` allows and a view's does not.
+format_sequence :: (a: Any) {
+    // The header's first word **as a pointer**, not as a number: `typed(*u8, a.data)` is a `**u8` and
+    // dereferencing it yields the `*u8` stored there. Reading it with `read_unsigned` gives the same bits
+    // and the wrong *type* — there is no conversion from an integer back to a pointer (ADR-0106 §1 allows
+    // retyping a pointer, deliberately not inventing one), so element addresses have to come from pointer
+    // arithmetic on this, exactly as `format_array` does on `a.data`.
+    data := typed(*u8, a.data).*;
+    count := read_signed(a.data + 8, 8);
+    stride := a.type.element_size;
+    out_byte(cast(u8, 91));
+    // A stride of zero would loop forever printing the first element, so it is refused rather than
+    // trusted. It can only happen if the compiler emitted no size for a kind that has elements, which is
+    // this compiler's bug — and printing `[?]` says so without hanging the program that asked.
+    if stride == 0 {
+        out_byte(cast(u8, 63));
+    } else {
+        i := 0;
+        while i < count {
+            if i > 0 {
+                out_str(", ");
+            }
+            format_field(data + i * stride, a.type.element);
+            i = i + 1;
+        }
+    }
+    out_byte(cast(u8, 93));
 }
 
 /// Appends a fixed-size array as `[a, b, c]`.

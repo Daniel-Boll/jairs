@@ -1,0 +1,121 @@
+// **Reflection reaches an enum's names, a view's elements, and a structural type's spelling** (ADR-0193).
+//
+// # Why this file exists
+//
+// ADR-0189 §6 recorded four gaps in what `print` could show and named one root cause for all of them:
+// `Type_Info` carries type **ids**, and ADR-0077 §1 makes an id deliberately opaque, so nothing could
+// recurse. Three of the four turned out not to need recursion at all:
+//
+//   * an **enum** needed a member table — names and values, no types involved;
+//   * a **view** needed one number, the element stride, because `size / count` works only for a fixed
+//     array whose `size` is its elements' and not for a view whose `size` is its header's;
+//   * a **structural name** needed its element's *spelling*, which terminates because a declared type
+//     answers by name without looking inside itself.
+//
+// The fourth — a nested aggregate or enum *field* — does need the recursion, and is asserted below as it
+// still is, so the day it lifts this file's expectation changes visibly rather than silently.
+//
+// The exit code is a checksum over what printed, so a wrong rendering fails the run.
+
+#import "Basic";
+
+Colour :: enum {
+    RED;
+    GREEN;
+    BLUE;
+}
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+Inner :: struct {
+    a: s64;
+}
+
+Outer :: struct {
+    i: Inner;
+    n: s64;
+}
+
+// A self-referential type: the spelling of `*Node` must terminate, and it does because `Node` is
+// *declared* and so is answered by name rather than by walking its members.
+Node :: struct {
+    next: *Node;
+    n: s64;
+}
+
+main :: () {
+    total := 0;
+
+    // An enum's member table, read directly. Three members, in declaration order, with their values.
+    ti := type_info(Colour);
+    total = total + ti.members.count;
+    if ti.members[0].name.count == 3 {
+        total = total + 10;
+    }
+    if ti.members[2].value == 2 {
+        total = total + 20;
+    }
+
+    // The element stride, which a view has and a pointer deliberately does not: a pointer holds one
+    // address rather than a sequence, so reporting a stride would invite arithmetic reflection cannot
+    // justify.
+    a: [4]s64;
+    a[0] = 10;
+    a[1] = 20;
+    a[2] = 30;
+    a[3] = 40;
+    v := view(*a[0], 4);
+    if type_info(type_of(v)).element_size == 8 {
+        total = total + 100;
+    }
+    if type_info(*Point).element_size == 0 {
+        total = total + 200;
+    }
+
+    // A view's `element` names its element type — the arm that was missing, and whose absence was
+    // invisible until the stride arrived beside it and the formatter had a stride but no type.
+    if type_info(type_of(v)).element == type_info(s64).id {
+        total = total + 1000;
+    }
+    // A view reports **no** static count, because its count lives in its own header at run time. A fixed
+    // array does report one. Asserting both is what stops a later change reporting a plausible lie.
+    if type_info(type_of(v)).count == 0 {
+        total = total + 2000;
+    }
+    if type_info(type_of(a)).count == 4 {
+        total = total + 4000;
+    }
+
+    // Structural spellings, composed from the element's own. `Point` and `Node` answer by declaration,
+    // which is what makes `*Node` two steps instead of infinitely many.
+    if type_info(type_of(a)).name.count == 6 {
+        total = total + 10000;
+    }
+    if type_info(*Point).name.count == 6 {
+        total = total + 20000;
+    }
+    if type_info(**Node).name.count == 6 {
+        total = total + 40000;
+    }
+
+    // And the printed output itself, which is the whole point of the wave.
+    print("enum %, view %, array %\n", Colour.BLUE, v, a);
+    print("names % % %\n", type_info(type_of(a)).name, type_info(type_of(v)).name, type_info(**Node).name);
+
+    // **The gap that remains**, asserted rather than omitted: a field's type is an *id*, so
+    // `format_field` compares it against the builtins and prints `..` for anything else — a nested
+    // aggregate, and an enum in a field. Lifting it needs the id-to-`Type_Info` table ADR-0193 §4 defers.
+    o: Outer;
+    o.i.a = 1;
+    o.n = 3;
+    print("still opaque %\n", o);
+
+    // 3 + 10 + 20 + 100 + 200 + 1000 + 2000 + 4000 + 10000 + 20000 + 40000 = 77333.
+    if total != 77333 {
+        exit(1);
+    }
+    exit(88);
+}

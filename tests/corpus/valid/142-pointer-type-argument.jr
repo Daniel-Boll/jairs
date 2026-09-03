@@ -1,0 +1,72 @@
+// **A pointer type as an intrinsic's type argument** — `any_as(a, *Point)`, `size_of(*u8)` (ADR-0191).
+//
+// # Why this file exists
+//
+// ADR-0189 §2 made an implicitly coerced argument describe **itself**, so `f(*p)` where `f` wants an
+// `Any` yields an `Any` whose type is `*Point`. That made a pointer the *common* thing to find in an
+// `Any` — and there was no spelling that read one back: `any_as(a, Point)` correctly traps on it, and
+// `any_as(a, *Point)` was E0261, "needs a type as its second argument".
+//
+// A migrated differential test had to work around that rather than use it, which is how the gap was
+// found. So this file exercises the round trip the two ADRs make together: erase a pointer implicitly,
+// recover it by naming its type, read through it, and get the value back.
+//
+// The recursion is exercised too (`**s64`), because the arm that handles `*T` calls itself and a
+// one-level implementation would pass every single-star test.
+
+#import "Basic";
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+// Takes the `Any` the implicit coercion builds, and reads it back through its real type.
+sum_through_pointer :: (a: Any) -> s64 {
+    pp := any_as(a, *Point);
+    return pp.*.x + pp.*.y;
+}
+
+// The same value, erased the *explicit* way, which describes the pointee instead (ADR-0189 §2).
+sum_through_value :: (a: Any) -> s64 {
+    p := any_as(a, Point);
+    return p.x + p.y;
+}
+
+main :: () {
+    total := 0;
+
+    p: Point;
+    p.x = 3;
+    p.y = 4;
+
+    // The implicit coercion, read back by naming the pointer type. This is the line the wave exists for.
+    total = total + sum_through_pointer(*p);
+
+    // The explicit form still describes the pointee, so it reads back as a `Point`. Both spellings work
+    // and they mean different things — asserting both in one file is what stops one silently becoming
+    // the other.
+    total = total + sum_through_value(any_of(*p));
+
+    // A pointer type is a type everywhere an intrinsic takes one, not only in `any_as`.
+    if size_of(*Point) == size_of(*u8) {
+        total = total + 100;
+    }
+
+    // Recursion: `**s64` needs the arm to call itself.
+    if size_of(**s64) == size_of(*u8) {
+        total = total + 200;
+    }
+
+    // A pointer type's own reflection: the kind is POINTER and the size is a machine word, whatever the
+    // pointee. `type_info` takes the same argument shape as `any_as`, through the same one function.
+    if type_info(*Point).kind == Type_Info_Kind.POINTER {
+        total = total + 1000;
+    }
+    if type_info(*Point).id != type_info(Point).id {
+        total = total + 2000;
+    }
+
+    // 7 + 7 + 100 + 200 + 1000 + 2000 = 3314, and 3314 % 251 = 51.
+    exit(total % 251);
+}

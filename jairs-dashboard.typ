@@ -97,22 +97,22 @@
 #h(4pt)
 #pill[1082 tests]
 #h(4pt)
-#pill[ADR-0189 latest]
+#pill[ADR-0194 latest]
 #h(4pt)
 #pill(fill: rgb("#eaf5ee"), stroke: good)[ALL TWELVE WAVES DONE]
 #h(4pt)
 #pill(fill: rgb("#eaf5ee"), stroke: good)[everything merged to main]
 #h(4pt)
-#pill(fill: rgb("#eaf5ee"), stroke: good)[print: %-formatted, any type]
+#pill(fill: rgb("#eaf5ee"), stroke: good)[5 language utilities landed]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
   metric("Tests", "1082", "workspace, all seven gates"),
-  metric("Corpus", "270", "jr files, all three engines"),
-  metric("ADRs", "189", "0001 to 0189, immutable"),
-  metric("Diagnostics", "130", "declared codes, E0295 next"),
+  metric("Corpus", "277", "jr files, all three engines"),
+  metric("ADRs", "194", "0001 to 0194, immutable"),
+  metric("Diagnostics", "131", "declared codes, E0296 next"),
   metric("Editor checks", "170", "Neovim, verified not gated"),
 )
 
@@ -441,15 +441,15 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[A program can report what it computed]
+    #sub[Five language utilities the plan had owed]
     #text(size: 7.4pt)[
-      ADR-0189. Tests *hold at 1082*, corpus 269 to *270*, ADRs 188 to *189*, no new diagnostic code for
-      the fifth stretch running. `print("x = %, ok = %", 42, true)` in Jairs, over the variadic and the
-      reflection already built — every integer width including `S64_MIN`, floats, `bool`, pointers, a
-      struct by field name. It is the *first* caller to compose four shipped features, and composing them
-      found *four compiler defects*: three `imports.is_empty()` guards hiding the standard library's own
-      types from itself, and the inliner moving a global reference across files, which ADR-0186 assumed
-      impossible in the same decision that made it possible.
+      ADR-0190 to 0194. Tests *hold at 1082*, corpus 270 to *277*, ADRs 189 to *194*, one new diagnostic
+      code (E0295). Typed constants `FLAG : u32 : 256` — twenty casts gone from `modules/GL`; a pointer
+      type as an intrinsic's argument; `type_of(x)`; an enum's *member names* and a view's elements in
+      reflection; and *array literals* `s64.[1, 2, 3]`, which real Jai code uses 39 times and which was
+      the most used construct this language lacked. Each wave paid the next: two arms added to
+      `described_type` are why the array literal's element type cost no code, and `Point.[…]`,
+      `(*u8).[…]` and `type_of(x).[…]` all work for free.
     ]
 
     #v(0.3em)
@@ -600,10 +600,10 @@
   Sources: PLAN.md §1.5 and §7, the ADR directory, `docs/decisions/DECISIONS.md`, and all seven gates
   run today on `main` *after* the merge, not on a branch. Every number was measured rather than carried
   forward — the test count from a full workspace run (1082, zero failures) and a second under
-  `--features jr-cli/llvm` (1088), the corpus count from a file walk (270 `.jr` files under
+  `--features jr-cli/llvm` (1088), the corpus count from a file walk (277 `.jr` files under
   `tests/corpus/` outside `tests/corpus/modules/`), the ADR count from `docs/adr/`, and the editor-check
   count from a real `verify.lua` run (170). The diagnostic count is *every* `const NAME: &str = "E0nnn"`
-  across the crates, which is 130 — and the counting rule is written down here because the previous number
+  across the crates, which is 131 — and the counting rule is written down here because the previous number
   was 126 by a method nobody recorded: three of the 130 are named for what they mean rather than for their
   code (`jr-mir`'s `USE_OF_UNINITIALISED`, `MISSING_RETURN`, `JUMP_OUTSIDE_LOOP`), so a count that keys on
   the *name* misses them. Ownership is enforced by `jr-cli/tests/codes.rs` rather than asserted in prose. Rebuild with `typst compile jairs-dashboard.typ`.

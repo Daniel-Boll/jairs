@@ -960,6 +960,24 @@ impl<'a> LowerCtx<'a> {
     fn lower_top_expr(&mut self, expr: &AstExpr) -> ExprId {
         let span = self.span_of_node(expr.syntax());
         match expr {
+            // **A fixed array literal** (ADR-0194 §1). The element type is lowered as an *expression*,
+            // which is what lets sema resolve it through `described_type` — the same route every
+            // intrinsic's type argument takes.
+            AstExpr::ArrayLiteral(al) => {
+                let elem_ty = al
+                    .element_type()
+                    .map(|t| self.lower_top_expr(&t))
+                    .unwrap_or_else(|| self.alloc_top_expr(Expr::Error(span), span));
+                let elems: Vec<ExprId> = al.elements().map(|e| self.lower_top_expr(&e)).collect();
+                self.alloc_top_expr(
+                    Expr::ArrayLit {
+                        elem_ty,
+                        elems,
+                        span,
+                    },
+                    span,
+                )
+            }
             AstExpr::Literal(lit) => {
                 let literal = lower_literal_impl(lit, span, self.interner, &mut self.diags);
                 self.alloc_top_expr(Expr::Literal(literal, span), span)
@@ -1551,19 +1569,28 @@ impl<'a> LowerCtx<'a> {
                 None => {
                     let err = self.alloc_top_expr_error(span);
                     ItemKind::Const {
-                        value: ConstValue::Expr(err),
+                        value: ConstValue::Expr {
+                            expr: err,
+                            ty: None,
+                        },
                     }
                 }
             }
         } else if let Some(expr) = cd.value_expr() {
             let expr_id = self.lower_top_expr(&expr);
+            // **The annotation of a typed constant** (ADR-0190 §2). `cd.ty()` is `Some` only for
+            // `name : T : value`, which the parser wraps as a `CONST_DECL` carrying a type child.
+            let ty = cd.ty().map(|t| self.lower_type_expr_top(&t));
             ItemKind::Const {
-                value: ConstValue::Expr(expr_id),
+                value: ConstValue::Expr { expr: expr_id, ty },
             }
         } else {
             let err_id = self.alloc_top_expr(Expr::Error(span), span);
             ItemKind::Const {
-                value: ConstValue::Expr(err_id),
+                value: ConstValue::Expr {
+                    expr: err_id,
+                    ty: None,
+                },
             }
         };
 
@@ -3214,6 +3241,22 @@ impl<'a> BodyLowerCtx<'a> {
     fn lower_expr(&mut self, expr: &AstExpr) -> ExprId {
         let span = self.span_of_node(expr.syntax());
         match expr {
+            // See `lower_top_expr`'s twin arm for why the element type is an expression.
+            AstExpr::ArrayLiteral(al) => {
+                let elem_ty = al
+                    .element_type()
+                    .map(|t| self.lower_expr(&t))
+                    .unwrap_or_else(|| self.alloc_expr(Expr::Error(span), span));
+                let elems: Vec<ExprId> = al.elements().map(|e| self.lower_expr(&e)).collect();
+                self.alloc_expr(
+                    Expr::ArrayLit {
+                        elem_ty,
+                        elems,
+                        span,
+                    },
+                    span,
+                )
+            }
             AstExpr::Literal(lit) => {
                 let literal = lower_literal_impl(lit, span, self.interner, &mut self.diags);
                 self.alloc_expr(Expr::Literal(literal, span), span)

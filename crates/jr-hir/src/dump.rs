@@ -171,9 +171,17 @@ impl<'a> Dumper<'a> {
                         self.indent -= 1;
                         self.line("}");
                     }
-                    ConstValue::Expr(eid) => {
-                        let expr_str = self.fmt_top_expr(*eid);
-                        self.line(&format!("Item[{i}] Const {name} :: {expr_str}"));
+                    ConstValue::Expr { expr, ty } => {
+                        let expr_str = self.fmt_top_expr(*expr);
+                        // The annotation is printed, because a typed constant and an untyped one with the
+                        // same initialiser are *different* declarations and a dump that cannot tell them
+                        // apart would make a snapshot blind to the difference (ADR-0190 §2).
+                        match ty {
+                            Some(_) => {
+                                self.line(&format!("Item[{i}] Const {name} : <ty> : {expr_str}"))
+                            }
+                            None => self.line(&format!("Item[{i}] Const {name} :: {expr_str}")),
+                        }
                     }
                 },
                 ItemKind::Var { ty, init, uninit } => {
@@ -508,6 +516,10 @@ fn fmt_expr_impl(expr: &Expr, interner: &Interner, is_top: bool, body: Option<&B
         Expr::Call { callee, args, .. } => {
             let args_str: Vec<String> = args.iter().map(|a| sub_expr(*a)).collect();
             format!("{}({})", sub_expr(*callee), args_str.join(", "))
+        }
+        Expr::ArrayLit { elem_ty, elems, .. } => {
+            let parts: Vec<String> = elems.iter().map(|e| sub_expr(*e)).collect();
+            format!("{}.[{}]", sub_expr(*elem_ty), parts.join(", "))
         }
         Expr::Field { receiver, name, .. } => {
             format!("{}.{}", sub_expr(*receiver), sym(*name))

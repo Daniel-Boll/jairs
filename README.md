@@ -17,7 +17,13 @@ with the same API as Jai's `Simp`. Every one of those claims has a capability
 table behind it, kept honest at the end of every wave — if a table and the code
 disagree, the code is right and the table has a bug.
 
-A program can now report what it computed. `print("x = %, ok = %\n", 42, true)`
+The language gained five utilities it had owed for several waves: typed constants
+(`FLAG : u32 : 256`), array literals (`s64.[1, 2, 3]` — the most used construct
+real Jai code has and this did not), `type_of(x)`, a pointer type as an
+intrinsic's argument, and reflection over an enum's member names. Twenty casts
+disappeared from `modules/GL`, and `print` now shows `BLUE` rather than `2`.
+
+A program can report what it computed. `print("x = %, ok = %\n", 42, true)`
 is written in Jairs, over the variadic and the reflection the compiler already
 had — every integer width including the most negative one, floats, `bool`,
 pointers, a struct by field name. Before it the library could print a string and
@@ -39,7 +45,7 @@ Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
 - **1082** workspace tests, all seven gates green.
-- **270** `.jr` corpus files, **189** accepted ADRs, **23** standard library
+- **277** `.jr` corpus files, **194** accepted ADRs, **23** standard library
   modules.
 - macOS arm64 is verified locally, gate by gate. Linux x86-64 has never been
   verified by a human reading a result: `main` was pushed for the first time on
@@ -120,7 +126,7 @@ before: two gates run at once and race a shared binary.
 - **[`docs/jai-parity.md`](docs/jai-parity.md)** — what real Jai code uses that
   this does not, syntax and libraries, each traced to a source and probed where
   a probe was possible.
-- **[`docs/adr/README.md`](docs/adr/README.md)** — all 189 accepted decision
+- **[`docs/adr/README.md`](docs/adr/README.md)** — all 194 accepted decision
   records.
 - **[`docs/spec/`](docs/spec/)** — the language specification chapters.
 - **[`examples/`](examples/)** — runnable programs, each verified.

@@ -694,6 +694,12 @@ fn a_polymorphic_struct_agrees_in_both_engines() {
 /// engines agreed would pass if both lost the distinction, which is exactly the regression that matters:
 /// `any_of` is the escape hatch that keeps "describe the pointee" reachable, and if the implicit form
 /// silently did the same thing again there would be no way to print a pointer.
+///
+/// This test **does not read the value back**, and now that is a choice rather than a limitation.
+/// `any_as(a, *Point)` was E0261 when this was migrated, so recovering an implicitly coerced pointer had
+/// no spelling at all; ADR-0191 added it, and `tests/corpus/valid/142-pointer-type-argument.jr` exercises
+/// the round trip in both engines. What is left here is the one property a corpus file cannot carry —
+/// that the two *spellings* describe different types — so the two tests do not overlap.
 #[test]
 fn a_pointer_coerces_to_any_at_a_call_in_both_engines() {
     let dir = TempDir::new().expect("a temporary directory");

@@ -529,3 +529,16 @@ pub(crate) const E0291: &str = "E0291";
 /// Owned by `jr-sema`, continuing this crate's block, and raised at the **declaration** rather than at a
 /// use: a `#library` nobody calls is still wrong, and reporting per use would say it once per binding.
 pub(crate) const E0293: &str = "E0293";
+
+/// An array literal with no elements — `T.[]` (ADR-0194 §2).
+///
+/// A `[0]T` has no use a caller could name: it cannot be indexed, `size_of` is zero, and a `for` over it
+/// runs no iterations — so every operation on one is either an error or a no-op. Refused where it is
+/// written rather than allowed and left to surprise whoever measures it.
+///
+/// **Not folded into E0261**, which is the neighbouring refusal for a literal whose element *type* cannot
+/// be resolved: that one means "I do not know what this holds" and this one means "it holds nothing", and
+/// a reader chasing the first would look for a misspelled type name.
+///
+/// Owned by `jr-sema`, continuing this crate's block. E0296 is the first free code.
+pub(crate) const E0295: &str = "E0295";

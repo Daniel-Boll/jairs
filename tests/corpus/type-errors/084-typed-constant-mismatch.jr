@@ -1,0 +1,20 @@
+// EXPECT: E0204 E0214 — a typed constant's value must fit its annotation (ADR-0190 §2)
+//
+// The refusal lands where the constant is *written*, not where it is used, which is the whole point of
+// the annotation: before it, `BAD :: 300` was a legal `s64` and the error surfaced at whichever call
+// first wanted a `u8` — possibly in another file, possibly not at all.
+//
+// Two codes in one fixture because they fail through different paths and both must keep working: an
+// integer literal that does not fit is caught by the literal-range check, and a value of an unrelated
+// type is caught by the ordinary expectation mismatch. Neither is new — the annotation simply gives them
+// somewhere earlier to fire.
+//
+// No `#import "Basic"` and no `exit`: this directory's harness runs without a module path, so a program
+// here that reached for the standard library would fail *resolution* and never get to sema.
+
+TOO_BIG : u8 : 300;
+
+WRONG_KIND : s64 : "text";
+
+main :: () {
+}

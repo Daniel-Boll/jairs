@@ -41,7 +41,7 @@ use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
     E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272, E0277,
-    E0278, E0279, E0284, E0285, E0286, E0287, E0288, E0289, E0291, E0293,
+    E0278, E0279, E0284, E0285, E0286, E0287, E0288, E0289, E0291, E0293, E0295,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -183,6 +183,14 @@ const TYPE_INFO_FIELDS: &[(&str, TypeInfoField)] = &[
     // name is always one of `s8`..`u64`. Depending on a compiler limitation for correctness is how a
     // `u64` above 2^63 comes to print as negative the day that limitation is fixed.
     ("signed", TypeInfoField::Exact(PoolId::BOOL)),
+    // **An enum's members** (ADR-0193 §1), and the second `ViewOfStruct` in this table — which is why that
+    // descriptor is shape-checked rather than naming a `PoolId`: `Type_Info_Member`'s id depends on its
+    // declaration site just as `Type_Info_Field`'s does, so neither can be named here in advance.
+    ("members", TypeInfoField::ViewOfStruct),
+    // **One element's size** (ADR-0193 §2), for an array, view or dynamic array. A plain number rather
+    // than a `*Type_Info`, because a stride is all a caller needs to walk elements and a pointer would
+    // need a per-type table with a cycle rule (§4).
+    ("element_size", TypeInfoField::Exact(PoolId::S64)),
 ];
 
 // ---------------------------------------------------------------------------
@@ -1624,6 +1632,15 @@ impl Ctx<'_> {
             }
             Expr::Slice { base, span } => {
                 let ty = self.check_slice(scope, base, span);
+                self.expect(expected, ty, span)
+            }
+            // **A fixed array literal** (ADR-0194 §2).
+            Expr::ArrayLit {
+                elem_ty,
+                elems,
+                span,
+            } => {
+                let ty = self.check_array_literal(scope, elem_ty, &elems, span);
                 self.expect(expected, ty, span)
             }
             // Both take `expected` **directly** rather than through `expect`: the context is
@@ -4104,6 +4121,65 @@ impl Ctx<'_> {
     /// It arrives now because **typed allocation asked for it**: a caller allocating `n` elements needs
     /// `n * size_of(T)` bytes, and until this sub-wave nothing could name that number. A facility with no
     /// caller is what ADR-0080 §3 declined to build; this one has one.
+    /// Types `T.[a, b, c]` — a fixed array literal (ADR-0194 §2).
+    ///
+    /// The element type goes through [`Ctx::described_type`], the one function every intrinsic asks for a
+    /// type argument, so `Point.[…]`, `Slot(s64, s64).[…]`, `(*u8).[…]` and `type_of(x).[…]` all work
+    /// without a line here. Each element is then checked with that type as its **expectation**, which is
+    /// ADR-0016 §1's existing mechanism rather than a new inference — so `u8.[1, 2, 3]` types its literals
+    /// as `u8` and one that does not fit is E0204 at the element that overflows.
+    ///
+    /// The length is the element count. ADR-0039 §6 deferred `[1, 2, 3]` over three questions — inferred
+    /// versus declared length, whether elements must be constant, and how context typing reaches an
+    /// element — and naming the type answers all three by construction.
+    ///
+    /// An empty literal is refused: `T.[]` would be a `[0]T`, which has no use a caller could name and
+    /// would make `size_of` zero. Refused here rather than allowed and left to surprise someone.
+    fn check_array_literal(
+        &mut self,
+        scope: ExprScope,
+        elem_ty: ExprId,
+        elems: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        self.type_position.insert((scope, elem_ty));
+        let described = self.described_type(scope, elem_ty);
+        self.types.set_expr(scope, elem_ty, PoolId::TYPE);
+        let Some(described) = described else {
+            self.diags.push(
+                Diagnostic::error(span, "an array literal needs an element type")
+                    .with_code(E0261)
+                    .with_note("the type before `.[` is the element type, e.g. `s64.[1, 2, 3]`"),
+            );
+            for &e in elems {
+                self.check_expr(scope, e, None);
+            }
+            return PoolId::ERROR;
+        };
+        // Poison propagates rather than refusing, exactly as ADR-0192 §4 established for `size_of`: inside
+        // a `$T` template the element type is not yet bound, and every element still wants typing.
+        if described == PoolId::ERROR {
+            for &e in elems {
+                self.check_expr(scope, e, None);
+            }
+            return PoolId::ERROR;
+        }
+        for &e in elems {
+            self.check_expr(scope, e, Some(described));
+        }
+        if elems.is_empty() {
+            self.diags.push(
+                Diagnostic::error(span, "an array literal needs at least one element")
+                    .with_code(E0295)
+                    .with_note(
+                        "a `[0]T` has no use a caller could name; declare `a: [N]T;` instead",
+                    ),
+            );
+            return PoolId::ERROR;
+        }
+        self.pool.array_of(described, elems.len() as u64)
+    }
+
     fn check_size_of(
         &mut self,
         scope: ExprScope,
@@ -4141,6 +4217,14 @@ impl Ctx<'_> {
             );
             return PoolId::ERROR;
         };
+        // **A poisoned described type is silence, not a refusal** (ADR-0192 §4, ADR-0017 §4). The arm above
+        // already does this for the *name* `T` inside a `$T` body; `size_of(type_of(v))` reaches the same
+        // situation one level deeper, because `v`'s type is `ERROR` until a call site binds it. Without this
+        // it reported "`size_of` cannot measure `<unknown>`" on a template that every instantiation types
+        // perfectly — an error about the compiler's own placeholder, shown to the author.
+        if described == PoolId::ERROR {
+            return PoolId::ERROR;
+        }
         let Ok(layout) = jr_pool::layout_of(self.pool, jr_pool::TargetLayout::LP64, described)
         else {
             let text = self.describe(described);
@@ -5032,6 +5116,66 @@ impl Ctx<'_> {
     /// is perfectly well known, and the objection is that it is a value rather than a type. Returning
     /// `None` lets the caller raise E0261, which says exactly that.
     fn described_type(&mut self, scope: ExprScope, arg: ExprId) -> Option<PoolId> {
+        // **A pointer type argument** — `any_as(a, *Point)`, `size_of(*u8)` (ADR-0191 §1). In *type*
+        // position `*T` is a `TypeRef::Pointer`; as an intrinsic's argument it is an **expression**, so the
+        // parser reads prefix `*` as address-of applied to the name `Point`. Recognised here for the same
+        // reason the parameterised form below is: only the intrinsic knows its argument is a type.
+        //
+        // This is the read-back half of ADR-0189 §2, which made an implicitly coerced argument describe
+        // **itself** — so an `Any` holding a `*Point` became the *common* case, and `any_as(a, Point)`
+        // correctly traps on one. Without this arm there was no spelling that recovered it, which a
+        // migrated differential test had to work around rather than use.
+        if let Expr::Unary {
+            op: jr_hir::UnOp::AddrOf,
+            operand,
+            ..
+        } = self.expr_of(scope, arg)
+        {
+            self.type_position.insert((scope, operand));
+            let inner = self.described_type(scope, operand)?;
+            self.types.set_expr(scope, operand, PoolId::TYPE);
+            return Some(self.pool.pointer_to(inner));
+        }
+        // **`type_of(x)` names the type of a value** (ADR-0192 §1), and it is the one type argument whose
+        // own argument is *not* a type. So it is matched before the parameterised form below, and its
+        // operand is deliberately **not** marked a type position: `x` is a value, and marking it would
+        // suppress the E0261 that should fire for `type_of(s64)`.
+        //
+        // Placed in this function rather than as an ordinary intrinsic arm because every intrinsic that
+        // takes a type asks here — so `size_of(type_of(x))`, `type_info(type_of(x))` and
+        // `any_as(a, type_of(x))` all work from one arm, and a nested `Slot(type_of(a), type_of(b))` does
+        // too, since the parameterised arm resolves its arguments through this same function.
+        if let Expr::Call { callee, args, .. } = self.expr_of(scope, arg)
+            && let Expr::Name { name, .. } = self.expr_of(scope, callee)
+            && self.interner.resolve(name) == "type_of"
+            && matches!(self.resolve.get(scope, callee), None | Some(Res::Error))
+        {
+            self.types.set_expr(scope, callee, PoolId::VOID);
+            if args.len() != 1 {
+                self.wrong_intrinsic_arity(
+                    "type_of",
+                    1,
+                    args.len(),
+                    self.expr_of(scope, arg).span(),
+                );
+                for &a in &args {
+                    self.check_expr(scope, a, None);
+                }
+                return None;
+            }
+            let ty = self.check_expr(scope, args[0], None);
+            // **A type argument, not a value.** `type_of(s64)` is refused by answering `None`, which lets the
+            // enclosing intrinsic raise its own E0261 rather than inventing a second message for one mistake.
+            if ty == PoolId::TYPE {
+                return None;
+            }
+            // **Poison propagates rather than refusing** (ADR-0017 §4). Inside a `$T` template the parameter's
+            // type is `ERROR` until a call site binds it, and every other operation on such a value is
+            // silently tolerated — `v.x` and `cast(s64, v)` report nothing in a template body. Answering
+            // `None` here instead made `size_of(type_of(v))` report "`size_of` needs a type" on a template
+            // that is perfectly well formed, and the instantiation would have typed it fine.
+            return Some(ty);
+        }
         // **A parameterised type argument** — `size_of(Slot(s64, s64))` (ADR-0119 §1). In *type* position that is
         // a `TypeRef::Apply`, but an intrinsic's argument is an **expression**, so it parses as a call: the
         // constructor is the callee name and the arguments are ordinary expressions. Recognised here rather than
@@ -6537,6 +6681,11 @@ impl Ctx<'_> {
     /// pointer is assignable and deciding that needs the receiver's type.
     fn is_place(&mut self, scope: ExprScope, id: ExprId) -> bool {
         match self.expr_of(scope, id) {
+            // **An array literal is a value, not a place** (ADR-0194 §2). It has no storage a program can
+            // name: MIR materialises one to build it, and that slot is an implementation detail, so
+            // `s64.[1, 2][0] = 5` must be refused rather than assigning into a temporary nobody can read
+            // back.
+            Expr::ArrayLit { .. } => false,
             // **`context` itself is not a place** — it is the pointer value, not storage — but
             // `context.allocator` is, because `Expr::Field` on a pointer receiver is assignable and
             // that arm decides it from the receiver's *type*. So writing the field works and
@@ -6618,6 +6767,10 @@ impl Ctx<'_> {
     /// a mismatch against a defaulted `s64`.
     fn is_untyped_literal(&self, scope: ExprScope, id: ExprId) -> bool {
         match self.expr_of(scope, id) {
+            // **Not untyped**, despite the name: an array literal names its element type, so it has one
+            // answer regardless of context. That is the whole reason `T.[…]` was buildable where
+            // ADR-0039 §6's `[1, 2, 3]` was not (ADR-0194 §1).
+            Expr::ArrayLit { .. } => false,
             Expr::Literal(literal, _) => match literal {
                 // A float literal is untyped for the same reason an integer one is
                 // (ADR-0040 §5): it takes its type from context, so `1.5 + x` where `x` is a

@@ -632,6 +632,19 @@ pub enum SyntaxKind {
     ARG_LIST,
     /// `a.b`
     FIELD_EXPR,
+    /// `T.[a, b, c]` — a fixed array literal whose element type is named (ADR-0194 §1).
+    ///
+    /// Postfix on the type expression, at the same precedence as `.b`, so it is parsed by the same chain
+    /// and `T.[1, 2].count` reads the way a reader expects. A separate kind from `FIELD_EXPR` because the
+    /// two produce entirely different things and one token of lookahead tells them apart: a field name is
+    /// always an `IDENT`.
+    ///
+    /// **Naming the element type is what made this expressible** where ADR-0039 §6 deferred `[1, 2, 3]`.
+    /// That form needed three decisions — inferred versus declared length, whether elements must be
+    /// constant, and how context typing reaches an element. `T.[…]` answers all three by construction: the
+    /// length is the element count, the elements are ordinary expressions, and each is checked against the
+    /// *named* type, which is ADR-0016 §1's existing expectation mechanism rather than a new inference.
+    ARRAY_LITERAL,
     /// `a[i]` (ADR-0039 §5).
     ///
     /// Postfix, at the same precedence as `.b` and `.*`, so `a[i].x` and `a.b[i]`

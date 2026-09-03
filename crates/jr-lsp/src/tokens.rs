@@ -434,7 +434,7 @@ fn item_kind(hir: &FileHir, item: jr_hir::ItemId) -> Kind {
             | jr_hir::ConstValue::Union(_)
             | jr_hir::ConstValue::Variant(_) => Kind::Struct,
             jr_hir::ConstValue::Enum(_) => Kind::Enum,
-            jr_hir::ConstValue::Expr(_) => Kind::Variable,
+            jr_hir::ConstValue::Expr { .. } => Kind::Variable,
         },
         ItemKind::Var { .. } => Kind::Variable,
         ItemKind::Import { .. } => Kind::Namespace,

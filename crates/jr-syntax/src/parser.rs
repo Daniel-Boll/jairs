@@ -989,9 +989,20 @@ impl<'src> Parser<'src> {
         self.finish_node();
     }
 
+    /// Parses `name : Type`, `name : Type = expr ;`, `name : Type = --- ;` — and `name : Type : value ;`,
+    /// the **typed constant** (ADR-0190 §1).
+    ///
+    /// The node kind is not known until the type has been read, because `X : u32 : 5` and `x : u32 = 5`
+    /// differ only in a token that comes *after* the annotation. So the tree is built behind a checkpoint
+    /// and wrapped as a `CONST_DECL` or a `VAR_DECL` once the answer is in — the same technique
+    /// `parse_expr_or_assign_stmt` uses for `=` and for the same reason.
+    ///
+    /// A third node kind was rejected. A typed constant *is* a constant: it has a value at compile time
+    /// and no storage, and every consumer of `CONST_DECL` — `file_consts`, the signature phase, the
+    /// formatter, the LSP — already does the right thing with one. A `TYPED_CONST_DECL` would teach a
+    /// dozen places about a variant that behaves identically everywhere except in reading one extra child.
     fn parse_var_decl_typed(&mut self) {
-        // `name : Type` or `name : Type = expr ;` or `name : Type = --- ;`
-        self.start_node(VAR_DECL);
+        let cp = self.checkpoint();
         self.parse_name();
         self.bump(); // `:`
         // Parse the type
@@ -1000,8 +1011,17 @@ impl<'src> Parser<'src> {
         } else {
             let span = self.current_span();
             self.error(span, "expected a type after `:`", E0105);
-            // Don't consume — let the `=` or `;` be found below
+            // Don't consume — let the `=`, `:` or `;` be found below
         }
+        // **`:` here means a typed constant**, `=` or nothing means a variable.
+        if self.at(COLON) {
+            self.start_node_at(cp, CONST_DECL);
+            self.bump(); // `:`
+            self.parse_const_value();
+            self.finish_node();
+            return;
+        }
+        self.start_node_at(cp, VAR_DECL);
         // Optional `= rhs`
         if self.eat(EQ) {
             self.parse_rhs_value();
@@ -2449,6 +2469,28 @@ impl<'src> Parser<'src> {
 
             match self.current() {
                 DOT => {
+                    // **`T.[a, b, c]` is an array literal** (ADR-0194 §1), not a field access. One token of
+                    // lookahead past the `.` decides it, and that is enough: a field name is always an
+                    // `IDENT` and can never be a `[`.
+                    if self.nth(1) == L_BRACK {
+                        self.start_node_at(cp, ARRAY_LITERAL);
+                        self.bump(); // `.`
+                        self.bump(); // `[`
+                        while !self.at(R_BRACK) && !self.at(EOF) {
+                            if !self.at_set(EXPR_START) {
+                                let span = self.current_span();
+                                self.error(span, "expected an element in the array literal", E0118);
+                                break;
+                            }
+                            self.parse_expr();
+                            if !self.eat(COMMA) {
+                                break;
+                            }
+                        }
+                        self.expect(R_BRACK);
+                        self.finish_node();
+                        continue;
+                    }
                     self.start_node_at(cp, FIELD_EXPR);
                     self.bump(); // `.`
                     if !self.eat(IDENT) {

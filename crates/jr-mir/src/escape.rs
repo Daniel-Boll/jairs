@@ -358,6 +358,15 @@ fn addr_taken(body: &Body) -> (FxHashSet<LocalId>, FxHashSet<jr_hir::ParamId>) {
 
     while let Some((expr_id, under_addr_of)) = expr_worklist.pop() {
         match body.expr(expr_id) {
+            // **Each element is walked with the flag unchanged** (ADR-0194 §3). The literal's own storage
+            // is a slot MIR creates, never a local, so it makes nothing escape by itself — but an element
+            // may be `*x`, and that `x` escapes exactly as it would anywhere else. The element *type* is
+            // not walked: it denotes a type and names no storage.
+            Expr::ArrayLit { elems, .. } => {
+                for e in elems {
+                    expr_worklist.push((*e, under_addr_of));
+                }
+            }
             Expr::Name { res, .. } => {
                 // **A promoted name escapes its base unconditionally** (ADR-0050 §2), and this is
                 // not defence in depth — it is load-bearing. `x` where `using p: Point` is in

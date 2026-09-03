@@ -1674,7 +1674,7 @@ impl<'a> Ctx<'a> {
         }
         let item = self.hir.scope.get(name)?;
         let jr_hir::ItemKind::Const {
-            value: jr_hir::ConstValue::Expr(expr),
+            value: jr_hir::ConstValue::Expr { expr, .. },
         } = &self.hir.items.get(item.index())?.kind
         else {
             return None;
