@@ -362,6 +362,18 @@ fn imports_invalid_corpus_fails() {
         // name the module declares and hides, which a reader fixes by moving the declaration. This one
         // reports a name that is not there at all, where there is no `#scope_module` to go looking for.
         "imports/invalid/019-qualified-name-absent.jr",
+        // A **computed** file-scope `#insert` generating a procedure, and one generating a constant
+        // (ADR-0184 §4). Here for the stage reason E0262 is, one phase later: E0294 comes out of the
+        // **expanded** lowering, so `type-errors/`' harness — which runs sema on the unexpanded tree —
+        // saw no diagnostic at all and failed the files for not declaring what they declare.
+        //
+        // What they pin is a *boundary* rather than a mistake. A **literal** insert expands during
+        // `file_hir` and can generate anything (`valid/136` does, and exits 63); a computed one expands
+        // after const-eval, so a generated procedure has no signature and a generated constant has no
+        // value. Both leaked internals before the refusal existed — "called a procedure taking 2
+        // arguments with 1" and "a file-level item has no value until jr-vm".
+        "imports/invalid/020-computed-insert-declarations.jr",
+        "imports/invalid/021-computed-insert-constant.jr",
     ] {
         let code = check_with_modules(vec![corpus_path(file)], Some("modules"));
         assert_eq!(code, 1, "{file} must report an error");
@@ -2257,6 +2269,154 @@ main :: () {
     exit(42);
 }
 "#;
+
+/// A library **chosen and linked per operating system by comptime code** (ADR-0183, ADR-0184).
+///
+/// # Why this is the test that matters
+///
+/// It is the one that proves the two compiler changes compose into the capability they were made for.
+/// `modules/GL` names no library: a `#run` reads `os()`, returns the text of one declaration, and a
+/// file-scope `#insert` splices it — `#framework "OpenGL"` on macOS, `#system_library "GL"` on Linux,
+/// `#system_library "opengl32"` on Windows. Three names and **two different linker argument forms**.
+///
+/// Before this, neither half existed: `jr-link` could emit only `-L` and `-l`, and `#insert` was not a
+/// file-scope directive at all, so comptime code could generate statements and not declarations.
+///
+/// # What it asserts, and why not more
+///
+/// That the program **builds, links and runs**. It deliberately calls no GL entry point: every one is
+/// undefined without a current context, and `glGetString` with none *segfaults* on macOS rather than
+/// returning null — measured while writing `modules/GL`. So the claim is that the symbols resolved, which
+/// is what linking means, and the assertion below reads the framework out of the built binary rather than
+/// trusting the exit code alone.
+///
+/// No `-L` is passed: a framework needs none, and a Linux `-lGL` resolves from the driver's defaults. That
+/// is itself part of the point — `-framework` is not a search of the `-L` paths.
+#[test]
+fn a_per_os_library_is_chosen_by_comptime_code_and_linked() {
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("gl.jr");
+    fs::write(
+        &source,
+        r#"#import "Basic";
+GL :: #import "GL";
+
+main :: () {
+    // Constants only. Every GL call needs a current context, and this program creates none.
+    if GL.COLOR_BUFFER_BIT != 16384 { exit(1); }
+    if GL.NO_ERROR != 0 { exit(2); }
+    exit(42);
+}
+"#,
+    )
+    .unwrap();
+
+    let binary = dir.path().join("gl");
+    let code = run_build_with_paths(source, binary.clone(), &[]);
+    assert_eq!(
+        code, 0,
+        "the program must build and link against this platform's OpenGL"
+    );
+
+    let ran = std::process::Command::new(&binary)
+        .status()
+        .expect("the linked binary should run");
+    assert_eq!(ran.code(), Some(42), "the linked program must run");
+
+    // **The link line is the claim, so the link line is what is checked.** An exit code proves the
+    // program ran; it does not prove which library it was linked against, and a compiler that silently
+    // dropped the library would still exit 42 here because nothing is called. On macOS the framework's
+    // path is recorded in the binary.
+    #[cfg(target_os = "macos")]
+    {
+        let listed = std::process::Command::new("otool")
+            .arg("-L")
+            .arg(&binary)
+            .output()
+            .expect("otool should run on macOS");
+        let text = String::from_utf8_lossy(&listed.stdout);
+        assert!(
+            text.contains("OpenGL.framework"),
+            "the binary must record the OpenGL framework, so `-framework` really was emitted; got:\n{text}"
+        );
+    }
+}
+
+/// `#framework` is a **different linker argument** from `#system_library`, and neither substitutes for the
+/// other (ADR-0183 §1).
+///
+/// # Why the negative half is the important one
+///
+/// A test that only linked a framework successfully would pass on a compiler that quietly emitted `-l`
+/// **and** on one that emitted `-framework`, if the name happened to resolve both ways. So this asserts the
+/// pair: `#framework "CoreFoundation"` links, and `#system_library "CoreFoundation"` — the same name, the
+/// other form — **fails** with `library not found`.
+///
+/// That asymmetry is the whole reason the form had to be added rather than inferred: the compiler cannot
+/// know which a name means, so the declaration says, and guessing would make `#system_library "SDL2"` on
+/// macOS try a framework that does not exist before finding the dylib that does.
+///
+/// macOS-only, because frameworks are.
+#[test]
+#[cfg(target_os = "macos")]
+fn a_framework_links_where_the_library_form_does_not() {
+    let dir = TempDir::new().unwrap();
+
+    // The framework form: links, and the call returns a real allocator. `CFAllocatorGetDefault` is safe
+    // with no prior setup, unlike every GL entry point.
+    let good = dir.path().join("good.jr");
+    fs::write(
+        &good,
+        r#"#import "Basic";
+cf :: #framework "CoreFoundation";
+allocator :: () -> *u8 #foreign cf "CFAllocatorGetDefault";
+
+main :: () {
+    if allocator() == null { exit(1); }
+    exit(42);
+}
+"#,
+    )
+    .unwrap();
+    let good_binary = dir.path().join("good");
+    assert_eq!(
+        run_build_with_paths(good.clone(), good_binary.clone(), &[]),
+        0,
+        "`#framework` must link"
+    );
+    let ran = std::process::Command::new(&good_binary)
+        .status()
+        .expect("the linked binary should run");
+    assert_eq!(
+        ran.code(),
+        Some(42),
+        "the framework's symbol must resolve at run time, not merely at link time"
+    );
+
+    // The library form, same name: must **fail**. This is the assertion that makes the feature
+    // load-bearing rather than decorative.
+    let bad = dir.path().join("bad.jr");
+    fs::write(
+        &bad,
+        r#"#import "Basic";
+cf :: #system_library "CoreFoundation";
+allocator :: () -> *u8 #foreign cf "CFAllocatorGetDefault";
+
+main :: () {
+    if allocator() == null { exit(1); }
+    exit(42);
+}
+"#,
+    )
+    .unwrap();
+    let bad_binary = dir.path().join("bad");
+    assert_ne!(
+        run_build_with_paths(bad, bad_binary, &[]),
+        0,
+        "`-lCoreFoundation` must not resolve; if it does, the two forms are not distinct and this \
+         feature is not doing anything"
+    );
+}
 
 /// A built object carries a DWARF line table whose rows name real statements (ADR-0169).
 ///

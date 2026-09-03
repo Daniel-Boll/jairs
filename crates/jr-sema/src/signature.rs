@@ -394,7 +394,9 @@ impl Ctx<'_> {
             }
             // Neither has a name, so neither has a signature. `#run` is typed by
             // the check phase, which is where unnamed items are handled.
-            ItemKind::Import { .. } | ItemKind::Run { .. } => None,
+            // An insert marker has no signature: it binds no name. The declarations its text produced
+            // are separate items in the same arena and each gets its own signature (ADR-0184 §1).
+            ItemKind::Import { .. } | ItemKind::Run { .. } | ItemKind::Insert { .. } => None,
         }
     }
 
@@ -905,11 +907,18 @@ impl Ctx<'_> {
             return None;
         };
         let interner = self.interner;
-        if interner.resolve(*directive) != "system_library" {
-            return None;
-        }
+        // **Two directives name a linkable library** (ADR-0183 §1): `#system_library "SDL2"` becomes
+        // `-lSDL2` and `#framework "OpenGL"` becomes `-framework OpenGL`. Anything else answers `None`
+        // and is E0293 at the declaration, which is the hole ADR-0180 §5 closed — this function used to
+        // be the *only* place that knew which directives count, and it said so by returning `None`
+        // silently.
+        let kind = match interner.resolve(*directive) {
+            "system_library" => jr_pool::LinkKind::Library,
+            "framework" => jr_pool::LinkKind::Framework,
+            _ => return None,
+        };
         let arg = arg.clone()?;
-        Some(self.pool.foreign_library_value(&arg))
+        Some(self.pool.foreign_library_value(&arg, kind))
     }
 
     /// Reports a constant whose type depends on itself.

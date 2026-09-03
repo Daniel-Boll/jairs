@@ -18,10 +18,41 @@ error-recovering compiler written in Rust.
 
 ## Status, honestly
 
-**All twelve waves are done, and the graphics library has been restructured on top of them.** 1073 workspace
-tests. The most recent work made a module importable *under a name* — `Simp.immediate_quad(…)` — gave the
-compiler a notion of which operating system it is compiling for, and rebuilt the 2D renderer around a vertex
-batch instead of a rectangle fill.
+**All twelve waves are done, and support for more than one operating system is now something the standard
+library does rather than something the compiler decides.** 1076 workspace tests. A module can pick a library, a
+linker argument form, a flag or a number per operating system in ordinary Jairs, at compile time. The clearest
+example is the new OpenGL module: it names no library at all, and instead a compile-time function reads which
+system it is being compiled for and returns the text of the declaration to use — `-framework OpenGL` on macOS,
+`-lGL` on Linux, `-lopengl32` on Windows. Three names and two genuinely different linker arguments, chosen
+before the program is built.
+
+**Two shell commands corrected the plan for that work, and they are worth repeating because the plan was
+confident.** It said the obstacle was that a library's *name* cannot be computed at compile time, which is true.
+But asking `cc` to link OpenGL the ordinary way fails on macOS — it is a framework, not a library on a search
+path — and the linker this project ships could only ever produce the ordinary way. So a perfect name mechanism
+would have produced a name that does not link. The first obstacle was a missing argument form, which is smaller
+and much easier than what the plan described. The other half was one missing case in the parser: a compile-time
+text splice worked inside a function and was simply not accepted at the top level of a file, which is where a
+declaration has to go.
+
+**One comment in the compiler had quietly expired, and it cost a wrong answer.** A phase that recomputes what it
+knows about a file's functions skipped that work with a note explaining that compile-time text splices never add
+new declarations. That was true when they could only add statements. Once they could add declarations, a
+generated function had nothing recorded about it, and the failure surfaced as an internal compiler error blaming
+the *caller*. It is the third time in this project that a hand-written claim with nothing checking it has gone
+stale, and the fix is not a better comment but an arrangement where the phase cannot choose the wrong input.
+
+**Where the boundary is, stated rather than discovered later.** A splice whose text is written literally happens
+before everything else, so it can generate any declaration — a constant, a struct, a function, even another
+splice. A splice whose text is *computed* has to wait until the compile-time evaluator has run, which is too
+late for a generated constant to be given a value or a generated function to be given a signature. Both of those
+used to produce internal compiler errors; they are now a named refusal that points at the two things which do
+work. What a computed splice *can* generate is a library declaration, because that needs neither — which is
+exactly the case all of this exists for.
+
+**Before this: the graphics restructure.** It made a module importable *under a name* —
+`Simp.immediate_quad(…)` — gave the compiler a notion of which operating system it is compiling for, and rebuilt
+the 2D renderer around a vertex batch instead of a rectangle fill.
 
 **The plan for that work was wrong in five places, and every one was found by writing the thing rather than by
 review.** That is worth leading with, because it is the pattern this project keeps paying for and keeps
@@ -170,7 +201,7 @@ debug section placed outside the segment reserved for it does not merely get ign
 the linker lays it out among real pointers.
 
 Last updated with **W11 — Concurrency DONE, and with it all twelve waves**, 1071 tests green — 1075 with the
-LLVM back end compiled in, and twenty library modules. W12 — Debug info has one open item, a register-resident
+LLVM back end compiled in, and twenty-three library modules. W12 — Debug info has one open item, a register-resident
 local, which is specified rather than vague.
 
 Graphics arrived in four steps, on a foundation the plan had wrong: a window and a 2D renderer, an event loop,
@@ -1019,7 +1050,7 @@ members and a refused body that reports instead of crashing (ADR-0047), `xx` aut
 `.RED` (ADR-0046), `union` (ADR-0045), `[]T` views (ADR-0044), `enum_flags` (ADR-0043), the bitwise
 operators (ADR-0042), `enum` (ADR-0041), `float32`/`float64` (ADR-0040), `[N]u8` fixed arrays and
 bounds checks (ADR-0039), negative literals (ADR-0038) and the integer tower, `cast` and
-`print_int` (ADR-0037). 1073 workspace tests; six gates green on macOS arm64 — **locally**, since CI
+`print_int` (ADR-0037). 1076 workspace tests; six gates green on macOS arm64 — **locally**, since CI
 has never run — plus 170 Neovim checks that are verified rather than gated.
 
 ### What you can actually do
@@ -1032,16 +1063,16 @@ has never run — plus 170 Neovim checks that are verified rather than gated.
 | Compile to a native executable | `jr build file.jr -o out` | arm64 macOS verified. x86-64 Linux is **configured in CI and has never run** — the workflow exists, and no CI run has ever happened on this repository, so Linux is entirely unverified. A declared `BUILD_OUTPUT` is confined to the working directory (ADR-0122) |
 | Build without bounds checks | `jr build file.jr --no-bounds-check`, or `jr run` | ADR-0003's build setting, finally wired (ADR-0058). An out-of-range index is then undefined behaviour, which is the trade. `#no_abc` on a procedure does the same locally, whatever the build says; compile-time execution checks regardless |
 | Choose an optimisation level | `jr build file.jr -O0`, or `jr run -O0` | Two levels, `0` and `1` (the default, and what every build did before the flag). `-O0` runs no mid-end pass, so the code executed is exactly what lowering produced — which is how a wrong answer becomes attributable to lowering rather than to a pass. A level may **not** change what a program computes, and the differential harness now sweeps every corpus program at both levels to check it (ADR-0142). The one thing `-O0` does change is a backtrace: nothing is inlined, so a trap inside a leaf names the leaf's own line. There is no `-O2` yet and no `--release` — deliberately, since a level with no pass behind it is a promise rather than a flag |
-| Get rustc-grade diagnostics | `jr check file.jr` | 117 codes across lexer, parser, HIR, sema, MIR and const-eval, with cross-crate uniqueness enforced by a test (ADR-0123). E0218 and E0212 suggest a near name; E0231 and E0245 are *warnings* — an unused `#import`, and a body the compiler could not lower |
+| Get rustc-grade diagnostics | `jr check file.jr` | 130 codes across lexer, parser, HIR, sema, MIR and const-eval, with cross-crate uniqueness enforced by a test (ADR-0123). E0218 and E0212 suggest a near name; E0231 and E0245 are *warnings* — an unused `#import`, and a body the compiler could not lower |
 | Format source canonically | `jr fmt [--check] paths…` | The corpus is canonical under it, enforced by gate 5 — locally, since CI has never run |
 | Inspect tokens or the CST | `jr parse file.jr` | Debug aid |
 | Measure language-server latency | `jr bench file.jr` | Reports min/median/p95 cold, warm and after an edit. **Reports, never judges** — no threshold, not a gate (ADR-0033), so a performance regression is invisible to CI by construction |
 | Measure compile throughput | `jr bench --throughput paths… ` | Lines and bytes per second for `check` and `build`, cold only — a compiler is a process, so there is no warm throughput to report (ADR-0146). Same contract: reports, never judges. The published figure is above, with the machine beside it |
 | Print a number | `print_int(n)` from `modules/Basic` | Written in Jairs, and still recursive — both the `[N]u8` buffer and the `[]u8` view it wanted now exist, so nothing in the language is missing; converting it is its own change. Traps on the most negative `s64`, which cannot be negated (ADR-0002). Executed by `valid/101`, which until ADR-0125 nothing did |
-| Call libc from Jairs | `#foreign` / `#system_library` | Through libffi at run time (refused at comptime, ADR-0006). `modules/Basic` binds `write`, `exit`, `malloc`, `free`; the VM satisfies `malloc`/`free` from its own region (ADR-0061) so a pointer round-trips there too |
+| Call libc from Jairs | `#foreign` / `#system_library` | Through libffi at run time (refused at comptime, ADR-0006). `modules/Basic` binds `write`, `exit`, `malloc`, `free`; the VM satisfies `malloc`/`free` from its own region (ADR-0061) so a pointer round-trips there too A library is named by `#system_library "SDL2"` or, on macOS, `#framework "OpenGL"` — **two different linker arguments**, and neither is a fallback for the other, because a compiler cannot know which a name means and guessing would link a program for a reason its source never stated (ADR-0183). |
 | Fold a compile-time call | `COMPUTED :: #run add(2, 3)`, or `n := #run add(2, 3)` in a body | Nested calls, arithmetic around a call, a loop in the callee and an **imported** callee all work (ADR-0069). Still refused: a `#foreign` call (ADR-0006), an operator overload, a default or named argument, and reading another file's constant — all because const-eval precedes the check phase |
 | Import a module | `#import "Basic";` or `Simp :: #import "Simp";` | One module = one file, cycles legal. A **bare** import merges the module's names into the file flat; an **aliased** one merges nothing and is reached as `Simp.name` — in value *and* type position, so `e: Input.Event` is a spelling (ADR-0179). That is what makes two modules exporting the same name usable together: before it, a program that both drew a window and read a file could not name `open` at all. Procedures, types, enum members and **constants' values** all cross the boundary; an imported struct's *fields* do not, so `using` on one is refused. `#scope_module` hides a declaration from importers |
-| Ask which operating system you are compiling for | `os() == Operating_System.MACOS` | A compile-time value, folded before any code generator sees it, so it works in a body, in a `#run`, and in a plain file-scope constant (ADR-0180). An enum rather than a number, so a `switch` over it is checked for completeness — "this program does not handle Windows" is a compile error rather than a wrong branch. There is deliberately **no** conditional compilation: nothing in the standard library needed a declaration to exist on one platform only, and every case that came up needed a *number* |
+| Ask which operating system you are compiling for | `os() == Operating_System.MACOS` | A compile-time value, folded before any code generator sees it, so it works in a body, in a `#run`, and in a plain file-scope constant (ADR-0180). An enum rather than a number, so a `switch` over it is checked for completeness — "this program does not handle Windows" is a compile error rather than a wrong branch. There is deliberately **no** conditional compilation: nothing in the standard library needed a declaration to exist on one platform only, and every case that came up needed a *number* A per-OS **declaration** works too: a `#run` returns the declaration's text and a file-scope `#insert` splices it, which is how `modules/GL` picks its library *and* its link form (ADR-0184). |
 | Draw a frame | `Simp.immediate_quad(…)` from `modules/Simp` | An immediate-mode renderer shaped like Jai's `Simp` (ADR-0182): open a batch, add quads that each carry their own colour, flush. Built on SDL2's vertex API, so a quad's four corners need not be axis-aligned and a **rotated** sprite is one call — which the previous rectangle-fill renderer could not draw at any angle. Needs SDL2 installed and `-L` pointing at it; a drawing program cannot run in the compile-time VM, which reaches libc and nothing else |
 | Edit in Neovim, with highlighting, diagnostics, hover, goto-definition, completion, rename, code actions, signature help and inlay hints | `editors/nvim/` | Two lines in `init.lua` and one build script; no plugin manager. Neovim **0.11+** — every capability is on a stock 0.11 default binding (`K`, `gd`, `gra`, `grn`, `grr`, `gO`, `<C-s>`), so there are no keymaps to add. Works on a standalone `.jr` file too, not only inside a checkout. See [`editors/nvim/README.md`](editors/nvim/README.md) |
 | Use any other LSP editor | `jr lsp` | Speaks LSP 3.17 over stdio. The repository packages for Neovim only and **will not ship a VS Code extension** (ADR-0036) — point your client at the command yourself |
@@ -1094,8 +1125,8 @@ The authoritative version of this list is
 | a `#run` returning a **struct or array**, interned as its element values and materialised by both engines (ADR-0074), including one holding a **string** (ADR-0075) | a `#run` returning a **union** — untagged storage makes "which field is valid" unanswerable; a struct or array *literal* (`P.{1, 2}`), which is a separate syntax question |
 | **`type_info(T)`** — a type's kind, name, size, alignment, a stable `id`, and the fixed-size per-kind facts `count` (a struct's field count / array length) and `element` (an array's element / pointer's pointee, as a type id); `Type_Info` is declared in `Basic` and validated on lookup (ADR-0075, ADR-0077, ADR-0078) | the variable-length **field list** — the elements need the program's lifetime, so it is a static-data-vs-comptime-table decision; following an `element` id back to a `Type_Info`; `type_info([4]s64)`, blocked on structural type aliases |
 | **`Any`** — `any_of(*x)` erases a value to a `{*Type_Info, *u8}` pair, `any_as(a, T)` reads it back and traps unless the type's `id` matches; the erasing pointer conversion is allowed only at that boundary (ADR-0076) | a bare **value** coercing to `Any` implicitly (a literal has no address, so it needs a materialised temporary — the *pointer* form `takes(*x)` is done); an `Any` in a compile-time constant |
-| `#insert "…"` of a **string literal**, lowered where it is written — same scope, so a local it declares is visible after it; nesting works, and every diagnostic points at the directive and names its offset into the inserted text (ADR-0072) | `#insert` at file scope, which would change the item tree; `#code` and the `Code` type |
-| `#insert <expr>;` of a **computed** operand — a constant or a `#run` whose text is evaluated at compile time and spliced (ADR-0073). The operand resolves and type-checks like any expression (`#insert undefined;` → E0201; a non-string → E0214), and a pending insert the evaluator has not reached is refused, never miscompiled. This is where sema and the VM become mutually recursive; the cycle is broken by an acyclic pre-pass | a **cross-file** `#run` value (its own decision, ADR-0073 §4); expansion past 16 levels (E0264) |
+| `#insert "…"` of a **string literal**, lowered where it is written — same scope, so a local it declares is visible after it; nesting works, and every diagnostic points at the directive and names its offset into the inserted text (ADR-0072). **Also at file scope**, where it generates *declarations* (ADR-0184): the generated items go straight into the file's arena, so a generated constant, struct or procedure is an ordinary one — it resolves in any order, exports, appears in the editor and is formatted | `#code` and the `Code` type |
+| `#insert <expr>;` of a **computed** operand — a constant or a `#run` whose text is evaluated at compile time and spliced (ADR-0073). The operand resolves and type-checks like any expression (`#insert undefined;` → E0201; a non-string → E0214), and a pending insert the evaluator has not reached is refused, never miscompiled. This is where sema and the VM become mutually recursive; the cycle is broken by an acyclic pre-pass **At file scope a computed operand may generate only a library declaration** (E0294, ADR-0184 §4), and the reason is a phase order rather than a policy: it cannot expand until the evaluator has run, which is too late for a generated constant to be given a value or a generated procedure a signature — while a library needs neither, which is exactly the case per-OS support wants | a **cross-file** `#run` value (its own decision, ADR-0073 §4); expansion past 16 levels (E0264); a computed file-scope insert generating a constant or a procedure (E0294) |
 | **`#code { … }`** — unquoted source spliced into the enclosing scope; the body is parsed where it is written, so no quoting and no escaping (ADR-0080). Deliberately *sugar* over `#insert`, reusing its depth bound and its refusal of a pending splice | a `Code` **value** — **declined**, not deferred: a quoted syntax tree is worth representing only once something can inspect or transform one (ADR-0080 §3); spans into the body's real source, so a fault inside it points at the `#code` |
 | **`$T` polymorphic procedures** — inferred from the argument (directly or through `*$T`/`[]$T`), instantiated once per distinct tuple of bound types, checked per instantiation, run as ordinary procedures in both engines (ADR-0081–0084). A template may call another template: expansion iterates to a fixed point, so a clone body's own polymorphic calls are redirected too (ADR-0120) | two-way unification and explicit type arguments; a **cross-file** instantiation (E0268 — the workaround is a wrapper the module instantiates itself) |
 | **polymorphic structs** — `Box :: struct($T) { value: T; }` used as `Box(s64)`; the instance is keyed on `(decl, args)` so `Box(s64)` and `Box(bool)` are distinct types with substituted fields and layouts, told apart in the pool the way `[2]s64` and `[3]s64` are (ADR-0085). Both engines compute each instance's layout from its substituted fields. A parameterised struct **crosses a module boundary** (ADR-0117): the importer resolves its fields from the declaring file's HIR, and identity stays the declaring file's | inferring a struct's argument through a `$T` parameter (`(b: Box($T))`, E0212); `using` on a parameterised struct; recursive `List($T)` |

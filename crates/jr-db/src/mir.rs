@@ -346,18 +346,29 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
         Arc<jr_hir::ResolveMap>,
         crate::sema::CheckResult,
         jr_diag::Diagnostics,
+        Arc<jr_sema::FileSignatures>,
     )> = if operands.is_empty() {
         None
     } else {
         let parse = crate::parse_file(db, file);
         let file_id = crate::queries::resolve_file_id(db, file);
         let interner = db.interner();
-        let (tree, _diags) =
+        // **The expanded lowering's own diagnostics are kept** (ADR-0184 §4). They were dropped, which was
+        // harmless while an expanded tree could only *add statements* — nothing in that path reports. A
+        // file-scope insert refuses a generated declaration it cannot support (E0294), and that refusal is
+        // raised exactly here, so dropping it left the user with the *downstream* symptoms — "unresolved
+        // name `double`", "unknown type name `Point`" — both true and neither naming the cause.
+        let (tree, lower_diags) =
             jr_hir::lower_file_with_inserts(&parse, file_id, interner, operands.as_ref());
         let tree = Arc::new(tree);
-        let (resolve_map, check, diags) =
+        let (resolve_map, check, mut diags, signatures) =
             crate::sema::checked_expanded(db, file, search_paths, tree.as_ref());
-        Some((tree, resolve_map, check, diags))
+        // **The lowering's first**, so a reader sees the cause above the consequences: the refusal
+        // explains why the names that follow it do not resolve.
+        let mut ordered = lower_diags;
+        ordered.extend(diags.iter().cloned());
+        diags = ordered;
+        Some((tree, resolve_map, check, diags, signatures))
     };
 
     // **Polymorphic instantiations, expanded** (ADR-0082 §2). When a file has polymorphic calls, the HIR
@@ -376,7 +387,7 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
         // `None` for the comptime values: they are keyed to the *unexpanded* tree, which the splice
         // renumbered, so a `$N` call here is refused (E0281) rather than paired with a value that may
         // belong to another expression (ADR-0120 §6).
-        Some((tree, _, check, _)) => {
+        Some((tree, _, check, _, _)) => {
             crate::sema::instantiated_from(db, file, search_paths, tree.clone(), check, None)
         }
         None => crate::sema::instantiated(db, file, search_paths),
@@ -387,22 +398,27 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
     // insert's tree would drop every appended procedure.
     let hir = match (&instantiated, &expanded) {
         (Some(inst), _) => inst.hir.clone(),
-        (_, Some((tree, _, _, _))) => tree.clone(),
+        (_, Some((tree, _, _, _, _))) => tree.clone(),
         _ => file_hir(db, file),
     };
     let own_resolve = match (&instantiated, &expanded) {
         (Some(inst), _) => inst.resolve.clone(),
-        (_, Some((_, resolve_map, _, _))) => resolve_map.clone(),
+        (_, Some((_, resolve_map, _, _, _))) => resolve_map.clone(),
         _ => resolved(db, file, search_paths).map,
     };
     let base_sigs = crate::sema::file_signatures(db, file, search_paths);
-    let own_signatures = match &instantiated {
-        Some(inst) => inst.signatures.clone(),
-        None => base_sigs.signatures.clone(),
+    let own_signatures = match (&instantiated, &expanded) {
+        (Some(inst), _) => inst.signatures.clone(),
+        // **The insert-expanded tree's signatures** (ADR-0184 §3). This arm did not exist while a
+        // computed `#insert` could only add *statements*; a file-scope one adds declarations, and a
+        // generated `#system_library` that these signatures do not carry is a library the declare phase
+        // never collects and the link line never names.
+        (_, Some((_, _, _, _, signatures))) => signatures.clone(),
+        _ => base_sigs.signatures.clone(),
     };
     let checked_file = match (&instantiated, &expanded) {
         (Some(inst), _) => inst.check.clone(),
-        (_, Some((_, _, check, _))) => check.clone(),
+        (_, Some((_, _, check, _, _))) => check.clone(),
         _ => checked(db, file, search_paths),
     };
     let types = checked_file.types;
@@ -426,7 +442,7 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
         // the ids MIR will use. Clearing matters as much as re-recording: a stale entry the expanded check
         // does not replace is exactly the wrong value at a live id.
         let base = match &expanded {
-            Some((_, _, check, _)) => {
+            Some((_, _, check, _, _)) => {
                 let mut values = (*base).clone();
                 for (scope, expr) in checked(db, file, search_paths).folded_calls.keys() {
                     values.clear_run(*scope, *expr);
@@ -569,7 +585,7 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
     // instantiation (ADR-0082). **Both**, where both expanded: they compose now (ADR-0120 §3), and the
     // `or_else` this replaced would have reported one set and silently dropped the other.
     let mut expanded_diagnostics = jr_diag::Diagnostics::new();
-    if let Some((_, _, check, diags)) = &expanded {
+    if let Some((_, _, check, diags, _)) = &expanded {
         expanded_diagnostics.extend(diags.iter().cloned());
         // **A `$N` call cannot be trusted once a splice has renumbered the tree** (ADR-0120 §6). Its
         // argument's value was folded by `file_consts` against the unexpanded tree and keyed by `ExprId`,

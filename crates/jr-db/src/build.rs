@@ -33,8 +33,11 @@ use crate::{
 pub struct BuildOutput {
     /// The object file's bytes.
     pub object: Vec<u8>,
-    /// The libraries every `#foreign` declaration named.
-    pub libraries: Vec<String>,
+    /// The libraries every `#foreign` declaration named, each with the linker argument it becomes.
+    ///
+    /// A name alone was enough while `-l` was the only form emitted; it is not enough now that
+    /// `#framework` exists, because the two forms are not interchangeable (ADR-0183 §1).
+    pub libraries: Vec<jr_codegen::LinkLibrary>,
 }
 
 /// Which code generator turns MIR into machine code (ADR-0143 §2).

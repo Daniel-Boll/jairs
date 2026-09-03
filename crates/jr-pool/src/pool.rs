@@ -2,7 +2,9 @@
 
 use rustc_hash::FxHashMap;
 
-use crate::item::{ContextKind, DeclId, EffectRow, EnumMember, Field, Item, PoolId, StrId};
+use crate::item::{
+    ContextKind, DeclId, EffectRow, EnumMember, Field, Item, LinkKind, PoolId, StrId,
+};
 
 // ---------------------------------------------------------------------------
 // The well-known prefix
@@ -302,7 +304,7 @@ impl Pool {
             // (ADR-0152 §1).
             Item::StaticArray { view, .. } => *view,
             Item::TypeValue(_) => PoolId::TYPE,
-            Item::ForeignLibraryValue(_) => PoolId::FOREIGN_LIBRARY,
+            Item::ForeignLibraryValue(_, _) => PoolId::FOREIGN_LIBRARY,
             // These carry their own type, because one shape can have many. An aggregate constant is here
             // for exactly that reason: two struct types with identically-typed fields have the same
             // element list, so without a `ty` in the key they would intern to one id (ADR-0074 §1).
@@ -731,9 +733,9 @@ impl Pool {
     /// Interns a foreign library value, e.g. the `"c"` of `#system_library "c"`.
     ///
     /// Its type is always [`PoolId::FOREIGN_LIBRARY`] (ADR-0016 §3).
-    pub fn foreign_library_value(&mut self, name: &str) -> PoolId {
+    pub fn foreign_library_value(&mut self, name: &str, kind: LinkKind) -> PoolId {
         let str_id = self.intern_str(name);
-        self.intern(Item::ForeignLibraryValue(str_id))
+        self.intern(Item::ForeignLibraryValue(str_id, kind))
     }
 
     /// Reads a foreign library value back out, e.g. `"c"`.
@@ -752,7 +754,7 @@ impl Pool {
         // Matched exhaustively, like `type_of` above, so that adding an item kind
         // is a compile error here rather than silently falling into `None`.
         match self.item(id) {
-            Item::ForeignLibraryValue(str_id) => Some(self.resolve_str(*str_id)),
+            Item::ForeignLibraryValue(str_id, _) => Some(self.resolve_str(*str_id)),
             Item::VoidType
             | Item::BoolType
             | Item::IntType { .. }
@@ -783,6 +785,27 @@ impl Pool {
             | Item::ProcValue { .. }
             // An aggregate constant names no library (ADR-0074 §1).
             | Item::AggregateValue { .. } => None,
+        }
+    }
+
+    /// Which linker argument this library's name becomes (ADR-0183 §1).
+    ///
+    /// Beside [`Pool::foreign_library_name`] rather than returned with it, because every existing
+    /// caller wants only the name and would otherwise have to destructure a pair it ignores.
+    ///
+    /// `_`-armed, unlike the name reader above, and the asymmetry is deliberate: that one is
+    /// exhaustive so a new item kind is a compile error there, which already forces whoever adds one
+    /// to visit this file. A second exhaustive list of every `Item` variant would be forty lines that
+    /// say the same thing twice.
+    ///
+    /// `None` for anything that is not a library value, on the same principle: a caller handed the
+    /// wrong [`PoolId`] gets nothing rather than a plausible default — and defaulting to
+    /// [`LinkKind::Library`] here would emit `-lOpenGL`, the exact link that does not resolve.
+    #[must_use]
+    pub fn foreign_library_kind(&self, id: PoolId) -> Option<LinkKind> {
+        match self.item(id) {
+            Item::ForeignLibraryValue(_, kind) => Some(*kind),
+            _ => None,
         }
     }
 
@@ -856,12 +879,43 @@ mod tests {
     #[test]
     fn foreign_libraries_dedupe_by_name() {
         let mut pool = Pool::new();
-        let libc = pool.foreign_library_value("c");
-        assert_eq!(libc, pool.foreign_library_value("c"));
-        assert_ne!(libc, pool.foreign_library_value("m"));
+        let libc = pool.foreign_library_value("c", LinkKind::Library);
+        assert_eq!(libc, pool.foreign_library_value("c", LinkKind::Library));
+        assert_ne!(libc, pool.foreign_library_value("m", LinkKind::Library));
         assert_eq!(pool.type_of(libc), PoolId::FOREIGN_LIBRARY);
         assert!(!pool.is_type(libc));
         assert!(pool.is_type(PoolId::FOREIGN_LIBRARY));
+    }
+
+    /// One name, two link forms, two values — and each reads its own form back (ADR-0183 §1).
+    ///
+    /// The interesting half is the **inequality**: `-lOpenGL` does not resolve on macOS and
+    /// `-framework OpenGL` does, so if these interned equal, a program naming the framework could be
+    /// handed the library's `PoolId` and linked with the flag that fails. The kind is part of the value's
+    /// identity precisely so that cannot happen.
+    #[test]
+    fn a_library_and_a_framework_of_one_name_are_different_values() {
+        let mut pool = Pool::new();
+        let library = pool.foreign_library_value("OpenGL", LinkKind::Library);
+        let framework = pool.foreign_library_value("OpenGL", LinkKind::Framework);
+        assert_ne!(library, framework);
+
+        // Both are still *libraries* by type, which is what keeps `#foreign gl "…"` accepting either.
+        assert_eq!(pool.type_of(library), PoolId::FOREIGN_LIBRARY);
+        assert_eq!(pool.type_of(framework), PoolId::FOREIGN_LIBRARY);
+
+        // The name reader answers the same for both; only the kind distinguishes them.
+        assert_eq!(pool.foreign_library_name(library), Some("OpenGL"));
+        assert_eq!(pool.foreign_library_name(framework), Some("OpenGL"));
+        assert_eq!(pool.foreign_library_kind(library), Some(LinkKind::Library));
+        assert_eq!(
+            pool.foreign_library_kind(framework),
+            Some(LinkKind::Framework)
+        );
+
+        // And a `PoolId` that is not a library value answers `None` rather than a plausible default —
+        // defaulting to `Library` here is exactly the wrong guess for a framework.
+        assert_eq!(pool.foreign_library_kind(PoolId::S64), None);
     }
 
     #[test]

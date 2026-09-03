@@ -222,10 +222,26 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
         return Ok(0);
     }
 
+    // **The one conversion between the compiler's link vocabulary and the linker's** (ADR-0183 §1).
+    // `jr-link` declares its own `LinkKind` because it has no dependencies — ADR-0009's seam — so the
+    // translation happens here, at the driver, where both types are visible. Exhaustive, so a third link
+    // form is a compile error on this line rather than a silent `-l`.
+    let libraries: Vec<jr_link::LinkLibrary> = built
+        .libraries
+        .iter()
+        .map(|library| jr_link::LinkLibrary {
+            name: library.name.clone(),
+            kind: match library.kind {
+                jr_db::LinkKind::Library => jr_link::LinkKind::Library,
+                jr_db::LinkKind::Framework => jr_link::LinkKind::Framework,
+            },
+        })
+        .collect();
+
     if let Err(error) = link(&LinkRequest {
         object: &built.object,
         output: &output,
-        libraries: &built.libraries,
+        libraries: &libraries,
         library_paths: &library_paths(&args),
     }) {
         crate::report::error(&error.to_string());

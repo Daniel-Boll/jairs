@@ -376,6 +376,18 @@ pub fn check_file(
         if let ItemKind::Run { expr } = item.kind {
             ctx.check_expr(ExprScope::TopLevel, expr, None);
         }
+        // **A pending file-scope `#insert`'s operand is typed here too** (ADR-0184 §2), expecting
+        // `string`, which is what makes `#insert 7;` a type error at the operand's own span rather than a
+        // blanket refusal. Like a top-level `#run`, the marker item has no name and so has no signature —
+        // and without this the operand was never typed at all, which reached const-eval as
+        // "a file-level expression was never typed": a compiler internal for a correct program.
+        if let ItemKind::Insert {
+            operand: Some(expr),
+            ..
+        } = item.kind
+        {
+            ctx.check_expr(ExprScope::TopLevel, expr, Some(PoolId::STRING));
+        }
     }
 
     // `Body` has no back-pointer to its `Proc`, so the mapping is recovered by
@@ -1378,7 +1390,7 @@ impl Ctx<'_> {
             | Item::AggregateValue { .. }
             | Item::ProcValue { .. }
             | Item::TypeValue(_)
-            | Item::ForeignLibraryValue(_) => {
+            | Item::ForeignLibraryValue(_, _) => {
                 Some("this is a value rather than a type, which is a compiler bug")
             }
         }
@@ -1399,6 +1411,13 @@ impl Ctx<'_> {
             return;
         };
 
+        // **Withheld while a file-scope `#insert` is pending** (ADR-0184 §2). The library may be exactly
+        // what that insert is about to declare — `#insert #run gl_decl();` then `#foreign gl "glGetString"`
+        // is the shape this whole feature exists for — and the declaration is not in this tree yet. The
+        // expanded pass re-checks with it present, so a library that really does not exist is still E0225.
+        if self.file_has_pending_insert {
+            return;
+        }
         let interner = self.interner;
         let name = interner.resolve(library);
         match self.lookup_value_name(library) {
@@ -1910,7 +1929,7 @@ impl Ctx<'_> {
             // refuses as a value (E0242), and a void has nothing to compare. `false` sends them down the
             // ordinary path, which already reports what is wrong with them.
             | Item::ForeignLibraryType
-            | Item::ForeignLibraryValue(_)
+            | Item::ForeignLibraryValue(_, _)
             | Item::VoidValue => false,
         }
     }
@@ -6386,7 +6405,7 @@ impl Ctx<'_> {
         let ty = match interner.resolve(name) {
             // ADR-0016 §3. The value is interned as well as the type, so that the
             // FFI boundary has an identity and not merely a shape.
-            "system_library" | "library" => {
+            "system_library" | "framework" | "library" => {
                 // **Two silent holes, closed here** (ADR-0180 §5). Both of these type-checked clean and
                 // emitted no `-l`, so a symbol failed at *link* time with nothing pointing at the cause —
                 // and a reader has no reason to doubt a declaration the compiler accepted.
@@ -6408,19 +6427,39 @@ impl Ctx<'_> {
                     );
                     return self.expect(expected, PoolId::ERROR, span);
                 }
+                // `#framework` is macOS's `-framework NAME` (ADR-0183 §1), and it is a **separate
+                // directive** rather than a modifier on `#system_library`: the two are different linker
+                // arguments and neither is a fallback for the other, so a program that wrote one and
+                // meant the other should not silently get a search of the wrong kind.
+                let framework = interner.resolve(name) == "framework";
+                let directive = if framework {
+                    "#framework"
+                } else {
+                    "#system_library"
+                };
+                let flag = if framework { "-framework" } else { "-l" };
                 let Some(library) = arg else {
                     self.diags.push(
-                        Diagnostic::error(span, "`#system_library` needs a library name")
+                        Diagnostic::error(span, format!("`{directive}` needs a library name"))
                             .with_code(E0293)
-                            .with_note(
-                                "the name becomes the linker's `-l`, so without one there is nothing \
-                                 to link against",
-                            )
-                            .with_help("e.g. `libc :: #system_library \"c\";`"),
+                            .with_note(format!(
+                                "the name becomes the linker's `{flag}`, so without one there is \
+                                 nothing to link against"
+                            ))
+                            .with_help(if framework {
+                                "e.g. `gl :: #framework \"OpenGL\";`"
+                            } else {
+                                "e.g. `libc :: #system_library \"c\";`"
+                            }),
                     );
                     return self.expect(expected, PoolId::ERROR, span);
                 };
-                let _ = self.pool.foreign_library_value(library);
+                let kind = if framework {
+                    jr_pool::LinkKind::Framework
+                } else {
+                    jr_pool::LinkKind::Library
+                };
+                let _ = self.pool.foreign_library_value(library, kind);
                 PoolId::FOREIGN_LIBRARY
             }
             // Every other directive in expression position was already rejected

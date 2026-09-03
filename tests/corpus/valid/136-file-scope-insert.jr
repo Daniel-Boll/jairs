@@ -1,0 +1,84 @@
+// **`#insert` at file scope, producing declarations** (ADR-0184) — comptime code that generates *items*
+// rather than statements.
+//
+// The body-level `#insert` has existed since ADR-0072 and splices **statements**. This is the other half,
+// and its absence was one missing arm in the file-scope directive dispatcher: `#insert "X :: 7;";` at file
+// scope was `error[E0101]: unexpected token at top level`. That one gap is what kept per-OS support a
+// compiler question rather than a library one, because a per-OS `#foreign` library is a *declaration*.
+//
+// **This file uses the literal form throughout, and the reason is a phase order.** A literal insert expands
+// during `file_hir` — before signatures, before const-eval, before anything — so what it generates is
+// indistinguishable from what the file wrote, and *every* declaration works. A **computed** operand cannot
+// expand until after const-eval, so a generated procedure has no signature when one is wanted and a
+// generated constant has no value; that is refused as E0294 (`type-errors/084`) rather than left to leak an
+// internal error, and the one shape it *does* support — a library declaration — needs a linker and so lives
+// in a `jr-cli` integration test.
+//
+// What is pinned, each an independent bit:
+//
+//   * a generated **constant**, read from a body;
+//   * a generated **struct**, declared as a local's type and its field written — so the type reached the
+//     signature phase, not merely the parser;
+//   * a generated **procedure**, called with an argument and its result used;
+//   * **two inserts in one file**, because expanding the first renumbers every item after it and an
+//     `ItemId`-keyed consumer would mis-pair the second (the reason ADR-0072 §2 keys inserts by *span*);
+//   * a declaration generated **after** its use in source order, which works because file-scope items
+//     resolve in any order — the property that makes generated declarations ordinary ones;
+//   * a **nested** insert: generated text that itself contains an `#insert`, bounded by ADR-0073 §3's
+//     depth budget;
+//   * an **empty** insert, which legally generates nothing rather than being an error.
+//
+// The exit code is the sum, 63, so a single failing bit names itself. Both engines must agree: a generated
+// declaration is an ordinary declaration, so there is nothing here for one engine to do differently.
+#import "Basic";
+
+#insert "GENERATED :: 7;";
+
+#insert "Pair :: struct { a: s64; b: s64; }";
+
+#insert "triple :: (n: s64) -> s64 { return n * 3; }";
+
+// Generated text containing an `#insert` of its own. Bounded by the depth budget, and the reason that
+// budget exists at all: a *computed* operand can reproduce itself without growing.
+#insert "#insert \"NESTED :: 5;\";";
+
+// An empty operand generates nothing, and is legal — the same rule a literal `#insert "";` follows for
+// statements (ADR-0072 §5). It is here so that "generates nothing" cannot be confused with "failed".
+#insert "";
+
+main :: () {
+    n := 0;
+
+    if GENERATED == 7 {
+        n = n + 1;
+    }
+    if NESTED == 5 {
+        n = n + 2;
+    }
+
+    p: Pair;
+    p.a = 4;
+    p.b = 6;
+    if p.a + p.b == 10 {
+        n = n + 4;
+    }
+
+    if triple(5) == 15 {
+        n = n + 8;
+    }
+
+    // Declared by an insert *below* this body in source order, which is what makes a generated
+    // declaration ordinary: file-scope items resolve in any order (ADR-0014).
+    if LATER == 11 {
+        n = n + 16;
+    }
+    if quadruple(3) == 12 {
+        n = n + 32;
+    }
+
+    exit(n);
+}
+
+#insert "LATER :: 11;";
+
+#insert "quadruple :: (n: s64) -> s64 { return n * 4; }";

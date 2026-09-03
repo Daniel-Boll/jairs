@@ -75,7 +75,7 @@ pub use float::{
     FloatCmp, FloatKind, FloatOp, float_binary, float_compare, float_negate, float_to_int,
     int_to_float,
 };
-pub use item::{ContextKind, DeclId, EffectRow, EnumMember, Field, Item, PoolId, StrId};
+pub use item::{ContextKind, DeclId, EffectRow, EnumMember, Field, Item, LinkKind, PoolId, StrId};
 pub use layout::{
     CONTEXT_FIELD_NAMES, CONTEXT_FIELD_TYPES, Layout, LayoutError, TAG_ALIGN, TAG_SIZE,
     TargetLayout, TargetOs, align_up, field_offset, layout_of, pair_count, pair_data, pair_layout,

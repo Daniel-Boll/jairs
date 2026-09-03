@@ -56,7 +56,7 @@ fn type_of_is_total_over_every_item_kind() {
     let string = pool.str_value("hello from Jairs\n");
     let type_value = pool.type_value(struct_ty);
     let proc_value = pool.proc_value(proc_ty, decl(1));
-    let libc = pool.foreign_library_value("c");
+    let libc = pool.foreign_library_value("c", jr_pool::LinkKind::Library);
 
     let values = [
         (PoolId::VOID_VALUE, PoolId::VOID),

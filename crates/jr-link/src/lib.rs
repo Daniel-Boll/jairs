@@ -87,18 +87,43 @@ impl From<std::io::Error> for LinkError {
     }
 }
 
+/// Which linker argument a library's name becomes (ADR-0183 §1).
+///
+/// Declared **here** rather than imported from `jr-pool`, which also has one, because this crate has
+/// **no dependencies at all** — that is the seam ADR-0009 drew, and it is why the linker can be read and
+/// tested without the compiler. The caller converts; the duplication is two variants and it buys a leaf
+/// crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkKind {
+    /// `-lNAME`, searched for in the `-L` paths. Every target supports this form.
+    Library,
+    /// `-framework NAME`, a macOS framework bundle. Two arguments, not one word.
+    Framework,
+}
+
+/// One library to link, and how.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkLibrary {
+    /// The name as written — `"c"`, `"SDL2"`, `"OpenGL"`.
+    pub name: String,
+    /// Which argument form the name takes.
+    pub kind: LinkKind,
+}
+
 /// What to link, and into what.
 pub struct LinkRequest<'a> {
     /// The object file's bytes, as `jr-codegen`'s `finalise` produced them.
     pub object: &'a [u8],
     /// Where the executable goes.
     pub output: &'a Path,
-    /// Libraries every `#foreign` declaration named, without the `lib` prefix — `"c"`
-    /// for libc.
+    /// Libraries every `#foreign` declaration named, each with the argument form it takes.
+    ///
+    /// A `Library` is `-lNAME`, without the `lib` prefix — `"c"` for libc. A `Framework` is
+    /// `-framework NAME`, which only macOS accepts (ADR-0183 §1).
     ///
     /// These come from the one resolution ADR-0019 §4 interned in the pool, so the
     /// link line cannot disagree with what `jr-sema` checked and the VM called.
-    pub libraries: &'a [String],
+    pub libraries: &'a [LinkLibrary],
     /// Directories to search for those libraries, in order, before the driver's own defaults.
     ///
     /// Each becomes a `-L`. Needed because a `#system_library` names *what* to link and never *where*: `-lc`
@@ -138,8 +163,21 @@ pub fn link(request: &LinkRequest<'_>) -> Result<(), LinkError> {
     for path in request.library_paths {
         command.arg(format!("-L{}", path.display()));
     }
+    // **Two forms, and the declaration says which** (ADR-0183 §1). `-lNAME` searches the `-L` paths;
+    // `-framework NAME` asks the macOS linker for a framework bundle, and is two arguments rather than
+    // one concatenated word — `-frameworkOpenGL` is not a thing `ld` accepts.
+    //
+    // No inference from the name, and no `-l` fallback after a failed `-framework`: the compiler cannot
+    // know which a name means, and guessing would make `#system_library "SDL2"` on macOS try a framework
+    // that does not exist before finding the dylib that does. The source says which, and after ADR-0184
+    // the *declaration itself* is generated per OS — so no file carries a form that is wrong elsewhere.
     for library in request.libraries {
-        command.arg(format!("-l{library}"));
+        match library.kind {
+            LinkKind::Library => command.arg(format!("-l{}", library.name)),
+            LinkKind::Framework => command
+                .arg("-framework")
+                .arg(not_a_flag_name(&library.name)),
+        };
     }
 
     let output = command.output()?;
@@ -179,6 +217,22 @@ fn not_a_flag(path: &Path) -> PathBuf {
         return Path::new(".").join(path);
     }
     path.to_owned()
+}
+
+/// A framework name that cannot be read as a flag (ADR-0183 §1).
+///
+/// `-framework` takes its name as a **separate argument**, so unlike a `-lNAME` — where the name is
+/// concatenated and a leading `-` is harmless — a name beginning with `-` would be handed to `cc` as an
+/// option of its own. `#framework "-rpath"` would then be a linker flag the source never asked for.
+///
+/// The path guard above solves the same problem by prefixing `./`, which is meaningless for a framework
+/// name; so this refuses by emptying instead, which fails the link with `ld: framework not found` rather
+/// than doing something. A refusal a reader can see beats an argument they cannot.
+fn not_a_flag_name(name: &str) -> String {
+    if name.starts_with('-') {
+        return String::new();
+    }
+    name.to_owned()
 }
 
 /// The first C driver on `PATH`.

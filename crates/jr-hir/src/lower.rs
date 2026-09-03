@@ -55,6 +55,17 @@ const E0262: &str = "E0262";
 const E0263: &str = "E0263";
 /// `#insert` expansion nested deeper than [`MAX_INSERT_DEPTH`] (ADR-0073 §3).
 const E0264: &str = "E0264";
+/// A **computed** file-scope `#insert` generating anything but a library declaration (ADR-0184 §4).
+///
+/// The boundary is a phase order, not a policy: a literal insert expands during `file_hir` and can
+/// generate anything, while a computed one expands only after const-eval — so a generated procedure has
+/// no signature by the time one is wanted and a generated constant has no value. Both leaked internals
+/// before this code existed ("called a procedure taking 2 arguments with 1", "a file-level item has no
+/// value until jr-vm"), which is the family this project keeps turning into diagnostics.
+///
+/// Owned by `jr-hir`, continuing its `#insert` block (E0262–E0264), because it is judged in lowering
+/// where the generated items are built.
+const E0294: &str = "E0294";
 /// A `return` that is not the last statement of a `#expand` macro body (ADR-0090 §2).
 ///
 /// Raised in **lowering** rather than in sema, because it is a property of the macro's *text* — the splice
@@ -105,7 +116,8 @@ const MAX_INSERT_DEPTH: u32 = 16;
 /// grammar change (see `jr_syntax::lexer`). That permissiveness has to be paid
 /// for here, or `main :: () { #import "Basic"; }` lowers silently and
 /// `jr check` reports success on a program that makes no sense.
-const DIRECTIVES_VALID_AS_EXPRESSIONS: &[&str] = &["system_library", "library", "bake_arguments"];
+const DIRECTIVES_VALID_AS_EXPRESSIONS: &[&str] =
+    &["system_library", "framework", "library", "bake_arguments"];
 
 /// Directives that are only meaningful at file scope.
 const FILE_SCOPE_ONLY_DIRECTIVES: &[&str] = &["import", "load"];
@@ -154,6 +166,17 @@ struct LowerCtx<'a> {
     import_aliases: ImportAliases,
     /// Predicate → guarded template's `$T` names, staged until the `FileHir` is built (ADR-0094 §1).
     predicate_vars: Vec<(ProcId, Vec<Symbol>)>,
+    /// The span every node gets while a file-scope `#insert` is expanding (ADR-0184 §1).
+    ///
+    /// `BodyLowerCtx` has the same field for the same reason — see its docs, which argue at length why
+    /// this is an override at the source rather than a rewrite afterwards.
+    span_override: Option<Span>,
+    /// How many file-scope `#insert` expansions enclose the item being lowered (ADR-0073 §3).
+    ///
+    /// Zero in ordinary source. A *literal* insert is bounded by its own text, so this exists for the
+    /// **computed** case: a generated string can reproduce itself without growing, which is a quine, and
+    /// nothing else would stop it.
+    insert_depth: u32,
 
     // File-level arenas
     items: Vec<Item>,
@@ -190,6 +213,8 @@ impl<'a> LowerCtx<'a> {
             import_aliases,
             macros,
             predicate_vars: Vec::new(),
+            span_override: None,
+            insert_depth: 0,
             diags: Diagnostics::new(),
             items: Vec::new(),
             scope: ItemScope::new(),
@@ -205,11 +230,18 @@ impl<'a> LowerCtx<'a> {
     }
 
     fn span_of_node(&self, node: &SyntaxNode) -> Span {
-        Span::new(self.file, node.text_range())
+        // **Honours `span_override` for the same reason `BodyLowerCtx`'s does** (ADR-0072 §2): while a
+        // file-scope `#insert` is expanding, a node's range is an offset into the *inserted string*, which
+        // `jr-diag` would clamp onto unrelated bytes of the real file. Overriding at the source is the
+        // only version that cannot be incomplete — a fix-up afterwards has to find every `Span` field,
+        // and the first attempt at that missed `Expr::Name`'s own.
+        self.span_override
+            .unwrap_or_else(|| Span::new(self.file, node.text_range()))
     }
 
     fn span_of_token(&self, tok: &SyntaxToken) -> Span {
-        Span::new(self.file, tok.text_range())
+        self.span_override
+            .unwrap_or_else(|| Span::new(self.file, tok.text_range()))
     }
 
     fn intern(&self, text: &str) -> Symbol {
@@ -1592,6 +1624,214 @@ impl<'a> LowerCtx<'a> {
         });
     }
 
+    /// Lowers a file-scope `#insert`, whose text becomes **declarations** (ADR-0184 §1).
+    ///
+    /// The body-level twin is [`BodyLowerCtx::lower_insert`], and the two differ in exactly one way that
+    /// matters: this one parses its text as a **source file** and allocates *items*, where that one parses
+    /// statements. Everything else — the depth guard, the span override, the literal-versus-computed
+    /// split, the pending state — is the same shape deliberately, so a reader who knows one knows both.
+    fn lower_insert_decl(&mut self, idl: &jr_syntax::ast::InsertDecl) {
+        let span = self.span_of_node(idl.syntax());
+
+        // **Checked before the operand is looked at** (ADR-0073 §3), because what is bounded is the
+        // recursion: an insert whose text contains an insert re-enters this function. A *literal* insert
+        // is bounded by its own text, so reaching the limit almost always means a computed operand
+        // reproduces itself — which a generated string can do without growing.
+        if self.insert_depth >= MAX_INSERT_DEPTH {
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`#insert` expanded more than {MAX_INSERT_DEPTH} levels deep"),
+                )
+                .with_code(E0264)
+                .with_note(
+                    "an insert whose text contains another expands recursively, and this one did not \
+                     stop",
+                )
+                .with_help(
+                    "a *literal* insert is bounded by its own text, so this usually means an insert's \
+                     operand reproduces itself",
+                ),
+            );
+            return;
+        }
+
+        let Some(operand) = idl.operand() else {
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    "`#insert` needs a string literal of Jairs declarations",
+                )
+                .with_code(E0262)
+                .with_help("write the declarations inline, e.g. `#insert \"X :: 7;\";`"),
+            );
+            return;
+        };
+
+        // A **literal** operand expands now. Decoded rather than merely unquoted, through the same
+        // function every string literal goes through, so `#insert "s :: \"hi\";"` inserts what it looks
+        // like.
+        if let AstExpr::Literal(literal) = &operand
+            && let Some(token) = literal.syntax().first_token()
+            && token.kind() == jr_syntax::SyntaxKind::STRING_LITERAL
+        {
+            let text = decode_string_impl(token.text(), span, &mut self.diags);
+            self.expand_insert_items(&text, span, true);
+            self.alloc_item(Item {
+                exported: self.exporting,
+                nested: false,
+                name: None,
+                span,
+                name_span: span,
+                kind: ItemKind::Insert {
+                    operand: None,
+                    span,
+                },
+            });
+            return;
+        }
+
+        // A **computed** operand. If the pre-pass has already evaluated it — keyed by this directive's
+        // span — expand it exactly as a literal, and record `operand: None`, which is what says
+        // "evaluated, and this is the result" as opposed to "still waiting". An operand that evaluated to
+        // the empty string therefore expands to zero declarations *legally*, where a pending one is
+        // refused; ADR-0073 §1 draws the same line for statements, and it is the reason the two states
+        // must not share a representation.
+        if let Some(text) = self.operands.get(span) {
+            let text = text.to_owned();
+            self.expand_insert_items(&text, span, false);
+            self.alloc_item(Item {
+                exported: self.exporting,
+                nested: false,
+                name: None,
+                span,
+                name_span: span,
+                kind: ItemKind::Insert {
+                    operand: None,
+                    span,
+                },
+            });
+            return;
+        }
+
+        // Not yet evaluated: **pending**. The operand is lowered as an ordinary top-level expression so
+        // it resolves and type-checks at its own span — `#insert nosuchname;` is an unresolved name and a
+        // non-`string` operand is a type error, each reported where the reader wrote it rather than as a
+        // blanket refusal here.
+        let operand_id = self.lower_top_expr(&operand);
+        self.alloc_item(Item {
+            exported: self.exporting,
+            nested: false,
+            name: None,
+            span,
+            name_span: span,
+            kind: ItemKind::Insert {
+                operand: Some(operand_id),
+                span,
+            },
+        });
+    }
+
+    /// Parses inserted `text` as a **source file** and lowers its items into this file's arena.
+    ///
+    /// The item counterpart of [`BodyLowerCtx::expand_insert_text`]. Every node produced takes the
+    /// directive's span through `span_override`, for ADR-0072 §2's reason: the inner parse's spans are
+    /// offsets into `text`, which `jr-diag` would clamp onto unrelated bytes of the real file.
+    ///
+    /// **Visibility is inherited, not reset.** An insert after `#scope_module` generates private
+    /// declarations, because `self.exporting` is a *position in the file* (ADR-0054 §1) and a splice does
+    /// not move that position. Saved and restored anyway, so a `#scope_module` *inside* the generated text
+    /// affects only the generated text — otherwise one generated marker would silently privatise
+    /// everything the rest of the real file declares.
+    fn expand_insert_items(&mut self, text: &str, span: Span, from_literal: bool) {
+        let parsed = jr_syntax::parse(text, self.file);
+        for diag in parsed.diagnostics().iter() {
+            // Re-pointed at the directive and re-worded, because the inner diagnostic's span is an offset
+            // into `text` and would land on unrelated bytes of the real file (ADR-0072 §3). The offset is
+            // carried in a note, which is the part a reader needs to find their mistake.
+            let offset = u32::from(diag.primary.span.range.start());
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("inserted declarations do not parse: {}", diag.message),
+                )
+                .with_code(E0263)
+                .with_note(format!("in inserted code, at offset {offset}"))
+                .with_note(format!("the inserted text was: {text}")),
+            );
+        }
+
+        let outer_override = self.span_override;
+        self.span_override = Some(span);
+        let outer_depth = self.insert_depth;
+        self.insert_depth = outer_depth + 1;
+        let outer_exporting = self.exporting;
+
+        if let Some(source_file) = SourceFile::cast(parsed.syntax()) {
+            // The same walk `lower_file_with_inserts` does, and for the same reason it walks *children*
+            // rather than `items()`: a `SCOPE_DECL` is not an `Item` kind, so that accessor would skip a
+            // visibility marker in the generated text (ADR-0054 §1).
+            for child in source_file.syntax().children() {
+                if let Some(scope) = jr_syntax::ast::ScopeDecl::cast(child.clone()) {
+                    self.exporting = scope
+                        .directive()
+                        .map(|token| token.text() != "#scope_module")
+                        .unwrap_or(true);
+                    continue;
+                }
+                let Some(item) = AstItem::cast(child) else {
+                    continue;
+                };
+                // **A computed operand may generate only a library declaration** (ADR-0184 §4), and the
+                // boundary is a *phase order* rather than a policy. A **literal** insert expands during
+                // `file_hir`, before signatures, before const-eval, before anything — so what it
+                // generates is indistinguishable from what the file wrote, and every declaration works
+                // (verified: a struct and a procedure from a literal insert run to 42). A **computed**
+                // one cannot expand until its operand has been evaluated, which is *after* const-eval —
+                // so a generated procedure has no signature by the time one is needed and a generated
+                // constant has no value, and both surfaced as leaked internals: "called a procedure
+                // taking 2 arguments with 1" and "a file-level item has no value until jr-vm".
+                //
+                // A `#system_library`/`#framework` declaration needs neither: `wanted()` excludes a
+                // directive from const-eval by design, and its only consumer reads it from the pool. That
+                // is why the per-OS library case — the one this whole wave exists for — works, and it is
+                // the honest supported surface until the ordering is fixed.
+                if !from_literal && !is_library_declaration(&item) {
+                    let item_span = self.span_of_node(item.syntax());
+                    self.diags.push(
+                        Diagnostic::error(
+                            item_span,
+                            "a computed `#insert` at file scope may generate only a library declaration",
+                        )
+                        .with_code(E0294)
+                        .with_note(
+                            "a computed operand is evaluated after const-eval, so a generated procedure \
+                             has no signature yet and a generated constant has no value",
+                        )
+                        .with_help(
+                            "use a *literal* `#insert \"…\";` for other declarations, or select a per-OS \
+                             *value* with `X :: #run pick();`",
+                        ),
+                    );
+                    continue;
+                }
+                match item {
+                    AstItem::Const(cd) => self.lower_const_decl(&cd),
+                    AstItem::Operator(od) => self.lower_operator_decl(&od),
+                    AstItem::Var(vd) => self.lower_var_decl_item(&vd),
+                    AstItem::Import(id) => self.lower_import_decl(&id),
+                    AstItem::Run(rd) => self.lower_run_decl(&rd),
+                    // A nested insert, which is why the depth guard above exists.
+                    AstItem::Insert(inner) => self.lower_insert_decl(&inner),
+                }
+            }
+        }
+
+        self.exporting = outer_exporting;
+        self.insert_depth = outer_depth;
+        self.span_override = outer_override;
+    }
+
     fn lower_run_decl(&mut self, rd: &RunDecl) {
         let span = self.span_of_node(rd.syntax());
         let expr = rd
@@ -2591,6 +2831,25 @@ impl<'a> BodyLowerCtx<'a> {
                         .with_help(
                             "use a file-scope `#run` or a `::` constant initialised with `#run`",
                         ),
+                );
+                self.alloc_stmt(Stmt::Error(span))
+            }
+            // **Unreachable, and listed rather than `_`-armed.** `INSERT_DECL` is built only by the
+            // file-scope dispatcher (ADR-0184 §1); inside a body an `#insert` is a `DIRECTIVE_EXPR`
+            // statement and takes the ADR-0072 path. Refused with the same message the other
+            // file-scope-only items get, so if the grammar ever does route one here the answer is a
+            // diagnostic rather than a silently dropped declaration.
+            AstItem::Insert(_) => {
+                self.diags.push(
+                    Diagnostic::error(
+                        span,
+                        "a declaration-producing `#insert` is only allowed at file scope",
+                    )
+                    .with_code(E0208)
+                    .with_note(
+                        "inside a body, `#insert` splices *statements* into the enclosing scope \
+                         (ADR-0072); at file scope it produces declarations",
+                    ),
                 );
                 self.alloc_stmt(Stmt::Error(span))
             }
@@ -3660,10 +3919,35 @@ pub fn lower_file_with_inserts(
             AstItem::Var(vd) => ctx.lower_var_decl_item(&vd),
             AstItem::Import(id) => ctx.lower_import_decl(&id),
             AstItem::Run(rd) => ctx.lower_run_decl(&rd),
+            AstItem::Insert(idl) => ctx.lower_insert_decl(&idl),
         }
     }
 
     ctx.finish()
+}
+
+/// Whether a generated item is a **library declaration** — `gl :: #system_library "GL";` (ADR-0184 §4).
+///
+/// The one shape a *computed* file-scope `#insert` may produce, because it is the one that needs nothing
+/// from a phase that has already run: `wanted()` excludes a directive from const-eval, and the library is
+/// read from the pool by whoever links.
+///
+/// Recognised on the **AST**, before lowering, so a refused item is never allocated — an item in the arena
+/// that later turns out to be unusable is the well-typed-placeholder shape AGENTS.md warns about.
+fn is_library_declaration(item: &AstItem) -> bool {
+    let AstItem::Const(decl) = item else {
+        return false;
+    };
+    let Some(AstExpr::Directive(directive)) = decl.value_expr() else {
+        return false;
+    };
+    let Some(token) = directive.directive_token() else {
+        return false;
+    };
+    matches!(
+        token.text().trim_start_matches('#'),
+        "system_library" | "framework"
+    )
 }
 
 /// The `#insert` directive an expression statement *is*, if it is one (ADR-0072 §1).

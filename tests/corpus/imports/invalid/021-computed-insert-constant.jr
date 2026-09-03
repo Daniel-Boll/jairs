@@ -1,0 +1,28 @@
+// EXPECT: E0294 — a computed file-scope `#insert` generating anything but a library declaration
+// (ADR-0184 §4)
+//
+//
+// **Filed in `imports/invalid/` rather than `type-errors/`**, and the reason is a stage rather than an
+// import: E0294 comes out of the **expanded lowering**, so `type-errors/`' harness — which runs sema on the
+// *unexpanded* tree — reported `[]` for this file and failed it for not declaring what it declares. That is
+// exactly why E0262, E0263, E0273 and E0290 live here too. The rule was met by moving the file, not by
+// weakening the harness; this is the seventh such move.
+//
+// The constant half of the pair; `084-computed-insert-declarations.jr` argues the shared reasoning.
+//
+// A generated **constant** has no value by the time const-eval has run, because a computed operand is
+// itself evaluated *by* const-eval — so the generated item arrives one phase too late to be given a value.
+// That leaked out as "a file-level item has no value until jr-vm", reported against the *consumer* rather
+// than the cause.
+//
+// The workaround is not a workaround but the mechanism that already exists: a per-OS **value** is
+// `X :: #run pick();` (ADR-0181), which needs no insert at all. What an insert adds is per-OS
+// *declarations*, and a library is the one the language can support today.
+generated :: () -> string {
+    return "VALUE :: 3;";
+}
+
+#insert #run generated();
+
+main :: () {
+}

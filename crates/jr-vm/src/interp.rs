@@ -839,7 +839,7 @@ impl<'a> Vm<'a> {
             // A type or a library used as a *value* is comptime-only (wave W4) and has
             // no runtime representation; `jr_pool::LayoutError::ComptimeOnly` says
             // the same thing from the layout side.
-            Item::TypeValue(_) | Item::ForeignLibraryValue(_) => Err(VmError::unsupported(
+            Item::TypeValue(_) | Item::ForeignLibraryValue(_, _) => Err(VmError::unsupported(
                 "a type or library used as a runtime value",
             )),
             // Exhaustive by *type* variant rather than a catch-all, and that change is this

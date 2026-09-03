@@ -95,24 +95,24 @@
 #v(0.4em)
 #pill[7/7 gates green]
 #h(4pt)
-#pill[1073 tests]
+#pill[1076 tests]
 #h(4pt)
-#pill[ADR-0182 latest]
+#pill[ADR-0184 latest]
 #h(4pt)
 #pill(fill: rgb("#eaf5ee"), stroke: good)[ALL TWELVE WAVES DONE]
 #h(4pt)
 #pill(fill: rgb("#eaf5ee"), stroke: good)[everything merged to main]
 #h(4pt)
-#pill(fill: rgb("#fdf3e7"), stroke: warn)[per-OS: capability thin]
+#pill(fill: rgb("#eaf5ee"), stroke: good)[per-OS: library concern]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "1073", "workspace; 1077 with LLVM in"),
-  metric("Corpus", "262", "jr files, all three engines"),
-  metric("ADRs", "182", "0001 to 0182, immutable"),
-  metric("Diagnostics", "126", "codes, E0294 next free"),
+  metric("Tests", "1076", "workspace; 1080 with LLVM in"),
+  metric("Corpus", "266", "jr files, all three engines"),
+  metric("ADRs", "184", "0001 to 0184, immutable"),
+  metric("Diagnostics", "130", "declared codes, E0295 next"),
   metric("Editor checks", "170", "Neovim, verified not gated"),
 )
 
@@ -297,7 +297,7 @@
   ("Formatter", "works", "Pure function over the CST; has lost a construct in most waves that added a node kind — #simd made it 9"),
   ("HIR, name resolution, modules", "works", "Flat import merge; cycles legal; export filtering"),
   ("InternPool: types, values, layout", "works", "One layout computation and one integer evaluator, shared. Behind an RwLock: reads share, interning excludes"),
-  ("Sema: signatures, checking", "works", "126 codes, E0294 next free, ownership enforced by a cross-crate test; folds size_of and os(); no const-eval here, by design"),
+  ("Sema: signatures, checking", "works", "130 codes, E0295 next free, ownership enforced by a cross-crate test; folds size_of and os(); no const-eval here, by design"),
   ("MIR: typed SSA", "works", "Block parameters, not phis; explicit bounds check and zeroing"),
   ("Mid-end", "5 passes", "Inline (non-leaf, bounded rounds), forwarding (cross-block), const-prop, DCE, plus the bounds-check strip. -O0 skips all of it"),
   ("Const-eval", "works", "Runs MIR through the bytecode VM"),
@@ -334,7 +334,7 @@
 // Roadmap
 // ---------------------------------------------------------------------------
 
-#section[Roadmap: twelve waves closed, plus the Simp programme — see PLAN §1.5 and §7]
+#section[Roadmap: twelve waves closed, plus the Simp programme and per-OS support — see PLAN §1.5 and §7]
 
 #let waves = (
   (
@@ -394,8 +394,8 @@
     "DONE in four ADRs (ADR-0179 to ADR-0182), on top of the twelve. Qualified imports first, because the graphics restructure could not be written without them: Window and File both exported open, so a program that both drew and read a file was E0211 and unwritable. Then the target OS as a compile-time value — the compiler had NO notion of an operating system anywhere, its whole notion of a target being two numbers in TargetLayout — and one library use of it, Time's CLOCK_MONOTONIC, which had been macOS's number under a comment saying so. Then the renderer, on SDL_RenderGeometry rather than SDL_RenderFillRect: a batch opened, quads carrying their own colour, flushed — so a ROTATED quad is one call, which the old rectangle fill could not draw at any angle. Simp's own shape was verified from primary sources and SDL_Vertex's 20 bytes measured with a cc-compiled offsetof before a line of the module existed.",
   ),
   (
-    "Per-OS support", "partial",
-    "THIN, and named rather than glossed. os() shipped and the whole 22-module library uses it ONCE, in Time. Every #system_library is 'c' or 'SDL2' — both one name on all three targets, which is WHY the graphics stack needed no gating and got none. File's O_* flags, Socket's constants and Thread's pthread sizes are all still hedged with comments admitting they are one platform's numbers. The enabling gap is ONE parser arm: #insert is absent from the file-scope directive dispatcher, so comptime code can generate statements but not DECLARATIONS. A #run reading os() and emitting source text already works, probed. Item-level #insert would make per-OS support library code rather than compiler work — and it dissolves the 'per-OS library name is circular' claim rather than breaking it, because generated text contains a LITERAL. Separately, jr-link emits only -L and -l, so OpenGL is unreachable on macOS for a simpler reason than the plan gave: -lOpenGL does not link, -framework OpenGL does. See docs/compatibility-plan.md.",
+    "Per-OS support", "done",
+    "DONE in two ADRs (ADR-0183, ADR-0184) — and this row read 'partial / THIN' one wave ago, which is why it is worth reading. It named the enabling gap as ONE parser arm and it was right: #insert was absent from the file-scope directive dispatcher, so comptime code could generate statements but not DECLARATIONS. What it got WRONG is what it inherited from the plan — that the remaining blocker was the circular per-OS library NAME. Two shell commands settled it: cc -lOpenGL fails on macOS, cc -framework OpenGL succeeds, and jr-link could emit only -L and -l. So a perfect name mechanism would have produced a name that does not link, and the real first blocker was a missing ARGUMENT FORM. Both are now built: #framework with LinkKind interned into the pool's library value (so the two forms are different values, no inference and no fallback), and #insert at file scope with generated items allocated straight into the file's arena. modules/GL picks its library AND its link form per OS in ordinary Jairs — three names, two argument forms — and the integration test reads otool -L rather than trusting an exit code. File's hedged O_* flags are unhedged. Socket's constants and Thread's pthread sizes are next and need no compiler work. A computed operand may generate only a library declaration (E0294): a phase order, not a policy, since it expands after const-eval and so is too late for a generated constant's value or a procedure's signature.",
   ),
 )
 
@@ -413,9 +413,11 @@
         // of PLAN §8.5 is that W10 is the first kind while the table used to imply the second.
         //
         // `partial` is amber too, and for a sharper reason: a capability that exists and is barely
-        // used reads as done from the outside. Per-OS support is exactly that — `os()` shipped and the
-        // library uses it once — so it gets a colour that says look here rather than the green of a
-        // closed wave or the grey of one nobody started.
+        // used reads as done from the outside. Per-OS support was exactly that — `os()` shipped and the
+        // library used it once — so it got a colour that said look here rather than the green of a
+        // closed wave or the grey of one nobody started. **It worked**: that row is green now
+        // (ADR-0183/0184), and the amber is what got it looked at. The state is kept in the renderer
+        // rather than deleted with its last user, because the next thin capability wants it.
         fill: if state == "done" { good } else if state == "in progress" { accent } else if state == "blocked" or state == "partial" { warn } else { absent },
       )[#state],
       text(size: 7.1pt, fill: muted)[#note],
@@ -433,11 +435,31 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
+    #sub[Per-OS support becomes library code — and the Simp programme before it]
+    #text(size: 7.4pt)[
+      ADR-0183 and 0184. Test count 1073 to *1076* (1080 with LLVM in), corpus 262 to *266* files, ADRs
+      182 to *184*. `jr-link` learned `-framework` beside `-l`, and `#insert` learned file scope, so a
+      module selects a library, a link form, a flag or a value per operating system in ordinary Jairs.
+      `modules/GL` is the proof: three library names and *two argument forms*, chosen by a `#run` that
+      reads `os()`.
+    ]
+
+    #v(0.3em)
+    #text(size: 7.4pt)[
+      *Two shell commands demolished the plan's stated blocker.* It ruled OpenGL out on a circular
+      library *name*; `cc -lOpenGL` fails on macOS and `cc -framework OpenGL` succeeds, and the linker
+      could emit only `-L` and `-l` — so a perfect name mechanism would have produced a name that does
+      not link. And *a comment had expired*: a phase skipped recomputing signatures "because \#insert
+      adds no items", true only while an insert could not add declarations, so a generated procedure had
+      none and the failure blamed its caller.
+    ]
+
+    #v(0.3em)
     #sub[The Simp programme, on top of twelve closed waves]
     #text(size: 7.4pt)[
-      ADR-0179 through 0182. Test count 1071 to *1073* (1077 with LLVM compiled in), corpus 255 to
-      *262* files, ADRs 178 to *182*. Qualified imports, the target OS as a compile-time value, a
-      per-OS clock id, and the graphics modules restructured onto `SDL_RenderGeometry`.
+      ADR-0179 through 0182. Test count 1071 to *1073*, corpus 255 to *262* files. Qualified imports,
+      the target OS as a compile-time value, a per-OS clock id, and the graphics modules restructured
+      onto `SDL_RenderGeometry`.
     ]
 
     #v(0.3em)
@@ -538,10 +560,12 @@
 #text(size: 6.6pt, fill: muted)[
   Sources: PLAN.md §1.5 and §7, the ADR directory, `docs/decisions/DECISIONS.md`, and all seven gates
   run today on `main` *after* the merge, not on a branch. Every number was measured rather than carried
-  forward — the test count from a full workspace run (1073, zero failures) and a second under
-  `--features jr-cli/llvm` (1077), the corpus count from a file walk (262 `.jr` files under
-  `tests/corpus/` outside `tests/corpus/modules/`), the ADR count from `docs/adr/`, the diagnostic codes
-  from the `const E0nnn` definitions across the crates — whose ownership is now enforced by
-  `jr-cli/tests/codes.rs` rather than asserted in prose — and the editor-check count from a real
-  `verify.lua` run (170). Rebuild with `typst compile jairs-dashboard.typ`.
+  forward — the test count from a full workspace run (1076, zero failures) and a second under
+  `--features jr-cli/llvm` (1080), the corpus count from a file walk (266 `.jr` files under
+  `tests/corpus/` outside `tests/corpus/modules/`), the ADR count from `docs/adr/`, and the editor-check
+  count from a real `verify.lua` run (170). The diagnostic count is *every* `const NAME: &str = "E0nnn"`
+  across the crates, which is 130 — and the counting rule is written down here because the previous number
+  was 126 by a method nobody recorded: three of the 130 are named for what they mean rather than for their
+  code (`jr-mir`'s `USE_OF_UNINITIALISED`, `MISSING_RETURN`, `JUMP_OUTSIDE_LOOP`), so a count that keys on
+  the *name* misses them. Ownership is enforced by `jr-cli/tests/codes.rs` rather than asserted in prose. Rebuild with `typst compile jairs-dashboard.typ`.
 ]

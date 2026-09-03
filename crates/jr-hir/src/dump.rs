@@ -195,6 +195,18 @@ impl<'a> Dumper<'a> {
                     let expr_str = self.fmt_top_expr(*expr);
                     self.line(&format!("Item[{i}] Run {expr_str}"));
                 }
+                // Printed by *state* rather than by content, because the generated declarations are
+                // items of their own in this same list — dumping them again here would show every one
+                // twice (ADR-0184 §1). `pending` is the state a reader needs to see: it means the
+                // operand has not been evaluated, so nothing was generated at all.
+                ItemKind::Insert { operand, .. } => {
+                    let state = if operand.is_some() {
+                        "pending"
+                    } else {
+                        "expanded"
+                    };
+                    self.line(&format!("Item[{i}] Insert ({state})"));
+                }
             }
         }
         self.indent -= 1;

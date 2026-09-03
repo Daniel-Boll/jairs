@@ -183,7 +183,7 @@ pub(crate) fn is_register_representable(pool: &Pool, ty: PoolId) -> bool {
         | Item::StrValue(_)
         | Item::TypeValue(_)
         | Item::ProcValue { .. }
-        | Item::ForeignLibraryValue(_)
+        | Item::ForeignLibraryValue(_, _)
         // An aggregate *value* is not an aggregate *type* — this asks about types (ADR-0074 §1).
         | Item::AggregateValue { .. } => false,
     }

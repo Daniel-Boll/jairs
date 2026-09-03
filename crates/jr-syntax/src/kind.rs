@@ -314,6 +314,13 @@ pub enum SyntaxKind {
     IMPORT_DECL,
     /// A top-level `#run expr;` executed for its side effects.
     RUN_DECL,
+    /// A top-level `#insert "…";` or `#insert OPERAND;`, whose text becomes **declarations**
+    /// (ADR-0184 §1).
+    ///
+    /// Its own kind rather than reusing the body-level `#insert`'s generic `DIRECTIVE_EXPR`, because the
+    /// two produce different things — statements there, items here — and a consumer that met one where it
+    /// expected the other would splice into the wrong arena.
+    INSERT_DECL,
     /// The name being bound by a declaration.
     NAME,
 

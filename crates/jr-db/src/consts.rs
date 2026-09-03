@@ -157,6 +157,14 @@ enum Wanted {
     /// directive's *span* (invariant across the re-lowering that consumes them; the operand's `ExprId` is
     /// not). The last field is that directive span.
     InsertOperand(ItemId, jr_hir::BodyId, ExprId, jr_base::Span),
+    /// The **operand of a computed `#insert` at file scope** (ADR-0184 §1).
+    ///
+    /// The file-scope twin of [`Wanted::InsertOperand`], and a separate variant for the reason
+    /// [`Wanted::BodyRun`] is one: a body's expressions and the file's both start at index 0, so a match
+    /// that could confuse the two would read a *different expression* rather than fail. Evaluated exactly
+    /// as a [`Wanted::Run`] — same arena, same thunk — and keyed additionally by the directive's span,
+    /// which is the one identifier stable across the re-lowering that consumes the text.
+    FileInsertOperand(ItemId, ExprId, jr_base::Span),
     /// The **argument to a `$N` comptime-value parameter** at a call site (ADR-0088 §2).
     ///
     /// `make(5)` — the call needs `5` evaluated to a constant at compile time so the instantiation can
@@ -189,7 +197,8 @@ impl Wanted {
             | Self::Run(_, expr)
             | Self::BodyRun(_, _, expr)
             | Self::TypeAlias(_, expr)
-            | Self::InsertOperand(_, _, expr, _) => expr,
+            | Self::InsertOperand(_, _, expr, _)
+            | Self::FileInsertOperand(_, expr, _) => expr,
             // The *argument* is what to evaluate; the call id is auxiliary and lives in the last fields.
             Self::ComptimeArg(_, _, _, arg, _) => arg,
         }
@@ -202,6 +211,7 @@ impl Wanted {
             | Self::BodyRun(item, _, _)
             | Self::TypeAlias(item, _)
             | Self::InsertOperand(item, _, _, _)
+            | Self::FileInsertOperand(item, _, _)
             | Self::ComptimeArg(item, _, _, _, _) => item,
         }
     }
@@ -209,7 +219,13 @@ impl Wanted {
     /// Which expression arena [`Wanted::expr`] indexes (ADR-0069 §2).
     const fn scope(self) -> ExprScope {
         match self {
-            Self::Item(_, _) | Self::Run(_, _) | Self::TypeAlias(_, _) => ExprScope::TopLevel,
+            // A file-scope insert's operand lives in the **file's** expression arena, which is what
+            // makes it a `TopLevel` scope rather than the `Body` its statement-level twin uses
+            // (ADR-0184 §1).
+            Self::Item(_, _)
+            | Self::Run(_, _)
+            | Self::TypeAlias(_, _)
+            | Self::FileInsertOperand(_, _, _) => ExprScope::TopLevel,
             Self::BodyRun(_, body, _) | Self::InsertOperand(_, body, _, _) => ExprScope::Body(body),
             Self::ComptimeArg(_, scope, _, _, _) => scope,
         }
@@ -253,7 +269,18 @@ fn wanted(
                 }
             }
             ItemKind::Run { expr } => out.push(Wanted::Run(id, *expr)),
-            ItemKind::Const { .. } | ItemKind::Var { .. } | ItemKind::Import { .. } => {}
+            // A **pending** file-scope insert: its operand is a top-level expression waiting to be
+            // evaluated (ADR-0184 §1). An *expanded* one carries `operand: None` and is not a target —
+            // there is nothing left to compute, and re-evaluating would be a second answer to a settled
+            // question.
+            ItemKind::Insert {
+                operand: Some(op),
+                span,
+            } => out.push(Wanted::FileInsertOperand(id, *op, *span)),
+            ItemKind::Const { .. }
+            | ItemKind::Var { .. }
+            | ItemKind::Import { .. }
+            | ItemKind::Insert { operand: None, .. } => {}
         }
     }
     // Then every `#run` inside a body (ADR-0069 §2). Collected in the same query as the file-scope ones
@@ -794,8 +821,14 @@ pub fn insert_operands(
         signatures.signatures.as_ref(),
         &checked_file.comptime_calls,
     ) {
-        let Wanted::InsertOperand(_, body, expr, span) = target else {
-            continue;
+        // **Both insert flavours**, and the scope is the difference (ADR-0184 §1): a statement-level
+        // operand lives in a body's arena and a file-scope one in the file's. Collapsed to a
+        // `(ExprScope, ExprId, Span)` here so the lookup below is written once — the two would otherwise
+        // be the same six lines with one word changed, which is how two answers to one question start.
+        let (scope, expr, span) = match target {
+            Wanted::InsertOperand(_, body, expr, span) => (ExprScope::Body(body), expr, span),
+            Wanted::FileInsertOperand(_, expr, span) => (ExprScope::TopLevel, expr, span),
+            _ => continue,
         };
         // **A folded operand is found by span first** (ADR-0101 §3). `noted_insert(…)` and the other note
         // intrinsics are folded by *sema*, and the value is stored under the id sema saw — but this walk
@@ -808,7 +841,7 @@ pub fn insert_operands(
             .folded_call_spans
             .get(&span)
             .copied()
-            .or_else(|| consts.values.run(ExprScope::Body(body), expr))
+            .or_else(|| consts.values.run(scope, expr))
         else {
             // The operand did not evaluate to a value (a non-string, a trap, a refusal). Left out, so
             // the insert stays pending; the reason was already reported by `checked` or `file_consts`.
@@ -831,7 +864,11 @@ fn known(values: &ConstValues, target: Wanted) -> bool {
         // A type alias's value is keyed like any other named constant's, so nothing downstream has to
         // know it was one (ADR-0071 §2).
         Wanted::Item(item, _) | Wanted::TypeAlias(item, _) => values.item(item).is_some(),
-        Wanted::Run(_, expr) => values.run(ExprScope::TopLevel, expr).is_some(),
+        // A file-scope insert's operand is keyed exactly as a file-scope `#run`'s value: same arena,
+        // same thunk (ADR-0184 §1).
+        Wanted::Run(_, expr) | Wanted::FileInsertOperand(_, expr, _) => {
+            values.run(ExprScope::TopLevel, expr).is_some()
+        }
         Wanted::BodyRun(_, body, expr) | Wanted::InsertOperand(_, body, expr, _) => {
             values.run(ExprScope::Body(body), expr).is_some()
         }
@@ -849,7 +886,9 @@ fn record(values: &mut ConstValues, target: Wanted, value: PoolId) {
             // constant folds when lowering walks it rather than being re-evaluated.
             values.set_run(ExprScope::TopLevel, expr, value);
         }
-        Wanted::Run(_, expr) => values.set_run(ExprScope::TopLevel, expr, value),
+        Wanted::Run(_, expr) | Wanted::FileInsertOperand(_, expr, _) => {
+            values.set_run(ExprScope::TopLevel, expr, value)
+        }
         Wanted::BodyRun(_, body, expr) | Wanted::InsertOperand(_, body, expr, _) => {
             values.set_run(ExprScope::Body(body), expr, value)
         }

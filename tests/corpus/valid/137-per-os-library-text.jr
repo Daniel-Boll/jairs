@@ -1,0 +1,71 @@
+// **All three of `modules/GL`'s per-OS library declarations, checked on whatever host runs this**
+// (ADR-0184 §5).
+//
+// # Why this file exists
+//
+// `modules/GL` picks its OpenGL library at compile time, and on any one machine exactly **one** of its three
+// branches runs. So the Linux and Windows declarations were text that no test could ever look at — and two of
+// three branches permanently unexecuted is not a portability claim, it is a hope. That is precisely the shape
+// AGENTS.md warns about under "if a construct is legal in the corpus, something must execute or snapshot it".
+//
+// So `gl_library_for` takes the OS as an **argument**, and `gl_library` is `gl_library_for(os())`. The choice
+// and the mapping are separated, and the mapping is what this file exercises: all three strings, on macOS, on
+// Linux, on Windows, from one host.
+//
+// # What it asserts, and why each part earns its line
+//
+//   * **Each string is exactly right**, compared character for character through `String.equal`, because `==`
+//     on a `string` is E0278 by design (ADR-0099 §4) — two strings could compare as bytes or as pointers and
+//     Jairs declines to pick. A `contains`-style check would pass on `"gl :: #system_library \"GLU\";"`.
+//   * **macOS differs in its *directive*, not just its name** — `#framework` against `#system_library`. That is
+//     the whole reason `jr-link` needed a second argument form (ADR-0183), so a test that only compared
+//     library *names* would miss the interesting half entirely.
+//   * **The three are pairwise different.** This catches the mistake a reader would actually make here:
+//     editing one branch and leaving another accidentally aliased to the same text. Two branches returning one
+//     string is a plausible-looking module and a program that links against the wrong library on one platform.
+//   * **The host's own choice agrees with the mapping** — `gl_library()` equals `gl_library_for(os())` for
+//     this machine. It is the one bit that ties the tested mapping back to what the module actually compiles
+//     with, and without it the mapping could be correct while the `#insert` used something else.
+//
+// Every comparison runs in **both** engines: these are string equalities over compile-time-known text, so
+// there is nothing here for the VM and a native binary to disagree about — which is exactly why this belongs
+// in `valid/` rather than as an integration test. The *linking* claim needs a linker and lives in
+// `crates/jr-cli/tests/integration.rs`; the *mapping* claim does not, and gets checked on every engine on
+// every run instead.
+//
+// Exit code 15 = 1 + 2 + 4 + 8, so a single failing group names itself.
+#import "Basic";
+GL :: #import "GL";
+Str :: #import "String";
+
+main :: () {
+    n := 0;
+
+    // macOS is a framework — a different directive, not merely a different name.
+    if Str.equal(GL.gl_library_for(Operating_System.MACOS), "gl :: #framework \"OpenGL\";") {
+        n = n + 1;
+    }
+
+    // Linux is an ordinary `-lGL`.
+    if Str.equal(GL.gl_library_for(Operating_System.LINUX), "gl :: #system_library \"GL\";") {
+        n = n + 2;
+    }
+
+    // Windows is the ordinary form under a different name.
+    if Str.equal(GL.gl_library_for(Operating_System.WINDOWS), "gl :: #system_library \"opengl32\";") {
+        n = n + 4;
+    }
+
+    // The three must be pairwise distinct, and the host's own choice must be one of them — the bit that ties
+    // the mapping to what the module really compiled against.
+    mac := GL.gl_library_for(Operating_System.MACOS);
+    linux := GL.gl_library_for(Operating_System.LINUX);
+    windows := GL.gl_library_for(Operating_System.WINDOWS);
+    distinct := !Str.equal(mac, linux) && !Str.equal(linux, windows) && !Str.equal(mac, windows);
+
+    if distinct && Str.equal(GL.gl_library(), GL.gl_library_for(os())) {
+        n = n + 8;
+    }
+
+    exit(n);
+}

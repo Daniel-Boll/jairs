@@ -192,7 +192,7 @@ impl<'ctx> Repr<'ctx> {
             | Item::StrValue(_)
             | Item::TypeValue(_)
             | Item::ProcValue { .. }
-            | Item::ForeignLibraryValue(_)
+            | Item::ForeignLibraryValue(_, _)
             | Item::AggregateValue { .. } => Err(CodegenError::NoLayout {
                 ty,
                 reason: layout_of(pool, target, ty)
