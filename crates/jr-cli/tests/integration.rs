@@ -1909,12 +1909,26 @@ Simp :: #import "Simp";
 libc :: #system_library "c";
 exit_now :: (status: s64) #foreign libc "exit";
 
-// Pushes a mouse event and folds every queued event into `ui`.
+// Pushes a mouse event through SDL's real queue and folds **that event** into `ui`.
 //
 // **Every assertion below is unchanged from before the migration** (ADR-0182 §5). Only this helper's types
 // and `main`'s setup and teardown moved: the same button, clicked the same way, must produce the same exit
 // code while every pixel now goes through `SDL_RenderGeometry`. An unchanged assertion over a replaced
 // backend is the only check that a migration preserved behaviour rather than merely compiling.
+//
+// # Why it folds one event rather than every queued one
+//
+// It used to `feed` everything the queue returned, and that made the test depend on **where the developer's
+// mouse happened to be**. A window under the physical cursor gets real `MOUSE_MOTION` events from the OS,
+// and `SDL_PollEvent` pumps more of them *while* this loop drains — so a real motion at the cursor's
+// position arrived after the synthetic click and overwrote `ui.mouse_x`/`mouse_y`. The button then
+// hit-tested against the wrong point and the program exited 10 instead of 24, deterministically, until the
+// cursor moved. Confirmed by printing the queue: `kind=1024 x=60 y=129` behind the pushed `kind=1025
+// x=20 y=20`, and by ruling out the `#place` overlay with a `cc` probe (offsets 16/20/24 still match).
+//
+// Filtering on the event's own values rather than on its kind alone is deliberate: this program pushes a
+// `MOUSE_MOTION` too, so a kind test would still admit a real one. The queue round trip is unchanged —
+// the event is still pushed into SDL and read back out — which is the property this test wanted.
 send :: (ui: *UI, kind: s64, x: s64, y: s64) {
     m: Input.Event;
     m.kind = cast(u32, kind);
@@ -1925,7 +1939,11 @@ send :: (ui: *UI, kind: s64, x: s64, y: s64) {
     e: Input.Event;
     i := 0;
     while i < 32 {
-        if Input.next_event(*e) { feed(ui, *e); }
+        if Input.next_event(*e) {
+            if e.kind == cast(u32, kind) && e.mouse_x == cast(s32, x) && e.mouse_y == cast(s32, y) {
+                feed(ui, *e);
+            }
+        }
         i = i + 1;
     }
 }

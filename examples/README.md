@@ -18,6 +18,7 @@ cargo run -q -p jr-cli -- run examples/<name>.jr -I modules
 | [`05-target-os.jr`](05-target-os.jr) | `os()`, the compile-time target-operating-system value. |
 | [`06-array.jr`](06-array.jr) | A fixed-size `[N]T` array: indexing, `.count`, bounds checks. |
 | [`07-file-read.jr`](07-file-read.jr) | Installs an allocator, then writes and reads a whole file. |
+| [`08-print-formatted.jr`](08-print-formatted.jr) | `%` placeholders over any type, and what a wrong argument count does. |
 
 A drawing program (`Simp`, `Window`, `Input`) needs SDL2 and cannot run under `jr run` —
 the compile-time VM reaches libc and nothing else. None is included here; see

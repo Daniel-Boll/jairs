@@ -1,0 +1,90 @@
+// **`print` with `%` placeholders over a `..Any` variadic** (ADR-0189).
+//
+// # Why this file exists
+//
+// Until this wave the library could print a string and one non-negative integer, so a program that
+// wanted to show a float, a negative number, a `bool` or a struct had nothing to call. `print_int`
+// could not even render `S64_MIN`, because it negated first.
+//
+// What is exercised here is the *composition*: `print` is a `..Any` variadic (ADR-0138/0139 built the
+// packing, ADR-0076 the erasure), each argument is discriminated at run time by its own `Type_Info`
+// (ADR-0075), and the placeholder scan decides where each lands. Every branch of `format_any` that a
+// corpus program can observe is taken below.
+//
+// # What is deliberately absent, and why
+//
+// **A pointer.** `%` on a pointer prints its address, and the bytecode VM's addresses are
+// region-relative while a native binary's are real — so the two engines legitimately disagree and the
+// value has no home in `valid/`, whose premise is that they agree. Verified by hand in both.
+//
+// **A view and an enum member's name.** Both print `<view>` / an ordinal, and ADR-0189 §6 records the
+// one root cause: a `Type_Info` field carrying a type **id** cannot be resolved back to a
+// `*Type_Info`, so nothing can recurse into an element or look a member up. Asserted below as it is
+// rather than left out, so the day that lifts, this file's expectation changes visibly.
+//
+// The exit code is a checksum of what printed, so a wrong rendering fails the run rather than only
+// looking wrong in a log nobody reads.
+
+#import "Basic";
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+Colour :: enum {
+    RED;
+    GREEN;
+    BLUE;
+}
+
+main :: () {
+    total := 0;
+
+    // A format string with no placeholder at all, and one that is only placeholders.
+    total = total + print("plain\n");
+    total = total + print("%-%\n", 1, 2);
+
+    // Every integer width, signed and unsigned, including the two that a naive renderer gets wrong:
+    // `S64_MIN` cannot be negated, and `U64_MAX` does not fit in an `s64`.
+    print("% % % %\n", cast(s8, -128), cast(s16, -32768), cast(s32, -2147483648), -9223372036854775807 - 1);
+    // `U64_MAX` through a typed local: a bare literal in a variadic takes `s64` from its context and
+    // does not fit, which is E0204 working rather than a gap.
+    big: u64 = 18446744073709551615;
+    print("% %\n", cast(u8, 255), big);
+
+    // A `bool`, a `string`, a `float64` and a `float32` widened to one.
+    print("% % % %\n", true, false, "text", 1.5);
+    print("%\n", cast(float32, -0.25));
+
+    // A struct, one level deep, by field name.
+    p: Point;
+    p.x = 3;
+    p.y = 4;
+    print("%\n", p);
+
+    // A fixed-size array, whose stride comes from `size / count`.
+    a: [3]s64;
+    a[0] = 10;
+    a[1] = 20;
+    a[2] = 30;
+    print("%\n", a);
+
+    // An escaped `%%`, and the two wrong-argument-count diagnostics. None of the three is an error:
+    // a `print` that refuses to print is worse than one that says what it was given.
+    print("100%% done\n");
+    print("short %\n");
+    print("long\n", 9);
+
+    // The two shapes ADR-0189 §6 leaves as they are.
+    c := Colour.BLUE;
+    print("%\n", c);
+    v := view(*a[0], 3);
+    print("%\n", v);
+
+    // `plain\n` is 6 bytes; `1-2\n` is 4. A rendering that drops or adds a byte changes this.
+    if total != 10 {
+        exit(1);
+    }
+    exit(64);
+}

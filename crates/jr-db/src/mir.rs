@@ -996,6 +996,7 @@ fn evaluate_modify_predicates(
     let mut out: Vec<jr_diag::Diagnostic> = Vec::new();
     let pool = crate::sema::read_pool(db);
     let mut program = jr_vm::comptime_program();
+    jr_vm::add_file_globals(&mut program, file_id, mir);
     if jr_vm::add_file(&mut program, file_id, hir, mir, signatures, &pool).is_err() {
         // The tree could not be loaded into the comptime program at all. Not a rejection — see this
         // function's docs — so the instantiation stands and any real problem is reported elsewhere.

@@ -639,6 +639,34 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
                     }
                 }
             }
+            jr_sema::AnyOp::OfValue => {
+                // The same two lookups `AnyOp::Of` needs, and the same failure reporting — the only
+                // difference is which `AnyLowering` is recorded and that `ty` is the value's own type
+                // rather than a pointee (ADR-0189 §2).
+                let any_name = interner.intern("Any");
+                let any_ty = all_sigs
+                    .iter()
+                    .find_map(|sigs| sigs.lookup(any_name))
+                    .and_then(|e| e.type_value);
+                match (type_info_value(&mut pool, interner, &all_sigs, *ty), any_ty) {
+                    (Ok(type_info), Some(any_ty)) => {
+                        values.set_any_op(
+                            *scope,
+                            *expr,
+                            jr_mir::AnyLowering::OfValue {
+                                type_info,
+                                any_ty,
+                                value_ty: *ty,
+                            },
+                        );
+                    }
+                    (Err(why), _) => type_info_failures.push(why),
+                    (_, None) => {
+                        type_info_failures
+                            .push("the standard library's `Any` is not usable".to_owned());
+                    }
+                }
+            }
             jr_sema::AnyOp::As => {
                 values.set_any_op(
                     *scope,
@@ -996,6 +1024,12 @@ fn evaluate(
         .ok_or_else(|| "the expression was never typed".to_owned())?;
 
     let mut program = jr_vm::comptime_program();
+    // **Phase 1: the globals, before any body** (ADR-0189 §7). A body can name a global from another
+    // file because the inliner copies a `GlobalRef` unchanged, so the table must be complete before
+    // anything compiles. A comptime program needs it too — not so a `#run` can read a global, which
+    // ADR-0186 §2 refuses, but so that a *body* holding one still compiles: without it, assembling
+    // `modules/Basic` failed outright and every constant in the file reported that refusal.
+    jr_vm::add_file_globals(&mut program, file_id, mir);
     jr_vm::add_file(&mut program, file_id, hir, mir, signatures, pool)
         .map_err(|e: VmError| e.to_string())?;
 
@@ -1043,6 +1077,7 @@ fn evaluate(
             interner,
             pool,
         );
+        jr_vm::add_file_globals(&mut program, module.id, &module_mir);
         jr_vm::add_file(
             &mut program,
             module.id,
@@ -1204,6 +1239,13 @@ pub(crate) fn type_info_value(
     // The fixed-size per-kind facts (ADR-0078 §1, §3), read from the pool the builder already consults.
     // `count` is a struct/union/variant field count or an array length; `element` is an array's element
     // or a pointer's pointee, as a type id. Both 0 for a kind that has neither.
+    // The pool is the authority on signedness, as it is on size — asking it here rather than deriving
+    // the answer from the type's *name* is the whole point of ADR-0189 §3.
+    let is_signed = matches!(
+        *pool.item(described),
+        jr_pool::Item::IntType { signed: true, .. }
+    );
+
     let (count, element) = match *pool.item(described) {
         jr_pool::Item::ArrayType { elem, len } => (len, u64::from(elem.as_u32())),
         jr_pool::Item::PointerType(pointee) => (0, u64::from(pointee.as_u32())),
@@ -1232,6 +1274,10 @@ pub(crate) fn type_info_value(
         pool.int_value(PoolId::S64, count),
         pool.int_value(PoolId::S64, element),
         field_table,
+        // **Signedness** (ADR-0189 §3), last so no existing member's offset moves. `false` for every
+        // non-integer, which is what a caller wants: the field is only meaningful where `kind` is
+        // `INTEGER`, and a `bool` that is `false` for a `string` reads better than one left undefined.
+        pool.bool_value(is_signed),
     ];
     Ok(pool.aggregate_value(info_ty, elements))
 }

@@ -352,7 +352,7 @@ fn hovering_an_imported_procedure_shows_the_module_as_container() {
     .expect("an imported name resolves");
     let text = hover_text(&found.contents);
     assert!(
-        text.starts_with("```jr\nBasic\nprint :: (s: string)\n```"),
+        text.starts_with("```jr\nBasic\nprint :: (fmt: string, args: []Any) -> s64\n```"),
         "expected the Basic module's card, got:\n{text}"
     );
 }
@@ -640,7 +640,13 @@ fn an_imported_name_is_offered_with_its_module() {
         .iter()
         .find(|i| i.label == "print")
         .expect("print offered from Basic");
-    assert_eq!(print.detail.as_deref(), Some("print :: (s: string)"));
+    // `print`'s signature is the variadic one ADR-0189 gave it. Spelled out rather than matched
+    // loosely, because the *detail* line is what a completion popup shows and a wrong arity there is
+    // worse than none.
+    assert_eq!(
+        print.detail.as_deref(),
+        Some("print :: (fmt: string, args: []Any) -> s64")
+    );
     assert_eq!(
         print
             .label_details
@@ -886,14 +892,15 @@ fn references_to_an_imported_name_cross_files() {
         false,
         &list_of(&db).files,
     );
-    // Six, and the count is the interesting part: one use in `a.jr`, two in `b.jr`, and
-    // **three inside `Basic` itself** — `print_line` calls `print` twice and `print_int`
-    // calls it once for the minus sign. A search that only looked at importers would have
-    // found three and looked correct.
+    // Four, and the split is the interesting part: one use in `a.jr`, two in `b.jr`, and **one inside
+    // `Basic` itself** — `print_int` delegates to it. A search that only looked at
+    // importers would have found three and looked correct.
     //
-    // This count is deliberately exact rather than `>=`, which is why adding `print_int` to
-    // `Basic` moved it from five to six: a loose assertion here would not have noticed a
-    // search that started missing the declaring module.
+    // The Basic figure was three when `print_line` called `print` twice and `print_int` once for the
+    // sign. ADR-0189 rewrote all three onto one formatter, so those calls no longer exist and the number
+    // followed the module's own code. That is expected of an exact count on a real module, and the count
+    // stays exact rather than becoming `>=`: the property worth defending is that the declaring module is
+    // searched *at all*, and a `>= 3` would have kept passing when the answer became "importers only".
     let per_file = |suffix: &str| {
         found
             .iter()
@@ -904,10 +911,10 @@ fn references_to_an_imported_name_cross_files() {
     assert_eq!(per_file("b.jr"), 2, "{found:?}");
     assert_eq!(
         per_file("Basic/module.jr"),
-        3,
+        1,
         "uses inside the declaring module are references too: {found:?}"
     );
-    assert_eq!(found.len(), 6, "{found:?}");
+    assert_eq!(found.len(), 4, "{found:?}");
 }
 
 #[test]

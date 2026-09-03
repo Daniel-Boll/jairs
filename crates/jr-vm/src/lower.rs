@@ -40,8 +40,10 @@
 //! stub the branch jumps to. Neither placement needs an edge split at lowering time.
 //! That is the concrete payoff ADR-0017 promised for enforcing the invariant.
 
+use rustc_hash::FxHashMap;
+
 use jr_mir::{
-    Callee, FileMir, GlobalData, GlobalRef, MirBody, MirSpan, Place, PlaceBase, Projection, Rvalue,
+    Callee, GlobalData, GlobalRef, MirBody, MirSpan, Place, PlaceBase, Projection, Rvalue,
     Statement, Target, Terminator,
 };
 use jr_pool::{
@@ -63,8 +65,9 @@ use crate::error::VmError;
 /// the version [`crate::assemble::add_file`] uses for an ordinary body, which can reference one.
 ///
 /// A thin wrapper rather than a fourth parameter on this function, because `jr-db` calls this one
-/// directly with its historical three arguments and does not have a file's [`FileMir`] in hand at
-/// that call site to supply as a fourth.
+/// directly with its historical three arguments for a body that has no globals to resolve at all. The
+/// wrapper's extra argument is the **program's** global table rather than one file's (ADR-0189 §7), since
+/// the inliner copies a `GlobalRef` from another file into a host body.
 ///
 /// # Errors
 /// [`VmError::Internal`] when MIR, the pool and the target layout disagree — an
@@ -80,7 +83,7 @@ use crate::error::VmError;
 pub fn compile(body: &MirBody, pool: &Pool, target: TargetLayout) -> Result<Code, VmError> {
     Compiler {
         body,
-        file_mir: None,
+        globals: None,
         pool,
         target,
         instrs: Vec::new(),
@@ -104,13 +107,13 @@ pub fn compile(body: &MirBody, pool: &Pool, target: TargetLayout) -> Result<Code
 /// [`FileMir`]).
 pub fn compile_in_file(
     body: &MirBody,
-    file_mir: &FileMir,
+    globals: &FxHashMap<GlobalRef, GlobalData>,
     pool: &Pool,
     target: TargetLayout,
 ) -> Result<Code, VmError> {
     Compiler {
         body,
-        file_mir: Some(file_mir),
+        globals: Some(globals),
         pool,
         target,
         instrs: Vec::new(),
@@ -142,7 +145,12 @@ struct Compiler<'a> {
     /// the whole program but just the one [`FileMir`] the caller already has in hand: `jr-mir`'s
     /// contract keeps every [`jr_mir::GlobalRef`] this wave produces same-file, so the body's own
     /// file is enough.
-    file_mir: Option<&'a FileMir>,
+    /// Every global in the **program**, not just this body's file (ADR-0189 §7).
+    ///
+    /// `None` for a const-eval body, which can observe no global at all. Program-wide rather than
+    /// per-file because the inliner copies a `GlobalRef` from another file into this body, so a per-file
+    /// table cannot resolve what a body legitimately names.
+    globals: Option<&'a FxHashMap<GlobalRef, GlobalData>>,
     pool: &'a Pool,
     target: TargetLayout,
     instrs: Vec<Instr>,
@@ -622,21 +630,26 @@ impl Compiler<'_> {
     /// unlike the missing-`file_mir` case above, a real per-file compile naming the wrong file
     /// *is* this compiler disagreeing with `jr-mir`, so it stays [`VmError::Internal`].
     fn global_data(&self, global: GlobalRef) -> Result<GlobalData, VmError> {
-        let Some(file_mir) = self.file_mir else {
+        let Some(globals) = self.globals else {
             return Err(VmError::unsupported(
                 "a global variable's current value cannot be read here: nothing runs before \
                  `main` to have set one, so a global's own initialiser and other compile-time-only \
                  evaluation can never observe one (ADR-0186 §2)",
             ));
         };
-        if global.file != self.body.proc().file {
-            return Err(VmError::internal(
-                "a cross-file global reference, which this engine does not yet support",
-            ));
-        }
-        file_mir
-            .global(global.item)
-            .ok_or_else(|| VmError::internal(format!("no global for item {}", global.item.index())))
+        // **No same-file check** (ADR-0189 §7). There used to be one, comparing `global.file` against
+        // the body's own and refusing a mismatch as an internal error — resting on ADR-0186's claim that
+        // only same-file globals occur. That claim was wrong for a reason no *program* reveals: the
+        // **inliner** copies a `GlobalRef` unchanged into a host body in another file, because a
+        // `GlobalRef` is absolute (ADR-0186 §3 decided that deliberately). So `Basic.print` inlined into
+        // a caller made this fire on an ordinary print, reporting a feature nobody had used.
+        globals.get(&global).copied().ok_or_else(|| {
+            VmError::internal(format!(
+                "no global for file {} item {}",
+                global.file.index(),
+                global.item.index()
+            ))
+        })
     }
 
     /// Resolves a MIR place into a plan with every offset computed.

@@ -97,21 +97,21 @@
 #h(4pt)
 #pill[1082 tests]
 #h(4pt)
-#pill[ADR-0188 latest]
+#pill[ADR-0189 latest]
 #h(4pt)
 #pill(fill: rgb("#eaf5ee"), stroke: good)[ALL TWELVE WAVES DONE]
 #h(4pt)
 #pill(fill: rgb("#eaf5ee"), stroke: good)[everything merged to main]
 #h(4pt)
-#pill(fill: rgb("#eaf5ee"), stroke: good)[per-OS: library concern]
+#pill(fill: rgb("#eaf5ee"), stroke: good)[print: %-formatted, any type]
 
 #v(0.5em)
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
   metric("Tests", "1082", "workspace, all seven gates"),
-  metric("Corpus", "269", "jr files, all three engines"),
-  metric("ADRs", "188", "0001 to 0188, immutable"),
+  metric("Corpus", "270", "jr files, all three engines"),
+  metric("ADRs", "189", "0001 to 0189, immutable"),
   metric("Diagnostics", "130", "declared codes, E0295 next"),
   metric("Editor checks", "170", "Neovim, verified not gated"),
 )
@@ -441,12 +441,15 @@
   columns: (1fr, 1fr),
   gutter: 14pt,
   [
-    #sub[The graphics API becomes Jai's, over OpenGL]
+    #sub[A program can report what it computed]
     #text(size: 7.4pt)[
-      ADR-0185 to 0188. Test count 1076 to *1082*, corpus 266 to *269* files, ADRs 184 to *188*, and
-      *no new diagnostic code* — four ADRs and not one new refusal, because every defect here was a gap
-      to close rather than a construct to refuse. `Simp` and `Window` now have Jai's real signatures and
-      draw through GL 2.1 with GLSL 1.20 shaders.
+      ADR-0189. Tests *hold at 1082*, corpus 269 to *270*, ADRs 188 to *189*, no new diagnostic code for
+      the fifth stretch running. `print("x = %, ok = %", 42, true)` in Jairs, over the variadic and the
+      reflection already built — every integer width including `S64_MIN`, floats, `bool`, pointers, a
+      struct by field name. It is the *first* caller to compose four shipped features, and composing them
+      found *four compiler defects*: three `imports.is_empty()` guards hiding the standard library's own
+      types from itself, and the inliner moving a global reference across files, which ADR-0186 assumed
+      impossible in the same decision that made it possible.
     ]
 
     #v(0.3em)
@@ -597,7 +600,7 @@
   Sources: PLAN.md §1.5 and §7, the ADR directory, `docs/decisions/DECISIONS.md`, and all seven gates
   run today on `main` *after* the merge, not on a branch. Every number was measured rather than carried
   forward — the test count from a full workspace run (1082, zero failures) and a second under
-  `--features jr-cli/llvm`, the corpus count from a file walk (269 `.jr` files under
+  `--features jr-cli/llvm` (1088), the corpus count from a file walk (270 `.jr` files under
   `tests/corpus/` outside `tests/corpus/modules/`), the ADR count from `docs/adr/`, and the editor-check
   count from a real `verify.lua` run (170). The diagnostic count is *every* `const NAME: &str = "E0nnn"`
   across the crates, which is 130 — and the counting rule is written down here because the previous number

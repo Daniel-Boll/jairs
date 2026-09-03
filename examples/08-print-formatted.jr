@@ -1,0 +1,43 @@
+// Formatted output: one `%` per argument, whatever its type.
+//
+// Verified: `cargo run -q -p jr-cli -- run examples/08-print-formatted.jr -I modules`
+// prints the eight lines below and exits 0.
+#import "Basic";
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+main :: () {
+    // `%` takes the next argument and asks it what it is. There is no `%d` or `%s`, because every
+    // argument already carries its own `Type_Info` — a type letter would be information the callee
+    // has and the caller can get wrong.
+    print("int %, float %, bool %, string %\n", 42, 1.5, true, "text");
+
+    // Every integer width, signed and unsigned. Including the two a naive renderer gets wrong:
+    // `S64_MIN` cannot be negated, and `U64_MAX` does not fit in an `s64`.
+    biggest: u64 = 18446744073709551615;
+    print("smallest s64 %\n", -9223372036854775807 - 1);
+    print("largest u64  %\n", biggest);
+
+    // A struct prints one level deep, by field name.
+    p: Point;
+    p.x = 3;
+    p.y = 4;
+    print("point %\n", p);
+
+    // `%%` is a literal percent.
+    print("100%% covered\n");
+
+    // A wrong argument count is not an error. `print` has nowhere to return one to, so it says so in
+    // the output where you are already looking.
+    print("missing %\n");
+    print("spare\n", 9);
+
+    // The return value is the byte count, so output can be measured.
+    written := print("counted\n");
+    print_line("that line was % bytes", written);
+
+    exit(0);
+}

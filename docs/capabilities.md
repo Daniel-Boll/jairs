@@ -10,7 +10,7 @@ the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrat
 behind them — that narrative is not duplicated here):
 
 - **1082** workspace tests, all seven gates green.
-- **269** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
+- **270** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
   (276 counting those).
 - **188** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **23** standard library modules under `modules/`.
@@ -33,7 +33,7 @@ behind them — that narrative is not duplicated here):
 | Inspect tokens or the CST | `jr parse file.jr` | Debug aid |
 | Measure language-server latency | `jr bench file.jr` | Reports min/median/p95 cold, warm and after an edit. **Reports, never judges** — no threshold, not a gate (ADR-0033), so a performance regression is invisible to CI by construction |
 | Measure compile throughput | `jr bench --throughput paths…` | Lines and bytes per second for `check` and `build`, cold only — a compiler is a process, so there is no warm throughput to report (ADR-0146). Same contract: reports, never judges |
-| Print a number | `print_int(n)` from `modules/Basic` | Written in Jairs, and still recursive — both the `[N]u8` buffer and the `[]u8` view it wanted now exist, so nothing in the language is missing; converting it is its own change. Traps on the most negative `s64`, which cannot be negated (ADR-0002) |
+| Print anything | `print("x = %, ok = %\n", 42, true)` from `modules/Basic` | Written in Jairs (ADR-0189). Every integer width signed and unsigned including `S64_MIN`, floats, `bool`, `string`, pointers as hex, a struct one level deep, a fixed array's elements. An enum prints its **ordinal** and a view prints `<view>`: `Type_Info` carries type *ids*, and an id cannot be resolved to a `*Type_Info` |
 | Call libc from Jairs | `#foreign` / `#system_library` | Through libffi at run time (refused at comptime, ADR-0006). `modules/Basic` binds `write`, `exit`, `malloc`, `free`; the VM satisfies `malloc`/`free` from its own region (ADR-0061) so a pointer round-trips there too. A library is named by `#system_library "SDL2"` or, on macOS, `#framework "OpenGL"` — **two different linker arguments**, and neither is a fallback for the other, because a compiler cannot know which a name means and guessing would link a program for a reason its source never stated (ADR-0183) |
 | Fold a compile-time call | `COMPUTED :: #run add(2, 3)`, or `n := #run add(2, 3)` in a body | Nested calls, arithmetic around a call, a loop in the callee and an **imported** callee all work (ADR-0069). Still refused: a `#foreign` call (ADR-0006), an operator overload, a default or named argument, and reading another file's constant — all because const-eval precedes the check phase |
 | Import a module | `#import "Basic";` or `Simp :: #import "Simp";` | One module = one file, cycles legal. A **bare** import merges the module's names into the file flat; an **aliased** one merges nothing and is reached as `Simp.name` — in value *and* type position, so `e: Input.Event` is a spelling (ADR-0179). That is what makes two modules exporting the same name usable together: before it, a program that both drew a window and read a file could not name `open` at all. Procedures, types, enum members and **constants' values** all cross the boundary; an imported struct's *fields* do not, so `using` on one is refused. `#scope_module` hides a declaration from importers |
@@ -86,7 +86,7 @@ The authoritative version of this list is
 | `[..]T` dynamic arrays — surface and layout (ADR-0136); `modules/List` operates on them natively | growth operations beyond what `List` provides |
 | calls, nested; a discarded call is a statement | |
 | integer literals (dec/hex/bin/oct, `_`), string literals + escapes | |
-| float literals: `1.5`, `1e9`, `1.5e-3`, `1_000.5` | float *printing* — `print_int` has no counterpart |
+| float literals: `1.5`, `1e9`, `1.5e-3`, `1_000.5`; float **printing** via `print("%", x)` (ADR-0189) | a chosen precision or field width — `%` renders shortest-ish and takes no modifiers |
 | nesting block comments; `///` and `//!` doc comments, shown on hover | doc generation (`jr doc`) — nothing consumes docs but the language server |
 | `#run` at file scope or in a body, calling local or **imported** procedures, with loops and nested calls; bounded by a **step budget** (ADR-0121), so a non-terminating one reports E0230 rather than hanging the compiler | a `#run` reading **another file's constant**; a `#foreign` call (ADR-0006); an operator overload, a default or a named argument |
 | a `#run` returning a **struct or array**, interned as its element values and materialised by both engines (ADR-0074), including one holding a **string** (ADR-0075) | a `#run` returning a **union** — untagged storage makes "which field is valid" unanswerable; a struct or array *literal* (`P.{1, 2}`), which is a separate syntax question |
@@ -242,9 +242,14 @@ missing feature.
   is the one case this restriction does not apply to.
 - **The two engines agreeing is *tested*, not assumed.** They share MIR, which makes agreement
   likely; `crates/jr-cli/tests/differential.rs` is what makes it checked.
-- **Only two of the printing corpus programs print anything**; most drive a computation out
-  through `exit` instead — arithmetic, precedence, loops, block parameters, pointers, struct
-  offsets and both traps.
+- **Most corpus programs still drive a computation out through `exit` rather than printing** —
+  arithmetic, precedence, loops, block parameters, pointers, struct offsets and both traps. That was
+  a limitation before ADR-0189 and is a *choice* after it: an exit code is checked by the harness,
+  where output would need a golden file. `valid/140` prints and does both, using `print`'s byte count
+  as its exit code.
+- **A pointer's printed value has no home in `tests/corpus/valid/`.** The bytecode VM's addresses are
+  region-relative and a native binary's are real, so the two engines legitimately disagree — and that
+  directory's premise is that they agree. Verified by hand in both instead.
 - **The integer tower cost almost nothing, and that is a fact about the code rather than
   luck.** `jr-pool`'s `IntKind` was already generic over width and signedness, and interning is
   structural — so `s8`..`u64` is eight names mapped onto an existing representation.

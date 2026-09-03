@@ -20,7 +20,7 @@ main :: () {
         i = i + 1;
     }
 
-    // 0 + 1 + 4 + 9 + 16 = 30
-    print_int(total);
-    print_line("");
+    // 0 + 1 + 4 + 9 + 16 = 30. The whole array prints too — a fixed array's elements are reachable
+    // through reflection, because its stride is `size / count`.
+    print_line("squares = %, total = %", squares, total);
 }

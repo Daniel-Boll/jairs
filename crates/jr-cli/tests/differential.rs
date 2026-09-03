@@ -677,36 +677,56 @@ fn a_polymorphic_struct_agrees_in_both_engines() {
     );
 }
 
-/// A `*T` **coerces to `Any`** at a call argument, identically in both engines (ADR-0076 §1).
+/// A `*T` **coerces to `Any`** at a call argument, identically in both engines (ADR-0076 §1, ADR-0189 §2).
 ///
-/// The ergonomic half of `any_of`: `takes(*x)` where `takes` wants an `Any` erases the pointer at the
-/// call, exactly as `takes(any_of(*x))` would. This checks the coerced form produces the same value the
-/// explicit form does — the two must be one call, not two behaviours.
+/// The implicit coercion and the explicit `any_of` are **two different operations**, and this pins the
+/// difference in both engines: `f(*p)` describes the `*Point` it was handed, while `any_of(*p)` erases
+/// through the pointer and describes the `Point`. So `size` is 8 for one and 16 for the other.
+///
+/// # What this test used to assert, and why it changed
+///
+/// It read `any_as(a, Point)` from an implicitly coerced argument and expected `size` to be 16, because
+/// the implicit coercion used to describe the **pointee** too — the two spellings were one operation. The
+/// old expectation was not a stale number but a stale *semantics*: ADR-0189 §2 adopted Jai's rule, where
+/// an argument describes *itself*, because `print("%", p)` on a `*Point` must be able to say "pointer".
+///
+/// Asserting the *difference* rather than the old equality is the point. A test that only checked the two
+/// engines agreed would pass if both lost the distinction, which is exactly the regression that matters:
+/// `any_of` is the escape hatch that keeps "describe the pointee" reachable, and if the implicit form
+/// silently did the same thing again there would be no way to print a pointer.
 #[test]
 fn a_pointer_coerces_to_any_at_a_call_in_both_engines() {
     let dir = TempDir::new().expect("a temporary directory");
     let source = concat!(
         "#import \"Basic\";\n\n",
         "Point :: struct { x: s64; y: s64; }\n\n",
-        "sum :: (a: Any) -> s64 {\n",
-        "    p := any_as(a, Point);\n",
-        "    return p.x + p.y + a.type.size;\n",
+        "describe :: (a: Any) -> s64 {\n",
+        "    return a.type.size;\n",
         "}\n\n",
         "main :: () {\n",
         "    p: Point;\n",
         "    p.x = 3;\n",
         "    p.y = 4;\n",
-        // No `any_of` at the call: the `*Point` is erased implicitly because `sum` wants an `Any`.
-        "    exit(sum(*p));\n",
+        // No `any_of` on the first: the `*Point` is coerced because `describe` wants an `Any`, and it
+        // describes the pointer. The second erases explicitly and describes the `Point`.
+        "    implicit := describe(*p);\n",
+        "    explicit := describe(any_of(*p));\n",
+        "    if implicit != 8 { exit(1); }\n",
+        "    if explicit != 16 { exit(2); }\n",
+        // The call-result coercion, which refused the whole body before ADR-0189 §2 — `print("%", f())`
+        // is the shape every caller writes, and it reported "a value coercion to `Any` recorded against a
+        // call" as a compiler gap.
+        "    if describe(describe(*p)) != 8 { exit(3); }\n",
+        "    exit(15);\n",
         "}\n",
     );
     let (vm, native) = both_engines(source, dir.path(), "anycoerce");
     assert_eq!(
-        vm.status, 23,
-        "the VM coerced `*Point` to `Any` wrongly (3 + 4 + size 16)"
+        vm.status, 15,
+        "the VM lost the implicit/explicit `Any` distinction, or refused a call-result coercion"
     );
     assert_eq!(
-        native.status, 23,
+        native.status, 15,
         "native disagreed about the `*T` → `Any` coercion"
     );
     assert_eq!(vm, native, "the two engines disagree about the coercion");

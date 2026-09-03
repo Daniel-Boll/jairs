@@ -131,6 +131,17 @@ impl Program {
         self.globals.insert(global, data);
     }
 
+    /// The global table itself, for a compiler that must resolve a `GlobalRef` to a type (ADR-0189 §7).
+    ///
+    /// Beside [`Program::globals`] rather than replacing it: that one is *ordered*, because layout must
+    /// be deterministic, and this one is the map, because a lookup by `GlobalRef` is what lowering does.
+    /// Returning the map from `globals()` would invite a caller to iterate it and lay out globals in hash
+    /// order, which is the nondeterminism that function's own docs exist to prevent.
+    #[must_use]
+    pub fn global_map(&self) -> &FxHashMap<GlobalRef, GlobalData> {
+        &self.globals
+    }
+
     /// Every global the program declares, in [`GlobalRef`]'s `Ord` order.
     ///
     /// Sorted rather than left in hash order: `Vm::emit_globals` lays each one out at a fixed

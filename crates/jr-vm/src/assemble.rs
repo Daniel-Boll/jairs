@@ -35,6 +35,29 @@ use crate::error::VmError;
 use crate::interp::Program;
 use crate::lower::compile_in_file;
 
+/// Records every global one file declares, **before any body is compiled** (ADR-0189 §7).
+///
+/// # Why this is a separate phase
+///
+/// A body can name a global from *another* file, and not because a program wrote a cross-file
+/// reference: **the inliner creates them.** `Basic.print` reads `Basic`'s output buffer, and inlining
+/// that body into a caller in another file copies the `GlobalRef` unchanged — deliberately, because a
+/// `GlobalRef` is absolute (ADR-0186 §3). So the host body legitimately contains a global whose file is
+/// not its own.
+///
+/// That made the same-file assumption wrong the moment the standard library used a global. It surfaced
+/// as `internal compiler error: a cross-file global reference, which this engine does not yet support`
+/// on an ordinary `print` call — a message about a feature nobody had asked for.
+///
+/// So every global is recorded first, exactly as `build_object`'s phase 1 declares every procedure
+/// before defining any body, and for the same reason: a forward reference must resolve to real storage
+/// rather than to a patch-up list.
+pub fn add_file_globals(program: &mut Program, file: FileId, mir: &FileMir) {
+    for (item, data) in mir.globals() {
+        program.insert_global(GlobalRef::new(file, item), data);
+    }
+}
+
 /// Adds every routine one file provides to `program`.
 ///
 /// Bodies that MIR refused are skipped rather than reported: a refusal is
@@ -54,19 +77,22 @@ pub fn add_file(
     signatures: &FileSignatures,
     pool: &Pool,
 ) -> Result<(), VmError> {
+    // **Compiled against the *program's* globals, not this file's** (ADR-0189 §7). Snapshotted once
+    // rather than borrowed, because the loop below needs `&mut program` to insert each routine and the
+    // map would otherwise be borrowed for the whole loop. The map holds one entry per global in the
+    // program, so the clone is a handful of words.
+    let globals = program.global_map().clone();
+    let target = program.target();
+    let mut routines = Vec::new();
     for (_proc, outcome) in mir.iter() {
         if let Ok(body) = outcome {
-            program.insert(Routine::Bytecode(compile_in_file(
-                body,
-                mir,
-                pool,
-                program.target(),
+            routines.push(Routine::Bytecode(compile_in_file(
+                body, &globals, pool, target,
             )?));
         }
     }
-
-    for (item, data) in mir.globals() {
-        program.insert_global(GlobalRef::new(file, item), data);
+    for routine in routines {
+        program.insert(routine);
     }
 
     for index in 0..hir.procs.len() {

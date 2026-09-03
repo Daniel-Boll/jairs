@@ -115,6 +115,12 @@ pub fn run_main(
 
     let pool = crate::sema::read_pool(db);
     let mut program = Program::new(jr_pool::TargetLayout::host());
+    // **Phase 1: every global, before any body** (ADR-0189 §7). The inliner copies a `GlobalRef` from
+    // another file into a host body, so a body compiled in phase 2 can name a global belonging to a file
+    // this loop has not reached yet. Same reasoning as `build_object`'s declare phase.
+    for (file_id, _, mir, _) in &inputs {
+        jr_vm::add_file_globals(&mut program, *file_id, mir.as_ref());
+    }
     for (file_id, hir, mir, signatures) in &inputs {
         jr_vm::add_file(
             &mut program,
