@@ -223,6 +223,11 @@ flowchart LR
       Expect the graphics tests to fail there: five of the six need a real video driver,
       and a headless Linux runner has none. `create_window` falls back to a plain window
       (ADR-0187 §2), so the event-loop test should pass and the drawing ones should not.
+      One of them needed more than a driver until 2026-09-03: the UI button test folded
+      **every** queued event, so a real `MOUSE_MOTION` from a cursor sitting over the
+      window overwrote the synthetic click's coordinates and it failed deterministically
+      on a developer machine. It now folds only the event it pushed. A test that
+      synthesises input into a real queue is not isolated from the real device.
 - [x] CI drift gate: every corpus file parses cleanly in *both* the compiler and
       tree-sitter
 - [x] Differential test harness exists: every corpus program's output must match

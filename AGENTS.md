@@ -323,6 +323,27 @@ makes an id opaque, so nothing can recurse. A fixed array escapes only by arithm
 added, so there was nothing for the emitter to learn. That is the second wave in fifteen to escape that
 trap, and for the same reason as ADR-0184's — reuse of an existing node shape.
 
+**And the first thing the formatter was used for found a test that depended on where the mouse was.**
+`an_immediate_mode_button_fires_on_release_inside` began failing deterministically — exit 10 where 24 was
+wanted — while its three sibling graphics tests passed, so the display was not the cause. It fails
+identically at the pre-wave commit, which is how it was told apart from this branch's work: **run the
+failing test in a worktree at the parent commit before spending anything on a diagnosis.**
+
+The cause was that its `send` helper folded *every* queued event. A window under the physical cursor gets
+real `MOUSE_MOTION` from the OS, and `SDL_PollEvent` pumps more of them **while the drain loop runs**, so a
+pre-drain could not have helped. A real motion arrived behind the synthetic click and overwrote the
+coordinates the assertions depend on.
+
+**Two things about the diagnosis are worth copying.** The obvious suspect was the `#place` overlay, since
+ADR-0165 §2 records it as an ABI-only guarantee a point release could break — ruled out in one minute with
+a `cc` probe (SDL 2.32.10 still has `button` at 16, `x` at 20, `y` at 24, `sizeof` 56, all matching
+`modules/Input`). Then `print("event kind=% x=% y=%\n", …)` showed the queue directly: `kind=1024 x=60
+y=129` behind the pushed `kind=1025 x=20 y=20`. Before this wave that program could not have been written,
+which is a concrete answer to what a formatter is worth.
+
+**The general shape: a test that synthesises input into a real queue is not isolated from the real
+device.** This one had been green for waves on a machine whose cursor happened to sit elsewhere.
+
 **Historical: ADR-0185 through ADR-0188 reach 1082** and **269** corpus files, and add **no** diagnostic code —
 E0295 is still the first free one. Four ADRs: a string literal's `.data` (0185), file-scope mutable
 variables (0186), `Simp` and `Window` on Jai's **real** API over OpenGL (0187), and two stale claims in
