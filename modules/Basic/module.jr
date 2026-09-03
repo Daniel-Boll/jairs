@@ -466,8 +466,9 @@ out_str :: (s: string) {
 /// Appends an unsigned integer in decimal.
 ///
 /// Digits are generated least-significant first into a 20-byte scratch array and emitted in reverse. 20
-/// is exact: `u64`'s maximum is 18446744073709551615, which is 20 digits. The old `print_digits` recursed
-/// instead, because arrays did not exist when it was written and its own comment says so.
+/// is exact: `u64`'s maximum is 18446744073709551615, which is 20 digits. The `print_digits` this replaced
+/// recursed instead, one frame per digit, because arrays did not exist when it was written — the note at
+/// the bottom of this file records that arc.
 out_u64 :: (v: u64) {
     if v == 0 {
         out_byte(cast(u8, ZERO_DIGIT));
@@ -951,20 +952,25 @@ print_int :: (n: s64) {
 }
 
 // ---------------------------------------------------------------------------
-// Integer printing: what it took, and what it still owes
+// Integer printing: what it took, and what it owed
 // ---------------------------------------------------------------------------
 //
-// This section used to say `print_int` was not implementable. It is now above, and the
-// thing that unblocked it was `cast` (ADR-0037): turning a digit value into a byte for
-// `write` is an `s64` to `u8` conversion and nothing else would do.
+// Kept because the arc is the useful part, and both entries are now closed.
 //
-// Still owed, and visible in the code above:
+// This section first said `print_int` was **not implementable** — PLAN §1.2 discovered that while the
+// slice was being built, and it was right: turning a digit into a byte for `write` needs an `s64` to `u8`
+// conversion, and `cast` (ADR-0037) was a wave away.
 //
-//   * a fixed-size buffer `[N]u8` to format into. `print_digits` recurses instead, one
-//     frame per digit, because emitting digits high-end-first needs either a buffer or a
-//     stack and only one of those exists yet.
-//   * the most negative `s64`. `print_int` negates a negative, and negating
-//     -9223372036854775808 overflows, which ADR-0002 makes a trap. Printing it needs an
-//     unsigned path or the wrapping `-%` operator.
+// It then listed two things still owed, and named them precisely enough to be checked:
 //
-// Neither is faked. A wrong digit would be worse than a missing feature.
+//   * **A buffer.** `print_digits` recursed one frame per digit, because emitting digits high-end-first
+//     needs either a buffer or a stack and only one existed. Closed by ADR-0189: the formatter writes into
+//     a file-scope `[..]u8` (ADR-0186 made a file-scope variable possible) and reaches `write` once per
+//     call instead of once per digit.
+//   * **The most negative `s64`.** `print_int` negated a negative, and negating -9223372036854775808
+//     overflows, which ADR-0002 makes a trap. Closed by the same wave, by the route this note guessed:
+//     the formatter renders through an unsigned magnitude, so there is no negation to overflow.
+//
+// Neither was faked while it was owed, and that is why both could be closed cleanly rather than found to
+// have been quietly wrong: a wrong digit would have been worse than a missing feature, and a trap that
+// says so is checkable where a wrong digit is not.
