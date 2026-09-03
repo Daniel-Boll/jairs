@@ -6,7 +6,7 @@ members = ["crates/*"]
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.94"
-license = "MIT OR Apache-2.0"
+license = "Unlicense"
 repository = "https://github.com/dboll/jairs"
 authors = ["Jairs contributors"]
 

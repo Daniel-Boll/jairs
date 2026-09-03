@@ -110,8 +110,6 @@ before: two gates run at once and race a shared binary.
 
 ## Licence
 
-Licensed under either of Apache License, Version 2.0
-(<https://www.apache.org/licenses/LICENSE-2.0>) or the MIT licence
-(<https://opensource.org/licenses/MIT>), at your option, per `Cargo.toml`'s
-`license = "MIT OR Apache-2.0"`. Neither `LICENSE-APACHE` nor `LICENSE-MIT`
-is checked into this repository yet.
+**Public domain**, under [The Unlicense](UNLICENSE) — do anything you like with
+this, with no conditions and no attribution required. `Cargo.toml` declares
+`license = "Unlicense"`, which is the SPDX identifier.
