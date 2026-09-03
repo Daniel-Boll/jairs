@@ -17,16 +17,29 @@ with the same API as Jai's `Simp`. Every one of those claims has a capability
 table behind it, kept honest at the end of every wave — if a table and the code
 disagree, the code is right and the table has a bug.
 
-That graphics API was not designed here. Its signatures came from copies of
-Jai's own module source that two open-source projects carry verbatim, read and
-compared against each other rather than taken from documentation. Eight were
+A program can now report what it computed. `print("x = %, ok = %\n", 42, true)`
+is written in Jairs, over the variadic and the reflection the compiler already
+had — every integer width including the most negative one, floats, `bool`,
+pointers, a struct by field name. Before it the library could print a string and
+one non-negative integer, and the one integer it could not print was the most
+negative, which is the first thing anyone tests.
+
+That was the first thing to use four of this compiler's features at once, and
+using them found four defects in code that had shipped and been believed: three
+guards that hid the standard library's own types from itself, and an assumption
+that the inliner could not move a global reference across files, made by the
+same decision that guaranteed it could.
+
+The graphics API was not designed here either. Its signatures came from copies
+of Jai's own module source that two open-source projects carry verbatim, read
+and compared against each other rather than taken from documentation. Eight were
 wrong, and two of those were not cosmetic: the coordinate origin was upside
 down, and every call took a state argument the original does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
 - **1082** workspace tests, all seven gates green.
-- **269** `.jr` corpus files, **188** accepted ADRs, **23** standard library
+- **270** `.jr` corpus files, **189** accepted ADRs, **23** standard library
   modules.
 - macOS arm64 is verified locally, gate by gate. Linux x86-64 has never been
   verified by a human reading a result: `main` was pushed for the first time on
@@ -107,7 +120,7 @@ before: two gates run at once and race a shared binary.
 - **[`docs/jai-parity.md`](docs/jai-parity.md)** — what real Jai code uses that
   this does not, syntax and libraries, each traced to a source and probed where
   a probe was possible.
-- **[`docs/adr/README.md`](docs/adr/README.md)** — all 188 accepted decision
+- **[`docs/adr/README.md`](docs/adr/README.md)** — all 189 accepted decision
   records.
 - **[`docs/spec/`](docs/spec/)** — the language specification chapters.
 - **[`examples/`](examples/)** — runnable programs, each verified.

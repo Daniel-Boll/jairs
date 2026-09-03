@@ -21,7 +21,7 @@ mod lower;
 mod memory;
 mod value;
 
-pub use assemble::{add_file, comptime_program};
+pub use assemble::{add_file, add_file_globals, comptime_program};
 pub use code::{
     Code, ForeignProc, Instr, Operand, PlacePlan, PlaceRoot, PlaceStep, Reg, Routine, Shape,
     SlotPlan,

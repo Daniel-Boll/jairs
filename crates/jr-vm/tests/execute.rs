@@ -122,6 +122,9 @@ impl Fixture {
         );
 
         let mut program = Program::new(TargetLayout::host());
+        // **Phase 1** (ADR-0189 §7): every global before any body, because a body can name a global from
+        // another file — the inliner copies a `GlobalRef` unchanged. One file here, but the same order.
+        jr_vm::add_file_globals(&mut program, FILE, &mir);
         jr_vm::add_file(
             &mut program,
             FILE,

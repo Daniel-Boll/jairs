@@ -399,10 +399,14 @@ fn print_line_loses_the_spill_slot_it_never_reads() {
     let Some(Ok(after)) = optimized.get(proc) else {
         panic!("`print_line` has no optimized body");
     };
-    assert_eq!(
-        before.slot_count(),
-        1,
-        "lowering still spills the parameter; if this changes, the test below proves nothing"
+    // **A count, not the count** (ADR-0189 §5). This asserted `== 1` while `print_line`'s body was
+    // `write(STDOUT, …)` twice; it now calls the variadic `print`, whose argument packing brings slots of
+    // its own, so the number is 2 and would move again on any change to `print`. The premise the test
+    // below actually needs is "lowering created at least one slot", and the assertion after this one
+    // pins the part that matters — that one of them is dead. An exact count here was a proxy for that.
+    assert!(
+        before.slot_count() > 0,
+        "lowering no longer creates any slot; if this changes, the test below proves nothing"
     );
     assert!(
         write_only_slots(before) > 0,

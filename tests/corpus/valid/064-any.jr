@@ -71,11 +71,17 @@ main :: () {
         n = n + 4;
     }
 
-    // The **implicit coercion** (ADR-0076 §1): `*p` is a `*Point`, and `sum_point` wants an `Any`, so the
-    // pointer is erased at the call the same way `any_of(*p)` erases it explicitly. `takes(any_of(*x))`
-    // and `takes(*x)` are the same call; this is the ergonomic half the ADR promised, and it would report
-    // a type mismatch without it.
-    if sum_point(*p) == 7 {
+    // The **implicit coercion**, and it takes the value now (ADR-0189 §1). `sum_point` wants an `Any`, so
+    // `p` — a `Point`, not a pointer — is described and materialised at the call. `takes(any_of(*x))` and
+    // `takes(x)` are the same call, which is the ergonomic half ADR-0076 §1 promised, finally in the form
+    // it promised it.
+    //
+    // **This line used to read `sum_point(*p)`**, because ADR-0076 §4 could not materialise a value's
+    // address, so a caller passed a pointer and the coercion erased the pointee. That is withdrawn: the
+    // implicit coercion describes the argument's own type, so `sum_point(*p)` would now pass an `Any`
+    // describing a `*Point` and `any_as(a, Point)` inside would trap. Passing the value is what the file
+    // wanted to write all along.
+    if sum_point(p) == 7 {
         n = n + 512;
     }
 

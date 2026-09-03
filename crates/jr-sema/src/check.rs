@@ -174,6 +174,15 @@ const TYPE_INFO_FIELDS: &[(&str, TypeInfoField)] = &[
     // than an `Exact`, because the element is a *declared* struct — `Type_Info_Field` in `Basic` — whose
     // `PoolId` is not a constant this crate can name, exactly as `PointerToStruct` handles `Any.type`.
     ("fields", TypeInfoField::ViewOfStruct),
+    // **Whether an integer is signed** (ADR-0189 §3). Appended last so no existing member's offset
+    // moves, the same discipline `Type_Info_Kind::DYNAMIC_ARRAY` was appended under.
+    //
+    // Reflection has to answer this, and before it did the only route was reading the first byte of
+    // `name` — 's' or 'u'. That works today *by accident*: a builtin cannot be aliased at file scope
+    // (`MyInt :: s64;` is E0201, because `resolve_all` walks the top-level arena flat), so an integer's
+    // name is always one of `s8`..`u64`. Depending on a compiler limitation for correctness is how a
+    // `u64` above 2^63 comes to print as negative the day that limitation is fixed.
+    ("signed", TypeInfoField::Exact(PoolId::BOOL)),
 ];
 
 // ---------------------------------------------------------------------------
@@ -324,6 +333,16 @@ fn variadic_last_param(variadic_params: &[bool]) -> bool {
 pub enum AnyOp {
     /// `any_of(p)` — build an `Any` from a pointer, the payload type being the pointee.
     Of,
+    /// An **implicit coercion of a value** to `Any`, the payload type being the value's own (ADR-0189 §1).
+    ///
+    /// Distinct from [`AnyOp::Of`] in what it *describes*: `Of` erases a pointer to its pointee, which is
+    /// what `any_of(p)` means, while this describes the argument itself. So a `*u8` passed where `Any` is
+    /// wanted now yields an `Any` describing `*u8` — the address — where before it described the `u8`.
+    ///
+    /// A separate variant rather than a flag, because the two need different **lowering**: `Of` already
+    /// has an address to put in `Any.data`, and this has to materialise one. A value has no address until
+    /// something gives it a slot, which is the whole reason ADR-0076 §4 deferred it.
+    OfValue,
     /// `any_as(a, T)` — read an `Any` back as `T`, trapping unless its type matches.
     As,
 }
@@ -3682,16 +3701,24 @@ impl Ctx<'_> {
         ret
     }
 
-    /// Checks one call argument, erasing a pointer to `Any` where the parameter wants one (ADR-0076 §1).
+    /// Checks one call argument, coercing **any value** to `Any` where the parameter wants one (ADR-0189 §1).
     ///
-    /// The ergonomic half of `any_of`: ADR-0076 §1 promised that "passing a `*T` where an `Any` is
-    /// expected" erases, so a reflection procedure reads `takes(*x)` rather than `takes(any_of(*x))`. When
-    /// the parameter type is the standard library's `Any` and the argument is a pointer, this records the
-    /// same `AnyOp::Of` lowering the explicit call does — keyed by the argument expression — so `jr-mir`
-    /// builds the `Any` there. Any other argument is checked normally.
+    /// The ergonomic half of `any_of`, and it now takes a value rather than a pointer: `takes(x)` rather
+    /// than `takes(*x)`. That is what makes `print("%", x)` writable, which is the whole point.
     ///
-    /// Deliberately narrow: only a **pointer** coerces, because §4 leaves a bare value (`a: Any = 3;`) for
-    /// later — a value has no address, so it would need a materialised temporary this does not create.
+    /// # What changed, and what it costs
+    ///
+    /// ADR-0076 §1 made this coercion take a **pointer** and describe its *pointee*, because §4 could not
+    /// materialise a value's address. So `f(p)` where `p: *u8` produced an `Any` describing the `u8`.
+    /// ADR-0189 withdraws that: the implicit coercion describes the **argument's own type**, so a pointer
+    /// argument now describes the pointer. `any_of(p)` is unchanged and is still the way to say "describe
+    /// the pointee" — the behaviour is not lost, only its implicitness.
+    ///
+    /// The cost is real and was accepted deliberately: a program that passed `*x` to get an `Any`
+    /// describing `x` now gets one describing `*x`. Two corpus files did, and both read *better* after the
+    /// change, because passing a pointer was a workaround for the missing value form rather than an intent.
+    /// Without the change, `print("%", p)` would print what `p` points at and never the address, which is
+    /// a rule every reader of every `print` call would have to remember.
     fn check_arg(&mut self, scope: ExprScope, arg: ExprId, want: Option<PoolId>) {
         if let Some(want_ty) = want
             && self.is_any_struct(want_ty)
@@ -3729,12 +3756,21 @@ impl Ctx<'_> {
         arg_ty: PoolId,
     ) -> bool {
         if self.is_any_struct(want_ty)
-            && let Item::PointerType(pointee) = *self.pool.item(arg_ty)
-            // The pointee must have a layout, as `any_of` requires — the same E0266 the explicit form
-            // raises, reused so the two paths agree.
-            && jr_pool::layout_of(self.pool, jr_pool::TargetLayout::LP64, pointee).is_ok()
+            // **An `Any` argument is passed through, not wrapped** (ADR-0189 §1). Without this guard the
+            // coercion would fire on a value that already *is* an `Any` and build an `Any` describing an
+            // `Any` — which type-checks, so every reader of it would see a `Type_Info` for the wrong
+            // thing rather than an error. That is the well-typed-placeholder shape, and forwarding an
+            // `Any` through a variadic is what a `print` wrapper does.
+            && arg_ty != want_ty
+            && arg_ty != PoolId::ERROR
+            // The argument's type must have a layout, as `any_of`'s pointee must — the same requirement
+            // the explicit form raises E0266 for, reused so the two paths agree about what is describable.
+            && jr_pool::layout_of(self.pool, jr_pool::TargetLayout::LP64, arg_ty).is_ok()
         {
-            self.any_calls.insert((scope, arg), (AnyOp::Of, pointee));
+            // **Describes `arg_ty`, not its pointee** (ADR-0189 §1). This is the line ADR-0076 §1 had as
+            // `Item::PointerType(pointee) => … (AnyOp::Of, pointee)`, and the change is the whole ADR.
+            self.any_calls
+                .insert((scope, arg), (AnyOp::OfValue, arg_ty));
             return true;
         }
         false
@@ -3756,9 +3792,12 @@ impl Ctx<'_> {
     /// — a program that never touches reflection should pay nothing and see nothing. The explicit
     /// `any_of`/`any_as` intrinsics still validate through `any_struct`.
     fn any_struct_quiet(&mut self) -> Option<PoolId> {
-        if self.imports.is_empty() {
-            return None;
-        }
+        // No `imports.is_empty()` early-out, for `library_struct`'s reason (ADR-0189 §3): `modules/Basic`
+        // imports nothing and **declares `Any` itself**, so the guard made the coercion unavailable inside
+        // the very file that defines it — `print("%", n)` in `Basic` was "variadic argument expected `Any`,
+        // found `s64`" while the identical call in an importer worked. The lookup already falls back to
+        // `self.sigs`, which is where a declaring file's own `Any` lives, so the guard was doing nothing
+        // but hiding it. Silence on a miss is unchanged: this helper reports nothing either way.
         let name = self.interner.intern("Any");
         let entry = self
             .imports
@@ -5101,9 +5140,9 @@ impl Ctx<'_> {
     /// E0265 there would be inventing a library error out of a missing input. `jr-sema`'s own corpus test
     /// runs exactly that way on purpose.
     fn library_enum(&mut self, span: Span, type_name: &str) -> Option<PoolId> {
-        if self.imports.is_empty() {
-            return None;
-        }
+        // The lookup before the silence rule, for `library_struct`'s reason (ADR-0189 §3): the declaring
+        // file imports nothing, so an `imports.is_empty()` guard ahead of the lookup makes `Basic`'s own
+        // `Type_Info_Kind` unreachable from inside `Basic`.
         let name = self.interner.intern(type_name);
         let entry = self
             .imports
@@ -5111,7 +5150,9 @@ impl Ctx<'_> {
             .find_map(|(_, sigs)| sigs.lookup(name))
             .or_else(|| self.sigs.lookup(name));
         let Some(ty) = entry.and_then(|e| e.type_value) else {
-            self.report_library_shape(span, type_name, "it is not declared, or is not a type");
+            if !self.imports.is_empty() {
+                self.report_library_shape(span, type_name, "it is not declared, or is not a type");
+            }
             return None;
         };
         if !matches!(self.pool.item(ty), Item::EnumType { .. }) {
@@ -5142,9 +5183,19 @@ impl Ctx<'_> {
         // Nothing is lost: a real program reaches this with `Basic` loaded, and a `type_info` in a file
         // that imports nothing is refused anyway — the call yields `PoolId::ERROR` and MIR never sees a
         // value, so `scan` refuses the body rather than lowering a placeholder.
-        if self.imports.is_empty() {
-            return None;
-        }
+        // **The lookup comes first, and the silence rule applies only when it misses** (ADR-0189 §3).
+        //
+        // This used to be `if self.imports.is_empty() { return None; }` *before* the lookup, and
+        // `imports.is_empty()` is a **proxy** for "module resolution did not run". It catches a second
+        // case that is nothing like the first: `modules/Basic` imports nothing **and declares
+        // `Type_Info` itself**, so its own reflection was unreachable. A `type_info(s64)` inside `Basic`
+        // silently yielded `PoolId::ERROR` and MIR refused the body — with no diagnostic, because this
+        // guard is deliberately silent, so the only symptom was E0245 naming a body that looked fine.
+        //
+        // The `or_else(self.sigs)` fallback below already handled the declaring file; the early return
+        // simply ran before it could. So the fix is an *ordering* one and the silence it protects is
+        // unchanged: a file with no imports that does not declare the type misses both lookups and still
+        // says nothing.
         let name = self.interner.intern(type_name);
         let entry = self
             .imports
@@ -5152,7 +5203,9 @@ impl Ctx<'_> {
             .find_map(|(_, sigs)| sigs.lookup(name))
             .or_else(|| self.sigs.lookup(name));
         let Some(ty) = entry.and_then(|e| e.type_value) else {
-            self.report_library_shape(span, type_name, "it is not declared, or is not a type");
+            if !self.imports.is_empty() {
+                self.report_library_shape(span, type_name, "it is not declared, or is not a type");
+            }
             return None;
         };
         let Item::StructType { decl, .. } = *self.pool.item(ty) else {

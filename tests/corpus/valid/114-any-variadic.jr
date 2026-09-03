@@ -4,15 +4,20 @@
 //
 // **Probed before a line was written, and it already worked.** ADR-0139 packs a variadic call's
 // trailing arguments into a stack `[N]T` view, checking each against the element type `T`. When `T`
-// is `Any`, the per-argument check is ADR-0076 §1's `*U`→`Any` coercion — which already fires at any
-// argument position — so `f(*a, *b, *c)` erases each pointer to an `Any` and packs the three into a
-// `[]Any`. The two features composed without a new line of compiler code; this file is the coverage
-// that pins the composition, since nothing in the corpus exercised a `..Any` before.
+// is `Any`, the per-argument check is the value→`Any` coercion — which fires at any argument position —
+// so `f(a, b, c)` describes and materialises each argument and packs the three into a `[]Any`. This file
+// is the coverage that pins the composition, since nothing in the corpus exercised a `..Any` before.
+//
+// **Every call here used to pass a pointer** — `sum_any(*a, *b, *c)` — because ADR-0076 §4 could not
+// materialise a value's address, so the coercion took a `*U` and described its *pointee*. ADR-0189
+// withdrew that and made the coercion describe the argument, which is what a `print` needs: otherwise
+// `print("%", p)` prints what `p` points at and never the address. So these calls pass values now, which
+// is what the comment below always said this file wanted.
 //
 // **The arguments are pointers**, `*n` rather than `n`. A bare value (`sum_any(42)`) has no address
-// for the `Any`'s `data` word to point at, and coercing one is ADR-0076 §4's deferred bare-value→`Any`
-// — declined there because a literal has no place. Passing `*n` is the same discipline `any_of(*x)`
-// and every `Any`-taking procedure already use.
+// for the `Any`'s `data` word to point at — and giving it one is exactly what ADR-0189 §2 added: the
+// coercion stores the value into a fresh slot and takes the slot's address. A *distinct* slot per
+// argument, which is what makes `f(a, b)` describe two things rather than twice the last one.
 //
 // What is pinned, each an independent bit:
 //
@@ -66,7 +71,7 @@ main :: () {
 
     // A single pointer argument, coerced and summed.
     a := 42;
-    if sum_any(*a) == 42 {
+    if sum_any(a) == 42 {
         n = n + 2;
     }
 
@@ -74,7 +79,7 @@ main :: () {
     b := 10;
     c := 20;
     d := 30;
-    if sum_any(*b, *c, *d) == 60 {
+    if sum_any(b, c, d) == 60 {
         n = n + 4;
     }
 
@@ -84,7 +89,7 @@ main :: () {
     pt.x = 3;
     pt.y = 5;
     flag := true;
-    if sum_any(*e, *pt, *flag) == 109 {
+    if sum_any(e, pt, flag) == 109 {
         n = n + 8;
     }
 

@@ -232,6 +232,20 @@ Type_Info :: struct {
     /// sentinel. The view points into a **read-only table the compiler emitted**, so it is valid for the
     /// life of the program and must not be written through.
     fields: []Type_Info_Field;
+    /// Whether an integer type is signed (ADR-0189 §3).
+    ///
+    /// Meaningful only where `kind` is `INTEGER`, and `false` for every other kind — which is a real
+    /// answer rather than a sentinel, since nothing else has a sign.
+    ///
+    /// **This is what makes printing an integer correct.** Width comes from `size`, and without this a
+    /// caller had to read the first byte of `name` and hope it was `s` or `u`. That works today by
+    /// accident: a builtin cannot be aliased at file scope, so an integer's name is always one of
+    /// `s8`..`u64`. Relying on it is how a `u64` above 2^63 comes to print as negative the day aliasing
+    /// starts working.
+    ///
+    /// Appended last, so no existing member's offset moves — the discipline `Type_Info_Kind`'s
+    /// `DYNAMIC_ARRAY` member records at length.
+    signed: bool;
 }
 
 /// A value whose type is carried alongside it (ADR-0076 §3).
@@ -262,80 +276,678 @@ STDOUT :: 1;
 /// The standard error file descriptor.
 STDERR :: 2;
 
-/// Writes a string to standard output.
-print :: (s: string) {
-    write(STDOUT, s.data, s.count);
+/// Writes `fmt` to standard output, replacing each `%` with the next argument (ADR-0189 §4).
+///
+/// ```jairs
+/// print("x = %, ok = %\n", 42, true);        // x = 42, ok = true
+/// print("100%% sure\n");                     // 100% sure
+/// print("%\n", some_point);                  // {x = 3, y = 4}
+/// ```
+///
+/// Returns the number of bytes written.
+///
+/// # Why `%` and not `{}` or `printf`
+///
+/// It is Jai's placeholder, and this library imitates Jai. It also needs no width, precision or type
+/// letter: the *argument* carries its type, through `Any` and `Type_Info`, so `%` never disagrees with
+/// what follows it. That is the whole reason a `printf`-shaped `%d` is wrong here — a `%d` handed a
+/// float is undefined behaviour in C and unrepresentable here.
+///
+/// `%%` is a literal `%`. That is the only escape.
+///
+/// # What a wrong argument count does
+///
+/// Neither is an error, because a `print` that refuses to print is worse than one that tells you:
+///
+///   * too few arguments — the `%` renders as `%!(MISSING)`;
+///   * too many — the extras are appended as `%!(EXTRA a, b)`.
+///
+/// Both are visible in the output and neither can be missed, which is what a diagnostic in a procedure
+/// that cannot fail looks like.
+///
+/// # Buffering, and the one caveat
+///
+/// Output goes through a module-level buffer and reaches `write` once per call rather than once per
+/// byte — the old `print_int` cost one syscall *per digit*. The buffer is a file-scope global, which is
+/// where Jai keeps its equivalent and which ADR-0186 made possible.
+///
+/// **It is therefore not thread-safe**, and that is stated rather than hidden: two threads printing at
+/// once interleave inside one buffer. Jai's own `print` uses the context's temporary storage and so is
+/// per-thread; matching that needs `#add_context`, which ADR-0186 records as owed. Until then, a
+/// threaded program prints from one thread.
+print :: (fmt: string, args: ..Any) -> s64 {
+    out_reset(STDOUT);
+    format_into_out(fmt, args);
+    return out_flush();
 }
 
-/// Writes a string to standard error.
-print_error :: (s: string) {
-    write(STDERR, s.data, s.count);
+/// `print`, to standard error.
+///
+/// A separate procedure rather than a `to_standard_error := false` parameter, which is what Jai's takes.
+/// The reason is Jairs' own: a defaulted parameter *after* a variadic cannot be reached, because every
+/// trailing argument is packed into the variadic (ADR-0139 §1). So the choice is a second name or a
+/// parameter before the format string, and a second name reads better at every call site.
+print_error :: (fmt: string, args: ..Any) -> s64 {
+    out_reset(STDERR);
+    format_into_out(fmt, args);
+    return out_flush();
 }
 
-/// Writes a string followed by a newline.
-print_line :: (s: string) {
-    print(s);
-    print("\n");
+/// `print`, with a newline appended.
+///
+/// Takes a format string and arguments like `print` does, so `print_line("x = %", x)` works. It used to
+/// take a bare `string`; every existing call still compiles, because a call with no trailing arguments
+/// packs an empty variadic and a format string with no `%` is copied through.
+print_line :: (fmt: string, args: ..Any) -> s64 {
+    out_reset(STDOUT);
+    format_into_out(fmt, args);
+    out_byte(cast(u8, NEWLINE));
+    return out_flush();
+}
+
+/// Formats into a caller's buffer instead of writing, returning the bytes used (ADR-0189 §4).
+///
+/// The building block a caller needs when the destination is not a file descriptor — a network write, a
+/// log record, a string to compare in a test. `buffer` is filled from the start and the result is how
+/// many bytes were written; output longer than the buffer is **truncated**, and the return value says so
+/// by equalling `buffer.count`.
+///
+/// Truncation rather than a failure flag, because the alternative is worse in both directions: a caller
+/// that must handle an error for a debug line will ignore it, and growing the buffer needs an allocator
+/// this procedure deliberately does not take.
+format :: (buffer: []u8, fmt: string, args: ..Any) -> s64 {
+    out_reset(NO_FD);
+    format_into_out(fmt, args);
+    n := out_count;
+    if n > buffer.count {
+        n = buffer.count;
+    }
+    i := 0;
+    while i < n {
+        buffer[i] = out_bytes[i];
+        i = i + 1;
+    }
+    out_count = 0;
+    return n;
+}
+
+// ---------------------------------------------------------------------------
+// The formatter (ADR-0189 §4)
+// ---------------------------------------------------------------------------
+
+#scope_module
+
+/// A file descriptor meaning "do not write" — `format` fills a caller's buffer instead.
+///
+/// `-1` rather than `0`, because 0 is standard input and a stray write to it would be a real bug rather
+/// than a no-op.
+NO_FD :: -1;
+
+/// How many bytes accumulate before the buffer is flushed to its descriptor.
+///
+/// 4096 is one page and comfortably more than any single line. It bounds the *buffer*, not the output:
+/// `out_byte` flushes when full, so a longer `print` costs more than one `write` and still completes.
+OUT_CAPACITY :: 4096;
+
+/// The output buffer.
+///
+/// A file-scope global, which ADR-0186 made possible and which is where Jai keeps its equivalent. Before
+/// globals existed this would have had to be a caller-owned struct threaded through every call, and
+/// `print("hi")` would have taken two arguments.
+out_bytes: [OUT_CAPACITY]u8 = ---;
+
+/// How many bytes of `out_bytes` are live.
+out_count: s64 = 0;
+
+/// Where a flush goes, or `NO_FD` to accumulate only.
+out_fd: s64 = NO_FD;
+
+/// How many bytes this `print` has produced, flushes included.
+out_written: s64 = 0;
+
+/// ASCII codes, named because a bare `48` in the middle of digit arithmetic reads as a magic number.
+ZERO_DIGIT :: 48;
+/// `-`
+MINUS :: 45;
+/// `%`
+PERCENT :: 37;
+/// `.`
+DOT :: 46;
+/// `\n`
+NEWLINE :: 10;
+/// `a`, the first hex letter, so `0xff` rather than `0xFF`.
+LOWER_A :: 97;
+
+/// Starts a fresh formatting run at `fd`.
+out_reset :: (fd: s64) {
+    out_count = 0;
+    out_fd = fd;
+    out_written = 0;
+}
+
+/// Writes the buffer out and returns the total bytes this run produced.
+out_flush :: () -> s64 {
+    if out_count > 0 && out_fd != NO_FD {
+        write(out_fd, *out_bytes[0], out_count);
+        out_count = 0;
+    }
+    return out_written;
+}
+
+/// Appends one byte, flushing first when the buffer is full.
+out_byte :: (b: u8) {
+    if out_count >= OUT_CAPACITY {
+        if out_fd == NO_FD {
+            // Nowhere to flush to, so a `format` longer than the buffer stops here. The caller learns
+            // this from a return value equal to their buffer's size, which is the documented contract.
+            return;
+        }
+        write(out_fd, *out_bytes[0], out_count);
+        out_count = 0;
+    }
+    out_bytes[out_count] = b;
+    out_count = out_count + 1;
+    out_written = out_written + 1;
+}
+
+/// Appends every byte of a string.
+out_str :: (s: string) {
+    i := 0;
+    while i < s.count {
+        out_byte((s.data + i).*);
+        i = i + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Numbers
+// ---------------------------------------------------------------------------
+
+/// Appends an unsigned integer in decimal.
+///
+/// Digits are generated least-significant first into a 20-byte scratch array and emitted in reverse. 20
+/// is exact: `u64`'s maximum is 18446744073709551615, which is 20 digits. The old `print_digits` recursed
+/// instead, because arrays did not exist when it was written and its own comment says so.
+out_u64 :: (v: u64) {
+    if v == 0 {
+        out_byte(cast(u8, ZERO_DIGIT));
+        return;
+    }
+    scratch: [20]u8 = ---;
+    n := 0;
+    x := v;
+    while x > 0 {
+        scratch[n] = cast(u8, cast(s64, x % 10) + ZERO_DIGIT);
+        x = x / 10;
+        n = n + 1;
+    }
+    while n > 0 {
+        n = n - 1;
+        out_byte(scratch[n]);
+    }
+}
+
+/// Appends a signed integer in decimal, **including the most negative one**.
+///
+/// `print_int` traps on `S64_MIN`, because it negates and ADR-0002 makes overflow a trap. Its own docs
+/// admitted that and said the fix "needs either an unsigned path or `-%`". It needs both, and this is
+/// them: the value is *reinterpreted* as a `u64` and then wrapping-negated, which yields the magnitude
+/// for every negative input — `S64_MIN` reinterprets to 2^63 and negates to 2^63, which is exactly its
+/// magnitude. No value is out of range, because a `u64` holds every `s64`'s magnitude.
+out_s64 :: (v: s64) {
+    if v < 0 {
+        out_byte(cast(u8, MINUS));
+        zero: u64 = 0;
+        out_u64(zero -% cast(u64, v));
+        return;
+    }
+    out_u64(cast(u64, v));
+}
+
+/// Appends `0x` and the value in lower-case hexadecimal, with no leading zeros.
+out_hex :: (v: u64) {
+    out_str("0x");
+    if v == 0 {
+        out_byte(cast(u8, ZERO_DIGIT));
+        return;
+    }
+    scratch: [16]u8 = ---;
+    n := 0;
+    x := v;
+    while x > 0 {
+        digit := cast(s64, x % 16);
+        if digit < 10 {
+            scratch[n] = cast(u8, digit + ZERO_DIGIT);
+        } else {
+            scratch[n] = cast(u8, digit - 10 + LOWER_A);
+        }
+        x = x / 16;
+        n = n + 1;
+    }
+    while n > 0 {
+        n = n - 1;
+        out_byte(scratch[n]);
+    }
+}
+
+/// How many fraction digits a float is rendered with.
+///
+/// Nine, which is enough to distinguish every `float32` and to show a `float64` usefully, and few enough
+/// that the single rounding below cannot produce a wrong leading digit.
+FRACTION_DIGITS :: 9;
+
+/// Ten to the power of [`FRACTION_DIGITS`].
+FRACTION_SCALE :: 1000000000;
+
+/// The magnitude above which a float is rendered in scientific notation.
+///
+/// 1e17 is below `u64`'s range, so the integer part below is always exact when this branch is not taken.
+SCIENTIFIC_ABOVE :: 1.0e17;
+
+/// Appends a float in decimal (ADR-0189 §5).
+///
+/// # What this is, and what it is not
+///
+/// It renders the sign, the integer part exactly, and **nine rounded fraction digits** with trailing
+/// zeros trimmed. It is *not* shortest-round-trip: `0.1` prints as `0.1`, but a value whose shortest
+/// representation needs more than nine fraction digits prints rounded, so reading the output back does
+/// not always reproduce the input bit for bit.
+///
+/// That is a deliberate, documented limit rather than an oversight. Shortest-round-trip needs Ryū or
+/// Grisu — a table-driven algorithm of a few hundred lines, which `docs/jai-parity.md` ranks as the third
+/// most valuable thing this library lacks precisely because `modules/JSON` defers serialisation for it.
+/// Doing it here badly would put a second, worse float renderer in the library and make the good one
+/// harder to adopt.
+///
+/// The integer part is exact for every `|x| < 1e17`, because it is taken through `u64`. Above that, and
+/// for a subnormal, the value goes to scientific notation, where the mantissa gets the same treatment.
+out_float :: (x: float64) {
+    // NaN first, because it fails every comparison below — including `x < 0.0` — so any other order
+    // would print it as a number. `x != x` is the only test that identifies it without a library.
+    if x != x {
+        out_str("NaN");
+        return;
+    }
+    v := x;
+    if v < 0.0 {
+        out_byte(cast(u8, MINUS));
+        v = 0.0 - v;
+    }
+    if v > 1.0e308 {
+        out_str("Infinity");
+        return;
+    }
+    if v >= SCIENTIFIC_ABOVE {
+        out_scientific(v);
+        return;
+    }
+    // The integer part, exact: `v < 1e17` fits a `u64` with room to spare, and a float-to-int cast
+    // truncates toward zero.
+    whole := cast(u64, v);
+    out_u64(whole);
+    fraction := v - cast(float64, whole);
+    // One multiply and one rounding, then the digits are read out of an integer — so the digits emitted
+    // are exactly those of the rounded scaled value, with no per-digit error accumulation.
+    scaled := cast(u64, fraction * cast(float64, FRACTION_SCALE) + 0.5);
+    if scaled >= cast(u64, FRACTION_SCALE) {
+        // The rounding carried into the integer part. Re-emit is not possible — the whole part is
+        // already written — so the carry is dropped and the fraction clamps to all nines. This is the
+        // one place the renderer is knowingly off by one in the last digit, and it needs the exact
+        // algorithm to fix rather than a bigger hammer.
+        scaled = cast(u64, FRACTION_SCALE) - 1;
+    }
+    if scaled == 0 {
+        return;
+    }
+    out_byte(cast(u8, DOT));
+    out_fraction(scaled);
+}
+
+/// Appends `scaled` as [`FRACTION_DIGITS`] digits with leading zeros kept and trailing zeros trimmed.
+out_fraction :: (scaled: u64) {
+    digits: [FRACTION_DIGITS]u8 = ---;
+    x := scaled;
+    i := FRACTION_DIGITS;
+    while i > 0 {
+        i = i - 1;
+        digits[i] = cast(u8, cast(s64, x % 10) + ZERO_DIGIT);
+        x = x / 10;
+    }
+    // Trailing zeros carry no information about the value, and `1.5` reads better than `1.500000000`.
+    last := FRACTION_DIGITS;
+    while last > 1 && digits[last - 1] == cast(u8, ZERO_DIGIT) {
+        last = last - 1;
+    }
+    i = 0;
+    while i < last {
+        out_byte(digits[i]);
+        i = i + 1;
+    }
+}
+
+/// Appends a large positive float as `d.dddddddddde+NN`.
+///
+/// Reached only for `|x| >= 1e17`, where the integer part no longer fits a `u64` exactly. The mantissa is
+/// brought into `[1, 10)` by repeated division, which costs one rounding per step — so this is the least
+/// exact path in the renderer and is documented as such above.
+out_scientific :: (v: float64) {
+    mantissa := v;
+    exponent := 0;
+    while mantissa >= 10.0 {
+        mantissa = mantissa / 10.0;
+        exponent = exponent + 1;
+    }
+    whole := cast(u64, mantissa);
+    out_u64(whole);
+    fraction := mantissa - cast(float64, whole);
+    scaled := cast(u64, fraction * cast(float64, FRACTION_SCALE) + 0.5);
+    if scaled > 0 && scaled < cast(u64, FRACTION_SCALE) {
+        out_byte(cast(u8, DOT));
+        out_fraction(scaled);
+    }
+    out_str("e+");
+    out_u64(cast(u64, exponent));
+}
+
+// ---------------------------------------------------------------------------
+// Reading a value back out of an `Any`
+// ---------------------------------------------------------------------------
+
+/// Reads a signed integer of `size` bytes, sign-extended to `s64`.
+///
+/// A width switch rather than a memcpy, because a narrow signed value must be **sign-extended** and only
+/// a load at its own type does that: reading an `s8` of -1 as a byte gives 255.
+read_signed :: (p: *u8, size: s64) -> s64 {
+    if size == 1 {
+        return cast(s64, typed(s8, p).*);
+    }
+    if size == 2 {
+        return cast(s64, typed(s16, p).*);
+    }
+    if size == 4 {
+        return cast(s64, typed(s32, p).*);
+    }
+    return typed(s64, p).*;
+}
+
+/// Reads an unsigned integer of `size` bytes, zero-extended to `u64`.
+read_unsigned :: (p: *u8, size: s64) -> u64 {
+    if size == 1 {
+        return cast(u64, p.*);
+    }
+    if size == 2 {
+        return cast(u64, typed(u16, p).*);
+    }
+    if size == 4 {
+        return cast(u64, typed(u32, p).*);
+    }
+    return typed(u64, p).*;
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch
+// ---------------------------------------------------------------------------
+
+/// Appends one value, formatted by its own type (ADR-0189 §4).
+///
+/// Dispatches on `Type_Info_Kind`, which is what makes `%` need no type letter. An `if` chain rather than
+/// a `switch`, deliberately: a `switch` over this enum must be exhaustive (ADR-0067), so every kind this
+/// procedure treats identically would need its own arm, and the *default* below is the honest answer for
+/// several of them at once.
+format_any :: (a: Any) {
+    kind := a.type.kind;
+    if kind == Type_Info_Kind.INTEGER {
+        if a.type.signed {
+            out_s64(read_signed(a.data, a.type.size));
+        } else {
+            out_u64(read_unsigned(a.data, a.type.size));
+        }
+        return;
+    }
+    if kind == Type_Info_Kind.BOOL {
+        if a.data.* != 0 {
+            out_str("true");
+        } else {
+            out_str("false");
+        }
+        return;
+    }
+    if kind == Type_Info_Kind.STRING {
+        out_str(typed(string, a.data).*);
+        return;
+    }
+    if kind == Type_Info_Kind.FLOAT {
+        // `float32` is widened rather than rendered separately: the digits come from a `float64`
+        // computation either way, and a separate path would be a second renderer to keep in step.
+        if a.type.size == 4 {
+            out_float(cast(float64, typed(float32, a.data).*));
+        } else {
+            out_float(typed(float64, a.data).*);
+        }
+        return;
+    }
+    if kind == Type_Info_Kind.POINTER {
+        out_hex(read_unsigned(a.data, a.type.size));
+        return;
+    }
+    if kind == Type_Info_Kind.ENUM {
+        // The **numeric** value. An enum's member names are not in `Type_Info` — `fields` describes a
+        // struct's members and `count` is 0 for an enum — so printing `Colour.RED` needs a member table
+        // the compiler does not emit. Recorded in ADR-0189 §6 as owed rather than faked.
+        out_s64(read_signed(a.data, a.type.size));
+        return;
+    }
+    if kind == Type_Info_Kind.STRUCT || kind == Type_Info_Kind.UNION || kind == Type_Info_Kind.VARIANT {
+        format_aggregate(a);
+        return;
+    }
+    if kind == Type_Info_Kind.ARRAY {
+        format_array(a);
+        return;
+    }
+    // Everything left — a view, a dynamic array, a procedure, `void`. Its type name is the most a caller
+    // can be told, and for a structural type that name is the lowercased *kind* rather than a spelling
+    // (`<view>`, not `<[]s64>`), because the compiler records no name for one. ADR-0189 §6 records both
+    // that and the deeper blocker.
+    //
+    // **A view is not here for a different reason than a procedure is**, and the difference is worth
+    // knowing: a view's elements are reachable — its header holds `data` and `count` — but its *stride*
+    // is not, because `Type_Info.element` is an id and an id yields no size. An array escapes that only
+    // because its own `size` divided by its `count` is the stride.
+    out_byte(cast(u8, 60));
+    out_str(a.type.name);
+    out_byte(cast(u8, 62));
+}
+
+/// Appends a fixed-size array as `[a, b, c]`.
+///
+/// The stride is `size / count` rather than the element type's own size, which is unreachable: `element`
+/// is a type **id**, and an id answers identity questions only (ADR-0077 §1). Dividing works because a
+/// fixed array's `size` *is* `count` strides by definition — there is no trailing padding to mislead it.
+///
+/// Elements go through [`format_field`], the same id-comparison ladder a struct's fields use, so an array
+/// of any builtin prints its values and an array of anything else prints `…` per element. One ladder for
+/// both, rather than a second copy that could disagree about what a `u16` looks like.
+format_array :: (a: Any) {
+    out_byte(cast(u8, 91));
+    count := a.type.count;
+    if count > 0 {
+        stride := a.type.size / count;
+        i := 0;
+        while i < count {
+            if i > 0 {
+                out_str(", ");
+            }
+            format_field(a.data + i * stride, a.type.element);
+            i = i + 1;
+        }
+    }
+    out_byte(cast(u8, 93));
+}
+
+/// Appends a struct, union or variant as `{name = value, …}`.
+///
+/// One level deep, and the limit is a real one rather than a choice: `Type_Info_Field.ty` is a type
+/// **id**, not a `*Type_Info`, so a field's *kind* cannot be looked up — only compared against an id the
+/// caller already holds. So every scalar field is matched against the builtin ids below, and a field of
+/// any other type prints as `…`. ADR-0189 §6 records what would lift this.
+format_aggregate :: (a: Any) {
+    out_byte(cast(u8, 123));
+    fields := a.type.fields;
+    i := 0;
+    while i < fields.count {
+        if i > 0 {
+            out_str(", ");
+        }
+        out_str(fields[i].name);
+        out_str(" = ");
+        format_field(a.data + fields[i].offset, fields[i].ty);
+        i = i + 1;
+    }
+    out_byte(cast(u8, 125));
+}
+
+/// Appends one field, identified by comparing its type id against every builtin's.
+///
+/// Thirteen comparisons rather than a lookup, because a lookup needs a runtime type registry. The ids
+/// come from `type_info(T)`, which the compiler folds to a constant, so each comparison is against a
+/// constant and none of this costs a call.
+format_field :: (p: *u8, ty: s64) {
+    if ty == type_info(s64).id {
+        out_s64(typed(s64, p).*);
+        return;
+    }
+    if ty == type_info(s32).id {
+        out_s64(cast(s64, typed(s32, p).*));
+        return;
+    }
+    if ty == type_info(s16).id {
+        out_s64(cast(s64, typed(s16, p).*));
+        return;
+    }
+    if ty == type_info(s8).id {
+        out_s64(cast(s64, typed(s8, p).*));
+        return;
+    }
+    if ty == type_info(u64).id {
+        out_u64(typed(u64, p).*);
+        return;
+    }
+    if ty == type_info(u32).id {
+        out_u64(cast(u64, typed(u32, p).*));
+        return;
+    }
+    if ty == type_info(u16).id {
+        out_u64(cast(u64, typed(u16, p).*));
+        return;
+    }
+    if ty == type_info(u8).id {
+        out_u64(cast(u64, p.*));
+        return;
+    }
+    if ty == type_info(float64).id {
+        out_float(typed(float64, p).*);
+        return;
+    }
+    if ty == type_info(float32).id {
+        out_float(cast(float64, typed(float32, p).*));
+        return;
+    }
+    if ty == type_info(bool).id {
+        if p.* != 0 {
+            out_str("true");
+        } else {
+            out_str("false");
+        }
+        return;
+    }
+    if ty == type_info(string).id {
+        out_str(typed(string, p).*);
+        return;
+    }
+    // A nested aggregate, a pointer, an array. Not describable without a `*Type_Info` for `ty`.
+    out_str("..");
+}
+
+/// Walks `fmt`, emitting literal bytes and substituting each `%`.
+format_into_out :: (fmt: string, args: []Any) {
+    i := 0;
+    next := 0;
+    while i < fmt.count {
+        c := (fmt.data + i).*;
+        if c != cast(u8, PERCENT) {
+            out_byte(c);
+            i = i + 1;
+            continue;
+        }
+        // `%%` is a literal `%`, and it is checked before the argument path so a doubled percent never
+        // consumes one.
+        if i + 1 < fmt.count && (fmt.data + i + 1).* == cast(u8, PERCENT) {
+            out_byte(cast(u8, PERCENT));
+            i = i + 2;
+            continue;
+        }
+        if next < args.count {
+            format_any(args[next]);
+            next = next + 1;
+        } else {
+            out_str("%!(MISSING)");
+        }
+        i = i + 1;
+    }
+    // Extra arguments are reported in the output rather than dropped. A dropped argument is a bug that
+    // leaves no trace, and this is a procedure with nowhere to return an error to.
+    if next < args.count {
+        out_str("%!(EXTRA ");
+        // Compared against the **first extra's** index, not against zero. `next > 0` was true for the
+        // very first extra whenever the format string consumed any argument at all, so a one-`%` format
+        // with two spare arguments printed a leading comma.
+        first := next;
+        while next < args.count {
+            if next > first {
+                out_str(", ");
+            }
+            format_any(args[next]);
+            next = next + 1;
+        }
+        out_byte(cast(u8, 41));
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Module-private helpers (ADR-0054 §1)
 // ---------------------------------------------------------------------------
 //
-// Everything from here down is hidden from importers until the `#scope_export` below. These two are
-// implementation detail: `put_byte` writes one byte through the address of a local, and
-// `print_digits` is the recursion `print_int` drives. An importer needs neither — and hiding them
-// means giving `print_digits` a buffer later cannot break a caller, because there are none outside
-// this file.
+// This section held the two helpers `print_int` needed before it had a buffer: `put_byte`, which wrote one
+// byte through the address of a local because `write` wants a `*u8` and a count, and `print_digits`, the
+// recursion that emitted digits high-to-low without anywhere to put them. **Both are gone** (ADR-0189 §4).
 //
-// This is the dogfooding ADR-0054's consequences call for: if `#scope_module` is right, the standard
-// library's own internals should be the first thing to use it.
-#scope_module
-
-/// Writes one byte to standard output.
-///
-/// The address of a local is what makes this expressible: `write` wants a `*u8` and a
-/// count, and a one-byte local supplies both (ADR-0011's prefix `*`). There is no buffer
-/// because `[N]u8` arrives with arrays; see `print_int`.
-put_byte :: (b: u8) {
-    p := *b;
-    write(STDOUT, p, 1);
-}
-
-/// Writes the decimal digits of a non-negative number.
-///
-/// Recursive, and deliberately so: `print_int` has no buffer to format into, because
-/// `[N]u8` arrives with arrays in a later wave. Recursion emits the digits in the right
-/// order without one -- divide first, print the high digits, then this digit on the way
-/// back out. It costs one frame per digit, which for a 64-bit number is at most 20.
-///
-/// This is the shape `PLAN.md` §1.2 predicted: the wave that unblocks integer printing is
-/// the wave that adds `cast`, and the buffer is still owed. When arrays land, this becomes
-/// a loop over a `[20]u8` and the recursion goes away.
-print_digits :: (n: s64) {
-    if n >= 10 {
-        print_digits(n / 10);
-    }
-    // `n % 10` is 0..9, so `+ 48` is '0'..'9' and the cast cannot lose information --
-    // which is why it is a cast and not a checked conversion (ADR-0037 §2).
-    put_byte(cast(u8, n % 10 + 48));
-}
-
+// They are deleted rather than left unused, and that is the interesting part. `print_int` now delegates to
+// the formatter, so keeping them would leave a second route to decimal digits beside the real one — and a
+// second route is a second chance to disagree, which these two demonstrably did: they trapped on `S64_MIN`
+// while the formatter renders it, because they negated and it does not.
+//
+// The formatter's own helpers stay above this line, so the dogfooding ADR-0054 asks for is unchanged: the
+// standard library's internals are still the first thing hidden by `#scope_module`.
 #scope_export
 
 /// Writes a number in decimal.
 ///
-/// Handles the sign here rather than in `print_digits`, so the recursion has one job. Note
-/// what is *not* handled: the most negative `s64` cannot be negated -- `-(-9223372036854775808)`
-/// overflows, and ADR-0002 makes that a trap rather than a wrap. So this traps on it, which
-/// is honest; printing it needs either an unsigned path or `-%`, and both are later waves.
+/// # What this used to be, and why it is one line now
+///
+/// It handled the sign itself and drove a recursion, one syscall per digit, and it **trapped on
+/// `S64_MIN`**: `-(-9223372036854775808)` overflows and ADR-0002 makes that a trap rather than a wrap, so
+/// the one integer this library could not print was the one a reader is most likely to reach for when
+/// testing an integer printer. Its own docs said so and named "an unsigned path or `-%`" as the fix.
+///
+/// Both arrived with the formatter (ADR-0189 §4), which renders through an unsigned magnitude and so has
+/// no negation to overflow. Delegating rather than keeping a second renderer is the point: two paths to
+/// decimal digits are two chances to disagree about `S64_MIN`, and this one was the wrong one.
+///
+/// Kept as a name because programs and the corpus call it, and because `print("%", n)` needs a format
+/// string where this needs nothing.
 print_int :: (n: s64) {
-    if n < 0 {
-        print("-");
-        print_digits(-n);
-    } else {
-        print_digits(n);
-    }
+    print("%", n);
 }
 
 // ---------------------------------------------------------------------------

@@ -93,7 +93,8 @@ silently skips. **Run gate 7 in any wave that touches MIR, `jr-pool`'s layout, `
 either back end** — those are exactly the places where a third engine has something to say.
 
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
-visible. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
+visible. **It is 1082 today, with 270 corpus files** (ADR-0189, which held the test count and moved only
+the corpus one — the pattern every library wave here follows, and the reason the two are tracked apart). It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
 → 969 (W5 sub-waves 1–4) → 974 (W5 sub-wave 5, polymorphic structs) → 976 (W5 sub-wave 6a, `$N` surface)
 → 977 (W5 sub-wave 6b, `$N` instantiation) → 978 (W5 sub-wave 6c, `[N]T` over `$N`; 7a `#expand` surface) → 979 (W5 sub-wave 7b, the `#expand` splice) → 980 (W5 sub-wave 7c, reflecting a bound type)
 → 981 (W5 sub-wave 7h, `#bake_arguments` specialisation — **W5 complete**). It reaches **1073** after the
@@ -256,7 +257,73 @@ grammar reported an `ERROR` node over it (gate 6, which is what that gate exists
 the type, verified by writing it; and `codes.rs` caught a code collision when this wave first reached for E0290,
 which `jr-hir` owns.
 
-**ADR-0185 through ADR-0188 reach 1082** and **269** corpus files, and add **no** diagnostic code —
+**ADR-0189 holds at 1082** and adds one corpus file = **270**, and adds **no** diagnostic code — E0295
+is still the first free one, for the fifth consecutive stretch. `print(fmt, args: ..Any) -> s64`: Go's `%`,
+Go's `%!(MISSING)`/`%!(EXTRA …)`, written in Jairs.
+
+**Read this wave for what happens the first time something composes four shipped features.** The variadic
+(ADR-0138/0139), `Type_Info` (ADR-0075), `Any` erasure (ADR-0076) and a file-scope global (ADR-0186) were
+all built and all believed. `print` is the first caller to use them together, and **it found four compiler
+defects, three of them in shipped code**. None was reachable before, which is the whole lesson: a feature
+nothing has composed is a feature nothing has tested.
+
+**The proxy-guard family reached four, and this instance is the clearest.** Three
+`if self.imports.is_empty() { return None; }` early-outs — `library_struct`, `library_enum`,
+`any_struct_quiet` — sat *above* the lookup they guarded. The comment was right that a checker run with
+no module resolution must not invent E0265; it was blind to `modules/Basic`, which imports nothing and
+**declares `Type_Info`, `Type_Info_Kind` and `Any` itself**. The fallback three lines below already reads
+`self.sigs`, exactly where a declaring file's own types live, so the guard did nothing but hide them.
+
+It stood for waves because **`type_info(` appears seventeen times in `Basic` and all seventeen are doc
+comments**. The first *code* use said "the compiler could not lower the body of `format_field`", blaming
+the body; `print("%", n)` inside `Basic` was "variadic argument expected `Any`, found `s64`" while the
+identical call one file away worked. After `TrapKind::ALL`'s length assertion (ADR-0178 §2) and
+`file_consts`' feature list (ADR-0176 §6), the rule is: **a proxy is not wrong until something legitimate
+sits on the other side of it** — which is why they survive review and surface in a program nobody
+suspected.
+
+**And ADR-0186 §3 refuted ADR-0186 §1, in the same ADR.** §1 said only same-file globals occur; the VM
+enforced it. §3 made a `GlobalRef` **absolute** so the inliner could copy one unchanged — which is
+exactly how a body ends up holding another file's global. `Basic.print` reads the output buffer, so
+inlining it into any caller produced `internal compiler error: a cross-file global reference, which this
+engine does not yet support` **on an ordinary print**. Neither section is wrong alone; the contract was.
+So: **when one section of a decision grants a property, check every invariant that assumed its absence.**
+
+**A flag was built for this and removed, and the removal is the instructive half.** Marking a comptime
+program "globals unobservable" — so a comptime read got ADR-0186 §2's honest message instead of a lookup
+miss — moved the refusal from **execution** to **assembly**. Assembling `modules/Basic` then failed
+outright, and *every constant in the file* reported "a global variable's current value cannot be read
+here". A comptime program must still **type** globals so bodies holding one compile; whether a `#run` may
+read one was already enforced upstream. **A refusal moved one phase earlier stops being a refusal about
+the thing and becomes a refusal about the file.**
+
+**`print("%", f())` refused the body**, because the coercion check excluded `Expr::Call` — true for
+`any_of`/`any_as`, which *are* calls, and false for the implicit coercion, which has no call node and is
+merely recorded against whatever expression the argument happens to be. Found by writing the shape every
+caller writes.
+
+**Six tests changed and the two reasons are worth separating.** Two snapshots. Three **stale
+expectations** a library change should invalidate — `print`'s signature in two LSP cards, and the
+reference count inside `Basic` falling three → one. One **stale premise**:
+`print_line_loses_the_spill_slot_it_never_reads` asserted `slot_count() == 1`, a proxy for "lowering made a
+slot at all", while the property that matters is asserted on the next line. And one **stale semantics** —
+`a_pointer_coerces_to_any_at_a_call_in_both_engines` expected `size == 16` from an implicitly coerced
+`*Point`. ADR-0189 §2 amends ADR-0076 §1: an argument describes **itself**, because otherwise no `Any` has
+a pointer type and `print("%", p)` cannot say "pointer". The test now asserts the **difference** (8 vs 16),
+because one asserting agreement would pass if both engines lost the distinction.
+
+**One root cause holds four visible gaps together.** An enum prints its ordinal, a nested field prints
+`…`, a view prints `<view>`, and a structural type's `name` is the lowercased kind (`array`, not
+`[3]s64`) — all because `Type_Info_Field.ty` and `Type_Info.element` are type **ids** and ADR-0077 §1
+makes an id opaque, so nothing can recurse. A fixed array escapes only by arithmetic (stride =
+`size / count`); a **view** cannot, since its `size` is the header. Lifting all four is one change — a
+`*Type_Info` per type via ADR-0152 §3's table — and it is recorded rather than half-built.
+
+**The formatter did not drop anything this wave**, and gate 5 passed first time: no new syntax node was
+added, so there was nothing for the emitter to learn. That is the second wave in fifteen to escape that
+trap, and for the same reason as ADR-0184's — reuse of an existing node shape.
+
+**Historical: ADR-0185 through ADR-0188 reach 1082** and **269** corpus files, and add **no** diagnostic code —
 E0295 is still the first free one. Four ADRs: a string literal's `.data` (0185), file-scope mutable
 variables (0186), `Simp` and `Window` on Jai's **real** API over OpenGL (0187), and two stale claims in
 the compiler (0188).

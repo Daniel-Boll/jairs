@@ -30,6 +30,5 @@ main :: () {
     p.x = 10;
     p.y = 20;
 
-    print_int(manhattan_distance(origin, p));
-    print_line("");
+    print_line("distance = %", manhattan_distance(origin, p));
 }

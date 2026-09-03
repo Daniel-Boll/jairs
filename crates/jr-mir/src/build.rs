@@ -2497,9 +2497,16 @@ impl Lower<'_> {
         // records it against the *argument expression*, which may be any shape (`takes(*x)` is a unary
         // address). Both are `AnyOp::Of`, and both erase the same way — so the check sits here, above the
         // per-shape lowering, and the argument's own value is the pointer to erase. The `Call` arm handles
-        // its own `any_op` (both `Of` and `As`), so this fires only for a *non-call* coercion.
+        // its own `any_op` (both `Of` and `As`), so those fire there.
+        //
+        // **`OfValue` is handled here whatever the shape** (ADR-0189 §2), including a call. It is only ever
+        // the *implicit* coercion, never an intrinsic, so the `Call` arm has nothing to do with it — and
+        // excluding calls here made `print("%", f())` refuse the body with "a value coercion to `Any`
+        // recorded against a call", which reads as a compiler bug and is one. `expr_inner` then lowers the
+        // call ordinarily, so the materialised temporary holds its result.
         if let Some(op) = self.consts.any_op(self.scope(), id)
-            && !matches!(self.body.expr(id), Expr::Call { .. })
+            && (matches!(op, crate::inputs::AnyLowering::OfValue { .. })
+                || !matches!(self.body.expr(id), Expr::Call { .. }))
         {
             return self.lower_any_coercion(op, id, ty, span);
         }
@@ -2614,7 +2621,12 @@ impl Lower<'_> {
                 // **`any_of`/`any_as` lower to real code** (ADR-0076), recorded by `file_consts` as an
                 // `AnyLowering` rather than a value. Like `type_info` they name no procedure, so they are
                 // handled before `call_rvalue` refuses the body for a missing callee.
-                if let Some(op) = self.consts.any_op(self.scope(), id) {
+                // `OfValue` is excluded: it is the implicit coercion recorded against this call as an
+                // *argument*, already handled in `expr` above, and it must not be mistaken for an
+                // intrinsic here — this call has a real callee to lower (ADR-0189 §2).
+                if let Some(op) = self.consts.any_op(self.scope(), id)
+                    && !matches!(op, crate::inputs::AnyLowering::OfValue { .. })
+                {
                     return self.lower_any(op, &args, ty, span);
                 }
                 match self.call_rvalue(id, callee, &args) {
@@ -3286,6 +3298,13 @@ impl Lower<'_> {
                 type_info,
                 any_ty: _,
             } => self.any_of(type_info, args, ty, span),
+            // Recorded only against an *argument* expression, never against a call — the implicit
+            // coercion has no call node of its own (ADR-0189 §2). Reaching here means something recorded
+            // it in the wrong place, which is a compiler bug rather than a program's.
+            crate::inputs::AnyLowering::OfValue { .. } => {
+                self.give_up("a value coercion to `Any` recorded against a call");
+                self.define(ty, Rvalue::Undef, span)
+            }
             crate::inputs::AnyLowering::As { type_id, result } => {
                 self.any_as(type_id, result, args, ty, span)
             }
@@ -3441,22 +3460,54 @@ impl Lower<'_> {
         any_ty: PoolId,
         span: MirSpan,
     ) -> Operand {
-        let crate::inputs::AnyLowering::Of {
-            type_info,
-            any_ty: built_ty,
-        } = op
-        else {
-            // Only `AnyOf` is ever recorded against a non-call expression; `AnyAs` is always a call.
-            self.give_up("an `any_as` recorded against a non-call expression");
-            return self.define(any_ty, Rvalue::Undef, span);
-        };
-        // Lower the pointer through the value path, but *without* re-entering the coercion check — read
-        // the expression by its shape. It is an ordinary pointer-typed expression (`*x`, a local, a
-        // field), so `expr_inner` handles it; the coercion only rewrites what the *result* becomes. The
-        // aggregate is built at the recorded `Any` type, not `self.ty(id)` — this expression's own type
-        // is the *pointer*, which is what `expr_inner` correctly lowers it as.
-        let pointer = self.expr_inner(id);
-        self.build_any(type_info, pointer, built_ty, span)
+        // Lower the argument through the value path *without* re-entering the coercion check — read the
+        // expression by its shape, since the coercion only rewrites what the *result* becomes. The
+        // aggregate is built at the recorded `Any` type and not `self.ty(id)`, because this expression's
+        // own type is the argument's, which is what `expr_inner` correctly lowers it as.
+        match op {
+            crate::inputs::AnyLowering::Of {
+                type_info,
+                any_ty: built_ty,
+            } => {
+                // The explicit-pointer form. `any_of(p)`'s implicit twin used to be the *only* coercion
+                // (ADR-0076 §1); ADR-0189 replaced it with `OfValue` below, so nothing records this
+                // against an argument any more. The arm stays because the variant is still what
+                // `any_of(p)` itself lowers through, and a `_` here would hide a future recorder.
+                let pointer = self.expr_inner(id);
+                self.build_any(type_info, pointer, built_ty, span)
+            }
+            crate::inputs::AnyLowering::OfValue {
+                type_info,
+                any_ty: built_ty,
+                value_ty,
+            } => {
+                // **The materialised temporary ADR-0076 §4 deferred** (ADR-0189 §2). A value has no
+                // address, so it is stored into a fresh slot and the slot's address becomes `Any.data`.
+                //
+                // The slot is per-coercion rather than reused across a call's arguments, which matters:
+                // `print("% %", a, b)` builds two `Any`s that must point at *different* storage, and one
+                // shared slot would make both describe whichever was stored last. Distinct slots is what
+                // a `Vec`-shaped `push_slot` gives for free.
+                //
+                // The value is lowered *before* the slot exists, so an argument whose own evaluation
+                // needs slots cannot be given this one.
+                let value = self.expr_inner(id);
+                let slot = self.mir.push_slot(value_ty, None, span);
+                self.emit(Statement::Store {
+                    place: Place::slot(slot),
+                    value,
+                    span,
+                });
+                let ptr_ty = self.pool.pointer_to(value_ty);
+                let address = self.define(ptr_ty, Rvalue::Address(Place::slot(slot)), span);
+                self.build_any(type_info, address, built_ty, span)
+            }
+            crate::inputs::AnyLowering::As { .. } => {
+                // `any_as` is always a call, so it never reaches the coercion path.
+                self.give_up("an `any_as` recorded against a non-call expression");
+                self.define(any_ty, Rvalue::Undef, span)
+            }
+        }
     }
 
     /// Builds an `Any` aggregate from an already-lowered pointer and a `Type_Info` constant (ADR-0076).

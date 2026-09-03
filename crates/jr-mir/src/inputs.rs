@@ -208,6 +208,22 @@ pub enum AnyLowering {
         /// cannot recover it from the expression the way the explicit call can from its result.
         any_ty: PoolId,
     },
+    /// An **implicit coercion of a value** to `Any` — materialise it, then build `{type, data}` from its
+    /// address (ADR-0189 §2).
+    ///
+    /// The difference from [`AnyLowering::Of`] is one statement and it is the reason this is a separate
+    /// variant: `Of` receives a pointer and already has an address for `Any.data`, while this receives a
+    /// *value* and has to give it a slot first. ADR-0076 §4 deferred exactly that — "a literal has no
+    /// place" — and a slot is the place.
+    OfValue {
+        /// The `Type_Info` constant describing the **value's own type**, not a pointee.
+        type_info: PoolId,
+        /// The `Any` struct type to build. Needed for the same reason `Of` needs it: this is recorded
+        /// against an argument expression whose own type is not `Any`, so the builder cannot recover it.
+        any_ty: PoolId,
+        /// The value's own type, so the builder knows what slot to make.
+        value_ty: PoolId,
+    },
     /// `any_as(a, T)` — trap unless `a.type.id` equals `type_id`, then read `a.data` as `*result`
     /// (ADR-0076 §2, ADR-0077).
     As {
