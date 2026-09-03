@@ -580,8 +580,11 @@
   ]
   #v(0.15em)
   #text(size: 7.4pt, style: "italic")[
-    The one open slice criterion is still a verified Linux x86-64 CI run — configured, never run, which
-    makes it a decision rather than a technical gap, and it is now the *only* one. Owed and specified
+    The one open slice criterion is a Linux x86-64 CI run someone has read. `main` was pushed for the
+    first time on 2026-09-03, so it is no longer blocked on the push — but triggering a run is not
+    reading one, and the outcome has not been observed even once. The Linux leg of the test matrix is
+    the only thing that has ever executed this compiler on x86-64, so a genuine endianness or layout
+    assumption surfaces there and nowhere else. Owed and specified
     rather than vague: a per-thread shadow call stack, so a trap in a spawned thread names the right
     frames; a register-resident local in DWARF, measured reachable and needing `.debug_loclists`; the
     security audit's remaining two dispatches (by hand — six subagent dispatches returned empty); and

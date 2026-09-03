@@ -28,8 +28,12 @@ level of a file, which the compiler could parse and could not compile.
 - **1082** workspace tests, all seven gates green.
 - **269** `.jr` corpus files, **188** accepted ADRs, **23** standard library
   modules.
-- macOS arm64 is verified; Linux x86-64 is configured in CI and has never
-  actually run, because `main` has never been pushed.
+- macOS arm64 is verified locally, gate by gate. Linux x86-64 has never been
+  verified by a human reading a result: `main` was pushed for the first time on
+  2026-09-03, so the CI matrix has now been triggered, and **nobody has yet
+  confirmed what it reported**. Treat every Linux claim in
+  [`docs/capabilities.md`](docs/capabilities.md) as unverified until someone
+  reads that run.
 
 Read **[`docs/capabilities.md`](docs/capabilities.md)** for the full,
 table-by-table inventory of what works, what is absent, and the sharp edges

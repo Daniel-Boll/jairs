@@ -209,11 +209,20 @@ flowchart LR
       `nvim --headless -u NONE -l editors/nvim/verify.lua`, 166 checks against the real
       editor and the real server. Verified rather than gated: Neovim is not a build
       dependency of this workspace.
-- [ ] CI green on macOS arm64 **and** Linux x86-64 — the matrix is configured for
-      both, and **no CI run has ever happened**: `main` has never been pushed, so every
-      gate has only ever been green locally, on macOS arm64. That also means the
-      tree-sitter corpus job — the only check that can see a *wrong parse tree* rather
-      than an error count — has never run.
+- [ ] CI green on macOS arm64 **and** Linux x86-64 — **`main` was pushed for the first
+      time on 2026-09-03**, so the matrix has been triggered and this criterion is no
+      longer blocked on the push. It is **still open**, and the distinction matters:
+      triggering a run is not reading one. Nobody has yet confirmed what it reported,
+      and the GitHub API was unreachable from the machine that pushed, so the outcome
+      was not observed even once.
+      Two jobs are worth reading first. The **Linux leg of the `test` matrix** is the
+      only thing that has ever executed this compiler on x86-64 — every gate before now
+      was green on macOS arm64 alone — so a genuine endianness or layout assumption
+      would surface there and nowhere else. And the **tree-sitter corpus job** is the
+      only check that can see a *wrong parse tree* rather than an error count.
+      Expect the graphics tests to fail there: five of the six need a real video driver,
+      and a headless Linux runner has none. `create_window` falls back to a plain window
+      (ADR-0187 §2), so the event-loop test should pass and the drawing ones should not.
 - [x] CI drift gate: every corpus file parses cleanly in *both* the compiler and
       tree-sitter
 - [x] Differential test harness exists: every corpus program's output must match
