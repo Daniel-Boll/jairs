@@ -100,6 +100,9 @@ before: two gates run at once and race a shared binary.
   absent, and the sharp edges.
 - **[`docs/architecture.md`](docs/architecture.md)** — the compiler pipeline
   and crate layout.
+- **[`docs/jai-parity.md`](docs/jai-parity.md)** — what real Jai code uses that
+  this does not, syntax and libraries, each traced to a source and probed where
+  a probe was possible.
 - **[`docs/adr/README.md`](docs/adr/README.md)** — all 188 accepted decision
   records.
 - **[`docs/spec/`](docs/spec/)** — the language specification chapters.

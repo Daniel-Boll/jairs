@@ -620,6 +620,18 @@ against this compiler** rather than checked against a document. Five probes sett
 | `for v, i: a` | 14 | **works** |
 | a reinterpreting cast, bitboard shifts | 65 `cast,no_check` sites | **works** — `+% -% *%` exist |
 
+**[`docs/jai-parity.md`](docs/jai-parity.md) holds both inventories in full** — the syntax table above
+with its sources, and a ranked eight of the *libraries* Jai has and this one lacks. Two things in it are
+worth reading before planning anything in that direction. `SogoCZE/jai_wgpu_native` binds `wgpu-native`,
+and **WebGPU is one library name on all three targets** — exactly the property ADR-0183 wanted and could
+not get from OpenGL, which needs three names and two linker argument forms. And `jai_parser`'s `tests/`
+directory is 40-odd files of real Jai syntax corner cases, which is a ready-made checklist for the next
+audit rather than a library to port.
+
+**One correction to this repository's own record, found by that research**: the brief for it listed
+`push_context` as a known gap, and `docs/adr/README.md:86` records ADR-0063 as **Accepted**. The brief
+was written from memory and the ADR index was right.
+
 > [!IMPORTANT]
 > **Per-OS support is now a *library* concern, not a compiler one** — ADR-0183 and ADR-0184, on top of the Simp
 > restructure (ADR-0179 … ADR-0182). A module selects a library, a link form, a flag or a value per operating
