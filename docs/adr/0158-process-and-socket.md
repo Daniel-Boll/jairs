@@ -149,6 +149,14 @@ A procedure returning a `bool` rather than a build failure, because this languag
 
 - **`modules/Process` and `modules/Socket`** are new. **W7 — Stdlib is DONE**: nine of nine, with `Compiler`
   delivered inside W6 and `Thread` split out to W11.
+
+  > **This sentence is false, and `docs/build-script-plan.md` §7 found it.** No module named `Compiler`
+  > has ever been created — verified by three independent searches of `modules/`. ADR-0154, which closed
+  > W6, does not claim one either: its Consequences list what W6 shipped and `Compiler` is not among
+  > them. `PLAN.md`'s §8.3 table still carries the un-struck row saying the module "belongs to W6's
+  > decision", which is where the claim came from — a *plan* to move it, read as a delivery. So W7 is
+  > **eight of nine**. An ADR is immutable, so the correction is recorded here rather than by editing the
+  > claim, which is how ADR-0168 handled the same shape.
 - **`jr-pool`'s `view_of` interns `*elem`**, closing a leaked internal error class.
 - **`valid/129` opens a real TCP connection to itself** over loopback on an OS-chosen port; all three engines
   print 32767 and exit 137. **`Process`'s test is native-only**, in `jr-cli`'s integration suite, with the

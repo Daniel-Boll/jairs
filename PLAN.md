@@ -386,7 +386,7 @@ dependency chain requires it. `rust-toolchain.toml` still floats on stable.
 | **W4 — Comptime** | Full `#run` (arbitrary code), aggressive const folding, RTTI (`Type` values, `type_info()`, `Any`), `#insert`, `#code`, the `Code` type | **Hardest wave.** Sema ↔ VM become mutually recursive; cycle detection with readable errors is the deliverable. **Delivered in sub-waves** (ADR-0069 §0), because a wave five times the size of any other cannot be verified the way the others were: **all ten shipped**: (1) `#run` across files and in a body (ADR-0069); (2) an array length from a constant (ADR-0070), which *replaced* "aggressive const folding" after ADR-0070 §0 found ADR-0022's const-prop had already delivered it; (3) a type as a compile-time value (ADR-0071); (4) `#insert` of a literal operand (ADR-0072); (5) of a **computed** operand (ADR-0073) — the mutual recursion this row calls the hardest part, broken by an acyclic pre-pass rather than salsa's fixed-point recovery; (6) aggregate constants (ADR-0074); (7) `type_info()` and a constant holding a string (ADR-0075); (8) `Any` with a checked read, plus `Type_Info`'s stable `id` the check needed (ADR-0076, ADR-0077); (9) `Type_Info`'s fixed-size per-kind facts (ADR-0078); (10) `#code` (ADR-0080), with a shipped silent miscompile refused on the way (ADR-0079). **Out of scope, each with a recorded reason**: `Type_Info`'s variable-length field list (owed its own wave — it needs a declared static-data mechanism, ADR-0079 §1); a `Code` *value* (**declined** until something can inspect a tree, ADR-0080 §3); a `#run` reading another file's constant (ADR-0073 §4, now reporting itself rather than an ICE) | 10–14 wks |
 | **W4.5 — Pattern matching** | `switch` with exhaustiveness checking, a bare `.RED` as a case (ADR-0041 §2 step 5), and a **tagged** variant type beside `union` (ADR-0045 §1) | **Was missing from this table entirely.** Two accepted ADRs deferred decisions to it while no wave scheduled it — found while closing W2 (ADR-0054's handoff). **Reordered before W4 by ADR-0067 §0.** This row used to say "placed after W4 because exhaustiveness diagnostics want comptime type info" — a *want*, not a need, and checking disproved it: `Pool::enum_members` is populated during checking (ADR-0041 §4), and `c == .GREEN` already worked, so `switch` and exhaustiveness needed nothing from W4. A wave order justified by a dependency that does not exist is §5's "plans that contradict themselves". Still before W5, because a polymorph over a variant type needs the variant | 4–6 wks |
 | **W5 — Polymorphism** | `$T`, `$$T` ~~**[NOT DELIVERED — E0107]**~~ **delivered as a *parameter* — ADR-0137, exercised by `valid/110`; a `$$T` **return** is now E0290, ADR-0168, since `$$` marks an argument and a return has none**, `#modify`, `#bake_arguments`, `#expand` macros + hygiene, instantiation caching, **instantiation backtraces** in diagnostics **[single frame DELIVERED by ADR-0128; multi-level chain still owed]** | Depends on W4's InternPool value identity | 8–12 wks |
-| **W6 — Metaprogram** | ~~Workspaces~~ **[DECLINED — ADR-0154 §4: a Jai workspace is the *poll* model, and the file-set half already exists as `reachable_files`]**, compiler message loop, `#run build()` build scripts replacing makefiles, ~~plugin hooks~~ **[DECLINED — ADR-0154 §3: a hook is a poll, and ADR-0153 §1 rejected the poll because its behaviour would depend on compilation order, which salsa makes unstable]**, `@note` attributes | **DONE** (ADR-0098 … ADR-0154). The headline claim is met: a metaprogram finds declarations by note and *iterates* them (ADR-0153), on the compiler-emitted table ADR-0152 built — which delivered `Type_Info.fields` at the same time, owed since ADR-0078. Build scripts name the artefact and choose the optimisation. Two items declined with reasons rather than left ambiguous | 6–8 wks |
+| **W6 — Metaprogram** | ~~Workspaces~~ **[DECLINED — ADR-0154 §4: a Jai workspace is the *poll* model, and the file-set half already exists as `reachable_files`]**, compiler message loop, ~~`#run build()` build scripts replacing makefiles~~ **[NOT DELIVERED — what shipped is two *settings*, `BUILD_OUTPUT` and `BUILD_OPT_LEVEL`. A script that replaces a makefile has to read files and shell out, and a `#run` can do neither: every `#foreign` call is refused at compile time and `#foreign_at_comptime` was never implemented. `docs/build-script-plan.md` researches it and proposes running the script as an ordinary program instead]**, ~~plugin hooks~~ **[DECLINED — ADR-0154 §3: a hook is a poll, and ADR-0153 §1 rejected the poll because its behaviour would depend on compilation order, which salsa makes unstable]**, `@note` attributes | **DONE** (ADR-0098 … ADR-0154). The headline claim is met: a metaprogram finds declarations by note and *iterates* them (ADR-0153), on the compiler-emitted table ADR-0152 built — which delivered `Type_Info.fields` at the same time, owed since ADR-0078. Build scripts name the artefact and choose the optimisation. Two items declined with reasons rather than left ambiguous | 6–8 wks |
 | **W7 — Stdlib** ✔ **DONE — ADR-0158** | In Jairs: `Basic`, `String`, dynamic array / hash table / bucket array, `Sort`, `Math` (vec/mat/quat **DELIVERED — vectors by ADR-0130, `Matrix4` by ADR-0131, `Quaternion` by ADR-0132; ADR-0115 declared `Math` complete when none of the three existed**), `Random`, `File`, `File_Utilities`, `Process`, ~~`Thread` + atomics~~ **[MOVED OUT to W11 by §8.3 — there is no thread support anywhere in the runtime, and delivering one needs a per-thread VM stack, atomics as language operations, a memory model, and a rule for comptime; that is a wave comparable to W4, not one item in a list]**, `Time`, `Socket`, `JSON`, ~~`Compiler`~~ **[MOVED to W6 by §8.3 — that module *is* the message loop's surface]** | Runs partly in parallel with W5/W6; each module is a wave-acceptance test. **Nine modules shipped; §8.3 orders the remaining seven by what blocks what**, and five of them wait on the error model (§8.1.1) | 14–18 wks |
 | **W8 — Performance** | LLVM backend via `inkwell` (`--release`), inliner maturity, `#soa`, SIMD vectors, `#align`/`#place`, parallel Sema + parallel codegen **[NOT DELIVERED — measured and refused; see ADR-0149]**, published compile-throughput number | Three-way differential testing: VM ≡ Cranelift ≡ LLVM. **DONE in eight sub-waves** (ADR-0142 the optimisation level, ADR-0143 the LLVM back end, ADR-0144 `#align`/`#place`, ADR-0145 inliner maturity, ADR-0146 the throughput number + `heap_sort`, ADR-0147 `#soa`, ADR-0148 `#simd`, ADR-0149 the parallelism measurement). Seven shipped a feature; the eighth shipped a number and a revert — 1.20x against a 2.5x ceiling, because 40% of a check runs inside the pool's exclusive critical sections | 10–14 wks |
 | **W9 — Tooling depth** | Full LSP surface (completion, refs, rename, signature help, semantic tokens, **inlay type hints**, code actions), richer DWARF (locals, struct layouts) for lldb, Neovim packaging (VS Code descoped by ADR-0036; any LSP client works unpackaged) | Incremental all along; this is the "make it excellent" pass | 8–10 wks |
@@ -890,6 +890,53 @@ Tests **1069 → 1073**; the workspace corpus **255 → 262** `.jr` files under 
 nothing else, so SDL2 is unreachable under `jr run` and `tests/corpus/valid/`'s premise is that the two engines
 agree.
 
+### The plan for the future — what to do next, and why in this order
+
+Eleven of the twelve waves are closed and **W6 is not** — its own row claims build scripts "replacing
+makefiles" and what shipped is two settings (see the row, now marked NOT DELIVERED). So there is no wave
+order left to follow except W6's remainder. What remains is otherwise a *list*, and a
+list needs an argument for its order. This one is by **what unblocks what**, checked against the code
+this session rather than carried forward — three entries below moved because a probe contradicted the
+record.
+
+> [!IMPORTANT]
+> **A build script written in Jairs is the largest thing owed, and it is researched but not started.**
+> [`docs/build-script-plan.md`](docs/build-script-plan.md) is the research: how Jai's `build.jai` actually
+> works, read from 23 real build scripts because Jai's own `modules/Compiler` is unpublished; what Jairs
+> has; what blocks it; and a five-wave plan.
+>
+> Its finding is that **copying Jai's model would not work here.** Jai puts the script in a `#run`, and a
+> Jairs `#run` can do *nothing* — every `#foreign` call is refused at compile time, so it cannot read a
+> file, shell out, print, or allocate. Jai's build scripts get their power from the ordinary standard
+> library, not from the `Compiler` module, so a plan that ports the module and leaves the script unable to
+> open a file has copied the wrong half. The plan runs the script as an **ordinary program in the VM**
+> instead — which needs no `#foreign_at_comptime`, has nothing for salsa to make unstable, and is what
+> ADR-0154 §4 said a revisit would need.
+
+**1. Make `jr-driver` real.** Small, and it is the prerequisite the build-script plan cannot skip: a
+build script needs a driver callable more than once with different requests, and today the 22 ordered
+steps of `jr build` are a `main`-shaped function reading `clap` structs. Moving them behind a
+`BuildRequest` changes no behaviour, so it is verifiable on its own. `jr-driver` has been a one-line
+doc comment promising exactly this since the slice.
+
+**2. The build script itself**, waves 2–5 of that plan. The three items below are independent of it.
+
+**3. A flat id → `Type_Info` table.** The last of ADR-0189 §6's four print gaps, and the shape is now
+known to be *different from what that section prescribed* — see the owed list below.
+
+**4. Deep pointer marshalling in the VM.** Ranked here rather than lower because it fails **silently**:
+`Process.run` under `jr run` returns exit code 127 while reporting success, because `argv` is an array of
+pointers and the VM translates one level deep (ADR-0158 §3). Measured this session. It is also what a
+build script needs to shell out, so it pays twice.
+
+**5. `#foreign_at_comptime`.** PLAN §0 calls it "non-negotiable given build scripts must read files" and
+W6 closed without it — but the build-script plan sidesteps it, so it is no longer blocking anything. Its
+own value is a `#run` that reads a file, and its real cost is **not** the mode flip: it is that a
+memoised `#run` which touched the filesystem goes stale silently, because `file_consts` models no
+external dependency. Whoever picks it up should read that as the wave's content.
+
+Everything after that is the list below.
+
 ### Owed, in the order a reader should care
 
 **Newly owed, from ADR-0190 to ADR-0194, ranked by reach:**
@@ -912,6 +959,24 @@ agree.
 5. **A typed constant naming a *type*.** `P : type : u8;` does not work, and neither does the plain
    `P :: u8;` — a builtin cannot be aliased at file scope (E0201), which is why `valid/141` asserts widths
    through parameter types rather than through `size_of`.
+
+**Two entries that dissolved, checked rather than assumed** (`docs/build-script-plan.md` §2):
+
+- ADR-0154 §2 recorded a `Build_Options` **struct** as blocked on struct literals (E0117). It is not: the
+  **read-then-mutate** idiom needs no literal, and that is what every real Jai build script uses anyway —
+  23 of 23 call `get_build_options` and mutate the copy. Verified by running a struct with `string`,
+  `s64`, `[]string` and `bool` fields through a procedure and back.
+- ADR-0102 recorded that a script adding a module path "wants a list-valued constant". **ADR-0194's array
+  literals answered that**, one wave ago: `string.["modules", "vendor"]` assigned into a `[]string` field
+  works in both engines. Both ADRs predate the feature.
+
+**Newly owed, measured this session:**
+
+- **`Process.run` under `jr run` fails silently** — exit code 127 with `ok = true`, because `argv` is an
+  array of pointers and the VM marshals one level deep (ADR-0158 §3). Natively it works. A silent wrong
+  answer ranks above a loud one, which is why the forward plan puts it fourth rather than last.
+- **`modules/Compiler` has never existed** and W7 is eight of nine, not nine. ADR-0158's Consequences say
+  otherwise; the correction is recorded there.
 
 **Also owed, from ADR-0185/0188, ranked by what real Jai code actually uses:**
 
@@ -1008,7 +1073,9 @@ widening was deliberately not attempted: migrating `UI` was forced, growing it w
 
 **Historical, kept because the reasoning is still load-bearing:**
 
-**All twelve waves are done.** W11 — Concurrency closed with ADR-0177 and was the last one.
+**Eleven of twelve waves are done.** W11 — Concurrency closed with ADR-0177 and was the last one *started*
+— but W6 was closed on an overclaim and is reopened here: build scripts are researched
+(`docs/build-script-plan.md`) and not built, and `modules/Compiler` never existed.
 
 **W11 — Concurrency is DONE** (ADR-0175, ADR-0176, ADR-0177): three threads share a counter through
 `atomic_add` and none of three thousand increments is lost, in both native back ends, five runs per test
@@ -1214,7 +1281,7 @@ what rather than by the order §2.1 happens to list them.
 | ~~5~~ | ~~**`File`**~~ | — | **done — ADR-0157**, with `File_Utilities` on top as this row expected. Descriptors, not buffered streams; paths as text, not a `Path` type. Everything `#must` except `close`. Two **silent** defects found, neither in the modules: a fixed-arity `#foreign` declaration of a *variadic* C function passes the extra argument in the wrong place (`open`'s mode — creation now goes through `creat`), and freeing a string **literal** aborts natively while running clean in the VM. `size` seeks rather than `stat`s, and `readdir`/metadata are deferred, all three because an aggregate cannot cross the FFI boundary (§8.1.2). |
 | ~~6~~ | ~~**`Process`**~~ | — | **done — ADR-0158.** This row was right that the FFI is scalars and the error model is the difficulty, and wrong about one thing: `execvp`'s **argv** is an array of pointers, which the VM's one-level pointer translation cannot carry — so `spawn` works natively and fails under `jr run`, and its test is a `jr-cli` integration test rather than a corpus program. The status is a struct because `waitpid`'s bits are macro-decoded and `exit(1)` produces 256. |
 | ~~7~~ | ~~**`Socket`**~~ | — | **done — ADR-0158**, and it did inherit `File`'s shape as this row expected. A separate type from `File`, so a caller cannot seek a socket. Works in **all three engines**, unlike `Process`: a `sockaddr_in` passed by pointer holds only integers, so one level of translation is enough — the contrast is worth knowing, since "passes a struct by pointer" sounds like the harder case. `parse_ipv4` is hand-written so the refusals are ours. No `getaddrinfo` (pointers inside pointers), no IPv6, no `select` (that is W11). |
-| 8 | **`Compiler`** | W6's message loop | This module *is* the loop's surface, so it belongs to W6's decision rather than to W7's list. |
+| 8 | **`Compiler`** | W6's message loop | **Still not delivered, and W7 is eight of nine.** This row is the only un-struck one in the table, and ADR-0158's Consequences read it as a delivery — see the correction recorded there. `docs/build-script-plan.md` §4 specifies the module for the first time: eight procedures whose implementation is the *driver* rather than Jairs or libc. |
 | ~~9~~ | ~~**`Thread` + atomics**~~ | **moved to W11** | Split out as this section recommended, and W11 is now the last wave in §2.1's table. |
 
 **`Thread` cannot be delivered as scoped, and the plan should stop implying it can.** There is no

@@ -216,7 +216,8 @@ straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
 **ADR-0175, ADR-0176 and ADR-0177 reach 1069** (**1073** under gate 7) and add one corpus file = **255**.
-**W11 — Concurrency is DONE, and it was the last of the twelve waves.**
+**W11 — Concurrency is DONE, and it was the last of the twelve waves *started*.** (W6 was closed on an
+overclaim and has been reopened — see the build-script entry at the top of this narrative.)
 
 **The blocker PLAN named was not the blocker, and this is the entry to read before trusting any plan here.**
 §8.3 said W11 needs a per-thread stack, atomics as language operations, and a comptime rule. It did not say a
@@ -257,6 +258,40 @@ grammar reported an `ERROR` node over it (gate 6, which is what that gate exists
 **genuine** ambiguity — `f :: () -> (s64) #c_call` — that the hand-written parser resolves greedily in favour of
 the type, verified by writing it; and `codes.rs` caught a code collision when this wave first reached for E0290,
 which `jr-hir` owns.
+
+**A build script written in Jairs is researched and not built** — `docs/build-script-plan.md`, which
+would become ADR-0195. Read it before picking the item up, and read this paragraph before trusting any
+"DONE" in the wave table.
+
+**W6 was closed on an overclaim, and it took eleven waves to notice.** Its row claims "`#run build()`
+build scripts replacing makefiles" as delivered; what shipped is two *settings*, `BUILD_OUTPUT` and
+`BUILD_OPT_LEVEL`. A script that replaces a makefile must read files and shell out, and **a `#run` can do
+neither** — every `#foreign` call is refused at compile time, so compile-time code cannot read a file,
+print, shell out, or even allocate, since `Basic.malloc` is `#foreign`. `#foreign_at_comptime`, which
+PLAN's own locked decisions call "non-negotiable given build scripts must read files", was never
+implemented: thirteen mentions in the repository and not one is code. And `modules/Compiler` never
+existed, so W7 is **eight of nine** — ADR-0158's Consequences claim otherwise, and that claim is now
+corrected in place.
+
+**The transferable finding is about which half of a design to copy.** Jai's build scripts are powerful
+because a build script is an *ordinary program with the whole standard library* — cloning a C dependency,
+stamping a git hash into the binary, formatting a bootable disk image, none of which touches the
+`Compiler` module. A plan that ports the module and leaves the script unable to open a file has copied
+the wrong half. So the plan runs the script as a program in the VM, where the stdlib already works
+(verified: a VM-hosted program writes and reads files), and sidesteps `#foreign_at_comptime` rather than
+pretending to solve it.
+
+**Two recorded blockers had already dissolved, and one by a wave from the same session.** ADR-0154 §2 said
+a `Build_Options` struct was blocked on struct literals; the **read-then-mutate** idiom needs none, and it
+is what 23 of 23 real Jai scripts use. ADR-0102 said a module-path setting "wants a list-valued
+constant"; ADR-0194's array literals answered that one wave earlier. **Both were checked by running a
+program, not by reading the ADRs** — which is the whole reason to probe a stated blocker before planning
+around it.
+
+**And one silent failure was measured.** `Process.run` under `jr run` returns exit code **127** with
+`ok = true`: the child spawns and `argv` arrives corrupt, because the VM marshals a pointer argument one
+level deep and `argv` is an array of pointers (ADR-0158 §3). Natively it works. A silently wrong answer
+outranks a loud one, which is why the forward plan puts deep marshalling fourth rather than last.
 
 **ADR-0190 through ADR-0194 hold at 1082** and add nine corpus files = **279**, with **one** new
 diagnostic code (E0295, an empty array literal) after four stretches with none. Five language utilities the

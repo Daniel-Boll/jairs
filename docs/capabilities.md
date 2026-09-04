@@ -11,12 +11,13 @@ behind them — that narrative is not duplicated here):
 
 - **1082** workspace tests, all seven gates green.
 - **279** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
-  (276 counting those).
-- **188** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+  (**290** counting those).
+- **194** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **23** standard library modules under `modules/`.
-- Diagnostic codes run **E0001–E0294**; **E0295** is the first free one
+- Diagnostic codes run **E0001–E0295**; **E0296** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership
-  table).
+  table, and `crates/jr-cli/tests/codes.rs` is what makes the "first free"
+  claim fail a test when it rots).
 
 ## What you can actually do
 

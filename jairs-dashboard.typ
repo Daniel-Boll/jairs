@@ -99,7 +99,7 @@
 #h(4pt)
 #pill[ADR-0194 latest]
 #h(4pt)
-#pill(fill: rgb("#eaf5ee"), stroke: good)[ALL TWELVE WAVES DONE]
+#pill(fill: rgb("#fdf6e3"), stroke: warn)[11.5/12 waves — W6 overclaimed]
 #h(4pt)
 #pill(fill: rgb("#eaf5ee"), stroke: good)[everything merged to main]
 #h(4pt)
@@ -299,7 +299,7 @@
   ("Formatter", "works", "Pure function over the CST; has lost a construct in most waves that added a node kind — #simd made it 9"),
   ("HIR, name resolution, modules", "works", "Flat import merge; cycles legal; export filtering"),
   ("InternPool: types, values, layout", "works", "One layout computation and one integer evaluator, shared. Behind an RwLock: reads share, interning excludes"),
-  ("Sema: signatures, checking", "works", "130 codes, E0295 next free, ownership enforced by a cross-crate test; folds size_of and os(); no const-eval here, by design"),
+  ("Sema: signatures, checking", "works", "131 codes, E0296 next free, ownership enforced by a cross-crate test; folds size_of, os() and type_of; no const-eval here, by design"),
   ("MIR: typed SSA", "works", "Block parameters, not phis; explicit bounds check and zeroing"),
   ("Mid-end", "5 passes", "Inline (non-leaf, bounded rounds), forwarding (cross-block), const-prop, DCE, plus the bounds-check strip. -O0 skips all of it"),
   ("Const-eval", "works", "Runs MIR through the bytecode VM"),
@@ -364,8 +364,8 @@
     "DONE in fifteen sub-waves (ADR-0081 to ADR-0097). $T inference, then $$T mixing inference with baking in one signature, then parameterised structs Box($T), then $N comptime-VALUE parameters — a length that is a constant rather than a type. #expand macros SPLICE their body into the caller's scope rather than calling it, #modify predicates run at instantiation and can REJECT one (E0275), and #bake_arguments produces a specialised procedure. The last piece lowers to a REAL procedure — a clone with the baked parameters dropped, their literals substituted and the kept ones remapped, which is the same machinery $N instantiation uses, so the wave ends on a REUSE rather than a new mechanism. Two plans were corrected by building: ADR-0096 intended to use the const-eval pre-pass and found it runs AFTER lowering, and the expansion fixed point (ADR-0120) needed a settling check because an instantiation family can fail to converge.",
   ),
   (
-    "W6 Metaprogram", "done",
-    "DONE, closed by ADR-0154. @note attaches metadata to a declaration (ADR-0098) as its own node kind rather than a generic attribute, because a note is DATA for a metaprogram while the directives are INSTRUCTIONS to the compiler. has_note and note_value read it at compile time (ADR-0099), folded in sema with no VM and no new query — unlike type_info, which folds later because it needs a layout. The first argument is the declaration itself rather than its name as text, so a misspelling is an unresolved name instead of a silent false. noted_count / noted_name / noted_declarations then let a metaprogram ITERATE what it found, and the compiler-emitted static-data table was the wave-sized architectural decision that made it possible. The wave headline claim is met: a metaprogram finds declarations by note and generates code for each one.",
+    "W6 Metaprogram", "partial",
+    "DONE, closed by ADR-0154. @note attaches metadata to a declaration (ADR-0098) as its own node kind rather than a generic attribute, because a note is DATA for a metaprogram while the directives are INSTRUCTIONS to the compiler. has_note and note_value read it at compile time (ADR-0099), folded in sema with no VM and no new query — unlike type_info, which folds later because it needs a layout. The first argument is the declaration itself rather than its name as text, so a misspelling is an unresolved name instead of a silent false. noted_count / noted_name / noted_declarations then let a metaprogram ITERATE what it found, and the compiler-emitted static-data table was the wave-sized architectural decision that made it possible. The wave headline claim is met: a metaprogram finds declarations by note and generates code for each one. PARTIAL, not done, and this row said done for eleven waves: its own item list claims '#run build() build scripts replacing makefiles' and what shipped is two SETTINGS, BUILD_OUTPUT and BUILD_OPT_LEVEL. A script that replaces a makefile must read files and shell out, and a #run can do neither — every #foreign call is refused at compile time and #foreign_at_comptime, which PLAN's locked decisions call 'non-negotiable given build scripts must read files', was never implemented. modules/Compiler was never created either, so W7 is eight of nine and ADR-0158's Consequences say otherwise. docs/build-script-plan.md researches the real shape and proposes it.",
   ),
   (
     "W7 Stdlib", "done",
@@ -468,6 +468,28 @@
       `let ... else`, so it compiled silently and skipped globals by luck — and the wrong answer there
       would have been a real miscompile, because forwarding a store to a global across a call drops the
       store the callee was meant to see.
+    ]
+
+    #v(0.3em)
+    #sub[What is next: a build script written in Jairs]
+    #text(size: 7.4pt)[
+      *Researched, not started* — `docs/build-script-plan.md`. Several Jai projects carry a `build.jai`
+      and are built with `jai build.jai`. The research read *23 real build scripts* because Jai's own
+      `Compiler` module is unpublished anywhere, and its finding is that copying Jai's model would not
+      work here: Jai puts the script in a `#run`, and a Jairs `#run` can do *nothing* — every `#foreign`
+      call is refused at compile time, so it cannot read a file, shell out, print, or even allocate.
+    ]
+
+    #v(0.3em)
+    #text(size: 7.4pt)[
+      *Jai's build power comes from the standard library, not from the Compiler module.* Cloning a C
+      dependency, stamping a git hash into the binary, building a `.dmg`, formatting a bootable disk
+      image — all of it is `Process`, `File`, `String`. So the plan runs the script as an *ordinary
+      program in the VM*, where the stdlib already works (verified: a VM-hosted program writes and reads
+      files), with a small `Compiler` module whose eight procedures record a build request the driver then
+      executes. That needs no `#foreign_at_comptime`, has nothing for salsa to make unstable, and is what
+      ADR-0154 §4 said a revisit would need. Two blockers the ADRs recorded had already dissolved — one of
+      them by array literals, one wave old.
     ]
 
     #v(0.3em)

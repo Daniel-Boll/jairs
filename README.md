@@ -17,6 +17,13 @@ with the same API as Jai's `Simp`. Every one of those claims has a capability
 table behind it, kept honest at the end of every wave — if a table and the code
 disagree, the code is right and the table has a bug.
 
+**What is next is researched and not built:** a build script written in Jairs, so a project is built by
+`jr build build.jr` rather than a line of flags. [`docs/build-script-plan.md`](docs/build-script-plan.md)
+is the research — 23 real Jai build scripts read, because Jai's own compiler module is unpublished — and
+its finding is that copying Jai's model would not work here, because a Jairs `#run` cannot read a file.
+The plan runs the script as an ordinary program instead. The same research found that W6 was closed on an
+overclaim: build scripts were never delivered, only two build settings.
+
 The language gained five utilities it had owed for several waves: typed constants
 (`FLAG : u32 : 256`), array literals (`s64.[1, 2, 3]` — the most used construct
 real Jai code has and this did not), `type_of(x)`, a pointer type as an

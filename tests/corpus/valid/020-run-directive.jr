@@ -7,8 +7,16 @@ add :: (a: s64, b: s64) -> s64 {
     return a + b;
 }
 
-// `#run` may also appear as a top-level statement, in which case it is
-// executed for its side effects during compilation.
+// `#run` may also appear as a top-level statement, and is evaluated during compilation.
+//
+// **It has no side effect anything can observe, and this comment used to claim it did.** Compile-time
+// code may call no `#foreign` procedure (`crates/jr-vm/src/interp.rs:1368`, ADR-0006) and may not read a
+// file-scope global (ADR-0186 §2) — so it cannot print, write a file, or even allocate, since
+// `Basic.malloc` is `#foreign`. What a bare `#run` does is *run*: its own frame, its own arithmetic, and
+// whatever it returns, which for a statement is discarded.
+//
+// The distinction matters because `docs/build-script-plan.md` rests on it: a build script written as a
+// `#run` could do nothing at all, which is why that plan runs one as an ordinary program instead.
 #run report();
 
 report :: () {
