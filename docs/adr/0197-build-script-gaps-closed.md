@@ -76,9 +76,19 @@ the dylib, both calling `add_two(40, 2)` and printing 42.
 `provide_import`. Each is a few lines once the request struct carries it, and each is a thing a real
 script does.
 
-`add_build_string` is the one with a design question: Jai injects text into a **shared global scope**,
-which Jairs does not have. Here each string becomes a synthetic file compiled into the target, which is
-the same capability under this language's rules — a generated `VERSION :: "..."` reaches the program.
+`add_build_string` is the one with a design question: Jai injects text into a **shared global scope**, so a
+generated `VERSION :: "abc";` is simply visible everywhere. Jairs has no shared global scope — a name crosses
+a file boundary only through `#import` (ADR-0014 §2) — so the text becomes a module named `Build`, and the
+target reads it with `#import "Build";`.
+
+**Say the import out loud, because it is the usage contract and not an implementation detail.** Verified from
+a clean directory: a script calling `add_build_string(t, "VERSION :: \"stamped\";")` alongside
+`set_working_directory` produces a binary that prints `version stamped`. Without the `#import` the target
+gets `error[E0201]: unresolved name VERSION` — which is the *correct* diagnostic under this language's rules
+and a confusing one if the docs imply a bare name works.
+
+That costs one line in the target and buys something Jai does not have: a generated name cannot silently
+collide with or shadow one the program wrote, because it is in its own scope.
 
 ### §4. Comptime file IO is host-mediated, and that closes ADR-0196's remaining gap
 
