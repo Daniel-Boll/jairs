@@ -1103,11 +1103,28 @@ the pattern by now: the coverage a vector needs is a corpus program the three en
 and the differential, snapshot and `type-errors` harnesses already iterate the directory. The enforced
 registry moved to E0286, and the *parser* range grew for the first time in three waves (E0133).
 
-**The nvim parser is a checked-in `.so` and it goes stale.** `editors/nvim/parser/jairs.so` predates
-any grammar change, so `verify.lua` fails "the highlights query loads" the moment a query names a new
-node — which is the AGENTS.md trap arriving through the one check that can see it, since gate 6's
-`query` run uses the *freshly generated* grammar. Run `./editors/nvim/build.sh` after touching
-`grammar.js`, then re-run the verification.
+**The nvim parser is a stale build product, and this paragraph used to call it "checked-in".**
+`editors/nvim/parser/jairs.so` is **gitignored and was never tracked** — `.gitignore:35`, and
+`git log --all -- editors/nvim/parser/jairs.so` is empty. It goes stale on *your machine* rather than in
+the repository, which changes the advice: there is nothing to commit and nothing a reviewer can see, so
+the only thing that catches it is running the check. It predates any grammar change, so `verify.lua`
+fails "the highlights query loads" the moment a query names a new node — while gate 6's `query` run uses
+the *freshly generated* grammar and passes. Run `./editors/nvim/build.sh` after touching `grammar.js`,
+then re-run the verification.
+
+**And the same audit found the one generated artifact that *is* tracked had rotted.**
+`jairs-dashboard.pdf` was a commit behind `jairs-dashboard.typ`, so the file a reader opens still said
+"ALL TWELVE WAVES DONE" after the commit that corrected it. `git log -1 -- <artifact>` against its
+source is the whole check, and it is the *only* one that works here for two reasons:
+
+- **The PDF is not reproducible.** Typst embeds `/CreationDate` and `/ModDate`, so recompiling an
+  unchanged source still produces a four-line diff. Byte-comparing the artifact therefore proves nothing
+  in either direction — a real change and no change look identical. Recompile only when the source
+  changed, and `git checkout jairs-dashboard.pdf` if the only diff is the timestamp.
+- **The PDF has no extractable text.** Typst subsets its fonts and emits glyph ids, so `strings` reports
+  every correction missing whether it is present or not, and the content streams inflate to font
+  programs rather than words. To check what the artifact *says*, rasterise it — `sips -s format png
+  --resampleWidth 1400 jairs-dashboard.pdf --out /tmp/p1.png` — and look at it.
 
 **ADR-0147 reaches 1032** (1033 under gate 7) and adds two corpus files = **235** — W8 sub-wave 6,
 `#soa`. Two new tests are the formatter's (survival *and* canonicalisation, because dropping the

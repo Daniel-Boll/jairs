@@ -142,13 +142,21 @@ output=app level=0 paths=2 first=modules
 ```
 
 A struct with `string`, `s64`, `[]string` and `bool` fields, returned from a procedure, **read then
-mutated**, with its `[]string` set from `string.["modules", "vendor"]`, passed by value to a consumer.
-Verified this session in both engines.
+mutated**, its `[]string` filled from an array literal, passed by value to a consumer. Verified this
+session in both engines.
 
 Two reasons it works now. The **read-then-mutate** idiom needs no literal — and it is what every real
 Jai script uses anyway (23 of 23 call `get_build_options` and mutate the copy), so the literal was never
-the requirement. And the `[]string` is writable because **array literals landed one wave ago**
+the requirement. And the `[]string` is fillable because **array literals landed one wave ago**
 (ADR-0194); ADR-0102 and ADR-0154 both predate them.
+
+> **One caveat, and this sentence first claimed more than the probe showed.** It said the field was set
+> "from `string.["modules", "vendor"]`" — direct assignment, which is **E0240**: Jairs has no implicit
+> array-to-view conversion. The literal must be **named** first, then viewed: `paths := string.[…];`
+> then `o.module_paths = paths[];`. A view of a temporary (`string.[…][]`) is also refused. So the
+> blocker is genuinely gone and the ergonomics cost one extra line, which is why §4's example carries
+> that line and a comment saying why. Caught by type-checking §4's example against a stub rather than by
+> re-reading the probe — the probe had used `view(*paths[0], 2)` and the prose had generalised it.
 
 ### What exists today
 
@@ -156,7 +164,9 @@ Two constants, `BUILD_OUTPUT` and `BUILD_OPT_LEVEL`, read through `file_consts` 
 corresponding flag. A `noted_declarations("x")` reflection table. And `crates/jr-driver`, whose doc
 comment reads *"Compilation orchestration: workspaces, the compiler message queue, and build
 metaprograms"* and which contains **nothing else** — one line, no dependencies, depended on by no crate.
-All 22 driver steps live in `jr-cli`.
+Every driver step lives in `jr-cli` instead: `commands/build.rs` is 323 lines, of which `pub fn run` is
+**147 lines and 25 top-level statements** — measured, because a round number inherited from a summary is
+the kind of claim this project keeps having to correct.
 
 ---
 
@@ -229,18 +239,23 @@ Mapped from Jai's irreducible core (§1) onto Jairs' idioms, with the read-then-
 ```jr
 // build.jr
 Compiler :: #import "Compiler";
-FU :: #import "File_Utilities";
+String :: #import "String";
 
 build :: () {
     args := Compiler.arguments();               // what followed `--` on the command line
-    release := args.count > 0 && args[0] == "release";
+    release := args.count > 0 && String.equal(args[0], "release");
+
+    level: s64 = 0;
+    if release { level = 1; }
+
+    paths := string.["modules"];                // a literal must be named before it is viewed
 
     t := Compiler.create_target("jairs-demo");
     o := Compiler.options(t);                   // read the defaults, never construct from zero
     o.output = "demo";
     o.output_path = "build";
-    o.opt_level = ifx release then 1 else 0;
-    o.module_paths = string.["modules"];
+    o.opt_level = level;
+    o.module_paths = paths[];
     o.bounds_checks = !release;
     Compiler.set_options(t, o);
 
@@ -252,9 +267,39 @@ build :: () {
 }
 ```
 
+> **The first draft of that example did not compile, and the two reasons belong in Wave 2.** It was
+> written in Jai's idiom and checked afterwards. `args[0] == "release"` is **E0278** — `==` on a `string`
+> is refused, because same storage and same contents are both plausible for a `{data, count}` pair
+> (ADR-0099 §4), so a script compares with `String.equal`. And `ifx release then 1 else 0` produced
+> **seven** errors: Jairs has no `ifx`, so a conditional value is a `var` plus an `if`.
+>
+> Everything in the corrected version except the `Compiler` calls was then **run**: `String.equal` over a
+> `string.[…]` literal, the `&&`, the `var`-plus-`if`, exit code 1. A plan shipping uncompilable example
+> code teaches the wrong idiom to whoever implements it, and the module in that example does not exist
+> yet, so nothing would have caught it later either.
+
 Invoked as `jr build --script build.jr -- release`, or `jr build build.jr` when the file declares
 `build` and no `main` — the second spelling is the one to aim for and the first is what makes it
 testable before the detection rule is settled.
+
+**The whole surface above was type-checked and run before this plan was accepted.** `modules/Compiler`
+does not exist, so it was **stubbed** — the eight signatures verbatim from the table below, the
+`Build_Options` struct with its seven fields, placeholder bodies that print — and `build.jr` was checked
+and then run against it:
+
+```
+$ jr check build.jr -I <stub-path>
+1 file checked, 0 errors
+$ jr run build.jr -I <stub-path>
+set: output=demo path=build level=0 paths=1 bounds=true
+add: src/main.jr
+build: target 10
+```
+
+That is worth more than it looks. It proves the read-then-mutate flow, the view assignment, the string
+comparison and the by-value struct round trip all compose *in this language* — and it found three defects
+in this document's own example, two of which no later gate would have caught, because a plan's code block
+is not compiled by anything.
 
 **Eight procedures and one struct.** Every one is a request recorded against driver state; none of them
 performs a compilation except `build`.
@@ -295,7 +340,8 @@ project's usual rhythm. Sizes are relative, not calendar.
 
 ### Wave 1 — `jr-driver` stops being empty, and the driver becomes callable twice · **small**
 
-Move the 22 ordered steps of `jr build` out of `crates/jr-cli/src/commands/build.rs` into `jr-driver` as
+Move `jr build`'s ordered steps — `pub fn run`, 147 lines and 25 top-level statements — out of
+`crates/jr-cli/src/commands/build.rs` into `jr-driver` as
 a function taking a **request** rather than parsed CLI args:
 
 ```rust
@@ -388,6 +434,17 @@ Each verified this session, and each is a claim the repository makes about itsel
    ADR-0102's "wants a list-valued constant" is answered by ADR-0194's array literals.
 5. **`crates/jr-driver`'s doc comment** promises workspaces, a message queue and build metaprograms from
    an empty file. Wave 1 makes it true or it should say what it is.
+6. **`AGENTS.md` called `editors/nvim/parser/jairs.so` "a checked-in `.so`".** It is gitignored
+   (`.gitignore:35`) and `git log --all` on it is empty — it was never tracked. That changes the advice:
+   it rots on a machine rather than in the repository, so nothing a reviewer sees can catch it.
+7. **`jairs-dashboard.pdf` was a commit behind `jairs-dashboard.typ`**, so the artifact a reader opens
+   still said "ALL TWELVE WAVES DONE" after the commit correcting that claim. Found by
+   `git log -1 -- <artifact>` against its source, which is the whole check. It is the only *tracked*
+   generated file in the tree; the other two are gitignored.
+8. **This document's own §4 example did not compile, in three ways** — see the note there. `==` on a
+   `string` is E0278, `ifx` does not exist, and an array literal does not implicitly become a view. Two
+   of the three would have survived any review that read the code instead of running it, and §2's prose
+   had generalised its own probe from `view(*paths[0], 2)` to a direct assignment that is refused.
 
 ---
 
