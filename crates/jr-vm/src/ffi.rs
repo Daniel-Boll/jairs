@@ -73,6 +73,39 @@ use crate::error::VmError;
 use crate::interp::Vm;
 use crate::value::{IntKind, Value};
 
+/// Whether the VM serves this symbol from its own resources, reaching no host (ADR-0196 §1).
+///
+/// # Why this predicate exists rather than a comment
+///
+/// ADR-0006 refuses a foreign call at compile time. The reason is that compile-time code must not
+/// reach **the host** — arbitrary C with arbitrary effects on the machine doing the build, and, worse
+/// for a query system, arbitrary *dependencies* a memoised result cannot record.
+///
+/// Three symbols never reach it. `malloc` comes out of the VM's own linear region, `free` is a no-op
+/// in a bump allocator, and `write` is copied into the VM's capture buffer. Keying the refusal on the
+/// `#foreign` *declaration* therefore refused things that are not foreign calls, and the consequence
+/// was not small: **compile-time code could not allocate**, because `Basic.malloc` is declared
+/// `#foreign` — so no `talloc`, no `context.allocator`, no string building, no dynamic array. That
+/// was never a decision; it was the declaration form leaking into a rule about behaviour.
+///
+/// Named here and used by both [`call`] and the interpreter's refusal, so the two cannot disagree
+/// about which symbols are which — the mistake this project keeps meeting is a hand-maintained list
+/// with nothing enforcing it.
+///
+/// `write` is included because its *effect* is to fill a buffer the VM owns, and printing from a `#run`
+/// is one of the two things people actually want compile-time execution for. What it is **not** is a
+/// dependency: the bytes go outward, so nothing a memoised result should have recorded came in.
+pub(crate) fn serves_itself(vm: &Vm<'_>, foreign: &ForeignProc) -> bool {
+    match foreign.symbol.as_str() {
+        "malloc" => is_pointer_return(vm, foreign),
+        "free" => foreign.ret == PoolId::VOID,
+        // Arity three is `write(fd, buf, count)`; any other arity is somebody else's `write` and is an
+        // ordinary foreign call, which is the same test `capture_write` makes.
+        "write" => foreign.params.len() == 3,
+        _ => false,
+    }
+}
+
 /// Performs a foreign call.
 ///
 /// # Errors
@@ -101,6 +134,12 @@ pub(crate) fn call(
     // runtime `malloc` returns memory the VM can actually read and write, and the native back end
     // still calls libc — the two engines' pointer *bits* differ, which nothing observes, while the
     // byte round-trip agrees.
+    //
+    // **These are also why the comptime refusal cannot be keyed on `#foreign`** (ADR-0196 §1). This
+    // block reaches no host at all, so a `#run` calling `malloc` is not calling foreign code — and
+    // refusing it made compile-time code unable to *allocate*, which is not a decision anyone took.
+    // [`serves_itself`] is the shared predicate, so the refusal and this dispatch cannot disagree
+    // about which symbols those are.
     match foreign.symbol.as_str() {
         "malloc" if is_pointer_return(vm, foreign) => {
             let size = args
@@ -129,6 +168,20 @@ pub(crate) fn call(
     // and not a detail.
     if foreign.symbol == "write" {
         capture_write(vm, args)?;
+        // **At compile time the capture is the whole call** (ADR-0196 §2). A `#run` that prints must
+        // not write to the build's own stdout as a side effect of a *query* — the query may be
+        // memoised, so the output would appear once and then not again, which is worse than either
+        // always or never. The bytes are in the capture buffer, and the driver emits them once
+        // const-evaluation has finished, so a `#run`'s printing happens exactly when the `#run` does.
+        //
+        // The return value is the byte count, which is what `write` promises and what
+        // `Basic.print` checks.
+        if vm.mode() == crate::Mode::Comptime {
+            let count = args
+                .get(2)
+                .map_or(0, |v| v.as_int(IntKind::S64).unwrap_or(0));
+            return Ok(Value::Scalar(count.max(0) as u64));
+        }
     }
 
     let mut raw = Vec::with_capacity(args.len());

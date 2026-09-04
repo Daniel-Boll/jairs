@@ -80,6 +80,30 @@ pub fn run(args: CheckArgs, global: &GlobalArgs) -> Result<i32> {
         db.load_modules_transitively(*root);
     }
 
+    // **What a `#run` printed** (ADR-0196 §2). Emitted before the diagnostics, because that is the order
+    // it happened in: compile-time evaluation runs during checking, so its output precedes any complaint
+    // about the file.
+    //
+    // Deduped across roots the same way the diagnostics are, since `jr check a.jr b.jr` may reach one
+    // module from both and a module's `#run` should print once.
+    {
+        let mut seen: Vec<jr_db::SourceFile> = Vec::new();
+        let mut printed: Vec<u8> = Vec::new();
+        for root in &roots {
+            for file in jr_db::reachable_files(&db, *root, search_paths_input) {
+                if seen.contains(&file) {
+                    continue;
+                }
+                seen.push(file);
+                printed
+                    .extend_from_slice(&jr_db::file_consts(&db, file, search_paths_input).output);
+            }
+        }
+        if !printed.is_empty() {
+            eprint!("{}", String::from_utf8_lossy(&printed));
+        }
+    }
+
     let mut total_errors: usize = 0;
 
     // Snapshot the source map once. It is taken from the database so that spans

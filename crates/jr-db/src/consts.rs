@@ -71,6 +71,30 @@ struct ModuleFrontend {
     types: Arc<jr_sema::TypeMap>,
     signatures: Arc<jr_sema::FileSignatures>,
     imports: Arc<ImportedProcs>,
+    /// Which overload an operator in this module resolved to (ADR-0196 §3).
+    ///
+    /// **Not empty**, unlike the root file's. ADR-0053 §2 passed an empty map here on the ground that
+    /// supplying one "means giving const-eval a checked view, which is the cycle ADR-0018 §3 exists to
+    /// prevent" — and that is true of the file *being* const-evaluated and false of an imported module,
+    /// because the line that builds this struct already calls `checked` on it for `types`. The cycle was
+    /// never there to prevent; the emptiness was inherited from the root file's genuine one.
+    operators: Arc<jr_mir::OperatorCalls>,
+    /// Where a call in this module packs a variadic or fills a default (ADR-0053 §1, ADR-0139 §1).
+    ///
+    /// Empty here was the reason **compile-time code could not print**: `Basic.print` takes `..Any`, so
+    /// with no packing MIR passed the trailing arguments raw and the VM reported
+    /// `called a procedure taking 2 arguments with 4` — a leaked internal error on a program that is
+    /// obviously fine. ADR-0053 §2's comment claimed `scan` would refuse such a body instead, which was
+    /// true for a *default* argument and never true for a variadic.
+    filled: Arc<jr_mir::FilledArgs>,
+    /// This module's whole `checked` output, for the fold maps its bodies need (ADR-0196 §3).
+    ///
+    /// A module's `ConstValues` cannot come from its own `file_consts` — an import cycle is legal, so
+    /// that call would be a salsa cycle — but most of what `file_consts` puts in one is *copied* out of
+    /// `checked` rather than evaluated: a `typed`/`untyped` call's result type, an atomic's opcode, a
+    /// sema-folded call, a `type_info` aggregate, an `any_of`. Those are available here, so a module's
+    /// bodies get them and only a value that needs *running* the module's own `#run` stays absent.
+    checked: crate::sema::CheckResult,
 }
 
 use crate::{
@@ -114,6 +138,18 @@ pub struct ConstResult {
     pub values: Arc<ConstValues>,
     /// E0230 for anything that should have had a value and did not.
     pub diagnostics: Arc<Diagnostics>,
+    /// Everything compile-time code wrote to standard output, in evaluation order (ADR-0196 §2).
+    ///
+    /// # Why it travels in the query result
+    ///
+    /// A `#run` that prints must not write to the build's stdout as a side effect of a *query*: the
+    /// query is memoised, so the output would appear on the first build and silently not on the next,
+    /// which is worse than either always or never. Carried out instead, and emitted by whoever ran the
+    /// compilation — so the printing happens exactly when the evaluation does.
+    ///
+    /// Bytes rather than a `String` because a program may write anything; the driver decodes lossily,
+    /// the same way it does for a captured `write` at run time.
+    pub output: Arc<[u8]>,
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +495,29 @@ fn aliased_type(
 // file_consts — tracked query
 // ---------------------------------------------------------------------------
 
+/// Everything compile-time code printed, over every file reachable from `root` (ADR-0196 §2).
+///
+/// # Why a driver has to ask for this
+///
+/// A `#run` that prints writes into the VM's capture buffer rather than to the process's stdout,
+/// because a query is memoised and a side effect inside one appears on the first build and silently not
+/// on the next. So the bytes come out in [`ConstResult::output`] and whoever ran the compilation emits
+/// them — which puts the printing back where a reader expects it, at the moment the compilation happens.
+///
+/// Ordered by the reachable-file walk, so a module's `#run` prints before the root's. That is the same
+/// order the diagnostics come out in, which is the only ordering a reader has any expectation about.
+///
+/// Returns the bytes rather than printing them, so a caller that captures output — a test, or a driver
+/// building several targets — decides where they go.
+#[must_use]
+pub fn comptime_output(db: &dyn Db, root: SourceFile, search_paths: ModuleSearchPaths) -> Vec<u8> {
+    let mut out = Vec::new();
+    for file in crate::run::reachable_files(db, root, search_paths) {
+        out.extend_from_slice(&file_consts(db, file, search_paths).output);
+    }
+    out
+}
+
 /// Evaluates every `#run` and every file-level constant initialiser.
 ///
 /// Gated on [`frontend_diagnostics`] for the same reason `file_mir` is: ADR-0017 §4
@@ -471,6 +530,8 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
         return ConstResult {
             values: Arc::new(ConstValues::new()),
             diagnostics: Arc::new(Diagnostics::new()),
+            // Nothing ran, so nothing printed.
+            output: Arc::from(&[][..]),
         };
     }
 
@@ -512,6 +573,8 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
         return ConstResult {
             values: Arc::new(ConstValues::new()),
             diagnostics: Arc::new(Diagnostics::new()),
+            // Nothing ran, so nothing printed.
+            output: Arc::from(&[][..]),
         };
     }
 
@@ -541,13 +604,20 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
         if frontend_diagnostics(db, other, search_paths).has_errors() {
             continue;
         }
+        // One `checked` call for all three of its outputs, rather than three: it is the same query and
+        // the same memo, and taking `types` from it while inventing empty maps beside it is what hid
+        // the defect above for as long as it did.
+        let checked_other = checked(db, other, search_paths);
         modules.push(ModuleFrontend {
             id: crate::queries::resolve_file_id(db, other),
             hir: file_hir(db, other),
             resolve: resolved(db, other, search_paths).map,
-            types: checked(db, other, search_paths).types,
+            types: checked_other.types.clone(),
             signatures: crate::sema::file_signatures(db, other, search_paths).signatures,
             imports: imported_procs(db, other, search_paths),
+            operators: checked_other.operator_calls.clone(),
+            filled: checked_other.filled_args.clone(),
+            checked: checked_other,
         });
     }
 
@@ -555,6 +625,10 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     let mut values = ConstValues::new();
     let mut failures: Vec<(Wanted, String)> = Vec::new();
     let mut type_info_failures: Vec<String> = Vec::new();
+    // What compile-time code printed, in evaluation order (ADR-0196 §2). Accumulated across the
+    // round-robin rather than per target, because one `#run` may be evaluated after another and a reader
+    // expects the lines in the order the evaluations happened.
+    let mut comptime_output: Vec<u8> = Vec::new();
 
     // **`type_info(T)` folds to an interned `Type_Info` aggregate** (ADR-0075 §2), built here because
     // this is where the pool is mutable and the described type is known. It needs no VM: every field is
@@ -568,10 +642,19 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     // sema had everything it needed to compute it. Keyed as a `run` value like `type_info`'s, and for the
     // same reason — `jr-mir` already replaces a `run`-keyed call with its constant and never emits the
     // callee, so a second channel would be a second thing to keep in step.
-    for ((scope, expr), value) in checked_file.folded_calls.iter() {
-        values.set_run(*scope, *expr, *value);
-    }
-
+    // Every fold `checked` already knows — see [`record_checked_folds`], which the module loop below
+    // calls with each imported module's own result for the same reason.
+    let all_sigs: Vec<&jr_sema::FileSignatures> = std::iter::once(signatures.signatures.as_ref())
+        .chain(modules.iter().map(|m| m.signatures.as_ref()))
+        .collect();
+    record_checked_folds(
+        &mut values,
+        &checked_file,
+        &all_sigs,
+        &mut pool,
+        interner,
+        &mut type_info_failures,
+    );
     // **And the signature phase's folds** (ADR-0180 §3), into the same channel. Two loops rather than
     // one merged map, because the two phases are two salsa queries and merging them would mean building
     // a third map only to iterate it once. A key can only appear in one of them: an expression is typed
@@ -579,107 +662,6 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     for ((scope, expr), value) in signatures.folded_calls.iter() {
         values.set_run(*scope, *expr, *value);
     }
-
-    for ((scope, expr), described) in checked_file.type_info_calls.iter() {
-        // The imported signatures are searched **as well as** this file's, because `Type_Info` is
-        // declared in `Basic` and so is almost never local: looking only at the own file reported
-        // "`Type_Info` is not usable" for every correct program, found by running the probe.
-        let mut all_sigs: Vec<&jr_sema::FileSignatures> = vec![signatures.signatures.as_ref()];
-        all_sigs.extend(modules.iter().map(|m| m.signatures.as_ref()));
-        match type_info_value(&mut pool, interner, &all_sigs, *described) {
-            Ok(value) => values.set_run(*scope, *expr, value),
-            // Sema already refused a type with no layout (E0266), so a failure here is an internal
-            // inconsistency rather than a user error. Reported as E0230 like any other const-eval
-            // failure and never lowered to a placeholder: without a recorded value `scan` refuses the
-            // body, which is the honest outcome.
-            Err(why) => type_info_failures.push(why),
-        }
-    }
-
-    // **`any_of` and `any_as` lower to real code** (ADR-0076), unlike `type_info` which folds to a
-    // constant — so they record *how* to lower rather than a value. `any_of` needs a `Type_Info`
-    // constant to spill for its `type` field, built here where the pool is mutable; `any_as` needs only
-    // the expected type's id (ADR-0077), which is the pool id itself.
-    // **A `typed`/`untyped` call carries its result pointer type through** (ADR-0106 §1). Copied rather than
-    // computed, because sema already resolved the type argument — and it rides `ConstValues` for the reason
-    // `any_calls` does: that struct is what `jr-mir` receives, so a fourth channel would be a fourth thing to
-    // thread.
-    for ((scope, expr), ty) in checked_file.pointer_views.iter() {
-        values.set_pointer_view(*scope, *expr, *ty);
-    }
-    // The atomics ride the same channel for the same reason (ADR-0176 §3): `ConstValues` is what `jr-mir`
-    // receives, so a separate one would be another thing to thread through every caller.
-    for ((scope, expr), code) in checked_file.atomics.iter() {
-        values.set_atomic(*scope, *expr, *code);
-    }
-
-    for ((scope, expr), (op, ty)) in checked_file.any_calls.iter() {
-        let mut all_sigs: Vec<&jr_sema::FileSignatures> = vec![signatures.signatures.as_ref()];
-        all_sigs.extend(modules.iter().map(|m| m.signatures.as_ref()));
-        match op {
-            jr_sema::AnyOp::Of => {
-                // The `Any` struct type to build, looked up like `Type_Info` — both live in `Basic`.
-                let any_ty = interner.intern("Any");
-                let any_ty = all_sigs
-                    .iter()
-                    .find_map(|sigs| sigs.lookup(any_ty))
-                    .and_then(|e| e.type_value);
-                match (type_info_value(&mut pool, interner, &all_sigs, *ty), any_ty) {
-                    (Ok(type_info), Some(any_ty)) => {
-                        values.set_any_op(
-                            *scope,
-                            *expr,
-                            jr_mir::AnyLowering::Of { type_info, any_ty },
-                        );
-                    }
-                    (Err(why), _) => type_info_failures.push(why),
-                    (_, None) => {
-                        type_info_failures
-                            .push("the standard library's `Any` is not usable".to_owned());
-                    }
-                }
-            }
-            jr_sema::AnyOp::OfValue => {
-                // The same two lookups `AnyOp::Of` needs, and the same failure reporting — the only
-                // difference is which `AnyLowering` is recorded and that `ty` is the value's own type
-                // rather than a pointee (ADR-0189 §2).
-                let any_name = interner.intern("Any");
-                let any_ty = all_sigs
-                    .iter()
-                    .find_map(|sigs| sigs.lookup(any_name))
-                    .and_then(|e| e.type_value);
-                match (type_info_value(&mut pool, interner, &all_sigs, *ty), any_ty) {
-                    (Ok(type_info), Some(any_ty)) => {
-                        values.set_any_op(
-                            *scope,
-                            *expr,
-                            jr_mir::AnyLowering::OfValue {
-                                type_info,
-                                any_ty,
-                                value_ty: *ty,
-                            },
-                        );
-                    }
-                    (Err(why), _) => type_info_failures.push(why),
-                    (_, None) => {
-                        type_info_failures
-                            .push("the standard library's `Any` is not usable".to_owned());
-                    }
-                }
-            }
-            jr_sema::AnyOp::As => {
-                values.set_any_op(
-                    *scope,
-                    *expr,
-                    jr_mir::AnyLowering::As {
-                        type_id: u64::from(ty.as_u32()),
-                        result: *ty,
-                    },
-                );
-            }
-        }
-    }
-
     for _round in 0..MAX_ROUNDS {
         let remaining: Vec<Wanted> = targets
             .iter()
@@ -704,26 +686,24 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
             // depend on another's, and ADR-0055 §3's acyclicity argument is about `optimized_file_mir`
             // rather than about this query. A `#run` reading an imported constant stays refused.
             &jr_mir::ImportedValues::new(),
-            // **Empty, deliberately.** Const-eval runs before `checked`, so the overload map does
-            // not exist yet — and asking for it here would make const-eval depend on the check
-            // phase, which is the cycle ADR-0018 §3 avoided by putting const-eval downstream of
-            // *signatures* rather than of checking.
+            // **These two were empty for a reason that had expired** (ADR-0196 §6). The comment here
+            // said "const-eval runs before `checked`, so the overload map does not exist yet", and that
+            // asking for it "would make const-eval depend on the check phase, which is the cycle
+            // ADR-0018 §3 exists to prevent".
             //
-            // The consequence, stated because it bites: an operator overload cannot be used in a
-            // `#run` or a `::` constant. `scan` refuses such a body — the operator finds no
-            // overload, falls through to the builtin path, and sema has already reported the
-            // operand types as unsupported — so this is a refusal rather than a wrong answer.
-            &jr_mir::OperatorCalls::new(),
-            // **Empty for the same reason, and with the same consequence** (ADR-0053 §2). The
-            // filled-argument map is `checked`'s output, so a `#run` calling a procedure with a
-            // *default* argument gets the source-order list — which for a call that omits an
-            // argument is one operand short, and `scan` refuses the body rather than passing
-            // garbage. A refusal, not a wrong answer.
+            // This function's **first statement** is `let checked_file = checked(db, file, search_paths)`.
+            // The dependency has been there since `type_info` needed sema's fold maps, so reading two
+            // more fields of a result already in hand adds no edge and cannot introduce a cycle. The
+            // comment was true when it was written and became false without anyone re-reading it, which
+            // is the shape this project keeps meeting: a claim about the code with nothing enforcing it.
             //
-            // Named arguments in a `#run` are refused the same way. Both are recorded as owed
-            // rather than discovered: lifting them means giving const-eval a checked view, which
-            // is the cycle ADR-0018 §3 exists to prevent.
-            &jr_mir::FilledArgs::new(),
+            // What it cost: an operator overload and a default argument were unusable in a `#run`, both
+            // recorded as owed. And a **variadic** call was worse than refused — `print` in a `#run` gave
+            // `internal compiler error: called a procedure taking 3 arguments with 2`, because with no
+            // packing the trailing arguments went raw. ADR-0053 §2's claim that `scan` refuses such a body
+            // held for a default argument and never for a variadic.
+            checked_file.operator_calls.as_ref(),
+            checked_file.filled_args.as_ref(),
             interner,
             &mut pool,
         );
@@ -745,6 +725,7 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
                 &modules,
                 interner,
                 &mut pool,
+                &mut comptime_output,
             ) {
                 Ok(value) => {
                     record(&mut values, target, value);
@@ -827,6 +808,7 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     ConstResult {
         values: Arc::new(values),
         diagnostics: Arc::new(diagnostics),
+        output: Arc::from(comptime_output.as_slice()),
     }
 }
 
@@ -971,6 +953,145 @@ fn record(values: &mut ConstValues, target: Wanted, value: PoolId) {
 // One evaluation
 // ---------------------------------------------------------------------------
 
+/// Records every fold a `checked` result already knows, into `values` (ADR-0196 §3).
+///
+/// # Why this is a function and not a block
+///
+/// Two callers need it and used to have one. `file_consts` fills its **own** file's folds this way, and
+/// const-evaluating a file also has to fill every **imported module's**, so a `#run` can call into the
+/// standard library — `print` reaches `read_signed`, whose `typed` call has no result type without this,
+/// and `format_field`, whose `any_of` has no `Type_Info`.
+///
+/// A module's folds cannot come from its own `file_consts`: an import cycle is legal here
+/// (`tests/corpus/imports/valid/005`), so that call would be a salsa cycle, which is exactly what
+/// ADR-0018 §3's separation prevents. But **none of this needs evaluating anything.** Every entry is a
+/// fact `checked` already established — which pointer type a `typed` produces, which opcode an atomic is,
+/// which call sema folded, which `Type_Info` describes a type — so it is available for a module without
+/// asking that module to run anything.
+///
+/// What stays absent for a module is a value that genuinely needs *running* its own `#run`. A body
+/// needing one is still refused, and now says which body and why.
+fn record_checked_folds(
+    values: &mut ConstValues,
+    checked_file: &crate::sema::CheckResult,
+    all_sigs: &[&jr_sema::FileSignatures],
+    pool: &mut Pool,
+    interner: &jr_base::Interner,
+    type_info_failures: &mut Vec<String>,
+) {
+    for ((scope, expr), value) in checked_file.folded_calls.iter() {
+        values.set_run(*scope, *expr, *value);
+    }
+
+    for ((scope, expr), described) in checked_file.type_info_calls.iter() {
+        match type_info_value(pool, interner, all_sigs, *described) {
+            Ok(value) => values.set_run(*scope, *expr, value),
+            // Sema already refused a type with no layout (E0266), so a failure here is an internal
+            // inconsistency rather than a user error. Reported as E0230 like any other const-eval
+            // failure and never lowered to a placeholder: without a recorded value `scan` refuses the
+            // body, which is the honest outcome.
+            Err(why) => type_info_failures.push(why),
+        }
+    }
+
+    // **`any_of` and `any_as` lower to real code** (ADR-0076), unlike `type_info` which folds to a
+    // constant — so they record *how* to lower rather than a value. `any_of` needs a `Type_Info`
+    // constant to spill for its `type` field, built here where the pool is mutable; `any_as` needs only
+    // the expected type's id (ADR-0077), which is the pool id itself.
+    // **A `typed`/`untyped` call carries its result pointer type through** (ADR-0106 §1). Copied rather than
+    // computed, because sema already resolved the type argument — and it rides `ConstValues` for the reason
+    // `any_calls` does: that struct is what `jr-mir` receives, so a fourth channel would be a fourth thing to
+    // thread.
+    for ((scope, expr), ty) in checked_file.pointer_views.iter() {
+        values.set_pointer_view(*scope, *expr, *ty);
+    }
+    // **A variadic call's packing, which `optimized_file_mir` copied and this did not** (ADR-0196 §6).
+    // Sema decided how many arguments are fixed and what the trailing element type is; without it MIR
+    // passes the trailing arguments raw, and the VM reports `called a procedure taking 3 arguments with
+    // 2` — the leaked internal error that made `print` in a `#run` impossible.
+    //
+    // The two paths populating one `ConstValues` differently is the defect underneath: this function
+    // exists so there is one place to add the next entry, rather than two that drift.
+    for ((scope, expr), info) in checked_file.variadic_calls.iter() {
+        values.set_variadic_call(*scope, *expr, info.fixed_arg_count, info.element_ty);
+    }
+    // The `#soa` accesses, on the same path and for the same reason (ADR-0147 §2): sema decided the place
+    // order, and lowering reads it rather than deciding again.
+    for ((scope, expr), position) in checked_file.soa_fields.iter() {
+        values.set_soa_field(*scope, *expr, *position);
+    }
+    // The atomics ride the same channel for the same reason (ADR-0176 §3): `ConstValues` is what `jr-mir`
+    // receives, so a separate one would be another thing to thread through every caller.
+    for ((scope, expr), code) in checked_file.atomics.iter() {
+        values.set_atomic(*scope, *expr, *code);
+    }
+
+    for ((scope, expr), (op, ty)) in checked_file.any_calls.iter() {
+        match op {
+            jr_sema::AnyOp::Of => {
+                // The `Any` struct type to build, looked up like `Type_Info` — both live in `Basic`.
+                let any_ty = interner.intern("Any");
+                let any_ty = all_sigs
+                    .iter()
+                    .find_map(|sigs| sigs.lookup(any_ty))
+                    .and_then(|e| e.type_value);
+                match (type_info_value(pool, interner, all_sigs, *ty), any_ty) {
+                    (Ok(type_info), Some(any_ty)) => {
+                        values.set_any_op(
+                            *scope,
+                            *expr,
+                            jr_mir::AnyLowering::Of { type_info, any_ty },
+                        );
+                    }
+                    (Err(why), _) => type_info_failures.push(why),
+                    (_, None) => {
+                        type_info_failures
+                            .push("the standard library's `Any` is not usable".to_owned());
+                    }
+                }
+            }
+            jr_sema::AnyOp::OfValue => {
+                // The same two lookups `AnyOp::Of` needs, and the same failure reporting — the only
+                // difference is which `AnyLowering` is recorded and that `ty` is the value's own type
+                // rather than a pointee (ADR-0189 §2).
+                let any_name = interner.intern("Any");
+                let any_ty = all_sigs
+                    .iter()
+                    .find_map(|sigs| sigs.lookup(any_name))
+                    .and_then(|e| e.type_value);
+                match (type_info_value(pool, interner, all_sigs, *ty), any_ty) {
+                    (Ok(type_info), Some(any_ty)) => {
+                        values.set_any_op(
+                            *scope,
+                            *expr,
+                            jr_mir::AnyLowering::OfValue {
+                                type_info,
+                                any_ty,
+                                value_ty: *ty,
+                            },
+                        );
+                    }
+                    (Err(why), _) => type_info_failures.push(why),
+                    (_, None) => {
+                        type_info_failures
+                            .push("the standard library's `Any` is not usable".to_owned());
+                    }
+                }
+            }
+            jr_sema::AnyOp::As => {
+                values.set_any_op(
+                    *scope,
+                    *expr,
+                    jr_mir::AnyLowering::As {
+                        type_id: u64::from(ty.as_u32()),
+                        result: *ty,
+                    },
+                );
+            }
+        }
+    }
+}
+
 /// Builds a thunk for one target, runs it, and interns the result.
 ///
 /// Returns the reason as a `String` rather than a diagnostic so that a failure in an
@@ -989,6 +1110,7 @@ fn evaluate(
     modules: &[ModuleFrontend],
     interner: &jr_base::Interner,
     pool: &mut Pool,
+    printed: &mut Vec<u8>,
 ) -> Result<PoolId, String> {
     // **A type alias needs no VM at all** (ADR-0071 §2). Its value is `SigEntry::type_value`, computed
     // by the signature phase this query is downstream of (ADR-0018 §3) — so it is interned here and
@@ -1063,17 +1185,47 @@ fn evaluate(
     // taken from `file_mir`, for the cycle reason `ModuleFrontend` documents — and with the same empty
     // maps this module passes for its own file, so an imported callee is subject to exactly the same
     // const-eval restrictions as a local one.
+    let mut module_refusals: Vec<String> = Vec::new();
     for module in modules {
+        // **A module's own fold maps, copied out of its `checked` output** (ADR-0196 §3). Not its
+        // `file_consts` — that would be a salsa cycle, because an import cycle is legal — and not empty
+        // either, which is what it used to be. Everything here is a *sema* fact rather than an evaluated
+        // value: which pointer type a `typed` call produces, which opcode an atomic is, which call sema
+        // already folded. A `#run` inside the module still contributes nothing, and a body needing one is
+        // still refused, now by name.
+        //
+        // Without this, `read_signed` — reached by every `print` of an integer — failed with "a name
+        // failed to resolve", because its `typed` call had no recorded result type and so resolved to
+        // nothing. That is the fifth occurrence of the shape whose fourth `file_consts`' early-out
+        // comment already records.
+        let mut module_consts = ConstValues::new();
+        let module_sigs: Vec<&jr_sema::FileSignatures> =
+            std::iter::once(module.signatures.as_ref())
+                .chain(modules.iter().map(|m| m.signatures.as_ref()))
+                .collect();
+        // Failures are dropped rather than reported: a `Type_Info` this module's own bodies could not
+        // build is not this `#run`'s problem unless it *calls* one of them, and if it does the body is
+        // refused and named. Reporting them all here would attach another module's shortcoming to every
+        // constant in this file, which is what the root file's own list already learned not to do.
+        let mut ignored = Vec::new();
+        record_checked_folds(
+            &mut module_consts,
+            &module.checked,
+            &module_sigs,
+            pool,
+            interner,
+            &mut ignored,
+        );
         let module_mir = jr_mir::lower_file(
             module.hir.as_ref(),
             module.resolve.as_ref(),
             module.types.as_ref(),
             module.signatures.as_ref(),
-            &ConstValues::new(),
+            &module_consts,
             module.imports.as_ref(),
             &jr_mir::ImportedValues::new(),
-            &jr_mir::OperatorCalls::new(),
-            &jr_mir::FilledArgs::new(),
+            module.operators.as_ref(),
+            module.filled.as_ref(),
             interner,
             pool,
         );
@@ -1087,6 +1239,40 @@ fn evaluate(
             pool,
         )
         .map_err(|e: VmError| e.to_string())?;
+        // **A refused body in an imported module has to be reportable too** (ADR-0196 §4). `add_file`
+        // skips one, so calling it reached the interpreter as `no routine for file 1 proc 6` — the
+        // eleventh instance of the leaked-internal-error shape this project tracks, and the least
+        // actionable yet, because *neither* number is anything a reader can look up. The root file's
+        // refusals were already collected a few lines above; a module's were not, for no reason other
+        // than that nobody had called one.
+        //
+        // Named by module rather than by index: `file 1` means nothing outside the database's load
+        // order, which is exactly why snapshots never print a `FileId`.
+        module_refusals.extend(
+            module_mir
+                .iter()
+                .filter_map(|(proc, outcome)| match outcome {
+                    Ok(_) => None,
+                    Err(Poisoned::Here(reason)) => Some(format!(
+                        "`{}` in an imported module could not be lowered at compile time: {reason}",
+                        // A procedure's name lives on the *item* that declares it, not on the `Proc` — the same
+                        // lookup `run_main`'s backtrace does.
+                        module
+                            .hir
+                            .items
+                            .iter()
+                            .find_map(|item| match &item.kind {
+                                ItemKind::Const {
+                                    value: ConstValue::Proc(declared),
+                                } if *declared == proc =>
+                                    item.name.map(|n| interner.resolve(n).to_owned()),
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| format!("proc {}", proc.index()))
+                    )),
+                    Err(Poisoned::Transitive(_)) => None,
+                }),
+        );
     }
     program.insert(Routine::Bytecode(
         jr_vm::compile(&body, pool, program.target()).map_err(|e: VmError| e.to_string())?,
@@ -1112,7 +1298,15 @@ fn evaluate(
         // trap or an unsupported operation, which is information rather than internals.
         let value = vm.call(thunk_proc, Vec::new()).map_err(|e| {
             if refused.is_empty() {
-                e.to_string()
+                // **A module's refusal, when this file has none** (ADR-0196 §4). The VM's own message
+                // for a missing routine names a `FileId` and a `ProcId`, neither of which a reader can
+                // look up, so the module's refusal is preferred whenever there is one.
+                match module_refusals.first() {
+                    Some(reason) => format!(
+                        "it calls a procedure this compiler could not lower at compile time — {reason}"
+                    ),
+                    None => e.to_string(),
+                }
             } else {
                 // The **first** reason only. Every refused body in the file is collected, but a reader
                 // needs the cause, not an inventory — and listing several made the one-line message
@@ -1124,6 +1318,11 @@ fn evaluate(
                 )
             }
         })?;
+        // **Drained before the VM goes away** (ADR-0196 §2), for the same reason the result is reduced
+        // here: the bytes live in this VM and it is about to be dropped. Appended on failure too — a
+        // `#run` that printed and *then* trapped printed, and hiding it would lose the one clue such a
+        // program left.
+        printed.extend_from_slice(vm.captured_output());
         reduce(&vm, pool, &value, ty, is_float).map_err(|e| e.to_string())?
     };
 

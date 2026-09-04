@@ -54,6 +54,20 @@ reason is measured rather than argued: **compile-time code may call no `#foreign
 allocate — `Basic.malloc` is itself `#foreign`. A build script that cannot open a file is not a build
 script.
 
+> **Two of those five are wrong, and ADR-0196 corrects them.** "Print" and "even allocate" were false:
+> `ffi.rs` has served `malloc` from the VM's **own linear region** since ADR-0061 and `write` from its
+> capture buffer, so neither reaches a host — the refusal was keyed on the `#foreign` *declaration*
+> rather than on whether foreign code is actually called. A `#run` can allocate and print now, and can
+> declare a build.
+>
+> "Read a file" and "shell out" stand: those do reach a host, and `#foreign_at_comptime` is what they
+> need. So the *conclusion* of this section survives — a build script wanting `git rev-parse` has to be
+> a program — but the reasoning was broader than the facts, and the decider caught it by asking whether
+> allocation really needs a foreign library. It does not, and it does not in Jai either: Jai's
+> compile-time `context.allocator` is an ordinary Jai module, and no allocator is compiler-provided.
+>
+> An ADR is immutable, so the correction is recorded here rather than by editing the claim.
+
 `#foreign_at_comptime` is what would change that. `PLAN.md`'s locked decisions call it "non-negotiable
 given build scripts must read files"; it has thirteen mentions in the repository and not one line of
 code. This design **sidesteps** it rather than pretending to solve it, which also means it stays owed

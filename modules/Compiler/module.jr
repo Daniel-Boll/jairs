@@ -66,6 +66,7 @@ add_module_path_raw :: (target: s64, dir: string) #foreign compiler "add_module_
 add_library_path_raw :: (target: s64, dir: string) #foreign compiler "add_library_path";
 add_file_raw :: (target: s64, path: string) #foreign compiler "add_file";
 build_raw :: (target: s64) -> bool #foreign compiler "build";
+request_build_raw :: (target: s64) #foreign compiler "request_build";
 report_raw :: (message: string) #foreign compiler "report";
 argument_count_raw :: () -> s64 #foreign compiler "argument_count";
 argument_raw :: (index: s64) -> string #foreign compiler "argument";
@@ -203,6 +204,25 @@ add_file :: (t: Target, path: string) {
 /// same whichever way the compilation was asked for.
 build :: (t: Target) -> bool #must {
     return build_raw(t.id);
+}
+
+/// Asks the driver to build `t` once the script has finished.
+///
+/// # When to use this rather than [`build`]
+///
+/// In a `#run`. A `#run` is evaluated *during* the script's own compilation, and starting another
+/// compilation from inside one is not something the query engine permits — it needs a second database
+/// while the first is mid-query. So a `#run` **declares** what it wants and the driver builds it
+/// afterwards, which is exactly the shape Jai's `build.jai` has: the metaprogram configures workspaces
+/// and the compiler builds them once the metaprogram returns.
+///
+/// Returns nothing, deliberately. A `bool` here would have to mean "queued" rather than "built", and a
+/// script branching on it would be branching on nothing. Whether the build succeeded is reported by the
+/// driver, and `jr build` exits non-zero if any target failed.
+///
+/// A `main`-shaped script should use [`build`] instead and get an answer it can act on.
+request_build :: (t: Target) {
+    request_build_raw(t.id);
 }
 
 /// Prints `message` as a compiler diagnostic.

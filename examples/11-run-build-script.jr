@@ -1,0 +1,62 @@
+// A build script written as a `#run`, which is the shape a Jai `build.jai` has.
+//
+// Verified: from the repository root,
+//
+//     cargo run -q -p jr-cli -- build examples/11-run-build-script.jr -I modules
+//
+// prints what the `#run` printed, then `note: built hello-from-a-run`. There is **no `main`** in this
+// file, and no `--script` flag.
+//
+// # What a `#run` can and cannot do here
+//
+// It can compute, allocate, build strings, print, and declare targets. Allocation works because the VM
+// serves `malloc` from its own region rather than calling libc, and printing works because `write` fills
+// the VM's capture buffer which the driver emits — neither reaches a host, so neither is the comptime
+// FFI that ADR-0006 still refuses (ADR-0196 §1).
+//
+// It cannot **compile** a target from inside itself: that needs a second database while the first is
+// mid-query, and the query engine refuses. So it calls `Compiler.request_build`, and the driver builds
+// once const-evaluation has finished. Jai's own `build.jai` has the same division — `add_build_file`
+// queues source into a workspace and the *compiler* does the compiling — so this is not a workaround for
+// a missing feature but the same shape arrived at for a different reason.
+//
+// It cannot shell out, because that is `#foreign` and reaches a real host. `examples/10-build-script.jr`
+// is the `main`-shaped spelling, which can.
+
+#import "Basic";
+Compiler :: #import "Compiler";
+
+build :: () {
+    print("configuring at compile time\n");
+
+    if Compiler.os() == Compiler.Operating_System.MACOS {
+        print("target is macOS\n");
+    }
+
+    // Allocation at compile time: a string built in the comptime VM's own region.
+    context.allocator = comptime_alloc;
+    context.allocator_free = comptime_free;
+
+    paths := string.["modules"];
+
+    t := Compiler.create_target("hello");
+    o := Compiler.options(t);
+    o.output = "hello-from-a-run";
+    o.module_paths = paths[];
+    Compiler.set_options(t, o);
+    Compiler.add_file(t, "examples/01-hello.jr");
+
+    // Declares rather than compiles — see the header.
+    Compiler.request_build(t);
+    print("target declared\n");
+}
+
+comptime_alloc :: (n: s64) -> *u8 {
+    return malloc(n);
+}
+
+comptime_free :: (p: *u8) {
+    free(p);
+}
+
+#run build();

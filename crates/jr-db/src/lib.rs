@@ -174,7 +174,7 @@ pub use build::{
 // **Re-exported so the driver can read `BuildOutput::libraries` without depending on `jr-pool`**
 // (ADR-0183 §1). `jr-cli` needs the link *kind* to translate it for `jr-link`, and adding a whole
 // dependency for a two-variant enum would widen the driver's reach for nothing.
-pub use consts::{ConstResult, file_consts};
+pub use consts::{ConstResult, comptime_output, file_consts};
 pub use jr_codegen::LinkLibrary;
 pub use jr_pool::LinkKind;
 // Re-exported because `ConstResult::values` is an `Arc<ConstValues>` in this crate's

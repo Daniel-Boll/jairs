@@ -127,6 +127,17 @@ pub fn build(request: &BuildRequest) -> Result<BuildOutcome, String> {
         });
     }
 
+    // **What compile-time code printed, before the artefact is reported** (ADR-0196 §2). A `#run` that
+    // prints has already run by now — the gate above forced every constant to a value — so emitting here
+    // puts its output ahead of anything the build says about itself, which is the order it happened in.
+    //
+    // To stderr, like a diagnostic, rather than stdout: a build's stdout may be piped somewhere that
+    // expects only the compiler's own machine-readable output, and a `#run`'s printing is commentary.
+    let printed = jr_db::comptime_output(&db, root, search);
+    if !printed.is_empty() {
+        eprint!("{}", String::from_utf8_lossy(&printed));
+    }
+
     let built = match build_object(&db, root, search, config, request.backend) {
         Ok(built) => built,
         Err(message) => return Ok(BuildOutcome::Failed(message)),

@@ -934,10 +934,15 @@ takes it needs a mechanism at the **call site**, since that is where the knowled
 known to be *different from what that section prescribed* — see the owed list below.
 
 **5. `#foreign_at_comptime`.** §0 called it "non-negotiable given build scripts must read files", and
-ADR-0195 **shipped build scripts without it** — so that reason is retired and this blocks nothing. Its own
-value is a `#run` that reads a schema and generates code, and its real cost is **not** the mode flip: it is
-that a memoised `#run` which touched the filesystem goes stale silently, because `file_consts` models no
-external dependency. Whoever picks it up should read that as the wave's content.
+ADR-0195 **shipped build scripts without it** — so that reason is retired and this blocks nothing.
+
+ADR-0196 narrowed what it is *for*, by removing the parts that never needed it: compile-time code can
+allocate and print now, because the VM serves `malloc`, `free` and `write` itself and the refusal had been
+keyed on the `#foreign` keyword rather than on reaching a host. **What is left is exactly the host-reaching
+half** — a `#run` that reads a file or shells out, which is what Jai's interpreter does by dlopening
+libraries. Its real cost is **not** the mode flip: it is that a memoised `#run` which touched the
+filesystem goes stale silently, because `file_consts` models no external dependency. Whoever picks it up
+should read that as the wave's content.
 
 Everything after that is the list below.
 

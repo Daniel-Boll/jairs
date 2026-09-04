@@ -567,8 +567,16 @@ fn a_foreign_call_is_refused_at_comptime_until_wave_w6() {
     // ADR-0006 allows comptime FFI *behind* `#foreign_at_comptime`, which does not
     // exist yet. The bridge does, so without the mode check the allowance would be
     // granted by accident to every program.
-    let source = format!("{BASIC}go :: () {{ print(\"nope\\n\"); }}");
-    let fixture = Fixture::build(&source);
+    //
+    // **This test used to use `print`, and that stopped being a foreign call** (ADR-0196 §1). `write`
+    // is one of three symbols the bridge serves from the VM's own resources, so refusing it granted
+    // nothing — and refusing `malloc` for the same reason meant compile-time code could not *allocate*.
+    // The refusal is keyed on whether a host is actually reached now, so this needs a symbol that
+    // genuinely reaches one.
+    let source = "libc :: #system_library \"c\";\n\
+         getpid :: () -> s64 #foreign libc \"getpid\";\n\
+         go :: () -> s64 { return getpid(); }\n";
+    let fixture = Fixture::build(source);
     match fixture.call("go", vec![], Mode::Comptime) {
         Err(VmError::Unsupported(message)) => {
             assert!(
@@ -578,6 +586,33 @@ fn a_foreign_call_is_refused_at_comptime_until_wave_w6() {
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
+}
+
+/// The three symbols the bridge serves itself are *not* refused at compile time (ADR-0196 §1).
+///
+/// The other half of the test above, and the half that matters: `malloc` from the VM's own region
+/// reaches no host, so refusing it was refusing something that is not a foreign call — and the cost was
+/// that compile-time code could not allocate at all, because `Basic.malloc` is *declared* `#foreign`.
+///
+/// Asserted on the returned pointer rather than only on the absence of an error: a `malloc` that
+/// answered zero would pass an "it did not fail" check while being useless.
+#[test]
+fn the_vms_own_services_are_available_at_comptime() {
+    let source = "libc :: #system_library \"c\";\n\
+         malloc :: (n: s64) -> *u8 #foreign libc \"malloc\";\n\
+         free :: (p: *u8) #foreign libc \"free\";\n\
+         go :: () -> s64 {\n\
+             p := malloc(32);\n\
+             if p == null { return 0; }\n\
+             free(p);\n\
+             return 1;\n\
+         }\n";
+    let fixture = Fixture::build(source);
+    assert_eq!(
+        fixture.call("go", vec![], Mode::Comptime).ok(),
+        Some(Value::Scalar(1)),
+        "compile-time code must be able to allocate: the VM serves `malloc` from its own region"
+    );
 }
 
 #[test]

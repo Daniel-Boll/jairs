@@ -97,7 +97,7 @@ struct Command {
 }
 
 /// What one build-script run produced.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ScriptOutcome {
     /// Every artefact written, in the order the script built them.
     pub built: Vec<PathBuf>,
@@ -113,8 +113,13 @@ pub struct ScriptOutcome {
 /// settings because a target inherits them: a script that adds no module path still needs the ones
 /// `jr build --script -I modules` was given, or `#import "Basic"` in the *target* would fail for a
 /// reason the script never mentioned.
-struct ScriptHost {
+struct ScriptState {
     targets: Vec<Target>,
+    /// Targets a `#run` asked to have built once the script has finished (ADR-0196 §8).
+    ///
+    /// Handles rather than clones, so a later `set_options` on the same target still applies: a script
+    /// may reasonably declare a target early and configure it as it learns things.
+    pending: Vec<i64>,
     /// Commands the script has assembled, in creation order.
     commands: Vec<Command>,
     /// The module paths the operator gave, inherited by every target.
@@ -129,7 +134,7 @@ struct ScriptHost {
     diagnostics: Vec<(Diagnostics, SourceMap)>,
 }
 
-impl ScriptHost {
+impl ScriptState {
     /// The target a handle names.
     ///
     /// A handle is an index plus one, so that a zeroed `Target` struct in a script — one declared and
@@ -171,12 +176,54 @@ fn text(args: &[HostArg], at: usize) -> Result<&str, String> {
     }
 }
 
+/// The [`Host`] the VM sees, sharing one [`ScriptState`] with the driver (ADR-0196 §7).
+///
+/// # Why a shared handle rather than the state itself
+///
+/// A `#run` is evaluated inside a salsa query, so the host has to be *installed* rather than passed —
+/// which means the driver gives it away and needs it back to find out what was recorded. Handing over a
+/// `Box<dyn Host>` and downcasting it later would need `Any` on the trait, so every implementor would
+/// carry a method that exists for one caller's bookkeeping.
+///
+/// An `Rc` costs nothing here: the ambient host is thread-local, so there is no `Send` to satisfy, and
+/// the driver simply keeps a clone.
+///
+/// The `RefCell` cannot be re-entered even though the work inside it re-enters the VM —
+/// `Compiler.build` compiles a target, whose own `#run`s evaluate — because `with_ambient_host` takes
+/// the host *out* of the slot for the duration of a call. A target's `#run` therefore finds no host and
+/// is refused, which is right: it is a different program, and it was not asked to build anything.
+struct ScriptHost {
+    state: std::rc::Rc<std::cell::RefCell<ScriptState>>,
+    /// Whether a `Compiler.build` may compile **now**, or must be deferred (ADR-0196 §8).
+    ///
+    /// `true` for a `main`-shaped script, which the driver runs itself: there is no query in the way, so
+    /// a compilation can start immediately and the script gets a `bool` back.
+    ///
+    /// `false` for a `#run`, and the reason is not a preference — **salsa forbids it.** A compilation
+    /// needs its own `JairsDatabase`, and creating one while another database's query is executing
+    /// panics with "Cannot change database mid-query". Measured, and it is what makes Jai's own shape
+    /// work the way it does: a `build.jai` *declares* workspaces and the compiler builds them once the
+    /// metaprogram returns.
+    immediate: bool,
+}
+
 impl Host for ScriptHost {
     fn call(&mut self, symbol: &str, args: &[HostArg]) -> Result<HostValue, String> {
+        self.state.borrow_mut().call(symbol, args, self.immediate)
+    }
+}
+
+impl ScriptState {
+    fn call(
+        &mut self,
+        symbol: &str,
+        args: &[HostArg],
+        immediate: bool,
+    ) -> Result<HostValue, String> {
         match symbol {
             "create_target" => {
                 self.targets.push(Target::new(text(args, 0)?.to_owned()));
-                // The handle is the index plus one — see [`ScriptHost::target`].
+                // The handle is the index plus one — see [`ScriptState::target`].
                 Ok(HostValue::Int(self.targets.len() as i64))
             }
             "set_output" => {
@@ -221,8 +268,25 @@ impl Host for ScriptHost {
             }
             "build" => {
                 let handle = int(args, 0)?;
+                if !immediate {
+                    // **Refused rather than deferred-and-reported-as-success** (ADR-0196 §8). A `bool`
+                    // that means "queued" is indistinguishable from one that means "built", so a script
+                    // checking it would branch on nothing. The alternative surface is right here in the
+                    // message, and it returns nothing precisely because there is nothing to know yet.
+                    return Err(String::from(
+                        "`Compiler.build` compiles immediately, which a `#run` cannot do: the                          compilation needs its own database and one is already open. Use                          `Compiler.request_build`, which asks the driver to build the target once the                          script has finished",
+                    ));
+                }
                 let target = self.target(handle)?.clone();
                 Ok(HostValue::Int(i64::from(self.perform(&target))))
+            }
+            "request_build" => {
+                let handle = int(args, 0)?;
+                // Validated now so a bad handle is reported at the call rather than after the script has
+                // finished, when there is nothing left to point at.
+                let _ = self.target(handle)?;
+                self.pending.push(handle);
+                Ok(HostValue::Void)
             }
             "report" => {
                 self.outcome.reports.push(text(args, 0)?.to_owned());
@@ -278,7 +342,7 @@ impl Host for ScriptHost {
     }
 }
 
-impl ScriptHost {
+impl ScriptState {
     /// Compiles one target, and records what happened.
     ///
     /// Returns whether every file in it built. A target with no files is a *failure* with a message,
@@ -527,19 +591,9 @@ pub fn run_script(request: &ScriptRequest) -> Result<ScriptResult, String> {
         .ok_or_else(|| format!("internal error: {key} was not registered"))?;
     db.load_modules_transitively(root);
 
-    let mut diagnostics = Diagnostics::new();
-    for file in jr_db::reachable_files(&db, root, search) {
-        diagnostics.extend(file_diagnostics(&db, file, search).iter().cloned());
-    }
-    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
-        return Ok(ScriptResult::ScriptRejected {
-            diagnostics,
-            map: db.source_map(),
-        });
-    }
-
-    let mut host = ScriptHost {
+    let state = std::rc::Rc::new(std::cell::RefCell::new(ScriptState {
         targets: Vec::new(),
+        pending: Vec::new(),
         commands: Vec::new(),
         inherited_module_paths: request.module_paths.clone(),
         inherited_library_paths: request.library_paths.clone(),
@@ -553,26 +607,143 @@ pub fn run_script(request: &ScriptRequest) -> Result<ScriptResult, String> {
             ok: true,
         },
         diagnostics: Vec::new(),
+    }));
+
+    // **Installed before the file is checked, because a `#run` runs during checking** (ADR-0196 §7).
+    // That is the whole of what makes `#run build();` work: `file_consts` evaluates the directive while
+    // gathering diagnostics, its `Compiler` calls find this host ambiently, and by the time the gate
+    // below has an answer the requests are already recorded.
+    //
+    // The database is fresh — created five lines up — so each `file_consts` runs exactly once and each
+    // request is recorded exactly once. That is the contract `install_ambient_host` documents, and it is
+    // a property of this function rather than an assumption about salsa.
+    let previous = jr_vm::install_ambient_host(Box::new(ScriptHost {
+        state: state.clone(),
+        immediate: false,
+    }));
+
+    let mut diagnostics = Diagnostics::new();
+    for file in jr_db::reachable_files(&db, root, search) {
+        diagnostics.extend(file_diagnostics(&db, file, search).iter().cloned());
+    }
+
+    // What a `#run` printed, emitted here for the reason `jr-driver`'s `build` emits it: the output is
+    // carried out of the query rather than written from inside one, so that a memoised evaluation cannot
+    // print on one build and not the next.
+    let printed = jr_db::comptime_output(&db, root, search);
+    if !printed.is_empty() {
+        eprint!("{}", String::from_utf8_lossy(&printed));
+    }
+
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        restore_ambient(previous);
+        return Ok(ScriptResult::ScriptRejected {
+            diagnostics,
+            map: db.source_map(),
+        });
+    }
+
+    // **A `#run` script has already done its work**, so there is nothing left to run. Detected by asking
+    // the host what it recorded rather than by inspecting the file for a `main`: a script may legitimately
+    // have both — a `#run` that configures and a `main` that does the rest — and the question here is
+    // "has anything been asked for yet", which only the host can answer.
+    // **The deferred builds, now that no query is open** (ADR-0196 §8). This is the moment Jai's model
+    // describes: the metaprogram has finished, so the compiler builds what it declared. Performed before
+    // `main` is considered, so a script with both spellings sees its `#run`'s targets already built.
+    {
+        let pending = std::mem::take(&mut state.borrow_mut().pending);
+        for handle in pending {
+            let target = match state.borrow_mut().target(handle) {
+                Ok(target) => target.clone(),
+                Err(reason) => {
+                    state.borrow_mut().outcome.reports.push(reason);
+                    state.borrow_mut().outcome.ok = false;
+                    continue;
+                }
+            };
+            // The borrow is released before `perform`, which compiles and may itself reach the VM.
+            let performed = state.borrow_mut().perform(&target);
+            let _ = performed;
+        }
+    }
+
+    let already_worked = {
+        let borrowed = state.borrow();
+        !borrowed.outcome.built.is_empty() || !borrowed.outcome.reports.is_empty()
     };
 
-    match jr_db::run_main_with_host(&db, root, search, config, &mut host) {
+    // Taken back so the `main` path below owns it, and so a *target's* `#run` cannot reach it.
+    let _ = jr_vm::take_ambient_host();
+
+    if already_worked && jr_db::main_of(&db, root).is_none() {
+        restore_ambient(previous);
+        let mut borrowed = state.borrow_mut();
+        return Ok(ScriptResult::Ran(
+            borrowed.outcome.clone(),
+            std::mem::take(&mut borrowed.diagnostics),
+        ));
+    }
+
+    let mut host = ScriptHost {
+        state: state.clone(),
+        immediate: true,
+    };
+
+    // A `main`-shaped script, which is the other spelling and needs the host explicitly: the driver owns
+    // this VM, so there is no query in the way.
+    let outcome = jr_db::run_main_with_host(&db, root, search, config, &mut host);
+    restore_ambient(previous);
+    match outcome {
         // **A script that `exit`s non-zero has failed**, even if every target it built succeeded.
         // The status is the script's own verdict on its work, and ignoring it would make
         // `if !ok { exit(1); }` — the shape a script uses to refuse — silently mean nothing.
         Ok(jr_db::RunOutcome::Exited(status)) if status != 0 => {
-            host.outcome.ok = false;
-            host.outcome
+            let mut borrowed = state.borrow_mut();
+            borrowed.outcome.ok = false;
+            borrowed
+                .outcome
                 .reports
                 .push(format!("the build script exited with status {status}"));
-            Ok(ScriptResult::Ran(host.outcome, host.diagnostics))
+            Ok(ScriptResult::Ran(
+                borrowed.outcome.clone(),
+                std::mem::take(&mut borrowed.diagnostics),
+            ))
         }
         Ok(jr_db::RunOutcome::Completed | jr_db::RunOutcome::Exited(_)) => {
-            Ok(ScriptResult::Ran(host.outcome, host.diagnostics))
+            let mut borrowed = state.borrow_mut();
+            Ok(ScriptResult::Ran(
+                borrowed.outcome.clone(),
+                std::mem::take(&mut borrowed.diagnostics),
+            ))
         }
-        // A trap inside the script. Its own message already names the line and the frames, so it is
-        // passed through rather than wrapped — a script's bug reads like any other program's.
+        // A script with no `main` that already did its work in a `#run` is not a failure — `no main` is
+        // the expected answer for Jai's own spelling, `#run build();`.
         Ok(jr_db::RunOutcome::Failed(message)) | Err(message) => {
-            Ok(ScriptResult::ScriptFailed(message))
+            if already_worked {
+                let mut borrowed = state.borrow_mut();
+                Ok(ScriptResult::Ran(
+                    borrowed.outcome.clone(),
+                    std::mem::take(&mut borrowed.diagnostics),
+                ))
+            } else {
+                Ok(ScriptResult::ScriptFailed(message))
+            }
+        }
+    }
+}
+
+/// Puts back whatever host was installed before this build, if any.
+///
+/// Nested builds are real: `Compiler.build` compiles a target, and that target's own `#run`s evaluate
+/// inside it. Restoring rather than clearing means an outer script's host survives an inner build —
+/// without which a second `Compiler.build` in one script would find no host at all.
+fn restore_ambient(previous: Option<Box<dyn Host>>) {
+    match previous {
+        Some(host) => {
+            let _ = jr_vm::install_ambient_host(host);
+        }
+        None => {
+            let _ = jr_vm::take_ambient_host();
         }
     }
 }

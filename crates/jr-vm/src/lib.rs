@@ -28,7 +28,7 @@ pub use code::{
     SlotPlan,
 };
 pub use error::{Trap, TrapSite, VmError};
-pub use host::{Host, HostArg, HostValue};
+pub use host::{Host, HostArg, HostValue, install_ambient_host, take_ambient_host};
 pub use interp::{MAX_DEPTH, Mode, Program, Vm};
 pub use lower::{compile, is_local_call};
 pub use memory::{DEFAULT_CAPACITY, Mark, Memory};

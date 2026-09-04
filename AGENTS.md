@@ -259,6 +259,74 @@ grammar reported an `ERROR` node over it (gate 6, which is what that gate exists
 the type, verified by writing it; and `codes.rs` caught a code collision when this wave first reached for E0290,
 which `jr-hir` owns.
 
+**ADR-0196 amends ADR-0195 §2, and the entry to read first is *why that section was wrong*.** It said a
+`#run` "cannot read a file, shell out, print, or even allocate". Two of the five were false, and the
+decider found them by asking one question — does allocation really need a foreign library? **It does not,
+and it never did here:** `ffi.rs` has served `malloc` from the VM's own linear region since ADR-0061, and
+its own comment says "a comptime-adjacent runtime `malloc`". The refusal was keyed on the `#foreign`
+*declaration* rather than on whether foreign code is reached, so it refused a call that reaches nothing.
+
+**The rule that generalises: a refusal must be keyed on the behaviour it forbids, not on the syntax that
+usually implies it.** ADR-0006 forbids compile-time code reaching *the host*. Three symbols never do —
+`malloc` (own region), `free` (no-op in a bump allocator), `write` (capture buffer) — and
+`ffi::serves_itself` is now the shared predicate, so the refusal and the dispatch cannot disagree.
+
+**And Jai does it the way the question guessed**, read from source because Jai's compiler is closed:
+compile-time `context.allocator` is `Default_Allocator.allocator_proc`, an **ordinary Jai module** (a port
+of rpmalloc) bottoming out in OS pages, not libc `malloc`. Decisive: theOS-2's kernel replaces the default
+allocator and must route the comptime path back to the stock module with an explicit `if #compile_time`.
+Enumerating every `#compiler` declaration across five vendored `Runtime_Support.jai` copies gives exactly
+four — `write_string`, `write_strings`, `compile_time_debug_break`, `get_current_workspace` — and **no
+allocator is among them**.
+
+**Two compilers independently special-cased the same primitive**, which is the strongest confirmation this
+project has ever got for a design: Jai marks `write_string` `#compiler` so compile-time output "syncs with
+the compiler's output", and this wave made comptime `write` capture-only so a *memoised* query cannot print
+on one build and not the next.
+
+**Getting from "allocation works" to "print works" cost four more fixes, and every one was a claim about
+the code that had stopped being true.** Read them as a set, because the shape repeats:
+
+1. **ADR-0053 §2 said supplying the fold maps "would make const-eval depend on the check phase, which is
+   the cycle ADR-0018 §3 exists to prevent".** `file_consts`' **first statement** is
+   `let checked_file = checked(db, file, search_paths)`. The dependency arrived when `type_info` needed
+   sema's folds and nobody re-read the comment. Cost: an operator overload and a default argument were
+   unusable in a `#run` — and a **variadic** was worse than refused, giving
+   `internal compiler error: called a procedure taking 3 arguments with 2`, because that ADR's claim that
+   `scan` refuses such a body held for a default argument and had never been true for a variadic.
+2. **`variadic_calls` and `soa_fields` were copied by `optimized_file_mir` and not by const-eval.** Two
+   paths populating one `ConstValues` differently is the defect under all of this, which is why they now
+   share `record_checked_folds`.
+3. **A module's `ConstValues` was empty for a reason that is only *half* true.** Its own `file_consts`
+   really would be a salsa cycle — import cycles are legal, and `Cycle_A` ↔ `Cycle_B` are fixtures — but
+   almost nothing in one needs *evaluating*: which pointer type a `typed` produces, which opcode an atomic
+   is, which `Type_Info` describes a type are all facts `checked` established, and the line building each
+   module's frontend already calls `checked` on it.
+4. **A constant whose value is a literal was refused for want of an evaluator.** `4096` is already a
+   value. `talloc` reads `TEMP_REGION_SIZE` and `out_byte` reads `OUT_CAPACITY`, so *every* library body
+   reading one of its own constants was refused. The predicate is shared by `scan_name` and the emit site
+   deliberately: if `scan` admitted a body the emit site lowered to `Rvalue::Undef`, that is a
+   **legitimate value** and invisible to both the verifier and the poison gate.
+
+**The diagnostic fix is what made the other four findable, and it is the eleventh leaked internal error.**
+`add_file` skips a refused body, so calling one in a module gave `no routine for file 1 proc 6` — neither
+number means anything outside the database's load order. Naming the procedure turned four rounds of
+guessing into four minutes: each fix produced a diagnostic naming the next blocker.
+
+**A `#run` build script works, with no `main`** — `examples/11-run-build-script.jr`. What it cannot do is
+**compile** from inside itself: salsa says `Cannot change database mid-query`, measured. So it calls
+`Compiler.request_build` to *declare* a target and the driver builds after const-eval. **Jai has the same
+division** — `add_build_file` queues, the compiler compiles — but not the same *ordering*: a Jai script
+blocks in `compiler_wait_for_message()` while the compiler works on threads, so it can patch icons and
+build a `.dmg` inside the same `#run`. That interleaving is precisely ADR-0153 §1's rejected poll, and a
+memoising query engine cannot have it. So the shapes agree, the ordering does not, and saying so is the
+honest version.
+
+**Four tests had their premises expire and were retargeted rather than weakened** — a foreign call that
+really is foreign (`getpid`), a constant that really needs evaluating (`#run pick()`). Fourth recorded
+instance of that shape. One MIR snapshot moved on pool ids only; a pool id in a snapshot has the same churn
+property as the `FileId` this project already refuses to print.
+
 **ADR-0195 delivers a build script written in Jairs, and it closes W6 eleven waves after that wave was
 declared done.** `jr build build.jr` compiles the script, runs it in the bytecode VM, and performs the
 compilations it recorded. `examples/10-build-script.jr` shells out for a git hash, reads `-- release`,

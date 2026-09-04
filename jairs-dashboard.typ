@@ -97,7 +97,7 @@
 #h(4pt)
 #pill[1082 tests]
 #h(4pt)
-#pill[ADR-0195 latest]
+#pill[ADR-0196 latest]
 #h(4pt)
 #pill(fill: rgb("#eaf5ee"), stroke: good)[ALL TWELVE WAVES DONE]
 #h(4pt)
@@ -109,9 +109,9 @@
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "1090", "workspace, all seven gates"),
+  metric("Tests", "1095", "workspace, all seven gates"),
   metric("Corpus", "279", "jr files, all three engines"),
-  metric("ADRs", "195", "0001 to 0195, immutable"),
+  metric("ADRs", "196", "0001 to 0196, immutable"),
   metric("Diagnostics", "131", "declared codes, E0296 next"),
   metric("Editor checks", "170", "Neovim, verified not gated"),
 )

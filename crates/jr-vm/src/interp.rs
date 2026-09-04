@@ -1384,11 +1384,19 @@ impl<'a> Vm<'a> {
         if foreign.kind == Some(jr_pool::LinkKind::Compiler) {
             return self.host_call(foreign, &args);
         }
-        // ADR-0006: compile-time code *may* call foreign functions, behind an
-        // explicit `#foreign_at_comptime` allowance that wave W6 introduces. The
-        // bridge exists; the allowance does not. Refusing here is what keeps a
-        // decision that has not been taken from being granted by accident.
-        if self.mode == Mode::Comptime {
+        // ADR-0006: compile-time code *may* call foreign functions, behind an explicit
+        // `#foreign_at_comptime` allowance. The bridge exists; the allowance does not. Refusing here
+        // is what keeps a decision that has not been taken from being granted by accident.
+        //
+        // **Except where there is no foreign code to call** (ADR-0196 §1). `malloc`, `free` and
+        // `write` are served by the VM itself — its own region, a no-op, and its capture buffer — so
+        // refusing them granted nothing and cost a great deal: compile-time code could not
+        // **allocate**, because `Basic.malloc` is *declared* `#foreign`. No `talloc`, no
+        // `context.allocator`, no string building. That was the declaration form leaking into a rule
+        // about behaviour, not a decision anyone took.
+        //
+        // The predicate lives beside the dispatch that implements them, so the two cannot disagree.
+        if self.mode == Mode::Comptime && !crate::ffi::serves_itself(self, foreign) {
             return Err(VmError::unsupported(format!(
                 "`{}` is a foreign procedure, and compile-time code may not call one until `#foreign_at_comptime` arrives (ADR-0006)",
                 foreign.symbol
@@ -1408,19 +1416,29 @@ impl<'a> Vm<'a> {
             decoded.push(self.host_arg(value, *ty)?);
         }
 
-        let Some(host) = self.host.as_deref_mut() else {
-            // **Named rather than silently doing nothing** — a program that declares a `compiler`
-            // foreign and is run by `jr run` is asking for something only the build-script driver
-            // provides, and a no-op would make it look as though the build had happened.
-            return Err(VmError::unsupported(format!(
-                "`{}` is a build-script procedure, and this program is not being run as a build \
-                 script — run it with `jr build --script`",
-                foreign.symbol
-            )));
+        // **The explicit host first, then this thread's ambient one** (ADR-0196 §7). A `main`-shaped
+        // script gets the explicit one, because the driver owns the VM that runs it. A **`#run`** cannot:
+        // it is evaluated inside a salsa query, whose arguments are its identity, so the host arrives
+        // ambiently instead — see `install_ambient_host` for the contract that makes that sound.
+        let answer = match self.host.as_deref_mut() {
+            Some(host) => host.call(&foreign.symbol, &decoded),
+            None => {
+                match crate::host::with_ambient_host(|host| host.call(&foreign.symbol, &decoded)) {
+                    Some(answer) => answer,
+                    // **Named rather than silently doing nothing** — a program that declares a `compiler`
+                    // foreign and is run by `jr run` is asking for something only the build-script driver
+                    // provides, and a no-op would make it look as though the build had happened.
+                    None => {
+                        return Err(VmError::unsupported(format!(
+                            "`{}` is a build-script procedure, and this program is not being run as a \
+                         build script — run it with `jr build --script`",
+                            foreign.symbol
+                        )));
+                    }
+                }
+            }
         };
-        let answer = host
-            .call(&foreign.symbol, &decoded)
-            .map_err(VmError::unsupported)?;
+        let answer = answer.map_err(VmError::unsupported)?;
 
         match answer {
             crate::HostValue::Void => Ok(Value::Void),
@@ -1502,6 +1520,11 @@ impl<'a> Vm<'a> {
     // -------------------------------------------------------------------
     // Accessors the FFI bridge needs
     // -------------------------------------------------------------------
+
+    /// Which mode this VM is executing in, for the bridge's comptime decisions.
+    pub(crate) const fn mode(&self) -> Mode {
+        self.mode
+    }
 
     pub(crate) const fn pool(&self) -> &Pool {
         self.pool

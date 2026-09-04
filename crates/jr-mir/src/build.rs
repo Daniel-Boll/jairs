@@ -723,6 +723,40 @@ fn scan(
     None
 }
 
+/// The **literal** a file-level constant's value is, if it is one (ADR-0196 §5).
+///
+/// # Why this exists at all
+///
+/// A `::` constant's value normally arrives through `ConstValues`, which is `file_consts`' output. That
+/// is right for `#run choose()` and unnecessary for `OUT_CAPACITY :: 4096`: a literal is already a
+/// value, and interning it needs no interpreter.
+///
+/// It matters because of one place where `ConstValues` is legitimately **empty**. Const-evaluating file
+/// A lowers every imported module's bodies so a `#run` can call them, and it cannot ask for module B's
+/// own `file_consts` — an import cycle is legal here (`tests/corpus/imports/valid/005`), so that call
+/// would be a salsa cycle, which is the reason ADR-0018 §3 keeps `checked` free of const values.
+///
+/// The consequence was that **no standard-library body reading one of its own constants would lower at
+/// compile time**, and that is nearly all of them: `talloc` reads `TEMP_REGION_SIZE`, `out_byte` reads
+/// `OUT_CAPACITY`, `print` reaches both. So a `#run` could not print, and the reported cause was
+/// `no routine for file 1 proc 6`.
+///
+/// This closes the case that needs no evaluation, and leaves the one that does — a constant computed by
+/// a `#run` in the module — still refused, honestly. That split is the whole of the fix: it is not "give
+/// const-eval a checked view", which is what the cycle forbids.
+fn literal_const_of(hir: &FileHir, item: jr_hir::ItemId) -> Option<Literal> {
+    let ItemKind::Const {
+        value: ConstValue::Expr { expr, .. },
+    } = &hir.items.get(item.index())?.kind
+    else {
+        return None;
+    };
+    match hir.exprs.get(expr.index())? {
+        Expr::Literal(literal, _) => Some(literal.clone()),
+        _ => None,
+    }
+}
+
 /// Whether one name reference is lowerable.
 fn scan_name(
     hir: &FileHir,
@@ -853,6 +887,11 @@ fn scan_name(
                 //
                 // `signatures` was `let _ = signatures;` here for the whole life of that refusal,
                 // parked against the day this arm was written. This is the day.
+                None
+            } else if literal_const_of(hir, item).is_some() {
+                // **A constant whose value is a literal needs no evaluation** (ADR-0196 §5), so an empty
+                // `ConstValues` is not a reason to refuse it. See `literal_const_of` for the one place
+                // that emptiness is legitimate and what it used to cost.
                 None
             } else {
                 Some("a file-level item has no value until jr-vm")
@@ -2923,7 +2962,15 @@ impl Lower<'_> {
                 Some(value) => Operand::Constant(value),
                 None => match self.proc_value_of(item, ty) {
                     Some(value) => Operand::Constant(value),
-                    None => self.define(ty, Rvalue::Undef, span),
+                    // **The literal fallback, and it must mirror `scan_name`'s** (ADR-0196 §5) —
+                    // otherwise `scan` admits a body this arm then lowers to `Rvalue::Undef`, which is
+                    // a *legitimate value* and therefore invisible to both the verifier and
+                    // ADR-0017 §4's poison gate. That is this project's first named failure mode, and
+                    // the two sites share `literal_const_of` so they cannot drift apart.
+                    None => match literal_const_of(self.hir, item) {
+                        Some(literal) => Operand::Constant(self.constant(&literal, ty)),
+                        None => self.define(ty, Rvalue::Undef, span),
+                    },
                 },
             },
             // **An imported constant is a constant operand** (ADR-0055 §1), exactly as a local one

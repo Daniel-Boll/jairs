@@ -379,12 +379,34 @@ fn a_body_containing_run_is_refused_because_run_has_no_value_yet() {
 #[test]
 fn a_body_referring_to_a_file_level_constant_is_refused() {
     let mut program = Program::new();
-    // `jr-sema` records a constant's type but never its value: computing one needs
-    // an evaluator, and the VM is the only evaluator there will be.
-    let lowered = program.lower_clean("LIMIT :: 4096;\nmain :: () -> s64 { return LIMIT; }");
+    // `jr-sema` records a constant's type but never its value: computing one needs an evaluator, and the
+    // VM is the only evaluator there will be.
+    //
+    // **This test used to use `LIMIT :: 4096;`, and that is no longer refused** (ADR-0196 §5). A literal
+    // needs no evaluation, so lowering interns it directly — which is what made compile-time `print`
+    // possible, since every standard-library body reads a constant of its own. The refusal is for a value
+    // that genuinely has to be *computed*, which is what this now uses.
+    let lowered =
+        program.lower_clean("LIMIT :: #run pick();\npick :: () -> s64 { return 4096; }\nmain :: () -> s64 { return LIMIT; }");
     assert_eq!(
         lowered.refusal(&program.interner, "main"),
         Poisoned::Here("a file-level item has no value until jr-vm")
+    );
+}
+
+/// A constant whose value is a **literal** lowers with no const-eval at all (ADR-0196 §5).
+///
+/// The other half of the test above. It exists because the gap it closes was invisible: an imported
+/// module's `ConstValues` is legitimately empty during const-eval — asking for the module's own would be
+/// a salsa cycle, since import cycles are legal — so *every* library body reading one of its own
+/// constants was refused, and a `#run` calling `print` reported `no routine for file 1 proc 6`.
+#[test]
+fn a_constant_whose_value_is_a_literal_needs_no_const_eval() {
+    let mut program = Program::new();
+    let lowered = program.lower_clean("LIMIT :: 4096;\nmain :: () -> s64 { return LIMIT; }");
+    assert!(
+        lowered.outcome(&program.interner, "main").is_ok(),
+        "a literal constant needs no evaluator, so the body must lower"
     );
 }
 
@@ -590,11 +612,18 @@ fn a_run_with_a_value_lowers_to_that_constant() {
 
 #[test]
 fn a_value_for_one_constant_does_not_excuse_another() {
-    // The map is consulted per item, so a partially-populated map must still refuse
-    // the parts it cannot answer. Otherwise a bug in the const query would surface
-    // as a body lowered from a missing value.
+    // The map is consulted per item, so a partially-populated map must still refuse the parts it cannot
+    // answer. Otherwise a bug in the const query would surface as a body lowered from a missing value.
+    //
+    // **Both constants used to be literals, and a literal no longer needs the map** (ADR-0196 §5), so
+    // the body lowered and the test was asserting a refusal that had stopped existing. Each is a `#run`
+    // now, which is the case the map is actually for — and it keeps the property under test intact
+    // rather than weakening it: one value present, one absent, body still refused.
     let mut program = Program::new();
-    let source = "A :: 1;\nB :: 2;\nmain :: () -> s64 { return A + B; }";
+    let source = "A :: #run one();\nB :: #run two();\n\
+                  one :: () -> s64 { return 1; }\n\
+                  two :: () -> s64 { return 2; }\n\
+                  main :: () -> s64 { return A + B; }";
 
     let probe = program.lower(source);
     let a = probe.item_id(&program.interner, "A").expect("A exists");

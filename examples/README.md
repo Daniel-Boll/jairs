@@ -21,6 +21,7 @@ cargo run -q -p jr-cli -- run examples/<name>.jr -I modules
 | [`08-print-formatted.jr`](08-print-formatted.jr) | `%` placeholders over any type, and what a wrong argument count does. |
 | [`09-language-utilities.jr`](09-language-utilities.jr) | Array literals, typed constants, `type_of`, and an enum printed by name. |
 | [`10-build-script.jr`](10-build-script.jr) | A **build script**: `jr build examples/10-build-script.jr -I modules` runs it, and it compiles another program. Shells out for a git hash, reads `-- release`, chooses per OS. |
+| [`11-run-build-script.jr`](11-run-build-script.jr) | The same, as a **`#run`** with no `main` — the shape a Jai `build.jai` has. Prints and allocates at compile time; declares its target with `request_build`, because compiling from inside a query is not possible. |
 
 A drawing program (`Simp`, `Window`, `Input`) needs SDL2 and cannot run under `jr run` —
 the compile-time VM reaches libc and nothing else. None is included here; see

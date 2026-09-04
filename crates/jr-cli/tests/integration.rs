@@ -4092,3 +4092,155 @@ fn a_build_script_is_detected_without_the_flag() {
     );
     assert!(plain.exists(), "the ordinary program's artefact must exist");
 }
+
+/// A `#run` prints at compile time, and the output reaches the terminal.
+///
+/// This did not work, and the reason it did not is the interesting part: `Basic.malloc` is *declared*
+/// `#foreign`, and the comptime refusal was keyed on the declaration — but the VM **serves `malloc` from
+/// its own region** and never calls a host, so refusing it granted nothing and cost compile-time code
+/// the ability to allocate at all. `write` is the same: it fills the VM's capture buffer.
+///
+/// Asserted through the **binary**, because the output is carried out of a memoised query and emitted by
+/// the driver; a unit test on the VM would not prove the plumbing.
+#[test]
+fn a_run_directive_prints_at_compile_time() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = dir.path().join("prog.jr");
+    fs::write(
+        &program,
+        "#import \"Basic\";\n\
+         announce :: () -> s64 {\n\
+         \x20   print(\"from compile time: % and %\\n\", 41 + 1, \"text\");\n\
+         \x20   return 3;\n\
+         }\n\
+         N :: #run announce();\n\
+         main :: () { exit(N); }\n",
+    )
+    .expect("the program should be written");
+
+    let binary = env!("CARGO_BIN_EXE_jr");
+    let modules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules");
+    let output = std::process::Command::new(binary)
+        .args([
+            "check",
+            &program.to_string_lossy(),
+            "-I",
+            &modules.to_string_lossy(),
+        ])
+        .output()
+        .expect("`jr check` should run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("from compile time: 42 and text"),
+        "a `#run` must be able to print, with its arguments formatted: got {stderr:?}"
+    );
+}
+
+/// Jai's own spelling: `#run build();` at file scope, with no `main` at all.
+///
+/// The direct answer to "can a `#run` do it". It can, and what it cannot do is *compile* from inside
+/// itself: a compilation needs its own database, and creating one while a query is executing panics with
+/// "Cannot change database mid-query". So a `#run` **declares** its targets with
+/// `Compiler.request_build` and the driver builds them once const-evaluation is finished — which is
+/// exactly what a real `build.jai` does, since `add_build_file` does not compile either.
+#[test]
+fn a_run_directive_build_script_needs_no_main() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = dir.path().join("app.jr");
+    fs::write(
+        &program,
+        "#import \"Basic\";\nmain :: () {\n    print(\"built by a #run\\n\");\n    exit(0);\n}\n",
+    )
+    .expect("the program should be written");
+
+    let artefact = Artefact::named("jr-test-built-by-a-run-directive");
+    let script = dir.path().join("build.jr");
+    fs::write(
+        &script,
+        format!(
+            "#import \"Basic\";\n\
+             Compiler :: #import \"Compiler\";\n\
+             build :: () {{\n\
+             \x20   print(\"configuring at compile time\\n\");\n\
+             \x20   t := Compiler.create_target(\"app\");\n\
+             \x20   o := Compiler.options(t);\n\
+             \x20   o.output = \"{}\";\n\
+             \x20   Compiler.set_options(t, o);\n\
+             \x20   Compiler.add_file(t, \"{}\");\n\
+             \x20   Compiler.request_build(t);\n\
+             }}\n\
+             #run build();\n",
+            artefact.path().display(),
+            program.display()
+        ),
+    )
+    .expect("the script should be written");
+
+    // **No `main` in the script, and no `--script` flag.** Both are the point.
+    assert_eq!(
+        run_build(script, None),
+        0,
+        "a `#run` build script with no `main` must succeed"
+    );
+    assert!(
+        artefact.path().exists(),
+        "the target the `#run` declared must have been built"
+    );
+
+    let output = std::process::Command::new(std::path::Path::new(".").join(artefact.path()))
+        .output()
+        .expect("the artefact should be runnable");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "built by a #run\n",
+        "the artefact must be the program the `#run` asked for"
+    );
+}
+
+/// `Compiler.build` inside a `#run` is refused, and the refusal names the alternative.
+///
+/// Not deferred-and-reported-as-success: a `bool` that means "queued" is indistinguishable from one that
+/// means "built", so a script branching on it would branch on nothing.
+#[test]
+fn an_immediate_build_inside_a_run_directive_is_refused() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = dir.path().join("app.jr");
+    fs::write(&program, "#import \"Basic\";\nmain :: () { exit(0); }\n")
+        .expect("the program should be written");
+
+    let script = dir.path().join("build.jr");
+    fs::write(
+        &script,
+        format!(
+            "#import \"Basic\";\n\
+             Compiler :: #import \"Compiler\";\n\
+             build :: () {{\n\
+             \x20   t := Compiler.create_target(\"app\");\n\
+             \x20   Compiler.add_file(t, \"{}\");\n\
+             \x20   if !Compiler.build(t) {{ }}\n\
+             }}\n\
+             #run build();\n",
+            program.display()
+        ),
+    )
+    .expect("the script should be written");
+
+    let binary = env!("CARGO_BIN_EXE_jr");
+    let modules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules");
+    let output = std::process::Command::new(binary)
+        .args([
+            "build",
+            &script.to_string_lossy(),
+            "-I",
+            &modules.to_string_lossy(),
+        ])
+        .output()
+        .expect("`jr build` should run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("request_build"),
+        "the refusal must name the procedure that works instead: got {stderr:?}"
+    );
+}
