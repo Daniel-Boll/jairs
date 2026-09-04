@@ -12,8 +12,9 @@ names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
 compile-time reflection, `#insert`/`#code` metaprogramming, an
 atomics-and-threads memory model, DWARF debug info in both native back ends,
-file-scope mutable state, and a 2D graphics stack that draws through OpenGL
-with the same API as Jai's `Simp`. Every one of those claims has a capability
+file-scope mutable state, a 2D graphics stack that draws through OpenGL
+with the same API as Jai's `Simp`, and **build scripts written in the language
+itself**. Every one of those claims has a capability
 table behind it, kept honest at the end of every wave — if a table and the code
 disagree, the code is right and the table has a bug.
 
@@ -72,8 +73,8 @@ down, and every call took a state argument the original does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1082** workspace tests, all seven gates green.
-- **279** `.jr` corpus files, **194** accepted ADRs, **23** standard library
+- **1090** workspace tests, all seven gates green.
+- **279** `.jr` corpus files, **195** accepted ADRs, **24** standard library
   modules.
 - macOS arm64 is verified locally, gate by gate. Linux x86-64 has never been
   verified by a human reading a result: `main` was pushed for the first time on
