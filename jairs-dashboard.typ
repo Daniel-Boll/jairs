@@ -82,7 +82,7 @@
     #text(size: 21pt, weight: "bold")[Jairs]
   ],
   [
-    #text(size: 8pt, fill: muted)[2 September 2026]
+    #text(size: 8pt, fill: muted)[4 September 2026]
   ],
 )
 #v(-0.5em)
@@ -222,7 +222,7 @@
   ("union, nominal, untagged — a cross-field read reinterprets", ""),
   ("variant — a tagged union: a wrong-case read traps, switch destructures", "a recursive variant; eliding the check in an arm"),
   ("enum and enum_flags, namespaced, bare dot-member, switch cases", "an explicit backing type"),
-  ("Fixed arrays, views and [..]T dynamic arrays, bounds-checked; a length may name a constant", "a length needing evaluation; array literals"),
+  ("Fixed arrays, views and [..]T dynamic arrays, bounds-checked; a length may name a constant; array literals T.[a, b] in every expression position", "a length needing evaluation; an array literal at file scope (refused by name); a struct literal"),
   ("struct #soa(N) — one array per field, and e[i].x means e.x[i]", "a bare e[i]; using inside one"),
   ("#simd [N]T — a vector at one of the six register widths; elementwise +% -% *% on integers, + - * / on floats, lane indexing, .count", "any other width; integer /; comparisons (need a mask type); swizzles"),
   ("Per-field #align N (a minimum, power of two up to 4096) and #place N (an exact offset, may overlap, may be unaligned)", "a struct-level #align; any packing form; an operand needing evaluation"),
@@ -234,10 +234,10 @@
   ("atomic_load, atomic_store, atomic_add, atomic_compare_exchange on s64, sequentially consistent", "wider types; other ops; weaker orderings; a fence"),
   ("Threads: spawn, join, joinable, yield_now, and a spin lock — modules/Thread", "a per-thread backtrace; Thread_Local; channels"),
   ("cast and xx from context; operator overloading", "unary, index and call overloading"),
-  ("Trapping arithmetic, wrapping variants, bitwise", "transmute; float printing"),
+  ("Trapping arithmetic, wrapping variants, bitwise", "transmute"),
   ("if, else, while, for, break, continue, defer, using", ""),
   ("switch with exhaustiveness checking over an enum; else", "patterns, ranges, guards; a jump table"),
-  ("Multiple returns, named args, literal defaults", "#must; a multi-result call in a return"),
+  ("Multiple returns, named args, literal defaults, #must on a discarded result, a multi-result call in a return", ""),
   ("import, foreign, system_library, #scope_module, #expand macros that splice, #modify predicates, #bake_arguments, @note metadata, and noted_count / noted_name / noted_declarations to ITERATE it", ""),
   ("$T and $$T procedures, Box($T) structs, $N comptime-value parameters, #expand macros that splice, #modify predicates, #bake_arguments — W5 complete", "inference through Box($T); a length needing arithmetic"),
   ("Compile-time run at file scope or in a body, across files; type_info(), Any, #insert, #code", "a cross-file #run value; a Code value (declined)"),
