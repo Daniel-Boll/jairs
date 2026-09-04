@@ -70,6 +70,32 @@ impl Target {
     }
 }
 
+/// A command a script is assembling, and what it produced when run.
+///
+/// # Why the *driver* spawns rather than `modules/Process`
+///
+/// `Process.run` works in a native binary and fails under `jr run`: the VM translates a pointer
+/// argument one level deep, so `execvp`'s `argv` — an array of pointers — arrives with a real address
+/// for the array and region-relative garbage for every string in it (ADR-0158 §3). Measured: exit
+/// code 127 while reporting success.
+///
+/// Fixing that inside the VM needs information no *type* carries. `char **` is `argv` here and
+/// `strtod`'s out-parameter there, and the second one **works** — the callee writes a pointer rather
+/// than reading one — so a rule keyed on "the pointee contains a pointer" would break working code in
+/// order to describe broken code. `modules/Process` records that trade and rejects it.
+///
+/// So the knowledge stays where it actually is: at the call site, which says "run this list". The
+/// driver spawns with ordinary Rust strings and there is nothing to marshal. That leaves the VM's
+/// defect standing for a general program, which is honest — it is a separate fix with a separate
+/// argument, and a build script does not have to wait for it.
+#[derive(Default)]
+struct Command {
+    /// The program and its arguments, in order. The first word is the program.
+    words: Vec<String>,
+    /// Everything the command wrote to standard output, after it ran.
+    output: String,
+}
+
 /// What one build-script run produced.
 #[derive(Debug, Default)]
 pub struct ScriptOutcome {
@@ -89,6 +115,8 @@ pub struct ScriptOutcome {
 /// reason the script never mentioned.
 struct ScriptHost {
     targets: Vec<Target>,
+    /// Commands the script has assembled, in creation order.
+    commands: Vec<Command>,
     /// The module paths the operator gave, inherited by every target.
     inherited_module_paths: Vec<PathBuf>,
     /// The library paths the operator gave, inherited by every target.
@@ -113,6 +141,15 @@ impl ScriptHost {
         self.targets
             .get_mut(index)
             .ok_or_else(|| format!("target {handle} was never created"))
+    }
+
+    /// The command a handle names, with the same plus-one discipline as [`Self::target`].
+    fn command(&mut self, handle: i64) -> Result<&mut Command, String> {
+        let index =
+            usize::try_from(handle - 1).map_err(|_| format!("{handle} is not a command handle"))?;
+        self.commands
+            .get_mut(index)
+            .ok_or_else(|| format!("command {handle} was never created"))
     }
 }
 
@@ -207,6 +244,26 @@ impl Host for ScriptHost {
             // these agree; when one exists, this is the line that has to decide which the script is
             // asking about, and the answer will be the host, because a build script chooses how to
             // *run* tools.
+            "command_begin" => {
+                self.commands.push(Command::default());
+                Ok(HostValue::Int(self.commands.len() as i64))
+            }
+            "command_arg" => {
+                let value = text(args, 1)?.to_owned();
+                self.command(int(args, 0)?)?.words.push(value);
+                Ok(HostValue::Void)
+            }
+            "command_run" => {
+                let handle = int(args, 0)?;
+                let words = self.command(handle)?.words.clone();
+                let (status, captured) = spawn(&words);
+                self.command(handle)?.output = captured;
+                Ok(HostValue::Int(status))
+            }
+            "command_output" => {
+                let handle = int(args, 0)?;
+                Ok(HostValue::Str(self.command(handle)?.output.clone()))
+            }
             "target_os" => Ok(HostValue::Int(if cfg!(target_os = "linux") {
                 1
             } else if cfg!(target_os = "windows") {
@@ -356,6 +413,35 @@ impl ScriptHost {
     }
 }
 
+/// Runs one command, returning its exit status and its captured standard output.
+///
+/// Standard error is **inherited**, not captured: it is the channel a tool uses to explain itself, so
+/// it goes to the terminal where the person running the build can read it. Capturing it would make a
+/// build script responsible for printing a compiler's error message, and most would forget.
+///
+/// A command that could not be started is a non-zero status with the reason on stdout rather than an
+/// error, because "the tool is not installed" is a thing a build script should be able to handle — and
+/// a script that wants to stop can read the status and `exit`.
+fn spawn(words: &[String]) -> (i64, String) {
+    let Some((program, arguments)) = words.split_first() else {
+        return (1, String::from("no program was named"));
+    };
+    match std::process::Command::new(program)
+        .args(arguments)
+        .stderr(std::process::Stdio::inherit())
+        .output()
+    {
+        Ok(output) => {
+            // **A signal is not exit code 0.** `ExitStatus::code()` is `None` for a process killed by
+            // one, and `unwrap_or(0)` would report a crashed tool as a success — which is how a build
+            // "succeeds" having produced nothing.
+            let status = output.status.code().map_or(-1, i64::from);
+            (status, String::from_utf8_lossy(&output.stdout).into_owned())
+        }
+        Err(error) => (1, format!("cannot run `{program}`: {error}")),
+    }
+}
+
 /// Everything one build-script run needs.
 #[derive(Debug, Clone)]
 pub struct ScriptRequest {
@@ -383,6 +469,41 @@ pub enum ScriptResult {
     },
     /// The script was accepted and could not be run: no `main`, or a trap.
     ScriptFailed(String),
+}
+
+/// The module a build script imports, and the one thing that makes a file a build script.
+///
+/// A *name* rather than a shape — "declares `build` and no `main`" was the other candidate — because
+/// this one is already load-bearing: importing it is what gives a file the driver's vocabulary, so a
+/// file that imports it and is compiled as a program is refused (see `build.rs`). Detecting on the
+/// same fact means the flag and the refusal cannot disagree about what a build script is.
+const COMPILER_MODULE: &str = "Compiler";
+
+/// Whether `path` is a build script, by whether it imports `modules/Compiler`.
+///
+/// Reads the file's **own** import list, which needs one parse and one lowering and **no module
+/// loading at all** — `imports_of` asks for `file_hir` and nothing else. So `jr build` on an ordinary
+/// program pays a parse of one file to learn it is not a script, rather than a second module tree.
+///
+/// A file that reaches `modules/Compiler` *indirectly* — through a helper module of its own — is not
+/// detected, and gets the refusal naming `--script` instead. That is the honest boundary of a cheap
+/// check, and the case is rare enough that paying for a transitive walk on every ordinary build would
+/// be the wrong trade.
+///
+/// # Errors
+/// When the file cannot be read or registered.
+pub fn is_build_script(path: &std::path::Path) -> Result<bool, String> {
+    let mut db = JairsDatabase::default();
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let key = path.to_string_lossy().into_owned();
+    let _ = db.set_file_text(key.clone(), text);
+    let root = db
+        .source_file(&key)
+        .ok_or_else(|| format!("internal error: {key} was not registered"))?;
+    Ok(jr_db::imports_of(&db, root)
+        .iter()
+        .any(|name| name.as_ref() == COMPILER_MODULE))
 }
 
 /// Compiles `request.path`, runs it, and performs the compilations it asked for.
@@ -419,6 +540,7 @@ pub fn run_script(request: &ScriptRequest) -> Result<ScriptResult, String> {
 
     let mut host = ScriptHost {
         targets: Vec::new(),
+        commands: Vec::new(),
         inherited_module_paths: request.module_paths.clone(),
         inherited_library_paths: request.library_paths.clone(),
         arguments: request.arguments.clone(),

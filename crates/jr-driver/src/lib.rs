@@ -34,4 +34,4 @@ mod build;
 mod script;
 
 pub use build::{BuildOutcome, BuildRequest, Built, build};
-pub use script::{ScriptOutcome, ScriptRequest, ScriptResult, run_script};
+pub use script::{ScriptOutcome, ScriptRequest, ScriptResult, is_build_script, run_script};

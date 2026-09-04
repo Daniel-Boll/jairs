@@ -97,9 +97,9 @@
 #h(4pt)
 #pill[1082 tests]
 #h(4pt)
-#pill[ADR-0194 latest]
+#pill[ADR-0195 latest]
 #h(4pt)
-#pill(fill: rgb("#fdf6e3"), stroke: warn)[11.5/12 waves — W6 overclaimed]
+#pill(fill: rgb("#eaf5ee"), stroke: good)[ALL TWELVE WAVES DONE]
 #h(4pt)
 #pill(fill: rgb("#eaf5ee"), stroke: good)[everything merged to main]
 #h(4pt)
@@ -109,9 +109,9 @@
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "1082", "workspace, all seven gates"),
+  metric("Tests", "1090", "workspace, all seven gates"),
   metric("Corpus", "279", "jr files, all three engines"),
-  metric("ADRs", "194", "0001 to 0194, immutable"),
+  metric("ADRs", "195", "0001 to 0195, immutable"),
   metric("Diagnostics", "131", "declared codes, E0296 next"),
   metric("Editor checks", "170", "Neovim, verified not gated"),
 )
@@ -364,8 +364,8 @@
     "DONE in fifteen sub-waves (ADR-0081 to ADR-0097). $T inference, then $$T mixing inference with baking in one signature, then parameterised structs Box($T), then $N comptime-VALUE parameters — a length that is a constant rather than a type. #expand macros SPLICE their body into the caller's scope rather than calling it, #modify predicates run at instantiation and can REJECT one (E0275), and #bake_arguments produces a specialised procedure. The last piece lowers to a REAL procedure — a clone with the baked parameters dropped, their literals substituted and the kept ones remapped, which is the same machinery $N instantiation uses, so the wave ends on a REUSE rather than a new mechanism. Two plans were corrected by building: ADR-0096 intended to use the const-eval pre-pass and found it runs AFTER lowering, and the expansion fixed point (ADR-0120) needed a settling check because an instantiation family can fail to converge.",
   ),
   (
-    "W6 Metaprogram", "partial",
-    "DONE, closed by ADR-0154. @note attaches metadata to a declaration (ADR-0098) as its own node kind rather than a generic attribute, because a note is DATA for a metaprogram while the directives are INSTRUCTIONS to the compiler. has_note and note_value read it at compile time (ADR-0099), folded in sema with no VM and no new query — unlike type_info, which folds later because it needs a layout. The first argument is the declaration itself rather than its name as text, so a misspelling is an unresolved name instead of a silent false. noted_count / noted_name / noted_declarations then let a metaprogram ITERATE what it found, and the compiler-emitted static-data table was the wave-sized architectural decision that made it possible. The wave headline claim is met: a metaprogram finds declarations by note and generates code for each one. PARTIAL, not done, and this row said done for eleven waves: its own item list claims '#run build() build scripts replacing makefiles' and what shipped is two SETTINGS, BUILD_OUTPUT and BUILD_OPT_LEVEL. A script that replaces a makefile must read files and shell out, and a #run can do neither — every #foreign call is refused at compile time and #foreign_at_comptime, which PLAN's locked decisions call 'non-negotiable given build scripts must read files', was never implemented. modules/Compiler was never created either, so W7 is eight of nine and ADR-0158's Consequences say otherwise. docs/build-script-plan.md researches the real shape and proposes it.",
+    "W6 Metaprogram", "done",
+    "DONE, closed by ADR-0154. @note attaches metadata to a declaration (ADR-0098) as its own node kind rather than a generic attribute, because a note is DATA for a metaprogram while the directives are INSTRUCTIONS to the compiler. has_note and note_value read it at compile time (ADR-0099), folded in sema with no VM and no new query — unlike type_info, which folds later because it needs a layout. The first argument is the declaration itself rather than its name as text, so a misspelling is an unresolved name instead of a silent false. noted_count / noted_name / noted_declarations then let a metaprogram ITERATE what it found, and the compiler-emitted static-data table was the wave-sized architectural decision that made it possible. The wave headline claim is met: a metaprogram finds declarations by note and generates code for each one. DONE at last, by ADR-0195 — and this row said done for eleven waves before it was. Its own item list claims '#run build() build scripts replacing makefiles' and what had shipped was two SETTINGS. The rest arrived, but NOT as a #run: comptime code may call no #foreign, so a #run cannot read a file, shell out, print, or even allocate. And the deeper finding from reading 23 real build.jai files is that Jai's build power is the STANDARD LIBRARY rather than the compiler API — cloning a dependency, stamping a git hash, formatting a disk image. So a script is an ordinary program run in the VM, and the whole feature needed no #foreign_at_comptime, retiring a locked decision that called it non-negotiable BECAUSE of build scripts. modules/Compiler exists now too, so W7 is nine of nine.",
   ),
   (
     "W7 Stdlib", "done",

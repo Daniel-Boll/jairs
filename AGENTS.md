@@ -216,8 +216,8 @@ straddle. And writing the module's *test* found a MIR gap: `mk().count`, a field
 not lower. That is the third capability gap a library has surfaced rather than a compiler test.
 
 **ADR-0175, ADR-0176 and ADR-0177 reach 1069** (**1073** under gate 7) and add one corpus file = **255**.
-**W11 — Concurrency is DONE, and it was the last of the twelve waves *started*.** (W6 was closed on an
-overclaim and has been reopened — see the build-script entry at the top of this narrative.)
+**W11 — Concurrency is DONE, and it was the last of the twelve waves *started*.** (W6 was the last one
+*finished* — closed on an overclaim, and completed eleven waves later by ADR-0195.)
 
 **The blocker PLAN named was not the blocker, and this is the entry to read before trusting any plan here.**
 §8.3 said W11 needs a per-thread stack, atomics as language operations, and a comptime rule. It did not say a
@@ -259,39 +259,64 @@ grammar reported an `ERROR` node over it (gate 6, which is what that gate exists
 the type, verified by writing it; and `codes.rs` caught a code collision when this wave first reached for E0290,
 which `jr-hir` owns.
 
-**A build script written in Jairs is researched and not built** — `docs/build-script-plan.md`, which
-would become ADR-0195. Read it before picking the item up, and read this paragraph before trusting any
-"DONE" in the wave table.
+**ADR-0195 delivers a build script written in Jairs, and it closes W6 eleven waves after that wave was
+declared done.** `jr build build.jr` compiles the script, runs it in the bytecode VM, and performs the
+compilations it recorded. `examples/10-build-script.jr` shells out for a git hash, reads `-- release`,
+branches on the OS, and builds a real Mach-O executable. Tests 1082 → **1090** (seven integration tests, one driver unit test, and seven moved with `confined_output`), no new corpus file (a
+build script has no native form, so `valid/`'s two-engine premise does not apply — ADR-0164's reasoning),
+and **no new diagnostic code**: `#compiler_library`'s refusals reuse E0293.
 
-**W6 was closed on an overclaim, and it took eleven waves to notice.** Its row claims "`#run build()`
-build scripts replacing makefiles" as delivered; what shipped is two *settings*, `BUILD_OUTPUT` and
-`BUILD_OPT_LEVEL`. A script that replaces a makefile must read files and shell out, and **a `#run` can do
-neither** — every `#foreign` call is refused at compile time, so compile-time code cannot read a file,
-print, shell out, or even allocate, since `Basic.malloc` is `#foreign`. `#foreign_at_comptime`, which
-PLAN's own locked decisions call "non-negotiable given build scripts must read files", was never
-implemented: thirteen mentions in the repository and not one is code. And `modules/Compiler` never
-existed, so W7 is **eight of nine** — ADR-0158's Consequences claim otherwise, and that claim is now
-corrected in place.
+**Read §2 of that ADR before copying any design from another language.** W6's row claimed "`#run build()`
+build scripts replacing makefiles" and had shipped two *settings*. Copying Jai's shape — the script in a
+`#run` — **cannot work here**, because compile-time code may call no `#foreign` procedure, so a `#run`
+cannot read a file, shell out, print, or even allocate (`Basic.malloc` is `#foreign`). And the deeper
+finding: **Jai's build power is not in its `Compiler` module at all.** Across 23 real `build.jai` files,
+what they *do* is clone a dependency, stamp a git hash, build a `.dmg`, format a bootable disk image —
+all `Process`, `File`, `String`. **A plan that ports the compiler API and leaves the script unable to open
+a file has copied the wrong half.** So the script is an ordinary program, and the whole feature needed no
+`#foreign_at_comptime`.
 
-**The transferable finding is about which half of a design to copy.** Jai's build scripts are powerful
-because a build script is an *ordinary program with the whole standard library* — cloning a C dependency,
-stamping a git hash into the binary, formatting a bootable disk image, none of which touches the
-`Compiler` module. A plan that ports the module and leaves the script unable to open a file has copied
-the wrong half. So the plan runs the script as a program in the VM, where the stdlib already works
-(verified: a VM-hosted program writes and reads files), and sidesteps `#foreign_at_comptime` rather than
-pretending to solve it.
+**That retires a "non-negotiable" locked decision by shipping the thing it justified.** PLAN §0 said
+comptime FFI was non-negotiable *because* build scripts must read files. Build scripts read files now and
+comptime FFI does not exist. It is still wanted for its own sake and blocks nothing.
+
+**The cheapest mechanism was an existing declaration form, and that is why three planned waves became
+one.** `#foreign compiler "set_output"` reuses `#foreign`, so the feature needed **no grammar rule, no HIR
+node, no MIR variant, and no change to either native back end**. A build script is not something you
+compile, so a library that cannot be linked is the right shape. The formatter did **not** drop
+`#compiler_library` and tree-sitter parsed it first time — the second wave in fifteen — for the same
+reason ADR-0184's file-scope `#insert` was clean: a construct reusing a node kind needs no new emitter arm.
+
+**And the security detail generalises: key a dispatch on a kind, never on a name.** The VM forwards on
+`jr_pool::LinkKind::Compiler`, which only `#compiler_library` can produce. Keying on the *string*
+`"compiler"` would have handed the driver's vocabulary to any program declaring a library with that name —
+probed, and the forgery attempt takes the C route and is refused by the library loader.
 
 **Two recorded blockers had already dissolved, and one by a wave from the same session.** ADR-0154 §2 said
 a `Build_Options` struct was blocked on struct literals; the **read-then-mutate** idiom needs none, and it
 is what 23 of 23 real Jai scripts use. ADR-0102 said a module-path setting "wants a list-valued
 constant"; ADR-0194's array literals answered that one wave earlier. **Both were checked by running a
-program, not by reading the ADRs** — which is the whole reason to probe a stated blocker before planning
-around it.
+program, not by reading the ADRs.**
 
-**And one silent failure was measured.** `Process.run` under `jr run` returns exit code **127** with
-`ok = true`: the child spawns and `argv` arrives corrupt, because the VM marshals a pointer argument one
-level deep and `argv` is an array of pointers (ADR-0158 §3). Natively it works. A silently wrong answer
-outranks a loud one, which is why the forward plan puts deep marshalling fourth rather than last.
+**One silent failure measured and then routed around rather than fixed.** `Process.run` under `jr run`
+returns exit code **127** with `ok = true`: `argv` is an array of pointers and the VM marshals one level
+deep (ADR-0158 §3). Fixing it *in the VM* needs information no **type** carries — `char **` is `argv`
+here and `strtod`'s out-parameter there, and the second **works** — so a build script shells out through
+the **driver** instead, with ordinary Rust strings. The VM defect still stands for a general program, and
+saying so is better than a rule that breaks working code to describe broken code.
+
+**Four defects found by running it, none visible in review**, and the first is the instructive one: the
+default output was `file.with_extension("")`, so `add_file("/tmp/p/main.jr")` was refused as "an absolute
+path" — **confinement blamed for a default the driver itself had chosen.** It is the source's *basename*
+now. The others: compiling a script gave a wall of `ld` output naming `_jr$2$17` instead of the missing
+`--script`; a tool pipeline ate a Rust line continuation, and scanning for the same shape found **two
+pre-existing** mangled diagnostics in `jr-sema`; and `Compiler.arguments()` needed an allocator without
+saying so.
+
+**The test count earned its keep for the second session running.** The suite went 1082 → **1081** while
+the wave *added* six tests: moving `confined_output` into `jr-driver` had dropped its seven unit tests,
+every one guarding an escape ADR-0122 found — `.git/hooks/pre-commit`, a leading `-`, a NUL byte. A count
+that only ever goes up would have hidden it.
 
 **ADR-0190 through ADR-0194 hold at 1082** and add nine corpus files = **279**, with **one** new
 diagnostic code (E0295, an empty array literal) after four stretches with none. Five language utilities the
@@ -1283,7 +1308,12 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0296 is the first free code**; E0134 is the first free *parser* code. **E0295** refuses an array literal
+**E0296 is the first free code**; E0134 is the first free *parser* code. **E0293** gained a third
+condition in ADR-0195 — `#compiler_library` written *with* a name — and it is the same code rather than a
+new one because all three of its conditions are "which library is this" being unanswerable: no operand
+where one is needed, a `#library` nothing links, and an operand where none can mean anything.
+`#compiler_library` names the compiler a build script is running inside, which is not a library and is
+never linked, so a name would read as though it named something. **E0295** refuses an array literal
 with no elements — `T.[]` (ADR-0194 §2) — **owned by `jr-sema`**, continuing its block. A `[0]T` has no
 use a caller could name: it cannot be indexed, `size_of` is zero, and a `for` over it runs no iterations,
 so every operation on one is an error or a no-op. Its own code rather than E0261's, which is the

@@ -70,6 +70,10 @@ report_raw :: (message: string) #foreign compiler "report";
 argument_count_raw :: () -> s64 #foreign compiler "argument_count";
 argument_raw :: (index: s64) -> string #foreign compiler "argument";
 target_os_raw :: () -> s64 #foreign compiler "target_os";
+command_begin_raw :: () -> s64 #foreign compiler "command_begin";
+command_arg_raw :: (command: s64, argument: string) #foreign compiler "command_arg";
+command_run_raw :: (command: s64) -> s64 #foreign compiler "command_run";
+command_output_raw :: (command: s64) -> string #foreign compiler "command_output";
 
 #scope_export
 
@@ -246,6 +250,68 @@ arguments :: () -> []string {
         i = i + 1;
     }
     return view(data, n);
+}
+
+/// A command to run, being assembled.
+///
+/// A handle, for the same reason [`Target`] is one: the arguments cross the boundary one at a time,
+/// so something has to say which command they belong to.
+Command :: struct {
+    /// The driver's handle. Opaque.
+    id: s64;
+}
+
+/// Starts a command whose first argument is the program to run.
+///
+/// The program is **found on `PATH`**, and its arguments are passed as a list rather than as a shell
+/// line: there is no shell, so nothing splits on spaces, expands a glob, or interprets a quote. A path
+/// with a space in it therefore works, which is the failure mode a makefile has to fight.
+command :: (program: string) -> Command {
+    c: Command;
+    c.id = command_begin_raw();
+    command_arg_raw(c.id, program);
+    return c;
+}
+
+/// Appends one argument.
+argument_of :: (c: Command, value: string) {
+    command_arg_raw(c.id, value);
+}
+
+/// Runs the command and returns its exit status, capturing its standard output.
+///
+/// A build script shelling out is what the design's first version could *not* do: the VM translates a
+/// pointer argument one level deep, so `execvp`'s `argv` — an array of pointers — arrives with a real
+/// address for the array and region-relative garbage for every string in it (ADR-0158 §3). That is why
+/// this is not `Process.run`: the **driver** spawns the process, with ordinary Rust strings, so there
+/// is no marshalling to get wrong.
+///
+/// `0` means success, as it does for every process. A command that could not be started at all is a
+/// non-zero status and a message on [`output`], rather than a trap, because "the tool is not
+/// installed" is a thing a build script should be able to handle.
+run :: (c: Command) -> s64 #must {
+    return command_run_raw(c.id);
+}
+
+/// Everything the command wrote to standard output, after [`run`].
+///
+/// Empty before it has run. Standard error is not captured: it is the channel a tool uses to explain
+/// itself, so it goes to the terminal where the person running the build can read it — capturing it
+/// would mean a build script had to choose to print it, and most would forget.
+output :: (c: Command) -> string {
+    return command_output_raw(c.id);
+}
+
+/// Runs `program` with `args` and returns its exit status.
+///
+/// The one-line form, for the common case. Use [`command`] and [`output`] when the *output* is what
+/// the script wants — a git hash to stamp into a binary, say.
+shell :: (program: string, args: []string) -> s64 #must {
+    c := command(program);
+    for a: args {
+        command_arg_raw(c.id, a);
+    }
+    return command_run_raw(c.id);
 }
 
 /// Which operating system the build is running on.

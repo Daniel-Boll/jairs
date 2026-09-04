@@ -64,7 +64,15 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
     let mut module_paths = args.module_paths.clone();
     module_paths.push(crate::commands::check::bundled_module_dir());
 
-    if args.script {
+    // **`--script` is now an override, not the only way in** (ADR-0195 §6). A file that imports
+    // `modules/Compiler` *is* a build script — that import is what gives it the driver's vocabulary —
+    // so `jr build build.jr` does the right thing without a flag, which is the whole point of a
+    // `build.jai`-shaped workflow. The flag stays for the case detection cannot see: a script that
+    // reaches the module through a helper of its own.
+    //
+    // Detection reads one file's own imports, so an ordinary build pays a parse rather than a second
+    // module tree.
+    if args.script || jr_driver::is_build_script(&args.path).map_err(|e| anyhow::anyhow!(e))? {
         return run_script(&args, &renderer, module_paths);
     }
 

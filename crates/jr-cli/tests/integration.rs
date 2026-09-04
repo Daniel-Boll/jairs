@@ -3866,20 +3866,41 @@ fn a_build_script_whose_target_does_not_compile_fails() {
 /// A build script is not something you compile, and saying so is a *diagnostic* rather than a wall of
 /// linker output.
 ///
-/// `#foreign compiler "…"` resolves to no symbol in any library, so before this refusal existed the
-/// link failed with `Undefined symbols: _add_file, referenced from _jr$2$17` — which names the
-/// compiler's own mangling rather than the mistake the operator made, a missing `--script`.
+/// **This test's construct changed when detection landed, and the change is the point.** It used to
+/// import `modules/Compiler` directly, which `jr build` now recognises and *runs* — so the refusal is
+/// unreachable that way, and a test asserting it would have been asserting a stale design.
+///
+/// What remains is the boundary detection cannot see: a script reaching the module through a helper of
+/// its own. `is_build_script` reads one file's own imports, deliberately, so an ordinary build pays a
+/// parse rather than a module tree — and this is the case that costs. It gets the refusal, which names
+/// `--script`.
+///
+/// Before that refusal existed the link failed with `Undefined symbols: _add_file, referenced from
+/// _jr$2$17` — the compiler's own mangling rather than the mistake the operator made.
 #[test]
 fn compiling_a_build_script_is_refused_by_name() {
     let dir = TempDir::new().expect("a temporary directory");
+
+    // A helper module of the script's own, so the root file does not name `Compiler` itself.
+    let modules = dir.path().join("modules");
+    fs::create_dir_all(modules.join("Helper")).expect("the module directory should be creatable");
+    fs::write(
+        modules.join("Helper/module.jr"),
+        "Compiler :: #import \"Compiler\";\n\
+         start :: (name: string) -> s64 {\n\
+         \x20   t := Compiler.create_target(name);\n\
+         \x20   return t.id;\n\
+         }\n",
+    )
+    .expect("the helper should be written");
+
     let script = dir.path().join("build.jr");
     fs::write(
         &script,
         "#import \"Basic\";\n\
-         Compiler :: #import \"Compiler\";\n\
+         Helper :: #import \"Helper\";\n\
          main :: () {\n\
-         \x20   t := Compiler.create_target(\"app\");\n\
-         \x20   Compiler.add_file(t, \"app.jr\");\n\
+         \x20   _ = Helper.start(\"app\");\n\
          \x20   exit(0);\n\
          }\n",
     )
@@ -3887,9 +3908,9 @@ fn compiling_a_build_script_is_refused_by_name() {
 
     let artefact = dir.path().join("as-a-program");
     assert_eq!(
-        run_build(script, Some(artefact.clone())),
+        run_build_with_module_dir(script, Some(artefact.clone()), modules),
         2,
-        "a file importing `modules/Compiler` must be refused as a program"
+        "a file reaching `modules/Compiler` indirectly must be refused as a program"
     );
     assert!(!artefact.exists(), "nothing should have been linked");
 }
@@ -3936,4 +3957,138 @@ fn a_build_script_procedure_outside_a_build_script_is_refused() {
         stderr.contains("--script"),
         "the refusal must name the flag that fixes it, got {stderr:?}"
     );
+}
+
+/// A build script shells out and reads the tool's output.
+///
+/// The thing v1 of this design could not do, and the reason real build scripts exist: stamping a git
+/// hash into a binary, running a shader compiler, calling `codesign`. Not `modules/Process`, because
+/// that fails under `jr run` — the VM marshals a pointer one level deep and `argv` is an array of
+/// pointers (ADR-0158 §3) — so the *driver* spawns, with ordinary Rust strings.
+///
+/// Uses `echo`, which every POSIX host has, and asserts on the **captured output** rather than only on
+/// the status: a driver that ran nothing and returned 0 would pass a status check.
+#[test]
+fn a_build_script_shells_out_and_reads_the_output() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = dir.path().join("app.jr");
+    fs::write(&program, "#import \"Basic\";\nmain :: () { exit(0); }\n")
+        .expect("the program should be written");
+
+    // The script writes what it learned into a file, which is how the test observes it: a script's
+    // own `print` goes to the same stdout the harness owns, and reading a file is unambiguous.
+    let observed = dir.path().join("observed.txt");
+    let artefact = Artefact::named("jr-test-shelled-out");
+    let script = dir.path().join("build.jr");
+    fs::write(
+        &script,
+        format!(
+            "#import \"Basic\";\n\
+             Compiler :: #import \"Compiler\";\n\
+             FU :: #import \"File_Utilities\";\n\
+             libc_alloc :: (n: s64) -> *u8 {{ return malloc(n); }}\n\
+             libc_free :: (p: *u8) {{ free(p); }}\n\
+             main :: () {{\n\
+             \x20   context.allocator = libc_alloc;\n\
+             \x20   context.allocator_free = libc_free;\n\
+             \x20   c := Compiler.command(\"echo\");\n\
+             \x20   Compiler.argument_of(c, \"from-a-subprocess\");\n\
+             \x20   status := Compiler.run(c);\n\
+             \x20   said := Compiler.output(c);\n\
+             \x20   no_args: []string;\n\
+             \x20   failed := Compiler.shell(\"false\", no_args);\n\
+             \x20   _ = FU.write_entire_file(\"{}\", said);\n\
+             \x20   if status != 0 {{ exit(2); }}\n\
+             \x20   if failed == 0 {{ exit(3); }}\n\
+             \x20   t := Compiler.create_target(\"app\");\n\
+             \x20   o := Compiler.options(t);\n\
+             \x20   o.output = \"{}\";\n\
+             \x20   Compiler.set_options(t, o);\n\
+             \x20   Compiler.add_file(t, \"{}\");\n\
+             \x20   if !Compiler.build(t) {{ exit(1); }}\n\
+             \x20   exit(0);\n\
+             }}\n",
+            observed.display(),
+            artefact.path().display(),
+            program.display()
+        ),
+    )
+    .expect("the script should be written");
+
+    assert_eq!(
+        run_build_script(script, Vec::new()),
+        0,
+        "the script should succeed: a non-zero exit means `echo` failed (2) or `false` succeeded (3)"
+    );
+    let said = fs::read_to_string(&observed).expect("the script should have written what it read");
+    assert_eq!(
+        said.trim(),
+        "from-a-subprocess",
+        "the script must receive the subprocess's actual output"
+    );
+    assert!(
+        artefact.path().exists(),
+        "the target should still have been built"
+    );
+}
+
+/// `jr build build.jr` runs the script without a flag, which is the workflow the feature exists for.
+///
+/// Detected by the **import**, not by a shape: importing `modules/Compiler` is what gives a file the
+/// driver's vocabulary, so detecting on the same fact means the flag and the refusal for compiling one
+/// as a program cannot disagree about what a build script is.
+///
+/// The negative half matters as much: an ordinary program must still be *compiled*, so this asserts
+/// both, with the same helper and one difference.
+#[test]
+fn a_build_script_is_detected_without_the_flag() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = dir.path().join("app.jr");
+    fs::write(
+        &program,
+        "#import \"Basic\";\nmain :: () {\n    print(\"detected\\n\");\n    exit(0);\n}\n",
+    )
+    .expect("the program should be written");
+
+    let artefact = Artefact::named("jr-test-detected-without-a-flag");
+    let script = dir.path().join("build.jr");
+    fs::write(
+        &script,
+        format!(
+            "#import \"Basic\";\n\
+             Compiler :: #import \"Compiler\";\n\
+             main :: () {{\n\
+             \x20   t := Compiler.create_target(\"app\");\n\
+             \x20   o := Compiler.options(t);\n\
+             \x20   o.output = \"{}\";\n\
+             \x20   Compiler.set_options(t, o);\n\
+             \x20   Compiler.add_file(t, \"{}\");\n\
+             \x20   if !Compiler.build(t) {{ exit(1); }}\n\
+             \x20   exit(0);\n\
+             }}\n",
+            artefact.path().display(),
+            program.display()
+        ),
+    )
+    .expect("the script should be written");
+
+    // **No `--script`**, and no `-o`: the script decides both.
+    assert_eq!(
+        run_build(script, None),
+        0,
+        "a file importing `modules/Compiler` must run as a build script without the flag"
+    );
+    assert!(
+        artefact.path().exists(),
+        "the script's target must have been built"
+    );
+
+    // The other direction: an ordinary program is still compiled, not run.
+    let plain = dir.path().join("plain");
+    assert_eq!(
+        run_build(program, Some(plain.clone())),
+        0,
+        "an ordinary program must still be compiled"
+    );
+    assert!(plain.exists(), "the ordinary program's artefact must exist");
 }

@@ -1,0 +1,89 @@
+// A build script, written in Jairs — the thing `jai build.jai` does, in this language.
+//
+// Verified: from the repository root,
+//
+//     cargo run -q -p jr-cli -- build examples/10-build-script.jr -I modules
+//
+// prints what it learned, then `note: built hello-from-a-build-script`. No `--script` flag: a file
+// that imports `modules/Compiler` *is* a build script, because that import is what gives it the
+// driver's vocabulary. Pass `-- release` to take the other branch.
+//
+// # Why this is a program and not a `#run`
+//
+// Jai puts its build script at compile time. That cannot work here: compile-time code may call no
+// `#foreign` procedure (ADR-0006), so a `#run` cannot read a file, shell out, print, or even
+// allocate — `Basic.malloc` is itself `#foreign`. And the power in a real `build.jai` is not the
+// compiler API at all; it is `Process`, `File` and `String`, which a program has and a `#run` does
+// not. So the script runs as an ordinary program and `modules/Compiler` is the small part that talks
+// to the compiler (ADR-0195).
+
+#import "Basic";
+Compiler :: #import "Compiler";
+String :: #import "String";
+
+libc_alloc :: (n: s64) -> *u8 {
+    return malloc(n);
+}
+
+libc_free :: (p: *u8) {
+    free(p);
+}
+
+main :: () {
+    // `Compiler.arguments()` allocates, so a script that reads its command line installs an
+    // allocator first — the same obligation `File_Utilities.read_entire_file` has.
+    context.allocator = libc_alloc;
+    context.allocator_free = libc_free;
+
+    args := Compiler.arguments();
+    is_release := args.count > 0 && String.equal(args[0], "release");
+
+    // Shell out, which is what a build script is *for*: a git hash to stamp in, a shader to compile,
+    // a bundle to sign. The driver spawns the process, so there is no `argv` to marshal.
+    git := Compiler.command("git");
+    Compiler.argument_of(git, "rev-parse");
+    Compiler.argument_of(git, "--short");
+    Compiler.argument_of(git, "HEAD");
+    status := Compiler.run(git);
+    if status == 0 {
+        print("at commit %", Compiler.output(git));
+    }
+    if status != 0 {
+        print("not a git checkout, carrying on\n");
+    }
+
+    if is_release {
+        print("release build\n");
+    }
+    if !is_release {
+        print("debug build\n");
+    }
+
+    // Per-OS decisions are ordinary code here, not a directive.
+    if Compiler.os() == Compiler.Operating_System.MACOS {
+        print("building for macOS\n");
+    }
+
+    level: s64 = 0;
+    if is_release {
+        level = 1;
+    }
+
+    // A literal must be named before it is viewed: there is no implicit array-to-view conversion.
+    paths := string.["modules"];
+
+    t := Compiler.create_target("hello");
+    o := Compiler.options(t);
+    o.output = "hello-from-a-build-script";
+    o.opt_level = level;
+    o.bounds_checks = !is_release;
+    o.module_paths = paths[];
+    Compiler.set_options(t, o);
+    Compiler.add_file(t, "examples/01-hello.jr");
+
+    if !Compiler.build(t) {
+        Compiler.report("the target did not build");
+        exit(1);
+    }
+    exit(0);
+}

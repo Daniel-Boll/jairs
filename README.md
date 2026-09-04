@@ -17,12 +17,33 @@ with the same API as Jai's `Simp`. Every one of those claims has a capability
 table behind it, kept honest at the end of every wave — if a table and the code
 disagree, the code is right and the table has a bug.
 
-**What is next is researched and not built:** a build script written in Jairs, so a project is built by
-`jr build build.jr` rather than a line of flags. [`docs/build-script-plan.md`](docs/build-script-plan.md)
-is the research — 23 real Jai build scripts read, because Jai's own compiler module is unpublished — and
-its finding is that copying Jai's model would not work here, because a Jairs `#run` cannot read a file.
-The plan runs the script as an ordinary program instead. The same research found that W6 was closed on an
-overclaim: build scripts were never delivered, only two build settings.
+**A project can be built by a Jairs program.** `jr build build.jr` compiles the script, runs it, and
+performs the compilations it asked for — no flag, because importing `modules/Compiler` is what makes a
+file a build script:
+
+```jairs
+Compiler :: #import "Compiler";
+
+main :: () {
+    git := Compiler.command("git");
+    Compiler.argument_of(git, "rev-parse");
+    _ = Compiler.run(git);                       // shells out, and reads what it said
+
+    t := Compiler.create_target("app");
+    o := Compiler.options(t);                    // read the defaults, then change what you care about
+    o.output = "app";
+    Compiler.set_options(t, o);
+    Compiler.add_file(t, "src/main.jr");
+    if !Compiler.build(t) { exit(1); }
+}
+```
+
+The design came from reading 23 real `build.jai` files, because Jai's own compiler module is unpublished
+— and copying Jai's shape would not have worked. Jai puts the script in a `#run`; a Jairs `#run` can call
+no `#foreign` procedure, so it cannot read a file, shell out, or even allocate. It also turned out that
+Jai's build power is the *standard library* rather than the compiler API, so the script runs as an
+ordinary program. See [ADR-0195](docs/adr/0195-build-script.md) and
+[`examples/10-build-script.jr`](examples/10-build-script.jr).
 
 The language gained five utilities it had owed for several waves: typed constants
 (`FLAG : u32 : 256`), array literals (`s64.[1, 2, 3]` — the most used construct
