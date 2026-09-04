@@ -22,10 +22,10 @@
 //   128       `READ_WRITE` on an existing file does not truncate
 //   256       `exists` before `remove`, and not after
 //   512       a missing file fails to open, and `close` of it is safe
-//   1024      `join` inserts exactly one separator                         File_Utilities
-//   2048      `join` collapses several
+//   1024      `path_join` inserts exactly one separator                         File_Utilities
+//   2048      `path_join` collapses several
 //   4096      an absolute right-hand side wins
-//   8192      `join` at the root
+//   8192      `path_join` at the root
 //   16384     `base_name`
 //   32768     `base_name` of a path ending in a separator is empty
 //   65536     `directory_name`
@@ -66,7 +66,7 @@ same :: (got: string, want: string, bit: s64) -> s64 {
 
 /// `same`, for a `got` the caller **owns**: freed here, so the check site stays one line.
 ///
-/// Two helpers rather than one because the ownership genuinely differs — `base_name` borrows and `join`
+/// Two helpers rather than one because the ownership genuinely differs — `base_name` borrows and `path_join`
 /// allocates — and ADR-0157 §4's whole argument is that the call site should say which.
 owned :: (got: string, want: string, bit: s64) -> s64 {
     r := same(got, want, bit);
@@ -164,10 +164,10 @@ main :: () {
     }
 
     // --- Paths -----------------------------------------------------------------------------------------
-    total = total + owned(join("a", "b"), "a/b", 1024);
-    total = total + owned(join("a//", "b"), "a/b", 2048);
-    total = total + owned(join("a/", "/b"), "/b", 4096);
-    total = total + owned(join("/", "a"), "/a", 8192);
+    total = total + owned(path_join("a", "b"), "a/b", 1024);
+    total = total + owned(path_join("a//", "b"), "a/b", 2048);
+    total = total + owned(path_join("a/", "/b"), "/b", 4096);
+    total = total + owned(path_join("/", "a"), "/a", 8192);
 
     total = total + same(base_name("/a/b/c.txt"), "c.txt", 16384);
     // **Named locals rather than `base_name(…).count`**, because a field of a call's *result* does not lower

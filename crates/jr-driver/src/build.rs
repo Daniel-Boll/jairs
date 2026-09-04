@@ -7,6 +7,13 @@ use jr_db::{BackendChoice, Db as _, JairsDatabase, OptLevel, build_object, file_
 use jr_diag::{Diagnostics, Severity};
 use jr_link::{LinkRequest, link};
 
+/// The module a target reads `add_build_string` text through (ADR-0197 §3).
+///
+/// `Build`, because Jai calls the same thing "build constants" and a script generating them is doing what
+/// `add_build_string` is for. Short, capitalised like every other module, and unlikely to collide — a
+/// project with its own `Build` module can pass its directory later in the search order and win.
+pub const GENERATED_MODULE: &str = "Build";
+
 /// Everything one compilation needs, with no argument parser in the way.
 ///
 /// Field order follows the order [`build`] consumes them, so a reader can follow the function
@@ -44,7 +51,34 @@ pub struct BuildRequest {
     /// **unchecked** — confinement applies only to a declared name (ADR-0122).
     pub output: Option<PathBuf>,
     /// Write the object file beside the output and stop, rather than linking.
+    ///
+    /// Kept beside `kind` rather than folded into it, because the two answer different questions: this is
+    /// `jr build --emit-object`, an operator's debugging switch, and `kind` is what the *artefact* is. A
+    /// script asking for an object says so with [`jr_link::OutputKind::Object`].
     pub emit_object: bool,
+    /// Which kind of artefact to produce (ADR-0197 §1).
+    pub kind: jr_link::OutputKind,
+    /// Extra arguments for the C driver, after everything the compiler generates.
+    pub linker_arguments: Vec<String>,
+    /// Extra source text to compile into this target, concatenated into one generated module
+    /// (ADR-0197 §3).
+    ///
+    /// Jai's `add_build_string`, adapted — and the adaptation is forced rather than chosen. Jai injects the
+    /// text into the **workspace's shared global scope**, so a generated `VERSION :: "abc";` is simply
+    /// visible to every file. Jairs has no shared global scope: a name crosses a file boundary only through
+    /// `#import` (ADR-0014 §2). So the text becomes a module named `Build`, and the target reads it with
+    /// `Build :: #import "Build";`.
+    ///
+    /// That is not a workaround for a missing feature; it is the same feature in a language where files
+    /// have scopes. What it costs is one line in the target, and what it buys is that a generated name
+    /// cannot silently shadow or collide with one the program wrote — which in Jai it can.
+    pub build_strings: Vec<String>,
+    /// Extra module lookups, from module name to directory (ADR-0197 §5).
+    ///
+    /// Jai's `provide_import`, in the form that needs no message loop: a mapping supplied *before* the
+    /// compilation rather than in answer to a `FAILED_IMPORT`. Appended to `module_paths`, so a name
+    /// resolves the ordinary way and nothing new has to understand it.
+    pub provided_imports: Vec<(String, PathBuf)>,
 }
 
 /// What one successful compilation produced.
@@ -88,7 +122,54 @@ pub enum BuildOutcome {
 pub fn build(request: &BuildRequest) -> Result<BuildOutcome, String> {
     let mut db = JairsDatabase::default();
 
-    let search = db.set_module_search_paths(request.module_paths.clone());
+    let mut module_paths = request.module_paths.clone();
+
+    // **A generated `Build` module, when the script supplied any text** (ADR-0197 §3). Written to a
+    // temporary directory rather than beside the source, because it is a product of *this* build: leaving
+    // it in the tree would make a second build see a stale one, and `git status` show a file nobody wrote.
+    //
+    // The guard outlives the compilation because `TempDir` removes the directory when dropped, and the
+    // module has to still be readable while `file_hir` runs.
+    let generated = if request.build_strings.is_empty() {
+        None
+    } else {
+        let dir = tempfile::tempdir()
+            .map_err(|e| format!("cannot create a directory for the generated module: {e}"))?;
+        let module_dir = dir.path().join(GENERATED_MODULE);
+        std::fs::create_dir_all(&module_dir)
+            .map_err(|e| format!("cannot create the generated module's directory: {e}"))?;
+        // Joined with a blank line between entries, so two strings cannot accidentally continue one
+        // another's last line — `A :: 1;` and `B :: 2;` written adjacently would otherwise be one line and
+        // one span.
+        let text = request.build_strings.join("\n\n");
+        std::fs::write(module_dir.join("module.jr"), text)
+            .map_err(|e| format!("cannot write the generated module: {e}"))?;
+        module_paths.push(dir.path().to_path_buf());
+        Some(dir)
+    };
+    // Named so the guard is not dropped early; the directory must outlive every query below.
+    let _generated = generated;
+
+    // **Provided imports are search directories, validated** (ADR-0197 §5). Jai answers a `FAILED_IMPORT`
+    // message with `provide_import(…, .PATH_TO_DIRECTORY, dir)`, so the mechanism is a directory either
+    // way — but Jai only ever calls it for a module that *did* fail, which means the name is checked by
+    // construction. Here it is supplied up front, so the check has to be explicit or the name would be
+    // decoration and "I provided `Foo` and the import still failed" would have no explanation.
+    for (name, dir) in &request.provided_imports {
+        let directory_form = dir.join(name).join("module.jr");
+        let file_form = dir.join(format!("{name}.jr"));
+        if !directory_form.is_file() && !file_form.is_file() {
+            return Ok(BuildOutcome::Failed(format!(
+                "`{name}` was provided from {}, which contains neither {} nor {}",
+                dir.display(),
+                directory_form.display(),
+                file_form.display()
+            )));
+        }
+        module_paths.push(dir.clone());
+    }
+
+    let search = db.set_module_search_paths(module_paths);
 
     // **A bootstrap configuration first**, then the real one (ADR-0154 §1). A build script may
     // declare `BUILD_OPT_LEVEL`, and reading a declared constant means *compiling* — so an option
@@ -138,7 +219,27 @@ pub fn build(request: &BuildRequest) -> Result<BuildOutcome, String> {
         eprint!("{}", String::from_utf8_lossy(&printed));
     }
 
-    let built = match build_object(&db, root, search, config, request.backend) {
+    // `--emit-object` is the operator's switch and reaches the same place a script's
+    // `OutputKind::Object` does, so there is one path that writes an object rather than two.
+    let kind = if request.emit_object {
+        jr_link::OutputKind::Object
+    } else {
+        request.kind
+    };
+
+    // **Only an executable needs a `main`, and only an executable gets a shim** (ADR-0197 §1). A library
+    // must not have one at all: a static archive containing `main` fails a C link with `duplicate symbol`.
+    //
+    // An object is *optional*, and that third state is why this is not a `bool` — found by a test, because
+    // a library asked for as an object has no `main` and `--emit-object` on a program has always produced
+    // one with an entry. Both are legitimate, so the object path uses a `main` when there is one.
+    let policy = match kind {
+        jr_link::OutputKind::Executable => jr_db::EntryPolicy::Required,
+        jr_link::OutputKind::Object => jr_db::EntryPolicy::Optional,
+        jr_link::OutputKind::Dynamic | jr_link::OutputKind::Static => jr_db::EntryPolicy::None,
+    };
+
+    let built = match build_object(&db, root, search, config, request.backend, policy) {
         Ok(built) => built,
         Err(message) => return Ok(BuildOutcome::Failed(message)),
     };
@@ -177,19 +278,14 @@ pub fn build(request: &BuildRequest) -> Result<BuildOutcome, String> {
         },
     };
 
-    if request.emit_object {
-        let object_path = output.with_extension("o");
-        if let Err(error) = std::fs::write(&object_path, &built.object) {
-            return Ok(BuildOutcome::Failed(format!(
-                "cannot write {}: {error}",
-                object_path.display()
-            )));
-        }
-        return Ok(BuildOutcome::Built(Built {
-            output,
-            opt_level: level,
-        }));
-    }
+    // **The extension is applied here, not in `jr-link`**, because whether to override a name the caller
+    // chose is a policy and that crate has none. The policy: add the extension when the name has none, and
+    // leave a name that already has one alone — a script asking for `libfoo.dylib` gets exactly that, and
+    // one asking for `libfoo` gets the platform's.
+    let output = match kind.extension() {
+        Some(extension) if output.extension().is_none() => output.with_extension(extension),
+        _ => output,
+    };
 
     // **The one conversion between the compiler's link vocabulary and the linker's** (ADR-0183 §1).
     // `jr-link` declares its own `LinkKind` because it has no dependencies — ADR-0009's seam — so
@@ -221,6 +317,8 @@ pub fn build(request: &BuildRequest) -> Result<BuildOutcome, String> {
         .collect();
 
     if let Err(error) = link(&LinkRequest {
+        kind,
+        linker_arguments: &request.linker_arguments,
         object: &built.object,
         output: &output,
         libraries: &libraries,

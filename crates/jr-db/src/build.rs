@@ -59,6 +59,24 @@ pub enum BackendChoice {
     Llvm,
 }
 
+/// Whether the artefact being built has an entry point (ADR-0197 §1).
+///
+/// **Three states, not two**, and a `bool` was the wrong shape — found by a test. An executable *requires*
+/// a `main`; a library must not have one at all, because a static archive containing one fails a C link
+/// with `duplicate symbol '_main'`; and an object is the compiler's bytes either way, so it uses a `main`
+/// when the file has one and does not insist.
+///
+/// The third case is the one a bool cannot express, and the one a library asked for as an object needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryPolicy {
+    /// A `main` is required; its absence is an error.
+    Required,
+    /// A `main` is used if the file declares one, and its absence is fine.
+    Optional,
+    /// No entry point, and no shim: what a library needs.
+    None,
+}
+
 /// Compiles every reachable file into one native object.
 ///
 /// The caller is responsible for having checked the file first, exactly as with
@@ -76,8 +94,23 @@ pub fn build_object(
     search_paths: ModuleSearchPaths,
     config: BuildConfig,
     choice: BackendChoice,
+    policy: EntryPolicy,
 ) -> Result<BuildOutput, String> {
-    let entry = main_of(db, root).ok_or_else(|| "the file declares no `main`".to_owned())?;
+    // **A library has no entry point, and must not pretend to** (ADR-0197 §1). A Jairs program always
+    // emitted a `main` shim, so linking a static library into a C program failed with
+    // `duplicate symbol '_main'` — found by doing it. A dynamic library got away with it, because a
+    // shared object's `main` does not collide, which is exactly the asymmetry that would have let this
+    // ship half-broken.
+    //
+    // It also means a library needs no `main` **at all**, which is the more useful half: a file of
+    // `#program_export` procedures is a perfectly good library and has nothing to run.
+    let entry = match policy {
+        EntryPolicy::Required => {
+            Some(main_of(db, root).ok_or_else(|| "the file declares no `main`".to_owned())?)
+        }
+        EntryPolicy::Optional => main_of(db, root),
+        EntryPolicy::None => None,
+    };
 
     let files = crate::run::reachable_files(db, root, search_paths);
 
@@ -147,7 +180,8 @@ pub fn build_object(
                 signatures: signatures.as_ref(),
                 names: &names,
             };
-            let own_entry = (*file_id == entry.file).then_some(entry.proc);
+            // `None` for a library, so no procedure is marked `entry` and no shim is emitted.
+            let own_entry = entry.and_then(|entry| (*file_id == entry.file).then_some(entry.proc));
             for decl in declarations(&input, &pool, own_entry) {
                 if matches!(decl.kind, jr_codegen::ProcKind::Local { .. }) {
                     declared.insert(decl.proc, (decl.params.clone(), decl.ret));

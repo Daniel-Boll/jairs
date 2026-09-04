@@ -839,6 +839,8 @@ fn run_build(path: PathBuf, output: Option<PathBuf>) -> i32 {
             library_paths: Vec::new(),
             script: false,
             script_args: Vec::new(),
+            output_kind: jr_cli::cli::OutputKindArg::Executable,
+            linker_args: Vec::new(),
         },
         &quiet_global(),
     )
@@ -867,6 +869,8 @@ fn run_build_with_module_dir(path: PathBuf, output: Option<PathBuf>, extra: Path
             library_paths: Vec::new(),
             script: false,
             script_args: Vec::new(),
+            output_kind: jr_cli::cli::OutputKindArg::Executable,
+            linker_args: Vec::new(),
         },
         &quiet_global(),
     )
@@ -1408,6 +1412,8 @@ main :: () {
             library_paths: Vec::new(),
             script: false,
             script_args: Vec::new(),
+            output_kind: jr_cli::cli::OutputKindArg::Executable,
+            linker_args: Vec::new(),
         },
         &global,
     )
@@ -1527,6 +1533,8 @@ fn run_build_with_paths(path: PathBuf, output: PathBuf, library_paths: &[PathBuf
             library_paths: library_paths.to_vec(),
             script: false,
             script_args: Vec::new(),
+            output_kind: jr_cli::cli::OutputKindArg::Executable,
+            linker_args: Vec::new(),
         },
         &quiet_global(),
     )
@@ -2745,6 +2753,8 @@ fn run_build_emit_object(path: PathBuf, output: PathBuf) -> i32 {
             library_paths: Vec::new(),
             script: false,
             script_args: Vec::new(),
+            output_kind: jr_cli::cli::OutputKindArg::Executable,
+            linker_args: Vec::new(),
         },
         &quiet_global(),
     )
@@ -2790,6 +2800,8 @@ fn the_llvm_back_end_emits_a_line_table_too() {
             library_paths: Vec::new(),
             script: false,
             script_args: Vec::new(),
+            output_kind: jr_cli::cli::OutputKindArg::Executable,
+            linker_args: Vec::new(),
         },
         &quiet_global(),
     )
@@ -2933,6 +2945,8 @@ main :: () {
             library_paths: Vec::new(),
             script: false,
             script_args: Vec::new(),
+            output_kind: jr_cli::cli::OutputKindArg::Executable,
+            linker_args: Vec::new(),
         },
         &quiet_global(),
     )
@@ -3094,6 +3108,8 @@ main :: () {
             library_paths: Vec::new(),
             script: false,
             script_args: Vec::new(),
+            output_kind: jr_cli::cli::OutputKindArg::Executable,
+            linker_args: Vec::new(),
         },
         &quiet_global(),
     )
@@ -3649,6 +3665,8 @@ fn run_build_script(path: PathBuf, arguments: Vec<String>) -> i32 {
             library_paths: Vec::new(),
             script: true,
             script_args: arguments,
+            output_kind: jr_cli::cli::OutputKindArg::Executable,
+            linker_args: Vec::new(),
         },
         &quiet_global(),
     )
@@ -4344,5 +4362,343 @@ fn a_run_directive_can_shell_out_and_need_not_declare_a_target() {
         output.status.code(),
         Some(0),
         "the build should succeed: got {stderr:?}"
+    );
+}
+
+/// A library is a real linkable artefact, in both kinds, and **C can call into it**.
+///
+/// Jai's `output_type`, which 13 of 23 real build scripts set and which this compiler could not produce at
+/// all. Asserted by compiling a C program against the result and running it, because every cheaper check
+/// passes on something useless: the first version of this produced a valid `ar` archive whose only external
+/// symbol was `_main`, and a static library with a `main` in it fails a C link with `duplicate symbol`.
+///
+/// Both kinds, because they differ in *how*: a dynamic library is a link with `-dynamiclib`, and a static
+/// one is `ar` with no linker involved. The dynamic one also happened to work while the static one did not,
+/// which is precisely the asymmetry that would have let this ship half-broken.
+#[test]
+fn a_library_exports_a_symbol_c_can_call() {
+    let dir = TempDir::new().expect("a temporary directory");
+
+    // **No `main`.** A library needs none, and requiring one was the other half of the same defect.
+    fs::write(
+        dir.path().join("lib.jr"),
+        "add_two :: (a: s64, b: s64) -> s64 #c_call #program_export { return a + b; }\n",
+    )
+    .expect("the library source should be written");
+
+    fs::write(
+        dir.path().join("use.c"),
+        "#include <stdio.h>\nlong add_two(long a, long b);\nint main(void) { printf(\"%ld\\n\", add_two(40, 2)); return 0; }\n",
+    )
+    .expect("the C caller should be written");
+
+    for (kind, extension) in [
+        (jr_cli::cli::OutputKindArg::StaticLibrary, "a"),
+        (
+            jr_cli::cli::OutputKindArg::DynamicLibrary,
+            if cfg!(target_os = "macos") {
+                "dylib"
+            } else {
+                "so"
+            },
+        ),
+    ] {
+        let status = jr_cli::commands::build::run(
+            jr_cli::cli::BuildArgs {
+                path: dir.path().join("lib.jr"),
+                output: Some(dir.path().join("libjrtest")),
+                emit_object: false,
+                backend: jr_cli::cli::BackendArg::Cranelift,
+                no_bounds_check: false,
+                opt_level: None,
+                module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
+                library_paths: Vec::new(),
+                script: false,
+                script_args: Vec::new(),
+                output_kind: kind,
+                linker_args: Vec::new(),
+            },
+            &quiet_global(),
+        )
+        .expect("building a library should not fail at the io layer");
+        assert_eq!(status, 0, "{kind:?} should build");
+
+        let artefact = dir.path().join(format!("libjrtest.{extension}"));
+        assert!(
+            artefact.exists(),
+            "{kind:?} must produce {}",
+            artefact.display()
+        );
+
+        let binary = dir.path().join("user");
+        let cc = std::process::Command::new("cc")
+            .arg(dir.path().join("use.c"))
+            .arg(format!("-L{}", dir.path().display()))
+            .arg("-ljrtest")
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .expect("a C driver should exist");
+        assert!(
+            cc.status.success(),
+            "C must link against {kind:?}: {}",
+            String::from_utf8_lossy(&cc.stderr)
+        );
+
+        let ran = std::process::Command::new(&binary)
+            .env("DYLD_LIBRARY_PATH", dir.path())
+            .env("LD_LIBRARY_PATH", dir.path())
+            .output()
+            .expect("the C program should run");
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout).trim(),
+            "42",
+            "C must be able to *call* the exported procedure, not merely link it ({kind:?})"
+        );
+
+        // Removed between kinds so the second link cannot silently resolve against the first.
+        let _ = fs::remove_file(&artefact);
+    }
+}
+
+/// `#program_export` is opt-in: an unmarked procedure stays local.
+///
+/// The negative half, and it matters because the flag lives on a `ProcKind::Local` beside `entry` — a
+/// version that exported everything would pass the test above while putting every helper and every module
+/// procedure in a library's symbol table.
+#[test]
+fn a_procedure_without_the_attribute_is_not_exported() {
+    let dir = TempDir::new().expect("a temporary directory");
+    fs::write(
+        dir.path().join("lib.jr"),
+        "exported :: (a: s64) -> s64 #c_call #program_export { return a; }\n\
+         private_helper :: (a: s64) -> s64 #c_call { return a; }\n",
+    )
+    .expect("the source should be written");
+
+    let object = dir.path().join("out.o");
+    assert_eq!(
+        jr_cli::commands::build::run(
+            jr_cli::cli::BuildArgs {
+                path: dir.path().join("lib.jr"),
+                output: Some(object.clone()),
+                emit_object: false,
+                backend: jr_cli::cli::BackendArg::Cranelift,
+                no_bounds_check: false,
+                opt_level: None,
+                module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
+                library_paths: Vec::new(),
+                script: false,
+                script_args: Vec::new(),
+                output_kind: jr_cli::cli::OutputKindArg::Object,
+                linker_args: Vec::new(),
+            },
+            &quiet_global(),
+        )
+        .expect("building an object should not fail at the io layer"),
+        0
+    );
+
+    let symbols = std::process::Command::new("nm")
+        .arg(&object)
+        .output()
+        .expect("`nm` should exist");
+    let text = String::from_utf8_lossy(&symbols.stdout);
+
+    // `T` is external, `t` is local. The distinction is the whole point: the first version of this feature
+    // got the *name* right and left the linkage local, which reads as finished and is not.
+    assert!(
+        text.lines()
+            .any(|l| l.contains(" T ") && l.contains("exported")),
+        "the marked procedure must be external:\n{text}"
+    );
+    assert!(
+        !text
+            .lines()
+            .any(|l| l.contains(" T ") && l.contains("private_helper")),
+        "an unmarked procedure must stay local:\n{text}"
+    );
+}
+
+/// Generated source, a provided import, a working directory and a linker argument, in one script.
+///
+/// Four of Jai's build options at once, because they are independent in the code and a reader wants to see
+/// that they compose — and because each one alone would be four near-identical tests.
+///
+/// `add_build_string` is the one that differs from Jai and the reason is a language difference rather than
+/// a shortfall: Jai injects text into a workspace's **shared global scope**, and Jairs has none, so the text
+/// becomes a `Build` module the target imports. Asserted through the artefact's *output*, which is the only
+/// way to know the generated constant actually reached the program.
+#[test]
+fn a_script_generates_source_and_provides_a_module() {
+    let dir = TempDir::new().expect("a temporary directory");
+    fs::create_dir_all(dir.path().join("vendor/Helper"))
+        .expect("the vendor tree should be creatable");
+    fs::write(
+        dir.path().join("vendor/Helper/module.jr"),
+        "answer :: () -> s64 { return 7; }\n",
+    )
+    .expect("the provided module should be written");
+    fs::write(
+        dir.path().join("app.jr"),
+        "#import \"Basic\";\n\
+         B :: #import \"Build\";\n\
+         H :: #import \"Helper\";\n\
+         main :: () {\n\
+         \x20   print(\"% %\\n\", B.STAMP, H.answer());\n\
+         \x20   exit(0);\n\
+         }\n",
+    )
+    .expect("the program should be written");
+
+    let artefact = Artefact::named("jr-test-generated-and-provided");
+    let script = dir.path().join("build.jr");
+    fs::write(
+        &script,
+        format!(
+            "#import \"Basic\";\n\
+             Compiler :: #import \"Compiler\";\n\
+             main :: () {{\n\
+             \x20   paths := string.[\"{}\"];\n\
+             \x20   t := Compiler.create_target(\"app\");\n\
+             \x20   o := Compiler.options(t);\n\
+             \x20   o.output = \"{}\";\n\
+             \x20   o.module_paths = paths[];\n\
+             \x20   Compiler.set_options(t, o);\n\
+             \x20   Compiler.add_build_string(t, \"STAMP :: \\\"stamped\\\";\");\n\
+             \x20   Compiler.provide_import(t, \"Helper\", \"{}\");\n\
+             \x20   Compiler.add_linker_argument(t, \"-Wl,-dead_strip\");\n\
+             \x20   Compiler.add_file(t, \"{}\");\n\
+             \x20   if !Compiler.build(t) {{ exit(1); }}\n\
+             \x20   exit(0);\n\
+             }}\n",
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../modules")
+                .display(),
+            artefact.path().display(),
+            dir.path().join("vendor").display(),
+            dir.path().join("app.jr").display(),
+        ),
+    )
+    .expect("the script should be written");
+
+    assert_eq!(
+        run_build_script(script, Vec::new()),
+        0,
+        "the script should succeed"
+    );
+    let output = std::process::Command::new(std::path::Path::new(".").join(artefact.path()))
+        .output()
+        .expect("the artefact should run");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "stamped 7",
+        "the generated constant and the provided module must both have reached the program"
+    );
+}
+
+/// A `provide_import` naming a module the directory does not contain says so.
+///
+/// The check exists because Jai gets it for free: it only ever calls `provide_import` in answer to a
+/// `FAILED_IMPORT`, so the name is known to be real. Supplied up front, the name would otherwise be
+/// decoration and "I provided `Foo` and the import still failed" would have no explanation.
+#[test]
+fn a_provided_import_that_is_not_there_is_reported() {
+    let dir = TempDir::new().expect("a temporary directory");
+    fs::write(
+        dir.path().join("app.jr"),
+        "#import \"Basic\";\nmain :: () { exit(0); }\n",
+    )
+    .expect("the program should be written");
+
+    let script = dir.path().join("build.jr");
+    fs::write(
+        &script,
+        format!(
+            "#import \"Basic\";\n\
+             Compiler :: #import \"Compiler\";\n\
+             main :: () {{\n\
+             \x20   t := Compiler.create_target(\"app\");\n\
+             \x20   Compiler.provide_import(t, \"Nowhere\", \"{}\");\n\
+             \x20   Compiler.add_file(t, \"{}\");\n\
+             \x20   if !Compiler.build(t) {{ exit(1); }}\n\
+             \x20   exit(0);\n\
+             }}\n",
+            dir.path().display(),
+            dir.path().join("app.jr").display(),
+        ),
+    )
+    .expect("the script should be written");
+
+    let binary = env!("CARGO_BIN_EXE_jr");
+    let modules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules");
+    let output = std::process::Command::new(binary)
+        .args([
+            "build",
+            &script.to_string_lossy(),
+            "-I",
+            &modules.to_string_lossy(),
+        ])
+        .output()
+        .expect("`jr build` should run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("Nowhere") && stderr.contains("provided"),
+        "the refusal must name the module and say it was provided: got {stderr:?}"
+    );
+}
+
+/// A `#run` reads and writes files through the driver.
+///
+/// `modules/File` is unusable from a `#run` — its flags are `#run` constants of its own, which is the one
+/// case a module's compile-time evaluation cannot reach (ADR-0196 §3) — so these go through the host, where
+/// the driver does the work and there is nothing to evaluate.
+#[test]
+fn a_run_directive_reads_and_writes_files() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let written = dir.path().join("generated/deep/out.txt");
+    let script = dir.path().join("build.jr");
+    fs::write(
+        &script,
+        format!(
+            "#import \"Basic\";\n\
+             Compiler :: #import \"Compiler\";\n\
+             build :: () {{\n\
+             \x20   ok := Compiler.write_file(\"{}\", \"round-tripped\");\n\
+             \x20   back := Compiler.read_file(\"{}\");\n\
+             \x20   print(\"ok=% back=[%] exists=% missing=%\\n\", ok, back,\n\
+             \x20       Compiler.file_exists(\"{}\"), Compiler.file_exists(\"{}\"));\n\
+             }}\n\
+             #run build();\n",
+            written.display(),
+            written.display(),
+            written.display(),
+            dir.path().join("nope").display(),
+        ),
+    )
+    .expect("the script should be written");
+
+    let binary = env!("CARGO_BIN_EXE_jr");
+    let modules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules");
+    let output = std::process::Command::new(binary)
+        .args([
+            "build",
+            &script.to_string_lossy(),
+            "-I",
+            &modules.to_string_lossy(),
+        ])
+        .output()
+        .expect("`jr build` should run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("ok=true back=[round-tripped] exists=true missing=false"),
+        "a `#run` must read and write files, and creating parent directories is part of it: got {stderr:?}"
+    );
+    assert!(
+        written.is_file(),
+        "the file must actually exist on disk at {}",
+        written.display()
     );
 }

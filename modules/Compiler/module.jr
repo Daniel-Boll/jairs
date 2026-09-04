@@ -75,6 +75,15 @@ command_begin_raw :: () -> s64 #foreign compiler "command_begin";
 command_arg_raw :: (command: s64, argument: string) #foreign compiler "command_arg";
 command_run_raw :: (command: s64) -> s64 #foreign compiler "command_run";
 command_output_raw :: (command: s64) -> string #foreign compiler "command_output";
+set_output_kind_raw :: (target: s64, kind: s64) #foreign compiler "set_output_kind";
+add_linker_argument_raw :: (target: s64, argument: string) #foreign compiler "add_linker_argument";
+add_build_string_raw :: (target: s64, text: string) #foreign compiler "add_build_string";
+provide_import_raw :: (target: s64, name: string, directory: string) #foreign compiler "provide_import";
+set_working_directory_raw :: (directory: string) #foreign compiler "set_working_directory";
+working_directory_raw :: () -> string #foreign compiler "working_directory";
+read_file_raw :: (path: string) -> string #foreign compiler "read_file";
+write_file_raw :: (path: string, contents: string) -> bool #foreign compiler "write_file";
+file_exists_raw :: (path: string) -> bool #foreign compiler "file_exists";
 
 #scope_export
 
@@ -93,6 +102,24 @@ command_output_raw :: (command: s64) -> string #foreign compiler "command_output
 Target :: struct {
     /// The driver's handle. Opaque; a script never needs to read it.
     id: s64;
+}
+
+/// What kind of artefact a target produces.
+///
+/// Jai's `output_type`, which 13 of 23 real build scripts set — the second most-used option after the
+/// executable's name, and the largest single thing this library could not ask for.
+Output_Kind :: enum {
+    /// A runnable program. The default.
+    EXECUTABLE;
+    /// A dynamic library: `.dylib` on macOS, `.so` elsewhere. The extension is added when the output name
+    /// has none, so `o.output = "libthing"` produces the platform's own.
+    DYNAMIC_LIBRARY;
+    /// A static library, `.a`, produced by `ar`. Records objects and nothing about what they need, so a
+    /// caller linking against one still declares the same `#system_library`s itself.
+    STATIC_LIBRARY;
+    /// The object file alone, for a script that will link it itself — Jai's
+    /// `READY_FOR_CUSTOM_LINK_COMMAND`, without a message loop. Needs no C toolchain at all.
+    OBJECT;
 }
 
 /// Which code generator to use.
@@ -125,6 +152,8 @@ Build_Options :: struct {
     module_paths: []string;
     /// Directories to search for a `#system_library`.
     library_paths: []string;
+    /// What kind of artefact to produce.
+    kind: Output_Kind;
 }
 
 /// Which operating system the build is running on, so a script can choose per-OS sources or flags.
@@ -165,6 +194,7 @@ options :: (t: Target) -> Build_Options {
     o.opt_level = 1;
     o.bounds_checks = true;
     o.backend = Backend.CRANELIFT;
+    o.kind = Output_Kind.EXECUTABLE;
     return o;
 }
 
@@ -178,6 +208,7 @@ set_options :: (t: Target, o: Build_Options) {
     set_opt_level_raw(t.id, o.opt_level);
     set_bounds_checks_raw(t.id, o.bounds_checks);
     set_backend_raw(t.id, cast(s64, o.backend));
+    set_output_kind_raw(t.id, cast(s64, o.kind));
     for p: o.module_paths {
         add_module_path_raw(t.id, p);
     }
@@ -192,6 +223,97 @@ set_options :: (t: Target, o: Build_Options) {
 /// `#import`. Several are allowed and each is compiled as its own root.
 add_file :: (t: Target, path: string) {
     add_file_raw(t.id, path);
+}
+
+/// Appends one argument for the C driver, after everything the compiler generates (ADR-0197 §2).
+///
+/// Jai's `additional_linker_arguments`. **After**, so a script can override: `cc` and `ld` generally take
+/// the last of a conflicting pair. `Compiler.add_linker_argument(t, "-Wl,-dead_strip")` is the shape.
+///
+/// Not part of [`Build_Options`] because the list grows one entry at a time and a `[]string` field would
+/// make a script build the whole list before it knows every entry — the same reason `add_file` is a call
+/// rather than a field.
+add_linker_argument :: (t: Target, argument: string) {
+    add_linker_argument_raw(t.id, argument);
+}
+
+/// Adds generated source to the target, readable as `#import "Build"` (ADR-0197 §3).
+///
+/// # How this differs from Jai, and why it has to
+///
+/// Jai's `add_build_string` injects the text into the workspace's **shared global scope**, so a generated
+/// `VERSION :: "abc";` is simply visible everywhere. Jairs has no shared global scope — a name crosses a
+/// file boundary only through `#import` (ADR-0014 §2) — so the text becomes a module named `Build` and the
+/// target reads it with `Build :: #import "Build";`.
+///
+/// That costs one line in the target and buys something Jai does not have: a generated name cannot
+/// silently collide with or shadow one the program wrote, because it is in its own scope.
+///
+/// Several calls concatenate, separated by a blank line. The module lives in a temporary directory for the
+/// duration of the build, so nothing stale is left in the tree and `git status` stays clean.
+add_build_string :: (t: Target, text: string) {
+    add_build_string_raw(t.id, text);
+}
+
+/// Tells the target where to find a module the ordinary search path would miss (ADR-0197 §5).
+///
+/// Jai's `provide_import`, which it calls in answer to a `FAILED_IMPORT` message. There is no message loop
+/// here, so this is supplied **before** the compilation instead — and because of that the name is
+/// *checked*: providing `Foo` from a directory containing no `Foo` fails the target with a message saying
+/// which two paths were looked for. Jai gets that check for free by only ever calling it for a module that
+/// already failed.
+///
+/// Either module layout works, the same two the compiler searches: `<dir>/Name/module.jr` or
+/// `<dir>/Name.jr`.
+provide_import :: (t: Target, name: string, directory: string) {
+    provide_import_raw(t.id, name, directory);
+}
+
+/// Changes the process's working directory.
+///
+/// Jai's `set_working_directory`, and like Jai's it is **process-wide** rather than per target: every
+/// relative path a script writes resolves against it, including the working directory a subprocess
+/// inherits from [`command`]. A per-target version would fix the compiler's paths and silently not the
+/// subprocesses', which is worse than either.
+///
+/// `set_working_directory(#filepath)` is the idiom — a script that then names paths relative to its own
+/// file works wherever it is invoked from.
+set_working_directory :: (directory: string) {
+    set_working_directory_raw(directory);
+}
+
+/// The process's working directory.
+working_directory :: () -> string {
+    return working_directory_raw();
+}
+
+/// Reads a whole file, through the driver (ADR-0197 §6).
+///
+/// # Why this exists beside `modules/File_Utilities`
+///
+/// A `#run` cannot use `File_Utilities`: `modules/File`'s flags are `#run` constants of its own, and a
+/// module's own compile-time evaluation is the one thing compile-time evaluation cannot reach
+/// (ADR-0196 §3). This route has no such problem, because the driver does the reading.
+///
+/// A `main`-shaped script should prefer `File_Utilities`, which is the real library with the whole surface.
+/// This is for the `#run` case.
+///
+/// Returns the empty string for a file that cannot be read. Use [`file_exists`] to tell that from an empty
+/// file — a `bool` beside the contents would make every call site destructure a tuple it usually ignores.
+read_file :: (path: string) -> string {
+    return read_file_raw(path);
+}
+
+/// Writes a whole file, creating parent directories, through the driver.
+///
+/// Returns whether it succeeded. See [`read_file`] for why this exists beside `File_Utilities`.
+write_file :: (path: string, contents: string) -> bool #must {
+    return write_file_raw(path, contents);
+}
+
+/// Whether a path exists.
+file_exists :: (path: string) -> bool {
+    return file_exists_raw(path);
 }
 
 /// Compiles `t`, and reports whether it succeeded.
@@ -333,6 +455,38 @@ shell :: (program: string, args: []string) -> s64 #must {
     }
     return command_run_raw(c.id);
 }
+
+// ---------------------------------------------------------------------------
+// Deliberately absent, with reasons (ADR-0197 §8)
+// ---------------------------------------------------------------------------
+
+// Four things a real `build.jai` can do and this cannot. Written down rather than left to be discovered,
+// because "it is not here" and "it was considered and refused" are different facts and only one of them
+// tells a reader whether to ask.
+//
+// **A message loop** — `compiler_begin_intercept`, `compiler_wait_for_message`, `.TYPECHECKED`,
+// `provide_import` in answer to a `FAILED_IMPORT`, `READY_FOR_CUSTOM_LINK_COMMAND`. **Refused**, and it is
+// the one refusal here that is about this compiler's architecture rather than about effort. Jai's compiler
+// is threads and a queue, so a script can watch a compilation proceed and answer questions mid-flight.
+// This one is a memoising query engine, where a compilation observed halfway through is precisely what
+// cannot be allowed (ADR-0153 §1) — and `Compiler.build` inside a `#run` already proves it, panicking with
+// "Cannot change database mid-query" (ADR-0196 §8). The two useful things a real script gets from the loop
+// are here by other routes: [`provide_import`] supplies the mapping up front, and `Output_Kind.OBJECT`
+// hands over the object so a script can run its own linker.
+//
+// **AST inspection and modification** — `Message_Typechecked`, `compiler_modify_procedure`. Refused for the
+// same reason plus one more: it is a large surface with no bearing on *compiling*, and `noted_declarations`
+// (ADR-0153) already answers the note-driven question a build script actually asks.
+//
+// **Windows icons and manifests** — `set_icon_by_filename`, `add_manifest_to_executable`. Absent because
+// they mean editing a PE resource section, and this compiler has never run on Windows (PLAN §1.5). A
+// portability claim it cannot test is worth less than a stated one it can — the rule ADR-0155 §1 used for
+// `CLOCK_MONOTONIC` and ADR-0157 for `O_CREAT`. Meanwhile a script can shell out to `rescle` or `mt.exe`
+// with [`command`], which is what the feature would do anyway.
+//
+// **A C bindings generator** — `Bindings_Generator`, `BuildCpp`. Absent because it is a C header parser,
+// which is a project of its own and not a build-script feature: Jai's is a separate module that a build
+// script *calls*, and the same would be true here. A script can shell out to one today.
 
 /// Which operating system the build is running on.
 os :: () -> Operating_System {

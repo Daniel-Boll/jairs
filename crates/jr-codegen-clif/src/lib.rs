@@ -686,11 +686,16 @@ impl Backend for ClifBackend {
         layout: TargetLayout,
     ) -> Result<(), CodegenError> {
         let (name, linkage, foreign) = match &decl.kind {
-            ProcKind::Local { symbol, entry } => (
+            ProcKind::Local {
+                symbol,
+                exported,
+                entry,
+            } => (
                 symbol.clone(),
-                // The entry point must be visible to the system linker; nothing else
-                // needs to be.
-                if *entry {
+                // The entry point must be visible to the system linker, and so must anything a library
+                // exports (ADR-0197 §1). Nothing else needs to be — and keeping the default `Local` is
+                // what lets the linker drop an unused helper rather than shipping it.
+                if *entry || *exported {
                     Linkage::Export
                 } else {
                     Linkage::Local
@@ -1196,6 +1201,7 @@ mod tests {
             receives_context: false,
             kind: ProcKind::Local {
                 symbol: "jr$0$0".to_owned(),
+                exported: false,
                 entry: false,
             },
             name: Some("roundtrip".to_owned()),

@@ -97,7 +97,7 @@
 #h(4pt)
 #pill[1082 tests]
 #h(4pt)
-#pill[ADR-0196 latest]
+#pill[ADR-0197 latest]
 #h(4pt)
 #pill(fill: rgb("#eaf5ee"), stroke: good)[ALL TWELVE WAVES DONE]
 #h(4pt)
@@ -109,9 +109,9 @@
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "1097", "workspace, all seven gates"),
-  metric("Corpus", "279", "jr files, all three engines"),
-  metric("ADRs", "196", "0001 to 0196, immutable"),
+  metric("Tests", "1103", "workspace, all seven gates"),
+  metric("Corpus", "280", "jr files, all three engines"),
+  metric("ADRs", "197", "0001 to 0197, immutable"),
   metric("Diagnostics", "131", "declared codes, E0296 next"),
   metric("Editor checks", "170", "Neovim, verified not gated"),
 )
@@ -471,25 +471,43 @@
     ]
 
     #v(0.3em)
-    #sub[What is next: a build script written in Jairs]
+    #sub[Build scripts written in Jairs — and measured against 23 real ones]
     #text(size: 7.4pt)[
-      *Researched, not started* — `docs/build-script-plan.md`. Several Jai projects carry a `build.jai`
-      and are built with `jai build.jai`. The research read *23 real build scripts* because Jai's own
-      `Compiler` module is unpublished anywhere, and its finding is that copying Jai's model would not
-      work here: Jai puts the script in a `#run`, and a Jairs `#run` can do *nothing* — every `#foreign`
-      call is refused at compile time, so it cannot read a file, shell out, print, or even allocate.
+      ADR-0195 to *0197*. Tests 1082 to *1103*, corpus 279 to *280*, ADRs 194 to *197*.
+      `jr build build.jr` compiles the script, runs it in the VM and performs the compilations it asked
+      for — no flag, because importing `modules/Compiler` is what makes a file a build script. Both of
+      Jai's spellings work: a `main` script the driver runs, and a bare `#run` at file scope.
     ]
 
     #v(0.3em)
     #text(size: 7.4pt)[
-      *Jai's build power comes from the standard library, not from the Compiler module.* Cloning a C
-      dependency, stamping a git hash into the binary, building a `.dmg`, formatting a bootable disk
-      image — all of it is `Process`, `File`, `String`. So the plan runs the script as an *ordinary
-      program in the VM*, where the stdlib already works (verified: a VM-hosted program writes and reads
-      files), with a small `Compiler` module whose eight procedures record a build request the driver then
-      executes. That needs no `#foreign_at_comptime`, has nothing for salsa to make unstable, and is what
-      ADR-0154 §4 said a revisit would need. Two blockers the ADRs recorded had already dissolved — one of
-      them by array literals, one wave old.
+      *ADR-0195 §2 was wrong and ADR-0196 says so.* It claimed a `#run` "cannot read a file, shell out,
+      print, or even allocate"; two of the five were false, because `ffi.rs` has served `malloc` from the
+      VM's own region since ADR-0061 and the refusal was keyed on the `#foreign` *declaration* rather
+      than on whether a host is reached. Jai agrees, read from vendored source: its comptime
+      `context.allocator` is an ordinary module, and *no allocator* is among the four `\#compiler`
+      declarations that exist.
+    ]
+
+    #v(0.3em)
+    #text(size: 7.4pt)[
+      *ADR-0197 then asked whether this is capable of the same work as a real `build.jai` — and measured
+      rather than answered.* It was not. `Build_Options.output_type` is set by *13 of 23* scripts and this
+      compiler could not build a library at all. Both kinds link now, verified by linking C against an
+      archive and a dylib. Two findings generalise: a `bool` was the wrong shape for the entry point
+      (a static archive with a `main` fails a C link), and `\#program_export` was wired correctly
+      everywhere while the symbol stayed *absent from the archive*, because reachability walks from
+      `main` and a library has none — an export must be a *reachability root*.
+    ]
+
+    #v(0.3em)
+    #text(size: 7.4pt)[
+      *The flat namespace forced two renames, and both landed on Jai's own names.* `Basic` gained a `u8`
+      `to_upper` and `String` a `[]string` `join`, so two corpus programs got E0211 on every use;
+      `to_upper_copy` and `path_join` are what Jai calls these exact procedures. And `modules/String` had
+      no `trim` at all — found by a build script stripping a newline off `git rev-parse`, not by an audit.
+      The message loop stays *refused*, not missing: Jai interleaves because its compiler is threads and a
+      queue, this one is a memoised query engine.
     ]
 
     #v(0.3em)

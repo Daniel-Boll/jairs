@@ -52,6 +52,14 @@ struct Target {
     module_paths: Vec<PathBuf>,
     /// Extra `#system_library` search directories.
     library_paths: Vec<PathBuf>,
+    /// Which artefact kind: 0 executable, 1 dynamic library, 2 static library, 3 object (ADR-0197 §1).
+    output_kind: i64,
+    /// Extra arguments for the C driver, in the order the script added them.
+    linker_arguments: Vec<String>,
+    /// Generated source text, each entry becoming part of the `Build` module.
+    build_strings: Vec<String>,
+    /// Module name to directory, for a module the ordinary search path would not find.
+    provided_imports: Vec<(String, PathBuf)>,
 }
 
 impl Target {
@@ -66,6 +74,10 @@ impl Target {
             backend: 0,
             module_paths: Vec::new(),
             library_paths: Vec::new(),
+            output_kind: 0,
+            linker_arguments: Vec::new(),
+            build_strings: Vec::new(),
+            provided_imports: Vec::new(),
         }
     }
 }
@@ -269,6 +281,80 @@ impl ScriptState {
                 self.target(int(args, 0)?)?.library_paths.push(value);
                 Ok(HostValue::Void)
             }
+            "set_output_kind" => {
+                let value = int(args, 1)?;
+                if !(0..=3).contains(&value) {
+                    return Err(format!(
+                        "{value} is not an output kind: 0 executable, 1 dynamic library,                          2 static library, 3 object"
+                    ));
+                }
+                self.target(int(args, 0)?)?.output_kind = value;
+                Ok(HostValue::Void)
+            }
+            "add_linker_argument" => {
+                let value = text(args, 1)?.to_owned();
+                self.target(int(args, 0)?)?.linker_arguments.push(value);
+                Ok(HostValue::Void)
+            }
+            "add_build_string" => {
+                let value = text(args, 1)?.to_owned();
+                self.target(int(args, 0)?)?.build_strings.push(value);
+                Ok(HostValue::Void)
+            }
+            "provide_import" => {
+                let name = text(args, 1)?.to_owned();
+                let dir = PathBuf::from(text(args, 2)?);
+                self.target(int(args, 0)?)?
+                    .provided_imports
+                    .push((name, dir));
+                Ok(HostValue::Void)
+            }
+            // **The working directory is the *process's*, not a target's** (ADR-0197 §4). Every relative
+            // path a script writes — a source file, an output, a subprocess's cwd — resolves against it, so
+            // it cannot sensibly belong to one target while another has a different one.
+            //
+            // Changed for real rather than recorded and applied per path: a script's whole point is that it
+            // runs code, and `Compiler.command` spawns processes that inherit it. Recording it would fix the
+            // compiler's paths and silently not the subprocesses', which is the worst of the three options.
+            "set_working_directory" => {
+                let dir = text(args, 0)?.to_owned();
+                std::env::set_current_dir(&dir)
+                    .map_err(|e| format!("cannot change the working directory to {dir:?}: {e}"))?;
+                Ok(HostValue::Void)
+            }
+            "working_directory" => Ok(HostValue::Str(
+                std::env::current_dir()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            )),
+            // **Host-mediated file IO, so a `#run` can read and write** (ADR-0197 §6). `modules/File` cannot
+            // be used from a `#run`: its flags are `#run` constants of its own, and a module's own
+            // const-eval is the one thing const-eval cannot reach (ADR-0196 §3). This route has no such
+            // problem, because the driver does the work.
+            //
+            // A `main`-shaped script should prefer `modules/File_Utilities`, which is the real library and
+            // has the whole surface. These two exist for the `#run` case and say so.
+            "read_file" => {
+                let path = text(args, 0)?;
+                Ok(HostValue::Str(
+                    std::fs::read_to_string(path).unwrap_or_default(),
+                ))
+            }
+            "write_file" => {
+                let path = text(args, 0)?.to_owned();
+                let contents = text(args, 1)?.to_owned();
+                if let Some(parent) = std::path::Path::new(&path).parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                Ok(HostValue::Int(i64::from(
+                    std::fs::write(&path, contents).is_ok(),
+                )))
+            }
+            "file_exists" => Ok(HostValue::Int(i64::from(
+                std::path::Path::new(text(args, 0)?).exists(),
+            ))),
             "add_file" => {
                 let value = PathBuf::from(text(args, 1)?);
                 self.target(int(args, 0)?)?.files.push(value);
@@ -451,6 +537,15 @@ impl ScriptState {
                 backend,
                 output: Some(confined),
                 emit_object: false,
+                kind: match target.output_kind {
+                    1 => jr_link::OutputKind::Dynamic,
+                    2 => jr_link::OutputKind::Static,
+                    3 => jr_link::OutputKind::Object,
+                    _ => jr_link::OutputKind::Executable,
+                },
+                linker_arguments: target.linker_arguments.clone(),
+                build_strings: target.build_strings.clone(),
+                provided_imports: target.provided_imports.clone(),
             };
 
             match crate::build::build(&request) {

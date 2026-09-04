@@ -212,6 +212,10 @@ fn append_one(
         must: template.must,
         // A clone is the same binding specialised, so it is variadic exactly when its template was.
         c_variadic: template.c_variadic,
+        // **Never inherited** (ADR-0197 §1): two instantiations of one template would otherwise want the
+        // same C symbol, and the second link would fail with a duplicate. A generic procedure is not a
+        // library entry point; a concrete wrapper around one is.
+        program_export: false,
         expand: template.expand,
         modify: template.modify,
         notes: template.notes.clone(),
@@ -376,8 +380,10 @@ fn clone_predicate(
         c_call: false,
         no_abc: false,
         must: false,
-        // Synthetic, and never a `#foreign` binding, so never variadic.
+        // Synthetic, and never a `#foreign` binding, so never variadic — nor exported, for the same
+        // reason: nothing outside the compiler knows this procedure exists to call it by name.
         c_variadic: false,
+        program_export: false,
         expand: false,
         modify: None,
         notes: Vec::new(),

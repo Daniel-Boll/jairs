@@ -12,7 +12,7 @@
 // An `==` that looped would also be the only implicitly-looping operator in the language, which is a far larger
 // thing to introduce than a procedure called `equal`.
 //
-// **Nothing here allocates**, deliberately. `concat`, `substring`, `to_upper` and `split` each need somewhere
+// **Nothing here allocates**, deliberately. `concat`, `substring`, `to_upper_copy` and `split` each need somewhere
 // to put a result, which means an allocator argument and a decision about who frees it. The *mechanism* is not
 // missing — `context.allocator` (ADR-0057) and temporary storage (ADR-0065) both exist — but choosing between
 // "always the context allocator", "an explicit parameter" and "always temporary" has real consequences for

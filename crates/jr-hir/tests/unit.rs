@@ -1613,3 +1613,23 @@ fn dump_hello_snapshot() {
         "dump should contain COMPUTED constant"
     );
 }
+
+/// `#program_export` reaches the HIR, so codegen can give the procedure a C-visible symbol.
+///
+/// Asserted at the HIR rather than at the parse tree, because the parse tree is not what codegen reads —
+/// and asserted **both ways**, since a flag that is always `true` would pass a one-sided check while
+/// exporting every procedure in the program.
+#[test]
+fn program_export_reaches_the_hir() {
+    let (hir, diags, _interner) = lower(
+        "exported :: (a: s64) -> s64 #c_call #program_export { return a; }\n\
+         private :: (a: s64) -> s64 { return a; }\n",
+    );
+    assert!(diags.is_empty(), "{diags:?}");
+    let exported: Vec<bool> = hir.procs.iter().map(|p| p.program_export).collect();
+    assert_eq!(
+        exported,
+        vec![true, false],
+        "the marked procedure must be exported and the unmarked one must not"
+    );
+}

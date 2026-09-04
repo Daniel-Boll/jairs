@@ -43,22 +43,28 @@ SEPARATOR :: 47;
 /// The extension separator.
 EXTENSION_SEPARATOR :: 46;
 
+/// **Renamed from `join` by ADR-0197 §7**, and forced rather than chosen: `modules/String` gained a `join`
+/// that concatenates a `[]string` with a separator — Jai's own name for that — and `#import` is flat, so a
+/// file importing both modules got E0211 on every use. `path_join` is Jai's name for *this* one, so the
+/// collision resolved into the naming the language being followed already had, exactly as `to_upper_copy`
+/// did in the same wave.
+///
 /// Joins `left` and `right` with exactly one separator between them.
 ///
-/// "Exactly one" is the whole value of the routine: `join("a/", "b")` and `join("a", "b")` are both `"a/b"`,
-/// and `join("a//", "b")` is too. Every program that concatenates paths by hand gets this wrong eventually,
+/// "Exactly one" is the whole value of the routine: `path_join("a/", "b")` and `path_join("a", "b")` are both `"a/b"`,
+/// and `path_join("a//", "b")` is too. Every program that concatenates paths by hand gets this wrong eventually,
 /// and the wrong result usually still *opens* — a doubled separator is harmless on POSIX — so the bug
 /// survives until something compares two paths for equality.
 ///
-/// **An absolute `right` wins**: `join("a", "/b")` is `"/b"`, and so is `join("a/", "/b")`. That matches
+/// **An absolute `right` wins**: `path_join("a", "/b")` is `"/b"`, and so is `path_join("a/", "/b")`. That matches
 /// Python's `os.path.join` and Rust's `PathBuf::push`, because a caller who supplied an absolute path meant
 /// it. Rejected: refusing the combination, which turns a decidable case into an error for no gain. Rejected:
 /// treating a leading separator on `right` as *punctuation* to be stripped, which was this routine's first
-/// draft and contradicted the rule two paragraphs apart — `join("a/", "/b")` cannot be both `"a/b"` and
+/// draft and contradicted the rule two paragraphs apart — `path_join("a/", "/b")` cannot be both `"a/b"` and
 /// `"/b"`, and the absolute rule is the one worth keeping.
 ///
 /// Allocates through `context.allocator`; `String.free_string` releases it.
-join :: (left: string, right: string) -> string {
+path_join :: (left: string, right: string) -> string {
     if left.count == 0 {
         return copy_of(right);
     }
@@ -80,7 +86,7 @@ join :: (left: string, right: string) -> string {
     // only trimming is `left`'s trailing separators, and `right` is appended as written.
     //
     // A `left` that was only separators is the root, and the root's child has one separator:
-    // `join("/", "a")` is `"/a"`. That falls out of the general path rather than being special-cased,
+    // `path_join("/", "a")` is `"/a"`. That falls out of the general path rather than being special-cased,
     // because `left_end == 0` makes the prefix empty and the separator inserted below *is* the root's.
     head := substring(left, 0, left_end);
     tail := copy_of(right);

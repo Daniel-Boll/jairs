@@ -16,3 +16,4 @@ jr-diag.workspace = true
 jr-db.workspace = true
 jr-link.workspace = true
 jr-vm.workspace = true
+tempfile = "3"

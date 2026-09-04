@@ -1,4 +1,4 @@
-// **The allocating half of `String`** (ADR-0111): `concat`, `substring`, `to_upper`, `to_lower`, `free_string`.
+// **The allocating half of `String`** (ADR-0111): `concat`, `substring`, `to_upper_copy`, `to_lower_copy`, `free_string`.
 // W7's ninth sub-wave, and the decision ADR-0103 §3 deferred when it shipped the non-allocating half.
 //
 // **Where the memory comes from.** Each of these produces a *new* string, so each allocates — through
@@ -24,7 +24,7 @@
 //   * `substring` in the middle, at the **start**, at the **end**, and **clamped** past the end — clamped rather
 //     than trapping, because "up to n bytes from here" is an ordinary thing to want, the reasoning `byte_at`'s
 //     `-1` follows;
-//   * `to_upper` and `to_lower` on mixed case, leaving non-letters alone;
+//   * `to_upper_copy` and `to_lower_copy` on mixed case, leaving non-letters alone;
 //   * every result compared with `equal` from the non-allocating half, so the two halves compose;
 //   * every result freed, so the harness can catch a leak or a double-free as a divergence.
 //
@@ -93,14 +93,14 @@ main :: () {
     }
     free_string(past);
 
-    // `to_upper` and `to_lower`, leaving the digit alone.
-    u := to_upper("aB3z");
+    // `to_upper_copy` and `to_lower_copy`, leaving the digit alone.
+    u := to_upper_copy("aB3z");
     if equal(u, "AB3Z") {
         n = n + 64;
     }
     free_string(u);
 
-    l := to_lower("aB3z");
+    l := to_lower_copy("aB3z");
     if equal(l, "ab3z") {
         n = n + 128;
     }

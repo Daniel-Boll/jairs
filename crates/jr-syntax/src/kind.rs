@@ -451,6 +451,11 @@ pub enum SyntaxKind {
     /// consumer that must react to this and not to the others matches a kind rather than re-reading the
     /// directive's text.
     C_VARIADIC_ATTR,
+    /// A `#program_export` attribute on a procedure, giving it a C-visible symbol (ADR-0197 §1).
+    ///
+    /// Its own kind for the reason every attribute here has one: a consumer reacting to this and not to
+    /// the others matches a kind rather than re-reading the directive's text.
+    PROGRAM_EXPORT_ATTR,
     /// A `#expand` attribute on a procedure, making it a **macro** (ADR-0090 §1).
     ///
     /// Its own node beside `C_CALL_ATTR` and `NO_ABC_ATTR`, for the reason those two are separate: a

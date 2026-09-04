@@ -1,0 +1,156 @@
+// **The `String` module's algorithm surface** (ADR-0197 §7) — trimming, searching, splitting, joining,
+// replacing, case-insensitive comparison and parsing — plus `Basic`'s byte classification.
+//
+// # Why this file exists
+//
+// The library was asked for `trim` and had none, so a build script reading `git rev-parse`'s output stripped
+// the trailing newline with arithmetic. Surveying Jai's own `modules/String` against ours found that most of
+// the surface was missing, not just that one.
+//
+// Every routine is exercised and the result is folded into one exit code, so a single number says whether
+// the whole surface agrees between the two engines. The checksum is *ordered* — each answer scaled by a
+// distinct multiplier — because a sum alone cannot tell a swapped pair from a correct one.
+
+#import "Basic";
+S :: #import "String";
+
+libc_alloc :: (n: s64) -> *u8 {
+    return malloc(n);
+}
+
+libc_free :: (p: *u8) {
+    free(p);
+}
+
+main :: () {
+    context.allocator = libc_alloc;
+    context.allocator_free = libc_free;
+
+    total := 0;
+
+    // Trimming borrows rather than copies, so the counts are what change.
+    total = total + S.trim("  hi there \n").count;
+    // 8
+    total = total + S.trim_left("  hi").count * 2;
+    // 4
+    total = total + S.trim_right("hi  ").count * 3;
+    // 6
+    total = total + S.trim_chars("xxhixx", "x").count * 4;
+    // 8
+
+    // Searching, including from the right — the direction a path split needs.
+    total = total + S.find_from_right("a/b/c", "/") * 5;
+    // 15
+    total = total + S.find_byte("abc", 98) * 6;
+    // 6
+    total = total + S.find_byte_from_right("abcb", 98) * 7;
+    // 21
+    total = total + S.find_any("abc", "cb") * 8;
+    // 8
+    if S.contains_any("abc", "zc") {
+        total = total + 9;
+    }
+    if S.contains_byte("abc", 99) {
+        total = total + 10;
+    }
+
+    // Splitting: found, and the two halves the separator is in neither of.
+    ok, left, right := S.split_from_left("key=value", "=");
+    if ok {
+        total = total + left.count + right.count * 2;
+        // 3 + 10
+    }
+    ok2, left2, right2 := S.split_from_right("a/b/c", "/");
+    if ok2 {
+        total = total + left2.count * 3 + right2.count * 4;
+        // 9 + 4
+    }
+    // A separator that is not there: the whole string is the left half.
+    ok3, left3, _ := S.split_from_left("nosep", "=");
+    if !ok3 {
+        total = total + left3.count * 5;
+        // 25
+    }
+
+    // `split` and `join` are inverses, which is the property a round trip needs — and the reason both
+    // treat an empty piece as real.
+    pieces := S.split("a,b,,c,", ",");
+    total = total + pieces.count * 6;
+    // 30
+    rejoined := S.join(pieces, ",");
+    if S.equal(rejoined, "a,b,,c,") {
+        total = total + 11;
+    }
+
+    // Replacing, with a longer replacement so the result's length is not the input's.
+    replaced, occurrences := S.replace("aXbXc", "X", "--");
+    total = total + replaced.count * 7 + occurrences * 8;
+    // 49 + 16
+
+    // Case-insensitive comparison.
+    if S.equal_nocase("HeLLo", "hello") {
+        total = total + 12;
+    }
+    if S.compare_nocase("abc", "ABD") == -1 {
+        total = total + 13;
+    }
+    if S.starts_with_nocase("HELLO", "he") {
+        total = total + 14;
+    }
+    if S.ends_with_nocase("HELLO", "LO") {
+        total = total + 15;
+    }
+
+    // Parsing, with the remainder that makes it usable in a loop.
+    value, parsed, rest := S.to_integer("-42rest");
+    if parsed {
+        total = total - value + rest.count * 9;
+        // +42 + 36
+    }
+    flag, flag_ok := S.to_bool("true");
+    if flag_ok && flag {
+        total = total + 16;
+    }
+    _, missing := S.to_bool("yes");
+    if !missing {
+        total = total + 17;
+    }
+
+    // In place, on bytes this program owns — a literal's bytes are read-only.
+    owned := S.substring("Hello World", 0, 11);
+    S.to_upper_in_place(owned);
+    if S.equal(owned, "HELLO WORLD") {
+        total = total + 18;
+    }
+    S.to_lower_in_place(owned);
+    if S.equal(owned, "hello world") {
+        total = total + 19;
+    }
+    S.replace_chars_in_place(owned, " ", 95);
+    if S.equal(owned, "hello_world") {
+        total = total + 20;
+    }
+
+    // `Basic`'s byte classification: the alphabet a lexer is built from, which is why it is not in
+    // `String` (ADR-0197 §7).
+    if is_alpha(65) && is_digit(53) && is_space(32) && is_alnum(95) && is_print(32) {
+        total = total + 21;
+    }
+    if is_upper(65) && is_lower(97) && !is_upper(97) {
+        total = total + 22;
+    }
+    if to_upper(97) == 65 && to_lower(65) == 97 && to_upper(48) == 48 {
+        total = total + 23;
+    }
+
+    // **Measured, not derived.** The first version of this line carried a hand-summed 515 and the program
+    // computes 540 — a checksum whose expected value is arithmetic done by a human is a second
+    // implementation of the thing under test, and it is the one more likely to be wrong.
+    //
+    // What makes the number meaningful is not that it was predicted but that both engines must agree on
+    // it, and that every multiplier is distinct so a swapped pair cannot sum to the same total.
+    if total != 540 {
+        exit(1);
+    }
+    exit(115);
+}

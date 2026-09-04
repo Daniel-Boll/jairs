@@ -169,7 +169,8 @@ pub use module_loader::{
 };
 
 pub use build::{
-    BackendChoice, BuildOutput, build_object, declared_build_output, declared_opt_level, entry_of,
+    BackendChoice, BuildOutput, EntryPolicy, build_object, declared_build_output,
+    declared_opt_level, entry_of,
 };
 // **Re-exported so the driver can read `BuildOutput::libraries` without depending on `jr-pool`**
 // (ADR-0183 §1). `jr-cli` needs the link *kind* to translate it for `jr-link`, and adding a whole

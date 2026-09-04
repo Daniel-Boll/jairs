@@ -70,6 +70,89 @@ talloc :: (n: s64) -> *u8 {
     context.temp_mark = context.temp_mark + n;
     return p;
 }
+/// Whether `c` is an ASCII letter.
+///
+/// # Why byte classification lives here and not in `String`
+///
+/// Jai's split, and it is the right one: these take a **`u8`**, not a `string`, so they are not string
+/// *algorithms* — they are the alphabet a lexer is built from, and every lexer wants them without importing
+/// a string library. Jai puts `is_alpha`, `is_digit`, `to_upper` and the rest in `Basic/Simple_String.jai`
+/// for exactly that reason, and keeps `modules/String` for operations on whole strings (ADR-0197 §7).
+///
+/// ASCII only, and said so rather than left to be discovered: a `string` is bytes (ADR-0004), and asking
+/// whether a *byte* is a letter has no answer outside ASCII — in UTF-8 the question belongs to a code
+/// point, which is several bytes.
+is_alpha :: (c: u8) -> bool {
+    if c >= 65 && c <= 90 {
+        return true;
+    }
+    return c >= 97 && c <= 122;
+}
+
+/// Whether `c` is an ASCII decimal digit.
+is_digit :: (c: u8) -> bool {
+    return c >= 48 && c <= 57;
+}
+
+/// Whether `c` is an ASCII letter, a digit, or an underscore.
+///
+/// **Underscore included**, matching Jai — whose own source comments the same surprise. It is what an
+/// identifier lexer wants, which is what this predicate is for; a caller who means strictly alphanumeric
+/// writes `is_alpha(c) || is_digit(c)`.
+is_alnum :: (c: u8) -> bool {
+    if c == 95 {
+        return true;
+    }
+    return is_alpha(c) || is_digit(c);
+}
+
+/// Whether `c` is ASCII whitespace: space, tab, newline, carriage return, vertical tab or form feed.
+///
+/// The same six C's `isspace` names, so a reader who knows one knows this.
+is_space :: (c: u8) -> bool {
+    if c == 32 {
+        return true;
+    }
+    return c >= 9 && c <= 13;
+}
+
+/// Whether `c` is a printable ASCII character, space included.
+is_print :: (c: u8) -> bool {
+    return c >= 32 && c <= 126;
+}
+
+/// Whether `c` is an ASCII uppercase letter.
+///
+/// **Not in Jai**, which has only `to_upper`/`to_lower` and `is_print` — added here because the asymmetry
+/// is a wart rather than a decision: a caller who can ask "is this a letter" and "make it upper" but not
+/// "is it already upper" ends up writing the range check by hand, which is what the predicate is for.
+is_upper :: (c: u8) -> bool {
+    return c >= 65 && c <= 90;
+}
+
+/// Whether `c` is an ASCII lowercase letter.
+is_lower :: (c: u8) -> bool {
+    return c >= 97 && c <= 122;
+}
+
+/// `c` raised to uppercase if it is an ASCII lowercase letter, unchanged otherwise.
+///
+/// Takes and returns a **byte**, like Jai's. The whole-string versions are `String.to_upper_copy` and
+/// `String.to_upper_in_place`.
+to_upper :: (c: u8) -> u8 {
+    if is_lower(c) {
+        return c - 32;
+    }
+    return c;
+}
+
+/// `c` lowered if it is an ASCII uppercase letter, unchanged otherwise.
+to_lower :: (c: u8) -> u8 {
+    if is_upper(c) {
+        return c + 32;
+    }
+    return c;
+}
 
 /// Rewinds the temporary-storage cursor, freeing everything [`talloc`] handed out at once (ADR-0065).
 ///

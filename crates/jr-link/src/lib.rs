@@ -110,8 +110,71 @@ pub struct LinkLibrary {
     pub kind: LinkKind,
 }
 
+/// What kind of artefact to produce (ADR-0197 §1).
+///
+/// Jai's `output_type`, which 13 of 23 real `build.jai` files set — the second most common option after
+/// the executable's name — and the largest single thing a build script here could not ask for.
+///
+/// # Why three and not two
+///
+/// A **static** library is not a link at all: it is `ar` archiving objects, and no C driver is involved.
+/// A **dynamic** library *is* a link, with one extra flag and a different one per platform. Collapsing
+/// them into "not an executable" would put an `if` inside the link path that decides whether to run the
+/// linker, which is the shape that hides a bug — so the kinds are separate and [`link`] dispatches once.
+///
+/// An **object** is neither: it is the bytes `jr-codegen` produced, written out. It exists so a script can
+/// do its own linking, which is what Jai's `READY_FOR_CUSTOM_LINK_COMMAND` is for — and it needs no
+/// mechanism here beyond not deleting the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputKind {
+    /// An executable, through the C driver. The default and what every earlier version produced.
+    #[default]
+    Executable,
+    /// A dynamic library: `.dylib` on macOS, `.so` elsewhere. Linked, with `-dynamiclib` or `-shared`.
+    Dynamic,
+    /// A static library: `.a`, produced by `ar` rather than by a linker.
+    Static,
+    /// The object file alone, for a caller that will link it itself.
+    Object,
+}
+
+impl OutputKind {
+    /// The extension this kind's artefact conventionally has, if it has one.
+    ///
+    /// `None` for an executable, which has none on Unix. Applied by the driver rather than here, because
+    /// whether to *override* a name the script chose is a policy question and this crate has no policies.
+    #[must_use]
+    pub const fn extension(self) -> Option<&'static str> {
+        match self {
+            Self::Executable => None,
+            // `.dylib` and `.so` are not interchangeable: `dlopen` on macOS will load a `.so`, but the
+            // linker's `-lNAME` search looks for `libNAME.dylib` and will not find a `.so`. So a dynamic
+            // library that another Jairs program links against must have the platform's own extension.
+            Self::Dynamic => Some(if cfg!(target_os = "macos") {
+                "dylib"
+            } else {
+                "so"
+            }),
+            Self::Static => Some("a"),
+            Self::Object => Some("o"),
+        }
+    }
+}
+
 /// What to link, and into what.
 pub struct LinkRequest<'a> {
+    /// Which kind of artefact to produce.
+    pub kind: OutputKind,
+    /// Extra arguments handed to the C driver, after everything this crate generates.
+    ///
+    /// Jai's `additional_linker_arguments`. **After**, so a script can override: `ld` and `cc` generally
+    /// take the last of a conflicting pair, and a script that needs `-Wl,-dead_strip` or an `-rpath` is
+    /// asking for something this crate has no opinion about.
+    ///
+    /// Passed through **unaltered**, including a leading `-` — that is the point of the option. The
+    /// confinement that protects an output *path* does not apply: these are arguments, not filenames, and
+    /// a script that can already run arbitrary subprocesses cannot be meaningfully restrained here.
+    pub linker_arguments: &'a [String],
     /// The object file's bytes, as `jr-codegen`'s `finalise` produced them.
     pub object: &'a [u8],
     /// Where the executable goes.
@@ -148,14 +211,54 @@ pub struct LinkRequest<'a> {
 /// [`LinkError`] when no driver exists, the object cannot be written, or the driver
 /// rejects the link.
 pub fn link(request: &LinkRequest<'_>) -> Result<(), LinkError> {
-    let object_path = request.output.with_extension("o");
+    // **The object is always written**, whatever the kind: it is the input to every path below, and for
+    // `OutputKind::Object` it *is* the answer.
+    let object_path = match request.kind {
+        // Writing straight to the output would give `foo.o.o` for a caller that already named it `foo.o`,
+        // and the two names must not collide — the executable path deletes the object on success.
+        OutputKind::Object => request.output.to_path_buf(),
+        _ => request.output.with_extension("o"),
+    };
+    if let Some(parent) = object_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
     std::fs::write(&object_path, request.object)?;
+
+    // **An object needs nothing else**, and in particular needs no toolchain — so this returns before
+    // `find_driver`, which is what makes `--emit-object` work on a machine with no `cc` at all.
+    if request.kind == OutputKind::Object {
+        return Ok(());
+    }
+
+    // **A static library is `ar`, not a link.** No C driver, no libraries, no search paths: an archive
+    // records objects and nothing about what they need, which is why a caller linking against one still
+    // has to name the same `#system_library`s itself.
+    if request.kind == OutputKind::Static {
+        let result = archive(&object_path, request.output);
+        let _ = std::fs::remove_file(&object_path);
+        return result;
+    }
 
     let driver = find_driver().ok_or_else(|| {
         LinkError::NoDriver(DRIVERS.iter().map(|name| (*name).to_owned()).collect())
     })?;
 
     let mut command = Command::new(&driver);
+    // **The kind flag first**, before the object: `cc` accepts it anywhere, but a reader of the failing
+    // command line should see what kind of link was attempted before what went into it.
+    //
+    // `-dynamiclib` is Apple's and `-shared` is everyone else's; they are not aliases, and `clang` on macOS
+    // accepts `-shared` while producing something `-lNAME` will not find, which is the silent-wrong-answer
+    // shape this project avoids by naming the platform rather than hoping.
+    if request.kind == OutputKind::Dynamic {
+        command.arg(if cfg!(target_os = "macos") {
+            "-dynamiclib"
+        } else {
+            "-shared"
+        });
+    }
     command.arg(not_a_flag(&object_path));
     command.arg("-o").arg(not_a_flag(request.output));
     // **Search paths before the libraries**, which is what `ld` requires: a `-L` affects the `-l`s that
@@ -180,6 +283,11 @@ pub fn link(request: &LinkRequest<'_>) -> Result<(), LinkError> {
         };
     }
 
+    // **Last, so a script can override what this crate chose** — see `LinkRequest::linker_arguments`.
+    for argument in request.linker_arguments {
+        command.arg(argument);
+    }
+
     let output = command.output()?;
     if !output.status.success() {
         let mut text = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -194,7 +302,51 @@ pub fn link(request: &LinkRequest<'_>) -> Result<(), LinkError> {
     // The object has served its purpose; a successful link leaves only the binary.
     let _ = std::fs::remove_file(&object_path);
 
-    ensure_signed(request.output);
+    // **Only an executable is signed.** `ld64` ad-hoc signs a dylib too, and `codesign` on a static
+    // archive is meaningless — it is not a Mach-O image.
+    if request.kind == OutputKind::Executable {
+        ensure_signed(request.output);
+    }
+    Ok(())
+}
+
+/// Archives one object into a static library with `ar`.
+///
+/// # Why `ar` and not the C driver
+///
+/// A static library is not linked. `cc` has no mode that produces one — `-c` stops at an object and there
+/// is no `-static-lib` — so this is the one artefact kind that needs a different tool. `ar rcs` is POSIX
+/// and behaves the same on macOS and Linux; the `s` writes the symbol index that a later `-lNAME` needs,
+/// and omitting it produces an archive the linker silently finds no symbols in.
+///
+/// The archive is **removed first** rather than replaced, because `ar r` *updates* an existing archive: a
+/// second build would leave the previous object in place beside the new one, which is a stale-symbol bug
+/// that only shows up after a rename.
+///
+/// # Errors
+/// [`LinkError`] when `ar` is missing or rejects the archive.
+fn archive(object: &Path, output: &Path) -> Result<(), LinkError> {
+    let _ = std::fs::remove_file(output);
+    let result = Command::new("ar")
+        .arg("rcs")
+        .arg(not_a_flag(output))
+        .arg(not_a_flag(object))
+        .output();
+    let output_bytes = match result {
+        Ok(bytes) => bytes,
+        // Reported as a missing driver rather than an io error, so a machine without binutils gets the
+        // same shape of message it gets for a missing `cc`.
+        Err(_) => return Err(LinkError::NoDriver(vec![String::from("ar")])),
+    };
+    if !output_bytes.status.success() {
+        let mut text = String::from_utf8_lossy(&output_bytes.stderr).into_owned();
+        text.push_str(&String::from_utf8_lossy(&output_bytes.stdout));
+        return Err(LinkError::Failed {
+            driver: String::from("ar"),
+            status: output_bytes.status.to_string(),
+            output: text,
+        });
+    }
     Ok(())
 }
 

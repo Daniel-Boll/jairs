@@ -94,6 +94,12 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
         backend: args.backend.into(),
         output: args.output.clone(),
         emit_object: args.emit_object,
+        kind: args.output_kind.into(),
+        linker_arguments: args.linker_args.clone(),
+        // Neither has a command-line form, and deliberately: generated source and a module override are
+        // things a *script* computes, and an operator who wants either has a shell that can write a file.
+        build_strings: Vec::new(),
+        provided_imports: Vec::new(),
     };
 
     match jr_driver::build(&request).map_err(|e| anyhow::anyhow!(e))? {

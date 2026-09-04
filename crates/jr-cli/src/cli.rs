@@ -302,6 +302,24 @@ pub struct BuildArgs {
     #[arg(short = 'L', long = "library-path", value_name = "DIR")]
     pub library_paths: Vec<std::path::PathBuf>,
 
+    /// What kind of artefact to produce (ADR-0197 §1).
+    ///
+    /// `executable` is the default. `dynamic-library` and `static-library` produce a `.dylib`/`.so` and a
+    /// `.a`; `object` writes the object file and needs no C toolchain, which is what `--emit-object`
+    /// already did and is now one way of asking.
+    ///
+    /// The extension is added when the output name has none, so `-o libthing` gives the platform's own and
+    /// `-o libthing.dylib` is left exactly as written.
+    #[arg(long = "output-kind", value_enum, default_value_t)]
+    pub output_kind: OutputKindArg,
+
+    /// Extra argument for the C driver, after everything the compiler generates. May be repeated.
+    ///
+    /// Jai's `additional_linker_arguments`. Last wins for a conflicting pair, which is `cc`'s own rule, so
+    /// this can override what the compiler chose.
+    #[arg(long = "linker-arg", value_name = "ARG")]
+    pub linker_args: Vec<String>,
+
     /// Treat `PATH` as a **build script** rather than a program to compile (ADR-0195).
     ///
     /// The script is compiled, run in the bytecode VM, and the compilations it asked for through
@@ -323,6 +341,35 @@ pub struct BuildArgs {
     /// to receive, and silently accepting some would suggest otherwise.
     #[arg(last = true, value_name = "ARGS")]
     pub script_args: Vec<String>,
+}
+
+/// `--output-kind`'s values (ADR-0197 §1).
+///
+/// Spelled with hyphens rather than as `dylib`/`staticlib`, because those are Rust's names and a reader of
+/// this compiler has no reason to know them — and because `object` has no snappy abbreviation, so a
+/// consistent long form reads better than one short name among three long ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum OutputKindArg {
+    /// A runnable program.
+    #[default]
+    Executable,
+    /// A `.dylib` on macOS, a `.so` elsewhere.
+    DynamicLibrary,
+    /// A `.a` archive, produced by `ar`.
+    StaticLibrary,
+    /// The object file alone.
+    Object,
+}
+
+impl From<OutputKindArg> for jr_link::OutputKind {
+    fn from(value: OutputKindArg) -> Self {
+        match value {
+            OutputKindArg::Executable => Self::Executable,
+            OutputKindArg::DynamicLibrary => Self::Dynamic,
+            OutputKindArg::StaticLibrary => Self::Static,
+            OutputKindArg::Object => Self::Object,
+        }
+    }
 }
 
 /// Arguments for `jr fmt`.

@@ -17,7 +17,7 @@
 //!
 //! # Why nothing here allocates
 //!
-//! `concat`, `substring`, `to_upper` and `split` are all deliberately absent. Each needs somewhere to put its
+//! `concat`, `substring`, `to_upper_copy` and `split` are all deliberately absent. Each needs somewhere to put its
 //! result, which means an allocator argument and a decision about who frees it. `context.allocator` exists
 //! (ADR-0057) and so does temporary storage (ADR-0065), so the mechanism is not missing — but *choosing*
 //! between "always the context allocator", "an explicit parameter" and "always temporary" has real
@@ -42,7 +42,7 @@
 //!
 //! # The allocating half, and where its memory comes from
 //!
-//! `concat`, `substring`, `to_upper` and `to_lower` each produce a **new** string, so each allocates — through
+//! `concat`, `substring`, `to_upper_copy` and `to_lower_copy` each produce a **new** string, so each allocates — through
 //! `context.allocator` (ADR-0062), and the **caller frees** with `free_string`. That is the convention ADR-0103
 //! §3 deferred, chosen in ADR-0111: not `talloc`, because a result that silently expires on an unrelated
 //! `reset_temporary_storage()` is a trap; not an explicit allocator parameter, because the context exists to
@@ -284,7 +284,18 @@ substring :: (s: string, start: s64, count: s64) -> string {
 ///
 /// ASCII only, and said so: a `string` is bytes (ADR-0004), and case-folding beyond ASCII needs a Unicode table
 /// this language does not have. `'a'` is 97 and `'z'` is 122; subtracting 32 reaches `'A'`.
-to_upper :: (s: string) -> string {
+///
+/// # Why the `_copy` suffix
+///
+/// **Renamed from `to_upper` by ADR-0197 §7**, and forced rather than chosen: `Basic` gained a `to_upper`
+/// taking a **`u8`** — where Jai puts byte classification and where a lexer wants it — and `#import` is
+/// flat, so a file importing both modules unqualified got E0211 on every use. E0211 firing is the good
+/// outcome; the fix is that a module must prefix as though the namespace were its own (AGENTS.md).
+///
+/// `to_upper_copy` is **Jai's own name** for exactly this pair, so the collision resolved into the naming
+/// the language being followed already had. The suffix also earns its keep: it says at the call site that
+/// this allocates, which the in-place [`to_upper_in_place`] beside it does not.
+to_upper_copy :: (s: string) -> string {
     if s.count == 0 {
         return make_string(null, 0);
     }
@@ -308,8 +319,9 @@ to_upper :: (s: string) -> string {
 
 /// A copy of `s` with ASCII uppercase letters lowered; other bytes unchanged.
 ///
-/// The mirror of `to_upper`. `'A'` is 65 and `'Z'` is 90; adding 32 reaches `'a'`.
-to_lower :: (s: string) -> string {
+/// The mirror of [`to_upper_copy`], and named the same way for the same reason. `'A'` is 65 and `'Z'` is
+/// 90; adding 32 reaches `'a'`.
+to_lower_copy :: (s: string) -> string {
     if s.count == 0 {
         return make_string(null, 0);
     }
@@ -392,7 +404,540 @@ borrow :: (data: *u8, count: s64) -> string {
     return make_string(data, count);
 }
 
+// ---------------------------------------------------------------------------
+// Trimming (ADR-0197 §7)
+// ---------------------------------------------------------------------------
+
+/// The bytes `trim` removes by default: space, tab, newline, carriage return.
+///
+/// A constant rather than a literal at three call sites, so a reader grepping for what "whitespace" means
+/// here finds one answer. Jai's equivalent is `DEFAULT_SPACES`; the name is spelled out because `SPACES`
+/// suggests only `' '`.
+DEFAULT_WHITESPACE :: " \t\n\r";
+
+/// `s` with leading bytes from `chars` removed.
+///
+/// # Why this returns a view and allocates nothing
+///
+/// A trim's result is always a **contiguous run inside the input**, so it needs no copy — and a version
+/// that allocated would make the commonest string operation in any program require an allocator and a
+/// matching free. Jai's returns a view for the same reason.
+///
+/// The consequence, stated because it matters: the result **borrows** `s`, so it is valid exactly as long
+/// as `s` is. A caller who needs to outlive it copies with [`substring`].
+trim_left_chars :: (s: string, chars: string) -> string {
+    start := 0;
+    while start < s.count {
+        if !contains_byte(chars, (s.data + start).*) {
+            break;
+        }
+        start = start + 1;
+    }
+    return borrow(s.data + start, s.count - start);
+}
+
+/// `s` with trailing bytes from `chars` removed. Borrows `s`, like [`trim_left_chars`].
+trim_right_chars :: (s: string, chars: string) -> string {
+    stop := s.count;
+    while stop > 0 {
+        if !contains_byte(chars, (s.data + stop - 1).*) {
+            break;
+        }
+        stop = stop - 1;
+    }
+    return borrow(s.data, stop);
+}
+
+/// `s` with leading and trailing bytes from `chars` removed. Borrows `s`.
+trim_chars :: (s: string, chars: string) -> string {
+    return trim_right_chars(trim_left_chars(s, chars), chars);
+}
+
+/// `s` with leading whitespace removed. Borrows `s`.
+trim_left :: (s: string) -> string {
+    return trim_left_chars(s, DEFAULT_WHITESPACE);
+}
+
+/// `s` with trailing whitespace removed. Borrows `s`.
+trim_right :: (s: string) -> string {
+    return trim_right_chars(s, DEFAULT_WHITESPACE);
+}
+
+/// `s` with leading and trailing whitespace removed. Borrows `s`.
+///
+/// The one this library was asked for, and it was missing: a build script reading `git rev-parse`'s output
+/// had to strip the trailing newline with arithmetic, which is the shape a standard library exists to
+/// remove.
+///
+/// **A separate name rather than a defaulted parameter.** Jai writes `trim(s, chars := DEFAULT_SPACES)`;
+/// this library splits the two, because a defaulted parameter of a *variadic-free* procedure is exactly
+/// what ADR-0139 §1 made unreachable once a variadic follows it — and more simply because two names read
+/// better at a call site than one name whose behaviour depends on an argument the reader cannot see.
+trim :: (s: string) -> string {
+    return trim_chars(s, DEFAULT_WHITESPACE);
+}
+
+// ---------------------------------------------------------------------------
+// Searching
+// ---------------------------------------------------------------------------
+
+/// Whether `s` contains the byte `b`.
+///
+/// Jai's second `contains` overload. A separate name here because this library has no overloading on
+/// parameter type, and `contains_byte` says at the call site which question is being asked — which a
+/// reader of `contains(s, x)` cannot tell without knowing `x`'s type.
+contains_byte :: (s: string, b: u8) -> bool {
+    return find_byte(s, b) >= 0;
+}
+
+/// The index of the first `b` in `s`, or `-1`.
+find_byte :: (s: string, b: u8) -> s64 {
+    i := 0;
+    while i < s.count {
+        if (s.data + i).* == b {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+/// The index of the last `b` in `s`, or `-1`.
+find_byte_from_right :: (s: string, b: u8) -> s64 {
+    i := s.count;
+    while i > 0 {
+        if (s.data + i - 1).* == b {
+            return i - 1;
+        }
+        i = i - 1;
+    }
+    return -1;
+}
+
+/// The index of the last occurrence of `needle` in `s`, or `-1`.
+///
+/// The mirror of [`find`], which searches from the left. Both are needed and neither implies the other:
+/// splitting a path at its last separator is the ordinary use, and doing it with a left search means
+/// looping.
+find_from_right :: (s: string, needle: string) -> s64 {
+    if needle.count == 0 {
+        return s.count;
+    }
+    if needle.count > s.count {
+        return -1;
+    }
+    start := s.count - needle.count;
+    while start >= 0 {
+        if region_equal(s, start, needle) {
+            return start;
+        }
+        start = start - 1;
+    }
+    return -1;
+}
+
+/// The index of the first byte of `s` that appears in `chars`, or `-1`.
+find_any :: (s: string, chars: string) -> s64 {
+    i := 0;
+    while i < s.count {
+        if contains_byte(chars, (s.data + i).*) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+/// Whether `s` contains any byte from `chars`.
+contains_any :: (s: string, chars: string) -> bool {
+    return find_any(s, chars) >= 0;
+}
+
+// ---------------------------------------------------------------------------
+// Splitting and joining
+// ---------------------------------------------------------------------------
+
+/// Splits `s` at the first `separator`.
+///
+/// Returns whether it was found, and the parts either side — the separator itself is in neither. When it
+/// is absent, `left` is all of `s` and `right` is empty, which is what a caller parsing `key=value` wants
+/// for a line with no `=`: the whole line is the key.
+///
+/// Both parts **borrow** `s`, so they live exactly as long as it does.
+split_from_left :: (s: string, separator: string) -> (bool, string, string) {
+    at := find(s, separator);
+    if at < 0 {
+        return false, s, borrow(null, 0);
+    }
+    rest := at + separator.count;
+    return true, borrow(s.data, at), borrow(s.data + rest, s.count - rest);
+}
+
+/// Splits `s` at the **last** `separator`. Borrows `s`, like [`split_from_left`].
+split_from_right :: (s: string, separator: string) -> (bool, string, string) {
+    at := find_from_right(s, separator);
+    if at < 0 {
+        return false, s, borrow(null, 0);
+    }
+    rest := at + separator.count;
+    return true, borrow(s.data, at), borrow(s.data + rest, s.count - rest);
+}
+
+/// How many pieces [`split`] would produce.
+///
+/// Exposed because `split` allocates, and a caller who only needs the count — validating a CSV's column
+/// count, say — should not have to allocate to learn it.
+split_count :: (s: string, separator: string) -> s64 {
+    if separator.count == 0 {
+        return 1;
+    }
+    n := 1;
+    at := 0;
+    while at <= s.count - separator.count {
+        if region_equal(s, at, separator) {
+            n = n + 1;
+            at = at + separator.count;
+        } else {
+            at = at + 1;
+        }
+    }
+    return n;
+}
+
+/// Every piece of `s` between occurrences of `separator`.
+///
+/// Allocates the **view** through `context.allocator`; the pieces themselves borrow `s` and are not
+/// copied, so freeing the view is enough and the pieces die with `s`. An empty separator yields one piece,
+/// the whole string — the alternative, a piece per byte, is never what a caller means.
+///
+/// Adjacent separators produce empty pieces, and a leading or trailing one produces an empty piece at that
+/// end. That is what makes `split` and [`join`] inverses, which is the property a round trip needs.
+split :: (s: string, separator: string) -> []string {
+    n := split_count(s, separator);
+    raw := context.allocator(n * size_of(string));
+    if raw == null {
+        empty: []string;
+        return empty;
+    }
+    out := typed(string, raw);
+    if separator.count == 0 {
+        (out + 0).* = s;
+        return view(out, 1);
+    }
+    written := 0;
+    start := 0;
+    at := 0;
+    while at <= s.count - separator.count {
+        if region_equal(s, at, separator) {
+            (out + written).* = borrow(s.data + start, at - start);
+            written = written + 1;
+            at = at + separator.count;
+            start = at;
+        } else {
+            at = at + 1;
+        }
+    }
+    (out + written).* = borrow(s.data + start, s.count - start);
+    return view(out, n);
+}
+
+/// Every piece of `s` between occurrences of the byte `b`.
+split_by_byte :: (s: string, b: u8) -> []string {
+    one: [1]u8;
+    one[0] = b;
+    return split(s, borrow(*one[0], 1));
+}
+
+/// `pieces` concatenated with `separator` between them.
+///
+/// Allocates the result through `context.allocator`. The inverse of [`split`] for the same separator,
+/// which is why both treat empty pieces as real.
+join :: (pieces: []string, separator: string) -> string {
+    if pieces.count == 0 {
+        return borrow(null, 0);
+    }
+    total := separator.count * (pieces.count - 1);
+    i := 0;
+    while i < pieces.count {
+        total = total + pieces[i].count;
+        i = i + 1;
+    }
+    if total == 0 {
+        return borrow(null, 0);
+    }
+    buf := context.allocator(total);
+    if buf == null {
+        return borrow(null, 0);
+    }
+    at := 0;
+    i = 0;
+    while i < pieces.count {
+        if i > 0 {
+            copy_bytes(buf + at, separator.data, 0, separator.count);
+            at = at + separator.count;
+        }
+        copy_bytes(buf + at, pieces[i].data, 0, pieces[i].count);
+        at = at + pieces[i].count;
+        i = i + 1;
+    }
+    return adopt(buf, total);
+}
+
+// ---------------------------------------------------------------------------
+// Replacing
+// ---------------------------------------------------------------------------
+
+/// `s` with every occurrence of `old` replaced by `new`, and how many were replaced.
+///
+/// Allocates through `context.allocator`. An empty `old` replaces nothing and returns a copy, rather than
+/// inserting `new` between every byte — which no caller means and which would make the count unbounded.
+replace :: (s: string, old: string, new: string) -> (string, s64) {
+    if old.count == 0 {
+        return substring(s, 0, s.count), 0;
+    }
+    occurrences := split_count(s, old) - 1;
+    if occurrences == 0 {
+        return substring(s, 0, s.count), 0;
+    }
+    total := s.count + occurrences * (new.count - old.count);
+    if total == 0 {
+        return borrow(null, 0), occurrences;
+    }
+    buf := context.allocator(total);
+    if buf == null {
+        return borrow(null, 0), 0;
+    }
+    out := 0;
+    at := 0;
+    while at < s.count {
+        if at <= s.count - old.count && region_equal(s, at, old) {
+            copy_bytes(buf + out, new.data, 0, new.count);
+            out = out + new.count;
+            at = at + old.count;
+        } else {
+            (buf + out).* = (s.data + at).*;
+            out = out + 1;
+            at = at + 1;
+        }
+    }
+    return adopt(buf, total), occurrences;
+}
+
+/// Overwrites, **in place**, every byte of `s` that appears in `chars` with `replacement`.
+///
+/// Jai's `replace_chars`, and like Jai's it mutates: a `string` is a `{data, count}` pair, so writing
+/// through `s.data` changes whatever the caller is holding. Returns nothing, so a call site cannot mistake
+/// it for the allocating [`replace`].
+///
+/// **A string literal must not be passed.** A literal's bytes are in the program's read-only data, and
+/// writing to them is a fault — the same rule that makes freeing a literal wrong (recorded by ADR-0157).
+replace_chars_in_place :: (s: string, chars: string, replacement: u8) {
+    i := 0;
+    while i < s.count {
+        if contains_byte(chars, (s.data + i).*) {
+            (s.data + i).* = replacement;
+        }
+        i = i + 1;
+    }
+}
+
+/// Raises ASCII lowercase letters in `s` to uppercase, **in place**.
+///
+/// The in-place pair of [`to_upper`], which copies. Both exist because both uses are real: a parser
+/// normalising a buffer it owns wants no allocation, and a caller keeping the original wants the copy.
+/// Jai has the same pair, named `to_upper_in_place` and `to_upper_copy`.
+to_upper_in_place :: (s: string) {
+    i := 0;
+    while i < s.count {
+        (s.data + i).* = ascii_upper((s.data + i).*);
+        i = i + 1;
+    }
+}
+
+/// Lowers ASCII uppercase letters in `s`, **in place**.
+to_lower_in_place :: (s: string) {
+    i := 0;
+    while i < s.count {
+        (s.data + i).* = ascii_lower((s.data + i).*);
+        i = i + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Case-insensitive comparison
+// ---------------------------------------------------------------------------
+
+/// Whether `a` and `b` are equal ignoring ASCII case.
+equal_nocase :: (a: string, b: string) -> bool {
+    if a.count != b.count {
+        return false;
+    }
+    i := 0;
+    while i < a.count {
+        if ascii_lower((a.data + i).*) != ascii_lower((b.data + i).*) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/// Like [`compare`], ignoring ASCII case.
+compare_nocase :: (a: string, b: string) -> s64 {
+    n := a.count;
+    if b.count < n {
+        n = b.count;
+    }
+    i := 0;
+    while i < n {
+        x := ascii_lower((a.data + i).*);
+        y := ascii_lower((b.data + i).*);
+        if x != y {
+            if x < y {
+                return -1;
+            }
+            return 1;
+        }
+        i = i + 1;
+    }
+    if a.count == b.count {
+        return 0;
+    }
+    if a.count < b.count {
+        return -1;
+    }
+    return 1;
+}
+
+/// Whether `s` starts with `prefix`, ignoring ASCII case.
+starts_with_nocase :: (s: string, prefix: string) -> bool {
+    if prefix.count > s.count {
+        return false;
+    }
+    return equal_nocase(borrow(s.data, prefix.count), prefix);
+}
+
+/// Whether `s` ends with `suffix`, ignoring ASCII case.
+ends_with_nocase :: (s: string, suffix: string) -> bool {
+    if suffix.count > s.count {
+        return false;
+    }
+    start := s.count - suffix.count;
+    return equal_nocase(borrow(s.data + start, suffix.count), suffix);
+}
+
+// ---------------------------------------------------------------------------
+// Parsing
+// ---------------------------------------------------------------------------
+
+/// Reads a decimal integer from the front of `s`.
+///
+/// Returns the value, whether anything was read, and the rest of `s`. The three-value shape is Jai's
+/// `to_integer`, and the *remainder* is what makes it usable in a loop — a version returning only the value
+/// forces the caller to re-find where the number ended.
+///
+/// An optional leading `-` or `+` is accepted. Overflow is **not** reported: the accumulation traps, which
+/// is this language's answer to arithmetic that does not fit (ADR-0002) and is a better one than a silently
+/// wrapped value.
+to_integer :: (s: string) -> (s64, bool, string) {
+    at := 0;
+    negative := false;
+    if at < s.count {
+        c := (s.data + at).*;
+        if c == 45 {
+            negative = true;
+            at = at + 1;
+        }
+        if c == 43 {
+            at = at + 1;
+        }
+    }
+    digits := 0;
+    value := 0;
+    while at < s.count {
+        c := (s.data + at).*;
+        if c < 48 || c > 57 {
+            break;
+        }
+        value = value * 10 + cast(s64, c - 48);
+        digits = digits + 1;
+        at = at + 1;
+    }
+    if digits == 0 {
+        return 0, false, s;
+    }
+    if negative {
+        value = -value;
+    }
+    return value, true, borrow(s.data + at, s.count - at);
+}
+
+/// Whether `s` is exactly `"true"` or `"false"`, and which.
+///
+/// Returns the value and whether it parsed. Case-sensitive, because a configuration format that accepts
+/// `True` and `TRUE` has to say so, and this is the primitive such a format is built from.
+to_bool :: (s: string) -> (bool, bool) {
+    if equal(s, "true") {
+        return true, true;
+    }
+    if equal(s, "false") {
+        return false, true;
+    }
+    return false, false;
+}
+
+// ---------------------------------------------------------------------------
+// Paths
+// ---------------------------------------------------------------------------
+
+// Deliberately **absent**: the path operations Jai keeps in `modules/String` — `path_filename`,
+// `path_extension`, `path_join` and the rest — because `modules/File_Utilities` already has them
+// (`base_name`, `extension`, `join`, `directory_name`, `stem`, `is_absolute`, `normalise`). Adding a second
+// set here would give a reader two answers to one question, which is worse than either.
+//
+// That is a placement difference from Jai rather than a gap, and it is the *better* placement: a path is a
+// filesystem concept, and `File_Utilities` is where the filesystem lives.
+
 #scope_module
+
+/// Whether `s`'s bytes at `at` match `needle`.
+///
+/// The one comparison every search here shares, so `find`, `find_from_right`, `split` and `replace` cannot
+/// disagree about what a match is — which they would if each wrote its own loop.
+region_equal :: (s: string, at: s64, needle: string) -> bool {
+    if at < 0 || at + needle.count > s.count {
+        return false;
+    }
+    i := 0;
+    while i < needle.count {
+        if (s.data + at + i).* != (needle.data + i).* {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/// `c` raised to ASCII uppercase.
+///
+/// Duplicated from `Basic.to_upper` rather than imported, because this module deliberately does not depend
+/// on `Basic` — a string library that pulls in `print` and an allocator's declarations makes every importer
+/// pay for them. Two lines of arithmetic is a cheaper price than that dependency, and the pair is checked
+/// against each other by `basic_and_string_agree_about_ascii_case`.
+ascii_upper :: (c: u8) -> u8 {
+    if c >= 97 && c <= 122 {
+        return c - 32;
+    }
+    return c;
+}
+
+/// `c` lowered to ASCII lowercase. The mirror of [`ascii_upper`].
+ascii_lower :: (c: u8) -> u8 {
+    if c >= 65 && c <= 90 {
+        return c + 32;
+    }
+    return c;
+}
 
 /// Builds a `string` from a data pointer and a count.
 ///

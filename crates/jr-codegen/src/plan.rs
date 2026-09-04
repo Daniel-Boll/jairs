@@ -70,7 +70,21 @@ pub enum ProcKind {
         /// constants — so this is `"jr$<file>$<proc>"`, built from the identity
         /// instead. *Every* Jairs procedure gets a mangled name, the entry point
         /// included: see the `entry` field.
+        ///
+        /// **Except a `#program_export`**, which gets its source name (ADR-0197 §1): a caller outside the
+        /// program has no way to know a file index or a procedure index, and both change when the program
+        /// does.
         symbol: String,
+        /// Whether a library must expose this symbol (ADR-0197 §1).
+        ///
+        /// A **third** state beside the mangled/entry pair, and it has to be, because the two questions a
+        /// back end asks are independent: *what is this called* and *who may see it*. Renaming a procedure
+        /// without exporting it gives a symbol nothing outside can link to; exporting one without renaming
+        /// it gives a visible `jr$0$1` that nobody can name.
+        ///
+        /// This wave found the first by reading `nm` after getting the name right: `t _add_two` — present,
+        /// correctly named, and **local**. A name change alone looks finished and is not.
+        exported: bool,
         /// Whether this is the program's entry point.
         ///
         /// The entry point does **not** take the linker's name for itself. A Jairs
@@ -191,7 +205,28 @@ pub fn declarations(input: &FileInput<'_>, pool: &Pool, entry: Option<ProcId>) -
                 })
             }
             None => ProcKind::Local {
-                symbol: symbol_for(input.file, proc),
+                // **`#program_export` uses the source name** (ADR-0197 §1). Everything else is
+                // `jr$<file>$<proc>`, which is right for an executable's internals and useless for a
+                // library — a caller outside the program has no way to know a file index or a procedure
+                // index, and both change when the program does.
+                //
+                // The name comes from `input.names`, the same lookup a backtrace frame uses, so the symbol
+                // a library exports and the name a trap prints cannot disagree. A procedure marked for
+                // export whose name could not be resolved keeps the mangled symbol rather than getting a
+                // placeholder: an unnamed export is a symbol nobody can call, and silently emitting one
+                // would be worse than emitting none.
+                symbol: match (
+                    data.program_export,
+                    input.names.get(index).and_then(Clone::clone),
+                ) {
+                    (true, Some(name)) => name,
+                    _ => symbol_for(input.file, proc),
+                },
+                // **Only when the name was resolved.** A procedure marked for export whose name could
+                // not be found keeps its mangled symbol, and exporting *that* would put a `jr$0$1` in
+                // a library's symbol table — visible and unnameable, which is worse than absent.
+                exported: data.program_export
+                    && input.names.get(index).and_then(Clone::clone).is_some(),
                 entry: entry == Some(proc),
             },
         };

@@ -1026,6 +1026,13 @@ pub struct Proc {
     /// Recorded on the procedure rather than in the effect row, unlike `must`: an effect row describes what a
     /// *call* obliges its caller to do, and this describes how the callee's **signature** is spelled in C.
     pub c_variadic: bool,
+    /// `#program_export` — emit this procedure under its own name, so a library can export it
+    /// (ADR-0197 §1).
+    ///
+    /// Every other procedure is `jr$<file>$<proc>`, built from an identity because a procedure has no name
+    /// of its own (ADR-0012). That is right for an executable's internals and useless for a library, whose
+    /// whole purpose is to be called by name.
+    pub program_export: bool,
     /// `true` for a `#expand` procedure — a **macro** (ADR-0090 §1).
     ///
     /// A call to one is **spliced**: the macro's statements are lowered into the *caller's* scope rather

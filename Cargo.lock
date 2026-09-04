@@ -818,6 +818,7 @@ dependencies = [
  "jr-diag",
  "jr-link",
  "jr-vm",
+ "tempfile",
 ]
 
 [[package]]

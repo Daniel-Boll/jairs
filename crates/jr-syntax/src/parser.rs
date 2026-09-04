@@ -295,17 +295,30 @@ enum ProcAttr {
     /// Its **absence** therefore means "not variadic", which is the safe default: a caller who forgets it
     /// gets a fixed-arity call, which is what they wrote.
     CVariadic,
+    /// `#program_export` — give this procedure a C-visible symbol so a library can export it
+    /// (ADR-0197 §1).
+    ///
+    /// Jai's own spelling, verified against `onelivesleft/jai-cookbook`'s directive reference rather than
+    /// guessed. Needed because every Jairs procedure is emitted as `jr$<file>$<proc>` — built from an
+    /// identity rather than a name, since a procedure *has* no name of its own (ADR-0012) and two files may
+    /// declare the same one. That mangling is right for an executable's internals and useless for a
+    /// library, which exists precisely to be called by name from outside.
+    ///
+    /// Opt-in rather than implied by `#c_call`: the convention and the visibility are different questions,
+    /// and a `#c_call` helper called only from Jairs has no business in a library's symbol table.
+    ProgramExport,
 }
 
 impl ProcAttr {
     /// Every attribute, so a test can check that each is accepted at both sites.
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::CCall,
         Self::NoAbc,
         Self::Expand,
         Self::Modify,
         Self::Must,
         Self::CVariadic,
+        Self::ProgramExport,
     ];
 
     /// The directive text that names this attribute.
@@ -317,6 +330,7 @@ impl ProcAttr {
             Self::Modify => "#modify",
             Self::Must => "#must",
             Self::CVariadic => "#c_variadic",
+            Self::ProgramExport => "#program_export",
         }
     }
 
@@ -1184,6 +1198,11 @@ impl<'src> Parser<'src> {
                 // anything written here (ADR-0151 §1).
                 ProcAttr::Must => MUST_ATTR,
                 ProcAttr::CVariadic => C_VARIADIC_ATTR,
+                // A bare token like `#c_call`: the *name* it exports is the procedure's own, so there is
+                // nothing for the attribute to carry. An explicit `#program_export "other_name"` was
+                // considered and left out — a library whose Jairs name and C name differ is one more thing
+                // for a reader to hold, and renaming is a one-line wrapper.
+                ProcAttr::ProgramExport => PROGRAM_EXPORT_ATTR,
                 // `#expand` makes the procedure a macro: a call splices its body into the caller's
                 // scope rather than calling it (ADR-0090 §1). Accepted in the same loop, so it may be
                 // written in any order with the other two — the ordering rule ADR-0058 refused to add.

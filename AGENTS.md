@@ -259,6 +259,35 @@ grammar reported an `ERROR` node over it (gate 6, which is what that gate exists
 the type, verified by writing it; and `codes.rs` caught a code collision when this wave first reached for E0290,
 which `jr-hir` owns.
 
+**ADR-0197 asked whether this is capable of the same work as a real `build.jai`, and *measured* it against
+23 of them rather than answering.** It was not, and it missed **specific** things: `Build_Options.output_type`
+is set by **13 of 23** scripts and this compiler could not build a library at all. Libraries in both kinds now
+link, and **C calls into them** — verified with `cc use.c -lthing` against a static archive and against a
+dylib, both returning 42.
+
+**Two findings from that wave generalise.** A `bool` was the wrong shape for "does this artefact have an entry
+point", and a **test** found it: an executable *requires* a `main`, a library must have **none** because a
+static archive containing one fails a C link with `duplicate symbol '_main'`, and an object works either way.
+Three behaviours, so `EntryPolicy` has three variants — and the third is exactly what a library asked for as
+an object needs, which is the case a bool cannot carry. Second: `#program_export` was wired correctly through
+the parser, HIR and codegen, and the symbol was **still absent from the archive**, because `jr-mir`'s
+reachability walks from `main` and a library has none. **An export must be a reachability root.** The wiring
+looked finished and the artefact was empty, which is the worst way for a feature to be wrong.
+
+**The flat namespace bit a third time, and this time it cost two renames — but both landed on Jai's own
+names** (ADR-0197 §7). `Basic` gained a `to_upper` taking a `u8`, `String` gained a `join` over a `[]string`,
+and `#import` is flat, so two existing corpus programs stopped checking with **E0211 on every use**. E0211
+firing is the good outcome. What is worth keeping is where the fix came from: `to_upper_copy` and `path_join`
+are what **Jai** calls these exact procedures, so the collision forced no compromise — it pointed at the
+naming the language being followed already had. ADR-0166 §7 recorded this hazard as a note and ADR-0167 as
+four errors at once; it is now a rule with a corollary. **When a flat-namespace collision needs a rename,
+check what the language you are following calls both halves before inventing a suffix.**
+
+**And one process note, third instance of one shape.** `modules/String` had **no `trim` at all**, found not by
+an audit but by a build script trying to strip the newline off `git rev-parse`'s output. Two of the three
+library gaps this project has found were surfaced by a *program that needed them* rather than by comparing
+the surface against Jai's — the same lesson as ADR-0156's `mk().count` and ADR-0157's variadic `open`.
+
 **ADR-0196 amends ADR-0195 §2, and the entry to read first is *why that section was wrong*.** It said a
 `#run` "cannot read a file, shell out, print, or even allocate". Two of the five were false, and the
 decider found them by asking one question — does allocation really need a foreign library? **It does not,
@@ -322,7 +351,7 @@ build a `.dmg` inside the same `#run`. That interleaving is precisely ADR-0153 �
 memoising query engine cannot have it. So the shapes agree, the ordering does not, and saying so is the
 honest version.
 
-Tests 1090 → **1097**. **Four existing tests had their premises expire and were retargeted rather than weakened** — a foreign call that
+Tests 1090 → **1097**, then → **1103** with ADR-0197's (**1109** under gate 7, whose clippy caught this wave's one cross-back-end omission — `jr-codegen-llvm` is not compiled by the six, so `ProcKind::Local`'s new `exported` field failed there and only there). **Four existing tests had their premises expire and were retargeted rather than weakened** — a foreign call that
 really is foreign (`getpid`), a constant that really needs evaluating (`#run pick()`). Fourth recorded
 instance of that shape. One MIR snapshot moved on pool ids only; a pool id in a snapshot has the same churn
 property as the `FileId` this project already refuses to print.

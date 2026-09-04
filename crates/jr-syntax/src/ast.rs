@@ -791,6 +791,13 @@ impl Proc {
         self.0.children().any(|n| n.kind() == C_VARIADIC_ATTR)
     }
 
+    /// Whether this procedure is `#program_export` — emitted under its own name so a library can export it
+    /// (ADR-0197 §1).
+    #[must_use]
+    pub fn is_program_export(&self) -> bool {
+        self.0.children().any(|n| n.kind() == PROGRAM_EXPORT_ATTR)
+    }
+
     /// Whether this procedure is `#expand` — a **macro**, spliced into the caller's scope rather than
     /// called (ADR-0090 §1).
     pub fn is_expand(&self) -> bool {

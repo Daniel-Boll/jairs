@@ -716,6 +716,7 @@ impl<'a> LowerCtx<'a> {
                 must: false,
                 // A `#modify` predicate is synthetic and never `#foreign`, so it is never variadic.
                 c_variadic: false,
+                program_export: false,
                 expand: false,
                 modify: None,
                 notes: Vec::new(),
@@ -775,6 +776,7 @@ impl<'a> LowerCtx<'a> {
             no_abc: ast_proc.is_no_abc(),
             must: ast_proc.is_must(),
             c_variadic: ast_proc.is_c_variadic(),
+            program_export: ast_proc.is_program_export(),
             expand: ast_proc.is_expand(),
             modify: modify_pred,
             notes: ast_proc
@@ -1425,6 +1427,7 @@ impl<'a> LowerCtx<'a> {
             // that procedure, specialised, so its caller's obligation cannot differ.
             must: template.must,
             c_variadic: template.c_variadic,
+            program_export: false,
             expand: false,
             modify: None,
             // A baked clone keeps its original's notes: it *is* that procedure, specialised.

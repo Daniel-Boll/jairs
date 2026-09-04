@@ -865,12 +865,17 @@ impl<'ctx> Backend for LlvmBackend<'ctx> {
         layout: TargetLayout,
     ) -> Result<(), CodegenError> {
         let (name, linkage, foreign) = match &decl.kind {
-            ProcKind::Local { symbol, entry } => (
+            ProcKind::Local {
+                symbol,
+                entry,
+                exported,
+            } => (
                 symbol.clone(),
-                // The entry point must be visible to the system linker; nothing else needs to
-                // be. `Internal` rather than `Private` so a symbol table still names it,
-                // which is what makes a native backtrace readable in a debugger.
-                if *entry {
+                // The entry point must be visible to the system linker, and so must a
+                // `#program_export` (ADR-0197 §2) — that is the whole point of the attribute.
+                // Nothing else needs to be. `Internal` rather than `Private` so a symbol table
+                // still names it, which is what makes a native backtrace readable in a debugger.
+                if *entry || *exported {
                     Linkage::External
                 } else {
                     Linkage::Internal
@@ -1345,6 +1350,7 @@ mod tests {
             kind: ProcKind::Local {
                 symbol: "jr$0$0".to_owned(),
                 entry: false,
+                exported: false,
             },
             name: Some("round_trip".to_owned()),
             param_names: Vec::new(),

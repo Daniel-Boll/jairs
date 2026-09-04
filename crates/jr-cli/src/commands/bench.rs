@@ -603,7 +603,15 @@ fn build_all(db: &mut JairsDatabase, sources: &[(PathBuf, String)], input: Modul
         };
         db.load_modules_transitively(file);
         let _ = jr_db::file_diagnostics(db, file, input);
-        let _ = jr_db::build_object(db, file, input, config, jr_db::BackendChoice::Cranelift);
+        // `Required`: the benchmark measures compiling a *program*, which is what the corpus contains.
+        let _ = jr_db::build_object(
+            db,
+            file,
+            input,
+            config,
+            jr_db::BackendChoice::Cranelift,
+            jr_db::EntryPolicy::Required,
+        );
     }
 }
 
