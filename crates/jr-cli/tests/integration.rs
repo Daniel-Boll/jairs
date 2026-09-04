@@ -4290,3 +4290,59 @@ fn an_immediate_build_inside_a_run_directive_is_refused() {
         "the refusal must name the procedure that works instead: got {stderr:?}"
     );
 }
+
+/// A `#run` build script can shell out, and declaring no target is not an error.
+///
+/// Both halves were wrong when first written down. `Compiler.command` is **host-mediated** — the driver
+/// spawns the process — so it is not a `#foreign` call and the comptime refusal never sees it; ADR-0196's
+/// first draft said a `#run` could not shell out, by assuming the boundary was `#foreign` when the whole
+/// design is that it is not.
+///
+/// And a script that shells out, prints, and declares nothing has done exactly what it was written to do.
+/// Keying "did the `#run` work" on *artefacts* reported `the file declares no main` for it — an error
+/// about a missing `main` on a file that was never going to have one.
+#[test]
+fn a_run_directive_can_shell_out_and_need_not_declare_a_target() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let script = dir.path().join("build.jr");
+    fs::write(
+        &script,
+        "#import \"Basic\";\n\
+         Compiler :: #import \"Compiler\";\n\
+         build :: () {\n\
+         \x20   c := Compiler.command(\"echo\");\n\
+         \x20   Compiler.argument_of(c, \"shelled-out-from-a-run\");\n\
+         \x20   status := Compiler.run(c);\n\
+         \x20   print(\"status %\\n\", status);\n\
+         }\n\
+         #run build();\n",
+    )
+    .expect("the script should be written");
+
+    let binary = env!("CARGO_BIN_EXE_jr");
+    let modules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules");
+    let output = std::process::Command::new(binary)
+        .args([
+            "build",
+            &script.to_string_lossy(),
+            "-I",
+            &modules.to_string_lossy(),
+        ])
+        .output()
+        .expect("`jr build` should run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("status 0"),
+        "a `#run` must be able to shell out: got {stderr:?}"
+    );
+    assert!(
+        !stderr.contains("declares no `main`"),
+        "a `#run` script that declares no target is not a missing-`main` error: got {stderr:?}"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the build should succeed: got {stderr:?}"
+    );
+}

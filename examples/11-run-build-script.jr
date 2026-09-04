@@ -20,8 +20,10 @@
 // queues source into a workspace and the *compiler* does the compiling — so this is not a workaround for
 // a missing feature but the same shape arrived at for a different reason.
 //
-// It cannot shell out, because that is `#foreign` and reaches a real host. `examples/10-build-script.jr`
-// is the `main`-shaped spelling, which can.
+// It **can** shell out, which this comment used to deny: `Compiler.command` is host-mediated — the driver
+// spawns the process with ordinary Rust strings — so it is not a `#foreign` call and the comptime refusal
+// never sees it. What a `#run` cannot do is use `modules/File`, because that module's flags are `#run`
+// constants of its own and a module's own const-eval is the one thing this cannot reach (ADR-0196 §3).
 
 #import "Basic";
 Compiler :: #import "Compiler";

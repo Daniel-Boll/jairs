@@ -229,7 +229,7 @@ A `#run` can allocate, build strings, print, read reflection, use an operator ov
 argument, a variadic and an `#soa` field — and declare a build. `examples/11-run-build-script.jr` is a
 build script with **no `main`**, which is the shape the decider asked for, and it builds a real binary.
 
-Tests **1090 → 1096**: two `jr-vm` tests on the refusal's two halves, one `jr-mir` test on the literal
+Tests **1090 → 1097**: two `jr-vm` tests on the refusal's two halves, one `jr-mir` test on the literal
 constant, and four `jr-cli` integration tests — comptime print, a `#run` script with no `main`, the
 immediate-build refusal, and one asserting that **`jr check`, `jr run` and `jr build` all** emit what a
 `#run` printed. That last one exists because `jr run` did not, and the inconsistency was invisible until
@@ -243,5 +243,24 @@ project already refuses to print.
 
 No new diagnostic code. **E0296 is still the first free one.**
 
-Owed, unchanged: `#foreign_at_comptime`, which is the remaining difference from Jai — a `#run` here still
-cannot shell out or read a file, and `examples/10-build-script.jr` is the `main`-shaped spelling that can.
+## §9 What a `#run` can and cannot do, measured after the fact
+
+The first draft of this ADR got one of these wrong, so they are listed as measurements rather than as
+reasoning.
+
+**A `#run` can shell out.** `Compiler.command` is host-mediated — the driver spawns with ordinary Rust
+strings — so it is not a `#foreign` call and the comptime refusal never sees it. Verified: a `#run` calling
+`echo` prints `echo exited 0`. This ADR's first draft said it could not, by assuming the boundary was
+`#foreign` when the whole point of §7 is that it is not.
+
+**A `#run` cannot use `modules/File`.** Not because of FFI, but because that module's flags are
+`CREATE :: #run create_flag();` — `#run` constants of its own, which is the exact case §3 leaves refused,
+since a module's own const-eval is the one thing const-eval cannot reach. So a `#run` that wants a file
+must go through the driver too, or the script must be `main`-shaped.
+
+**A `#run` that declares nothing is not an error.** Keying "did the `#run` do the work" on *artefacts*
+reported `the file declares no main` for a script that shelled out, printed, and declared no target —
+an error about a missing `main` on a file that was never going to have one. It keys on *any* host call now.
+
+Owed, unchanged: `#foreign_at_comptime`, which is the remaining difference from Jai — a `#run` here cannot
+read a file through `modules/File`, and cannot call libc directly at all.

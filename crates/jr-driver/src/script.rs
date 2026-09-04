@@ -114,6 +114,13 @@ pub struct ScriptOutcome {
 /// `jr build --script -I modules` was given, or `#import "Basic"` in the *target* would fail for a
 /// reason the script never mentioned.
 struct ScriptState {
+    /// Whether the script has reached the driver at all (ADR-0196 §9).
+    ///
+    /// The signal for "a `#run` did the work", and it is *any* call rather than "a target was built": a
+    /// script that shells out, prints and declares nothing has done exactly what it was written to do,
+    /// and keying on artefacts reported `the file declares no main` for it — an error about a missing
+    /// `main` on a file that was never going to have one.
+    touched: bool,
     targets: Vec<Target>,
     /// Targets a `#run` asked to have built once the script has finished (ADR-0196 §8).
     ///
@@ -220,6 +227,7 @@ impl ScriptState {
         args: &[HostArg],
         immediate: bool,
     ) -> Result<HostValue, String> {
+        self.touched = true;
         match symbol {
             "create_target" => {
                 self.targets.push(Target::new(text(args, 0)?.to_owned()));
@@ -592,6 +600,7 @@ pub fn run_script(request: &ScriptRequest) -> Result<ScriptResult, String> {
     db.load_modules_transitively(root);
 
     let state = std::rc::Rc::new(std::cell::RefCell::new(ScriptState {
+        touched: false,
         targets: Vec::new(),
         pending: Vec::new(),
         commands: Vec::new(),
@@ -667,10 +676,7 @@ pub fn run_script(request: &ScriptRequest) -> Result<ScriptResult, String> {
         }
     }
 
-    let already_worked = {
-        let borrowed = state.borrow();
-        !borrowed.outcome.built.is_empty() || !borrowed.outcome.reports.is_empty()
-    };
+    let already_worked = state.borrow().touched;
 
     // Taken back so the `main` path below owns it, and so a *target's* `#run` cannot reach it.
     let _ = jr_vm::take_ambient_host();

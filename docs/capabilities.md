@@ -9,7 +9,7 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1096** workspace tests, all seven gates green.
+- **1097** workspace tests, all seven gates green.
 - **279** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
   (**290** counting those).
 - **196** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
