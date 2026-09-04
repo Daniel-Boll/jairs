@@ -322,7 +322,7 @@ build a `.dmg` inside the same `#run`. That interleaving is precisely ADR-0153 �
 memoising query engine cannot have it. So the shapes agree, the ordering does not, and saying so is the
 honest version.
 
-**Four tests had their premises expire and were retargeted rather than weakened** — a foreign call that
+Tests 1090 → **1096**. **Four existing tests had their premises expire and were retargeted rather than weakened** — a foreign call that
 really is foreign (`getpid`), a constant that really needs evaluating (`#run pick()`). Fourth recorded
 instance of that shape. One MIR snapshot moved on pool ids only; a pool id in a snapshot has the same churn
 property as the `FileId` this project already refuses to print.

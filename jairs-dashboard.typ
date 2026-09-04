@@ -109,7 +109,7 @@
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "1095", "workspace, all seven gates"),
+  metric("Tests", "1096", "workspace, all seven gates"),
   metric("Corpus", "279", "jr files, all three engines"),
   metric("ADRs", "196", "0001 to 0196, immutable"),
   metric("Diagnostics", "131", "declared codes, E0296 next"),

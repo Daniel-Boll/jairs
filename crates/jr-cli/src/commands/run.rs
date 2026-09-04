@@ -92,6 +92,19 @@ pub fn run(args: RunArgs, global: &GlobalArgs) -> Result<i32> {
         return Ok(1);
     }
 
+    // **What a `#run` printed, before the program's own output** (ADR-0196 §2). Compile-time evaluation
+    // finished during the gate above, so this is the order it happened in — and emitting it here rather
+    // than from inside the query is what keeps a memoised evaluation from printing on one run and not the
+    // next. `jr check` and `jr build` do the same; a `#run`'s output must not depend on which command
+    // reached it.
+    //
+    // Stderr, so a program's stdout stays exactly its own — a `jr run` piped into something else should
+    // not gain lines the program did not write.
+    let printed = jr_db::comptime_output(&db, root, search);
+    if !printed.is_empty() {
+        eprint!("{}", String::from_utf8_lossy(&printed));
+    }
+
     match run_main(&db, root, search, config) {
         Ok(RunOutcome::Completed) => Ok(0),
         Ok(RunOutcome::Exited(status)) => Ok(i32::try_from(status).unwrap_or(TRAP_EXIT)),

@@ -229,9 +229,11 @@ A `#run` can allocate, build strings, print, read reflection, use an operator ov
 argument, a variadic and an `#soa` field — and declare a build. `examples/11-run-build-script.jr` is a
 build script with **no `main`**, which is the shape the decider asked for, and it builds a real binary.
 
-Tests **1090 → 1095**: two `jr-vm` tests on the refusal's two halves, one `jr-mir` test on the literal
-constant, and three `jr-cli` integration tests (comptime print, a `#run` script with no `main`, and the
-immediate-build refusal). Four existing tests had their **premises expire** and were retargeted rather
+Tests **1090 → 1096**: two `jr-vm` tests on the refusal's two halves, one `jr-mir` test on the literal
+constant, and four `jr-cli` integration tests — comptime print, a `#run` script with no `main`, the
+immediate-build refusal, and one asserting that **`jr check`, `jr run` and `jr build` all** emit what a
+`#run` printed. That last one exists because `jr run` did not, and the inconsistency was invisible until
+the same file was run two ways: a `#run`'s output must not depend on which command reached it. Four existing tests had their **premises expire** and were retargeted rather
 than weakened — a foreign call that really is foreign, a constant that really needs evaluating — which is
 the fourth time this project has recorded that shape.
 

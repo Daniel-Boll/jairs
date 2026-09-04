@@ -4137,6 +4137,52 @@ fn a_run_directive_prints_at_compile_time() {
     );
 }
 
+/// Every command that evaluates a `#run` emits what it printed.
+///
+/// A `#run`'s output must not depend on which command reached it: `jr check`, `jr run` and `jr build` all
+/// force compile-time evaluation, so all three must show it. `jr run` was the one that did not, and the
+/// inconsistency was invisible until someone ran the same file two ways — which is the argument for
+/// asserting the *set* rather than one command.
+#[test]
+fn every_command_emits_what_a_run_directive_printed() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = dir.path().join("prog.jr");
+    fs::write(
+        &program,
+        "#import \"Basic\";\n\
+         announce :: () -> s64 { print(\"printed-by-a-run\\n\"); return 0; }\n\
+         N :: #run announce();\n\
+         main :: () { exit(N); }\n",
+    )
+    .expect("the program should be written");
+
+    let binary = env!("CARGO_BIN_EXE_jr");
+    let modules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules");
+    let artefact = Artefact::named("jr-test-run-printed-everywhere");
+
+    for command in ["check", "run", "build"] {
+        let mut args = vec![
+            command.to_owned(),
+            program.to_string_lossy().into_owned(),
+            String::from("-I"),
+            modules.to_string_lossy().into_owned(),
+        ];
+        if command == "build" {
+            args.push(String::from("-o"));
+            args.push(artefact.path().to_string_lossy().into_owned());
+        }
+        let output = std::process::Command::new(binary)
+            .args(&args)
+            .output()
+            .unwrap_or_else(|e| panic!("`jr {command}` should run: {e}"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("printed-by-a-run"),
+            "`jr {command}` must emit what the `#run` printed: got {stderr:?}"
+        );
+    }
+}
+
 /// Jai's own spelling: `#run build();` at file scope, with no `main` at all.
 ///
 /// The direct answer to "can a `#run` do it". It can, and what it cannot do is *compile* from inside
