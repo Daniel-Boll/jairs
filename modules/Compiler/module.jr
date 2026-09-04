@@ -1,0 +1,261 @@
+//! The Compiler module: a build script's vocabulary, so a project is built by a Jairs program
+//! rather than by a line of flags.
+//!
+//! Written in Jairs. `jr build --script build.jr` compiles this file's caller, runs it in the
+//! bytecode VM, and then performs the compilations it asked for (ADR-0195).
+//!
+//! # Why a build script is a program and not a `#run`
+//!
+//! Jai puts its build script at compile time, in a `#run`, and reaching for the same shape here does
+//! not work: compile-time code may call no `#foreign` procedure (ADR-0006), so a `#run` cannot read a
+//! file, shell out, print, or even allocate — `Basic.malloc` is itself `#foreign`. A build script
+//! that cannot open a file is not a build script.
+//!
+//! And the power in a real `build.jai` is not the compiler API at all. Cloning a C dependency,
+//! stamping a git hash into the binary, building a `.dmg`, formatting a bootable disk image — every
+//! one of those is `Process`, `File` and `String`. So the script runs as an ordinary program, where
+//! this library already works, and this module is the small part that talks to the compiler.
+//!
+//! # Why these procedures are `#foreign compiler`
+//!
+//! `compiler` is not a library and is never linked: the VM recognises the name and forwards the call
+//! to the driver (ADR-0195 §4). Reusing the `#foreign` declaration form means the feature needed no
+//! grammar rule, no HIR node, no MIR variant and no change to either native back end — and a build
+//! script is not something you compile, so a library that cannot be linked is the right shape. Run a
+//! script with plain `jr run` and the call says so by name rather than quietly doing nothing.
+//!
+//! # Why `set_options` takes a struct and the boundary does not
+//!
+//! [`Build_Options`] is declared here, in Jairs, and `set_options` decomposes it into one call per
+//! field. The compiler therefore never learns the shape of a library type: adding a field is an edit
+//! to this file and a new `#foreign` line, not a change to Rust. That is ADR-0009's layout seam
+//! applied to a library struct — keep the narrow thing narrow.
+//!
+//! # Why the options are read and then mutated
+//!
+//! `o := Compiler.options(t);` returns the *defaults* and the script changes what it cares about.
+//! Every real Jai build script does this — 23 of 23 call `get_build_options` and mutate the copy —
+//! and it means a script names only its own decisions, so a new option cannot silently become zero
+//! in every existing script.
+
+// **No `#import "Basic"` here**, deliberately: everything this file uses from outside itself —
+// `size_of`, `view`, `typed`, `context` — is a compiler intrinsic rather than a library name, so the
+// import would be dead weight and E0231 says so. A *script* will import `Basic` for `print`.
+
+// ---------------------------------------------------------------------------
+// The boundary
+// ---------------------------------------------------------------------------
+
+// Each of these is forwarded to the driver by the VM. They are `#scope_module`, because a script
+// should reach them through the procedures below: the handle discipline (`t.id` rather than `t`) is
+// this module's business, and a script that called `set_output_raw` directly would be relying on it.
+
+#scope_module
+
+// The compiler this script is running inside. Not a library: `#compiler_library` is what tells the
+// VM to forward these calls to the driver, and it takes no name because there is nothing to name.
+compiler :: #compiler_library;
+
+create_target_raw :: (name: string) -> s64 #foreign compiler "create_target";
+set_output_raw :: (target: s64, path: string) #foreign compiler "set_output";
+set_output_path_raw :: (target: s64, path: string) #foreign compiler "set_output_path";
+set_opt_level_raw :: (target: s64, level: s64) #foreign compiler "set_opt_level";
+set_bounds_checks_raw :: (target: s64, on: bool) #foreign compiler "set_bounds_checks";
+set_backend_raw :: (target: s64, backend: s64) #foreign compiler "set_backend";
+add_module_path_raw :: (target: s64, dir: string) #foreign compiler "add_module_path";
+add_library_path_raw :: (target: s64, dir: string) #foreign compiler "add_library_path";
+add_file_raw :: (target: s64, path: string) #foreign compiler "add_file";
+build_raw :: (target: s64) -> bool #foreign compiler "build";
+report_raw :: (message: string) #foreign compiler "report";
+argument_count_raw :: () -> s64 #foreign compiler "argument_count";
+argument_raw :: (index: s64) -> string #foreign compiler "argument";
+target_os_raw :: () -> s64 #foreign compiler "target_os";
+
+#scope_export
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/// A compilation the script is describing.
+///
+/// A handle rather than the configuration itself, so that `add_file` and `set_options` name the same
+/// thing without the script having to keep them in step — and so that a second target is a second
+/// `create_target` rather than a second copy of every setting.
+///
+/// Called `Target` and not `Workspace`, deliberately: Jairs declined Jai's workspace-plus-message-loop
+/// model (ADR-0154 §4), and reusing the word would claim a poll this has not got.
+Target :: struct {
+    /// The driver's handle. Opaque; a script never needs to read it.
+    id: s64;
+}
+
+/// Which code generator to use.
+Backend :: enum {
+    /// Cranelift, the default and the verified back end.
+    CRANELIFT;
+    /// LLVM, available when the compiler was built with its feature on.
+    LLVM;
+}
+
+/// Everything one compilation can be told.
+///
+/// Read with [`options`], mutated, then written back with [`set_options`]. Seven fields against
+/// Jai's roughly sixty: these are the ones real build scripts set, and an option nobody sets is a
+/// promise to keep working that nothing tests.
+Build_Options :: struct {
+    /// The artefact's name. Empty means "the root file's stem", which is what every other compiler
+    /// does and what a shell completion expects.
+    output: string;
+    /// A directory to write the artefact into, joined with `output`. Empty means the working
+    /// directory.
+    output_path: string;
+    /// 0 for `-O0`, 1 for `-O1`.
+    opt_level: s64;
+    /// Whether to emit bounds checks.
+    bounds_checks: bool;
+    /// Which code generator.
+    backend: Backend;
+    /// Directories to search for an `#import`.
+    module_paths: []string;
+    /// Directories to search for a `#system_library`.
+    library_paths: []string;
+}
+
+/// Which operating system the build is running on, so a script can choose per-OS sources or flags.
+///
+/// The same three `Basic.os()` reports, restated here so a build script does not have to import
+/// `Basic` to ask a build question.
+Operating_System :: enum {
+    /// macOS.
+    MACOS;
+    /// Linux.
+    LINUX;
+    /// Windows.
+    WINDOWS;
+}
+
+// ---------------------------------------------------------------------------
+// The surface
+// ---------------------------------------------------------------------------
+
+/// Creates a target named `name`.
+///
+/// The name appears in the driver's report of what it built, and is not the artefact's filename —
+/// that is [`Build_Options.output`]. Two targets may share a name; the handle is the identity.
+create_target :: (name: string) -> Target {
+    t: Target;
+    t.id = create_target_raw(name);
+    return t;
+}
+
+/// The defaults for `t`, to mutate and write back with [`set_options`].
+///
+/// Returns a value rather than a pointer, so that a script's edits do not act at a distance: the
+/// write-back is a separate, visible call, exactly as it is in Jai.
+options :: (t: Target) -> Build_Options {
+    o: Build_Options;
+    o.output = "";
+    o.output_path = "";
+    o.opt_level = 1;
+    o.bounds_checks = true;
+    o.backend = Backend.CRANELIFT;
+    return o;
+}
+
+/// Applies `o` to `t`.
+///
+/// Decomposed into one boundary call per field here rather than passed as a struct, so that the
+/// compiler never has to know this struct's layout — see the module docs.
+set_options :: (t: Target, o: Build_Options) {
+    set_output_raw(t.id, o.output);
+    set_output_path_raw(t.id, o.output_path);
+    set_opt_level_raw(t.id, o.opt_level);
+    set_bounds_checks_raw(t.id, o.bounds_checks);
+    set_backend_raw(t.id, cast(s64, o.backend));
+    for p: o.module_paths {
+        add_module_path_raw(t.id, p);
+    }
+    for p: o.library_paths {
+        add_library_path_raw(t.id, p);
+    }
+}
+
+/// Adds a root source file to `t`.
+///
+/// One file is the ordinary case, because a Jairs program reaches the rest of itself through
+/// `#import`. Several are allowed and each is compiled as its own root.
+add_file :: (t: Target, path: string) {
+    add_file_raw(t.id, path);
+}
+
+/// Compiles `t`, and reports whether it succeeded.
+///
+/// The whole of what a script needs from Jai's four-call intercept-and-poll dance: with no message
+/// loop there is nothing to interleave, so there is nothing for a script to do between "start" and
+/// "finished" except find out which it got.
+///
+/// Diagnostics are rendered by the driver as they would be for `jr build`, so a failure looks the
+/// same whichever way the compilation was asked for.
+build :: (t: Target) -> bool #must {
+    return build_raw(t.id);
+}
+
+/// Prints `message` as a compiler diagnostic.
+///
+/// Routed through the compiler's own renderer rather than `print`, so a script's complaint about its
+/// own inputs — a missing directory, an unknown configuration name — looks like every other error
+/// the build produced instead of like stray output.
+report :: (message: string) {
+    report_raw(message);
+}
+
+/// How many arguments followed `--` on the command line.
+argument_count :: () -> s64 {
+    return argument_count_raw();
+}
+
+/// The argument at `index`, counting from zero.
+///
+/// Out of range is an empty string rather than a trap: a script asking for an argument it was not
+/// given is the ordinary case, and `arguments()` below is the shape most callers want.
+argument :: (index: s64) -> string {
+    return argument_raw(index);
+}
+
+/// Every argument that followed `--`, in order.
+///
+/// Allocates through `context.allocator`, so a script that calls this must install one — the same
+/// obligation `File_Utilities.read_entire_file` has, and for the same reason.
+arguments :: () -> []string {
+    n := argument_count_raw();
+    if n <= 0 {
+        empty: []string;
+        return empty;
+    }
+    raw := context.allocator(n * size_of(string));
+    if raw == null {
+        empty: []string;
+        return empty;
+    }
+    data := typed(string, raw);
+    i := 0;
+    while i < n {
+        stored := data + i;
+        stored.* = argument_raw(i);
+        i = i + 1;
+    }
+    return view(data, n);
+}
+
+/// Which operating system the build is running on.
+os :: () -> Operating_System {
+    raw := target_os_raw();
+    if raw == 1 {
+        return Operating_System.LINUX;
+    }
+    if raw == 2 {
+        return Operating_System.WINDOWS;
+    }
+    return Operating_System.MACOS;
+}

@@ -116,8 +116,13 @@ const MAX_INSERT_DEPTH: u32 = 16;
 /// grammar change (see `jr_syntax::lexer`). That permissiveness has to be paid
 /// for here, or `main :: () { #import "Basic"; }` lowers silently and
 /// `jr check` reports success on a program that makes no sense.
-const DIRECTIVES_VALID_AS_EXPRESSIONS: &[&str] =
-    &["system_library", "framework", "library", "bake_arguments"];
+const DIRECTIVES_VALID_AS_EXPRESSIONS: &[&str] = &[
+    "system_library",
+    "framework",
+    "library",
+    "compiler_library",
+    "bake_arguments",
+];
 
 /// Directives that are only meaningful at file scope.
 const FILE_SCOPE_ONLY_DIRECTIVES: &[&str] = &["import", "load"];
@@ -3989,7 +3994,7 @@ fn is_library_declaration(item: &AstItem) -> bool {
     };
     matches!(
         token.text().trim_start_matches('#'),
-        "system_library" | "framework"
+        "system_library" | "framework" | "compiler_library"
     )
 }
 

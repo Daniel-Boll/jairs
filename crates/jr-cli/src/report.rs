@@ -75,6 +75,15 @@ pub fn unified_diff(path: &std::path::Path, original: &str, formatted: &str) -> 
     out
 }
 
+/// Print a note to stderr that is not attached to a source span.
+///
+/// Used to say what a build script built. A *note* rather than a bare `println!`, so that a script
+/// building six artefacts reads as six lines of compiler output rather than as the script's own
+/// printing — a script may print, and the two must be distinguishable.
+pub fn note(message: &str) {
+    eprintln!("note: {message}");
+}
+
 /// Print a warning to stderr that is not attached to a source span.
 ///
 /// Used for configuration problems (a bad `--module-path`, say) which have no

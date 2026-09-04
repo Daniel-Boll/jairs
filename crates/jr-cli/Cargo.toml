@@ -28,6 +28,7 @@ jr-base.workspace = true
 jr-diag.workspace = true
 jr-db.workspace = true
 jr-link.workspace = true
+jr-driver.workspace = true
 jr-hir.workspace = true
 jr-syntax.workspace = true
 jr-fmt.workspace = true

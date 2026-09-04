@@ -16,6 +16,7 @@ mod assemble;
 mod code;
 mod error;
 mod ffi;
+mod host;
 mod interp;
 mod lower;
 mod memory;
@@ -27,6 +28,7 @@ pub use code::{
     SlotPlan,
 };
 pub use error::{Trap, TrapSite, VmError};
+pub use host::{Host, HostArg, HostValue};
 pub use interp::{MAX_DEPTH, Mode, Program, Vm};
 pub use lower::{compile, is_local_call};
 pub use memory::{DEFAULT_CAPACITY, Mark, Memory};

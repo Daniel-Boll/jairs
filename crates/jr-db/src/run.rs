@@ -65,6 +65,36 @@ pub fn run_main(
     search_paths: ModuleSearchPaths,
     config: BuildConfig,
 ) -> Result<RunOutcome, String> {
+    run_main_impl(db, root, search_paths, config, None)
+}
+
+/// Assembles every reachable file and calls `main`, with a build script's `#foreign compiler "…"`
+/// calls forwarded to `host` (ADR-0195 §4).
+///
+/// Identical to [`run_main`] in every other respect — same gate, same assembly, same trap rendering —
+/// because a build script *is* an ordinary program and giving it a second run path would be a second
+/// notion of what running means. The only difference is that the `compiler` library resolves to
+/// something instead of being refused by name.
+///
+/// # Errors
+/// As [`run_main`].
+pub fn run_main_with_host(
+    db: &dyn Db,
+    root: SourceFile,
+    search_paths: ModuleSearchPaths,
+    config: BuildConfig,
+    host: &mut dyn jr_vm::Host,
+) -> Result<RunOutcome, String> {
+    run_main_impl(db, root, search_paths, config, Some(host))
+}
+
+fn run_main_impl(
+    db: &dyn Db,
+    root: SourceFile,
+    search_paths: ModuleSearchPaths,
+    config: BuildConfig,
+    host: Option<&mut dyn jr_vm::Host>,
+) -> Result<RunOutcome, String> {
     let entry = main_of(db, root).ok_or_else(|| "the file declares no `main`".to_owned())?;
 
     // **The entry point must have lowered.** E0245 warns about a refused body at check time,
@@ -134,6 +164,9 @@ pub fn run_main(
     }
 
     let mut vm = Vm::new(&program, &pool, Mode::Runtime).map_err(|e: VmError| e.to_string())?;
+    if let Some(host) = host {
+        vm.set_host(host);
+    }
     // **`main`'s context is created here** (ADR-0057 §5), because `main` has no Jairs caller to have
     // passed one. Zeroed, so `context.allocator` reads 0 in a program that never sets it.
     //

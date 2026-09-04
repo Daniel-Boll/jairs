@@ -837,6 +837,8 @@ fn run_build(path: PathBuf, output: Option<PathBuf>) -> i32 {
             module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
             // Empty: these two tests link only against libc, which the driver finds on its own.
             library_paths: Vec::new(),
+            script: false,
+            script_args: Vec::new(),
         },
         &quiet_global(),
     )
@@ -863,6 +865,8 @@ fn run_build_with_module_dir(path: PathBuf, output: Option<PathBuf>, extra: Path
                 extra,
             ],
             library_paths: Vec::new(),
+            script: false,
+            script_args: Vec::new(),
         },
         &quiet_global(),
     )
@@ -1402,6 +1406,8 @@ main :: () {
             module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
             // Empty: these two tests link only against libc, which the driver finds on its own.
             library_paths: Vec::new(),
+            script: false,
+            script_args: Vec::new(),
         },
         &global,
     )
@@ -1519,6 +1525,8 @@ fn run_build_with_paths(path: PathBuf, output: PathBuf, library_paths: &[PathBuf
             opt_level: None,
             module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
             library_paths: library_paths.to_vec(),
+            script: false,
+            script_args: Vec::new(),
         },
         &quiet_global(),
     )
@@ -2735,6 +2743,8 @@ fn run_build_emit_object(path: PathBuf, output: PathBuf) -> i32 {
             opt_level: None,
             module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
             library_paths: Vec::new(),
+            script: false,
+            script_args: Vec::new(),
         },
         &quiet_global(),
     )
@@ -2778,6 +2788,8 @@ fn the_llvm_back_end_emits_a_line_table_too() {
             opt_level: None,
             module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
             library_paths: Vec::new(),
+            script: false,
+            script_args: Vec::new(),
         },
         &quiet_global(),
     )
@@ -2919,6 +2931,8 @@ main :: () {
             opt_level: None,
             module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
             library_paths: Vec::new(),
+            script: false,
+            script_args: Vec::new(),
         },
         &quiet_global(),
     )
@@ -3078,6 +3092,8 @@ main :: () {
             opt_level: None,
             module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
             library_paths: Vec::new(),
+            script: false,
+            script_args: Vec::new(),
         },
         &quiet_global(),
     )
@@ -3609,5 +3625,315 @@ fn a_refused_body_builds_and_traps_instead_of_panicking() {
     assert!(
         stderr.contains("in main"),
         "the trap must name its frame, got {stderr:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Build scripts (ADR-0195)
+// ---------------------------------------------------------------------------
+
+/// Runs `jr build --script`, with the repository's `modules` on the search path.
+///
+/// A helper rather than a copy per test, because every one needs the same three things and the
+/// interesting difference is always the *script*.
+fn run_build_script(path: PathBuf, arguments: Vec<String>) -> i32 {
+    jr_cli::commands::build::run(
+        jr_cli::cli::BuildArgs {
+            path,
+            output: None,
+            emit_object: false,
+            backend: jr_cli::cli::BackendArg::Cranelift,
+            no_bounds_check: false,
+            opt_level: None,
+            module_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules")],
+            library_paths: Vec::new(),
+            script: true,
+            script_args: arguments,
+        },
+        &quiet_global(),
+    )
+    .expect("a build script should not fail at the io layer")
+}
+
+/// Where a script's artefact lands, and cleans it up.
+///
+/// A script's output name is **confined to the working directory** (ADR-0122's rule, applied to a
+/// script because it is code the operator may not have written), so a test cannot ask for one inside
+/// its `TempDir`. And these tests run in one process in parallel, so `set_current_dir` would race
+/// every other test — which is why nothing in this file does it.
+///
+/// So each script names a unique artefact relative to the working directory, and this removes it. The
+/// name has to be unique per test for the same reason: two tests writing `app` would pass or fail
+/// depending on which finished first.
+struct Artefact(PathBuf);
+
+impl Artefact {
+    fn named(name: &str) -> Self {
+        let path = PathBuf::from(name);
+        let _ = fs::remove_file(&path);
+        Self(path)
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for Artefact {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// The feature, end to end: a Jairs program describes a compilation and the driver performs it.
+///
+/// Asserted on the **artefact**, and then by *running* it. A driver that reported success and wrote
+/// nothing would pass an exit-code check, and one that wrote a file the linker never finished would
+/// pass an existence check — so the program prints, and its output is the evidence that a real
+/// executable came out the other end.
+#[test]
+fn a_build_script_compiles_a_program_and_names_its_artefact() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = dir.path().join("app.jr");
+    fs::write(
+        &program,
+        "#import \"Basic\";\nmain :: () {\n    print(\"built by a build script\\n\");\n    exit(0);\n}\n",
+    )
+    .expect("the program should be written");
+
+    let artefact = Artefact::named("jr-test-named-by-the-script");
+    let script = dir.path().join("build.jr");
+    fs::write(
+        &script,
+        format!(
+            "#import \"Basic\";\n\
+             Compiler :: #import \"Compiler\";\n\
+             main :: () {{\n\
+             \x20   t := Compiler.create_target(\"app\");\n\
+             \x20   o := Compiler.options(t);\n\
+             \x20   o.output = \"{}\";\n\
+             \x20   Compiler.set_options(t, o);\n\
+             \x20   Compiler.add_file(t, \"{}\");\n\
+             \x20   if !Compiler.build(t) {{ exit(1); }}\n\
+             \x20   exit(0);\n\
+             }}\n",
+            artefact.path().display(),
+            program.display()
+        ),
+    )
+    .expect("the script should be written");
+
+    assert_eq!(
+        run_build_script(script, Vec::new()),
+        0,
+        "the script should succeed"
+    );
+    assert!(
+        artefact.path().exists(),
+        "the script named the artefact, so that is the file that must exist"
+    );
+
+    let output = std::process::Command::new(std::path::Path::new(".").join(artefact.path()))
+        .output()
+        .expect("the artefact should be a runnable executable");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "built by a build script\n",
+        "the artefact must be the program the script asked for"
+    );
+}
+
+/// A script reads its command line, and branches on it.
+///
+/// The half of a build script that has nothing to do with the compiler, and the reason this design
+/// runs the script as a program rather than as a `#run`: `Compiler.arguments()` allocates through
+/// `context.allocator`, which needs `malloc`, which is `#foreign` — and compile-time code may call
+/// none (ADR-0006).
+///
+/// **Both directions are checked**, because a script that ignored its arguments entirely would pass a
+/// test that looked at only one: the artefact would simply always have the same name.
+#[test]
+fn a_build_script_reads_its_arguments() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = dir.path().join("app.jr");
+    fs::write(&program, "#import \"Basic\";\nmain :: () { exit(0); }\n")
+        .expect("the program should be written");
+
+    let release = Artefact::named("jr-test-release-build");
+    let debug = Artefact::named("jr-test-debug-build");
+    let script = dir.path().join("build.jr");
+    fs::write(
+        &script,
+        format!(
+            "#import \"Basic\";\n\
+             Compiler :: #import \"Compiler\";\n\
+             String :: #import \"String\";\n\
+             libc_alloc :: (n: s64) -> *u8 {{ return malloc(n); }}\n\
+             libc_free :: (p: *u8) {{ free(p); }}\n\
+             main :: () {{\n\
+             \x20   context.allocator = libc_alloc;\n\
+             \x20   context.allocator_free = libc_free;\n\
+             \x20   args := Compiler.arguments();\n\
+             \x20   is_release := args.count > 0 && String.equal(args[0], \"release\");\n\
+             \x20   t := Compiler.create_target(\"app\");\n\
+             \x20   o := Compiler.options(t);\n\
+             \x20   if is_release {{ o.output = \"{}\"; }}\n\
+             \x20   if !is_release {{ o.output = \"{}\"; }}\n\
+             \x20   Compiler.set_options(t, o);\n\
+             \x20   Compiler.add_file(t, \"{}\");\n\
+             \x20   if !Compiler.build(t) {{ exit(1); }}\n\
+             \x20   exit(0);\n\
+             }}\n",
+            release.path().display(),
+            debug.path().display(),
+            program.display()
+        ),
+    )
+    .expect("the script should be written");
+
+    assert_eq!(
+        run_build_script(script.clone(), vec![String::from("release")]),
+        0,
+        "the script should succeed with an argument"
+    );
+    assert!(
+        release.path().exists(),
+        "`-- release` must reach the script"
+    );
+    assert!(
+        !debug.path().exists(),
+        "the script must not have taken the other branch"
+    );
+
+    assert_eq!(
+        run_build_script(script, Vec::new()),
+        0,
+        "the script should succeed with no arguments"
+    );
+    assert!(
+        debug.path().exists(),
+        "no arguments must reach the other branch"
+    );
+}
+
+/// A target that does not compile fails the build, and reports at the target's own lines.
+///
+/// The exit code is `2` — "accepted, could not finish" — rather than `1`, which means *the script
+/// itself* did not check. The two have different fixes, so they have different codes.
+#[test]
+fn a_build_script_whose_target_does_not_compile_fails() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let program = dir.path().join("broken.jr");
+    fs::write(
+        &program,
+        "#import \"Basic\";\nmain :: () { exit(no_such_name()); }\n",
+    )
+    .expect("the program should be written");
+
+    let artefact = Artefact::named("jr-test-broken-target");
+    let script = dir.path().join("build.jr");
+    fs::write(
+        &script,
+        format!(
+            "#import \"Basic\";\n\
+             Compiler :: #import \"Compiler\";\n\
+             main :: () {{\n\
+             \x20   t := Compiler.create_target(\"broken\");\n\
+             \x20   o := Compiler.options(t);\n\
+             \x20   o.output = \"{}\";\n\
+             \x20   Compiler.set_options(t, o);\n\
+             \x20   Compiler.add_file(t, \"{}\");\n\
+             \x20   if !Compiler.build(t) {{ exit(1); }}\n\
+             \x20   exit(0);\n\
+             }}\n",
+            artefact.path().display(),
+            program.display()
+        ),
+    )
+    .expect("the script should be written");
+
+    assert_eq!(
+        run_build_script(script, Vec::new()),
+        2,
+        "a target that does not compile must fail the build, not the script's own check"
+    );
+    assert!(
+        !artefact.path().exists(),
+        "nothing should have been written for a target that did not compile"
+    );
+}
+
+/// A build script is not something you compile, and saying so is a *diagnostic* rather than a wall of
+/// linker output.
+///
+/// `#foreign compiler "…"` resolves to no symbol in any library, so before this refusal existed the
+/// link failed with `Undefined symbols: _add_file, referenced from _jr$2$17` — which names the
+/// compiler's own mangling rather than the mistake the operator made, a missing `--script`.
+#[test]
+fn compiling_a_build_script_is_refused_by_name() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let script = dir.path().join("build.jr");
+    fs::write(
+        &script,
+        "#import \"Basic\";\n\
+         Compiler :: #import \"Compiler\";\n\
+         main :: () {\n\
+         \x20   t := Compiler.create_target(\"app\");\n\
+         \x20   Compiler.add_file(t, \"app.jr\");\n\
+         \x20   exit(0);\n\
+         }\n",
+    )
+    .expect("the script should be written");
+
+    let artefact = dir.path().join("as-a-program");
+    assert_eq!(
+        run_build(script, Some(artefact.clone())),
+        2,
+        "a file importing `modules/Compiler` must be refused as a program"
+    );
+    assert!(!artefact.exists(), "nothing should have been linked");
+}
+
+/// A build-script procedure called by an ordinary `jr run` says so by name.
+///
+/// The alternative — a call that quietly does nothing — would make a script run the wrong way look as
+/// though the build had happened, which is the worst of the three possible behaviours. The message
+/// names the flag, because the mistake has exactly one fix.
+#[test]
+fn a_build_script_procedure_outside_a_build_script_is_refused() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let script = dir.path().join("build.jr");
+    fs::write(
+        &script,
+        "#import \"Basic\";\n\
+         Compiler :: #import \"Compiler\";\n\
+         main :: () {\n\
+         \x20   t := Compiler.create_target(\"app\");\n\
+         \x20   Compiler.add_file(t, \"app.jr\");\n\
+         \x20   exit(0);\n\
+         }\n",
+    )
+    .expect("the script should be written");
+
+    let binary = env!("CARGO_BIN_EXE_jr");
+    let modules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules");
+    let output = std::process::Command::new(binary)
+        .args([
+            "run",
+            &script.to_string_lossy(),
+            "-I",
+            &modules.to_string_lossy(),
+        ])
+        .output()
+        .expect("`jr run` should run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("is a build-script procedure"),
+        "the refusal must name what kind of procedure it is, got {stderr:?}"
+    );
+    assert!(
+        stderr.contains("--script"),
+        "the refusal must name the flag that fixes it, got {stderr:?}"
     );
 }

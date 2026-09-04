@@ -383,6 +383,13 @@ pub struct ForeignProc {
     pub symbol: String,
     /// The library it lives in, e.g. `c`, if the declaration named one.
     pub library: Option<String>,
+    /// How that library links — or that it is the compiler itself (ADR-0195 §4).
+    ///
+    /// Carried beside the name rather than derived from it, because a build script's vocabulary must
+    /// not be reachable by *naming* a library `compiler`: [`jr_pool::LinkKind::Compiler`] can only
+    /// come from `#compiler_library`, and a name can come from anywhere. `None` when the declaration
+    /// named no library at all.
+    pub kind: Option<jr_pool::LinkKind>,
     /// Parameter types, in declaration order.
     pub params: Vec<PoolId>,
     /// The return type. [`PoolId::VOID`] when the source omitted the arrow.

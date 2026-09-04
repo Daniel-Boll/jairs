@@ -773,7 +773,7 @@ impl Ctx<'_> {
                                 )
                                 .with_code(E0247)
                                 .with_note(
-                                    "a `for` iterates a fixed-size array `[N]T`, a view `[]T`,                                      or a range `a..b`",
+                                    "a `for` iterates a fixed-size array `[N]T`, a view `[]T`, or a range `a..b`",
                                 )
                                 .with_help(
                                     // **Not "wave W5's macros unlock it".** W5 is complete and
@@ -2046,7 +2046,7 @@ impl Ctx<'_> {
                     Diagnostic::error(span, "`null` needs a pointer type from its context")
                         .with_code(E0257)
                         .with_note(
-                            "unlike an integer literal, `null` has no default type — annotate the                              binding or call, e.g. `p: *u8 = null`",
+                            "unlike an integer literal, `null` has no default type — annotate the binding or call, e.g. `p: *u8 = null`",
                         ),
                 );
                 PoolId::ERROR
@@ -6607,6 +6607,32 @@ impl Ctx<'_> {
         let ty = match interner.resolve(name) {
             // ADR-0016 §3. The value is interned as well as the type, so that the
             // FFI boundary has an identity and not merely a shape.
+            // **The compiler itself, which is not a library and takes no name** (ADR-0195 §4). A
+            // build script's `#foreign compiler "set_output"` is forwarded by the VM to the driver,
+            // so there is no `-l` and nothing to search for — which is why this is a separate
+            // directive rather than `#system_library "compiler"`: that spelling would link, and a
+            // reserved *name* would let any program forge the driver's vocabulary.
+            //
+            // Refuses an operand rather than ignoring one, because `#compiler_library "c"` reads as
+            // though it named something and it never can.
+            "compiler_library" => {
+                if arg.is_some() {
+                    self.diags.push(
+                        Diagnostic::error(span, "`#compiler_library` takes no name")
+                            .with_code(E0293)
+                            .with_note(
+                                "it names the compiler the script is running inside, which is not a \
+                                 library and is never linked",
+                            )
+                            .with_help("write `compiler :: #compiler_library;`"),
+                    );
+                    return self.expect(expected, PoolId::ERROR, span);
+                }
+                let _ = self
+                    .pool
+                    .foreign_library_value("compiler", jr_pool::LinkKind::Compiler);
+                PoolId::FOREIGN_LIBRARY
+            }
             "system_library" | "framework" | "library" => {
                 // **Two silent holes, closed here** (ADR-0180 §5). Both of these type-checked clean and
                 // emitted no `-l`, so a symbol failed at *link* time with nothing pointing at the cause —

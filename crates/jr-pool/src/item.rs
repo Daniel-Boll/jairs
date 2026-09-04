@@ -284,6 +284,17 @@ pub enum LinkKind {
     Library,
     /// `-framework NAME`, a macOS framework bundle. Nothing else accepts it.
     Framework,
+    /// The compiler itself: a `#foreign` whose call the bytecode VM forwards to the driver
+    /// (ADR-0195 §4), and which **emits no linker argument at all**.
+    ///
+    /// Not a library and not linkable. This is how a build script names `set_output`: the
+    /// declaration form is `#foreign`, so the feature needed no new grammar for the *call*, and the
+    /// kind is what tells the VM to forward rather than reach for libffi.
+    ///
+    /// A distinct kind rather than a reserved library *name*, because a name is forgeable —
+    /// `#system_library "compiler"` would otherwise hand any program the driver's vocabulary — while
+    /// a kind can only come from the one directive that produces it.
+    Compiler,
 }
 
 /// One interned entry: either a type or a compile-time value.

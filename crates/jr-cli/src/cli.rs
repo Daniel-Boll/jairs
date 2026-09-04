@@ -301,6 +301,28 @@ pub struct BuildArgs {
     /// anywhere else. The same asymmetry that makes `-o` outrank a declared `BUILD_OUTPUT` (ADR-0102 §2).
     #[arg(short = 'L', long = "library-path", value_name = "DIR")]
     pub library_paths: Vec<std::path::PathBuf>,
+
+    /// Treat `PATH` as a **build script** rather than a program to compile (ADR-0195).
+    ///
+    /// The script is compiled, run in the bytecode VM, and the compilations it asked for through
+    /// `modules/Compiler` are then performed. It is an ordinary Jairs program, so it has the whole
+    /// standard library: it can read files, inspect the operating system, and choose what to build.
+    ///
+    /// A **flag rather than a subcommand**, because everything it shares with `jr build` — the module
+    /// paths, the library paths — is a `jr build` flag already, and a `jr script` would have to grow
+    /// a copy of each. A future wave detects a script by its shape and makes the flag optional.
+    #[arg(long = "script")]
+    pub script: bool,
+
+    /// Arguments for the build script, after `--`.
+    ///
+    /// Readable as `Compiler.arguments()`. 18 of 23 real Jai build scripts read their command line,
+    /// and `-- release` is the idiom, so this exists in the first version rather than being owed.
+    ///
+    /// Ignored without `--script`: a program being compiled is not being run, so it has no arguments
+    /// to receive, and silently accepting some would suggest otherwise.
+    #[arg(last = true, value_name = "ARGS")]
+    pub script_args: Vec<String>,
 }
 
 /// Arguments for `jr fmt`.

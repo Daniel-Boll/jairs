@@ -942,6 +942,17 @@ impl Ctx<'_> {
         let kind = match interner.resolve(*directive) {
             "system_library" => jr_pool::LinkKind::Library,
             "framework" => jr_pool::LinkKind::Framework,
+            // **No operand, and the name is supplied here** (ADR-0195 §4): `#compiler_library` names
+            // the compiler the script is running inside, so there is nothing for the source to say.
+            // Returning early rather than falling through to `arg.clone()?`, which would answer
+            // `None` for a declaration that is perfectly well formed — and `None` here means "not a
+            // linkable library", which is E0293 at the declaration.
+            "compiler_library" => {
+                return Some(
+                    self.pool
+                        .foreign_library_value("compiler", jr_pool::LinkKind::Compiler),
+                );
+            }
             _ => return None,
         };
         let arg = arg.clone()?;

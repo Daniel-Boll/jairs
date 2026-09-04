@@ -722,6 +722,7 @@ dependencies = [
  "jr-base",
  "jr-db",
  "jr-diag",
+ "jr-driver",
  "jr-fmt",
  "jr-hir",
  "jr-link",
@@ -811,6 +812,13 @@ dependencies = [
 [[package]]
 name = "jr-driver"
 version = "0.0.0"
+dependencies = [
+ "jr-base",
+ "jr-db",
+ "jr-diag",
+ "jr-link",
+ "jr-vm",
+]
 
 [[package]]
 name = "jr-fmt"

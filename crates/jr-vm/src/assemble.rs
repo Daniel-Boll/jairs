@@ -109,13 +109,18 @@ pub fn add_file(
         let Some(sig) = signatures.proc_sig(proc) else {
             continue;
         };
+        // **The library's name and its kind, from one lookup** (ADR-0195 §4). ADR-0018 §4 said a third
+        // independent resolution of a `#foreign` declaration was the signal to intern the answer; this
+        // reads the interned value both ways instead, so the name and the kind cannot disagree about
+        // which declaration they came from.
+        let library = signatures.foreign_library(proc);
         program.insert(Routine::Foreign(ForeignProc {
             proc: ProcRef::new(file, proc),
             symbol,
-            library: signatures
-                .foreign_library(proc)
+            library: library
                 .and_then(|id| pool.foreign_library_name(id))
                 .map(str::to_owned),
+            kind: library.and_then(|id| pool.foreign_library_kind(id)),
             params: sig.params.clone(),
             ret: sig.ret,
         }));

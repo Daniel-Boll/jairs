@@ -238,6 +238,12 @@ pub struct Vm<'a> {
     /// why only compilation is bounded. A plain counter rather than an `Option` so the hot loop pays one
     /// decrement and one branch.
     fuel: u64,
+    /// Where a `#foreign compiler "…"` call goes, when the caller supplied somewhere (ADR-0195 §4).
+    ///
+    /// `None` for every ordinary run, and that is what makes a build script's vocabulary unavailable
+    /// to a program nobody asked to treat as one: the call reaches [`Self::foreign`] and is refused
+    /// by name rather than silently doing nothing.
+    host: Option<&'a mut dyn crate::Host>,
 }
 
 impl<'a> Vm<'a> {
@@ -264,10 +270,20 @@ impl<'a> Vm<'a> {
                 Mode::Comptime => MAX_COMPTIME_STEPS,
                 Mode::Runtime => u64::MAX,
             },
+            host: None,
         };
         vm.intern_strings()?;
         vm.emit_globals()?;
         Ok(vm)
+    }
+
+    /// Points `#foreign compiler "…"` calls at `host` (ADR-0195 §4).
+    ///
+    /// A setter rather than a `new` parameter, so that every existing caller — `jr run`, const-eval,
+    /// the differential harness — keeps one constructor and reads unchanged. Only the build-script
+    /// driver calls this.
+    pub fn set_host(&mut self, host: &'a mut dyn crate::Host) {
+        self.host = Some(host);
     }
 
     /// Allocates every interned string's bytes, before any frame mark exists.
@@ -1361,6 +1377,13 @@ impl<'a> Vm<'a> {
     }
 
     fn foreign(&mut self, foreign: &ForeignProc, args: Vec<Value>) -> Result<Value, VmError> {
+        // **A build script's own vocabulary, before the comptime refusal below** (ADR-0195 §4). The
+        // `compiler` library is not a library: it is this VM forwarding to the driver, so libffi
+        // never sees it and there is no symbol to find. Checked first because the refusal below
+        // would otherwise be the wrong answer for the one caller that is *not* asking to call C.
+        if foreign.kind == Some(jr_pool::LinkKind::Compiler) {
+            return self.host_call(foreign, &args);
+        }
         // ADR-0006: compile-time code *may* call foreign functions, behind an
         // explicit `#foreign_at_comptime` allowance that wave W6 introduces. The
         // bridge exists; the allowance does not. Refusing here is what keeps a
@@ -1372,6 +1395,108 @@ impl<'a> Vm<'a> {
             )));
         }
         crate::ffi::call(self, foreign, &args)
+    }
+
+    /// Forwards one `#foreign compiler "…"` call to the driver (ADR-0195 §4).
+    ///
+    /// Decodes each argument to a [`crate::HostArg`] and encodes the answer, so that an implementor
+    /// never touches a [`Value`] or an [`Address`]. A `string` is read out of this VM's memory here;
+    /// a returned one is written into it here.
+    fn host_call(&mut self, foreign: &ForeignProc, args: &[Value]) -> Result<Value, VmError> {
+        let mut decoded = Vec::with_capacity(args.len());
+        for (value, ty) in args.iter().zip(&foreign.params) {
+            decoded.push(self.host_arg(value, *ty)?);
+        }
+
+        let Some(host) = self.host.as_deref_mut() else {
+            // **Named rather than silently doing nothing** — a program that declares a `compiler`
+            // foreign and is run by `jr run` is asking for something only the build-script driver
+            // provides, and a no-op would make it look as though the build had happened.
+            return Err(VmError::unsupported(format!(
+                "`{}` is a build-script procedure, and this program is not being run as a build \
+                 script — run it with `jr build --script`",
+                foreign.symbol
+            )));
+        };
+        let answer = host
+            .call(&foreign.symbol, &decoded)
+            .map_err(VmError::unsupported)?;
+
+        match answer {
+            crate::HostValue::Void => Ok(Value::Void),
+            crate::HostValue::Int(int) => Ok(Value::Scalar(self.host_int(int, foreign.ret))),
+            crate::HostValue::Str(text) => self.host_string(&text),
+        }
+    }
+
+    /// Reads one argument out of this VM into a driver-facing value.
+    fn host_arg(&self, value: &Value, ty: PoolId) -> Result<crate::HostArg, VmError> {
+        match self.pool.item(ty) {
+            Item::IntType { .. } => {
+                let kind = IntKind::of(self.pool, ty).unwrap_or(IntKind::S64);
+                // Narrowed from `i128` deliberately: the boundary carries an `i64` because a
+                // driver's own fields are `i64`, and no integer type in this language is wider.
+                let wide = value.as_int(kind)?;
+                Ok(crate::HostArg::Int(i64::try_from(wide).map_err(|_| {
+                    VmError::unsupported(String::from(
+                        "an integer argument to a build-script procedure does not fit an i64",
+                    ))
+                })?))
+            }
+            Item::BoolType => Ok(crate::HostArg::Int(i64::from(value.boolean()?))),
+            // A `string` is `{data, count}` in target layout, so the bytes are read from the pair
+            // rather than from a NUL terminator — a Jairs string has none (ADR-0187 §3), and reading
+            // to one is how `glShaderSource` compiled whatever followed a shader in memory.
+            Item::StringType => {
+                let Value::Aggregate(bytes) = value else {
+                    return Err(VmError::unsupported(String::from(
+                        "a `string` argument to a build-script procedure arrived as a scalar",
+                    )));
+                };
+                let data = read_le(bytes, 0, 8);
+                let count = read_le(bytes, 8, 8);
+                if count == 0 {
+                    return Ok(crate::HostArg::Str(String::new()));
+                }
+                let raw = self.memory.read(data, count)?;
+                Ok(crate::HostArg::Str(
+                    String::from_utf8_lossy(raw).into_owned(),
+                ))
+            }
+            _ => Err(VmError::unsupported(String::from(
+                "only an integer, a `bool` and a `string` can be passed to a build-script \
+                 procedure — decompose an aggregate in `modules/Compiler`",
+            ))),
+        }
+    }
+
+    /// Width-normalises a driver answer to the declared return type.
+    ///
+    /// Without this a `-> bool` returning 1 and a `-> s64` returning 1 would differ in the high
+    /// bits, which is the shape every other scalar in this VM is careful about.
+    fn host_int(&self, int: i64, ret: PoolId) -> u64 {
+        match IntKind::of(self.pool, ret) {
+            Some(kind) => kind.wrap(i128::from(int)),
+            None => u64::from(int != 0),
+        }
+    }
+
+    /// Copies a driver answer's bytes into this VM and builds the `{data, count}` pair.
+    fn host_string(&mut self, text: &str) -> Result<Value, VmError> {
+        // **Heap, not the frame's mark** — the pair outlives the call that produced it, and a frame
+        // allocation is released when the frame is (ADR-0061), so a returned string would dangle.
+        let address = if text.is_empty() {
+            0
+        } else {
+            let bytes = text.as_bytes().to_vec();
+            let at = self.memory.allocate_heap(bytes.len() as u64, 1)?;
+            self.memory.write(at, &bytes)?;
+            at
+        };
+        let mut pair = vec![0u8; 16];
+        write_le(&mut pair, 0, 8, address);
+        write_le(&mut pair, 8, 8, text.len() as u64);
+        Ok(Value::Aggregate(pair))
     }
 
     // -------------------------------------------------------------------
