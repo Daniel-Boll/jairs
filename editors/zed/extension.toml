@@ -31,4 +31,4 @@ languages = ["Jairs"]
 [grammars.jairs]
 repository = "file:///Users/dboll/dev/p/jairs"
 path = "tree-sitter-jairs"
-rev = "275742bb2523c554d78368a3bf9daee737ce4275"
+rev = "65161074e0adec0cc3ab8ea46a90de14d348c5a7"

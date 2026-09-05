@@ -575,38 +575,38 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0198 re-ran ADR-0197's own inventory against its result, and the most useful thing it found was
-> *why* one gap existed.** The corpus program passed `"PATH".data` to `getenv` and got null — in **both**
-> engines, because a string literal's bytes are not followed by a NUL (ADR-0004). Both engines agreeing is
-> the part to keep: the differential harness compares them, so a bug that makes both read past the same
-> string is invisible to it. Only running the program found it. `to_c_string` exists because of that.
+> **ADR-0199 closed a completion gap, and the blocker was a missing line in the CLI rather than
+> anything in completion.** Typing `create_window` with no `#import "Window";` offered nothing — but
+> `jr lsp` was the **one subcommand of six** that never pushed `bundled_module_dir()`, so with no
+> explicit `--module-path` the server's search paths were **empty** and `module_file` probes only
+> those. It could resolve no `#import` at all, and the existing auto-import quick fix had been
+> **silently dead** in a default invocation since it shipped.
 >
-> **Closed in `modules/String`:** `c_style_strlen`, `to_string`, `to_c_string` (the FFI boundary — one
-> direction borrows, the other cannot), `wildcard_match`, `string_to_float`, `find_nocase`,
-> `contains_nocase`.
+> **Delivered:** unimported names are offered, each carrying its `#import` as an
+> `additional_text_edits` (a field populated nowhere in the crate before) and sorting after everything
+> in scope; `jr_db::module_index` as a query over two inputs, never a walk (ADR-0029 §2); the server
+> **formats** over the protocol, so no editor needs a formatter command; and a **Zed extension** in
+> `editors/zed/`.
 >
-> **A latent SSA defect came out of writing the float scanner** — the fourth in this project found by
-> writing a library rather than by a compiler test. `try_remove_trivial_phi` **cascades**, and it returned
-> the replacement it had chosen *before* the cascade ran, so a `goto` could carry a parameter that no longer
-> existed. The trigger is entirely ordinary: a local before an `if`, a `while` whose condition
-> short-circuits, another `if` after the loop, an assignment to the outer local. **The first fix was wrong**
-> — reserving placeholder arguments made an unfinished parameter look finished to the code whose job is
-> asking whether it is finished.
+> **Two defects in the existing completion path** came out of writing the new one, both the same shape:
+> completion read another file's raw HIR items where the code-action path read `file_exports`. So
+> `#scope_module` names were offered and then rejected by sema, and an aliased import contributed bare
+> names that only resolve qualified.
 >
-> **ADR-0198 §4 withdraws two of ADR-0197 §5's five refusals.** `BuildCpp` and a custom link command are
-> **compositions**: a script compiles C with `Compiler.command` and links via `library_paths`, or asks for
-> `Output_Kind.OBJECT` and runs its own `cc`. Both pinned by tests that run the artefacts (42 and 7).
+> **Measured, because ADR-0033 §3 asked:** completion 0.58 ms → **4.09 ms cold**, unchanged warm and
+> after an edit. One 4 ms hit per session.
 >
-> **Still owed, with reasons in `modules/Compiler`:** icons and manifests (platform resource formats) and
-> `Bindings_Generator` (a C parser). The message loop stays **refused** (ADR-0153).
+> **`tree-sitter-jairs/src/parser.c` is now tracked**, reversing ADR-0025 §3 — Zed compiles it directly
+> and never runs `tree-sitter generate`. That also *strengthens* gate 6, whose drift check had always
+> been blind to it.
 >
-> **Read `integration.rs`'s `Artefact` doc before adding a build-script test.** Nothing in that file may
-> change the process CWD — the tests share one process and run in parallel — and two new tests called
-> `Compiler.set_working_directory` anyway, making an unrelated test fail intermittently while passing in
-> isolation. That option is now tested in a subprocess.
+> **Owed:** the extension's grammar `rev` must be re-stamped by `editors/zed/sync-grammar-rev.sh` after
+> any `grammar.js` change, and the `repository` is a `file://` URL until this repository is published.
+> ADR-0036 §1–2's refusal of a VS Code extension stands; only §3 is reversed.
 >
-> **1109 workspace tests (1115 under gate 7), 281 corpus files, 198 ADRs, all seven gates green. E0296 is
-> still the first free diagnostic code.**
+> **1118 workspace tests (1124 under gate 7), 281 corpus files, 199 ADRs, all seven gates green.
+> E0296 is still the first free diagnostic code.**
+
 
 
 > [!IMPORTANT]

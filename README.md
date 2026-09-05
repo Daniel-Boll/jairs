@@ -73,8 +73,8 @@ down, and every call took a state argument the original does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1109** workspace tests, all seven gates green.
-- **281** `.jr` corpus files, **198** accepted ADRs, **24** standard library
+- **1118** workspace tests, all seven gates green.
+- **281** `.jr` corpus files, **199** accepted ADRs, **24** standard library
   modules.
 - macOS arm64 is verified locally, gate by gate. Linux x86-64 has never been
   verified by a human reading a result: `main` was pushed for the first time on
