@@ -27,4 +27,4 @@ language = "Jairs"
 [grammars.jairs]
 repository = "file:///Users/dboll/dev/p/jairs"
 path = "tree-sitter-jairs"
-commit = "0000000000000000000000000000000000000000"
+commit = "88a7e4963f72e77d97ef6d094ede5e27c2032810"

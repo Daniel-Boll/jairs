@@ -52,6 +52,7 @@ impl zed::Extension for JairsExtension {
             .as_ref()
             .and_then(|binary| binary.path.clone())
             .or_else(|| worktree.which(BINARY))
+            .or_else(|| in_repo_build(worktree))
             .ok_or_else(|| {
                 format!(
                     "`{BINARY}` was not found on PATH. Install it, or set \
@@ -82,6 +83,38 @@ impl zed::Extension for JairsExtension {
             env: worktree.shell_env(),
         })
     }
+}
+
+/// The compiler's own `target/release/jr`, when the worktree **is** the compiler's source tree.
+///
+/// `editors/nvim/lsp/jairs.lua` has always done this, and its comment gives the reason: "someone who
+/// installed `jr` wants theirs, and someone hacking on the compiler wants the one they just built".
+/// ADR-0026's follow-on asked that a second editor share that logic rather than re-derive it, and
+/// this is as close as a WASM extension can get — it cannot read a Lua file, so the *rule* is shared
+/// by being written down in both places rather than the code.
+///
+/// # The worktree is identified, not assumed
+///
+/// Returning `<root>/target/release/jr` unconditionally would hand Zed a path that does not exist for
+/// every project that is not this one, and the failure would be Zed's "command not found" instead of
+/// the message above, which says what to do. So the crate that *produces* the binary is read first:
+/// `crates/jr-cli/Cargo.toml` declaring `name = "jr"` is the tree, and it is the most direct evidence
+/// available — it is the manifest of the very thing being pointed at.
+///
+/// A first draft matched `crates/jr-cli` in the **workspace** manifest instead, which never matches:
+/// `members` is the glob `["crates/*"]`, so no crate is named there. That would have made this
+/// function silently return `None` for every project including this one — dead code that looks live.
+///
+/// It cannot check that the binary exists — a `Worktree` can read a text file and look on `PATH`, and
+/// a compiled binary is neither. `release` rather than `debug` because a `--release` build is what an
+/// editor should be talking to; someone who wants the debug one says so in settings, which wins
+/// outright above.
+fn in_repo_build(worktree: &zed::Worktree) -> Option<String> {
+    let manifest = worktree.read_text_file("crates/jr-cli/Cargo.toml").ok()?;
+    if !manifest.contains("name = \"jr-cli\"") {
+        return None;
+    }
+    Some(format!("{}/target/release/{BINARY}", worktree.root_path()))
 }
 
 zed::register_extension!(JairsExtension);
