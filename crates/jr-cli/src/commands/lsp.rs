@@ -32,18 +32,29 @@ pub fn run(args: LspArgs, global: &GlobalArgs) -> Result<i32> {
     // here" instead of erroring. Found by running the real server from a relative
     // `--module-path`, which is what a person types first.
     let cwd = std::env::current_dir().context("the working directory must be readable")?;
+    let mut module_search_paths: Vec<std::path::PathBuf> = args
+        .module_path
+        .into_iter()
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                cwd.join(path)
+            }
+        })
+        .collect();
+    // **The bundled `modules/` directory, exactly as `check`, `run`, `build` and `bench` do**
+    // (ADR-0199 §1). This server was the one subcommand of six that did not, and the omission
+    // was not cosmetic: `module_file` probes *only* the search paths, so with none the server
+    // could resolve no `#import` at all — and the auto-import quick fix, whose whole job is to
+    // find a module exporting a missing name, silently offered nothing.
+    //
+    // It read as "there is nothing to import" rather than as a misconfiguration, and it worked
+    // in the one editor that ships a config here only because `editors/nvim` passes
+    // `--module-path` explicitly. Appended last, so an explicit path still wins (ADR-0014 §1).
+    module_search_paths.push(crate::commands::check::bundled_module_dir());
     let options = jr_lsp::ServerOptions {
-        module_search_paths: args
-            .module_path
-            .into_iter()
-            .map(|path| {
-                if path.is_absolute() {
-                    path
-                } else {
-                    cwd.join(path)
-                }
-            })
-            .collect(),
+        module_search_paths,
     };
     jr_lsp::run_stdio(&options)
         .map_err(|e| anyhow::anyhow!("{e}"))

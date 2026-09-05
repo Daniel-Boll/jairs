@@ -235,7 +235,11 @@ fn operations() -> Vec<Operation> {
             let _ = jr_lsp::hover(db, file, input, Encoding::Utf8, at);
         }),
         ("completion", |db, file, input, at| {
-            let _ = jr_lsp::completion(db, file, input, Encoding::Utf8, at);
+            // **With the workspace input**, so the number covers the unimported-symbol source
+            // (ADR-0199 §7). Passing `None` here would measure the in-scope half alone and report
+            // a latency the real server never has — the cost ADR-0033 §3 declined to guess at is
+            // precisely this one, so measuring the cheap path would answer the wrong question.
+            let _ = jr_lsp::completion(db, file, input, Encoding::Utf8, at, db.workspace_files());
         }),
         ("code_action", |db, file, input, at| {
             // Given the file's own diagnostics, which is what a client sends. An empty list

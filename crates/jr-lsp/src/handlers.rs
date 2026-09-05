@@ -44,6 +44,53 @@ use crate::render::{Card, Decl, binding_card, container_of, type_name};
 // Diagnostics
 // ---------------------------------------------------------------------------
 
+/// Reprints the whole file, as one edit replacing all of it (ADR-0199 §9).
+///
+/// # Why one whole-document edit rather than a diff
+///
+/// The formatter reprints from the CST (ADR-0027 §1) — it produces a string, not a patch — so any
+/// finer-grained edit list would have to be *derived* by diffing, and a diff of formatted output is a
+/// second formatter's worth of decisions about what moved. A client applies one replacement in one
+/// undo step, which is what `Format on save` needs.
+///
+/// # A file that does not parse is left alone
+///
+/// `None`, and deliberately not an error: the buffer usually does not parse *while* it is being
+/// edited, and `Format on save` firing on a half-written line must not either fail loudly or reprint
+/// a guess. `jr fmt` takes the same position — it exits non-zero and writes nothing (ADR-0027 §5).
+///
+/// The range covers the file by lines, not bytes: `end` is one past the last line at column 0, which
+/// is the spelling every client accepts for "all of it" including when the file has no trailing
+/// newline.
+#[must_use]
+pub fn formatting(db: &dyn Db, file: SourceFile) -> Option<Vec<lsp_types::TextEdit>> {
+    let text = file.text(db);
+    let map = db.source_map();
+    // `None` means the file is not in the source map, which cannot happen for a file the client
+    // has open — but a formatter that panicked on it would take the server down.
+    let id = map.file_id(file.path(db).as_ref())?;
+    let formatted = jr_fmt::format_default(text.as_ref(), id).ok()?;
+    if formatted == text.as_ref() {
+        // Already formatted. An empty list rather than one no-op edit, so a client does not mark the
+        // buffer dirty for a change that is not one.
+        return Some(Vec::new());
+    }
+    let lines = u32::try_from(text.as_ref().lines().count()).unwrap_or(u32::MAX);
+    Some(vec![lsp_types::TextEdit {
+        range: lsp_types::Range {
+            start: lsp_types::Position {
+                line: 0,
+                character: 0,
+            },
+            end: lsp_types::Position {
+                line: lines,
+                character: 0,
+            },
+        },
+        new_text: formatted,
+    }])
+}
+
 /// Every diagnostic for one file, as the protocol wants them.
 ///
 /// A `jr-diag` diagnostic can point at spans in *other* files — an import error names

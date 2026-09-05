@@ -229,7 +229,12 @@ fn auto_imports(
 /// An empty range, so the edit inserts rather than replaces. Placed after the last import
 /// rather than at the very top so that a file's `//!` module documentation — which must be
 /// the first thing in the file to be recognised (ADR-0027) — is never pushed down.
-fn import_insertion_point(
+///
+/// `pub(crate)` rather than private because completion's auto-import needs the **same** point
+/// (ADR-0199 §5). Two insertion rules would be a real divergence, not a stylistic one: the quick
+/// fix and the completion item would put the line in different places in the same file, and only
+/// one of them can be after the module docs.
+pub(crate) fn import_insertion_point(
     db: &dyn Db,
     file: SourceFile,
     positions: &Positions<'_>,

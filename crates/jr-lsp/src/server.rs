@@ -148,6 +148,15 @@ pub fn capabilities(encoding: Encoding) -> ServerCapabilities {
                 },
             ),
         ),
+        // **The formatter, over the protocol** (ADR-0199 §9). `jr fmt` has existed since ADR-0027 and
+        // every editor had to be told how to shell out to it; a server that formats needs no such
+        // configuration, and `Format on save` then works from the same binary that reports the
+        // diagnostics. It is the one capability whose absence forced per-editor setup.
+        //
+        // Whole-document only, deliberately: the formatter reprints from the CST (ADR-0027 §1), so it
+        // has no notion of formatting a range, and advertising `rangeFormatting` would mean reprinting
+        // everything and returning an edit the client did not ask for.
+        document_formatting_provider: Some(OneOf::Left(true)),
         ..ServerCapabilities::default()
     }
 }
@@ -412,6 +421,24 @@ enum Job {
         id: RequestId,
         file: SourceFile,
         position: lsp_types::Position,
+        /// The workspace-files salsa **input**, so `module_index` can be a cached query.
+        ///
+        /// The input rather than the list, because that is what the query is keyed on — and it is
+        /// threaded like `ModuleSearchPaths` for the same reason: both are created once and
+        /// re-`set` thereafter, so the id stays valid across every snapshot (ADR-0199 §4).
+        ///
+        /// `None` means discovery has not run, which a consumer must not read as an empty
+        /// workspace.
+        workspace: Option<jr_db::WorkspaceFiles>,
+    },
+    /// `textDocument/formatting`: reprint the whole file (ADR-0199 §9).
+    ///
+    /// Carries no position and no range: the formatter reprints from the CST, so there is
+    /// nothing smaller it could do.
+    Formatting {
+        db: Box<JairsDatabase>,
+        id: RequestId,
+        file: SourceFile,
     },
     /// `completionItem/resolve`: fill in one item's documentation.
     ///
@@ -540,6 +567,16 @@ fn needs_whole_workspace(method: &str) -> bool {
             // the quick fix silently offers only modules the editor happens to have open,
             // and an absent offer reads as "there is nothing to import".
             | "textDocument/codeAction"
+            // **Completion joins for exactly the reason above** (ADR-0199 §4). Offering a name
+            // the file has not imported needs the same index of what every module exports, so
+            // without this a keystroke sees only opened files and the offer is missing rather
+            // than wrong — the same silent failure, in the surface a person uses far more often.
+            //
+            // It is the costliest entry in this list, because completion fires per keystroke
+            // where a code action fires on a click. It is affordable because loading is
+            // idempotent: the first request pays, and `load_workspace_files` skips every file
+            // already in the database thereafter.
+            | "textDocument/completion"
     )
 }
 
@@ -547,8 +584,11 @@ fn dispatch(db: &mut JairsDatabase, jobs: &Sender<Job>, request: Request) {
     if needs_whole_workspace(&request.method) {
         db.load_workspace_files();
     }
-    let workspace = db
-        .workspace_files()
+    // Both halves of the workspace, captured together so every job in this dispatch sees one
+    // consistent view: the **list** for the features that iterate paths, and the salsa **input** for
+    // `module_index`, which is keyed on it (ADR-0199 §4).
+    let workspace_input = db.workspace_files();
+    let workspace = workspace_input
         .map(|files| files.list(db))
         .unwrap_or_default();
 
@@ -589,6 +629,19 @@ fn dispatch(db: &mut JairsDatabase, jobs: &Sender<Job>, request: Request) {
                         id: id.clone(),
                         file,
                         position: params.text_document_position.position,
+                        workspace: workspace_input,
+                    })
+                })
+        }
+        "textDocument/formatting" => {
+            serde_json::from_value::<lsp_types::DocumentFormattingParams>(request.params)
+                .ok()
+                .and_then(|params| {
+                    let file = file_of(db, &params.text_document.uri)?;
+                    Some(Job::Formatting {
+                        db: Box::new(db.snapshot()),
+                        id: id.clone(),
+                        file,
                     })
                 })
         }
@@ -817,12 +870,13 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
             id,
             file,
             position,
+            workspace,
         } => {
             let db = db.as_ref();
             let computed = catch(|| {
-                // `is_incomplete: false`: the list is everything in scope, so a client is
-                // free to filter it locally as the user keeps typing rather than asking
-                // again on every keystroke.
+                // `is_incomplete: false`: the list is everything in scope plus every
+                // `#import`able name, so a client is free to filter it locally as the user
+                // keeps typing rather than asking again on every keystroke.
                 lsp_types::CompletionResponse::List(lsp_types::CompletionList {
                     is_incomplete: false,
                     items: crate::completion::completion(
@@ -831,9 +885,17 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
                         search_paths,
                         encoding,
                         position,
+                        workspace,
                     ),
                 })
             });
+            answer(out, id, computed.map(serde_json::to_value));
+        }
+        Job::Formatting { db, id, file } => {
+            let db = db.as_ref();
+            // `None` — a file that does not parse — answers with no edits rather than an error, so
+            // `Format on save` on a half-written line is quiet instead of shouting.
+            let computed = catch(|| handlers::formatting(db, file).unwrap_or_default());
             answer(out, id, computed.map(serde_json::to_value));
         }
         Job::References {

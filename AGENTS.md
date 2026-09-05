@@ -67,8 +67,27 @@ cd tree-sitter-jairs && npx --yes tree-sitter-cli@0.26.11 generate \
   && for q in highlights folds indents locals; do \
        npx --yes tree-sitter-cli@0.26.11 query "queries/$q.scm" \
          ../tests/corpus/valid/024-hello.jr > /dev/null || exit 1; \
+     done \
+  && ../editors/zed/generate-queries.sh \
+  && for q in highlights brackets indents outline; do \
+       npx --yes tree-sitter-cli@0.26.11 query "../editors/zed/languages/jairs/$q.scm" \
+         ../tests/corpus/valid/024-hello.jr > /dev/null || exit 1; \
      done
 ```
+
+The gate covers **both** editors' queries, and its `git status` drift check now covers two generated
+artefacts rather than none (ADR-0199 §12):
+
+- `tree-sitter-jairs/src/parser.c` is tracked, because Zed compiles it directly and never runs
+  `tree-sitter generate` (ADR-0199 §10 reverses ADR-0025 §3). While it was ignored, drift could never
+  be reported for it, so a `grammar.js` change with a stale parser beside it was invisible.
+- `editors/zed/languages/jairs/highlights.scm` is generated from the Neovim query by
+  `editors/zed/generate-queries.sh`, so the two editors cannot disagree about which node is a keyword.
+
+Writing a Zed query by hand is how the `query` half earns its keep: the first `brackets.scm` named
+`"\""`, which is not a node in this grammar because a `string_literal` is one token, and the first
+`outline.scm` used `field name:` where the grammar spells that identifier positionally. Both failed to
+compile, and neither would have been visible any other way.
 
 ### Gate 7 — the LLVM back end
 

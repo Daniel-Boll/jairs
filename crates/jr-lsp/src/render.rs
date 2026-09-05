@@ -508,23 +508,16 @@ pub fn type_name(pool: &Pool, signatures: &FileSignatures, ty: PoolId) -> String
     }
 }
 
-/// The container line for a file path: its stem.
+/// The container line for a file path: the module name an `#import` would spell.
 ///
-/// `modules/Basic/module.jr` is the module `Basic`, not `module` — the directory names
-/// a Jairs module and the file inside it is always `module.jr`, so the stem would be
-/// the same string for every module in the system.
+/// Delegates to [`jr_db::module_name_of`], which is where the rule lives now (ADR-0199 §2). It moved
+/// because `jr-db` itself needed it — `module_index` turns a discovered path back into a name — and
+/// it belongs beside `module_file`, whose probe it inverts. Kept here as a thin wrapper rather than
+/// updating four call sites to a `&Path` signature: they all hold a `&str`, and a second conversion
+/// at each of them buys nothing.
 #[must_use]
 pub fn container_of(path: &str) -> String {
-    let path = std::path::Path::new(path);
-    let stem = path.file_stem().map(|stem| stem.to_string_lossy());
-    match stem.as_deref() {
-        Some("module") => path.parent().and_then(|dir| dir.file_name()).map_or_else(
-            || String::from("module"),
-            |dir| dir.to_string_lossy().into(),
-        ),
-        Some(stem) => stem.to_owned(),
-        None => String::new(),
-    }
+    jr_db::module_name_of(std::path::Path::new(path))
 }
 
 /// Escapes a string constant's value for display inside quotes.
