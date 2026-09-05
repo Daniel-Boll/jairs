@@ -265,6 +265,150 @@ pub fn file_exports(db: &dyn Db, file: SourceFile) -> Arc<ItemScope> {
 }
 
 // ---------------------------------------------------------------------------
+// module_name_of — the inverse of module_file's probe
+// ---------------------------------------------------------------------------
+
+/// The module name a path would be imported by, or an empty string for a path with no stem.
+///
+/// The **inverse of [`module_file`]'s probe**, and it lives beside it for that reason: that function
+/// turns `Basic` into `<dir>/Basic/module.jr` or `<dir>/Basic.jr`, and this turns either back into
+/// `Basic`. Two functions disagreeing about that correspondence would make `#import "X";` import
+/// something other than the file a feature had inspected.
+///
+/// `modules/Basic/module.jr` is the module `Basic`, **not** `module` — the directory names a Jairs
+/// module and the file inside it is always `module.jr`, so the stem would be the same string for
+/// every module in the system.
+///
+/// Moved here from `jr-lsp`'s renderer by ADR-0199 §2, where it had four callers and was about to
+/// gain a fifth in `jr-db` itself. A copy in each crate is the shape this project's own doc comments
+/// keep refusing: whichever one a consumer happened to call would decide the answer.
+#[must_use]
+pub fn module_name_of(path: &Path) -> String {
+    let stem = path.file_stem().map(|stem| stem.to_string_lossy());
+    match stem.as_deref() {
+        Some("module") => path.parent().and_then(|dir| dir.file_name()).map_or_else(
+            || String::from("module"),
+            |dir| dir.to_string_lossy().into(),
+        ),
+        Some(stem) => stem.to_owned(),
+        None => String::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// module_index — tracked query
+// ---------------------------------------------------------------------------
+
+/// Every module reachable by `#import`, with the names it exports.
+///
+/// ADR-0029:15-17 recorded that "nothing enumerates" — [`module_file`] only ever *probes* a name it
+/// was given, which is all `#import` resolution needs and not enough to answer "which module exports
+/// `create_window`?". This is that index, and it is what lets completion offer a name the file has
+/// not imported (ADR-0199 §3).
+///
+/// # Why it is a query over two inputs and not a directory walk
+///
+/// A walk is untracked I/O and **must not live in a query** (ADR-0029 §2): salsa cannot know the
+/// filesystem changed, so a query that walked would be stale with no way to notice. Both of its
+/// inputs are already walked outside the database — [`ModuleSearchPaths`] is set from the command
+/// line and [`crate::WorkspaceFiles`] by `set_workspace_roots` — so this derives from them and
+/// invalidates exactly when they do. Editing one module re-runs that module's [`file_exports`] leg
+/// and nothing else.
+///
+/// # How a path becomes a module
+///
+/// Discovery finds every `.jr` file in the workspace, and most of them are not modules. A candidate
+/// is kept only when [`module_name_of`] gives a name that [`module_file`] resolves **back to that
+/// very path** — the round-trip the auto-import quick fix has always done (ADR-0031 §5), and the
+/// check that matters: without it, a `helpers.jr` sitting outside every search path would be offered
+/// as `#import "helpers";`, which resolves to nothing or, worse, to a different file of that name
+/// earlier on the path.
+///
+/// # What it does not do
+///
+/// It does not load files. A path discovered but never read has no [`SourceFile`], and
+/// `source_file_for_path` answers `None` — the same silent skip [`resolved`] documents. A caller
+/// wanting the whole index must run `load_workspace_files` first, which is a write and therefore
+/// happens outside any query.
+///
+/// Uses `no_eq` because [`ItemScope`] does not implement [`PartialEq`].
+#[salsa::tracked(returns(clone), no_eq)]
+pub fn module_index(
+    db: &dyn Db,
+    search_paths: ModuleSearchPaths,
+    workspace: crate::WorkspaceFiles,
+) -> Arc<ModuleIndex> {
+    let list = workspace.list(db);
+    let mut modules: Vec<IndexedModule> = Vec::new();
+    let mut seen: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
+    for path in list.files.iter() {
+        let name = module_name_of(path);
+        if name.is_empty() || !seen.insert(name.clone()) {
+            continue;
+        }
+        // The round-trip. `found` must be this path, or the name means a different file.
+        let lookup = module_file(db, search_paths, Arc::from(name.as_str()));
+        let Some(found) = lookup.found else { continue };
+        if found != *path {
+            continue;
+        }
+        let Some(source) = db.source_file_for_path(&found.to_string_lossy()) else {
+            continue;
+        };
+        modules.push(IndexedModule {
+            name: Arc::from(name.as_str()),
+            file: source,
+            exports: file_exports(db, source),
+        });
+    }
+    Arc::new(ModuleIndex {
+        modules,
+        truncated: list.truncated,
+    })
+}
+
+/// One module in a [`ModuleIndex`].
+///
+/// No `Debug`, deliberately: a `SourceFile` is a salsa input and printing one needs the database,
+/// which a `Debug` impl has no way to reach.
+#[derive(Clone)]
+pub struct IndexedModule {
+    /// The name an `#import` would spell — what [`module_name_of`] returned.
+    pub name: ModuleName,
+    /// The module's loaded file, so a caller can reach its HIR and signatures.
+    pub file: SourceFile,
+    /// What the module offers an importer: [`file_exports`]'s scope, so `#scope_module` is
+    /// already applied and a caller cannot offer a module-private name (ADR-0054 §3).
+    pub exports: Arc<ItemScope>,
+}
+
+/// Every `#import`able module and its exported names ([`module_index`]).
+#[derive(Clone)]
+pub struct ModuleIndex {
+    /// The modules, in workspace-file order, each name appearing once.
+    pub modules: Vec<IndexedModule>,
+    /// Whether discovery hit its file cap, so this is **not** every module.
+    ///
+    /// Carried rather than hidden for the reason `WorkspaceFileList::truncated` is (ADR-0029 §4):
+    /// a consumer that must be exhaustive has to be able to refuse, and one that merely offers
+    /// suggestions can proceed. Completion is the second kind.
+    pub truncated: bool,
+}
+
+impl ModuleIndex {
+    /// The modules exporting `name`, in index order.
+    ///
+    /// Several is normal and not an error — two modules may export one name, which is exactly the
+    /// E0211 ambiguity a *bare* import would create. A caller offering an import per module lets the
+    /// person choose, which is what the auto-import quick fix already does.
+    pub fn exporters_of(&self, name: jr_base::Symbol) -> impl Iterator<Item = &IndexedModule> {
+        self.modules
+            .iter()
+            .filter(move |module| module.exports.get(name).is_some())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // imports_of — tracked query
 // ---------------------------------------------------------------------------
 

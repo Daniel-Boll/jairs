@@ -1,0 +1,35 @@
+name = "Jairs"
+grammar = "jairs"
+path_suffixes = ["jr"]
+line_comments = ["// "]
+tab_size = 4
+hard_tabs = false
+
+# `//!` and `///` are line comments to the grammar (ADR-0027 §5), so nothing extra is needed here —
+# `highlights.scm` distinguishes them.
+[[brackets]]
+start = "{"
+end = "}"
+close = true
+newline = true
+
+[[brackets]]
+start = "("
+end = ")"
+close = true
+newline = false
+
+[[brackets]]
+start = "["
+end = "]"
+close = true
+newline = false
+
+# Not closed inside a comment or a string: a `"` typed inside a string is almost always the closing
+# one, and auto-inserting a second breaks the literal.
+[[brackets]]
+start = "\""
+end = "\""
+close = true
+newline = false
+not_in = ["comment", "string"]

@@ -558,7 +558,7 @@ fn symbol_kind(kind: &ItemKind) -> SymbolKind {
 ///
 /// Converting a span from one file with another file's lines produces a plausible wrong
 /// location, which is worse than none — the same rule `goto_definition` follows.
-fn location_of(
+pub(crate) fn location_of(
     db: &dyn Db,
     encoding: Encoding,
     path: &std::path::Path,

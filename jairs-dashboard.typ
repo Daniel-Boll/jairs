@@ -97,7 +97,7 @@
 #h(4pt)
 #pill[1082 tests]
 #h(4pt)
-#pill[ADR-0198 latest]
+#pill[ADR-0200 latest]
 #h(4pt)
 #pill(fill: rgb("#eaf5ee"), stroke: good)[ALL TWELVE WAVES DONE]
 #h(4pt)
@@ -109,11 +109,11 @@
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "1109", "workspace, all seven gates"),
+  metric("Tests", "1129", "workspace, all seven gates"),
   metric("Corpus", "281", "jr files, all three engines"),
-  metric("ADRs", "198", "0001 to 0198, immutable"),
+  metric("ADRs", "200", "0001 to 0200, immutable"),
   metric("Diagnostics", "131", "declared codes, E0296 next"),
-  metric("Editor checks", "170", "Neovim, verified not gated"),
+  metric("Editor checks", "189", "Neovim 170 + Zed 19, verified not gated"),
 )
 
 // ---------------------------------------------------------------------------
@@ -468,6 +468,66 @@
       `let ... else`, so it compiled silently and skipped globals by luck — and the wrong answer there
       would have been a real miscompile, because forwarding a store to a global across a call drops the
       store the callee was meant to see.
+    ]
+
+    #v(0.3em)
+    #sub[An imported type's name, and navigation from a type position]
+    #text(size: 7.4pt)[
+      ADR-0200, found by a screenshot. An inlay hint read `window: structDeclId(1:1)` — the *eleventh*
+      internal identifier here to reach a place a person reads. `FileSignatures` keys type names per
+      *file*, so an importing file had no entry for an imported struct. The name lives in the *pool*
+      now, beside `soa_counts`, whose own comment already made the argument word for word: the pool
+      "is the one place every file's declarations already meet".
+    ]
+
+    #v(0.3em)
+    #text(size: 7.4pt)[
+      *Two consumers wanted the same missing fact and had each worked around it.* ADR-0171 recorded the
+      DWARF struct DIE as anonymous, its §"honest gaps" naming this exact absence — so the editor showed
+      an internal identifier and the debugger showed nothing, for one reason. Closing both with one map
+      is the argument for putting it there. And the last resort matters as much as the lookup: it reads
+      `<struct>` now, because a wrong answer presented as an answer is worse than an absent one.
+    ]
+
+    #v(0.3em)
+    #text(size: 7.4pt)[
+      *A second, unrelated defect came from the same report:* hover and goto-definition on a type
+      annotation answered nothing at every column, because a `TypeRef` carries no span (ADR-0013) and no
+      type resolution reaches `ResolveMap`. Read from the CST instead — giving `TypeRef::Name` a span was
+      19 sites across nine crates for what the tree already holds. Sema's own bookkeeping map looked like
+      the answer and was *measured empty* for a body-local annotation: it would have worked for a
+      parameter and silently failed for a local.
+    ]
+
+    #v(0.3em)
+    #sub[Completion of names you have not imported — and a second editor]
+    #text(size: 7.4pt)[
+      ADR-0199. Typing `create_window` with no `\#import "Window";` offered *nothing*. It is offered
+      now, inserting a call snippet with the declaration's real parameter names, showing the whole
+      signature, and adding the import in the same undo step. The server *formats* over the protocol
+      too, so no editor needs a formatter command — and `editors/zed/` is a second supported editor.
+    ]
+
+    #v(0.3em)
+    #text(size: 7.4pt)[
+      *The blocker was a missing line in the CLI, not anything in completion.* `jr lsp` was the one
+      subcommand of six that never pushed its bundled `modules/`, so with no explicit `--module-path`
+      the server's search paths were *empty* — and `module_file` probes only those. It could resolve no
+      `\#import` at all, which means the auto-import quick fix had been *silently dead* in a default
+      invocation since it shipped. When a feature offers nothing, check its inputs are non-empty before
+      reading its logic: an absent offer is indistinguishable from "there is nothing here".
+    ]
+
+    #v(0.3em)
+    #text(size: 7.4pt)[
+      *Two defects in the existing path came out of writing the new one*, both the same shape —
+      completion read another file's raw HIR items where the code-action path read `file_exports`. So
+      `\#scope_module` names were offered and sema then rejected what the editor had suggested, and an
+      aliased import contributed bare names that only resolve qualified. And *a claim expired in the
+      direction that reverses a decision*: ADR-0025 §3 refused to commit the generated `parser.c`
+      because the gate regenerates it, but Zed compiles that file directly and never runs
+      `tree-sitter generate`. Tracking it *strengthens* gate 6, whose drift check had always been blind
+      to an ignored file.
     ]
 
     #v(0.3em)

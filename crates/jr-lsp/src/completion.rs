@@ -97,6 +97,7 @@ pub fn completion(
     search_paths: ModuleSearchPaths,
     encoding: Encoding,
     position: lsp_types::Position,
+    workspace: Option<jr_db::WorkspaceFiles>,
 ) -> Vec<CompletionItem> {
     let text = file.text(db);
     let index = jr_db::line_index(db, file);
@@ -113,7 +114,7 @@ pub fn completion(
                 ..CompletionItem::default()
             })
             .collect(),
-        Context::Name => names_at(db, file, search_paths, offset),
+        Context::Name => names_at(db, file, search_paths, offset, workspace, &positions),
     };
 
     // Stamped here rather than at each construction site, because forgetting it at one of
@@ -224,6 +225,8 @@ fn names_at(
     file: SourceFile,
     search_paths: ModuleSearchPaths,
     offset: usize,
+    workspace: Option<jr_db::WorkspaceFiles>,
+    positions: &Positions<'_>,
 ) -> Vec<CompletionItem> {
     let hir = jr_db::file_hir(db, file);
     let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
@@ -238,6 +241,8 @@ fn names_at(
     // like from outside.
     let types = jr_db::checked(db, file, search_paths).types;
     let imported = imported_completions(db, hir.as_ref(), search_paths);
+    let unimported =
+        unimported_completions(db, file, hir.as_ref(), search_paths, workspace, positions);
 
     {
         let pool = db.read_pool();
@@ -298,6 +303,10 @@ fn names_at(
     }
 
     out.extend(imported);
+    // **After the in-scope names and before the keywords.** Order is not the ranking — `sort_text`
+    // is (ADR-0199 §5) — but a client that ignores `sort_text` falls back to the order it was given,
+    // and an unimported name should never come first in either reading.
+    out.extend(unimported);
 
     out.extend(KEYWORDS.iter().map(|kw| CompletionItem {
         label: (*kw).to_owned(),
@@ -402,6 +411,18 @@ fn call_snippet(name: &str, params: &[jr_hir::Param], interner: &jr_base::Intern
 ///
 /// Read from the imported file's own HIR and signatures, the same route
 /// `goto_definition` takes (ADR-0014 §4).
+///
+/// # Two things it now gets right and used to not (ADR-0199 §6)
+///
+/// **An aliased import contributes nothing here.** `Simp :: #import "Simp";` makes the module
+/// reachable *only* as `Simp.name` (ADR-0179 §1), so offering a bare `immediate_quad` was offering a
+/// name that does not resolve — the completion accepted and the file then failed to check. The alias
+/// was being discarded by the `..` in the pattern.
+///
+/// **A module-private name is not offered.** Names come from [`jr_db::file_exports`] rather than the
+/// other file's raw items, so `#scope_module` is respected (ADR-0054 §3). Reading the items directly
+/// offered names sema rejects — the code-action path had always filtered correctly, so the two
+/// disagreed about what a module offers.
 fn imported_completions(
     db: &dyn Db,
     hir: &FileHir,
@@ -409,9 +430,13 @@ fn imported_completions(
 ) -> Vec<CompletionItem> {
     let mut out = Vec::new();
     for item in &hir.items {
-        let ItemKind::Import { path, .. } = &item.kind else {
+        let ItemKind::Import { path, alias, .. } = &item.kind else {
             continue;
         };
+        // An alias suppresses the flat merge, so none of these names is writable bare.
+        if alias.is_some() {
+            continue;
+        }
         let lookup = jr_db::module_file(db, search_paths, Arc::from(path.as_str()));
         let Some(found) = lookup.found else { continue };
         let Some(module) = db.source_file_for_path(found.to_string_lossy().as_ref()) else {
@@ -421,7 +446,9 @@ fn imported_completions(
         let other = jr_db::file_hir(db, module);
         let sigs = jr_db::file_signatures(db, module, search_paths).signatures;
         let docs = jr_db::file_docs(db, module);
+        let exports = jr_db::file_exports(db, module);
         let container = container_of(found.to_string_lossy().as_ref());
+        // Every query above, then the lock — the ordering the module's own comment records.
         let pool = db.read_pool();
         let decl = Decl {
             hir: other.as_ref(),
@@ -433,11 +460,7 @@ fn imported_completions(
             container: &container,
         };
 
-        for (index, other_item) in other.items.iter().enumerate() {
-            if other_item.name.is_none() {
-                continue;
-            }
-            let id = jr_hir::ItemId::from_usize(index);
+        for id in exports.names.values().copied() {
             if let Some(mut completion) = item_completion(&decl, other.as_ref(), id, &container) {
                 // The module is carried so that resolve can look the documentation up in
                 // the file that actually declares it.
@@ -447,6 +470,145 @@ fn imported_completions(
                 }));
                 out.push(completion);
             }
+        }
+    }
+    out
+}
+
+/// Completions for names no `#import` in this file brings in, each carrying the import it needs.
+///
+/// The feature ADR-0028 §5 left out: typing `create_window` in a file that has not imported
+/// `modules/Window` offered nothing, so the name a person is reaching for is exactly the one the
+/// editor stays silent about. ADR-0199 §5 adds it, and the shape is settled by what already exists —
+/// [`jr_db::module_index`] answers "which module exports this", and
+/// [`crate::actions::import_insertion_point`] answers "where does the line go".
+///
+/// # Every item carries its own import
+///
+/// `additional_text_edits` is the LSP's mechanism for "and also change this elsewhere", and it is the
+/// right one here rather than a `command`: the client applies it in the same undo step as the
+/// insertion, so accepting the completion and importing the module are one action to undo. Before
+/// this, `additional_text_edits` was populated nowhere in the crate.
+///
+/// # Ranked below everything in scope
+///
+/// `sort_text` is `~` + the label. `~` is `0x7E`, above every letter and digit, and an item with no
+/// `sort_text` sorts by its label — so in-scope names keep their alphabetical order and every
+/// unimported one lands after all of them. Without this the two groups tie and a client interleaves
+/// them, which would put a name needing an import above a local variable of the same spelling.
+///
+/// # What it deliberately does not offer
+///
+/// A module already imported bare (its names come from [`imported_completions`], with no edit
+/// needed), this file itself, and anything a module keeps behind `#scope_module` — the index is built
+/// from [`jr_db::file_exports`], so the last is not a filter here but a property of the source.
+///
+/// A module imported *under an alias* is still offered, and that is not an oversight: the alias makes
+/// the bare name unreachable (ADR-0179 §1), so `create_window` genuinely does need a second, bare
+/// `#import "Window";` to be written as `create_window`. Offering it with that edit is the honest
+/// answer, and the person can decline it and write `W.create_window` instead.
+fn unimported_completions(
+    db: &dyn Db,
+    file: SourceFile,
+    hir: &FileHir,
+    search_paths: ModuleSearchPaths,
+    workspace: Option<jr_db::WorkspaceFiles>,
+    positions: &Positions<'_>,
+) -> Vec<CompletionItem> {
+    // `None` means discovery has not run, which is **not** an empty workspace. Answering with
+    // nothing is right either way here, but the two are kept apart deliberately: walking a
+    // directory to find out would be untracked I/O inside a request, which ADR-0029 §2 forbids.
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+    let index = jr_db::module_index(db, search_paths, workspace);
+    if index.modules.is_empty() {
+        return Vec::new();
+    }
+
+    // The modules whose names are already writable bare. An aliased import is deliberately absent
+    // from this set — see the doc above.
+    let mut already: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for item in &hir.items {
+        if let ItemKind::Import {
+            path, alias: None, ..
+        } = &item.kind
+        {
+            already.insert(path.as_str());
+        }
+    }
+
+    let insert_at = crate::actions::import_insertion_point(db, file, positions);
+    let own_path = file.path(db);
+
+    // Everything each module needs, gathered before the pool is locked. A query taken inside the
+    // guard deadlocks, because a query locks the same non-reentrant mutex — the trap `names_at`
+    // records and the reason this is two loops rather than one.
+    struct Gathered {
+        module: jr_db::ModuleName,
+        hir: Arc<FileHir>,
+        sigs: Arc<jr_sema::FileSignatures>,
+        docs: Arc<jr_db::FileDocs>,
+        ids: Vec<jr_hir::ItemId>,
+    }
+    let mut gathered: Vec<Gathered> = Vec::new();
+    for module in &index.modules {
+        if already.contains(module.name.as_ref()) {
+            continue;
+        }
+        if module.file.path(db).as_ref() == own_path.as_ref() {
+            continue;
+        }
+        let mut ids: Vec<jr_hir::ItemId> = module.exports.names.values().copied().collect();
+        // Sorted, so two runs over one unchanged workspace produce the same list. A `FxHashMap`'s
+        // iteration order is not stable across processes, and an unstable completion list is the
+        // kind of flake that reads as a race in whatever consumes it.
+        ids.sort_unstable_by_key(|id| id.index());
+        gathered.push(Gathered {
+            module: Arc::clone(&module.name),
+            hir: jr_db::file_hir(db, module.file),
+            sigs: jr_db::file_signatures(db, module.file, search_paths).signatures,
+            docs: jr_db::file_docs(db, module.file),
+            ids,
+        });
+    }
+
+    let mut out = Vec::new();
+    let pool = db.read_pool();
+    for entry in &gathered {
+        let decl = Decl {
+            hir: entry.hir.as_ref(),
+            sigs: entry.sigs.as_ref(),
+            docs: entry.docs.as_ref(),
+            consts: None,
+            pool: &pool,
+            interner: db.interner(),
+            container: entry.module.as_ref(),
+        };
+        let import_line = format!("#import \"{}\";\n", entry.module);
+        for id in entry.ids.iter().copied() {
+            let Some(mut completion) =
+                item_completion(&decl, entry.hir.as_ref(), id, entry.module.as_ref())
+            else {
+                continue;
+            };
+            completion.sort_text = Some(format!("~{}", completion.label));
+            completion.additional_text_edits = Some(vec![lsp_types::TextEdit {
+                range: insert_at,
+                new_text: import_line.clone(),
+            }]);
+            // Spelled out in the detail line, because the edit itself is invisible until accepted
+            // and a person choosing between two same-named candidates needs to see which module
+            // each would pull in.
+            completion.label_details = Some(lsp_types::CompletionItemLabelDetails {
+                detail: None,
+                description: Some(format!("import {}", entry.module)),
+            });
+            completion.data = Some(serde_json::json!({
+                "item": id.index(),
+                "module": entry.module.as_ref(),
+            }));
+            out.push(completion);
         }
     }
     out

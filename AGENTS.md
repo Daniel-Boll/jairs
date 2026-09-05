@@ -67,8 +67,27 @@ cd tree-sitter-jairs && npx --yes tree-sitter-cli@0.26.11 generate \
   && for q in highlights folds indents locals; do \
        npx --yes tree-sitter-cli@0.26.11 query "queries/$q.scm" \
          ../tests/corpus/valid/024-hello.jr > /dev/null || exit 1; \
+     done \
+  && ../editors/zed/generate-queries.sh \
+  && for q in highlights brackets indents outline; do \
+       npx --yes tree-sitter-cli@0.26.11 query "../editors/zed/languages/jairs/$q.scm" \
+         ../tests/corpus/valid/024-hello.jr > /dev/null || exit 1; \
      done
 ```
+
+The gate covers **both** editors' queries, and its `git status` drift check now covers two generated
+artefacts rather than none (ADR-0199 §12):
+
+- `tree-sitter-jairs/src/parser.c` is tracked, because Zed compiles it directly and never runs
+  `tree-sitter generate` (ADR-0199 §10 reverses ADR-0025 §3). While it was ignored, drift could never
+  be reported for it, so a `grammar.js` change with a stale parser beside it was invisible.
+- `editors/zed/languages/jairs/highlights.scm` is generated from the Neovim query by
+  `editors/zed/generate-queries.sh`, so the two editors cannot disagree about which node is a keyword.
+
+Writing a Zed query by hand is how the `query` half earns its keep: the first `brackets.scm` named
+`"\""`, which is not a node in this grammar because a `string_literal` is one token, and the first
+`outline.scm` used `field name:` where the grammar spells that identifier positionally. Both failed to
+compile, and neither would have been visible any other way.
 
 ### Gate 7 — the LLVM back end
 
@@ -259,6 +278,85 @@ grammar reported an `ERROR` node over it (gate 6, which is what that gate exists
 the type, verified by writing it; and `codes.rs` caught a code collision when this wave first reached for E0290,
 which `jr-hir` owns.
 
+**ADR-0200 is the clearest case yet for putting a fact where every file's declarations meet, and it
+was found by a screenshot.** An inlay hint read `window: structDeclId(1:1)` — the **eleventh** internal
+identifier in this project to reach a place a person reads. `FileSignatures::type_name` is keyed per
+*file*, so an importing file's map had no entry for an imported struct and the renderer fell through to
+`format!("struct{decl:?}")`.
+
+**The argument for the fix was already written in the codebase, about a different fact.**
+`Pool::soa_counts` carries a comment saying it lives there "because the question … is asked … about a
+type that may have been declared in **another file**, and the pool is the one place every file's
+declarations already meet. Two lookups — one per file's HIR — would be two chances to disagree about a
+type's identity." That transfers word for word to "what is this type called", and finding it is what
+settled the design in one step. **When adding a per-declaration fact, read what the neighbouring maps
+say about why they are there.**
+
+**Two consumers wanted the same missing fact and had each worked around it.** ADR-0171 recorded the
+DWARF struct DIE as *anonymous*, its own §"honest gaps" naming this exact absence and refusing to fake a
+name from the `DeclId`. So the LSP rendered an internal identifier and the debugger rendered nothing,
+for one reason. That is the signal a fact belongs in the shared place rather than in either consumer —
+and closing both with one map is what stops them disagreeing later.
+
+**The last resort matters as much as the lookup.** It is `<struct>` now, not `struct{decl:?}`. A reader
+can tell `<struct>` means "unavailable"; `structDeclId(1:1)` is indistinguishable from a type actually
+called that. **An absent answer presented as absent beats a wrong answer presented as an answer** — the
+same choice `<unknown>` already made for an error type in the arm above it.
+
+**A second, unrelated defect came from the same report: hover and goto-definition on a type annotation
+answered `null` at every column.** A `TypeRef` carries no span (ADR-0013) and no type resolution reaches
+`ResolveMap`, so `locate` — which scans expressions — never saw one. Read from the **CST** instead;
+giving `TypeRef::Name` a span was 19 sites across nine crates to record what the tree already holds.
+
+**And the tempting source was measured and rejected.** `FileSignatures::type_name_imports` maps a type
+name to its module and looks like the answer. It is populated from four specific resolution sites, and a
+type used only in a **body-local annotation** reaches none of them — it holds nothing for `w: Window`
+inside `main`. Building on it would have worked for a parameter and silently failed for a local, which
+is the shape of bug that gets reported as "it works sometimes". **Measure a bookkeeping map before
+trusting it to be complete.**
+
+**A test asserting an absence expired for the fourth time**, and this one had left instructions:
+`hovering_a_type_annotation_returns_nothing_today` failed with "if this now works, update the note in
+`hovering_a_struct_name_shows_its_fields` and PLAN.md". Retargeted to assert the presence, which is what
+stops it regressing to the old `None`.
+
+**ADR-0199 fixed a completion gap and found that the blocker was a missing line in the CLI, not
+anything in completion.** Typing `create_window` with no `#import "Window";` offered nothing. But
+`jr lsp` was the **one subcommand of six** that never pushed `bundled_module_dir()` — `check`, `run`,
+`build` and `bench` all do — so with no explicit `--module-path` the server's search paths were
+**empty**, and `module_file` probes only those. It could resolve no `#import` at all, and the existing
+auto-import quick fix had therefore been **silently dead** in a default invocation since it shipped.
+
+**The rule: when a feature offers nothing, check that its inputs are non-empty before reading its
+logic.** An absent offer reads as "there is nothing here", which is indistinguishable from a
+misconfiguration and from a bug. It worked in the one editor shipping a config here only because
+`editors/nvim` passes the flag.
+
+**Two defects in the *existing* completion path came out of writing the new one**, and both had the
+same shape — completion read another file's **raw HIR items** where the code-action path read
+`file_exports`. So `#scope_module`-hidden names were offered and sema then rejected what the editor had
+just suggested, and an aliased `Simp :: #import "Simp";` contributed *bare* names that only resolve as
+`Simp.name`. `file_exports` was called exactly once in the whole crate before this. **Two features
+answering "what does this module offer" from two sources will disagree, and the one that is wrong is
+whichever the reader did not check.**
+
+**ADR-0033 §3 declined an exported-name index pending measurement, so it was measured:** completion
+goes 0.58 ms → **4.09 ms cold** and is unchanged warm (0.062 → 0.034 ms) and after an edit (0.376 →
+0.345 ms). One 4 ms hit per session. Worth noting that `jr bench` now measures completion **with** the
+workspace input — passing `None` would have reported a latency the real server never has, which is a
+more comfortable number and the wrong question.
+
+**And a claim expired in the direction that reverses a decision.** ADR-0025 §3 refused to commit
+`tree-sitter-jairs/src/parser.c` because "all generated output is regenerated by the gate". Zed builds
+a grammar by cloning the repository at a revision and running `clang` over that file — read from its
+own `extension_builder.rs`, which **never runs `tree-sitter generate`** — so the premise held only
+while every consumer could regenerate. Tracking it also **strengthens gate 6**: the drift check ignores
+ignored files, so a `grammar.js` change with a stale parser beside it had always been invisible.
+
+**The `!` mangling fired for the fourth time**, in a Python heredoc writing Rust: `assert!(!found,` was
+delivered as `__omp_shell("found,")`. It is recorded three times already in this file. Build a literal
+`chr(33)` when writing a `!` through a shell.
+
 **ADR-0198 re-ran ADR-0197's inventory against its own result and found four more `String` gaps — and the
 most useful thing in the wave is *why* one of them exists.** The corpus program passed `"PATH".data` to
 `getenv` and got null, in **both** engines, because a string literal's bytes are not followed by a NUL
@@ -387,7 +485,7 @@ build a `.dmg` inside the same `#run`. That interleaving is precisely ADR-0153 �
 memoising query engine cannot have it. So the shapes agree, the ordering does not, and saying so is the
 honest version.
 
-Tests 1090 → **1097**, then → **1103** with ADR-0197's and **1109** with ADR-0198's (**1115** under gate 7, whose clippy caught this wave's one cross-back-end omission — `jr-codegen-llvm` is not compiled by the six, so `ProcKind::Local`'s new `exported` field failed there and only there). **Four existing tests had their premises expire and were retargeted rather than weakened** — a foreign call that
+Tests 1090 → **1097**, then → **1103** with ADR-0197's, **1109** with ADR-0198's **1118** with ADR-0199's and **1129** with ADR-0200's (**1135** under gate 7, whose clippy caught this wave's one cross-back-end omission — `jr-codegen-llvm` is not compiled by the six, so `ProcKind::Local`'s new `exported` field failed there and only there). **Four existing tests had their premises expire and were retargeted rather than weakened** — a foreign call that
 really is foreign (`getpid`), a constant that really needs evaluating (`#run pick()`). Fourth recorded
 instance of that shape. One MIR snapshot moved on pool ids only; a pool id in a snapshot has the same churn
 property as the `FileId` this project already refuses to print.
@@ -1395,8 +1493,12 @@ picking a side quietly.
   published figure. It reports and never judges, so there is nothing to fail — a timing assertion on
   a shared machine fails for reasons unrelated to the code (ADR-0033 §4). The published number lives
   in the README with the machine beside it.
-- Editor integration is **verified, not gated**:
-  `nvim --headless -u NONE -l editors/nvim/verify.lua` (166 checks, non-zero on failure).
+- Editor integration is **verified, not gated**, for **two** editors now:
+  `nvim --headless -u NONE -l editors/nvim/verify.lua` (170 checks) and `./editors/zed/verify.sh`
+  (19 checks, which replicate Zed's own grammar build — clone at the pinned revision, compile
+  `parser.c`, check the exported symbol). Neither editor is a build dependency, so neither is one of
+  the six — but run the relevant one after touching `jr-lsp`, `grammar.js` or the queries.
+  The Zed script's own negative test: breaking one query makes it report `1 of 19 checks failed`.
   Neovim is not a build dependency, so it is not one of the six — but run it after
   touching `jr-lsp`, `grammar.js` or the queries.
 - `insta` snapshots: review the `.snap.new` diff, then move it over the `.snap` and

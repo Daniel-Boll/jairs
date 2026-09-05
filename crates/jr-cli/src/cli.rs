@@ -410,8 +410,15 @@ pub struct LspArgs {
     /// Directory to search for `#import`ed modules. Repeatable.
     ///
     /// Supplied rather than discovered, for the same reason `jr check --module-path` is:
-    /// guessing a search path silently changes which module a program means.
-    #[arg(long = "module-path", value_name = "DIR")]
+    /// guessing a search path silently changes which module a program means. The bundled
+    /// `modules/` directory is appended after these, as it is for every other subcommand
+    /// (ADR-0199 §1) — this one used to omit it, and the server could then resolve no
+    /// `#import` at all.
+    ///
+    /// `-I` matches `check`, `run`, `build` and `bench`; this was the only subcommand
+    /// taking a module path without it, so the form a reader had already learned failed
+    /// here alone.
+    #[arg(short = 'I', long = "module-path", value_name = "DIR")]
     pub module_path: Vec<std::path::PathBuf>,
 }
 

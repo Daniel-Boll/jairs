@@ -1,0 +1,22 @@
+[
+  {
+    "token_type": "namespace",
+    "style": ["type"]
+  },
+  {
+    "token_type": "enumMember",
+    "style": ["constant"]
+  },
+  {
+    "token_type": "parameter",
+    "style": ["variable.parameter"]
+  },
+  {
+    "token_type": "macro",
+    "style": ["keyword"]
+  },
+  {
+    "token_type": "decorator",
+    "style": ["attribute"]
+  }
+]

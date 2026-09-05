@@ -1,0 +1,19 @@
+[package]
+name = "zed_jairs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+# **Deliberately outside the workspace.** This crate compiles to `wasm32-wasip2` for Zed, and
+# `zed_extension_api` is not a dependency the compiler has any use for. Joining the workspace would
+# put a WASM-only target in `cargo build --workspace` and a crate in the six gates that cannot run
+# under them, so `[workspace]` below detaches it (ADR-0199 §11).
+[workspace]
+
+[lib]
+path = "src/jairs.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "0.7.0"

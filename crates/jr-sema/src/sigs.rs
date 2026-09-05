@@ -424,7 +424,7 @@ impl FileSignatures {
         self.foreign_libraries.get(&proc).copied()
     }
 
-    /// Every module this file resolved a *type* name from, in no particular order.
+    /// Every module this file resolved a *type* name from, in no particular order.    /// Every module this file resolved a *type* name from, in no particular order.
     ///
     /// The other half of what "is this import used" needs, the first half being
     /// `ResolveMap`'s `Res::Imported` — which covers `Expr::Name` and **only**
@@ -450,15 +450,34 @@ impl FileSignatures {
         self.names.is_empty()
     }
 
-    /// Records this file's struct bodies in `pool`.
+    /// Records this file's struct bodies **and its nominal types' declared names** in `pool`.
     ///
     /// Idempotent, and safe to call for a file whose fields are already
     /// recorded: [`Pool::set_struct_fields`] replaces rather than appends.
     /// Call it for the file being checked *and* for every file it imports,
     /// before any field access is typed.
+    ///
+    /// # Why the names travel with the fields (ADR-0200 §1)
+    ///
+    /// `type_names` is keyed by [`PoolId`] and scoped to **this file**, so an importer's map has no
+    /// entry for an imported struct and every renderer fell through to a debug spelling — a hover on
+    /// a `Window` local read `window: structDeclId(1:1)`. The pool is the one place every file's
+    /// declarations meet, and this call already runs for the file being checked *and* every file it
+    /// imports, which is exactly the coverage the name needs.
+    ///
+    /// The [`DeclId`] is derived here rather than carried through `insert_type_name`, because
+    /// [`Pool::nominal_decl`] already answers it and the five call sites recording a name hold a
+    /// `PoolId`. One derivation beats five extra arguments that could each pass the wrong one.
     pub fn record_in(&self, pool: &mut Pool) {
         for (decl, fields) in &self.struct_bodies {
             pool.set_struct_fields(*decl, fields.clone());
+        }
+        for (ty, name) in &self.type_names {
+            // `None` for a structural type. A name recorded against one would be meaningless, and
+            // `nominal_decl` refuses rather than inventing a declaration.
+            if let Some(decl) = pool.nominal_decl(*ty) {
+                pool.set_decl_name(decl, name.clone());
+            }
         }
     }
 

@@ -14,6 +14,9 @@ workspace = true
 jr-base.workspace = true
 jr-db.workspace = true
 jr-diag.workspace = true
+# The server formats over the protocol (ADR-0199 §9), so it needs the one formatter rather
+# than a second opinion about layout.
+jr-fmt.workspace = true
 jr-hir.workspace = true
 jr-pool.workspace = true
 jr-sema.workspace = true

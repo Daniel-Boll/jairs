@@ -223,3 +223,83 @@ pub fn locate_declaration(hir: &FileHir, offset: TextSize) -> Option<DeclSite> {
 
     None
 }
+
+// ---------------------------------------------------------------------------
+// Type positions (ADR-0200 §3)
+// ---------------------------------------------------------------------------
+
+/// A type name written at a cursor, and where it was written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeNameRef {
+    /// The leading identifier — `Window` in `Window`, and the *alias* in `W.Event`.
+    pub name: String,
+    /// The member after a dot, for a qualified type `W.Event` (ADR-0179 §1).
+    ///
+    /// `Some` means `name` is a module alias rather than a type, so a consumer must look the member
+    /// up in that module instead of looking `name` up as a type.
+    pub member: Option<String>,
+    /// The span of whichever identifier the cursor is actually on.
+    ///
+    /// Not the whole `name_type`: on `W.Event` the cursor is on one of two names, and a range
+    /// covering both would highlight the wrong thing and make a rename ambiguous.
+    pub span: Span,
+    /// Whether the cursor was on the member rather than on the leading identifier.
+    pub on_member: bool,
+}
+
+/// The type name at `offset`, read from the **CST** rather than the HIR.
+///
+/// # Why the CST and not `locate`
+///
+/// A `TypeRef` carries **no span** (ADR-0013) — where one is needed it is added to the variant that
+/// needs it, as `TypeRef::Array` does for `len_span`. And a type name's resolution never reaches
+/// `ResolveMap`, which covers expressions only: `resolve.rs` says so explicitly, calling it "the
+/// asymmetry ADR-0031 §2 had to work around for unused imports".
+///
+/// So `locate` cannot see a type annotation at all, and before ADR-0200 §3 both hover and
+/// goto-definition answered `null` on one — no error, no fallback, simply nothing, which reads as "this
+/// name means nothing" rather than "this feature does not reach here".
+///
+/// Reading the CST is the same choice completion's `context_at` makes and for a related reason: the
+/// tree knows precisely that an identifier is in *type* position, which is what stops a value of the
+/// same name being offered instead. Adding a span to `TypeRef::Name` was the alternative — 19 sites
+/// across nine crates, to record something the CST already holds exactly.
+#[must_use]
+pub fn type_name_at(
+    parse: &jr_syntax::Parse,
+    file: jr_base::FileId,
+    offset: TextSize,
+) -> Option<TypeNameRef> {
+    let root = parse.syntax();
+    let token = root
+        .token_at_offset(offset)
+        // A cursor sits *between* two tokens, and on the boundary of a name it is the name that is
+        // meant — `left_biased` alone answers the previous token when the cursor is at the name's
+        // start, which is where a person leaves it after jumping to a line.
+        .find(|token| token.kind() == jr_syntax::SyntaxKind::IDENT)?;
+    let parent = token.parent()?;
+    if parent.kind() != jr_syntax::SyntaxKind::NAME_TYPE {
+        return None;
+    }
+
+    // A `name_type` is `identifier [. member] [type_arguments]`, so the identifiers in order are the
+    // leading name and then the member.
+    let idents: Vec<_> = parent
+        .children_with_tokens()
+        .filter_map(|element| element.into_token())
+        .filter(|token| token.kind() == jr_syntax::SyntaxKind::IDENT)
+        .collect();
+    let first = idents.first()?;
+    let member = idents.get(1);
+    let on_member = member.is_some_and(|m| m.text_range() == token.text_range());
+
+    Some(TypeNameRef {
+        name: first.text().to_owned(),
+        member: member.map(|m| m.text().to_owned()),
+        span: Span::new(
+            file,
+            jr_base::TextRange::new(token.text_range().start(), token.text_range().end()),
+        ),
+        on_member,
+    })
+}

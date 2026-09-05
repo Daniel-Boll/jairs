@@ -575,38 +575,35 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0198 re-ran ADR-0197's own inventory against its result, and the most useful thing it found was
-> *why* one gap existed.** The corpus program passed `"PATH".data` to `getenv` and got null — in **both**
-> engines, because a string literal's bytes are not followed by a NUL (ADR-0004). Both engines agreeing is
-> the part to keep: the differential harness compares them, so a bug that makes both read past the same
-> string is invisible to it. Only running the program found it. `to_c_string` exists because of that.
+> **ADR-0200 fixed two defects a screenshot exposed, and the second was not the one reported.** An inlay
+> hint read `window: structDeclId(1:1)` — the **eleventh** internal identifier in this project to reach a
+> place a person reads. And hover and goto-definition on a type annotation answered `null` at every
+> column, which is a different bug with a different cause.
 >
-> **Closed in `modules/String`:** `c_style_strlen`, `to_string`, `to_c_string` (the FFI boundary — one
-> direction borrows, the other cannot), `wildcard_match`, `string_to_float`, `find_nocase`,
-> `contains_nocase`.
+> **The name now lives in the pool**, beside `soa_counts`, whose own comment already made the argument
+> word for word: the pool "is the one place every file's declarations already meet". `FileSignatures`
+> keys type names per *file*, so an importer had no entry for an imported struct.
 >
-> **A latent SSA defect came out of writing the float scanner** — the fourth in this project found by
-> writing a library rather than by a compiler test. `try_remove_trivial_phi` **cascades**, and it returned
-> the replacement it had chosen *before* the cascade ran, so a `goto` could carry a parameter that no longer
-> existed. The trigger is entirely ordinary: a local before an `if`, a `while` whose condition
-> short-circuits, another `if` after the loop, an assignment to the outer local. **The first fix was wrong**
-> — reserving placeholder arguments made an unfinished parameter look finished to the code whose job is
-> asking whether it is finished.
+> **That also closes ADR-0171's anonymous struct DIE** — two consumers, a hover and a debugger, had each
+> worked around the same missing fact. Closing both with one map is the argument for putting it there.
 >
-> **ADR-0198 §4 withdraws two of ADR-0197 §5's five refusals.** `BuildCpp` and a custom link command are
-> **compositions**: a script compiles C with `Compiler.command` and links via `library_paths`, or asks for
-> `Output_Kind.OBJECT` and runs its own `cc`. Both pinned by tests that run the artefacts (42 and 7).
+> **The last resort is `<struct>`, not `struct{decl:?}`.** A wrong answer presented as an answer is worse
+> than an absent one presented as absent.
 >
-> **Still owed, with reasons in `modules/Compiler`:** icons and manifests (platform resource formats) and
-> `Bindings_Generator` (a C parser). The message loop stays **refused** (ADR-0153).
+> **Type-position navigation reads the CST**, because a `TypeRef` carries no span (ADR-0013) and no type
+> resolution reaches `ResolveMap`. One resolver is shared by hover and goto-definition, so a cursor
+> cannot describe one declaration and jump to another. Sema's own `type_name_imports` was measured and
+> **rejected**: it holds nothing for a body-local annotation, so it would have worked for a parameter and
+> silently failed for a local.
 >
-> **Read `integration.rs`'s `Artefact` doc before adding a build-script test.** Nothing in that file may
-> change the process CWD — the tests share one process and run in parallel — and two new tests called
-> `Compiler.set_working_directory` anyway, making an unrelated test fail intermittently while passing in
-> isolation. That option is now tested in a subprocess.
+> **Owed:** nothing from this wave. The `w` shown as a hover's container line for a local is the file
+> stem via `container_of` and is pre-existing behaviour, not a defect this wave introduced — recorded
+> here so the next reader of a hover card knows it was seen and left alone.
 >
-> **1109 workspace tests (1115 under gate 7), 281 corpus files, 198 ADRs, all seven gates green. E0296 is
-> still the first free diagnostic code.**
+> **1129 workspace tests (1135 under gate 7), 281 corpus files, 200 ADRs, all seven gates green.
+> E0296 is still the first free diagnostic code.**
+
+
 
 
 > [!IMPORTANT]

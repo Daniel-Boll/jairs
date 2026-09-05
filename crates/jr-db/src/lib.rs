@@ -163,9 +163,9 @@ pub use queries::{
 };
 
 pub use module_loader::{
-    InMemoryModules, ModuleLookupResult, ModuleName, ModuleSearchPaths, ResolveResult,
-    file_diagnostics, file_exports, file_hir, frontend_diagnostics, imports_of, module_file,
-    resolved,
+    InMemoryModules, IndexedModule, ModuleIndex, ModuleLookupResult, ModuleName, ModuleSearchPaths,
+    ResolveResult, file_diagnostics, file_exports, file_hir, frontend_diagnostics, imports_of,
+    module_file, module_index, module_name_of, resolved,
 };
 
 pub use build::{

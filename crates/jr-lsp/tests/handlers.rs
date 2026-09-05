@@ -136,7 +136,7 @@ fn completing_a_field_on_an_array_offers_count_and_not_data() {
     // added. A completion list that offered it would advertise a field sema rejects.
     let source = "main :: () {\n    buf: [4]u8;\n    n := buf.\n}\n";
     let (db, search, file) = program(source);
-    let items = completion(&db, file, search, Encoding::Utf8, at(source, "\n}"));
+    let items = completion(&db, file, search, Encoding::Utf8, at(source, "\n}"), None);
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
     assert!(
         labels.contains(&"count"),
@@ -283,11 +283,11 @@ fn hovering_a_declaration_name_works() {
 
 #[test]
 fn hovering_a_struct_name_shows_its_fields() {
-    // `Alias :: Point;` rather than the annotation in `p: Point`, and that is a real
-    // limitation rather than a test convenience: `jr_hir::TypeRef::Name` carries only a
-    // `Symbol` and no `Span`, so `locate` — which scans expressions — has nothing to
-    // match a cursor inside a type annotation against. Giving `TypeRef` spans is a
-    // `jr-hir` change, recorded as owed work rather than done quietly here.
+    // A struct name used in *value* position — `Alias :: Point;` — which is an expression and so
+    // `locate` sees it. The **type** position is covered by
+    // `hovering_a_type_annotation_now_works` below; it used to be a documented limitation here,
+    // because `TypeRef::Name` carries no `Span` (ADR-0013) and `locate` scans expressions only.
+    // ADR-0200 §3 closed it by reading the CST instead of giving `TypeRef` a span.
     let source =
         "/// A point in the plane.\nPoint :: struct { x: s64; y: s64; }\n\nAlias :: Point;\n";
     let (db, search, file) = program(source);
@@ -300,15 +300,26 @@ fn hovering_a_struct_name_shows_its_fields() {
 }
 
 #[test]
-fn hovering_a_type_annotation_returns_nothing_today() {
-    // Pins the limitation above, so that giving `TypeRef` a span turns this test red and
-    // whoever does it is handed the reason.
-    let source = "Point :: struct { x: s64; }\n\nmain :: () {\n    p: Point;\n}\n";
+fn hovering_a_type_annotation_now_works() {
+    // **This test used to assert the opposite**, and its own failure message said "if this now works,
+    // update the note". ADR-0200 §3 made it work, so it is retargeted rather than deleted: the
+    // behaviour it guards is the one a reader of the old note was promised, and asserting the
+    // positive is what stops it silently regressing to the old `None`.
+    //
+    // Fourth instance in this project of a test naming an unimplemented thing having a one-wave shelf
+    // life. The previous three are recorded in AGENTS.md.
+    let source = "/// A point.\nPoint :: struct { x: s64; }\n\nmain :: () {\n    p: Point;\n}\n";
     let (db, search, file) = program(source);
+    let found = hover(&db, file, search, Encoding::Utf8, at(source, "Point;"))
+        .expect("a type annotation must hover now");
+    let text = hover_text(&found.contents);
     assert!(
-        hover(&db, file, search, Encoding::Utf8, at(source, "Point;")).is_none(),
-        "a type annotation has no HIR span to locate; if this now works, update the note \
-         in `hovering_a_struct_name_shows_its_fields` and PLAN.md"
+        text.contains("Point :: struct"),
+        "expected the struct's card, got:\n{text}"
+    );
+    assert!(
+        text.contains("A point."),
+        "expected the doc comment to travel with it, got:\n{text}"
     );
 }
 
@@ -523,12 +534,237 @@ fn a_non_ascii_line_places_the_range_correctly_under_both_encodings() {
 fn labels(source: &str, needle: &str) -> Vec<String> {
     let (db, search, file) = program(source);
     let mut out: Vec<String> =
-        jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, needle))
+        jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, needle), None)
             .into_iter()
             .map(|item| item.label)
             .collect();
     out.sort();
     out
+}
+
+/// A program whose workspace has been discovered and loaded, so the unimported source can run.
+///
+/// The difference from [`program`] is the two calls at the end, and it is the whole reason the
+/// unimported half needs its own fixture: `None` for the workspace input means "discovery has not
+/// run", which is what every other completion test wants — an in-scope assertion must not suddenly
+/// compete with several hundred importable names (ADR-0199 §8).
+fn program_with_workspace(
+    source: &str,
+) -> (
+    JairsDatabase,
+    ModuleSearchPaths,
+    SourceFile,
+    Option<jr_db::WorkspaceFiles>,
+) {
+    let mut db = JairsDatabase::default();
+    let search = db.set_module_search_paths(vec![modules()]);
+    let path = "/jairs-lsp-test/main.jr";
+    db.set_file_text(path, source);
+    let file = db.source_file(path).expect("the file was just added");
+    db.load_modules_transitively(file);
+    // Discovery over the real `modules/` tree, then the load that turns paths into `SourceFile`s.
+    // Both are writes, which is why the server does them in `dispatch` and not in a query.
+    let workspace = db.set_workspace_roots(&[modules()]);
+    db.load_workspace_files();
+    (db, search, file, Some(workspace))
+}
+
+/// The completion item for `label` at `needle`, with the workspace discovered.
+fn unimported_item(source: &str, needle: &str, label: &str) -> Option<lsp_types::CompletionItem> {
+    let (db, search, file, workspace) = program_with_workspace(source);
+    jr_lsp::completion(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(source, needle),
+        workspace,
+    )
+    .into_iter()
+    .find(|item| item.label == label)
+}
+
+/// A name from a module this file never imported is offered, and carries its own `#import`.
+///
+/// The feature ADR-0028 §5 left out and ADR-0199 §5 adds: typing `create_window` in a file with no
+/// `#import "Window";` used to offer nothing at all, so the editor was silent about exactly the name
+/// a person was reaching for.
+///
+/// Asserted on all four things a caller needs at once, because they are one feature and any of them
+/// missing makes it useless: the item exists, it inserts a **snippet** with the declaration's real
+/// parameter names, its `detail` is the full signature, and `additional_text_edits` carries the
+/// import. Splitting these into four tests would let three pass while the feature does not work.
+#[test]
+fn a_name_from_an_unimported_module_is_offered_with_its_import() {
+    let source = "main :: () {
+    create_window
+}
+";
+    let item = unimported_item(
+        source,
+        "
+}",
+        "create_window",
+    )
+    .expect("`create_window` must be offered from `modules/Window` with no import present");
+
+    assert_eq!(
+        item.insert_text.as_deref(),
+        Some(
+            "create_window(${1:width}, ${2:height}, ${3:window_name}, ${4:window_x}, ${5:window_y})$0"
+        ),
+        "the snippet must use the declaration's real parameter names"
+    );
+    assert_eq!(
+        item.insert_text_format,
+        Some(lsp_types::InsertTextFormat::SNIPPET)
+    );
+    assert_eq!(
+        item.detail.as_deref(),
+        Some(
+            "create_window :: (width: s64, height: s64, window_name: string, window_x: s64, window_y: s64) -> Window"
+        ),
+        "the detail line must show the whole signature, names included"
+    );
+
+    let edits = item
+        .additional_text_edits
+        .expect("an unimported name must carry the import it needs");
+    assert_eq!(edits.len(), 1, "one import line, not several");
+    assert_eq!(edits[0].new_text, "#import \"Window\";\n");
+    // An empty range, so the client inserts rather than replaces.
+    assert_eq!(
+        edits[0].range.start, edits[0].range.end,
+        "the edit must insert, not overwrite the line it lands on"
+    );
+}
+
+/// An unimported name sorts **after** everything already in scope.
+///
+/// `sort_text` was unset everywhere before this, so every item tied and a client fell back to label
+/// order — which would put a name needing an import above a local variable of the same spelling. The
+/// assertion is the relation, not the literal string: what matters is that the in-scope item wins.
+#[test]
+fn an_unimported_name_ranks_below_one_in_scope() {
+    // `start` is declared here *and* exported by `modules/Window`.
+    let source = "start :: () -> s64 { return 1; }
+
+main :: () {
+    start
+}
+";
+    let (db, search, file, workspace) = program_with_workspace(source);
+    let items = jr_lsp::completion(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(source, "\n}"),
+        workspace,
+    );
+
+    let local = items
+        .iter()
+        .find(|item| item.label == "start" && item.additional_text_edits.is_none())
+        .expect("this file's own `start` must be offered");
+    let imported = items
+        .iter()
+        .find(|item| item.label == "start" && item.additional_text_edits.is_some())
+        .expect("`Window.start` must be offered too, with its import");
+
+    // An item with no `sort_text` sorts by its label, so the comparison is label vs sort key.
+    let local_key = local
+        .sort_text
+        .clone()
+        .unwrap_or_else(|| local.label.clone());
+    let imported_key = imported
+        .sort_text
+        .clone()
+        .expect("an unimported item must carry a sort key");
+    assert!(
+        local_key < imported_key,
+        "the in-scope `start` must sort first: {local_key:?} vs {imported_key:?}"
+    );
+}
+
+/// A module already imported is offered **without** an import edit.
+///
+/// The negative half, and the one that catches a duplicate: without the already-imported filter the
+/// same name appears twice, once with a redundant `#import` that would be inserted a second time.
+#[test]
+fn an_already_imported_name_carries_no_import_edit() {
+    let source = "#import \"Window\";\n\nmain :: () {\n    create_window\n}\n";
+    let (db, search, file, workspace) = program_with_workspace(source);
+    let offers: Vec<_> = jr_lsp::completion(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(source, "\n}"),
+        workspace,
+    )
+    .into_iter()
+    .filter(|item| item.label == "create_window")
+    .collect();
+
+    assert_eq!(
+        offers.len(),
+        1,
+        "`create_window` must be offered exactly once when `Window` is imported"
+    );
+    assert!(
+        offers[0].additional_text_edits.is_none(),
+        "an already-imported name needs no edit, got {:?}",
+        offers[0].additional_text_edits
+    );
+}
+
+/// A module-private name is never offered, from an imported module or an unimported one.
+///
+/// `modules/Window` keeps `window_position` behind `#scope_module`. Both completion sources used to
+/// read the other file's raw items, so both offered it — and sema then rejected the name the editor
+/// had just suggested. Reading `file_exports` is what fixes it, and this asserts the absence on both
+/// paths at once (ADR-0199 §6).
+#[test]
+fn a_module_private_name_is_never_offered() {
+    for source in [
+        "main :: () {\n    window_position\n}\n",
+        "#import \"Window\";\n\nmain :: () {\n    window_position\n}\n",
+    ] {
+        let (db, search, file, workspace) = program_with_workspace(source);
+        let found = jr_lsp::completion(
+            &db,
+            file,
+            search,
+            Encoding::Utf8,
+            at(source, "\n}"),
+            workspace,
+        )
+        .into_iter()
+        .any(|item| item.label == "window_position");
+        assert!(
+            !found,
+            "`window_position` is `#scope_module` in `modules/Window` and must not be offered for:\n{source}"
+        );
+    }
+}
+
+/// With no workspace discovered, the list is exactly what it was before this feature.
+///
+/// `None` means "discovery has not run", which is deliberately not the same as an empty workspace —
+/// and it is what every other test in this section passes, so this pins that those tests still
+/// measure the in-scope surface rather than silently gaining the whole module tree.
+#[test]
+fn without_discovery_no_unimported_name_is_offered() {
+    let source = "main :: () {\n    create_window\n}\n";
+    let (db, search, file) = program(source);
+    let found = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "\n}"), None)
+        .into_iter()
+        .any(|item| item.label == "create_window");
+    assert!(
+        !found,
+        "with no workspace input there is nothing to enumerate, so nothing may be offered"
+    );
 }
 
 #[test]
@@ -558,7 +794,7 @@ fn a_dot_on_a_string_offers_its_pseudo_fields() {
 fn a_field_completion_carries_its_type_as_detail() {
     let source = "Point :: struct { x: s64; }\n\nmain :: () {\n    p: Point;\n    n := p.;\n}\n";
     let (db, search, file) = program(source);
-    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, ";\n}"));
+    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, ";\n}"), None);
     let x = items.iter().find(|i| i.label == "x").expect("field x");
     assert_eq!(x.detail.as_deref(), Some("s64"));
 }
@@ -571,10 +807,11 @@ fn a_hash_offers_directives() {
     let mut position = at(source, "#");
     position.character += 1;
     let (db, search, file) = program(source);
-    let mut offered: Vec<String> = jr_lsp::completion(&db, file, search, Encoding::Utf8, position)
-        .into_iter()
-        .map(|item| item.label)
-        .collect();
+    let mut offered: Vec<String> =
+        jr_lsp::completion(&db, file, search, Encoding::Utf8, position, None)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
     offered.sort();
     assert_eq!(
         offered,
@@ -615,7 +852,7 @@ fn a_procedure_completes_as_a_call_snippet() {
     let source =
         "add :: (a: s64, b: s64) -> s64 {\n    return a + b;\n}\n\nmain :: () {\n    n := a\n}\n";
     let (db, search, file) = program(source);
-    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "a\n}"));
+    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "a\n}"), None);
     let add = items
         .iter()
         .find(|i| i.label == "add")
@@ -635,7 +872,7 @@ fn a_procedure_completes_as_a_call_snippet() {
 fn an_imported_name_is_offered_with_its_module() {
     let source = "#import \"Basic\";\n\nmain :: () {\n    p\n}\n";
     let (db, search, file) = program(source);
-    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "p\n}"));
+    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "p\n}"), None);
     let print = items
         .iter()
         .find(|i| i.label == "print")
@@ -662,7 +899,7 @@ fn the_list_carries_no_documentation_until_resolved() {
     let source =
         "/// Adds.\nadd :: (a: s64) -> s64 {\n    return a;\n}\n\nmain :: () {\n    n := a\n}\n";
     let (db, search, file) = program(source);
-    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "a\n}"));
+    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "a\n}"), None);
     let add = items
         .iter()
         .find(|i| i.label == "add")
@@ -679,7 +916,7 @@ fn resolving_an_item_agrees_with_the_hover_card() {
     let source = "/// Adds two numbers.\nadd :: (a: s64, b: s64) -> s64 {\n    return a + b;\n}\n\nmain :: () {\n    n := a\n}\n";
     let (db, search, file) = program(source);
 
-    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "a\n}"));
+    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "a\n}"), None);
     let add = items
         .iter()
         .find(|i| i.label == "add")
@@ -723,6 +960,7 @@ fn completing_in_an_empty_file_offers_keywords_rather_than_failing() {
             line: 0,
             character: 0,
         },
+        None,
     );
     assert!(
         items.iter().any(|i| i.label == "struct"),
@@ -2105,5 +2343,353 @@ broken :: (p: Point) -> s64 {
     assert!(
         kinds.contains(&"type"),
         "and so is the type annotation: {kinds:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Formatting (ADR-0199 §9)
+// ---------------------------------------------------------------------------
+
+/// A misformatted file comes back as one edit replacing all of it.
+///
+/// One edit rather than a diff, because the formatter reprints from the CST and produces a string —
+/// deriving a patch would be a second set of decisions about what moved.
+#[test]
+fn formatting_returns_one_edit_covering_the_whole_file() {
+    let source = "main::()   {\n      a:=1;\n   exit(a);\n}\n";
+    let (db, _search, file) = program(source);
+    let edits = jr_lsp::formatting(&db, file).expect("a file that parses must format");
+
+    assert_eq!(edits.len(), 1, "one whole-document edit, got {edits:?}");
+    assert_eq!(
+        edits[0].new_text,
+        "main :: () {\n    a := 1;\n    exit(a);\n}\n"
+    );
+    assert_eq!(
+        edits[0].range.start,
+        lsp_types::Position {
+            line: 0,
+            character: 0
+        }
+    );
+    // The end is one past the last line at column 0 — the spelling every client reads as "all of
+    // it", and the one that works when the file has no trailing newline.
+    assert_eq!(
+        edits[0].range.end,
+        lsp_types::Position {
+            line: 4,
+            character: 0
+        }
+    );
+}
+
+/// An already-formatted file produces **no** edits.
+///
+/// An empty list rather than one no-op edit, so a client does not mark the buffer dirty — and
+/// `Format on save` on an untouched file does not create a new undo step.
+#[test]
+fn formatting_an_already_formatted_file_produces_no_edits() {
+    let source = "main :: () {\n    a := 1;\n    exit(a);\n}\n";
+    let (db, _search, file) = program(source);
+    let edits = jr_lsp::formatting(&db, file).expect("a file that parses must format");
+    assert!(
+        edits.is_empty(),
+        "an already-formatted file needs no edit, got {edits:?}"
+    );
+}
+
+/// A file that does not parse is left alone, and that is not an error.
+///
+/// The buffer usually does not parse *while* it is being edited, so `Format on save` firing on a
+/// half-written line must neither fail loudly nor reprint a guess. `jr fmt` takes the same position:
+/// it exits non-zero and writes nothing.
+#[test]
+fn formatting_a_file_that_does_not_parse_declines() {
+    let source = "main :: () {\n    a := \n";
+    let (db, _search, file) = program(source);
+    assert!(
+        jr_lsp::formatting(&db, file).is_none(),
+        "a file that does not parse must be declined rather than reprinted"
+    );
+}
+
+/// The capability is advertised, so a client offers `Format Document` without configuration.
+///
+/// Asserted because the handler working and the client knowing about it are different facts, and the
+/// whole point of ADR-0199 §9 is that no editor needs to be told how to shell out to `jr fmt`.
+#[test]
+fn the_server_advertises_document_formatting() {
+    let capabilities = jr_lsp::capabilities(Encoding::Utf8);
+    assert_eq!(
+        capabilities.document_formatting_provider,
+        Some(lsp_types::OneOf::Left(true)),
+        "an editor cannot offer formatting it was never told about"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Imported nominal types (ADR-0200)
+// ---------------------------------------------------------------------------
+
+/// A local whose type is a struct from an imported module is named, not spelled as an internal id.
+///
+/// The reported symptom: an inlay hint on `window := create_window(...)` read `: structDeclId(1:1)`.
+/// `FileSignatures::type_name` is keyed per file, so the importing file's map had no entry for
+/// `modules/Window`'s struct, and the renderer fell through to `format!("struct{decl:?}")` — the
+/// eleventh internal identifier in this project to reach a place meant for a person.
+#[test]
+fn an_imported_struct_type_is_named_in_an_inlay_hint() {
+    let source =
+        "#import \"Window\";\nmain :: () {\n    window := create_window(10, 10, \"x\", 0, 0);\n}\n";
+    let (db, search, file) = program(source);
+    let hints = jr_lsp::inlay_hints(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        lsp_types::Range {
+            start: lsp_types::Position {
+                line: 0,
+                character: 0,
+            },
+            end: lsp_types::Position {
+                line: 4,
+                character: 0,
+            },
+        },
+    );
+    let labels: Vec<String> = hints
+        .iter()
+        .map(|hint| match &hint.label {
+            lsp_types::InlayHintLabel::String(text) => text.clone(),
+            other => format!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        labels,
+        vec![String::from(": Window")],
+        "an imported struct's declared name must reach the hint"
+    );
+}
+
+/// The same name reaches a hover, which is a different renderer path onto the same defect.
+#[test]
+fn an_imported_struct_type_is_named_in_a_hover() {
+    let source =
+        "#import \"Window\";\nmain :: () {\n    window := create_window(10, 10, \"x\", 0, 0);\n}\n";
+    let (db, search, file) = program(source);
+    let hover = jr_lsp::hover(&db, file, search, Encoding::Utf8, at(source, "window :="))
+        .expect("a local must hover");
+    let text = hover_text(&hover.contents);
+    assert!(
+        text.contains("window: Window"),
+        "expected the declared name, got:\n{text}"
+    );
+    assert!(
+        !text.contains("structDeclId"),
+        "an internal identifier must not reach a hover:\n{text}"
+    );
+}
+
+/// A type whose declaring file was never recorded renders as `<struct>`, not as an internal id.
+///
+/// The last resort, asserted because it is the case the old code got wrong in a *specific* way: a
+/// reader can tell `<struct>` means "the name is unavailable", while `structDeclId(1:1)` reads as a
+/// type actually called `structDeclId`. Reached by rendering against an empty `FileSignatures` and a
+/// pool that has the type interned but no name recorded for it.
+#[test]
+fn an_unrecorded_nominal_type_renders_as_its_kind() {
+    let mut pool = jr_pool::Pool::new();
+    let decl = jr_pool::DeclId::new(jr_base::FileId::from_usize(0), 7);
+    let ty = pool.struct_type(decl);
+    let signatures = jr_sema::FileSignatures::default();
+    assert_eq!(
+        jr_lsp::type_name(&pool, &signatures, ty),
+        "<struct>",
+        "an unavailable name must read as unavailable"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Navigation from a type position (ADR-0200 §3)
+// ---------------------------------------------------------------------------
+
+/// Goto-definition on an imported type reaches the `struct` in the module that declares it.
+///
+/// A `TypeRef` carries no span (ADR-0013) and no resolution for one reaches `ResolveMap`, so `locate`
+/// could not see a type annotation at all and this answered `null` at every column.
+#[test]
+fn goto_definition_on_an_imported_type_reaches_its_struct() {
+    let source = "#import \"Window\";\nmain :: () {\n    w: Window;\n}\n";
+    let (db, search, file) = program(source);
+    let location =
+        jr_lsp::goto_definition(&db, file, search, Encoding::Utf8, at(source, "Window;"))
+            .expect("an imported type must be navigable");
+
+    assert!(
+        location.uri.as_str().ends_with("modules/Window/module.jr"),
+        "expected the declaring module, got {}",
+        location.uri.as_str()
+    );
+    // Asserted against the source rather than a fixed line, so editing the module does not fail this
+    // test for the wrong reason.
+    let module = std::fs::read_to_string(modules().join("Window/module.jr"))
+        .expect("the module must be readable");
+    let line = module
+        .lines()
+        .nth(location.range.start.line as usize)
+        .expect("the reported line must exist");
+    assert!(
+        line.starts_with("Window :: struct"),
+        "expected the struct declaration, got {line:?}"
+    );
+}
+
+/// Hover on an imported type describes that type, and from the module that declares it.
+#[test]
+fn hover_on_an_imported_type_describes_it() {
+    let source = "#import \"Window\";\nmain :: () {\n    w: Window;\n}\n";
+    let (db, search, file) = program(source);
+    let hover = jr_lsp::hover(&db, file, search, Encoding::Utf8, at(source, "Window;"))
+        .expect("an imported type must hover");
+    let text = hover_text(&hover.contents);
+    assert!(
+        text.contains("Window"),
+        "expected the type's own card, got:\n{text}"
+    );
+    // The container line names the declaring module, which is what tells a reader where it came from.
+    assert!(
+        text.contains("Window\n"),
+        "expected the declaring module as the container, got:\n{text}"
+    );
+}
+
+/// A type declared in **this** file resolves here, not through an import.
+///
+/// The nearer answer, and the ordering matters: asking the imports first would jump into a module for
+/// a name the file declares itself.
+#[test]
+fn goto_definition_on_an_own_type_stays_in_this_file() {
+    let source =
+        "#import \"Window\";\nLocal :: struct { a: s64; }\nmain :: () {\n    v: Local;\n}\n";
+    let (db, search, file) = program(source);
+    let location = jr_lsp::goto_definition(&db, file, search, Encoding::Utf8, at(source, "Local;"))
+        .expect("an own type must be navigable");
+    assert!(
+        location.uri.as_str().ends_with("main.jr"),
+        "expected this file, got {}",
+        location.uri.as_str()
+    );
+    assert_eq!(
+        location.range.start.line, 1,
+        "expected the declaration's own line"
+    );
+}
+
+/// A **qualified** type `W.Rect` resolves the member in the module the alias names (ADR-0179 §1).
+#[test]
+fn goto_definition_on_a_qualified_type_resolves_the_member() {
+    let source = "W :: #import \"Window\";\nmain :: () {\n    r: W.Rect;\n}\n";
+    let (db, search, file) = program(source);
+    let location = jr_lsp::goto_definition(&db, file, search, Encoding::Utf8, at(source, "Rect;"))
+        .expect("a qualified type's member must be navigable");
+    assert!(
+        location.uri.as_str().ends_with("modules/Window/module.jr"),
+        "expected the aliased module, got {}",
+        location.uri.as_str()
+    );
+    let module = std::fs::read_to_string(modules().join("Window/module.jr"))
+        .expect("the module must be readable");
+    let line = module
+        .lines()
+        .nth(location.range.start.line as usize)
+        .expect("the reported line must exist");
+    assert!(
+        line.starts_with("Rect :: struct"),
+        "expected the member's declaration, got {line:?}"
+    );
+}
+
+/// The **alias** of a qualified type is not a type, so it answers nothing.
+///
+/// Asserted rather than left implicit: guessing here would send a cursor on `W` into a struct the
+/// alias does not name, and `import_target` already answers for a cursor on the import line itself.
+#[test]
+fn the_alias_of_a_qualified_type_is_not_a_type() {
+    let source = "W :: #import \"Window\";\nmain :: () {\n    r: W.Rect;\n}\n";
+    let (db, search, file) = program(source);
+    assert!(
+        jr_lsp::goto_definition(&db, file, search, Encoding::Utf8, at(source, "W.Rect")).is_none(),
+        "an alias names a module, not a type"
+    );
+}
+
+/// A module-private name is not navigable from a type position (ADR-0054 §3).
+///
+/// `window_position` sits after `#scope_module` in `modules/Window`, so `file_exports` does not have
+/// it — which is the exact lookup this resolution goes through, making the property structural rather
+/// than a filter. It is asserted because the *completion* path had the mirror-image bug of offering
+/// module-private names (ADR-0199 §6), and the two now agree about what a module offers.
+///
+/// A private **procedure** rather than a private struct, because no bundled module has one: everything
+/// after `modules/Compiler`'s `#scope_module` is re-exported by a later `#scope_export`. Written down
+/// rather than left as a gap — the code path under test is the same either way, and inventing a
+/// fixture module to make the example a struct would test the fixture.
+#[test]
+fn a_module_private_name_is_not_navigable_as_a_type() {
+    let source = "#import \"Window\";\nmain :: () {\n    v: window_position;\n}\n";
+    let (db, search, file) = program(source);
+    assert!(
+        jr_lsp::goto_definition(
+            &db,
+            file,
+            search,
+            Encoding::Utf8,
+            at(source, "window_position;")
+        )
+        .is_none(),
+        "a `#scope_module` name must not be reachable from an importer"
+    );
+}
+
+/// A type name nothing declares answers nothing, rather than the first module tried.
+#[test]
+fn an_unknown_type_name_is_not_navigable() {
+    let source = "#import \"Window\";\nmain :: () {\n    v: No_Such_Type;\n}\n";
+    let (db, search, file) = program(source);
+    assert!(
+        jr_lsp::goto_definition(
+            &db,
+            file,
+            search,
+            Encoding::Utf8,
+            at(source, "No_Such_Type;")
+        )
+        .is_none(),
+        "an undeclared type must not resolve to anything"
+    );
+}
+
+/// A value still wins over a type of the same name, because it is the nearer question.
+///
+/// The type route is checked *after* `locate` and `locate_declaration`, and this pins the order: a
+/// cursor on a *use* of `Thing` as a value must describe the value.
+#[test]
+fn a_value_of_the_same_name_still_wins() {
+    let source =
+        "Thing :: struct { a: s64; }\nThing_value :: 7;\nmain :: () {\n    n := Thing_value;\n}\n";
+    let (db, search, file) = program(source);
+    let hover = jr_lsp::hover(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(source, "Thing_value;"),
+    )
+    .expect("the value must hover");
+    let text = hover_text(&hover.contents);
+    assert!(
+        text.contains("Thing_value"),
+        "expected the constant, got:\n{text}"
     );
 }

@@ -1,0 +1,34 @@
+id = "jairs"
+name = "Jairs"
+description = "Jairs language support: syntax, diagnostics, completion with auto-import, and formatting."
+version = "0.1.0"
+schema_version = 1
+authors = ["dboll"]
+repository = "https://github.com/dboll/jairs"
+
+# The language server is `jr lsp` — a subcommand, not a second binary (ADR-0024 §5).
+# `src/jairs.rs` supplies the command, because Zed requires Rust for a language server.
+[language_servers.jairs]
+name = "Jairs"
+# `languages`, not the singular `language`: Zed's manifest marks that one
+# "Deprecated in favor of `languages`" (read from `extension_manifest.rs`), and it still accepts both
+# only because it has not finished removing it.
+languages = ["Jairs"]
+
+# **Zed builds a grammar by cloning this repository and running `clang` over `src/parser.c`.**
+# It never runs `tree-sitter generate` (verified in Zed's `extension_builder.rs`), which is why
+# ADR-0199 §10 reverses ADR-0025 §3 and tracks the generated parser.
+#
+# `path` points at the grammar inside this repository rather than a repository of its own, so the
+# grammar and the compiler that must agree with it cannot drift apart.
+#
+# `rev` must be a revision the clone can fetch — `commit` is only a serde alias for it.
+# `./sync-grammar-rev.sh` stamps the current `HEAD`; run it after any `grammar.js` change, then
+# re-install the dev extension so the parser is rebuilt. When this
+# repository is published, replace `repository` with the `https://` URL — the `file://` form is
+# Zed's documented spelling for a grammar on the local filesystem, and it is the honest one while
+# the only copy of this grammar is the one on this machine.
+[grammars.jairs]
+repository = "file:///Users/dboll/dev/p/jairs"
+path = "tree-sitter-jairs"
+rev = "2a4f4b12fb764816eb72fb5f6c9b35731c632e06"
