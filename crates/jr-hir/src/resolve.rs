@@ -827,6 +827,13 @@ impl<'a> ResolveCtx<'a> {
     /// scope. That is why a qualified name can never be ambiguous — E0211 has nothing to compare.
     fn resolve_qualified_name(&mut self, alias: Symbol, member: Symbol, span: Span) -> Res {
         let member_text = self.interner.resolve(member);
+        // **`Window.` mid-typing is a syntax error, not a missing export.** With no name token,
+        // lowering interned [`crate::ERROR_NAME`], and reporting *that* names something the person
+        // never wrote — the parser already said what is wrong. Same judgement as the `None` arm
+        // below: one problem gets one complaint.
+        if member_text == crate::ERROR_NAME {
+            return Res::Error;
+        }
         match self.import_index.lookup_qualified(alias, member) {
             Some(QualifiedLookup::Found(import, sym)) => Res::Imported(import, sym),
             // The same distinction the bare path draws (ADR-0054 §2), reached by the same helper so

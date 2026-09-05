@@ -1077,7 +1077,7 @@ impl<'a> LowerCtx<'a> {
                 let (name, name_span) = f
                     .field_name()
                     .map(|t| (self.intern(t.text()), self.span_of_token(&t)))
-                    .unwrap_or_else(|| (self.intern("<error>"), span));
+                    .unwrap_or_else(|| (self.intern(crate::ERROR_NAME), span));
                 // **`Simp.foo` is a qualified name, not a field access** (ADR-0179 §4). At file scope
                 // there are no locals, so an alias always wins here — the body path additionally
                 // checks that no local shadows it.
@@ -3357,7 +3357,7 @@ impl<'a> BodyLowerCtx<'a> {
                 let (name, name_span) = f
                     .field_name()
                     .map(|t| (self.intern(t.text()), self.span_of_token(&t)))
-                    .unwrap_or_else(|| (self.intern("<error>"), span));
+                    .unwrap_or_else(|| (self.intern(crate::ERROR_NAME), span));
                 // **`Simp.foo` is a qualified name, not a field access** (ADR-0179 §4) — unless a
                 // local or a parameter of that name is in scope, in which case the binding wins and
                 // this is an ordinary field of a value. That is ADR-0014 §3's rule, applied by

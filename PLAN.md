@@ -621,7 +621,9 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
    — neither exceeded the width anywhere in this corpus, so there was nothing to measure. All three are
    candidates only when something overflows.
 
-**1193 workspace tests (1199 under gate 7), 281 corpus files, 203 ADRs, all seven gates green.**
+**1204 workspace tests (1210 under gate 7), 281 corpus files, 204 ADRs, all seven gates green.**
+ADR-0203 and ADR-0204 landed together: 1181 + 11 + 12 = 1204, and the two ADRs each state their own
+wave's contribution rather than a running total, which is why neither number matches this one.
 **E0296** is still the first free diagnostic code — this wave added none, because nothing it built is
 a language rule. The corpus count is unchanged for the same reason: `jr new` and a manifest are not
 things a `.jr` program can observe, so their tests are `jr-cli` integration tests that drive the real

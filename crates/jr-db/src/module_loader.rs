@@ -324,6 +324,17 @@ pub fn module_name_of(path: &Path) -> String {
 /// as `#import "helpers";`, which resolves to nothing or, worse, to a different file of that name
 /// earlier on the path.
 ///
+/// **A name is claimed only once a candidate has passed every check.** The first version marked the
+/// name seen *before* the round-trip, so a file that merely produced the name and then failed took it
+/// with it and the real module below was skipped as a duplicate. That is not a hypothetical: Zed
+/// builds a dev extension by cloning the grammar's repository into the extension directory, which
+/// puts a **second copy of this repository inside it** — `editors/zed/grammars/jairs/modules/…`
+/// sorts before `modules/…`, claimed every module name, failed the round-trip on each, and left the
+/// index **empty**, so completion offered no unimported name anywhere in the tree. Neither the name
+/// nor the round-trip was wrong; the order of the two was.
+///
+/// A repeated `module_file` probe costs nothing, because it is a query memoised on its name.
+///
 /// # What it does not do
 ///
 /// It does not load files. A path discovered but never read has no [`SourceFile`], and
@@ -343,7 +354,7 @@ pub fn module_index(
     let mut seen: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
     for path in list.files.iter() {
         let name = module_name_of(path);
-        if name.is_empty() || !seen.insert(name.clone()) {
+        if name.is_empty() || seen.contains(&name) {
             continue;
         }
         // The round-trip. `found` must be this path, or the name means a different file.
@@ -355,6 +366,8 @@ pub fn module_index(
         let Some(source) = db.source_file_for_path(&found.to_string_lossy()) else {
             continue;
         };
+        // Claimed here, with the candidate accepted: see the doc above.
+        seen.insert(name.clone());
         modules.push(IndexedModule {
             name: Arc::from(name.as_str()),
             file: source,

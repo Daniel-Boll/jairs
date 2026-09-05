@@ -1443,6 +1443,59 @@ worth knowing before doing anything similar:
 grammar revision, and after the rewrite it named a commit that only still resolved through
 `refs/original/`. Re-stamp with `editors/zed/sync-grammar-rev.sh`.
 
+**ADR-0203 adds 11 tests** — 1181 → **1192** (**1198** under gate 7), the baseline having moved under
+it while a concurrent session finished ADR-0202 — and **holds at 281** corpus files. Four defects
+behind two reports, "completion doesn't appear in Zed, it used to in Neovim" and "`Window.` gives me
+nothing". Read it before trusting that a feature works because it works on your machine.
+
+**A full disk fails gate 7 as a code error.** `cannot write the object file: No space left on device`
+failed the two differential tests and nothing else, which reads exactly like a back-end defect. The
+volume was at 100% with 102 MiB free and `target/` held 40 GB, 17 GB of it `target/debug/incremental`
+— which is regenerable, so deleting it is the cheap fix and does not throw away build products a
+concurrent session is using. **Check `df` before diagnosing a codegen failure.**
+
+**The release profile revoked a contract the code depends on, and no test could see it.** salsa
+signals cancellation by *panicking*; `jr-lsp` catches it with `salsa::Cancelled::catch`, a
+`catch_unwind`, and `server.rs`'s own docs state that contract twice. `[profile.release]
+panic = "abort"` makes the catch unreachable, so **the first keystroke landing behind an in-flight
+request killed the server** — exit 134, SIGABRT, *no message* (with abort the payload is never
+handled) and *no crash report*. `cargo test` compiles with the test profile, which inherits `dev` and
+unwinds, so a cancellation test passes under both settings and defends nothing:
+`crates/jr-cli/tests/profile.rs` asserts the **manifest** instead. **When a behaviour depends on a
+build setting, the setting is what a test can hold.**
+
+**Two editors reading two different binaries hid it for waves.** `editors/nvim/lsp/jairs.lua` picks
+the *newer* of `target/debug/jr` and `target/release/jr` — so a developer was usually served by an
+unwinding build — and `editors/zed/src/jairs.rs` takes `target/release/jr` unconditionally. "It works
+in my editor" is not a claim about the compiler.
+
+**Installing the Zed extension is what broke completion, and this is the trap to remember.** Zed
+builds a dev extension by **cloning the grammar's repository into the extension directory**, and
+`grammars.jairs.repository` is this repository — so `editors/zed/grammars/jairs/` is a whole second
+copy of the tree, 328 `.jr` files with `modules/` among them, whose paths sort *before* the real ones.
+`module_index` marked a module name seen **before** the round-trip that decides whether the candidate
+is that module, so every copy claimed a name, failed, and took the real module with it: the index was
+**empty** and no unimported name was offered anywhere in the tree. Neither the name nor the check was
+wrong — the *order* was. Discovery now also refuses a subdirectory holding its own `.git`, because
+otherwise a workspace rename edits a build artefact.
+
+**The auto-import quick fix kept working the whole time**, which is what made it confusing: it walks
+the workspace list with its own round-trip and never consults `module_index`. **Two features
+answering one question by two routes will disagree, and the one that is wrong is the one nobody
+suspected** — here the one a person uses on every keystroke.
+
+**Every step of that diagnosis came from asking the running system, not from reading code**: an LSP
+client written for the purpose (0 unimported offers inside the repository, 571 in `/tmp` — the
+discriminator that named the clone), a `tee` wrapper around the server (which showed Zed *did* send
+`textDocument/completion` and got no reply), and the wrapper's **exit status** (134). A screenshot
+found a fourth thing: Zed had auto-updated mid-session, which explains server churn that looked like
+a crash loop.
+
+**And a Zed settings key is silently ignored when wrong.** `"lsp": { "Jairs": … }` — the spelling in
+`editors/zed/README.md` — did nothing; Zed keys `lsp` settings by the server **id** from
+`[language_servers.jairs]`, so it is `jairs`. Verified both ways rather than assumed, and the README
+is corrected.
+
 **ADR-0202 reaches 1181** (1187 under gate 7) and **holds at 281** corpus files — a CLI wave, so
 nothing it built is something a `.jr` program can observe. Read it for the two measurements that
 *prevented* work, because both are the shape this file keeps warning about: a plan's stated target
@@ -1514,7 +1567,7 @@ manifest is refused. And a sibling agent's `cargo test -p jr-link` failed for tw
 must be registered in the same edit as its first use**, or every concurrent build in the tree breaks
 for reasons that have nothing to do with the crate being built.
 
-**ADR-0204 reaches 1193** (1199 under gate 7) and **holds at 281** corpus files — line wrapping, and
+**ADR-0204 reaches 1204** (1210 under gate 7) and **holds at 281** corpus files — **+12 on ADR-0203's 1192**, since the two waves landed together and this file tracks the running total — line wrapping, and
 the entry to read for how a plan's "expensive fork" can evaporate.
 
 **`PLAN.md` §7 said the first question was whether to keep the single-pass emitter or move to a

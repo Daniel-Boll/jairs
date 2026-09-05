@@ -123,5 +123,17 @@ opt-level = 2
 [profile.release]
 lto = "thin"
 codegen-units = 1
-panic = "abort"
+# **Unwinding, not aborting, and the language server is why.** salsa signals cancellation by
+# panicking, and `jr-lsp` catches it with `salsa::Cancelled::catch` — a `catch_unwind` — to answer
+# the request with `ContentModified` (ADR-0024 §2, ADR-0032). `panic = "abort"` turns that catch into
+# a no-op, so the *first* keystroke landing behind an in-flight request killed the server: exit 134,
+# SIGABRT, and **no message**, because with abort the payload is never handled. Neovim was unaffected
+# and Zed was not, which is what hid it — `editors/nvim/lsp/jairs.lua` picks the newer of
+# `target/debug` and `target/release`, so a developer was usually served by an unwinding build, while
+# `editors/zed` takes `target/release` unconditionally.
+#
+# Cargo has no per-binary panic strategy, so this is the whole workspace's setting. A compiler that
+# aborts on an internal panic was the intent; the cost of keeping it was an editor that dies while
+# you type.
+panic = "unwind"
 strip = true

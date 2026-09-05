@@ -44,6 +44,11 @@
 /editors/zed/*.wasm
 /editors/zed/Cargo.lock
 
+# Zed clones the grammar repository into the extension directory when it builds the dev extension.
+# `grammars.jairs.repository` is this repository, so the clone lands *inside* it — a full second
+# copy of the tree, plus a `.git` of its own. It is a build input Zed re-fetches, never a source.
+/editors/zed/grammars/
+
 .DS_Store
 
 # The tree-sitter parser Neovim loads, built by editors/nvim/build.sh from the

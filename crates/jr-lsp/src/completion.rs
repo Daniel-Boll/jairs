@@ -105,7 +105,12 @@ pub fn completion(
     let offset = usize::from(positions.offset(position));
 
     let mut items = match context_at(text.as_ref(), offset) {
-        Context::Field { dot } => fields_at(db, file, search_paths, dot),
+        // **`Alias.` is a qualified name before it is a field access** (ADR-0179 §4), so the module
+        // is asked first — and only when nothing shadows the alias, which is the rule lowering
+        // applies at the same fork.
+        Context::Field { dot } => ident_before(text.as_ref(), dot)
+            .and_then(|receiver| qualified_members(db, file, search_paths, receiver, offset))
+            .unwrap_or_else(|| fields_at(db, file, search_paths, dot)),
         Context::Directive => DIRECTIVES
             .iter()
             .map(|name| CompletionItem {
@@ -163,6 +168,126 @@ fn context_at(text: &str, offset: usize) -> Context {
 /// Whether `c` can appear in the middle of an identifier.
 fn is_ident_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
+}
+
+/// The identifier immediately before `dot`, or `None` when the receiver is not a bare name.
+///
+/// Textual, like [`context_at`] and for the same reason: `Window.` does not parse, so the CST is at
+/// its least useful exactly here. A receiver that is an expression rather than a name — `f().x`,
+/// `p.q.x` — yields `None` for the qualified path and falls through to the field path, which is
+/// where an expression receiver belongs.
+fn ident_before(text: &str, dot: usize) -> Option<&str> {
+    let before = text.get(..dot)?;
+    let start = before
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !is_ident_char(*c))
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    (start < dot).then(|| &before[start..])
+}
+
+/// The names an aliased `#import` makes reachable as `Alias.member` (ADR-0179 §1).
+///
+/// `Window :: #import "Window";` then `Window.` used to offer **nothing**: the dot sent the request
+/// down [`fields_at`], which asks what *type* the receiver has, and an alias is not a value — it is
+/// deliberately absent from `hir.scope`, as `jr-hir`'s lowering records ("a bare `Simp` is not a
+/// value"). So the one spelling that reaches an aliased module was the one the editor was silent
+/// about, which is ADR-0199 §5's complaint about unimported names in the other half of the surface.
+///
+/// # The fork is decided the way lowering decides it
+///
+/// `Alias.member` is a *qualified name*, not a field access — but only while no local shadows the
+/// alias (ADR-0014 §3, applied in `Lower::field_receiver_alias`). So a local or parameter of that
+/// name in scope here answers `None` and the field path runs, exactly as the compiler would read it.
+/// Deciding instead by "the field path found nothing" would offer module members for a struct that
+/// happens to have no fields, and would disagree with the compiler about a shadowed name.
+///
+/// # What it offers
+///
+/// [`jr_db::file_exports`], so `#scope_module` is respected and the editor cannot suggest a name
+/// sema then rejects — the divergence ADR-0199 §6 closed for the bare form. No `additional_text_edits`
+/// and no `sort_text`: the import is already written, and these names have no competition, because a
+/// qualified receiver admits nothing else.
+///
+/// A **type** position is not distinguished. `w: Window.` offers procedures too, and narrowing it
+/// would need the CST of a file that does not parse; the qualified type form (ADR-0179 §5) reads the
+/// same scope, so every name offered is at least reachable through this receiver.
+fn qualified_members(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+    receiver: &str,
+    offset: usize,
+) -> Option<Vec<CompletionItem>> {
+    let symbol = db.interner().get(receiver)?;
+    let hir = jr_db::file_hir(db, file);
+    if shadows_alias(hir.as_ref(), symbol, offset) {
+        return None;
+    }
+    let path = hir.items.iter().find_map(|item| match &item.kind {
+        ItemKind::Import {
+            path,
+            alias: Some(alias),
+            ..
+        } if *alias == symbol => Some(path.clone()),
+        _ => None,
+    })?;
+
+    let lookup = jr_db::module_file(db, search_paths, Arc::from(path.as_str()));
+    let found = lookup.found?;
+    let module = db.source_file_for_path(found.to_string_lossy().as_ref())?;
+
+    let other = jr_db::file_hir(db, module);
+    let sigs = jr_db::file_signatures(db, module, search_paths).signatures;
+    let docs = jr_db::file_docs(db, module);
+    let exports = jr_db::file_exports(db, module);
+    let container = container_of(found.to_string_lossy().as_ref());
+    // Every query above, then the lock — the ordering `names_at` records.
+    let pool = db.read_pool();
+    let decl = Decl {
+        hir: other.as_ref(),
+        sigs: sigs.as_ref(),
+        docs: docs.as_ref(),
+        consts: None,
+        pool: &pool,
+        interner: db.interner(),
+        container: &container,
+    };
+
+    let mut out = Vec::new();
+    for id in exports.names.values().copied() {
+        if let Some(mut completion) = item_completion(&decl, other.as_ref(), id, &container) {
+            // The declaring module, so `completionItem/resolve` reads the documentation from the
+            // file that holds it rather than from the file being edited.
+            completion.data = Some(serde_json::json!({
+                "item": id.index(),
+                "module": path.clone(),
+            }));
+            out.push(completion);
+        }
+    }
+    Some(out)
+}
+
+/// Whether a local or parameter in scope at `offset` binds `name`, shadowing an import alias.
+///
+/// A local declared *after* the cursor does not shadow it, which is the same cutoff `names_at` uses
+/// when it offers locals: a name is in scope from its declaration onwards.
+fn shadows_alias(hir: &FileHir, name: jr_base::Symbol, offset: usize) -> bool {
+    let Some(body_id) = body_at(hir, offset) else {
+        return false;
+    };
+    if let Some(body) = hir.bodies.get(body_id.index())
+        && body
+            .locals
+            .iter()
+            .any(|local| local.name == name && usize::from(local.span.range.start()) < offset)
+    {
+        return true;
+    }
+    owner_of(hir, body_id)
+        .and_then(|proc| hir.procs.get(proc.index()))
+        .is_some_and(|proc| proc.params.iter().any(|param| param.name == name))
 }
 
 /// The fields of the receiver before a `.`.

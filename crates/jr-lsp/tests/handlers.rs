@@ -799,6 +799,102 @@ fn a_field_completion_carries_its_type_as_detail() {
     assert_eq!(x.detail.as_deref(), Some("s64"));
 }
 
+/// `Alias.` offers the aliased module's exports (ADR-0203 §5).
+///
+/// The one spelling that reaches an aliased module was the one the editor was silent about: the dot
+/// sent the request to the field path, which asks what *type* the receiver has, and an alias is not a
+/// value — `jr-hir` deliberately leaves it out of `hir.scope`.
+#[test]
+fn a_dot_after_an_import_alias_offers_the_modules_names() {
+    let source = "Window :: #import \"Window\";\n\nmain :: () {\n    Window.\n}\n";
+    let (db, search, file, workspace) = program_with_workspace(source);
+    let items = jr_lsp::completion(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(source, "\n}"),
+        workspace,
+    );
+    let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+    assert!(
+        labels.contains(&"create_window"),
+        "the aliased module's exports must be offered, got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"window_position"),
+        "`window_position` is `#scope_module`, so a qualified receiver must not reach it"
+    );
+    // Only the module's names: no keyword, no builtin type, nothing from this file.
+    assert!(
+        !labels.contains(&"while") && !labels.contains(&"s64") && !labels.contains(&"main"),
+        "a qualified receiver admits nothing but the module's names, got {labels:?}"
+    );
+    let item = items
+        .iter()
+        .find(|item| item.label == "create_window")
+        .expect("create_window");
+    assert!(
+        item.additional_text_edits.is_none(),
+        "the import is already written, so nothing may be inserted"
+    );
+    assert_eq!(
+        item.data
+            .as_ref()
+            .and_then(|data| data.get("module"))
+            .and_then(serde_json::Value::as_str),
+        Some("Window"),
+        "resolve must read the documentation from the declaring module"
+    );
+}
+
+/// A local of the alias's name makes the dot an ordinary field access.
+///
+/// ADR-0014 §3's shadowing rule, which is where lowering decides the same fork
+/// (`Lower::field_receiver_alias`). Answering with the module's names here would disagree with the
+/// compiler about a program that checks.
+#[test]
+fn a_local_shadowing_an_alias_gets_field_completion_instead() {
+    let source = "Window :: #import \"Window\";\n\nPoint :: struct { x: s64; }\n\nmain :: () {\n    Window: Point;\n    n := Window.;\n}\n";
+    let (db, search, file, workspace) = program_with_workspace(source);
+    let labels: Vec<String> = jr_lsp::completion(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(source, ";\n}"),
+        workspace,
+    )
+    .into_iter()
+    .map(|item| item.label)
+    .collect();
+    assert_eq!(
+        labels,
+        vec!["x"],
+        "the local shadows the alias, so this is a field access"
+    );
+}
+
+/// A receiver that is not an alias still gets fields, and an unknown one still gets nothing.
+#[test]
+fn a_dot_after_a_name_that_is_no_alias_is_unchanged() {
+    let source = "main :: () {\n    Nope.\n}\n";
+    let (db, search, file, workspace) = program_with_workspace(source);
+    let items = jr_lsp::completion(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(source, "\n}"),
+        workspace,
+    );
+    assert!(
+        items.is_empty(),
+        "an unknown receiver has neither fields nor a module, got {:?}",
+        items.iter().map(|i| &i.label).collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn a_hash_offers_directives() {
     let source = "main :: () {\n    n := 1;\n}\n#";

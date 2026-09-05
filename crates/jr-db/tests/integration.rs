@@ -670,6 +670,77 @@ fn module_file_not_found_lists_searched_paths() {
 }
 
 // ---------------------------------------------------------------------------
+// 10b. module_index — the index behind unimported completion
+// ---------------------------------------------------------------------------
+
+/// The corpus modules, loaded, with `files` as the discovered workspace.
+///
+/// `set_workspace_files` rather than `set_workspace_roots`, so the list is stated instead of walked:
+/// the property under test is which candidate wins for a name, and a real directory tree would make
+/// that depend on a filesystem.
+fn index_over(files: &[&str]) -> (JairsDatabase, Arc<jr_db::ModuleIndex>) {
+    let (mut db, sp) = make_module_db_with_corpus();
+    // Loading is what turns a discovered path into a `SourceFile`; without it the index skips every
+    // candidate for a reason that has nothing to do with this test.
+    load_with_modules(
+        &mut db,
+        "/main.jr",
+        "#import \"Shapes\";\n#import \"Colors\";\n",
+    );
+    let workspace = db.set_workspace_files(Arc::new(jr_db::WorkspaceFileList {
+        files: files.iter().map(PathBuf::from).collect::<Vec<_>>().into(),
+        truncated: false,
+    }));
+    let index = jr_db::module_index(&db, sp, workspace);
+    (db, index)
+}
+
+#[test]
+fn module_index_finds_the_modules_a_workspace_holds() {
+    let (_db, index) = index_over(&[
+        "/main.jr",
+        "/modules/Colors.jr",
+        "/modules/Shapes/module.jr",
+    ]);
+    let mut names: Vec<&str> = index.modules.iter().map(|m| m.name.as_ref()).collect();
+    names.sort_unstable();
+    assert_eq!(names, vec!["Colors", "Shapes"], "both forms are indexed");
+}
+
+/// A copy of the tree inside the tree must not hide the modules it copies.
+///
+/// Zed clones a dev extension's grammar repository into the extension directory, so this repository
+/// gains a second copy of itself at `editors/zed/grammars/jairs/` — whose `modules/…` paths sort
+/// **before** the real ones. `module_index` used to mark a name seen before checking that the name
+/// resolved back to that very file, so each copy claimed a name, failed the check, and took the real
+/// module down with it: the index was empty and completion offered no unimported name at all.
+#[test]
+fn a_copy_of_the_tree_does_not_hide_the_real_module() {
+    let (db, index) = index_over(&[
+        // Sorts first, exactly as the real clone does.
+        "/editors/zed/grammars/jairs/modules/Colors.jr",
+        "/editors/zed/grammars/jairs/modules/Shapes/module.jr",
+        "/main.jr",
+        "/modules/Colors.jr",
+        "/modules/Shapes/module.jr",
+    ]);
+    let mut names: Vec<&str> = index.modules.iter().map(|m| m.name.as_ref()).collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec!["Colors", "Shapes"],
+        "the shadowed copies must be skipped and the real modules kept"
+    );
+    for module in &index.modules {
+        let path = module.file.path(&db);
+        assert!(
+            !path.contains("grammars"),
+            "a module must be the one on the search path, got {path}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 11. file_hir and file_exports
 // ---------------------------------------------------------------------------
 

@@ -135,6 +135,11 @@ driver knows all of that and `ld` does not", and it turns out that knowledge is 
 default of 100 it used to have while doing nothing. Ten corpus files reformatted once; the widest
 line in the tree is now a comment rather than a 338-column call.
 
+**On the counts.** This wave measured 1193 in isolation (1199 under gate 7), against a `main` at 1181.
+It landed together with ADR-0203, which added 11 of its own, so the tree is at **1204** (1210) —
+1181 + 11 + 12. Both ADRs state their own wave's contribution; `PLAN.md` §7 carries the running total,
+and the arithmetic is written there so a reader who finds three different numbers can reconcile them.
+
 ### Owed
 
 - **A boolean chain is still not broken.** Four lines, asserted as a boundary. It needs chain

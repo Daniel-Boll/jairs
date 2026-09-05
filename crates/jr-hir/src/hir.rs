@@ -14,6 +14,22 @@
 use jr_base::{Interner, Span, Symbol};
 use jr_pool::PoolId;
 
+/// The name lowering interns when the source has no name token to read.
+///
+/// `Window.` mid-typing, a `.` with nothing after it, a malformed declaration: the parser has already
+/// reported the syntax error, and lowering still needs a `Symbol` to build a node with. Every such
+/// site interns this.
+///
+/// **It is a placeholder and never a name a program wrote**, so a later phase must not report it back
+/// to a reader. Resolution used to answer a half-typed `Window.` with ``no exported name `<error>` in
+/// module `Window` `` — a name the person never typed, and the twelfth instance of an internal
+/// identifier reaching a place a person reads (ADR-0200, ADR-0203 §6). A consumer that would print a
+/// name compares against this first.
+///
+/// Shared rather than spelled at each site so the producer and the consumer cannot drift: a rename
+/// here is a compile error in both.
+pub const ERROR_NAME: &str = "<error>";
+
 jr_base::newtype_index! {
     /// A file-level declaration.
     pub struct ItemId;

@@ -38,7 +38,7 @@ For anything else, name the paths yourself:
 ```json
 {
   "lsp": {
-    "Jairs": {
+    "jairs": {
       "binary": {
         "path": "/absolute/path/to/jr",
         "arguments": ["lsp", "--module-path", "/absolute/path/to/modules"]
@@ -47,6 +47,12 @@ For anything else, name the paths yourself:
   }
 }
 ```
+
+**`jairs`, lowercase — the server's id, not its display name.** This said `Jairs` and that silently
+does nothing: Zed keys `lsp` settings by the id in `extension.toml`'s `[language_servers.jairs]`,
+which is also the name its log messages use (`Failed to start language server "jairs"`). A wrong key
+is not reported, so the override simply never applies. Verified both ways — `Jairs` left the default
+command running, `jairs` replaced it.
 
 Supplying `arguments` replaces the defaults entirely, so include `lsp` and every `--module-path` you
 need. Paths must be absolute: a server's working directory is whatever the editor happened to have,

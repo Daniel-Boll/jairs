@@ -4195,6 +4195,54 @@ fn a_run_directive_prints_at_compile_time() {
     );
 }
 
+/// A half-typed `Alias.` reports the syntax error and **not** a name the person never wrote.
+///
+/// With no name token after the dot, lowering interns [`jr_hir::ERROR_NAME`], and resolution used to
+/// report it back: `no exported name `<error>` in module `Window``. That is the twelfth internal
+/// identifier to reach a place a reader looks (ADR-0203 §6), and it is also a *second* complaint about
+/// one problem — the parser has already said `expected a field name after `.``.
+///
+/// Asserted through the binary because the surface that matters is what a person sees, and because an
+/// editor asks for exactly this state on every keystroke after a dot.
+#[test]
+fn an_incomplete_qualified_access_does_not_report_the_placeholder_name() {
+    let dir = tempfile::TempDir::new().expect("a temporary directory");
+    let program = dir.path().join("qualified.jr");
+    fs::write(
+        &program,
+        "Window :: #import \"Window\";\n\
+         main :: () {\n\
+         \x20   Window.\n\
+         }\n",
+    )
+    .expect("the program should be written");
+
+    let modules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_jr"))
+        .args([
+            "check",
+            &program.to_string_lossy(),
+            "-I",
+            &modules.to_string_lossy(),
+        ])
+        .output()
+        .expect("`jr check` should run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !stderr.contains(jr_hir::ERROR_NAME),
+        "no diagnostic may print lowering's placeholder name: got {stderr:?}"
+    );
+    assert!(
+        !stderr.contains("E0292"),
+        "a missing member is a syntax error, not a missing export: got {stderr:?}"
+    );
+    assert!(
+        stderr.contains("expected a field name after"),
+        "the honest diagnostic must still be reported: got {stderr:?}"
+    );
+}
+
 /// Every command that evaluates a `#run` emits what it printed.
 ///
 /// A `#run`'s output must not depend on which command reached it: `jr check`, `jr run` and `jr build` all

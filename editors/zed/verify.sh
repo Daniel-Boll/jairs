@@ -181,12 +181,23 @@ check "the wasm artefact exists" test -f "$here/target/wasm32-wasip2/release/zed
 
 # ---- the server it will launch -------------------------------------------------------------------
 
+# `jr lsp` is handed one message and its stdin then closes, so the server exits nonzero, and
+# `grep -q` closes the pipe before the reply is fully written. Under `set -o pipefail` either of
+# those failed the whole check while the capabilities were in the reply all along — the same trap
+# as the reachability check above. So the reply is captured first, and only then read.
+init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{}}}'
 check "jr lsp advertises formatting and completion" bash -c "
-printf 'Content-Length: %d\r\n\r\n%s' \
-  \"\$(printf '%s' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"capabilities\":{}}}' | wc -c | tr -d ' ')\" \
-  '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"capabilities\":{}}}' |
-  '$repo/target/release/jr' lsp -q 2>/dev/null |
-  grep -q '\"documentFormattingProvider\":true'
+reply=\$(printf 'Content-Length: %d\r\n\r\n%s' \
+  \"\$(printf '%s' '$init' | wc -c | tr -d ' ')\" '$init' |
+  '$repo/target/release/jr' lsp -q 2>/dev/null || true)
+printf '%s' \"\$reply\" | grep -q '\"documentFormattingProvider\":true' || {
+  echo 'the initialize reply does not advertise documentFormattingProvider'
+  exit 1
+}
+printf '%s' \"\$reply\" | grep -q '\"completionProvider\"' || {
+  echo 'the initialize reply does not advertise completionProvider'
+  exit 1
+}
 "
 
 echo

@@ -39,6 +39,27 @@ pub const MAX_FILES: usize = 10_000;
 /// wrong by fiat here.
 const SKIP: &[&str] = &["target", "node_modules"];
 
+/// Whether `dir` is the root of a repository of its own, and therefore another project's copy.
+///
+/// A nested checkout holds source that this workspace does not own, and every whole-workspace
+/// feature would treat it as ours: `rename` would edit it, `references` would report matches inside
+/// it, and `workspaceSymbol` would list every symbol twice. All three are the "confident wrong
+/// answer" ADR-0029 §3 is written against.
+///
+/// It is not a hypothetical here. Zed builds a dev extension by cloning the grammar's repository
+/// into the extension directory, so installing `editors/zed` puts a **whole second copy of this
+/// repository** at `editors/zed/grammars/jairs/` — 328 `.jr` files, `modules/` included.
+///
+/// `.git` is tested with `exists` rather than `is_dir` because a worktree and a submodule spell it
+/// as a *file* holding a `gitdir:` line, and both are still separate checkouts.
+///
+/// The root the caller named is never subject to this: roots go straight into the queue, so opening
+/// a repository still walks it. The rule applies to what a walk *descends into*, which is where a
+/// vendored copy appears.
+fn is_nested_checkout(dir: &Path) -> bool {
+    dir.join(".git").exists()
+}
+
 #[allow(
     missing_docs,
     reason = "salsa's generated code is not documented by us"
@@ -122,6 +143,9 @@ impl WorkspaceFileList {
 /// A symlinked *file* is likewise skipped, because following it would report the same
 /// source under two paths and a rename would then edit it twice.
 ///
+/// A subdirectory holding a `.git` of its own is not descended into: it is another project's
+/// checkout, and a workspace-wide rename must not edit source this project does not own.
+///
 /// Unreadable directories are skipped silently. A permissions error on some unrelated
 /// subtree is not something a language server should refuse to start over.
 #[must_use]
@@ -171,7 +195,10 @@ pub fn walk(roots: &[PathBuf]) -> WorkspaceFileList {
                 .unwrap_or_default();
 
             if meta.is_dir() {
-                if name.starts_with('.') || SKIP.contains(&name.as_str()) {
+                if name.starts_with('.')
+                    || SKIP.contains(&name.as_str())
+                    || is_nested_checkout(&path)
+                {
                     continue;
                 }
                 queue.push(path);
@@ -258,6 +285,36 @@ mod tests {
             ".git/hook.jr",
             ".hidden/x.jr",
         ]);
+        assert_eq!(names(&walk(&[dir.path().to_path_buf()])), vec!["keep.jr"]);
+    }
+
+    /// A vendored checkout is another project's copy, so its sources are not this workspace's.
+    ///
+    /// The shape is the one Zed's dev-extension install produces: a clone of this repository inside
+    /// it, `modules/` and all. Indexing it makes `rename` edit a build artefact and
+    /// `workspaceSymbol` report every symbol twice.
+    #[test]
+    fn it_does_not_descend_into_a_nested_checkout() {
+        let dir = tree(&[
+            "keep.jr",
+            "vendor/clone/.git/config",
+            "vendor/clone/modules/Basic/module.jr",
+        ]);
+        assert_eq!(names(&walk(&[dir.path().to_path_buf()])), vec!["keep.jr"]);
+    }
+
+    /// A submodule and a worktree spell `.git` as a *file*, and both are separate checkouts.
+    #[test]
+    fn a_gitdir_file_marks_a_checkout_too() {
+        let dir = tree(&["keep.jr", "sub/.git", "sub/inner.jr"]);
+        assert_eq!(names(&walk(&[dir.path().to_path_buf()])), vec!["keep.jr"]);
+    }
+
+    /// The root the caller named is walked even though it is a checkout — otherwise opening a
+    /// repository would index nothing at all.
+    #[test]
+    fn the_root_itself_is_walked_even_when_it_is_a_checkout() {
+        let dir = tree(&["keep.jr", ".git/config"]);
         assert_eq!(names(&walk(&[dir.path().to_path_buf()])), vec!["keep.jr"]);
     }
 
