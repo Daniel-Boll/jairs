@@ -48,7 +48,6 @@ use jr_db::{Db as _, JairsDatabase, ModuleSearchPaths, SourceFile};
 use jr_lsp::Encoding;
 
 use crate::cli::{BenchArgs, GlobalArgs};
-use crate::commands::check::bundled_module_dir;
 
 /// Which cache state an operation was measured in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,8 +123,10 @@ pub fn run(args: BenchArgs, global: &GlobalArgs) -> Result<i32> {
     let text = std::fs::read_to_string(&path)
         .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
 
-    let mut search_paths = args.module_paths.clone();
-    search_paths.push(bundled_module_dir());
+    // Through the one resolver, so a benchmark measures the same module set the compiler would
+    // actually use on this project — a measurement taken against a *different* search path than
+    // the real build is a measurement of something nobody runs (ADR-0202 §2).
+    let search_paths = crate::project::module_search_paths(&args.module_paths)?;
 
     let at = cursor(&text);
     let iterations = args.iterations.max(1);
@@ -541,8 +542,10 @@ fn throughput(args: &BenchArgs, global: &GlobalArgs) -> Result<i32> {
         sources.push((path.clone(), text));
     }
 
-    let mut search_paths = args.module_paths.clone();
-    search_paths.push(bundled_module_dir());
+    // Through the one resolver, so a benchmark measures the same module set the compiler would
+    // actually use on this project — a measurement taken against a *different* search path than
+    // the real build is a measurement of something nobody runs (ADR-0202 §2).
+    let search_paths = crate::project::module_search_paths(&args.module_paths)?;
 
     let iterations = args.iterations.max(1);
     let mut rows = Vec::new();

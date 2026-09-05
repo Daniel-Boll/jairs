@@ -199,6 +199,32 @@ being treated as signed, because failing to parse is not evidence.
 **`strip = true`** saves 1.29 MB, which more than pays for the 476 KB the embedded standard library
 adds: the release binary is **6.3 MB**, down from 6.8 MB before this wave.
 
+## 5. A setting with two surfaces is half-wired until both read it — twice
+
+Two subcommands were left reading the bundled directory directly instead of going through the one
+resolver, and both were found by auditing *which call sites go through it* rather than by any
+failure.
+
+**`jr lsp` was the one that mattered.** In a project declaring `[build] module_paths = ["vendor"]`,
+`jr check` resolved `#import "Vend"` and the **editor** reported `E0210: module Vend not found` on
+the same file. That reads as the code being wrong rather than the tool, which is the worst way for a
+configuration bug to present. `jr bench` had the same gap with a smaller consequence: a benchmark
+taken against a different search path than the real build measures something nobody runs.
+
+**This is the second instance of one shape in this ADR.** §2 already records the formatter half —
+`jr fmt` honoured `jairs.toml`'s style while the server ignored it. Same server, same manifest, same
+two surfaces, and the module-path half was missed *while fixing the style half*. So the rule is
+worth stating flatly rather than as a note: **when a setting has two surfaces, wiring one is half a
+feature, and the half that ships is usually the one nobody uses.** The mechanical form of the check
+is cheap — grep for the direct call and confirm the resolver is its only caller — and it is now
+true: `bundled_module_dir()` has exactly one call site.
+
+**The regression test was verified by reverting the fix**, not by passing. Without it the assertion
+fails with the E0210 quoted above; with it, nothing is published. A test that passes without the
+code it tests is worse than no test (ADR-0055), and a search-path bug is exactly the kind that hides
+behind a test which resolved the module for an unrelated reason — hence the negative twin, which
+asserts an *undeclared* module is still reported.
+
 ## Consequences
 
 `cargo install --path crates/jr-cli` produces a working compiler — verified by installing it, copying

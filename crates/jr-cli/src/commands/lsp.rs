@@ -43,16 +43,24 @@ pub fn run(args: LspArgs, global: &GlobalArgs) -> Result<i32> {
             }
         })
         .collect();
-    // **The bundled `modules/` directory, exactly as `check`, `run`, `build` and `bench` do**
-    // (ADR-0199 §1). This server was the one subcommand of six that did not, and the omission
-    // was not cosmetic: `module_file` probes *only* the search paths, so with none the server
-    // could resolve no `#import` at all — and the auto-import quick fix, whose whole job is to
-    // find a module exporting a missing name, silently offered nothing.
+    // **The manifest's module paths, then the bundled ones** — exactly as `check`, `run` and
+    // `build` do, through the one resolver that ranks them (ADR-0202 §2).
     //
-    // It read as "there is nothing to import" rather than as a misconfiguration, and it worked
-    // in the one editor that ships a config here only because `editors/nvim` passes
-    // `--module-path` explicitly. Appended last, so an explicit path still wins (ADR-0014 §1).
-    module_search_paths.push(crate::commands::check::bundled_module_dir());
+    // This server was the one subcommand of six that pushed no bundled directory at all
+    // (ADR-0199 §1), and the omission was not cosmetic: `module_file` probes *only* the search
+    // paths, so with none the server could resolve no `#import`, and the auto-import quick fix
+    // silently offered nothing. It then had the *same* shape of bug once a `jairs.toml` could
+    // declare paths of its own: a project with `[build] module_paths` resolved under `jr check`
+    // and reported E0210 in the editor, which reads as the code being wrong rather than the
+    // tool. A setting with two surfaces is half-wired until both read it.
+    //
+    // Resolved from the working directory, which is where an editor launches its server — the
+    // same assumption `jr fmt --stdin` documents, and for the same reason: stdio carries no path
+    // to resolve from at the moment the search paths must be set.
+    module_search_paths.extend(
+        crate::project::module_search_paths(&[])
+            .context("reading the project manifest for the language server")?,
+    );
     let options = jr_lsp::ServerOptions {
         module_search_paths,
     };

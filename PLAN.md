@@ -631,6 +631,13 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 > this was caught is that the close-out audit re-ran it instead of trusting the figure already written
 > into four documents.
 
+> **A defect found at close-out, by audit rather than by failure — and it was the same shape twice.**
+> `jr fmt` honoured `jairs.toml` while `jr lsp` ignored it; that was fixed. The **module-path** half
+> was then missed *while fixing the style half*, so a project declaring `[build] module_paths`
+> resolved under `jr check` and reported `E0210: module not found` **in the editor**. `jr bench` had
+> it too. Caught by grepping which call sites reach the one resolver, which is a cheap habit worth
+> keeping: **fixing one surface is not evidence you found them all.**
+
 ### Next
 
 1. **Line wrapping in the formatter.** `max_width` is now *absent* rather than dead, which is honest
@@ -651,7 +658,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
    That claim has been in this handoff for several waves and is the only *platform* claim in the
    README with no observation behind it.
 
-**1178 workspace tests (1184 under gate 7), 281 corpus files, 202 ADRs, all seven gates green.**
+**1181 workspace tests (1187 under gate 7), 281 corpus files, 202 ADRs, all seven gates green.**
 **E0296** is still the first free diagnostic code — this wave added none, because nothing it built is
 a language rule. The corpus count is unchanged for the same reason: `jr new` and a manifest are not
 things a `.jr` program can observe, so their tests are `jr-cli` integration tests that drive the real

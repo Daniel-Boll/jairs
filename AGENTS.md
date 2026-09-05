@@ -1443,7 +1443,7 @@ worth knowing before doing anything similar:
 grammar revision, and after the rewrite it named a commit that only still resolved through
 `refs/original/`. Re-stamp with `editors/zed/sync-grammar-rev.sh`.
 
-**ADR-0202 reaches 1178** (1184 under gate 7) and **holds at 281** corpus files — a CLI wave, so
+**ADR-0202 reaches 1181** (1187 under gate 7) and **holds at 281** corpus files — a CLI wave, so
 nothing it built is something a `.jr` program can observe. Read it for the two measurements that
 *prevented* work, because both are the shape this file keeps warning about: a plan's stated target
 being wrong.
@@ -1487,10 +1487,19 @@ workspace root, **outside** `crates/jr-stdlib/`, so Cargo's default package-dire
 too. **A generated `include_str!` table also beat `include_dir` on every axis measured** (927,664 vs
 929,200 bytes, `&'static str` with no UTF-8 re-validation, zero dependencies).
 
-**One inconsistency was found by asking where a feature is actually used, not whether it works.**
-`jr fmt` honoured the manifest and `jr lsp` did not — and an editor is where nearly all formatting
-happens, so the setting would have appeared to work only from a terminal. **When a setting has two
-surfaces, wiring one is half a feature**, and the half that ships is usually the one nobody uses.
+**One inconsistency was found by asking where a feature is actually used, not whether it works —
+and then the same shape was missed a second time in the same wave.** `jr fmt` honoured the manifest
+and `jr lsp` did not, so the style setting would have worked only from a terminal. Fixed. The
+*module-path* half was then missed **while fixing the style half**: `jr check` resolved a
+`[build] module_paths` entry and the **editor** reported `E0210: module not found` on the same file,
+which reads as the code being wrong rather than the tool. `jr bench` had it too. Caught only by
+auditing *which call sites go through the one resolver* rather than by a failure, at close-out.
+
+**So: when a setting has two surfaces, wiring one is half a feature — and fixing one surface is not
+evidence you found them all.** The mechanical check is cheap and worth making a habit: grep the
+direct call and confirm the resolver is its only caller. `bundled_module_dir()` now has exactly one.
+**The regression test was verified by reverting the fix**, since a search-path test that resolves the
+module for an unrelated reason passes either way (ADR-0055).
 
 **The house exhaustiveness rule paid twice more.** Adding `BuildRequest.default_output` made
 `script.rs`'s struct literal a compile error, forcing a decision at a site that had to make one — and

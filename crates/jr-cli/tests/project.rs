@@ -370,3 +370,179 @@ fn an_explicit_path_still_works_with_no_manifest_anywhere() {
         "the default is four spaces with no manifest"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The manifest reaches the other two subcommands that take module paths
+// ---------------------------------------------------------------------------
+
+/// Sends one LSP session over stdio and returns every diagnostic message published for `file`.
+///
+/// A real subprocess in `dir`, because the server resolves its search paths from the working
+/// directory — the whole point of the test below.
+fn lsp_diagnostics(dir: &Path, file: &Path) -> Vec<String> {
+    use std::io::Write as _;
+
+    let text = std::fs::read_to_string(file).expect("read the source");
+    let uri = format!("file://{}", file.display());
+    let frame = |value: &serde_json::Value| {
+        let body = serde_json::to_vec(value).expect("serialise");
+        let mut out = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
+        out.extend_from_slice(&body);
+        out
+    };
+
+    let mut input = Vec::new();
+    for value in [
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize",
+            "params":{"processId":null,"rootUri":format!("file://{}", dir.display()),
+                      "capabilities":{}}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen",
+            "params":{"textDocument":{"uri":uri,"languageId":"jairs","version":1,"text":text}}}),
+    ] {
+        input.extend_from_slice(&frame(&value));
+    }
+
+    let mut child = jr()
+        .args(["lsp", "-q"])
+        .current_dir(dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("the jr binary must be runnable");
+    child
+        .stdin
+        .take()
+        .expect("stdin was piped")
+        .write_all(&input)
+        .expect("write the session");
+    let out = child.wait_with_output().expect("the server must exit");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+
+    // Split on the framing header and parse each body. Cheaper than a full LSP client, and the
+    // only thing asserted on is whether a diagnostic was published at all.
+    let mut messages = Vec::new();
+    for chunk in stdout.split("Content-Length") {
+        let Some(start) = chunk.find('{') else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&chunk[start..]) else {
+            continue;
+        };
+        if value.get("method").and_then(|m| m.as_str()) != Some("textDocument/publishDiagnostics") {
+            continue;
+        }
+        for diagnostic in value["params"]["diagnostics"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            if let Some(message) = diagnostic.get("message").and_then(|m| m.as_str()) {
+                messages.push(message.to_owned());
+            }
+        }
+    }
+    messages
+}
+
+/// A module the manifest declares resolves **in the editor**, not only from a terminal.
+///
+/// This was a real defect, found by auditing which subcommands go through the one resolver rather
+/// than by a failure: `jr check` resolved a `[build] module_paths` entry and `jr lsp` reported
+/// E0210 on the same file. That reads as the code being wrong rather than the tool, and it is the
+/// second time this exact shape appeared — `jr fmt` honoured the manifest's style while the server
+/// ignored it. **A setting with two surfaces is half-wired until both read it.**
+#[test]
+fn the_language_server_honours_the_manifests_module_paths() {
+    let (_guard, root) = scaffolded();
+    std::fs::create_dir_all(root.join("vendor").join("Vend")).expect("mkdir");
+    std::fs::write(
+        root.join("vendor").join("Vend").join("module.jr"),
+        "VEND :: 5;\n",
+    )
+    .expect("write");
+    std::fs::write(
+        root.join("jairs.toml"),
+        "[project]\nname = \"demo\"\n\n[build]\nmodule_paths = [\"vendor\"]\n",
+    )
+    .expect("write");
+    let source = root.join("src").join("main.jr");
+    std::fs::write(
+        &source,
+        "#import \"Basic\";\n#import \"Vend\";\nmain :: () {\n    exit(VEND);\n}\n",
+    )
+    .expect("write");
+
+    // The terminal half must pass, or the test proves nothing about the server.
+    let (code, _, stderr) = run_in(&root, &["check"]);
+    assert_eq!(code, 0, "jr check must resolve it first: {stderr}");
+
+    let diagnostics = lsp_diagnostics(&root, &source);
+    assert!(
+        diagnostics.is_empty(),
+        "the server must resolve a manifest-declared module, got {diagnostics:?}"
+    );
+}
+
+/// The negative half: without the manifest entry the module genuinely does not resolve.
+///
+/// Without this, the test above passes even if the server resolved `Vend` for some unrelated
+/// reason — which is exactly how a search-path bug hides.
+#[test]
+fn the_language_server_still_reports_a_module_that_nothing_declares() {
+    let (_guard, root) = scaffolded();
+    std::fs::create_dir_all(root.join("vendor").join("Vend")).expect("mkdir");
+    std::fs::write(
+        root.join("vendor").join("Vend").join("module.jr"),
+        "VEND :: 5;\n",
+    )
+    .expect("write");
+    // No `[build] module_paths` this time.
+    std::fs::write(root.join("jairs.toml"), "[project]\nname = \"demo\"\n").expect("write");
+    let source = root.join("src").join("main.jr");
+    std::fs::write(
+        &source,
+        "#import \"Basic\";\n#import \"Vend\";\nmain :: () {\n    exit(VEND);\n}\n",
+    )
+    .expect("write");
+
+    let diagnostics = lsp_diagnostics(&root, &source);
+    assert!(
+        diagnostics.iter().any(|m| m.contains("Vend")),
+        "an undeclared module must still be reported, got {diagnostics:?}"
+    );
+}
+
+/// `jr bench` measures the module set the project actually builds with.
+///
+/// A benchmark taken against a different search path than the real build is a measurement of
+/// something nobody runs.
+#[test]
+fn bench_honours_the_manifests_module_paths() {
+    let (_guard, root) = scaffolded();
+    std::fs::create_dir_all(root.join("vendor").join("Vend")).expect("mkdir");
+    std::fs::write(
+        root.join("vendor").join("Vend").join("module.jr"),
+        "VEND :: 5;\n",
+    )
+    .expect("write");
+    std::fs::write(
+        root.join("jairs.toml"),
+        "[project]\nname = \"demo\"\n\n[build]\nmodule_paths = [\"vendor\"]\n",
+    )
+    .expect("write");
+    std::fs::write(
+        root.join("src").join("main.jr"),
+        "#import \"Basic\";\n#import \"Vend\";\nmain :: () {\n    exit(VEND);\n}\n",
+    )
+    .expect("write");
+
+    // `--throughput` compiles the files it is given, so a search path it cannot resolve shows up
+    // as a failure rather than as a slower number.
+    let (code, stdout, stderr) = run_in(
+        &root,
+        &["bench", "--throughput", "src", "--iterations", "1"],
+    );
+    assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+}
