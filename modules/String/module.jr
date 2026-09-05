@@ -826,6 +826,35 @@ ends_with_nocase :: (s: string, suffix: string) -> bool {
     return equal_nocase(borrow(s.data + start, suffix.count), suffix);
 }
 
+/// The index of the first occurrence of `needle` in `haystack` ignoring ASCII case, or `-1`.
+///
+/// The case-insensitive twin of [`find`]. It exists because the family was **asymmetric**: `equal_nocase`,
+/// `compare_nocase`, `starts_with_nocase` and `ends_with_nocase` all had a case-folding version and the two
+/// *search* routines did not, so a caller matching a filename case-insensitively had to lower a copy of the
+/// whole haystack first — an allocation, for a comparison.
+find_nocase :: (haystack: string, needle: string) -> s64 {
+    if needle.count > haystack.count {
+        return -1;
+    }
+    last := haystack.count - needle.count;
+    start := 0;
+    while start <= last {
+        if region_equal_nocase(haystack, start, needle) {
+            return start;
+        }
+        start = start + 1;
+    }
+    return -1;
+}
+
+/// Whether `needle` appears anywhere in `haystack`, ignoring ASCII case.
+///
+/// Jai's `contains_nocase`. Delegates rather than looping, so the two cannot disagree about a match — the
+/// same reason [`contains`] delegates to [`find`].
+contains_nocase :: (haystack: string, needle: string) -> bool {
+    return find_nocase(haystack, needle) >= 0;
+}
+
 // ---------------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------------
@@ -886,6 +915,177 @@ to_bool :: (s: string) -> (bool, bool) {
     return false, false;
 }
 
+/// Reads a decimal floating-point number from the front of `s` (ADR-0198 §1).
+///
+/// Returns the value, whether anything was read, and the rest of `s` — the same three-value shape as
+/// [`to_integer`], for the same reason: a caller in a loop needs to know where the number ended.
+///
+/// # Why libc does the conversion
+///
+/// The **extent** is found here and the **value** by `strtod`, which is the split ADR-0156 chose for
+/// `modules/JSON` and it is right for the same reason. Converting a decimal to the nearest `float64`
+/// *exactly* is a genuinely hard problem — a wrong last bit is a wrong **answer** rather than a wrong
+/// approximation, which is why `Math` ships no `sqrt` (ADR-0112) — so the platform's correctly-rounded
+/// conversion does it. Accumulating `digit + value * 10.0` in Jairs would be twenty lines and wrong in the
+/// last place for inputs a build script really has, and wrong in a way no test written by the same author
+/// would catch.
+///
+/// The extent cannot be left to `strtod` either: it accepts `0x1p3`, `inf`, `nan` and a leading `+` on
+/// platforms this does not want to vary by, so the grammar accepted here is spelled out — an optional sign,
+/// digits, an optional `.` and digits, an optional `e`/`E` with an optional sign and digits — and `strtod`
+/// only ever sees bytes that already matched it.
+///
+/// # It needs an installed allocator
+///
+/// `strtod` reads to a **NUL**, and a Jairs `string` has none (ADR-0004) — the trap that made
+/// `glShaderSource` compile whatever followed a shader in memory. So the matched bytes are copied into a
+/// NUL-terminated scratch buffer from `context.allocator`, and freed before returning. That is the same
+/// obligation the rest of this module's allocating half already has, and forgetting is not silent:
+/// `context.allocator` is null until set and a call through it traps.
+///
+/// `talloc` would be the tidier scratch and is deliberately not used: it lives in `modules/Basic`, and this
+/// module imports nothing (see the module docs). One parse is not worth that dependency.
+string_to_float :: (s: string) -> (float64, bool, string) {
+    n := float_extent(s);
+    if n == 0 {
+        return 0.0, false, s;
+    }
+    scratch := context.allocator(n + 1);
+    if scratch == null {
+        return 0.0, false, s;
+    }
+    i := 0;
+    while i < n {
+        (scratch + i).* = (s.data + i).*;
+        i = i + 1;
+    }
+    (scratch + n).* = cast(u8, 0);
+    ignored: *u8;
+    value := strtod(scratch, *ignored);
+    context.allocator_free(scratch);
+    return value, true, borrow(s.data + n, s.count - n);
+}
+
+// ---------------------------------------------------------------------------
+// C strings
+// ---------------------------------------------------------------------------
+
+/// The length of a NUL-terminated C string, not counting the NUL.
+///
+/// Jai's own name. Returns 0 for a null pointer rather than trapping, because the usual caller is reading a
+/// result out of a `#foreign` call that is *documented* to return null on failure — `getenv`, `strerror`,
+/// `SDL_GetError` — and making the failure path a trap would force a null check at every one of them.
+c_style_strlen :: (str: *u8) -> s64 {
+    if str == null {
+        return 0;
+    }
+    n := 0;
+    while (str + n).* != cast(u8, 0) {
+        n = n + 1;
+    }
+    return n;
+}
+
+/// A `string` viewing a NUL-terminated C string, **without** copying it.
+///
+/// Jai's own name, and the routine this language needed most for FFI: every `#foreign` call that returns
+/// `*u8` returns a C string, and a Jairs `string` is `{data, count}` with no NUL (ADR-0004), so the two
+/// representations meet exactly here. Before this existed each caller counted the bytes itself.
+///
+/// **Borrows.** The result's lifetime is the C string's, so a pointer into a libc static buffer — `strerror`,
+/// `getenv` — must be copied with [`copy_string`] before the next call overwrites it. Named `to_string` after
+/// Jai rather than `borrow_c_string`, because the name a reader will search for is Jai's; the borrowing is
+/// what the doc is for, and [`borrow`] beside it makes the pair legible.
+to_string :: (str: *u8) -> string {
+    return borrow(str, c_style_strlen(str));
+}
+
+/// A NUL-terminated copy of `s`, for handing to C.
+///
+/// Jai's own name, and the exact inverse of [`to_string`]. The pair is the whole FFI boundary: C strings are
+/// terminated and Jairs strings are counted (ADR-0004), so one direction can borrow and the other cannot.
+///
+/// # This is not optional, and the cost of skipping it is silence
+///
+/// **A string literal's bytes are not followed by a NUL.** Passing `"PATH".data` to `getenv` reads whatever
+/// the linker happened to place next, looks up a name nobody set, and returns null — no diagnostic, no trap,
+/// just a wrong answer. That is the same defect that made `glShaderSource` compile the bytes after a shader
+/// (recorded in AGENTS.md), and `tests/corpus/valid/148-string-ffi-glob.jr` was written against `getenv`
+/// and hit it immediately, which is how this procedure came to exist.
+///
+/// The failure looks like a *divergence* at first and is not: both engines agree, because both are reading
+/// past the same string. That is worth knowing, because it means the differential harness cannot catch it.
+///
+/// **Allocates**, from `context.allocator`, and the caller frees with [`free_string`] — the same obligation
+/// as [`concat`] and [`substring`], because a terminated copy is a copy. Borrowing is impossible here by
+/// construction: there is nowhere to put the NUL that is not someone else's byte.
+///
+/// Returns null if the allocation fails, which is what C already expects from a failed `strdup`.
+to_c_string :: (s: string) -> *u8 {
+    buf := context.allocator(s.count + 1);
+    if buf == null {
+        return null;
+    }
+    i := 0;
+    while i < s.count {
+        (buf + i).* = (s.data + i).*;
+        i = i + 1;
+    }
+    (buf + s.count).* = cast(u8, 0);
+    return buf;
+}
+
+// ---------------------------------------------------------------------------
+// Glob matching
+// ---------------------------------------------------------------------------
+
+/// Whether `s` matches `pattern`, where `*` is any run of bytes and `?` is exactly one.
+///
+/// Jai's own name and semantics, and confirmed in real Jai code rather than assumed: `polgartom/astex` and
+/// `okmatija/Prizm` both call it, and both call it on paths. A build script wants it for the same thing.
+///
+/// # Iterative with one backtrack point, not recursive
+///
+/// The textbook recursion is four lines and takes exponential time on `"aaaaaaaaaaaaaaaaaaaa"` against
+/// `"*a*a*a*a*a"` — a pattern a caller writes by accident. This keeps the position of the last `*` and the
+/// input position it was tried at, so a mismatch resumes one byte later instead of unwinding: linear in the
+/// input times the number of `*`s, and it cannot overflow a stack.
+///
+/// An empty pattern matches only an empty `s`, and `"*"` matches everything including `""`. There is no
+/// escape for a literal `*` or `?`, matching Jai — a caller needing one wants a real regex.
+wildcard_match :: (s: string, pattern: string) -> bool {
+    si := 0;
+    pi := 0;
+    // Where to resume if the current attempt fails: the `*` to stretch, and how far it had stretched.
+    star := -1;
+    star_si := 0;
+    while si < s.count {
+        if pi < pattern.count && byte_at(pattern, pi) == QUESTION {
+            si = si + 1;
+            pi = pi + 1;
+        } else if pi < pattern.count && byte_at(pattern, pi) == STAR {
+            star = pi;
+            pi = pi + 1;
+            star_si = si;
+        } else if pi < pattern.count && byte_at(pattern, pi) == byte_at(s, si) {
+            si = si + 1;
+            pi = pi + 1;
+        } else if star >= 0 {
+            // Stretch the remembered `*` by one byte and try the rest of the pattern again.
+            pi = star + 1;
+            star_si = star_si + 1;
+            si = star_si;
+        } else {
+            return false;
+        }
+    }
+    // Trailing `*`s may still match the empty remainder; anything else cannot.
+    while pi < pattern.count && byte_at(pattern, pi) == STAR {
+        pi = pi + 1;
+    }
+    return pi == pattern.count;
+}
+
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
@@ -899,6 +1099,98 @@ to_bool :: (s: string) -> (bool, bool) {
 // filesystem concept, and `File_Utilities` is where the filesystem lives.
 
 #scope_module
+
+/// The bytes `wildcard_match` treats as its two metacharacters.
+STAR :: 42;
+QUESTION :: 63;
+
+/// libc `strtod(3)`, for the exact decimal-to-`float64` conversion (ADR-0198 §1).
+///
+/// Reachable because ADR-0114 let a float cross the `#foreign` boundary. The `end` out-parameter is ignored:
+/// [`string_to_float`] has already found the number's extent with its own scanner, which has to happen
+/// anyway because `strtod`'s grammar is wider than the one this accepts.
+///
+/// **This is the module's only foreign declaration**, and the module docs' claim that it "imports nothing at
+/// all" is about `#import` and stays true — libc is linked by every program this compiler produces.
+strtod :: (text: *u8, end: **u8) -> float64 #foreign libc "strtod";
+
+libc :: #system_library "c";
+
+/// Whether `s`'s bytes at `at` match `needle`, ignoring ASCII case.
+///
+/// The case-folding twin of [`region_equal`], and separate from it rather than a flag on it: a flag makes
+/// every caller of the exact comparison pass a `false` that means nothing to it.
+region_equal_nocase :: (s: string, at: s64, needle: string) -> bool {
+    if at < 0 || at + needle.count > s.count {
+        return false;
+    }
+    i := 0;
+    while i < needle.count {
+        if ascii_lower((s.data + at + i).*) != ascii_lower((needle.data + i).*) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/// How many bytes at the front of `s` form a decimal floating-point number, or 0 if none do.
+///
+/// The grammar is spelled out here rather than delegated to `strtod`, which is the whole point of the split
+/// (see [`string_to_float`]): an optional sign, digits, an optional `.` with digits, an optional exponent.
+/// At least one digit is required **before** the exponent, so `"e5"` and `"."` read nothing.
+float_extent :: (s: string) -> s64 {
+    i := 0;
+    if i < s.count && (byte_at(s, i) == PLUS || byte_at(s, i) == MINUS) {
+        i = i + 1;
+    }
+    digits := 0;
+    while i < s.count && is_ascii_digit(byte_at(s, i)) {
+        i = i + 1;
+        digits = digits + 1;
+    }
+    if i < s.count && byte_at(s, i) == DOT {
+        i = i + 1;
+        while i < s.count && is_ascii_digit(byte_at(s, i)) {
+            i = i + 1;
+            digits = digits + 1;
+        }
+    }
+    if digits == 0 {
+        return 0;
+    }
+    // An exponent is only part of the number if it is **complete**: `"1e"` is the number 1 followed by an
+    // `e`, not a malformed number, so the position is only committed once a digit is seen.
+    if i < s.count && (byte_at(s, i) == LOWER_E || byte_at(s, i) == UPPER_E) {
+        after := i + 1;
+        if after < s.count && (byte_at(s, after) == PLUS || byte_at(s, after) == MINUS) {
+            after = after + 1;
+        }
+        exponent_digits := 0;
+        while after < s.count && is_ascii_digit(byte_at(s, after)) {
+            after = after + 1;
+            exponent_digits = exponent_digits + 1;
+        }
+        if exponent_digits > 0 {
+            i = after;
+        }
+    }
+    return i;
+}
+
+/// Whether `c` is an ASCII digit, taking the `s64` [`byte_at`] returns so a `-1` at the end of the string
+/// answers `false` rather than needing a length check at every call.
+is_ascii_digit :: (c: s64) -> bool {
+    return c >= ZERO && c <= NINE;
+}
+
+PLUS :: 43;
+MINUS :: 45;
+DOT :: 46;
+ZERO :: 48;
+NINE :: 57;
+UPPER_E :: 69;
+LOWER_E :: 101;
 
 /// Whether `s`'s bytes at `at` match `needle`.
 ///

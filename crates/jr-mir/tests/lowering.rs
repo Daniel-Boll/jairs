@@ -753,3 +753,75 @@ fn a_synthetic_provenance_resolves_to_nothing() {
         None
     );
 }
+
+/// A collapsed block parameter cannot leave a dangling operand behind (ADR-0198 §2).
+///
+/// The shape that found this is narrow and entirely ordinary: a local declared before an `if`, a
+/// `while` inside it whose condition **short-circuits**, another `if` after that loop, and an
+/// assignment to the outer local. The short-circuit is what makes the condition span several blocks,
+/// which is what gives the loop header a parameter that is only *intermediate* — collapsed once its
+/// own operands turn out to agree.
+///
+/// `try_remove_trivial_phi` then cascades, and the cascade could remove the very value an earlier
+/// collapse had just chosen as its replacement, so the operand handed back named a parameter that no
+/// longer existed. It lowered to `goto bb13(v13)` with nothing defining `v13`.
+///
+/// Asserted through `lower_clean`, whose whole job is that the verifier ran and found nothing: the
+/// symptom was an assertion inside lowering, so a test that merely reads the output would not have
+/// reached the check. There is no snapshot here deliberately — the property is "this is well formed",
+/// not "it has this shape", and a snapshot would pass again the moment someone re-broke it into a
+/// *different* malformed body.
+#[test]
+fn a_collapsed_parameter_leaves_no_dangling_operand() {
+    let mut program = Program::new();
+    let lowered = program.lower_clean(concat!(
+        "f :: (n: s64) -> s64 {\n",
+        "    i := 0;\n",
+        "    if n > 0 {\n",
+        "        ed := 0;\n",
+        "        while ed < 3 && ed < n { ed = ed + 1; }\n",
+        "        if ed > 0 { i = 7; }\n",
+        "    }\n",
+        "    return i;\n",
+        "}\n",
+        "main :: () { }\n",
+    ));
+
+    // **The collapse really happened**, which is what stops this passing vacuously. The outer
+    // local's value reaches both merges as the *constant* `0_s64`, and it does so only because the
+    // chain of parameters between those edges and `i := 0` was folded away. The defect put a removed
+    // parameter on one of them instead, so counting the folded edges pins exactly what was wrong.
+    let body = lowered.body(&program.interner, "f");
+    let text = jr_mir::dump_body(body, &program.pool, &lowered.signatures);
+    let folded = text
+        .lines()
+        .filter(|line| line.trim_start().starts_with("goto ") && line.contains("0_s64"))
+        .count();
+    assert!(
+        folded >= 3,
+        "expected the outer local to reach its merges as a folded constant, so a dangling \
+         parameter cannot hide on one of them; got {folded} such edges in:\n{text}"
+    );
+}
+
+/// The `||` spelling of the same hazard, because the two take different arms of `short_circuit`.
+///
+/// One test would have been enough to catch the original defect and not enough to keep it caught:
+/// `short_on` swaps which successor is the short one, so a repair that only threaded the `&&` arm
+/// correctly would pass a test written with `&&` alone.
+#[test]
+fn the_or_spelling_leaves_no_dangling_operand_either() {
+    let mut program = Program::new();
+    let _ = program.lower_clean(concat!(
+        "g :: (n: s64) -> s64 {\n",
+        "    i := 0;\n",
+        "    if n > 0 {\n",
+        "        ed := 0;\n",
+        "        while ed > 3 || ed < n { ed = ed + 1; }\n",
+        "        if ed > 0 { i = 7; }\n",
+        "    }\n",
+        "    return i;\n",
+        "}\n",
+        "main :: () { }\n",
+    ));
+}

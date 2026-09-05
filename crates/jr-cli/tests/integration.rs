@@ -4702,3 +4702,288 @@ fn a_run_directive_reads_and_writes_files() {
         written.display()
     );
 }
+
+/// Jai's `BuildCpp` composes rather than being a feature: a script compiles C and links it in.
+///
+/// One of two rows a build-script inventory left as "nothing", and the answer turned out to be that the
+/// pieces already existed and nobody had put them together (ADR-0198 §4). The script shells out to `cc` and
+/// `ar`, then asks for a Jairs program that calls into the archive through `#system_library`. No new code —
+/// it is `Compiler.command`, `Compiler.run` and `library_paths`.
+///
+/// **Asserted on the running binary's exit code, not on the build succeeding.** A link that resolves the
+/// symbol and a call that reaches the right function are different claims, and only the second says the C
+/// half ran: `jr_test_helper(20)` must come back 42.
+///
+/// Every path handed to the script is **absolute** and the working directory is never changed, because
+/// these tests share one process and [`Artefact`] documents why nothing here may call `set_current_dir`.
+#[test]
+fn a_script_compiles_c_and_links_it_in() {
+    let dir = TempDir::new().expect("a temporary directory");
+    fs::write(
+        dir.path().join("helper.c"),
+        "long jr_test_helper(long a) { return a + 22; }\n",
+    )
+    .expect("the C source should be written");
+    fs::write(
+        dir.path().join("app.jr"),
+        "#import \"Basic\";\n\
+         helperlib :: #system_library \"jrtesthelper\";\n\
+         jr_test_helper :: (a: s64) -> s64 #c_call #foreign helperlib \"jr_test_helper\";\n\
+         main :: () { exit(jr_test_helper(20)); }\n",
+    )
+    .expect("the program should be written");
+
+    let artefact = Artefact::named("jr-test-c-linked");
+    let script = dir.path().join("build.jr");
+    fs::write(
+        &script,
+        format!(
+            "#import \"Basic\";\n\
+             Compiler :: #import \"Compiler\";\n\
+             main :: () {{\n\
+             \x20   if !ran(\"cc\", \"-c\", \"{dir}/helper.c\", \"-o\", \"{dir}/helper.o\") {{ exit(1); }}\n\
+             \x20   if !ran(\"ar\", \"rcs\", \"{dir}/libjrtesthelper.a\", \"{dir}/helper.o\") {{ exit(2); }}\n\
+             \x20   libs := string.[\"{dir}\"];\n\
+             \x20   mods := string.[\"{modules}\"];\n\
+             \x20   t := Compiler.create_target(\"app\");\n\
+             \x20   o := Compiler.options(t);\n\
+             \x20   o.output = \"{output}\";\n\
+             \x20   o.library_paths = libs[];\n\
+             \x20   o.module_paths = mods[];\n\
+             \x20   Compiler.set_options(t, o);\n\
+             \x20   Compiler.add_file(t, \"{dir}/app.jr\");\n\
+             \x20   if !Compiler.build(t) {{ exit(3); }}\n\
+             \x20   exit(0);\n\
+             }}\n\
+             ran :: (program: string, args: ..string) -> bool {{\n\
+             \x20   cmd := Compiler.command(program);\n\
+             \x20   for a: args {{ Compiler.argument_of(cmd, a); }}\n\
+             \x20   return Compiler.run(cmd) == 0;\n\
+             }}\n",
+            dir = dir.path().display(),
+            output = artefact.path().display(),
+            modules = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../modules")
+                .display(),
+        ),
+    )
+    .expect("the script should be written");
+
+    assert_eq!(
+        run_build_script(script, Vec::new()),
+        0,
+        "the script should compile the C half, archive it, and link it in"
+    );
+
+    let status = std::process::Command::new(std::path::Path::new(".").join(artefact.path()))
+        .status()
+        .expect("the linked artefact should run");
+    assert_eq!(
+        status.code(),
+        Some(42),
+        "the C function must actually have run: 20 + 22"
+    );
+}
+
+/// A script supplies its **own** link command, which is Jai's `use_custom_link_command`.
+///
+/// The other row the inventory left as "nothing" (ADR-0198 §4), composed the same way: ask for
+/// `Output_Kind.OBJECT` so the compiler stops after codegen, then run whatever linker invocation the script
+/// wants. Jai needs a flag because its compiler otherwise always links; this needs none, because the object
+/// *is* an output kind.
+///
+/// The assertion runs the artefact the script's own `cc` produced and reads the exit code the Jairs program
+/// chose, so a `cc` that silently produced nothing cannot pass.
+#[test]
+fn a_script_runs_its_own_link_command() {
+    let dir = TempDir::new().expect("a temporary directory");
+    fs::write(
+        dir.path().join("prog.jr"),
+        "#import \"Basic\";\nmain :: () { exit(7); }\n",
+    )
+    .expect("the program should be written");
+
+    let object = Artefact::named("jr-test-own-link.o");
+    let linked = Artefact::named("jr-test-own-link");
+    let script = dir.path().join("build.jr");
+    fs::write(
+        &script,
+        format!(
+            "#import \"Basic\";\n\
+             Compiler :: #import \"Compiler\";\n\
+             main :: () {{\n\
+             \x20   mods := string.[\"{modules}\"];\n\
+             \x20   t := Compiler.create_target(\"obj\");\n\
+             \x20   o := Compiler.options(t);\n\
+             \x20   o.output = \"jr-test-own-link\";\n\
+             \x20   o.kind = Compiler.Output_Kind.OBJECT;\n\
+             \x20   o.module_paths = mods[];\n\
+             \x20   Compiler.set_options(t, o);\n\
+             \x20   Compiler.add_file(t, \"{dir}/prog.jr\");\n\
+             \x20   if !Compiler.build(t) {{ exit(1); }}\n\
+             \x20   if !Compiler.file_exists(\"{object}\") {{ exit(2); }}\n\
+             \x20   cc := Compiler.command(\"cc\");\n\
+             \x20   Compiler.argument_of(cc, \"{object}\");\n\
+             \x20   Compiler.argument_of(cc, \"-o\");\n\
+             \x20   Compiler.argument_of(cc, \"{linked}\");\n\
+             \x20   if Compiler.run(cc) != 0 {{ exit(3); }}\n\
+             \x20   exit(0);\n\
+             }}\n",
+            dir = dir.path().display(),
+            object = object.path().display(),
+            linked = linked.path().display(),
+            modules = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../modules")
+                .display(),
+        ),
+    )
+    .expect("the script should be written");
+
+    assert_eq!(
+        run_build_script(script, Vec::new()),
+        0,
+        "the script should emit an object and link it itself"
+    );
+
+    let status = std::process::Command::new(std::path::Path::new(".").join(linked.path()))
+        .status()
+        .expect("the script-linked artefact should run");
+    assert_eq!(
+        status.code(),
+        Some(7),
+        "the binary the script linked must be the program it compiled"
+    );
+}
+
+/// A C string returned *by* libc reaches Jairs, and only a native binary can do it.
+///
+/// `to_string` and `to_c_string` are the FFI boundary (ADR-0198 §1), and the round trip through `getenv`
+/// is the shape every caller has: a counted Jairs string in, a NUL-terminated C string back.
+///
+/// **This has no home in `tests/corpus/valid/`**, and the reason is ADR-0158's: `getenv` returns a pointer
+/// into the *host's* environment block, while a Jairs pointer is an offset into the VM's own linear region
+/// (ADR-0061). So `jr run` traps — `invalid access of 1 bytes at address 0x16b976e4a`, measured — and the
+/// native binary reads it correctly. A program whose two engines legitimately differ cannot live in a
+/// directory whose whole premise is that they agree.
+///
+/// The environment variable is **set by this test** rather than read from the ambient one, so the expected
+/// bytes are known here and the assertion is on the value rather than on "non-empty".
+#[test]
+fn a_c_string_from_libc_round_trips_natively() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let source = dir.path().join("env.jr");
+    fs::write(
+        &source,
+        "#import \"Basic\";\n\
+         S :: #import \"String\";\n\
+         libc :: #system_library \"c\";\n\
+         getenv :: (name: *u8) -> *u8 #foreign libc \"getenv\";\n\
+         alloc :: (n: s64) -> *u8 { return malloc(n); }\n\
+         release :: (p: *u8) { free(p); }\n\
+         main :: () {\n\
+         \x20   context.allocator = alloc;\n\
+         \x20   context.allocator_free = release;\n\
+         \x20   name := S.to_c_string(\"JR_TEST_ROUND_TRIP\");\n\
+         \x20   value := S.to_string(getenv(name));\n\
+         \x20   print(\"[%]\\n\", value);\n\
+         \x20   exit(value.count);\n\
+         }\n",
+    )
+    .expect("the program should be written");
+
+    let artefact = Artefact::named("jr-test-c-string-round-trip");
+    assert_eq!(
+        run_build(source, Some(artefact.path().to_path_buf())),
+        0,
+        "the program should build"
+    );
+
+    let output = std::process::Command::new(std::path::Path::new(".").join(artefact.path()))
+        .env("JR_TEST_ROUND_TRIP", "seven77")
+        .output()
+        .expect("the artefact should run");
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "[seven77]",
+        "the C string's bytes must reach Jairs exactly"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(7),
+        "`c_style_strlen` must have counted the seven bytes, stopping at the NUL"
+    );
+}
+
+/// `set_working_directory` really changes where a build writes, tested in a **subprocess**.
+///
+/// It has to be a subprocess, and that is the interesting constraint rather than an inconvenience: the
+/// option's whole effect is a process-wide `set_current_dir`, and [`Artefact`] records why nothing else in
+/// this file may do that — these tests share one process and run in parallel, so a CWD change races every
+/// concurrent test. Two earlier versions of the two tests above called it in-process and made
+/// `a_run_directive_build_script_needs_no_main` fail intermittently while passing in isolation.
+///
+/// So this drives the real `jr` binary, where the CWD change is confined to a child that exits. The
+/// assertion is the artefact's **location**: it must appear inside the directory the script chose, and the
+/// script names it with no path at all, so only the working directory can have put it there.
+#[test]
+fn set_working_directory_moves_where_a_build_writes() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let inner = dir.path().join("out");
+    fs::create_dir_all(&inner).expect("the output directory should be creatable");
+    fs::write(
+        dir.path().join("prog.jr"),
+        "#import \"Basic\";\nmain :: () { exit(5); }\n",
+    )
+    .expect("the program should be written");
+
+    let script = dir.path().join("build.jr");
+    fs::write(
+        &script,
+        format!(
+            "#import \"Basic\";\n\
+             Compiler :: #import \"Compiler\";\n\
+             main :: () {{\n\
+             \x20   Compiler.set_working_directory(\"{inner}\");\n\
+             \x20   mods := string.[\"{modules}\"];\n\
+             \x20   t := Compiler.create_target(\"app\");\n\
+             \x20   o := Compiler.options(t);\n\
+             \x20   o.output = \"moved\";\n\
+             \x20   o.module_paths = mods[];\n\
+             \x20   Compiler.set_options(t, o);\n\
+             \x20   Compiler.add_file(t, \"{dir}/prog.jr\");\n\
+             \x20   if !Compiler.build(t) {{ exit(1); }}\n\
+             \x20   exit(0);\n\
+             }}\n",
+            dir = dir.path().display(),
+            inner = inner.display(),
+            modules = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../modules")
+                .display(),
+        ),
+    )
+    .expect("the script should be written");
+
+    let status = std::process::Command::new(PathBuf::from(env!("CARGO_BIN_EXE_jr")))
+        .arg("build")
+        .arg(&script)
+        .status()
+        .expect("the compiler should run");
+    assert_eq!(status.code(), Some(0), "the build script should succeed");
+
+    let moved = inner.join("moved");
+    assert!(
+        moved.is_file(),
+        "the artefact must land in the directory the script chose, got nothing at {}",
+        moved.display()
+    );
+    // And it is the program that was compiled, not an empty file that happens to exist.
+    let ran = std::process::Command::new(&moved)
+        .status()
+        .expect("the moved artefact should run");
+    assert_eq!(
+        ran.code(),
+        Some(5),
+        "the artefact must be the compiled program"
+    );
+}

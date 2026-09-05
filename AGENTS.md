@@ -259,6 +259,42 @@ grammar reported an `ERROR` node over it (gate 6, which is what that gate exists
 the type, verified by writing it; and `codes.rs` caught a code collision when this wave first reached for E0290,
 which `jr-hir` owns.
 
+**ADR-0198 re-ran ADR-0197's inventory against its own result and found four more `String` gaps — and the
+most useful thing in the wave is *why* one of them exists.** The corpus program passed `"PATH".data` to
+`getenv` and got null, in **both** engines, because a string literal's bytes are not followed by a NUL
+(ADR-0004): `getenv` read past `PATH` into whatever the linker placed next. That is the `glShaderSource` trap
+again, and **both engines agreeing is the part to keep** — the differential harness compares the two engines,
+so a bug that makes both read past the same string is invisible to it. Only running the program found it.
+`to_c_string` exists because of that, and `to_string`/`c_style_strlen` complete the boundary: one direction
+borrows, the other cannot, because there is nowhere to put a NUL that is not someone else's byte.
+
+**Writing the float scanner surfaced a latent SSA defect, and it is the fourth found by writing a library
+rather than by a compiler test** — after ADR-0156's `mk().count`, ADR-0157's variadic `open` and ADR-0197's
+missing `trim`. `try_remove_trivial_phi` **cascades**, and it returned the replacement it had chosen *before*
+the cascade ran; the cascade could remove that very value, so a `goto` carried a parameter that no longer
+existed. The trigger is narrow and entirely ordinary: a local declared before an `if`, a `while` inside it
+whose condition short-circuits, another `if` after the loop, an assignment to the outer local.
+
+**The first fix was wrong in the way worth remembering.** `add_phi_operands` holds operands in a local `Vec`
+across reads that can invalidate them, so the obvious repair was to reserve a placeholder argument on each
+edge and fill it immediately, putting the operand where `replace_uses` could see it. That **broke a different
+procedure**, because `try_remove_trivial_phi` deliberately bails out when an edge has not supplied its
+argument yet — and a placeholder makes an unfinished parameter *look finished*, so it collapses against
+operands that are not the real ones. **A sentinel that stands in for "not yet known" must not be
+indistinguishable from a real value to the code whose whole job is asking whether it is known.**
+
+**And ADR-0198 §4 withdraws two of ADR-0197 §5's five refusals.** `BuildCpp` and a custom link command are
+**compositions**, not gaps: a script compiles C with `Compiler.command` and links it via `library_paths`, or
+asks for `Output_Kind.OBJECT` and runs its own `cc`. Both are now pinned by tests that run the artefacts (42
+and 7). Calling them refusals was the mistake ADR-0197 warns about one section earlier — describing a
+composition as a missing feature.
+
+**One test-hygiene rule re-earned the hard way.** `integration.rs` already documents that nothing in it may
+change the process CWD, because the tests share one process and run in parallel. Two new tests called
+`Compiler.set_working_directory` anyway and made an *unrelated* test fail intermittently while passing in
+isolation. The two were rewritten to use absolute paths, and the option itself is now tested in a
+**subprocess**, where the CWD change is confined to a child that exits.
+
 **ADR-0197 asked whether this is capable of the same work as a real `build.jai`, and *measured* it against
 23 of them rather than answering.** It was not, and it missed **specific** things: `Build_Options.output_type`
 is set by **13 of 23** scripts and this compiler could not build a library at all. Libraries in both kinds now
@@ -351,7 +387,7 @@ build a `.dmg` inside the same `#run`. That interleaving is precisely ADR-0153 �
 memoising query engine cannot have it. So the shapes agree, the ordering does not, and saying so is the
 honest version.
 
-Tests 1090 → **1097**, then → **1103** with ADR-0197's (**1109** under gate 7, whose clippy caught this wave's one cross-back-end omission — `jr-codegen-llvm` is not compiled by the six, so `ProcKind::Local`'s new `exported` field failed there and only there). **Four existing tests had their premises expire and were retargeted rather than weakened** — a foreign call that
+Tests 1090 → **1097**, then → **1103** with ADR-0197's and **1109** with ADR-0198's (**1115** under gate 7, whose clippy caught this wave's one cross-back-end omission — `jr-codegen-llvm` is not compiled by the six, so `ProcKind::Local`'s new `exported` field failed there and only there). **Four existing tests had their premises expire and were retargeted rather than weakened** — a foreign call that
 really is foreign (`getpid`), a constant that really needs evaluating (`#run pick()`). Fourth recorded
 instance of that shape. One MIR snapshot moved on pool ids only; a pool id in a snapshot has the same churn
 property as the `FileId` this project already refuses to print.
