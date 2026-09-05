@@ -9,10 +9,10 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1118** workspace tests, all seven gates green.
+- **1129** workspace tests, all seven gates green.
 - **281** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
   (**290** counting those).
-- **199** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **200** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **24** standard library modules under `modules/`.
 - Diagnostic codes run **E0001–E0295**; **E0296** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership

@@ -422,6 +422,39 @@ pub fn binding_card(container: &str, name: &str, ty: Option<String>) -> Card {
     }
 }
 
+/// The name of a nominal type — struct, union, variant or enum.
+///
+/// # Two sources, and why both are needed (ADR-0200 §2)
+///
+/// `signatures.type_name` is the **file's own** map, keyed by [`PoolId`] and populated only from that
+/// file's items. It is asked first because it is the spelling the file itself uses. For a type declared
+/// in an imported module it holds nothing, and the fallback used to be `format!("struct{decl:?}")` —
+/// so a hover on a `Window` local read `window: structDeclId(1:1)`, an internal identifier in a place
+/// a person reads a type name.
+///
+/// [`Pool::decl_name`] is the second source and covers exactly that case: the pool is where every
+/// file's declarations meet, and `FileSignatures::record_in` now records a nominal type's declared name
+/// there for the file being checked *and* every file it imports.
+///
+/// # The last resort names the kind, not the declaration
+///
+/// When neither knows — a type whose declaring file's signatures were never recorded — the answer is
+/// `<struct>` rather than `struct{decl:?}`. A reader can tell `<struct>` is "the name is unavailable";
+/// `structDeclId(1:1)` reads as a type called `structDeclId`. It is the same choice `<unknown>` makes
+/// for an error type two arms above, and the eleventh instance in this project of an internal
+/// identifier reaching a place meant for a person.
+fn nominal_name(pool: &Pool, signatures: &FileSignatures, ty: PoolId, kind: &str) -> String {
+    if let Some(name) = signatures.type_name(ty) {
+        return name.to_owned();
+    }
+    if let Some(decl) = pool.nominal_decl(ty)
+        && let Some(name) = pool.decl_name(decl)
+    {
+        return name.to_owned();
+    }
+    format!("<{kind}>")
+}
+
 /// Renders a type for a human.
 ///
 /// Moved here from `handlers` when it acquired a second caller. ADR-0024 §6 records why
@@ -438,9 +471,7 @@ pub fn type_name(pool: &Pool, signatures: &FileSignatures, ty: PoolId) -> String
         Item::IntType { signed, bits } => format!("{}{bits}", if *signed { 's' } else { 'u' }),
         Item::StringType => String::from("string"),
         Item::FloatType { bits } => format!("float{bits}"),
-        Item::EnumType { decl, .. } => signatures
-            .type_name(ty)
-            .map_or_else(|| format!("enum{decl:?}"), ToOwned::to_owned),
+        Item::EnumType { .. } => nominal_name(pool, signatures, ty, "enum"),
         Item::TypeType => String::from("type"),
         Item::ErrorType => String::from("<unknown>"),
         Item::ForeignLibraryType => String::from("#system_library"),
@@ -466,15 +497,9 @@ pub fn type_name(pool: &Pool, signatures: &FileSignatures, ty: PoolId) -> String
                 .collect();
             format!("({})", parts.join(", "))
         }
-        Item::StructType { decl, .. } => signatures
-            .type_name(ty)
-            .map_or_else(|| format!("struct{decl:?}"), ToOwned::to_owned),
-        Item::UnionType { decl, .. } => signatures
-            .type_name(ty)
-            .map_or_else(|| format!("union{decl:?}"), ToOwned::to_owned),
-        Item::VariantType { decl, .. } => signatures
-            .type_name(ty)
-            .map_or_else(|| format!("variant{decl:?}"), ToOwned::to_owned),
+        Item::StructType { .. } => nominal_name(pool, signatures, ty, "struct"),
+        Item::UnionType { .. } => nominal_name(pool, signatures, ty, "union"),
+        Item::VariantType { .. } => nominal_name(pool, signatures, ty, "variant"),
         Item::ProcType {
             params,
             ret,

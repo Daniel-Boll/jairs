@@ -2878,8 +2878,27 @@ fn the_llvm_back_end_emits_a_line_table_too() {
     }
 }
 
+/// One `DW_TAG_structure_type` and the members under it, as read back out of the object.
+///
+/// A named struct rather than a tuple because it grew a third field when ADR-0200 §4 gave the DIE a
+/// name, and `Option<(String, u64, Vec<(String, u64)>)>` is a type clippy refuses on sight — rightly:
+/// `point.0` and `point.2` say nothing about what they hold.
+///
+/// Found by **gate 7**, not by the six: this test is `#[cfg(feature = "llvm")]`, so the default clippy
+/// never compiles it.
+#[cfg(feature = "llvm")]
+#[derive(Debug)]
+struct StructDie {
+    /// `DW_AT_name` — empty when the pool never recorded the declared name.
+    name: String,
+    /// `DW_AT_byte_size`.
+    size: u64,
+    /// Each member's name and `DW_AT_data_member_location`, in declaration order.
+    members: Vec<(String, u64)>,
+}
+
 /// A struct's layout reaches DWARF as a `DW_TAG_structure_type` with named members at real offsets
-/// (ADR-0171).
+/// (ADR-0171), **under its declared name** (ADR-0200 §4).
 ///
 /// # Why a parameter is what makes this work
 ///
@@ -2896,9 +2915,9 @@ fn the_llvm_back_end_emits_a_line_table_too() {
 /// to *compile* a field access — so a wrong DIE offset would mean a debugger showing a field the program does
 /// not have there. Asserting the tag without the offsets would pass on a struct whose every member sat at 0.
 ///
-/// The member names come from the interner through `SourceInfo::symbol`, added for this wave. A struct whose
+/// The member names come from the interner through `SourceInfo::symbol`, added for that wave. A struct whose
 /// members were `field0`/`field1` would parse identically and be nearly useless, so the names are asserted
-/// too.
+/// too — and so is the struct's own name, which was `""` until the pool recorded one.
 #[cfg(feature = "llvm")]
 #[test]
 fn a_struct_reaches_dwarf_with_named_members_at_real_offsets() {
@@ -2977,7 +2996,7 @@ main :: () {
     while let Some(header) = units.next().expect("units should parse") {
         let unit = dwarf.unit(header).expect("the unit should parse");
         let mut entries = unit.entries();
-        let mut current: Option<(u64, Vec<(String, u64)>)> = None;
+        let mut current: Option<StructDie> = None;
         while let Some(entry) = entries.next_dfs().expect("entries should walk") {
             match entry.tag() {
                 gimli::DW_TAG_structure_type => {
@@ -2988,10 +3007,22 @@ main :: () {
                         .attr_value(gimli::DW_AT_byte_size)
                         .and_then(|v| v.udata_value())
                         .unwrap_or(0);
-                    current = Some((size, Vec::new()));
+                    // The struct's own name, which was `""` until ADR-0200 §4: the pool recorded no
+                    // declared name, so the DIE was anonymous and `lldb` showed the members under no
+                    // type at all. Read the same way a member's name is, four lines below.
+                    let name = entry
+                        .attr(gimli::DW_AT_name)
+                        .and_then(|a| a.string_value(&dwarf.debug_str))
+                        .map(|s| String::from_utf8_lossy(s.slice()).into_owned())
+                        .unwrap_or_default();
+                    current = Some(StructDie {
+                        name,
+                        size,
+                        members: Vec::new(),
+                    });
                 }
                 gimli::DW_TAG_member => {
-                    if let Some((_, members)) = current.as_mut() {
+                    if let Some(StructDie { members, .. }) = current.as_mut() {
                         let name = entry
                             .attr(gimli::DW_AT_name)
                             .and_then(|a| a.string_value(&dwarf.debug_str))
@@ -3019,12 +3050,21 @@ main :: () {
 
     let point = structs
         .iter()
-        .find(|(size, members)| *size == 24 && members.len() == 3)
+        .find(|die| die.size == 24 && die.members.len() == 3)
         .unwrap_or_else(|| {
             panic!("a 24-byte struct with three members must appear; got {structs:?}")
         });
+    // **The type's own name** (ADR-0200 §4). This DIE was deliberately anonymous, and the comment
+    // where it was built said why: the pool recorded no declared name, and faking one from the
+    // `DeclId` would print a number no reader recognises. The LSP needed the same fact for a
+    // different reason — a hover on an imported struct read `structDeclId(1:1)` — so the pool records
+    // it now and both consumers read one answer.
     assert_eq!(
-        point.1,
+        point.name, "Point",
+        "the struct DIE must carry its declared name, or `lldb` shows the members under no type"
+    );
+    assert_eq!(
+        point.members,
         vec![
             ("x".to_owned(), 0),
             ("y".to_owned(), 8),

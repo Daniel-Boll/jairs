@@ -65,7 +65,7 @@ pub use completion::{completion, resolve_completion};
 pub use defs::{DefId, Reference, definition_at, references};
 pub use handlers::{diagnostics, formatting, goto_definition, hover};
 pub use hints::{EnclosingCall, enclosing_call, inlay_hints, signature_help};
-pub use locate::{DeclSite, Located, locate, locate_declaration};
+pub use locate::{DeclSite, Located, TypeNameRef, locate, locate_declaration, type_name_at};
 pub use navigate::{
     RenameRefusal, document_highlight, document_symbol, find_references, prepare_rename, rename,
     workspace_symbol,

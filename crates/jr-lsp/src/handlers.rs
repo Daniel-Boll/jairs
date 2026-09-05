@@ -242,6 +242,19 @@ pub fn hover(
         });
     }
 
+    // A **type** name, which is neither an expression nor a declaration in this file (ADR-0200 §3).
+    // Checked after both, so a value of the same name still wins where one exists — and before
+    // answering `None`, which is what a type annotation used to get at every column.
+    if let Some((card, span)) = type_name_card(db, file, search_paths, offset) {
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: card.to_markdown(),
+            }),
+            range: Some(positions.range(span)),
+        });
+    }
+
     let site = locate_declaration(hir.as_ref(), offset)?;
     let (card, span) = declaration_site_card(db, file, search_paths, hir.as_ref(), site)?;
     Some(Hover {
@@ -513,6 +526,14 @@ pub fn goto_definition(
         return Some(target);
     }
 
+    // A **type** name is checked next, and for the same reason the import above is: it is not an
+    // expression, so no resolution for it reaches `ResolveMap` and `locate` cannot see it at all
+    // (ADR-0200 §3). Before this, goto-definition on `w: Window` answered nothing at every column —
+    // which reads as "this name means nothing" rather than "this feature does not reach here".
+    if let Some(target) = type_target(db, file, search_paths, encoding, &positions, offset) {
+        return Some(target);
+    }
+
     let found = locate(hir.as_ref(), offset)?;
     let resolve = jr_db::resolved(db, file, search_paths).map;
     let res = resolve.get(found.scope, found.expr)?;
@@ -604,6 +625,180 @@ fn import_target(
         uri: crate::uri::from_path(&found)?,
         range: lsp_types::Range::default(),
     })
+}
+
+/// Where a type name written at `offset` was declared (ADR-0200 §3).
+///
+/// Resolution is [`resolve_type_name`]'s, shared with hover: a cursor must not describe one
+/// declaration and jump to another.
+fn type_target(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+    encoding: Encoding,
+    positions: &Positions<'_>,
+    offset: jr_base::TextSize,
+) -> Option<Location> {
+    let map = db.source_map();
+    let file_id = map.file_id(file.path(db).as_ref())?;
+    let parse = jr_db::parse_file(db, file);
+    let found = crate::locate::type_name_at(&parse, file_id, offset)?;
+    let (declaring, item) = resolve_type_name(db, file, search_paths, &found)?;
+
+    let declaration_span = jr_db::file_hir(db, declaring)
+        .items
+        .get(item.index())?
+        .name_span;
+    if declaring == file {
+        // Already have this file's positions; building a second set would read the same text twice.
+        return Some(here(db, file, positions, declaration_span));
+    }
+    // `navigate`'s helper rather than a second one here. A first draft built the range inline and
+    // hard-coded `Encoding::Utf8`, which is wrong on any line with a non-ASCII byte before the
+    // declaration — and it would have been the one place in the crate ignoring the negotiated
+    // encoding, which `import_target` takes the parameter specifically to avoid becoming.
+    let path = std::path::PathBuf::from(declaring.path(db).as_ref());
+    crate::navigate::location_of(db, encoding, &path, declaration_span)
+}
+
+/// The card for a type name written at `offset`, and the span to attach it to (ADR-0200 §3).
+///
+/// Shares [`resolve_type_name`] with goto-definition, so the two cannot disagree about which
+/// declaration a type annotation means — hovering one thing and jumping to another is the divergence
+/// ADR-0028 §1's one-renderer rule exists to prevent, applied to the *resolution* rather than to the
+/// rendering.
+fn type_name_card(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+    offset: jr_base::TextSize,
+) -> Option<(crate::render::Card, jr_base::Span)> {
+    let map = db.source_map();
+    let file_id = map.file_id(file.path(db).as_ref())?;
+    let parse = jr_db::parse_file(db, file);
+    let found = crate::locate::type_name_at(&parse, file_id, offset)?;
+    let (declaring, item) = resolve_type_name(db, file, search_paths, &found)?;
+
+    let hir = jr_db::file_hir(db, declaring);
+    let sigs = jr_db::file_signatures(db, declaring, search_paths).signatures;
+    let docs = jr_db::file_docs(db, declaring);
+    let container = crate::render::container_of(declaring.path(db).as_ref());
+    let pool = db.read_pool();
+    let decl = crate::render::Decl {
+        hir: hir.as_ref(),
+        sigs: sigs.as_ref(),
+        docs: docs.as_ref(),
+        // Not fetched, for the reason completion does not: hovering a type should not evaluate a
+        // `#run`. The card still shows the declaration and its documentation.
+        consts: None,
+        pool: &pool,
+        interner: db.interner(),
+        container: &container,
+    };
+    Some((decl.card(item)?, found.span))
+}
+
+/// The file and item a type name refers to.
+///
+/// One function for hover and goto-definition both, so a cursor cannot describe one declaration and
+/// jump to another.
+///
+/// # Why not sema's own record
+///
+/// `FileSignatures::type_name_imports` looks like the answer and is not: it is populated from four
+/// specific resolution sites, and a type used only in a **body-local annotation** reaches none of them
+/// — measured, it holds nothing for `w: Window` inside `main`. Building on it would have worked for a
+/// parameter and silently failed for a local, which is the shape of bug reported as "it works
+/// sometimes". Asking each imported module's `file_exports` is the same lookup name resolution itself
+/// performs (ADR-0014 §2).
+fn resolve_type_name(
+    db: &dyn Db,
+    file: SourceFile,
+    search_paths: ModuleSearchPaths,
+    found: &crate::locate::TypeNameRef,
+) -> Option<(SourceFile, jr_hir::ItemId)> {
+    // On the alias of a qualified type there is no type to resolve — the alias names a module.
+    if found.member.is_some() && !found.on_member {
+        return None;
+    }
+    let wanted = found.member.as_deref().unwrap_or(&found.name);
+    let symbol = db.interner().get(wanted)?;
+    let hir = jr_db::file_hir(db, file);
+
+    if found.member.is_some() {
+        let path = alias_module(db, hir.as_ref(), &found.name)?;
+        return exported_declaration(db, search_paths, &path, symbol);
+    }
+
+    // This file's own declarations first: the nearer answer, and the one a reader means.
+    let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
+    if let Some(entry) = sigs.lookup(symbol)
+        && is_type_kind(entry.kind)
+    {
+        return Some((file, entry.item));
+    }
+
+    // Then every module imported **bare**, in source order. An aliased import contributes nothing to
+    // an unqualified name, exactly as it contributes nothing to completion (ADR-0199 §6).
+    for item in &hir.items {
+        let ItemKind::Import {
+            path, alias: None, ..
+        } = &item.kind
+        else {
+            continue;
+        };
+        if let Some(target) = exported_declaration(db, search_paths, path, symbol) {
+            return Some(target);
+        }
+    }
+    None
+}
+
+/// The file and item a module **exports** under `symbol`.
+///
+/// `file_exports` rather than the module's raw items, so a `#scope_module` name is not reachable —
+/// describing or jumping into a declaration the importer cannot name would answer a question the
+/// program cannot ask (ADR-0054 §3).
+fn exported_declaration(
+    db: &dyn Db,
+    search_paths: ModuleSearchPaths,
+    module: &str,
+    symbol: jr_base::Symbol,
+) -> Option<(SourceFile, jr_hir::ItemId)> {
+    let found = jr_db::module_file(db, search_paths, Arc::from(module)).found?;
+    let source = db.source_file_for_path(found.to_string_lossy().as_ref())?;
+    let item = jr_db::file_exports(db, source).get(symbol)?;
+    Some((source, item))
+}
+
+/// The module path an `#import` alias names.
+fn alias_module(db: &dyn Db, hir: &FileHir, alias: &str) -> Option<String> {
+    let symbol = db.interner().get(alias)?;
+    hir.items.iter().find_map(|item| match &item.kind {
+        ItemKind::Import {
+            path,
+            alias: Some(name),
+            ..
+        } if *name == symbol => Some(path.clone()),
+        _ => None,
+    })
+}
+
+/// Whether a signature entry is a **type** rather than a value.
+///
+/// An exhaustive match, so a new nominal kind is a compile error here instead of quietly failing to
+/// navigate — which is the failure this whole function exists to fix.
+fn is_type_kind(kind: jr_sema::SigKind) -> bool {
+    match kind {
+        jr_sema::SigKind::Struct
+        | jr_sema::SigKind::Union
+        | jr_sema::SigKind::Variant
+        | jr_sema::SigKind::Enum => true,
+        jr_sema::SigKind::Const
+        | jr_sema::SigKind::Var
+        | jr_sema::SigKind::Proc
+        | jr_sema::SigKind::Operator => false,
+    }
 }
 
 /// The procedure whose body is `body`.

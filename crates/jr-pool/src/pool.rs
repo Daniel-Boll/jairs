@@ -116,6 +116,21 @@ pub struct Pool {
     soa_counts: FxHashMap<DeclId, u64>,
     /// Enum members, keyed by declaration site (ADR-0041 §4).
     enum_members: FxHashMap<DeclId, Vec<EnumMember>>,
+    /// The **declared name** of each nominal type, keyed by declaration site (ADR-0200 §1).
+    ///
+    /// Here for the reason `soa_counts` above is, and the argument transfers word for word: the
+    /// question "what is this type called" is asked about a type that may have been declared in
+    /// **another file**, and the pool is the one place every file's declarations already meet.
+    ///
+    /// Before this there was no such place, and two consumers had each worked around it differently.
+    /// `jr-sema`'s `FileSignatures` records a name per *file*, so the importing file's map has no
+    /// entry for an imported struct and every renderer fell through to a debug spelling — a hover on
+    /// a `Window` local read `window: structDeclId(1:1)`. And ADR-0171's DWARF emitter recorded the
+    /// struct DIE as **anonymous**, its own §"honest gaps" naming this absence as the reason.
+    ///
+    /// A `String` rather than a `Symbol`, because the pool has no interner and a consumer holding a
+    /// `Symbol` from one file's interner could not resolve another's.
+    decl_names: FxHashMap<DeclId, String>,
 }
 
 impl Default for Pool {
@@ -140,6 +155,7 @@ impl Pool {
             instance_fields: FxHashMap::default(),
             soa_counts: FxHashMap::default(),
             enum_members: FxHashMap::default(),
+            decl_names: FxHashMap::default(),
         };
 
         let void = pool.intern(Item::VoidType);
@@ -595,6 +611,73 @@ impl Pool {
     /// records *why* they are arrays rather than a fact anything recomputes.
     pub fn set_soa_count(&mut self, decl: DeclId, count: u64) {
         self.soa_counts.insert(decl, count);
+    }
+
+    /// Records the declared name of the nominal type declared at `decl` (ADR-0200 §1).
+    ///
+    /// Called from the same place [`Self::set_struct_fields`] is, for the same reason `set_soa_count`
+    /// is: the facts are recorded together, and doing so for every imported file as well as the file
+    /// being checked is what makes an imported type's name reachable at all.
+    ///
+    /// Replaces rather than appends, so re-analysing a file is safe.
+    pub fn set_decl_name(&mut self, decl: DeclId, name: String) {
+        self.decl_names.insert(decl, name);
+    }
+
+    /// The declaration site of a **nominal** type, or `None` for a structural one.
+    ///
+    /// The four nominal kinds — struct, union, variant, enum — are the ones whose identity *is* a
+    /// declaration (ADR-0015 §1), and so the only ones that can have a declared name. A `*T` or a
+    /// `[]T` is spelled from its parts and names nothing.
+    ///
+    /// An exhaustive match rather than an `if let` chain, deliberately: a fifth nominal kind must be a
+    /// compile error here, not a silent `None` that renders as an internal identifier. `ProcValue`
+    /// also carries a `DeclId` and is **not** a type, which is why it is listed and refused rather
+    /// than swept up by a wildcard.
+    #[must_use]
+    pub fn nominal_decl(&self, ty: PoolId) -> Option<DeclId> {
+        match self.item(ty) {
+            Item::StructType { decl, .. }
+            | Item::UnionType { decl, .. }
+            | Item::VariantType { decl, .. }
+            | Item::EnumType { decl, .. } => Some(*decl),
+            Item::VoidType
+            | Item::BoolType
+            | Item::IntType { .. }
+            | Item::FloatType { .. }
+            | Item::StringType
+            | Item::TypeType
+            | Item::ErrorType
+            | Item::ContextType
+            | Item::ForeignLibraryType
+            | Item::PointerType(_)
+            | Item::ArrayType { .. }
+            | Item::VectorType { .. }
+            | Item::ViewType { .. }
+            | Item::DynamicArrayType { .. }
+            | Item::ResultsType { .. }
+            | Item::ProcType { .. }
+            | Item::VoidValue
+            | Item::BoolValue(_)
+            | Item::IntValue { .. }
+            | Item::FloatValue { .. }
+            | Item::StrValue(_)
+            | Item::TypeValue(_)
+            | Item::ProcValue { .. }
+            | Item::ForeignLibraryValue(_, _)
+            | Item::StaticArray { .. }
+            | Item::AggregateValue { .. } => None,
+        }
+    }
+
+    /// The declared name of the nominal type declared at `decl`, if it has been recorded.    /// The declared name of the nominal type declared at `decl`, if it has been recorded.
+    ///
+    /// `None` means the declaring file's signatures have not been recorded in this pool yet — which a
+    /// consumer must **not** render as a guess. Every caller here falls back to something a reader
+    /// can recognise as "unknown" rather than to an internal identifier.
+    #[must_use]
+    pub fn decl_name(&self, decl: DeclId) -> Option<&str> {
+        self.decl_names.get(&decl).map(String::as_str)
     }
 
     /// The `#soa` count of the struct declared at `decl`, or `None` for an ordinary struct.

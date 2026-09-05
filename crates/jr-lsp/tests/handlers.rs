@@ -283,11 +283,11 @@ fn hovering_a_declaration_name_works() {
 
 #[test]
 fn hovering_a_struct_name_shows_its_fields() {
-    // `Alias :: Point;` rather than the annotation in `p: Point`, and that is a real
-    // limitation rather than a test convenience: `jr_hir::TypeRef::Name` carries only a
-    // `Symbol` and no `Span`, so `locate` — which scans expressions — has nothing to
-    // match a cursor inside a type annotation against. Giving `TypeRef` spans is a
-    // `jr-hir` change, recorded as owed work rather than done quietly here.
+    // A struct name used in *value* position — `Alias :: Point;` — which is an expression and so
+    // `locate` sees it. The **type** position is covered by
+    // `hovering_a_type_annotation_now_works` below; it used to be a documented limitation here,
+    // because `TypeRef::Name` carries no `Span` (ADR-0013) and `locate` scans expressions only.
+    // ADR-0200 §3 closed it by reading the CST instead of giving `TypeRef` a span.
     let source =
         "/// A point in the plane.\nPoint :: struct { x: s64; y: s64; }\n\nAlias :: Point;\n";
     let (db, search, file) = program(source);
@@ -300,15 +300,26 @@ fn hovering_a_struct_name_shows_its_fields() {
 }
 
 #[test]
-fn hovering_a_type_annotation_returns_nothing_today() {
-    // Pins the limitation above, so that giving `TypeRef` a span turns this test red and
-    // whoever does it is handed the reason.
-    let source = "Point :: struct { x: s64; }\n\nmain :: () {\n    p: Point;\n}\n";
+fn hovering_a_type_annotation_now_works() {
+    // **This test used to assert the opposite**, and its own failure message said "if this now works,
+    // update the note". ADR-0200 §3 made it work, so it is retargeted rather than deleted: the
+    // behaviour it guards is the one a reader of the old note was promised, and asserting the
+    // positive is what stops it silently regressing to the old `None`.
+    //
+    // Fourth instance in this project of a test naming an unimplemented thing having a one-wave shelf
+    // life. The previous three are recorded in AGENTS.md.
+    let source = "/// A point.\nPoint :: struct { x: s64; }\n\nmain :: () {\n    p: Point;\n}\n";
     let (db, search, file) = program(source);
+    let found = hover(&db, file, search, Encoding::Utf8, at(source, "Point;"))
+        .expect("a type annotation must hover now");
+    let text = hover_text(&found.contents);
     assert!(
-        hover(&db, file, search, Encoding::Utf8, at(source, "Point;")).is_none(),
-        "a type annotation has no HIR span to locate; if this now works, update the note \
-         in `hovering_a_struct_name_shows_its_fields` and PLAN.md"
+        text.contains("Point :: struct"),
+        "expected the struct's card, got:\n{text}"
+    );
+    assert!(
+        text.contains("A point."),
+        "expected the doc comment to travel with it, got:\n{text}"
     );
 }
 
@@ -2413,5 +2424,272 @@ fn the_server_advertises_document_formatting() {
         capabilities.document_formatting_provider,
         Some(lsp_types::OneOf::Left(true)),
         "an editor cannot offer formatting it was never told about"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Imported nominal types (ADR-0200)
+// ---------------------------------------------------------------------------
+
+/// A local whose type is a struct from an imported module is named, not spelled as an internal id.
+///
+/// The reported symptom: an inlay hint on `window := create_window(...)` read `: structDeclId(1:1)`.
+/// `FileSignatures::type_name` is keyed per file, so the importing file's map had no entry for
+/// `modules/Window`'s struct, and the renderer fell through to `format!("struct{decl:?}")` — the
+/// eleventh internal identifier in this project to reach a place meant for a person.
+#[test]
+fn an_imported_struct_type_is_named_in_an_inlay_hint() {
+    let source =
+        "#import \"Window\";\nmain :: () {\n    window := create_window(10, 10, \"x\", 0, 0);\n}\n";
+    let (db, search, file) = program(source);
+    let hints = jr_lsp::inlay_hints(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        lsp_types::Range {
+            start: lsp_types::Position {
+                line: 0,
+                character: 0,
+            },
+            end: lsp_types::Position {
+                line: 4,
+                character: 0,
+            },
+        },
+    );
+    let labels: Vec<String> = hints
+        .iter()
+        .map(|hint| match &hint.label {
+            lsp_types::InlayHintLabel::String(text) => text.clone(),
+            other => format!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        labels,
+        vec![String::from(": Window")],
+        "an imported struct's declared name must reach the hint"
+    );
+}
+
+/// The same name reaches a hover, which is a different renderer path onto the same defect.
+#[test]
+fn an_imported_struct_type_is_named_in_a_hover() {
+    let source =
+        "#import \"Window\";\nmain :: () {\n    window := create_window(10, 10, \"x\", 0, 0);\n}\n";
+    let (db, search, file) = program(source);
+    let hover = jr_lsp::hover(&db, file, search, Encoding::Utf8, at(source, "window :="))
+        .expect("a local must hover");
+    let text = hover_text(&hover.contents);
+    assert!(
+        text.contains("window: Window"),
+        "expected the declared name, got:\n{text}"
+    );
+    assert!(
+        !text.contains("structDeclId"),
+        "an internal identifier must not reach a hover:\n{text}"
+    );
+}
+
+/// A type whose declaring file was never recorded renders as `<struct>`, not as an internal id.
+///
+/// The last resort, asserted because it is the case the old code got wrong in a *specific* way: a
+/// reader can tell `<struct>` means "the name is unavailable", while `structDeclId(1:1)` reads as a
+/// type actually called `structDeclId`. Reached by rendering against an empty `FileSignatures` and a
+/// pool that has the type interned but no name recorded for it.
+#[test]
+fn an_unrecorded_nominal_type_renders_as_its_kind() {
+    let mut pool = jr_pool::Pool::new();
+    let decl = jr_pool::DeclId::new(jr_base::FileId::from_usize(0), 7);
+    let ty = pool.struct_type(decl);
+    let signatures = jr_sema::FileSignatures::default();
+    assert_eq!(
+        jr_lsp::type_name(&pool, &signatures, ty),
+        "<struct>",
+        "an unavailable name must read as unavailable"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Navigation from a type position (ADR-0200 §3)
+// ---------------------------------------------------------------------------
+
+/// Goto-definition on an imported type reaches the `struct` in the module that declares it.
+///
+/// A `TypeRef` carries no span (ADR-0013) and no resolution for one reaches `ResolveMap`, so `locate`
+/// could not see a type annotation at all and this answered `null` at every column.
+#[test]
+fn goto_definition_on_an_imported_type_reaches_its_struct() {
+    let source = "#import \"Window\";\nmain :: () {\n    w: Window;\n}\n";
+    let (db, search, file) = program(source);
+    let location =
+        jr_lsp::goto_definition(&db, file, search, Encoding::Utf8, at(source, "Window;"))
+            .expect("an imported type must be navigable");
+
+    assert!(
+        location.uri.as_str().ends_with("modules/Window/module.jr"),
+        "expected the declaring module, got {}",
+        location.uri.as_str()
+    );
+    // Asserted against the source rather than a fixed line, so editing the module does not fail this
+    // test for the wrong reason.
+    let module = std::fs::read_to_string(modules().join("Window/module.jr"))
+        .expect("the module must be readable");
+    let line = module
+        .lines()
+        .nth(location.range.start.line as usize)
+        .expect("the reported line must exist");
+    assert!(
+        line.starts_with("Window :: struct"),
+        "expected the struct declaration, got {line:?}"
+    );
+}
+
+/// Hover on an imported type describes that type, and from the module that declares it.
+#[test]
+fn hover_on_an_imported_type_describes_it() {
+    let source = "#import \"Window\";\nmain :: () {\n    w: Window;\n}\n";
+    let (db, search, file) = program(source);
+    let hover = jr_lsp::hover(&db, file, search, Encoding::Utf8, at(source, "Window;"))
+        .expect("an imported type must hover");
+    let text = hover_text(&hover.contents);
+    assert!(
+        text.contains("Window"),
+        "expected the type's own card, got:\n{text}"
+    );
+    // The container line names the declaring module, which is what tells a reader where it came from.
+    assert!(
+        text.contains("Window\n"),
+        "expected the declaring module as the container, got:\n{text}"
+    );
+}
+
+/// A type declared in **this** file resolves here, not through an import.
+///
+/// The nearer answer, and the ordering matters: asking the imports first would jump into a module for
+/// a name the file declares itself.
+#[test]
+fn goto_definition_on_an_own_type_stays_in_this_file() {
+    let source =
+        "#import \"Window\";\nLocal :: struct { a: s64; }\nmain :: () {\n    v: Local;\n}\n";
+    let (db, search, file) = program(source);
+    let location = jr_lsp::goto_definition(&db, file, search, Encoding::Utf8, at(source, "Local;"))
+        .expect("an own type must be navigable");
+    assert!(
+        location.uri.as_str().ends_with("main.jr"),
+        "expected this file, got {}",
+        location.uri.as_str()
+    );
+    assert_eq!(
+        location.range.start.line, 1,
+        "expected the declaration's own line"
+    );
+}
+
+/// A **qualified** type `W.Rect` resolves the member in the module the alias names (ADR-0179 §1).
+#[test]
+fn goto_definition_on_a_qualified_type_resolves_the_member() {
+    let source = "W :: #import \"Window\";\nmain :: () {\n    r: W.Rect;\n}\n";
+    let (db, search, file) = program(source);
+    let location = jr_lsp::goto_definition(&db, file, search, Encoding::Utf8, at(source, "Rect;"))
+        .expect("a qualified type's member must be navigable");
+    assert!(
+        location.uri.as_str().ends_with("modules/Window/module.jr"),
+        "expected the aliased module, got {}",
+        location.uri.as_str()
+    );
+    let module = std::fs::read_to_string(modules().join("Window/module.jr"))
+        .expect("the module must be readable");
+    let line = module
+        .lines()
+        .nth(location.range.start.line as usize)
+        .expect("the reported line must exist");
+    assert!(
+        line.starts_with("Rect :: struct"),
+        "expected the member's declaration, got {line:?}"
+    );
+}
+
+/// The **alias** of a qualified type is not a type, so it answers nothing.
+///
+/// Asserted rather than left implicit: guessing here would send a cursor on `W` into a struct the
+/// alias does not name, and `import_target` already answers for a cursor on the import line itself.
+#[test]
+fn the_alias_of_a_qualified_type_is_not_a_type() {
+    let source = "W :: #import \"Window\";\nmain :: () {\n    r: W.Rect;\n}\n";
+    let (db, search, file) = program(source);
+    assert!(
+        jr_lsp::goto_definition(&db, file, search, Encoding::Utf8, at(source, "W.Rect")).is_none(),
+        "an alias names a module, not a type"
+    );
+}
+
+/// A module-private name is not navigable from a type position (ADR-0054 §3).
+///
+/// `window_position` sits after `#scope_module` in `modules/Window`, so `file_exports` does not have
+/// it — which is the exact lookup this resolution goes through, making the property structural rather
+/// than a filter. It is asserted because the *completion* path had the mirror-image bug of offering
+/// module-private names (ADR-0199 §6), and the two now agree about what a module offers.
+///
+/// A private **procedure** rather than a private struct, because no bundled module has one: everything
+/// after `modules/Compiler`'s `#scope_module` is re-exported by a later `#scope_export`. Written down
+/// rather than left as a gap — the code path under test is the same either way, and inventing a
+/// fixture module to make the example a struct would test the fixture.
+#[test]
+fn a_module_private_name_is_not_navigable_as_a_type() {
+    let source = "#import \"Window\";\nmain :: () {\n    v: window_position;\n}\n";
+    let (db, search, file) = program(source);
+    assert!(
+        jr_lsp::goto_definition(
+            &db,
+            file,
+            search,
+            Encoding::Utf8,
+            at(source, "window_position;")
+        )
+        .is_none(),
+        "a `#scope_module` name must not be reachable from an importer"
+    );
+}
+
+/// A type name nothing declares answers nothing, rather than the first module tried.
+#[test]
+fn an_unknown_type_name_is_not_navigable() {
+    let source = "#import \"Window\";\nmain :: () {\n    v: No_Such_Type;\n}\n";
+    let (db, search, file) = program(source);
+    assert!(
+        jr_lsp::goto_definition(
+            &db,
+            file,
+            search,
+            Encoding::Utf8,
+            at(source, "No_Such_Type;")
+        )
+        .is_none(),
+        "an undeclared type must not resolve to anything"
+    );
+}
+
+/// A value still wins over a type of the same name, because it is the nearer question.
+///
+/// The type route is checked *after* `locate` and `locate_declaration`, and this pins the order: a
+/// cursor on a *use* of `Thing` as a value must describe the value.
+#[test]
+fn a_value_of_the_same_name_still_wins() {
+    let source =
+        "Thing :: struct { a: s64; }\nThing_value :: 7;\nmain :: () {\n    n := Thing_value;\n}\n";
+    let (db, search, file) = program(source);
+    let hover = jr_lsp::hover(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(source, "Thing_value;"),
+    )
+    .expect("the value must hover");
+    let text = hover_text(&hover.contents);
+    assert!(
+        text.contains("Thing_value"),
+        "expected the constant, got:\n{text}"
     );
 }

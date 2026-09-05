@@ -278,6 +278,48 @@ grammar reported an `ERROR` node over it (gate 6, which is what that gate exists
 the type, verified by writing it; and `codes.rs` caught a code collision when this wave first reached for E0290,
 which `jr-hir` owns.
 
+**ADR-0200 is the clearest case yet for putting a fact where every file's declarations meet, and it
+was found by a screenshot.** An inlay hint read `window: structDeclId(1:1)` — the **eleventh** internal
+identifier in this project to reach a place a person reads. `FileSignatures::type_name` is keyed per
+*file*, so an importing file's map had no entry for an imported struct and the renderer fell through to
+`format!("struct{decl:?}")`.
+
+**The argument for the fix was already written in the codebase, about a different fact.**
+`Pool::soa_counts` carries a comment saying it lives there "because the question … is asked … about a
+type that may have been declared in **another file**, and the pool is the one place every file's
+declarations already meet. Two lookups — one per file's HIR — would be two chances to disagree about a
+type's identity." That transfers word for word to "what is this type called", and finding it is what
+settled the design in one step. **When adding a per-declaration fact, read what the neighbouring maps
+say about why they are there.**
+
+**Two consumers wanted the same missing fact and had each worked around it.** ADR-0171 recorded the
+DWARF struct DIE as *anonymous*, its own §"honest gaps" naming this exact absence and refusing to fake a
+name from the `DeclId`. So the LSP rendered an internal identifier and the debugger rendered nothing,
+for one reason. That is the signal a fact belongs in the shared place rather than in either consumer —
+and closing both with one map is what stops them disagreeing later.
+
+**The last resort matters as much as the lookup.** It is `<struct>` now, not `struct{decl:?}`. A reader
+can tell `<struct>` means "unavailable"; `structDeclId(1:1)` is indistinguishable from a type actually
+called that. **An absent answer presented as absent beats a wrong answer presented as an answer** — the
+same choice `<unknown>` already made for an error type in the arm above it.
+
+**A second, unrelated defect came from the same report: hover and goto-definition on a type annotation
+answered `null` at every column.** A `TypeRef` carries no span (ADR-0013) and no type resolution reaches
+`ResolveMap`, so `locate` — which scans expressions — never saw one. Read from the **CST** instead;
+giving `TypeRef::Name` a span was 19 sites across nine crates to record what the tree already holds.
+
+**And the tempting source was measured and rejected.** `FileSignatures::type_name_imports` maps a type
+name to its module and looks like the answer. It is populated from four specific resolution sites, and a
+type used only in a **body-local annotation** reaches none of them — it holds nothing for `w: Window`
+inside `main`. Building on it would have worked for a parameter and silently failed for a local, which
+is the shape of bug that gets reported as "it works sometimes". **Measure a bookkeeping map before
+trusting it to be complete.**
+
+**A test asserting an absence expired for the fourth time**, and this one had left instructions:
+`hovering_a_type_annotation_returns_nothing_today` failed with "if this now works, update the note in
+`hovering_a_struct_name_shows_its_fields` and PLAN.md". Retargeted to assert the presence, which is what
+stops it regressing to the old `None`.
+
 **ADR-0199 fixed a completion gap and found that the blocker was a missing line in the CLI, not
 anything in completion.** Typing `create_window` with no `#import "Window";` offered nothing. But
 `jr lsp` was the **one subcommand of six** that never pushed `bundled_module_dir()` — `check`, `run`,
@@ -443,7 +485,7 @@ build a `.dmg` inside the same `#run`. That interleaving is precisely ADR-0153 �
 memoising query engine cannot have it. So the shapes agree, the ordering does not, and saying so is the
 honest version.
 
-Tests 1090 → **1097**, then → **1103** with ADR-0197's, **1109** with ADR-0198's and **1118** with ADR-0199's (**1124** under gate 7, whose clippy caught this wave's one cross-back-end omission — `jr-codegen-llvm` is not compiled by the six, so `ProcKind::Local`'s new `exported` field failed there and only there). **Four existing tests had their premises expire and were retargeted rather than weakened** — a foreign call that
+Tests 1090 → **1097**, then → **1103** with ADR-0197's, **1109** with ADR-0198's **1118** with ADR-0199's and **1129** with ADR-0200's (**1135** under gate 7, whose clippy caught this wave's one cross-back-end omission — `jr-codegen-llvm` is not compiled by the six, so `ProcKind::Local`'s new `exported` field failed there and only there). **Four existing tests had their premises expire and were retargeted rather than weakened** — a foreign call that
 really is foreign (`getpid`), a constant that really needs evaluating (`#run pick()`). Fourth recorded
 instance of that shape. One MIR snapshot moved on pool ids only; a pool id in a snapshot has the same churn
 property as the `FileId` this project already refuses to print.

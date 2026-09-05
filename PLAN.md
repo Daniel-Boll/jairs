@@ -575,37 +575,34 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0199 closed a completion gap, and the blocker was a missing line in the CLI rather than
-> anything in completion.** Typing `create_window` with no `#import "Window";` offered nothing — but
-> `jr lsp` was the **one subcommand of six** that never pushed `bundled_module_dir()`, so with no
-> explicit `--module-path` the server's search paths were **empty** and `module_file` probes only
-> those. It could resolve no `#import` at all, and the existing auto-import quick fix had been
-> **silently dead** in a default invocation since it shipped.
+> **ADR-0200 fixed two defects a screenshot exposed, and the second was not the one reported.** An inlay
+> hint read `window: structDeclId(1:1)` — the **eleventh** internal identifier in this project to reach a
+> place a person reads. And hover and goto-definition on a type annotation answered `null` at every
+> column, which is a different bug with a different cause.
 >
-> **Delivered:** unimported names are offered, each carrying its `#import` as an
-> `additional_text_edits` (a field populated nowhere in the crate before) and sorting after everything
-> in scope; `jr_db::module_index` as a query over two inputs, never a walk (ADR-0029 §2); the server
-> **formats** over the protocol, so no editor needs a formatter command; and a **Zed extension** in
-> `editors/zed/`.
+> **The name now lives in the pool**, beside `soa_counts`, whose own comment already made the argument
+> word for word: the pool "is the one place every file's declarations already meet". `FileSignatures`
+> keys type names per *file*, so an importer had no entry for an imported struct.
 >
-> **Two defects in the existing completion path** came out of writing the new one, both the same shape:
-> completion read another file's raw HIR items where the code-action path read `file_exports`. So
-> `#scope_module` names were offered and then rejected by sema, and an aliased import contributed bare
-> names that only resolve qualified.
+> **That also closes ADR-0171's anonymous struct DIE** — two consumers, a hover and a debugger, had each
+> worked around the same missing fact. Closing both with one map is the argument for putting it there.
 >
-> **Measured, because ADR-0033 §3 asked:** completion 0.58 ms → **4.09 ms cold**, unchanged warm and
-> after an edit. One 4 ms hit per session.
+> **The last resort is `<struct>`, not `struct{decl:?}`.** A wrong answer presented as an answer is worse
+> than an absent one presented as absent.
 >
-> **`tree-sitter-jairs/src/parser.c` is now tracked**, reversing ADR-0025 §3 — Zed compiles it directly
-> and never runs `tree-sitter generate`. That also *strengthens* gate 6, whose drift check had always
-> been blind to it.
+> **Type-position navigation reads the CST**, because a `TypeRef` carries no span (ADR-0013) and no type
+> resolution reaches `ResolveMap`. One resolver is shared by hover and goto-definition, so a cursor
+> cannot describe one declaration and jump to another. Sema's own `type_name_imports` was measured and
+> **rejected**: it holds nothing for a body-local annotation, so it would have worked for a parameter and
+> silently failed for a local.
 >
-> **Owed:** the extension's grammar `rev` must be re-stamped by `editors/zed/sync-grammar-rev.sh` after
-> any `grammar.js` change, and the `repository` is a `file://` URL until this repository is published.
-> ADR-0036 §1–2's refusal of a VS Code extension stands; only §3 is reversed.
+> **Owed:** nothing from this wave. The `w` shown as a hover's container line for a local is the file
+> stem via `container_of` and is pre-existing behaviour, not a defect this wave introduced — recorded
+> here so the next reader of a hover card knows it was seen and left alone.
 >
-> **1118 workspace tests (1124 under gate 7), 281 corpus files, 199 ADRs, all seven gates green.
+> **1129 workspace tests (1135 under gate 7), 281 corpus files, 200 ADRs, all seven gates green.
 > E0296 is still the first free diagnostic code.**
+
 
 
 

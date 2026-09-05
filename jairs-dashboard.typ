@@ -97,7 +97,7 @@
 #h(4pt)
 #pill[1082 tests]
 #h(4pt)
-#pill[ADR-0199 latest]
+#pill[ADR-0200 latest]
 #h(4pt)
 #pill(fill: rgb("#eaf5ee"), stroke: good)[ALL TWELVE WAVES DONE]
 #h(4pt)
@@ -109,9 +109,9 @@
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "1118", "workspace, all seven gates"),
+  metric("Tests", "1129", "workspace, all seven gates"),
   metric("Corpus", "281", "jr files, all three engines"),
-  metric("ADRs", "199", "0001 to 0199, immutable"),
+  metric("ADRs", "200", "0001 to 0200, immutable"),
   metric("Diagnostics", "131", "declared codes, E0296 next"),
   metric("Editor checks", "189", "Neovim 170 + Zed 19, verified not gated"),
 )
@@ -468,6 +468,35 @@
       `let ... else`, so it compiled silently and skipped globals by luck — and the wrong answer there
       would have been a real miscompile, because forwarding a store to a global across a call drops the
       store the callee was meant to see.
+    ]
+
+    #v(0.3em)
+    #sub[An imported type's name, and navigation from a type position]
+    #text(size: 7.4pt)[
+      ADR-0200, found by a screenshot. An inlay hint read `window: structDeclId(1:1)` — the *eleventh*
+      internal identifier here to reach a place a person reads. `FileSignatures` keys type names per
+      *file*, so an importing file had no entry for an imported struct. The name lives in the *pool*
+      now, beside `soa_counts`, whose own comment already made the argument word for word: the pool
+      "is the one place every file's declarations already meet".
+    ]
+
+    #v(0.3em)
+    #text(size: 7.4pt)[
+      *Two consumers wanted the same missing fact and had each worked around it.* ADR-0171 recorded the
+      DWARF struct DIE as anonymous, its §"honest gaps" naming this exact absence — so the editor showed
+      an internal identifier and the debugger showed nothing, for one reason. Closing both with one map
+      is the argument for putting it there. And the last resort matters as much as the lookup: it reads
+      `<struct>` now, because a wrong answer presented as an answer is worse than an absent one.
+    ]
+
+    #v(0.3em)
+    #text(size: 7.4pt)[
+      *A second, unrelated defect came from the same report:* hover and goto-definition on a type
+      annotation answered nothing at every column, because a `TypeRef` carries no span (ADR-0013) and no
+      type resolution reaches `ResolveMap`. Read from the CST instead — giving `TypeRef::Name` a span was
+      19 sites across nine crates for what the tree already holds. Sema's own bookkeeping map looked like
+      the answer and was *measured empty* for a body-local annotation: it would have worked for a
+      parameter and silently failed for a local.
     ]
 
     #v(0.3em)

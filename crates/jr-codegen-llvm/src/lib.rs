@@ -339,16 +339,24 @@ impl<'ctx> LlvmBackend<'ctx> {
                         .as_type()
                     })
                     .collect();
+                // **Named now** (ADR-0200 §4). This used to be `""`, and the comment here explained why:
+                // "the pool does not record a struct's *declared* name … recorded as owed rather than
+                // faked from the `DeclId`". ADR-0200 §1 made the pool record it, for the LSP's sake —
+                // a hover on an imported struct read `structDeclId(1:1)` for the same missing fact —
+                // and DWARF is the second consumer of the same answer, which is why the name belongs
+                // in the pool rather than in either.
+                //
+                // Still `""` when the declaring file's signatures were never recorded in this pool.
+                // DWARF permits an unnamed struct type and `lldb` shows it with its members, so the
+                // fallback loses a spelling rather than the information a reader came for.
+                let name = pool
+                    .nominal_decl(ty)
+                    .and_then(|decl| pool.decl_name(decl))
+                    .unwrap_or_default();
                 Some(
                     info.create_struct_type(
                         file.as_debug_info_scope(),
-                        // **Anonymous**, because the pool does not record a struct's *declared* name: an
-                        // `Item::StructType` carries a `DeclId`, and the name lives on the HIR item that bound
-                        // it, which a back end cannot see (ADR-0009). DWARF permits an unnamed struct type and
-                        // `lldb` shows it with its members, which is where the value is — a reader wants `p.x`
-                        // and its offset far more than the type's spelling. Recorded as owed rather than faked
-                        // from the `DeclId`, which would print a number no reader recognises.
-                        "",
+                        name,
                         file,
                         0,
                         bits,
