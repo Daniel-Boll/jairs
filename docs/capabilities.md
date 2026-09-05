@@ -12,7 +12,7 @@ behind them — that narrative is not duplicated here):
 - **1129** workspace tests, all seven gates green.
 - **281** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
   (**290** counting those).
-- **200** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **201** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **24** standard library modules under `modules/`.
 - Diagnostic codes run **E0001–E0295**; **E0296** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership

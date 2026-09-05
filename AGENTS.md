@@ -1412,6 +1412,37 @@ trusting a count you find anywhere else. **That advice has itself been wrong onc
 (the `.jr` files under `tests/corpus/` outside `tests/corpus/modules/`; 223 counting those) rather than
 only the figure.
 
+## Commit identity
+
+Enforced by repo-local config, so it needs no remembering:
+
+```sh
+git config user.name       "Daniel Boll"
+git config user.email      "danielboll.academico@gmail.com"
+git config user.signingkey BC362D94E7ACAC77
+git config commit.gpgsign  true
+git config tag.gpgSign     true
+```
+
+**Every commit is GPG-signed and carries a `Signed-off-by`.** Commit with `-S -s`, or rely on
+`commit.gpgsign` and pass `-s`. `git log --format='%G?'` must be `G` for every commit, and
+`git log --format='%GK'` must be `BC362D94E7ACAC77`.
+
+The whole history was rewritten once to establish this (ADR-0201). Two things from that operation are
+worth knowing before doing anything similar:
+
+- **A signing key is not enough; the *committer* has to match too.** `filter-branch --env-filter` must
+  set `GIT_COMMITTER_NAME`/`EMAIL` as well as the author pair, or `%cn`/`%ce` keep the old identity and
+  forge platforms still attribute the commit to it.
+- **Signing during `filter-branch` needs a custom `--commit-filter`**, because nothing else signs.
+  `git commit-tree -S "$@"`, wrapped in `git_commit_non_empty_tree`'s logic so a commit whose tree
+  matches its single parent is dropped — which is what makes a "remove the file I should not have
+  committed" commit vanish once the file is gone from every tree.
+
+**A SHA pinned inside the tree does not survive a rewrite.** `editors/zed/extension.toml` pins the
+grammar revision, and after the rewrite it named a commit that only still resolved through
+`refs/original/`. Re-stamp with `editors/zed/sync-grammar-rev.sh`.
+
 ## House style
 
 Enforced by the first four gates, so it is not a matter of taste:
