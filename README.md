@@ -38,6 +38,8 @@ name = "hello"
 [fmt]
 indent_style = "space"         # "space" or "tab"
 indent_width = 4               # spaces per level; not read when indent_style = "tab"
+max_width = 100                # breaks a long argument or parameter list. Comments are
+                               # never reflowed, so a longer line can still survive.
 
 [build]
 # module_paths = ["vendor"]    # extra directories for `#import`. The standard library
@@ -115,8 +117,8 @@ down, and every call took a state argument the original does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1181** workspace tests, all seven gates green.
-- **281** `.jr` corpus files, **202** accepted ADRs, **24** standard library
+- **1193** workspace tests, all seven gates green.
+- **281** `.jr` corpus files, **203** accepted ADRs, **24** standard library
   modules.
 - macOS arm64 is verified locally, gate by gate. Linux x86-64 has never been
   verified by a human reading a result: `main` was pushed for the first time on

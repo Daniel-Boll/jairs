@@ -218,6 +218,8 @@ name = \"{name}\"
 [fmt]
 indent_style = \"space\"         # \"space\" or \"tab\"
 indent_width = 4               # spaces per level; not read when indent_style = \"tab\"
+max_width = 100                # breaks a long argument or parameter list. Comments are never
+#                              # reflowed, so a longer line can still survive here.
 
 [build]
 # module_paths = [\"vendor\"]    # extra directories to search for `#import`ed modules.
@@ -289,6 +291,7 @@ mod tests {
         // pinning the old value.
         assert_eq!(config.indent_width, default.indent_width);
         assert_eq!(config.indent_style, default.indent_style);
+        assert_eq!(config.max_width, default.max_width);
     }
 
     #[test]

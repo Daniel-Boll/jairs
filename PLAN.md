@@ -575,90 +575,53 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0202 made the compiler installable, and the two measurements that shaped it both said "do
-> nothing".** The wave was five asks — global install, no more `-I modules`, `jr new`, a formatter
-> config, and CLI performance — and the performance half is the part worth reading, because most of
-> the obvious work was ruled out *before* it was done.
+> **ADR-0204 implemented line wrapping, and the fork this handoff called expensive dissolved under one
+> measurement.** The previous §7 said the first question to settle was whether the formatter keeps its
+> single-pass emitter or moves to a Wadler-style document, "because that choice is expensive to undo".
+> Counting the corpus answered it instead: of 25,865 lines, **3472 exceed 100 columns and 3436 are
+> comments**. Exactly **25 are code** — 11 argument lists, 10 parameter lists, 4 boolean chains. **A
+> document engine cannot be justified for three constructs.**
 >
-> **Startup is at the floor.** `jr --version` is 8.16 ms; an **empty Rust binary** on the same
-> machine is 8.24 ms, against 5.89 ms for `/usr/bin/true`. There is no lazy-init win, no allocator
-> win and no argument-parsing win available, because nothing happens before dispatch. **And the link
-> is somebody else's:** `cc <obj> -o <out>` alone is 85 ms of the 135 ms link step, and no `lld` is
-> installed here, so a faster-linker flag could not be measured — which is why none is offered.
+> **The lesson is not about formatters.** This handoff framed a choice as architectural because nobody
+> had counted the inputs the feature would see. The count took two minutes. Before choosing an
+> architecture, count.
 >
-> **What remained was 56 ms of process spawns asking questions nobody needed answered**: a
-> `cc --version` probe spawned purely to test that `cc` exists, and a `codesign --verify` in a
-> function whose own doc comment said `ld64` had already signed the output. `jr build` went
-> **170.8 → 114.0 ms** — a controlled A/B against the parent commit, 56.8 ms recovered
-> against 56 estimated.
+> **Every refusal is asserted by a test.** Comments are never reflowed (3436 lines, and `rustfmt`
+> agrees by default); a boolean chain is not broken (nested left-recursive `BINARY_EXPR`, needs chain
+> flattening, 4 lines, real non-idempotence risk); a string literal cannot be (ADR-0004). Whoever
+> builds the chain breaker inverts a named test rather than discovering an omission.
 >
-> **`cargo install` cannot install data files** — Cargo's docs are explicit — so the standard library
-> is compiled into the binary from a build-script `include_str!` table, measured *smaller* than
-> `include_dir` (927,664 vs 929,200 bytes) at no dependency cost. The binary is **6.3 MB, down from
-> 6.8**, because `strip = true` more than paid for the 476 KB the library adds.
+> **The defect it produced was invisible in isolation, and that is the transferable part.** The first
+> implementation broke *every two-parameter signature in the corpus* — 41 files instead of 10 — because
+> the tail rendered to measure the width budget also emitted the **body**, so `reserve` was the whole
+> procedure's character count. `jr fmt --stdin` on the signature alone did not reproduce it. **Gate 5
+> over the corpus found it; a unit test would not have.** And `jr fmt --check`'s own diff pointed
+> several lines away from the real edit — when a tool's diff and the file disagree, believe `diff`.
 >
-> **The `rerun-if-changed` in that build script is load-bearing, not hygiene.** `include_str!`
-> registers a dependency on a file's *contents*, so editing a module rebuilds — but **adding or
-> removing** one does not, and the failure is silent: the module is absent from the binary and the
-> compiler reports "module not found" on a correct program. `include_dir`'s answer is
-> `proc_macro::tracked_path`, which is **nightly-only and a no-op on stable**. And `modules/` is at
-> the workspace root, *outside* `crates/jr-stdlib/`, so Cargo's default package-directory scan does
-> not cover it either.
->
-> **ADR-0029 §1 specified this wave's manifest four waves before it was asked for.** It rejected
-> `jairs.toml` as a *prerequisite* and left it open in words that are the design: a manifest "would
-> need a fallback to exactly the rule above, at which point **the rule is doing the work and the
-> manifest is an optional override**." So every command works without one, a missing file is neither
-> an error nor a warning, and a flag always outranks the file. Worth knowing before proposing the
-> next config file: **the ADR that says no often says what a yes would have to look like.**
->
-> **`max_width` was dead, and that is why it is not in the manifest.** Declared in `jr_fmt::Config`,
-> defaulted to 100, and **never copied into the `Formatter`** — dead from the day it was written.
-> Offering it would have been a setting that appears to work; the honest move was to delete it and
-> record that line wrapping is unimplemented. **Tabs, by contrast, cost one enum and one `match`,**
-> because `indent_str()` was the *only* site that emitted indentation.
->
-> **One real inconsistency was caught by asking where the feature is actually used.** `jr fmt` read
-> the manifest and `jr lsp` did not — and an editor is where nearly all formatting happens, so the
-> setting would have appeared to work only from a terminal. Both now share it, with a test each way.
-
-> **And the number in the first draft of this handoff was wrong, which is the finding to carry.** It
-> said 40% off 178.6 ms. That before was measured early in the session and that after an hour later, so
-> the baseline had drifted 8 ms and the percentage inflated with it. The controlled version — parent
-> commit in a `git worktree`, both binaries in one `hyperfine` run, 10 warmups and 40 runs each — is
-> 170.8 → 114.0 ms. The *recovered milliseconds* were right all along (56.8 against 56 estimated).
-> **A before and an after taken at two moments is not a measurement of a change**, and the only reason
-> this was caught is that the close-out audit re-ran it instead of trusting the figure already written
-> into four documents.
-
-> **A defect found at close-out, by audit rather than by failure — and it was the same shape twice.**
-> `jr fmt` honoured `jairs.toml` while `jr lsp` ignored it; that was fixed. The **module-path** half
-> was then missed *while fixing the style half*, so a project declaring `[build] module_paths`
-> resolved under `jr check` and reported `E0210: module not found` **in the editor**. `jr bench` had
-> it too. Caught by grepping which call sites reach the one resolver, which is a cheap habit worth
-> keeping: **fixing one surface is not evidence you found them all.**
+> **Two owed items from ADR-0202 are closed, one with no code at all.** `run_script` no longer re-reads
+> the root file (`ScriptRequest.source`, a field rather than an `Option` so the exhaustive-initialiser
+> rule forces every site to supply it). And the faster-linker question is **bounded** rather than left
+> open: `ld -v` is 39.3 ms against a 72.2 ms link, so **39 of 72 is the linker's own startup**, which
+> any replacement pays — a ceiling of ~33 ms out of `jr build`'s 114. `cc` costs *nothing* over `ld`
+> directly (76.2 vs 72.2 ms), so ADR-0019 §2's convenience was free.
 
 ### Next
 
-1. **Line wrapping in the formatter.** `max_width` is now *absent* rather than dead, which is honest
-   but not finished — a real column limit means a wrapping engine and a decision per construct about
-   where a break is allowed. The first question to settle is whether the formatter keeps its current
-   single-pass emitter or moves to a Wadler-style document, because that choice is expensive to undo.
-2. **A per-thread shadow call stack**, still owed from W11: a trap in a spawned thread names the wrong
+1. **A per-thread shadow call stack**, still owed from W11: a trap in a spawned thread names the wrong
    frames. Needs thread-local storage in both back ends and a change to the trap path every existing
    program uses, which is why `modules/Thread`'s docs say so rather than pretending otherwise.
-3. **`.debug_loclists` for register-resident locals** (ADR-0173 §4). Cranelift value labels hold a
+2. **`.debug_loclists` for register-resident locals** (ADR-0173 §4). Cranelift value labels hold a
    register for 4 to 40 bytes, never a whole function, so a single `DW_OP_regN` would print confident
    garbage outside that range — correctness needs a location list, the first section beyond
    `.debug_line`/`.debug_info` this compiler would emit.
-4. **`run_script` still reads the root file once more than it needs to.** `is_build_script` no longer
-   duplicates the read, but the script path does. A few milliseconds on a command that spends 85 of
-   them in `cc`, so this is tidiness rather than a defect.
-5. **x86-64 Linux is still unverified.** The CI matrix has been triggered; nobody has read the result.
-   That claim has been in this handoff for several waves and is the only *platform* claim in the
-   README with no observation behind it.
+3. **x86-64 Linux is still unverified.** The CI matrix has been triggered; nobody has read the result.
+   That claim has been in this handoff for several waves and is the only *platform* claim in the README
+   with no observation behind it.
+4. **A boolean chain is still not wrapped** (ADR-0204 §2), and a struct or array literal is not either
+   — neither exceeded the width anywhere in this corpus, so there was nothing to measure. All three are
+   candidates only when something overflows.
 
-**1181 workspace tests (1187 under gate 7), 281 corpus files, 202 ADRs, all seven gates green.**
+**1193 workspace tests (1199 under gate 7), 281 corpus files, 203 ADRs, all seven gates green.**
 **E0296** is still the first free diagnostic code — this wave added none, because nothing it built is
 a language rule. The corpus count is unchanged for the same reason: `jr new` and a manifest are not
 things a `.jr` program can observe, so their tests are `jr-cli` integration tests that drive the real

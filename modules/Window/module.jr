@@ -170,7 +170,13 @@ stop :: () {
 /// library whose whole purpose is to match another library's API does not get to improve one call in
 /// isolation. A null `handle` is the failure, `is_open` asks the question, and every routine here is
 /// already safe on a closed window.
-create_window :: (width: s64, height: s64, window_name: string, window_x: s64 = 0, window_y: s64 = 0) -> Window {
+create_window :: (
+    width: s64,
+    height: s64,
+    window_name: string,
+    window_x: s64 = 0,
+    window_y: s64 = 0,
+) -> Window {
     w: Window;
     // SDL wants a NUL-terminated title and a Jairs `string` carries a count instead, so the title is
     // copied into temporary storage. The pointer is valid until the next `reset_temporary_storage`,
@@ -201,9 +207,23 @@ create_window :: (width: s64, height: s64, window_name: string, window_x: s64 = 
     // window — which puts the failure where the requirement is. The rejected alternative was a flags
     // argument, which is what this module used to have: it makes every caller decide a question only
     // the renderer knows the answer to, and Jai's `create_window` has no such flag.
-    w.handle = sdl_create_window(c_title, cast(s32, x), cast(s32, y), cast(s32, width), cast(s32, height), cast(u32, OPENGL | SHOWN));
+    w.handle = sdl_create_window(
+        c_title,
+        cast(s32, x),
+        cast(s32, y),
+        cast(s32, width),
+        cast(s32, height),
+        cast(u32, OPENGL | SHOWN),
+    );
     if w.handle == null {
-        w.handle = sdl_create_window(c_title, cast(s32, x), cast(s32, y), cast(s32, width), cast(s32, height), cast(u32, SHOWN));
+        w.handle = sdl_create_window(
+            c_title,
+            cast(s32, x),
+            cast(s32, y),
+            cast(s32, width),
+            cast(s32, height),
+            cast(u32, SHOWN),
+        );
     }
     return w;
 }

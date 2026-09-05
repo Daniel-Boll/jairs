@@ -1514,6 +1514,51 @@ manifest is refused. And a sibling agent's `cargo test -p jr-link` failed for tw
 must be registered in the same edit as its first use**, or every concurrent build in the tree breaks
 for reasons that have nothing to do with the crate being built.
 
+**ADR-0204 reaches 1193** (1199 under gate 7) and **holds at 281** corpus files — line wrapping, and
+the entry to read for how a plan's "expensive fork" can evaporate.
+
+**`PLAN.md` §7 said the first question was whether to keep the single-pass emitter or move to a
+Wadler-style document. One measurement answered it.** Of this corpus's 25,865 lines, 3472 exceed 100
+columns — and **3436 of those are comments**. Exactly **25 are code**: 11 argument lists, 10
+parameter lists, 4 boolean chains. A document engine cannot be justified for three constructs, and
+the plan had framed the choice as architectural **because nobody had counted what needed wrapping.**
+
+**So the rule: before choosing an architecture for a feature, count the inputs it will actually
+see.** The count took two minutes and removed the entire design question.
+
+**Every refusal is asserted by a test, and each has its own reason.** Comments are never reflowed
+(3436 lines, and `rustfmt`'s `wrap_comments` is off by default and still unstable — the strongest
+available evidence that this is not timidity); a boolean chain is not broken (a nested
+left-recursive `BINARY_EXPR` needs same-precedence chain flattening plus a "do not re-decide" flag
+through every inner node, for 4 lines, against a real non-idempotence risk); a string literal cannot
+be broken at all (ADR-0004). **An absence that is asserted is a boundary; one merely omitted is
+something the next reader rediscovers** — so whoever builds the chain breaker inverts a named test.
+
+**Width is decided by rendering into a scratch buffer, never by predicting it from the CST.** A
+width calculator that walks the tree is a second implementation of the emitter, and the two can
+disagree about what a construct looks like — this project's most-recorded failure mode. One thing
+knows how a parameter list is spelled.
+
+**The defect this wave produced is the one to remember, because it was invisible in isolation.** The
+first implementation broke **every two-parameter signature in the corpus** — 41 files instead of 10,
+including a 43-column one — because the tail rendered to measure the width budget *also emitted the
+body*, making `reserve` the character count of the whole procedure. `jr fmt --stdin` on the
+signature alone did **not** reproduce it, since a one-line body is short. **Gate 5 over the corpus
+found it; a unit test would not have.**
+
+**And `jr fmt --check`'s own diff pointed at the wrong line.** Its rendering showed the first change
+several lines from where the real edit was, so the first hypothesis was about the wrong construct.
+`diff -u` of the real output corrected it in one step. **When a tool's own diff and the file
+disagree, believe `diff`.**
+
+**One owed item closed by measurement alone, with no code.** ADR-0202 left "no faster linker
+offered" open because `lld` is not installed. It still is not, and the question is answerable
+anyway: `ld -v` is **39.3 ms** and a real link is 72.2 ms, so **39 of those 72 are the linker's own
+startup** — which any replacement binary also pays. The ceiling for *any* faster linker is ~33 ms of
+`jr build`'s 114. A bound is a better answer than an open question. And `cc <obj> -o out` (76.2 ms)
+costs essentially nothing over `ld` directly (72.2 ms), so ADR-0019 §2's choice of the C driver —
+made for convenience — turns out to be free.
+
 ## House style
 
 Enforced by the first four gates, so it is not a matter of taste:

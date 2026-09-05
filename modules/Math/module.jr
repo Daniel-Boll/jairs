@@ -667,7 +667,12 @@ operator * :: (a: Matrix4, b: Matrix4) -> Matrix4 {
 /// point is `(x, y, z, 1)` and a direction is `(x, y, z, 0)`, so translation
 /// affects the first and not the second — the reason the `w` component exists.
 operator * :: (m: Matrix4, v: Vector4) -> Vector4 {
-    return vec4(m.values[0] * v.x + m.values[4] * v.y + m.values[8] * v.z + m.values[12] * v.w, m.values[1] * v.x + m.values[5] * v.y + m.values[9] * v.z + m.values[13] * v.w, m.values[2] * v.x + m.values[6] * v.y + m.values[10] * v.z + m.values[14] * v.w, m.values[3] * v.x + m.values[7] * v.y + m.values[11] * v.z + m.values[15] * v.w);
+    return vec4(
+        m.values[0] * v.x + m.values[4] * v.y + m.values[8] * v.z + m.values[12] * v.w,
+        m.values[1] * v.x + m.values[5] * v.y + m.values[9] * v.z + m.values[13] * v.w,
+        m.values[2] * v.x + m.values[6] * v.y + m.values[10] * v.z + m.values[14] * v.w,
+        m.values[3] * v.x + m.values[7] * v.y + m.values[11] * v.z + m.values[15] * v.w,
+    );
 }
 
 operator * :: (m: Matrix4, s: float64) -> Matrix4 {
@@ -702,7 +707,12 @@ operator == :: (a: Matrix4, b: Matrix4) -> bool {
 /// **Right-handed and `[-1, 1]` depth** to match `Math`'s cross product and the
 /// GL/GLSL convention Jairs will eventually target; ADR-0131 §3 records the
 /// rejected alternatives and why an unpinned handedness is exactly what drifts.
-mat4_perspective :: (fov_y_radians: float64, aspect: float64, near: float64, far: float64) -> Matrix4 {
+mat4_perspective :: (
+    fov_y_radians: float64,
+    aspect: float64,
+    near: float64,
+    far: float64,
+) -> Matrix4 {
     // `f = cot(fov_y/2) = cos / sin`. One rounding rather than two — `1 / (sin/cos)`
     // is mathematically the same and rounds twice, which the differential noticed
     // in ADR-0116 §2's neighbourhood.
@@ -719,7 +729,14 @@ mat4_perspective :: (fov_y_radians: float64, aspect: float64, near: float64, far
 /// A right-handed orthographic projection into the OpenGL-style clip space
 /// `z ∈ [-1, 1]`. `left`, `right`, `bottom`, `top` bound the view rectangle;
 /// `near` and `far` are the near and far clipping distances.
-mat4_orthographic :: (left: float64, right: float64, bottom: float64, top: float64, near: float64, far: float64) -> Matrix4 {
+mat4_orthographic :: (
+    left: float64,
+    right: float64,
+    bottom: float64,
+    top: float64,
+    near: float64,
+    far: float64,
+) -> Matrix4 {
     r: Matrix4;
     r.values[0] = 2.0 / (right - left);
     r.values[5] = 2.0 / (top - bottom);
@@ -828,7 +845,12 @@ quat_from_axis_angle :: (axis: Vector3, angle_radians: float64) -> Quaternion {
 /// composition, and a caller stacking a hundred rotations does not need it a
 /// hundred times.
 operator * :: (a: Quaternion, b: Quaternion) -> Quaternion {
-    return quat(a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x, a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z);
+    return quat(
+        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+        a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+        a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+    );
 }
 
 operator + :: (a: Quaternion, b: Quaternion) -> Quaternion {

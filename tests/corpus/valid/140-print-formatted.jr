@@ -47,7 +47,13 @@ main :: () {
 
     // Every integer width, signed and unsigned, including the two that a naive renderer gets wrong:
     // `S64_MIN` cannot be negated, and `U64_MAX` does not fit in an `s64`.
-    print("% % % %\n", cast(s8, -128), cast(s16, -32768), cast(s32, -2147483648), -9223372036854775807 - 1);
+    print(
+        "% % % %\n",
+        cast(s8, -128),
+        cast(s16, -32768),
+        cast(s32, -2147483648),
+        -9223372036854775807 - 1,
+    );
     // `U64_MAX` through a typed local: a bare literal in a variadic takes `s64` from its context and
     // does not fit, which is E0204 working rather than a gap.
     big: u64 = 18446744073709551615;
