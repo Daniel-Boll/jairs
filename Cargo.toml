@@ -22,6 +22,8 @@ authors = ["Jairs contributors"]
 jr-base = { path = "crates/jr-base" }
 jr-diag = { path = "crates/jr-diag" }
 jr-syntax = { path = "crates/jr-syntax" }
+jr-stdlib = { path = "crates/jr-stdlib" }
+jr-manifest = { path = "crates/jr-manifest" }
 jr-fmt = { path = "crates/jr-fmt" }
 jr-hir = { path = "crates/jr-hir" }
 jr-pool = { path = "crates/jr-pool" }
@@ -82,6 +84,8 @@ lsp-server = "0.10.0"
 lsp-types = "0.97.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The project manifest, `jairs.toml` (ADR-0029 §1 left this open as an optional override).
+toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
 crossbeam-channel = "0.5"
 
 # --- CLI / misc ------------------------------------------------------------
@@ -120,3 +124,4 @@ opt-level = 2
 lto = "thin"
 codegen-units = 1
 panic = "abort"
+strip = true

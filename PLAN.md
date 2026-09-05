@@ -575,589 +575,88 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0200 fixed two defects a screenshot exposed, and the second was not the one reported.** An inlay
-> hint read `window: structDeclId(1:1)` — the **eleventh** internal identifier in this project to reach a
-> place a person reads. And hover and goto-definition on a type annotation answered `null` at every
-> column, which is a different bug with a different cause.
+> **ADR-0202 made the compiler installable, and the two measurements that shaped it both said "do
+> nothing".** The wave was five asks — global install, no more `-I modules`, `jr new`, a formatter
+> config, and CLI performance — and the performance half is the part worth reading, because most of
+> the obvious work was ruled out *before* it was done.
 >
-> **The name now lives in the pool**, beside `soa_counts`, whose own comment already made the argument
-> word for word: the pool "is the one place every file's declarations already meet". `FileSignatures`
-> keys type names per *file*, so an importer had no entry for an imported struct.
+> **Startup is at the floor.** `jr --version` is 8.16 ms; an **empty Rust binary** on the same
+> machine is 8.24 ms, against 5.89 ms for `/usr/bin/true`. There is no lazy-init win, no allocator
+> win and no argument-parsing win available, because nothing happens before dispatch. **And the link
+> is somebody else's:** `cc <obj> -o <out>` alone is 85 ms of the 135 ms link step, and no `lld` is
+> installed here, so a faster-linker flag could not be measured — which is why none is offered.
 >
-> **That also closes ADR-0171's anonymous struct DIE** — two consumers, a hover and a debugger, had each
-> worked around the same missing fact. Closing both with one map is the argument for putting it there.
+> **What remained was 56 ms of process spawns asking questions nobody needed answered**: a
+> `cc --version` probe spawned purely to test that `cc` exists, and a `codesign --verify` in a
+> function whose own doc comment said `ld64` had already signed the output. `jr build` went
+> **170.8 → 114.0 ms** — a controlled A/B against the parent commit, 56.8 ms recovered
+> against 56 estimated.
 >
-> **The last resort is `<struct>`, not `struct{decl:?}`.** A wrong answer presented as an answer is worse
-> than an absent one presented as absent.
+> **`cargo install` cannot install data files** — Cargo's docs are explicit — so the standard library
+> is compiled into the binary from a build-script `include_str!` table, measured *smaller* than
+> `include_dir` (927,664 vs 929,200 bytes) at no dependency cost. The binary is **6.3 MB, down from
+> 6.8**, because `strip = true` more than paid for the 476 KB the library adds.
 >
-> **Type-position navigation reads the CST**, because a `TypeRef` carries no span (ADR-0013) and no type
-> resolution reaches `ResolveMap`. One resolver is shared by hover and goto-definition, so a cursor
-> cannot describe one declaration and jump to another. Sema's own `type_name_imports` was measured and
-> **rejected**: it holds nothing for a body-local annotation, so it would have worked for a parameter and
-> silently failed for a local.
+> **The `rerun-if-changed` in that build script is load-bearing, not hygiene.** `include_str!`
+> registers a dependency on a file's *contents*, so editing a module rebuilds — but **adding or
+> removing** one does not, and the failure is silent: the module is absent from the binary and the
+> compiler reports "module not found" on a correct program. `include_dir`'s answer is
+> `proc_macro::tracked_path`, which is **nightly-only and a no-op on stable**. And `modules/` is at
+> the workspace root, *outside* `crates/jr-stdlib/`, so Cargo's default package-directory scan does
+> not cover it either.
 >
-> **Owed:** nothing from this wave. The `w` shown as a hover's container line for a local is the file
-> stem via `container_of` and is pre-existing behaviour, not a defect this wave introduced — recorded
-> here so the next reader of a hover card knows it was seen and left alone.
+> **ADR-0029 §1 specified this wave's manifest four waves before it was asked for.** It rejected
+> `jairs.toml` as a *prerequisite* and left it open in words that are the design: a manifest "would
+> need a fallback to exactly the rule above, at which point **the rule is doing the work and the
+> manifest is an optional override**." So every command works without one, a missing file is neither
+> an error nor a warning, and a flag always outranks the file. Worth knowing before proposing the
+> next config file: **the ADR that says no often says what a yes would have to look like.**
 >
-> **1129 workspace tests (1135 under gate 7), 281 corpus files, 200 ADRs, all seven gates green.
-> E0296 is still the first free diagnostic code.**
-
-
-
-
-> [!IMPORTANT]
-> **Five language utilities the plan had owed, in five waves** — ADR-0190 to ADR-0194. Typed constants
-> (`FLAG : u32 : 256`), a pointer type as an intrinsic's argument (`any_as(a, *Point)`), `type_of(x)`,
-> reflection over an enum's member names and a view's elements, and **array literals** (`s64.[1, 2, 3]`) —
-> which real Jai code uses 39 times and which was the single most used construct Jairs lacked.
+> **`max_width` was dead, and that is why it is not in the manifest.** Declared in `jr_fmt::Config`,
+> defaulted to 100, and **never copied into the `Formatter`** — dead from the day it was written.
+> Offering it would have been a setting that appears to work; the honest move was to delete it and
+> record that line wrapping is unimplemented. **Tabs, by contrast, cost one enum and one `match`,**
+> because `indent_str()` was the *only* site that emitted indentation.
 >
-> **Read this stretch for how much each wave paid the next.** ADR-0191 put a pointer arm in
-> `described_type`; ADR-0192 put a `type_of` arm in the same function; ADR-0194 then routed an array
-> literal's element type through it and got `Point.[…]`, `(*u8).[…]`, `Slot(s64, s64).[…]` and
-> `type_of(x).[…]` for **no code at all**. Choosing where the first arm went is what made the last wave
-> small.
->
-> And each wave found something the plan had not: `type_of`'s obvious fix was unnecessary *and* worse
-> (ADR-0192 §2); a view's `element` had never been populated and nobody could have noticed until something
-> used it (ADR-0193 §2); and an array literal being a value rather than a place broke `for` over one —
-> whose fix also repaired `for x: f()` over an array-returning call, which nothing had asked for
-> (ADR-0194 §3).
-
-### Historical: what the print wave found
-
-> [!IMPORTANT]
-> **A program can report what it computed** — ADR-0189. `print("x = %, ok = %\n", 42, true)`, written in
-> Jairs, over the `..Any` variadic. Before it the library could print a `string` and one non-negative
-> integer, and `print_int` **trapped on `S64_MIN`** — its own docs said so and named the fix.
->
-> Every piece was already built and unused: ADR-0138/0139's variadic packing, ADR-0075's `Type_Info`,
-> ADR-0076's `Any` erasure, ADR-0186's file-scope global for the buffer. **This is the first caller to
-> compose all four, and composing them found four compiler defects** — three in code shipped and believed
-> for several waves. That is the entry to read: the defects were invisible because nothing had ever asked.
-
-**Read this before writing a guard that stands in for a condition, because that is now four for four.**
-Three `imports.is_empty()` early-outs — in `library_struct`, `library_enum` and `any_struct_quiet` — sat
-*above* the lookup they guarded, so `modules/Basic`, which imports nothing and **declares `Type_Info`,
-`Type_Info_Kind` and `Any` itself**, could not use its own library types. The lookup three lines below
-already fell back to `self.sigs`, which is exactly where a declaring file's types live, so the guard was
-doing nothing but hiding them.
-
-It went unnoticed because `type_info(` appears seventeen times in that file and **all seventeen were doc
-comments**. The first code use reported `the compiler could not lower the body of format_field`, blaming
-the body; `print("%", n)` inside `Basic` was "variadic argument expected `Any`, found `s64`" while the
-identical call in an importer worked.
-
-`imports.is_empty()` proxied for "module resolution did not run" and is also true of the one file that
-needs none. After ADR-0178 §2's `TrapKind::ALL` length assertion (a proxy for exhaustiveness) and
-ADR-0176 §6's `file_consts` feature list (a proxy for "this file uses comptime"), the rule is stated:
-**a proxy is not wrong until something legitimate sits on the other side of it**, which is why these
-survive review and surface as a defect in a program nobody suspected.
-
-**And ADR-0186 §3's same-file contract was false, broken by a decision ADR-0186 itself made.**
-`Compiler::global_data` refused a cross-file `GlobalRef` as an internal error. No program writes one —
-**the inliner creates them**: `Basic.print` reads the output buffer, and inlining that body into a caller
-in another file copies the `GlobalRef` unchanged, *because* ADR-0186 §3 deliberately made a `GlobalRef`
-absolute. So an ordinary `print` reported "a cross-file global reference, which this engine does not yet
-support": a message about a feature nobody had asked for. Fixed by the phase split `build_object` already
-uses — every global declared before any body compiles.
-
-**Read this before trusting the exhaustive-match rule, because it has a hole.** Adding
-`PlaceBase::Global` made **nine** sites in `jr-mir` fail to compile, each having to decide what a global
-means to it — the rule working exactly as this file describes. The **tenth** was
-`forward::participating_slot`, a `let PlaceBase::Slot(slot) = place.base else { … }`, which compiled
-silently and skipped globals **by luck**. It is the right answer, and the wrong one would have been a real
-miscompile: forwarding a store to a global across a call drops the store the callee was meant to see.
-
-**A `let-else` on an enum is a silent `_` arm.** So "adding a variant is a compile error at every site
-that must change" holds only where a `match` is written, and this project has been stating it more broadly
-than it is true.
-
-### What shipped
-
-**`print(fmt, args: ..Any) -> s64`** (ADR-0189 §1), with Go's `%` and Go's diagnostics. One placeholder
-character taking the next argument whatever its type, matching Jai. `%%` is a literal percent. A wrong
-count is **not** an error — too few renders `%!(MISSING)`, too many appends `%!(EXTRA a, b)` — because
-`print` has nowhere to return an error to, and a `print` that refuses to print is worse than one that
-tells you in the output. The return is the byte count, which `valid/140` uses as its exit-code checksum.
-
-Reaches: every integer width signed and unsigned including `S64_MIN` and `U64_MAX`, `float32`/`float64`,
-`bool`, `string`, pointers as hex, a struct/union/variant one level deep by field name, and a fixed
-array's elements. Output is buffered through a file-scope global and reaches `write` once per call; the
-old `print_int` cost one syscall **per digit**. It is **not thread-safe**, stated rather than hidden.
-
-**An implicitly coerced argument now describes itself** (ADR-0189 §2), which **amends ADR-0076 §1**.
-`f(*p)` yields an `Any` whose type is `*Point`; `any_of(*p)` still describes the `Point`. The old rule
-made a pointer unprintable — there was no `Any` in the language whose type was a pointer type. ADR-0076
-§4's deferred **bare value** coercion arrives with it, materialised into a per-coercion slot: one shared
-slot would make `print("% %", a, b)` describe whichever was stored last.
-
-**`print_int` delegates and both its helpers are deleted** (ADR-0189 §4). It prints `S64_MIN` because the
-formatter renders through an unsigned magnitude with no negation to overflow. `print_digits` and
-`put_byte` are gone rather than unused: a second route to decimal digits is a second chance to disagree,
-which those two demonstrably did, on the one value a reader tests first.
-
-**`print("%", f())` was refused** (ADR-0189 §8) — the coercion check excluded `Expr::Call`, true for
-`any_of`/`any_as` and false for the implicit coercion, which has no call node of its own.
-
-### Historical: what the graphics stretch shipped
-
-**Jai's real graphics API** (ADR-0187). `create_window(width, height, title)` — that order, a `string`
-title, one return value. `set_render_target(window)`, `clear_render_target(r,g,b,a)`,
-`set_shader_for_color(enable_blend := false)`, `immediate_quad(x0,y0,x1,y1,color)`, `immediate_flush()`,
-`swap_buffers(window)`. **No state argument anywhere**, and the coordinate origin is bottom-left with y
-up, which is what Jai's `immediate_set_2d_projection` builds. Pixels go through **GL 2.1 with GLSL 1.20**
-— measured, not assumed, and 3.3 was rejected because on macOS that is core profile only.
-
-**File-scope mutable variables** (ADR-0186), the second item this plan has owed since ADR-0178.
-`PlaceBase::Global` is a program-lifetime memory root: a region in the VM, a writable data object with
-`symbol_value` in Cranelift, an internal mutable global in LLVM. One byte renderer for both native
-engines (`jr_pool::static_image`, which ADR-0152 §2 already built), because two engines rendering one
-global's initial bytes by two routes is a divergence that surfaces late.
-
-**Two compiler defects, each costing a working program** (ADR-0188). A constant's value is keyed by
-`ItemId` and a computed `#insert` renumbers those — so `modules/GL`'s last constants lost their values,
-and **moving a constant earlier broke a different procedure**. And a **default argument silently did not
-apply across a module boundary**, which is what blocked the Jai signatures: `set_shader_for_color()` and
-`swap_buffers(*w)` both rely on one.
-
-**`"literal".data` lowers** (ADR-0185). One missing arm in one guard, hit in the first SDL call of a GL
-probe.
-
-### Syntax validated against real Jai code, by probe
-
-Three real repositories were read — `danieltan1517/chess-jai`, `SogoCZE/jai_parser`,
-`SogoCZE/jai_wgpu_native`, 58 files and about 18,500 lines — and the constructs they use were **probed
-against this compiler** rather than checked against a document. Five probes settled ~90 occurrences:
-
-| Construct | Occurrences in real Jai | Jairs, probed |
-|---|---|---|
-| `s64.[1, 2, 4]` array literal | 39 | **absent** |
-| `Code` + a `for`-expansion macro | 58 call sites | **absent** (declined, ADR-0080) |
-| `type_of(x)` | 14 | **absent** |
-| statement `#if` on a `$` parameter | ~14 | **absent** |
-| `for *p: a`, by pointer | 11 | **absent** |
-| `for v, i: a` | 14 | **works** |
-| a reinterpreting cast, bitboard shifts | 65 `cast,no_check` sites | **works** — `+% -% *%` exist |
-
-**[`docs/jai-parity.md`](docs/jai-parity.md) holds both inventories in full** — the syntax table above
-with its sources, and a ranked eight of the *libraries* Jai has and this one lacks. Two things in it are
-worth reading before planning anything in that direction. `SogoCZE/jai_wgpu_native` binds `wgpu-native`,
-and **WebGPU is one library name on all three targets** — exactly the property ADR-0183 wanted and could
-not get from OpenGL, which needs three names and two linker argument forms. And `jai_parser`'s `tests/`
-directory is 40-odd files of real Jai syntax corner cases, which is a ready-made checklist for the next
-audit rather than a library to port.
-
-**One correction to this repository's own record, found by that research**: the brief for it listed
-`push_context` as a known gap, and `docs/adr/README.md:86` records ADR-0063 as **Accepted**. The brief
-was written from memory and the ADR index was right.
-
-> [!IMPORTANT]
-> **Per-OS support is now a *library* concern, not a compiler one** — ADR-0183 and ADR-0184, on top of the Simp
-> restructure (ADR-0179 … ADR-0182). A module selects a library, a link form, a flag or a value per operating
-> system in ordinary Jairs. `modules/GL` proves it: `#framework "OpenGL"` on macOS, `#system_library "GL"` on
-> Linux, `#system_library "opengl32"` on Windows — three names and **two different linker argument forms**,
-> chosen by a `#run` that reads `os()` and spliced by a file-scope `#insert`. Built, linked and run.
->
-> **The compatibility plan's Wave A is delivered.** `docs/compatibility-plan.md` ordered five waves; the first
-> lands three of them at once (Wave A, C1's typed-constant motivation is unchanged, A3's library hedging is
-> closed), because the two compiler changes it needed turned out to be one missing match arm each.
-
-**Read this before trusting the compatibility plan: its stated blocker was not the blocker, and the correction
-came from two shell commands.** That document ruled OpenGL out because a per-OS *library name* needs a computed
-`#system_library` operand, which is circular. The cycle is real. It is also second in line:
-
-```
-$ cc probe.c -o probe -lOpenGL           ld: library 'OpenGL' not found   (exit 1)
-$ cc probe.c -o probe -framework OpenGL                                   (exit 0)
-```
-
-`jr-link`'s whole flag vocabulary was `-L` and `-l`. **A perfect per-OS name mechanism would have emitted
-`-lOpenGL` and failed.** The first blocker was a missing *link form* — smaller and far more tractable than the
-plan described. That habit is now **fifteen for fifteen**, and its last two catches were both against plans
-written in the same session as the code that disproved them.
-
-**And the second half was one match arm.** `#insert` has spliced statements since ADR-0072, and a *computed*
-operand already chose per OS inside a body. The file-scope directive dispatcher had four arms —
-`#import`, `#run`, `#scope_module`, `#scope_export` — and `#insert "X :: 7;";` at file scope was
-`error[E0101]: unexpected token at top level`. That single gap is what made per-OS support look like a compiler
-feature.
-
-### What shipped on top of Simp
-
-**`#framework`, and `LinkKind` in the pool** (ADR-0183). The form is interned *into* the library value, so
-`#system_library "X"` and `#framework "X"` are **different values** — pinned by a test, because if they interned
-equal a program naming the framework could be handed the library's `PoolId` and linked with the flag that does
-not resolve. No inference from the name and no fallback between the forms: the source says which, and after
-ADR-0184 the declaration is generated per OS so no file carries the wrong one. The house exhaustive-match rule
-earned its keep on the spot — the new field turned **nine crates'** pattern sites into compile errors.
-
-**`#insert` at file scope** (ADR-0184). `ItemKind::Insert`, and generated items go **straight into the file's
-arena**, so a generated declaration is indistinguishable from a written one: it resolves in any order, exports,
-appears in the LSP and is formatted. Nothing downstream learned about generated items.
-
-**One expired comment, and it was load-bearing.** `checked_expanded` reused the *unexpanded* signatures under a
-comment reading "because `#insert` adds no items" — true when an insert could only splice statements, false now.
-A generated procedure had no signature, and it surfaced as *"internal compiler error: called a procedure taking
-2 arguments with 1"*. Third instance in this project of a hand-maintained claim with nothing enforcing it, after
-the E0290 collision and `file_consts`' feature list.
-
-**The boundary is a phase order, and it is refused rather than left to leak.** A **literal** insert expands
-during `file_hir` — before signatures, before const-eval — so it can generate anything, and `valid/136` generates
-a constant, a struct, a procedure, a nested insert and an empty one (exit 63). A **computed** operand expands
-*after* const-eval, so a generated procedure has no signature and a generated constant has no value; both leaked
-internals before **E0294**. What a computed operand *may* generate is a library declaration, which needs
-neither — which is exactly the case the wave exists for.
-
-**Two hedges closed.** `modules/File`'s `CREATE`, `TRUNCATE` and `APPEND` were macOS numbers with a comment
-saying they were wrong on Linux (ADR-0155 §1 owed this). They select per OS now, and the corpus program that
-uses them exits 124 before and after — the mechanism changed and the behaviour did not.
-
-
-**Read this first if you are about to plan anything: the plan for this programme was wrong in five places, and
-every one was found by *writing the thing*.** Not one by review. The score for that habit is now **thirteen for
-thirteen**, and this programme's five are the cheapest and the most expensive it has produced:
-
-1. **`Res::Imported` on an `Expr::Field`** (ADR-0179 §4). The plan's design for a qualified value. Counting the
-   integration surface killed it: sema reads a callee as an `Expr::Name` at a dozen sites and MIR at seven
-   more, and a construct half-represented on the lowering path is this project's first named failure mode.
-   Carried on the *name* instead, four construction sites became compile errors and **no MIR logic changed**.
-2. **E0293 for "the alias is not an import"** (ADR-0179 §4). Drafted, then **refused**: no reachable condition,
-   because a local of the alias's name makes the access an ordinary field and a colliding declaration is
-   already E0200. A code with no condition reads as a promise that something is checked.
-3. **A `BuildConfig` field for the OS** (ADR-0180 §2). The plan cited ADR-0058 §2's invalidation argument; it
-   does not transfer to a value that **cannot change within a process**, and the cost was measured at ≈50
-   `file_signatures` call sites across six crates. A `cfg!` constant beside `TargetLayout`, with the salsa
-   input owed the day a `--target` flag exists.
-4. **"One arm in `thunk.rs`"** (ADR-0180 §3). The plan named the wrong cause. Fixing that arm changed nothing,
-   because **nothing had put a value in the channel**: a named item's initialiser is typed by the *signature*
-   phase and `SignatureOutput` had no `folded_calls` field, so the fold was computed and thrown away.
-5. **Module-level state for the renderer and the event buffer** (ADR-0182 §1). **Jairs has none** — a
-   file-scope `var` is E0245, probed for a scalar and an array — which made two of the plan's five graphics
-   items unbuildable as written. The answer was not a compiler feature but `modules/UI`'s own pattern.
-
-A sixth, smaller: **`get_render_dimensions` in `Window`** (ADR-0182 §3) binds `SDL_GetRendererOutputSize`,
-which needs the renderer `Window` no longer has. It could not have compiled.
-
-### What shipped
-
-**Qualified imports** (ADR-0179). `Simp :: #import "Simp";` then `Simp.name`, in value **and** type position.
-The wall it removes is measured, not argued: `Window` and `File` both exported `open`, so a graphics program
-that loads a file was E0211 and **unwritable**. Three modules already carried workarounds — `UI` renamed its own
-sentinel to dodge flat names, `Image` is fully prefixed after four collisions in one wave. The aliased form
-needs **no grammar rule**: a constant whose value is a directive expression already parses.
-
-**The target OS as a compile-time value** (ADR-0180). `os()` folds in sema to a `Basic.Operating_System`
-member. Before it the compiler had **no notion of an OS anywhere** — its whole notion of a target was
-`TargetLayout`'s two numbers. Rejected item-level `#if` (it reshapes the item tree, and every case here needs
-only a *number*) and a per-OS library **name**, which is not merely unimplemented but **circular**: library
-resolution happens inside `file_signatures` and `file_consts` depends on it.
-
-It also closed a gap **two library modules had documented and worked around**: `Window.LAYOUT_IS_SDL2` and
-`Image.SURFACE_LAYOUT_IS_SDL2` are file-scope constants now, not procedures. And E0293 closed two silent
-`#system_library` holes that type-checked clean and emitted no `-l`.
-
-**A per-OS library value** (ADR-0181). `modules/Time`'s `CLOCK_MONOTONIC` no longer lies. The `#if` its old
-comment asked for was not built and is not needed.
-
-**The Simp-shaped renderer** (ADR-0182). Three modules become five, on `SDL_RenderGeometry`. Simp's own shape
-was verified from primary sources — the Jai wiki says *"SIMP has a GL backend"*, single-backend with all the
-per-OS code in `Window_Creation` — and `SDL_Vertex`'s 20 bytes and three offsets were **measured with a
-`cc`-compiled `offsetof`**, then `SDL_RenderGeometry` was **called from Jairs before a line of the module
-existed**.
-
-### The numbers
-
-Tests **hold at 1082**; the workspace corpus **270 → 279** `.jr` files under `tests/corpus/` outside
-`tests/corpus/modules/`. ADRs 189 → **194**. **One** new diagnostic code — E0295, an empty array literal —
-after four stretches with none, and `jr-cli`'s `codes.rs` caught the stale "first free code" claim the
-moment it was declared, which is exactly what that test is for.
-
-Nine corpus files for five waves, and the test count holding again: every one of these waves is
-exercised by a program the differential and snapshot harnesses already iterate. The two that touched a
-*refusal* added a `type-errors` fixture each.
-
-### Historical: the print wave's numbers
-
-Tests **hold at 1082**; corpus **269 → 270**. ADRs 188 → **189**. **No new diagnostic code** — E0295 is still the first free
-one, for the fifth consecutive stretch, because every defect here was a *gap* to close rather than a
-construct to refuse.
-
-The test count holding is the honest shape and worth reading twice: this wave **fixed four compiler
-defects** and added no test of its own. Three are covered by `modules/Basic` compiling at all, which
-`mir_corpus` snapshots and every printing program depends on; the fourth is in the migrated
-`a_pointer_coerces_to_any_at_a_call_in_both_engines`. The new coverage is `valid/140`, which the
-differential and snapshot harnesses iterate rather than adding a case — the pattern every library wave
-here has followed, and the reason the corpus count is tracked separately.
-
-**Six existing tests changed, and telling apart the two reasons is the skill.** Two were snapshots.
-Three were *stale expectations* a library change should invalidate — `print`'s signature in two LSP
-cards, and the reference count inside `Basic`, which fell from three to one because `print_line` and
-`print_int` no longer call `print` twice between them. One was a **stale premise**:
-`print_line_loses_the_spill_slot_it_never_reads` asserted `slot_count() == 1`, an exact count standing in
-for "lowering created a slot at all" while the property that matters — that none survives dead — is
-asserted on the next line. The count became 2 and is now `> 0`.
-
-### Historical: the graphics stretch's numbers
-
-Tests **1076 → 1082**; corpus **266 → 269**. ADRs 184 → **188**. No new diagnostic code — four ADRs and
-not one new refusal.
-
-### Historical: the per-OS stretch's numbers
-
-Tests **1073 → 1076** (**1080** under gate 7); the workspace corpus **262 → 266** `.jr` files under
-`tests/corpus/` outside `tests/corpus/modules/` (276 counting those). ADRs 182 → **184**.
-
-Only three new Rust tests for two compiler features, and the split says where the risk is: two are `jr-cli`
-integration tests, because *linking* is what both features do and no corpus file can observe a link line — one
-builds a program whose GL library was chosen by comptime code and reads `otool -L` to prove the framework is
-really recorded, the other asserts the **negative** half, that `#system_library "CoreFoundation"` fails where
-`#framework "CoreFoundation"` links. The third is `jr-pool`'s interning. Everything else is corpus.
-
-### Historical: the Simp restructure's numbers
-
-Tests **1069 → 1073**; the workspace corpus **255 → 262** `.jr` files under `tests/corpus/` outside
-`tests/corpus/modules/` (272 counting those). Two of the four new tests are the graphics ones, which are
-`jr-cli` integration tests rather than corpus files for ADR-0164's reason: the comptime VM reaches libc and
-nothing else, so SDL2 is unreachable under `jr run` and `tests/corpus/valid/`'s premise is that the two engines
-agree.
-
-### The plan for the future — what to do next, and why in this order
-
-**All twelve waves are closed at last**, W6 included: its row claimed build scripts "replacing
-makefiles" and had shipped two settings, and ADR-0195 delivered the rest — not as the `#run` the row
-imagined, for a reason §2 of that ADR measures. So there is no wave order left to follow. What remains is
-a *list*, and a
-list needs an argument for its order. This one is by **what unblocks what**, checked against the code
-this session rather than carried forward — three entries below moved because a probe contradicted the
-record.
-
-> [!IMPORTANT]
-> **A build script written in Jairs is the largest thing owed, and it is researched but not started.**
-> [`docs/build-script-plan.md`](docs/build-script-plan.md) is the research: how Jai's `build.jai` actually
-> works, read from 23 real build scripts because Jai's own `modules/Compiler` is unpublished; what Jairs
-> has; what blocks it; and a five-wave plan.
->
-> Its finding is that **copying Jai's model would not work here.** Jai puts the script in a `#run`, and a
-> Jairs `#run` can do *nothing* — every `#foreign` call is refused at compile time, so it cannot read a
-> file, shell out, print, or allocate. Jai's build scripts get their power from the ordinary standard
-> library, not from the `Compiler` module, so a plan that ports the module and leaves the script unable to
-> open a file has copied the wrong half. The plan runs the script as an **ordinary program in the VM**
-> instead — which needs no `#foreign_at_comptime`, has nothing for salsa to make unstable, and is what
-> ADR-0154 §4 said a revisit would need.
-
-**~~1. Make `jr-driver` real.~~ DONE — ADR-0195 §1.** It is `BuildRequest` → `BuildOutcome` now, and
-the split is what made the rest possible.
-
-**~~2. The build script itself.~~ DONE — ADR-0195.** `jr build build.jr` works, with no flag: importing
-`modules/Compiler` is what makes a file a build script. It shells out, reads its command line, chooses
-per OS, and compiles real binaries. Three of the plan's five waves collapsed into one because the design
-turned out smaller than the plan priced it — reusing `#foreign` needed no grammar, no HIR node, no MIR
-variant and no back-end change.
-
-**3. Deep pointer marshalling in the VM.** Ranked above the rest because it fails **silently**:
-`Process.run` under `jr run` returns exit code 127 while reporting success, because `argv` is an array of
-pointers and the VM translates one level deep (ADR-0158 §3). Measured. A build script no longer waits on
-it — ADR-0195 §5 spawns from the driver, because no *type* distinguishes `argv` from `strtod`'s working
-`char **end` — so this is now purely about `modules/Process` telling the truth under `jr run`. Whoever
-takes it needs a mechanism at the **call site**, since that is where the knowledge is.
-
-**4. A flat id → `Type_Info` table.** The last of ADR-0189 §6's four print gaps, and the shape is now
-known to be *different from what that section prescribed* — see the owed list below.
-
-**5. `#foreign_at_comptime`.** §0 called it "non-negotiable given build scripts must read files", and
-ADR-0195 **shipped build scripts without it** — so that reason is retired and this blocks nothing.
-
-ADR-0196 narrowed what it is *for*, by removing the parts that never needed it: compile-time code can
-allocate and print now, because the VM serves `malloc`, `free` and `write` itself and the refusal had been
-keyed on the `#foreign` keyword rather than on reaching a host. **What is left is exactly the host-reaching
-half** — a `#run` that reads a file or shells out, which is what Jai's interpreter does by dlopening
-libraries. Its real cost is **not** the mode flip: it is that a memoised `#run` which touched the
-filesystem goes stale silently, because `file_consts` models no external dependency. Whoever picks it up
-should read that as the wave's content.
-
-Everything after that is the list below.
-
-### Owed, in the order a reader should care
-
-**Newly owed, from ADR-0190 to ADR-0194, ranked by reach:**
-
-1. **A flat id → `Type_Info` table**, so a *field's* type can be recovered. This is what remains of
-   ADR-0189 §6's four gaps after ADR-0193 closed three: a nested aggregate or enum field still prints
-   `..`, because `format_field` compares a field's type id against each builtin's and has no answer for
-   anything else. The shape is now known and is **not** what ADR-0189 §6 described: a nested emission
-   *diverges* on `Node :: struct { next: *Node; }`, so it must be a flat table with each type emitted
-   once and members holding pointers into it, where a second visit to `Node` finds the existing entry.
-2. **A struct literal, `Point.{1, 2}`.** ADR-0039 §6's other half. ADR-0194 answered the array form's
-   three questions by naming the element type; a struct's fields are *named and ordered*, so the same
-   trick supplies nothing and the decisions are real: positional or named, whether every field must be
-   given, and what an omitted one is.
-3. **A compile-time array literal.** `A :: s64.[1, 2];` is refused with a message naming the gap
-   (ADR-0194 §4). It needs a `ConstValue` that can hold an aggregate, which the pool can already build —
-   `static_array` is what the field and member tables use — but which no caller has needed.
-4. **A field width or precision for `%`.** `print` renders shortest-ish and takes no modifiers, so a
-   caller cannot align a column. Go's `%6.2f` is the shape; it needs a modifier parser and nothing else.
-5. **A typed constant naming a *type*.** `P : type : u8;` does not work, and neither does the plain
-   `P :: u8;` — a builtin cannot be aliased at file scope (E0201), which is why `valid/141` asserts widths
-   through parameter types rather than through `size_of`.
-
-**Two entries that dissolved, checked rather than assumed** (`docs/build-script-plan.md` §2):
-
-- ADR-0154 §2 recorded a `Build_Options` **struct** as blocked on struct literals (E0117). It is not: the
-  **read-then-mutate** idiom needs no literal, and that is what every real Jai build script uses anyway —
-  23 of 23 call `get_build_options` and mutate the copy. Verified by running a struct with `string`,
-  `s64`, `[]string` and `bool` fields through a procedure and back.
-- ADR-0102 recorded that a script adding a module path "wants a list-valued constant". **ADR-0194's array
-  literals answered that**, one wave ago: `string.["modules", "vendor"]` assigned into a `[]string` field
-  works in both engines. Both ADRs predate the feature.
-
-**Newly owed, measured this session:**
-
-- **`Process.run` under `jr run` fails silently** — exit code 127 with `ok = true`, because `argv` is an
-  array of pointers and the VM marshals one level deep (ADR-0158 §3). Natively it works. A silent wrong
-  answer ranks above a loud one, which is why the forward plan puts it fourth rather than last.
-- **`modules/Compiler` has never existed** and W7 is eight of nine, not nine. ADR-0158's Consequences say
-  otherwise; the correction is recorded there.
-
-**Also owed, from ADR-0185/0188, ranked by what real Jai code actually uses:**
-
-1. ~~**`T.[a, b, c]` array literals — 39 occurrences.**~~ **Done — ADR-0194.** Parser, HIR, sema and a
-   MIR slot-plus-stores; the *constant* form is still owed and is item 3 above.
-2. **A `Code` value and `for`-expansion macros — 58 call sites**, and they are **one gap with one fix**:
-   a Jai for-expansion macro's second parameter is literally `body: Code`. ADR-0080 *declined* a `Code`
-   value ("until something can inspect a tree"); real code inspects one 58 times, so that decision is
-   now evidence-backed rather than speculative and should be revisited.
-3. ~~**A typed constant.**~~ **Done — ADR-0190.** `X : u32 : 5` parses and types, and all twenty
-   `cast(u32, X)` in `modules/GL` are gone.
-4. ~~**`type_of(x)` — 14 occurrences.**~~ **Done — ADR-0192**, as one arm in `described_type`.
-5. **Statement-level `#if` on a `$` parameter — ~14 occurrences**, and `for *p: a` by pointer — 11.
-6. **`#add_context`.** Jai's `Simp` keeps its state in `#add_context simp: *Immediate_State`, and this
-   library keeps it in a file-scope global instead. The difference is *thread-locality*: two threads
-   drawing to two windows share `modules/Simp`'s state where Jai's would not. It needs the context's
-   layout to become program-dependent, where `CONTEXT_FIELD_NAMES` is a Rust `const` today.
-7. **Cross-file globals *in source*.** Reading an imported module's global directly is still E0245, and
-   that is a front-end gap. The **back-end** half is done and was not optional: ADR-0189 §7 found that the
-   inliner already copies a `GlobalRef` across files, so every engine resolves one program-wide now. A
-   module's own procedures reading its own global is the whole `Simp` and `print` use case, so the source
-   surface is not urgent — but this entry used to imply the engines could not do it, and they can.
-8. **Text and fonts in `Simp`.** Jai has `draw_text` over a `Dynamic_Font`; that needs `stb_truetype` or
-   a bitmap glyph table, which is a module rather than a routine.
-
-**Closed by this stretch, recorded because all three were on this list:** `"literal".data` (ADR-0185),
-the file-scope mutable variable (ADR-0186), and `modules/Simp`'s state being shaped around its absence.
-
-**Historical: owed from ADR-0183/0184, each named where it bit:**
-
-1. **A computed `#insert` generating a constant or a procedure.** E0294 today. It needs a second const-eval
-   pass over generated items, which is a wave; the table in ADR-0184 §4 says exactly which cells are open. The
-   *literal* form generates anything, so nothing is blocked — this is about generating a **procedure** per OS,
-   which no case here has wanted yet.
-2. **A full-path link form.** `jr-link` emits `-l` and `-framework`; a library outside every `-L` path is still
-   unreachable. Two lines and one `LinkKind` variant, the same shape as ADR-0183.
-3. **Per-OS struct layouts.** A layout is computed before comptime code runs, so `#insert` cannot reach it. No
-   module needs one yet; `Window`'s SDL overlays are ABI-identical across targets and assert their sizes.
-
-**Closed by this work, recorded because both were on this list:** `modules/File`'s hedged `O_*` flags (ADR-0184
-§6), and the "per-OS library name is circular" entry — the cycle is real and is now routed around rather than
-broken.
-
-**Three language items the Simp programme *found* and did not build**, each named where it bit:
-
-1. **A typed constant.** `QUIT : u32 : 256` does not parse, and `OUTLINE_THICKNESS : float32 : 1.0` does not
-   either — so every constant crossing a C boundary is `cast` at the call site, at roughly a dozen sites in
-   `Window`, `Image` and `UI`. ADR-0165 §5 already owed this; this programme added five more call sites to the
-   count. **Still the highest-value small item.**
-2. **A file-scope mutable variable.** ADR-0178 gave it an honest trapping stub; it still has no value.
-   `modules/Simp` and `modules/Input` are shaped around its absence, and the shape they chose is *better* —
-   two windows can have two renderers — so this is no longer urgent for graphics. It is a `.data` section,
-   static initialisation and three engines: **its own wave**, and a language one.
-3. **`"literal".data`.** A field of a string *literal* does not lower — *"a memory reference has no place"* —
-   while binding the literal to a local first works. Every program here does the latter and so did the
-   pre-existing tests, so nothing is blocked; it cost one confused build, and it is a one-line surprise for the
-   next person who writes the obvious thing.
-
-**Also owed from ADR-0179/0182, smaller:** `using p: Window.Point` promotes nothing (it returns `None` rather
-than falling back to the member name, which would find a same-named local struct and promote the *wrong*
-fields — asserted as a boundary rather than left implicit); and a bare alias is `unresolved name`, which is
-indirect for `x := Simp;` and was accepted rather than given a code, because giving it one means keeping the
-alias in scope, which is what ADR-0179 §1 rejected.
-
-**Windows is source-portable and unrun.** `-lSDL2` is the link name there, every binding is a plain C function
-of scalars and pointers, and the widths are C's now. Two things are untested and one is not merely untested:
-whether `clang` on Windows resolves `-lSDL2` to `SDL2.lib`, and `jr-vm`'s `use libloading::os::unix::Library`,
-which means **the compiler itself cannot be built for a Windows host**. The second is real work and is not
-graphics work.
-
-**W12 — Debug info has one item left**: a **register-resident** local, which *neither* engine shows, so it is a
-property of the project rather than of one back end. Three pieces, each its own decision: a **name channel**
-(`ValueData` needs `local: Option<LocalId>`, mirroring `SlotData.local` — a promoted local's writes go through
-`ssa.write_variable` and the value's span is the *expression*, so nothing today links an SSA value to the local
-it defines); a **`PReg` → DWARF register number** mapping, per-architecture for ADR-0174 §2's reason about the
-frame pointer; and the **location list** itself, because a label holds its register for 4 to 40 bytes and a
-single `DW_OP_regN` would print confident garbage outside that range. Plus the LLVM half — `llvm.dbg.value`
-rather than `llvm.dbg.declare`, and none of the gimli work carries over.
-
-**Also owed and separate:** **aggregate locals** in DWARF, pending a `LocalId` on their slot; a struct's
-**declared name**, which the pool does not record; views, arrays, unions and variants, each wanting its own
-naming decision; a **`dsymutil` step**, a *driver* decision since `ld` on macOS leaves DWARF in the object and
-`jr build` deletes it after a successful link; and a **per-thread shadow call stack**, so a trap in a spawned
-thread names the right frames (§8.3 put it *in* W11 and it needs thread-local storage in both back ends plus a
-change to the trap path every existing program uses).
-
-**Fonts and text** stay out of `Simp`, with the reason rather than a shrug: a font needs `SDL_ttf` — a second
-library's version skew — or a bitmap glyph table carried as data. `UI` is still label-less, and `GetRect`'s
-widening was deliberately not attempted: migrating `UI` was forced, growing it was not.
-
-**A GL backend** is a later swap behind an unchanged API, which is the point of having the API.
-
----
-
-**Historical, kept because the reasoning is still load-bearing:**
-
-**All twelve waves are done.** W11 — Concurrency closed with ADR-0177 and was the last one *started*;
-W6 was the last one actually *finished*, by ADR-0195, having been closed on an overclaim eleven waves
-earlier. `modules/Compiler` exists now, so W7 is nine of nine too.
-
-**W11 — Concurrency is DONE** (ADR-0175, ADR-0176, ADR-0177): three threads share a counter through
-`atomic_add` and none of three thousand increments is lost, in both native back ends, five runs per test
-invocation.
-
-> [!IMPORTANT]
-> **The blocker this plan named was not the blocker.** §8.3 said W11 needs a per-thread stack, atomics as
-> language operations, and a comptime rule. It did not say a thread body could not be **named**: `#c_call` was
-> a *declaration* attribute with no way to spell it in a **type**, so a `#c_call` procedure could be declared,
-> called directly, and handed to nothing. `jr-pool` had modelled the distinction since ADR-0001 and `ctx.rs`
-> interned it away with a comment explaining why that was safe.
->
-> Found by three probes in four minutes, the third of which reported **`expected (s64) -> s64, found (s64) ->
-> s64`** — two identical types, because `describe` did not render the convention either. ADR-0175 is that one
-> piece of syntax and the three engines that had each hard-coded the convention at an indirect call.
->
-> **And the comptime fork is closed on a fact rather than on taste.** The VM cannot marshal a *procedure* to C
-> at all — C needs a machine address and an interpreter has no machine code — so refusing is **forced**, and
-> the scheduler option is not expensive but **unreachable**: a scheduler still needs a body to run.
-
-**The memory model is written down** (ADR-0177 §3), and its data-race clause is **measured** rather than
-asserted: the same three-thread program with a plain `shared.* = shared.* + 1` produced **1000 instead of
-3000** on one run of three. Two thousand increments lost, no diagnostic.
-
-**W12's first three items are DONE in both back ends.** ADR-0169 delivered `.debug_line` for **Cranelift** —
-written by hand with `gimli` — and ADR-0170 for **LLVM**, where none of that is reusable because LLVM writes
-DWARF itself from `!dbg` metadata. ADR-0171 and ADR-0173 delivered type DIEs on each side, ADR-0172 and
-ADR-0174 stack-resident locals. Both verified by *parsing* the section the way `lldb` does rather than by
-grepping `dwarfdump`. §8.4 claimed "line tables exist" and there were **none**, so this started from zero.
-
-**W8 — Performance is DONE**, eight sub-waves (ADR-0142 … ADR-0149). Seven shipped a feature and the eighth
-shipped a number and a **revert**, which is the honest way to close a performance wave: §2.1's last item was a
-hypothesis, it was tested, and it did not hold on this architecture.
-
-**W6 — Metaprogram is DONE** (ADR-0152, ADR-0153, ADR-0154). **W7 — Stdlib is DONE** (ADR-0158 closed it: nine
-of nine modules). **W9 — Tooling depth is DONE** (ADR-0159, re-scoped: semantic tokens shipped, DWARF moved to
-W12). **W10 — Graphics is DONE** (ADR-0163 … ADR-0167, on SDL2 rather than Cocoa) — and this programme is the
-restructure of what it built.
-
-**§8 is the completion plan** — read it before picking anything up, because the thing that decides the order is
-not the per-wave item lists but three cross-cutting blockers.
+> **One real inconsistency was caught by asking where the feature is actually used.** `jr fmt` read
+> the manifest and `jr lsp` did not — and an editor is where nearly all formatting happens, so the
+> setting would have appeared to work only from a terminal. Both now share it, with a test each way.
+
+> **And the number in the first draft of this handoff was wrong, which is the finding to carry.** It
+> said 40% off 178.6 ms. That before was measured early in the session and that after an hour later, so
+> the baseline had drifted 8 ms and the percentage inflated with it. The controlled version — parent
+> commit in a `git worktree`, both binaries in one `hyperfine` run, 10 warmups and 40 runs each — is
+> 170.8 → 114.0 ms. The *recovered milliseconds* were right all along (56.8 against 56 estimated).
+> **A before and an after taken at two moments is not a measurement of a change**, and the only reason
+> this was caught is that the close-out audit re-ran it instead of trusting the figure already written
+> into four documents.
+
+### Next
+
+1. **Line wrapping in the formatter.** `max_width` is now *absent* rather than dead, which is honest
+   but not finished — a real column limit means a wrapping engine and a decision per construct about
+   where a break is allowed. The first question to settle is whether the formatter keeps its current
+   single-pass emitter or moves to a Wadler-style document, because that choice is expensive to undo.
+2. **A per-thread shadow call stack**, still owed from W11: a trap in a spawned thread names the wrong
+   frames. Needs thread-local storage in both back ends and a change to the trap path every existing
+   program uses, which is why `modules/Thread`'s docs say so rather than pretending otherwise.
+3. **`.debug_loclists` for register-resident locals** (ADR-0173 §4). Cranelift value labels hold a
+   register for 4 to 40 bytes, never a whole function, so a single `DW_OP_regN` would print confident
+   garbage outside that range — correctness needs a location list, the first section beyond
+   `.debug_line`/`.debug_info` this compiler would emit.
+4. **`run_script` still reads the root file once more than it needs to.** `is_build_script` no longer
+   duplicates the read, but the script path does. A few milliseconds on a command that spends 85 of
+   them in `cc`, so this is tidiness rather than a defect.
+5. **x86-64 Linux is still unverified.** The CI matrix has been triggered; nobody has read the result.
+   That claim has been in this handoff for several waves and is the only *platform* claim in the
+   README with no observation behind it.
+
+**1178 workspace tests (1184 under gate 7), 281 corpus files, 202 ADRs, all seven gates green.**
+**E0296** is still the first free diagnostic code — this wave added none, because nothing it built is
+a language rule. The corpus count is unchanged for the same reason: `jr new` and a manifest are not
+things a `.jr` program can observe, so their tests are `jr-cli` integration tests that drive the real
+binary in a temporary directory (17 of them), plus 14 unit tests on the manifest and 8 on the
+embedded library.
 
 ## 8. Finishing the programme: ~~W6~~, ~~W7~~, ~~W9~~, ~~W10~~ — **all four done**
 

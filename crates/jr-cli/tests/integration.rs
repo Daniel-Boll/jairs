@@ -624,7 +624,7 @@ fn type_error_corpus_is_rejected() {
 fn run_program(path: PathBuf) -> i32 {
     let global = quiet_global();
     let args = jr_cli::cli::RunArgs {
-        path,
+        path: Some(path),
         module_paths: Vec::new(),
         no_bounds_check: false,
         opt_level: jr_cli::cli::OptLevelArg::Standard,
@@ -672,7 +672,7 @@ fn run_reports_a_program_with_no_main() {
     fs::write(&path, "helper :: () -> s64 { return 1; }\n").unwrap();
     let global = quiet_global();
     let args = jr_cli::cli::RunArgs {
-        path,
+        path: Some(path),
         module_paths: Vec::new(),
         no_bounds_check: false,
         opt_level: jr_cli::cli::OptLevelArg::Standard,
@@ -796,7 +796,7 @@ fn a_refused_body_is_a_diagnostic_rather_than_a_crash() {
     // internal error this replaced.
     let run = jr_cli::commands::run::run(
         jr_cli::cli::RunArgs {
-            path,
+            path: Some(path),
             module_paths: vec![dir.path().to_path_buf()],
             no_bounds_check: false,
             opt_level: jr_cli::cli::OptLevelArg::Standard,
@@ -825,7 +825,7 @@ fn a_refused_body_is_a_diagnostic_rather_than_a_crash() {
 fn run_build(path: PathBuf, output: Option<PathBuf>) -> i32 {
     jr_cli::commands::build::run(
         jr_cli::cli::BuildArgs {
-            path,
+            path: Some(path),
             output,
             emit_object: false,
             backend: jr_cli::cli::BackendArg::Cranelift,
@@ -856,7 +856,7 @@ fn run_build(path: PathBuf, output: Option<PathBuf>) -> i32 {
 fn run_build_with_module_dir(path: PathBuf, output: Option<PathBuf>, extra: PathBuf) -> i32 {
     jr_cli::commands::build::run(
         jr_cli::cli::BuildArgs {
-            path,
+            path: Some(path),
             output,
             emit_object: false,
             backend: jr_cli::cli::BackendArg::Cranelift,
@@ -1400,7 +1400,7 @@ main :: () {
     let global = quiet_global();
     let code = jr_cli::commands::build::run(
         jr_cli::cli::BuildArgs {
-            path: source,
+            path: Some(source),
             output: Some(object.clone()),
             emit_object: true,
             backend: jr_cli::cli::BackendArg::Cranelift,
@@ -1523,7 +1523,7 @@ main :: () {
 fn run_build_with_paths(path: PathBuf, output: PathBuf, library_paths: &[PathBuf]) -> i32 {
     jr_cli::commands::build::run(
         jr_cli::cli::BuildArgs {
-            path,
+            path: Some(path),
             output: Some(output),
             emit_object: false,
             backend: jr_cli::cli::BackendArg::Cranelift,
@@ -2743,7 +2743,7 @@ fn a_built_object_carries_a_dwarf_line_table() {
 fn run_build_emit_object(path: PathBuf, output: PathBuf) -> i32 {
     jr_cli::commands::build::run(
         jr_cli::cli::BuildArgs {
-            path,
+            path: Some(path),
             output: Some(output),
             emit_object: true,
             backend: jr_cli::cli::BackendArg::Cranelift,
@@ -2790,7 +2790,7 @@ fn the_llvm_back_end_emits_a_line_table_too() {
     let source = corpus_path("valid/024-hello.jr");
     let code = jr_cli::commands::build::run(
         jr_cli::cli::BuildArgs {
-            path: source,
+            path: Some(source),
             output: Some(object_path.clone()),
             emit_object: true,
             backend: jr_cli::cli::BackendArg::Llvm,
@@ -2954,7 +2954,7 @@ main :: () {
     let object_path = dir.path().join("layout.o");
     let code = jr_cli::commands::build::run(
         jr_cli::cli::BuildArgs {
-            path: source,
+            path: Some(source),
             output: Some(object_path.clone()),
             emit_object: true,
             backend: jr_cli::cli::BackendArg::Llvm,
@@ -3138,7 +3138,7 @@ main :: () {
     let object_path = dir.path().join("locals.o");
     let code = jr_cli::commands::build::run(
         jr_cli::cli::BuildArgs {
-            path: source,
+            path: Some(source),
             output: Some(object_path.clone()),
             emit_object: true,
             backend: jr_cli::cli::BackendArg::Llvm,
@@ -3695,7 +3695,7 @@ fn a_refused_body_builds_and_traps_instead_of_panicking() {
 fn run_build_script(path: PathBuf, arguments: Vec<String>) -> i32 {
     jr_cli::commands::build::run(
         jr_cli::cli::BuildArgs {
-            path,
+            path: Some(path),
             output: None,
             emit_object: false,
             backend: jr_cli::cli::BackendArg::Cranelift,
@@ -4445,7 +4445,7 @@ fn a_library_exports_a_symbol_c_can_call() {
     ] {
         let status = jr_cli::commands::build::run(
             jr_cli::cli::BuildArgs {
-                path: dir.path().join("lib.jr"),
+                path: Some(dir.path().join("lib.jr")),
                 output: Some(dir.path().join("libjrtest")),
                 emit_object: false,
                 backend: jr_cli::cli::BackendArg::Cranelift,
@@ -4520,7 +4520,7 @@ fn a_procedure_without_the_attribute_is_not_exported() {
     assert_eq!(
         jr_cli::commands::build::run(
             jr_cli::cli::BuildArgs {
-                path: dir.path().join("lib.jr"),
+                path: Some(dir.path().join("lib.jr")),
                 output: Some(object.clone()),
                 emit_object: false,
                 backend: jr_cli::cli::BackendArg::Cranelift,

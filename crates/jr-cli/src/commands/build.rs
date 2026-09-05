@@ -61,8 +61,10 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
         }
     }
 
-    let mut module_paths = args.module_paths.clone();
-    module_paths.push(crate::commands::check::bundled_module_dir());
+    // Resolved through `crate::project` so that the command line, the manifest and the bundled
+    // library rank identically here and in every other subcommand.
+    let path = crate::project::entry(args.path.clone())?;
+    let module_paths = crate::project::module_search_paths(&args.module_paths)?;
 
     // **`--script` is now an override, not the only way in** (ADR-0195 §6). A file that imports
     // `modules/Compiler` *is* a build script — that import is what gives it the driver's vocabulary —
@@ -72,8 +74,13 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
     //
     // Detection reads one file's own imports, so an ordinary build pays a parse rather than a second
     // module tree.
-    if args.script || jr_driver::is_build_script(&args.path).map_err(|e| anyhow::anyhow!(e))? {
-        return run_script(&args, &renderer, module_paths);
+    // Read once and hand the text to the detection, rather than letting it build a throwaway
+    // database and read the file itself — that was a second full read, parse and lowering of a
+    // file this build is about to read anyway.
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
+    if args.script || jr_driver::is_build_script(&path, &text).map_err(|e| anyhow::anyhow!(e))? {
+        return run_script(&args, &path, &renderer, module_paths);
     }
 
     if !args.script_args.is_empty() {
@@ -83,7 +90,7 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
     }
 
     let request = BuildRequest {
-        path: args.path.clone(),
+        path: path.clone(),
         module_paths,
         library_paths: library_paths(&args),
         // `None` lets a declared `BUILD_OPT_LEVEL` decide; an explicit `-O` outranks it, which is
@@ -93,6 +100,9 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
         bounds_checks: !args.no_bounds_check,
         backend: args.backend.into(),
         output: args.output.clone(),
+        // The project's own name, when it has one. Only reached if neither `-o` nor a declared
+        // `BUILD_OUTPUT` named the artefact, so this cannot override either.
+        default_output: crate::project::default_output()?,
         emit_object: args.emit_object,
         kind: args.output_kind.into(),
         linker_arguments: args.linker_args.clone(),
@@ -137,11 +147,12 @@ fn library_paths(args: &crate::cli::BuildArgs) -> Vec<std::path::PathBuf> {
 /// `BUILD_EXIT`, the same as a build that could not finish.
 fn run_script(
     args: &BuildArgs,
+    path: &std::path::Path,
     renderer: &jr_diag::Renderer,
     module_paths: Vec<std::path::PathBuf>,
 ) -> Result<i32> {
     let request = ScriptRequest {
-        path: args.path.clone(),
+        path: path.to_path_buf(),
         module_paths,
         library_paths: library_paths(args),
         arguments: args.script_args.clone(),

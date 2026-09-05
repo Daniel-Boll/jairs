@@ -9,22 +9,18 @@ use crate::cli::{CheckArgs, GlobalArgs};
 use crate::files::expand_paths;
 use crate::report::{emit_diagnostics, make_renderer, print_check_summary};
 
-/// The module directory shipped with the compiler.
+/// The search path the standard library shipped with the compiler answers for.
 ///
-/// Searched after any `--module-path` given on the command line (ADR-0014 §1).
-/// Resolved relative to the workspace at build time, which is adequate while the
-/// compiler runs from its own source tree; installing `jr` will need a real
-/// installation-relative lookup.
+/// Appended after any `--module-path` given on the command line, so an explicit path still
+/// wins (ADR-0014 §1).
+///
+/// This used to be the *build machine's* `<repo>/modules`, baked in through
+/// `env!("CARGO_MANIFEST_DIR")` — correct only while the compiler ran from the tree it was
+/// built in, which is exactly the condition installing `jr` breaks. The modules are now in the
+/// binary, and this is the synthetic root they answer for; see the `jr-stdlib` crate docs for
+/// why embedding beat both an executable-relative search and a separate install step.
 pub fn bundled_module_dir() -> std::path::PathBuf {
-    // Walk up from `crates/jr-cli` rather than joining `../../`, so the path
-    // that appears in an E0210 diagnostic reads as `<repo>/modules` instead of
-    // `<repo>/crates/jr-cli/../../modules`.
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .parent()
-        .and_then(std::path::Path::parent)
-        .unwrap_or(manifest)
-        .join("modules")
+    jr_stdlib::root().to_path_buf()
 }
 
 /// Run `jr check`.
@@ -39,7 +35,14 @@ pub fn run(args: CheckArgs, global: &GlobalArgs) -> Result<i32> {
     let colour = global.color.resolve();
     let renderer = make_renderer(colour);
 
-    let files = expand_paths(&args.paths)?;
+    // With no path, check what the project says it is. `expand_paths` still does the
+    // directory expansion, so `jr check` and `jr check src` differ only in what they start from.
+    let requested = if args.paths.is_empty() {
+        vec![crate::project::entry(None)?]
+    } else {
+        args.paths.clone()
+    };
+    let files = expand_paths(&requested)?;
 
     // One database for the whole run, so that a module imported by several files
     // is parsed and lowered once (ADR-0007).
@@ -57,9 +60,8 @@ pub fn run(args: CheckArgs, global: &GlobalArgs) -> Result<i32> {
         }
     }
 
-    let mut search_paths = args.module_paths.clone();
-    search_paths.push(bundled_module_dir());
-    let search_paths_input = db.set_module_search_paths(search_paths);
+    let search_paths_input =
+        db.set_module_search_paths(crate::project::module_search_paths(&args.module_paths)?);
 
     // Register every file the user asked about, then pull in the modules they
     // import transitively.

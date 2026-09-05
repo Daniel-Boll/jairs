@@ -22,6 +22,8 @@ fn run(cli: Cli) -> Result<i32> {
         Command::Bench(args) => jr_cli::commands::bench::run(args, &cli.global),
         Command::Build(args) => jr_cli::commands::build::run(args, &cli.global),
         Command::Check(args) => jr_cli::commands::check::run(args, &cli.global),
+        Command::Init(args) => jr_cli::commands::new::run_init(args),
+        Command::New(args) => jr_cli::commands::new::run_new(args),
         Command::Fmt(args) => jr_cli::commands::fmt::run(args, &cli.global),
         Command::Lsp(args) => jr_cli::commands::lsp::run(args, &cli.global),
         Command::Run(args) => jr_cli::commands::run::run(args, &cli.global),

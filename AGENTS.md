@@ -1443,6 +1443,68 @@ worth knowing before doing anything similar:
 grammar revision, and after the rewrite it named a commit that only still resolved through
 `refs/original/`. Re-stamp with `editors/zed/sync-grammar-rev.sh`.
 
+**ADR-0202 reaches 1178** (1184 under gate 7) and **holds at 281** corpus files — a CLI wave, so
+nothing it built is something a `.jr` program can observe. Read it for the two measurements that
+*prevented* work, because both are the shape this file keeps warning about: a plan's stated target
+being wrong.
+
+**Startup had no overhead to recover.** `jr --version` is 8.16 ms and an **empty Rust binary** is
+8.24 ms on the same machine (`/usr/bin/true` is 5.89 ms). **And the link is not ours:** `cc` alone is
+85 ms of the 135 ms link step. Both were measured *before* any optimisation was attempted, which is
+what left the actual target visible: **56 ms of process spawns asking questions nobody needed
+answered** — a `cc --version` probe spawned only to test that `cc` is executable, and a
+`codesign --verify` in a function whose own doc comment said `ld64` had already signed the output.
+`jr build` **170.8 → 114.0 ms**, and the binary *shrank* (6.8 → 6.3 MB) despite gaining a 476 KB
+embedded standard library.
+
+**The rule: measure the floor before optimising towards it.** An empty binary of the same language is
+the cheapest possible control, and it turned "make the CLI faster" from four speculative changes into
+one accounted-for list.
+
+**ADR-0029 §1 specified this wave's manifest four waves before anyone asked for one, in the act of
+rejecting it.** It refused `jairs.toml` as a *prerequisite* and wrote down what a yes would require:
+a manifest "would need a fallback to exactly the rule above, at which point **the rule is doing the
+work and the manifest is an optional override**." That sentence is the whole design — every command
+works with no manifest, a missing file is neither error nor warning, a flag always outranks the file.
+**So a rejected-alternatives paragraph is a specification for the day the answer changes**, and this
+project's ADRs are worth re-reading before proposing the thing they turned down.
+
+**A dead setting was deleted rather than exposed, and that is the interesting half of the fmt work.**
+`jr_fmt::Config::max_width` was declared, defaulted to 100, and **never copied into the `Formatter`**
+— dead from the day it was written. Putting it in a user-facing config file would have made it a
+setting that *appears* to work, which is this project's least favourite failure mode. It is gone, and
+line wrapping is recorded as unimplemented. **Tabs cost one enum and one `match`** by contrast,
+because `indent_str()` was the only site in 3,000 lines that emitted indentation — a good outcome to
+notice, since it is what a single well-placed seam buys.
+
+**`include_str!` does not rebuild when a file is *added*, and the failure is silent.** It registers a
+rustc dependency on a file's **contents**, so editing a module rebuilds; adding or removing one does
+not, and the new module is simply absent from the binary while the compiler reports "module not
+found" on a correct program. `include_dir`'s answer is `proc_macro::tracked_path`, **nightly-only and
+a no-op on stable**, so it does not solve this. The fix is `cargo::rerun-if-changed` on the
+*directory*, in a build script — and it is mandatory here for a second reason: `modules/` sits at the
+workspace root, **outside** `crates/jr-stdlib/`, so Cargo's default package-directory scan misses it
+too. **A generated `include_str!` table also beat `include_dir` on every axis measured** (927,664 vs
+929,200 bytes, `&'static str` with no UTF-8 re-validation, zero dependencies).
+
+**One inconsistency was found by asking where a feature is actually used, not whether it works.**
+`jr fmt` honoured the manifest and `jr lsp` did not — and an editor is where nearly all formatting
+happens, so the setting would have appeared to work only from a terminal. **When a setting has two
+surfaces, wiring one is half a feature**, and the half that ships is usually the one nobody uses.
+
+**The house exhaustiveness rule paid twice more.** Adding `BuildRequest.default_output` made
+`script.rs`'s struct literal a compile error, forcing a decision at a site that had to make one — and
+`None` there is provably right rather than a placeholder, since that site sets `output: Some(..)`
+unconditionally. And a new `IndentStyle` enum rather than a `bool` means a third style is a compile
+error at every site that must choose.
+
+**Two process notes.** `cmd | head -3; echo $?` reported **0** for a command that exited **3** — the
+pipe trap this file already records, hit again inside this very wave while checking that a malformed
+manifest is refused. And a sibling agent's `cargo test -p jr-link` failed for two minutes on a
+`toml.workspace = true` that had not been added to the root manifest yet: **a workspace dependency
+must be registered in the same edit as its first use**, or every concurrent build in the tree breaks
+for reasons that have nothing to do with the crate being built.
+
 ## House style
 
 Enforced by the first four gates, so it is not a matter of taste:

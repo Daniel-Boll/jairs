@@ -4,6 +4,46 @@ Jairs is a Jai-inspired systems language with compile-time execution, explicit
 allocators, and no GC, RAII, or exceptions — compiled by a hand-written,
 error-recovering compiler written in Rust.
 
+## Install
+
+```sh
+cargo install --path crates/jr-cli
+```
+
+That is the whole procedure. The standard library is compiled into the binary, so there is nothing
+to unpack, no environment variable to set, and no `-I` to remember — `jr` works from any directory,
+with the source tree deleted (ADR-0202 §1).
+
+## Start a project
+
+```sh
+jr new hello && cd hello
+jr run                 # Hello from Jairs!
+jr build               # ./hello
+```
+
+`jr new` writes a `jairs.toml`, a `src/main.jr` that compiles on the first try, an inert `build.jr`
+showing the build-script form, and a `.gitignore`. Inside a project, `jr run`, `jr build`,
+`jr check` and `jr fmt` need no arguments, from any subdirectory.
+
+The manifest is an **override, never a requirement** — every command works without one, and an
+explicit flag always outranks the file. An unrecognised key is an error rather than being ignored,
+so a typo is reported instead of silently doing nothing:
+
+```toml
+[project]
+name = "hello"
+# entry = "src/main.jr"        # what a bare `jr build` / `jr run` / `jr check` compiles
+
+[fmt]
+indent_style = "space"         # "space" or "tab"
+indent_width = 4               # spaces per level; not read when indent_style = "tab"
+
+[build]
+# module_paths = ["vendor"]    # extra directories for `#import`. The standard library
+#                              # is built in, so it needs no entry here.
+```
+
 ## Status, honestly
 
 **Pre-alpha.** Jairs source runs in a compile-time VM *and* compiles to a
@@ -14,7 +54,9 @@ compile-time reflection, `#insert`/`#code` metaprogramming, an
 atomics-and-threads memory model, DWARF debug info in both native back ends,
 file-scope mutable state, a 2D graphics stack that draws through OpenGL
 with the same API as Jai's `Simp`, and **build scripts written in the language
-itself**. Every one of those claims has a capability
+itself**. It **installs with one command** and carries its own standard
+library, so `cargo install` is the whole procedure and `#import "Basic"` needs
+no search path. Every one of those claims has a capability
 table behind it, kept honest at the end of every wave — if a table and the code
 disagree, the code is right and the table has a bug.
 
@@ -73,8 +115,8 @@ down, and every call took a state argument the original does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1129** workspace tests, all seven gates green.
-- **281** `.jr` corpus files, **201** accepted ADRs, **24** standard library
+- **1178** workspace tests, all seven gates green.
+- **281** `.jr` corpus files, **202** accepted ADRs, **24** standard library
   modules.
 - macOS arm64 is verified locally, gate by gate. Linux x86-64 has never been
   verified by a human reading a result: `main` was pushed for the first time on

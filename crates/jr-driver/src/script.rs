@@ -536,6 +536,9 @@ impl ScriptState {
                 bounds_checks: target.bounds_checks,
                 backend,
                 output: Some(confined),
+                // A build script has already decided its own name, so there is nothing for a
+                // fallback to answer: `output` above is always `Some`.
+                default_output: None,
                 emit_object: false,
                 kind: match target.output_kind {
                     1 => jr_link::OutputKind::Dynamic,
@@ -648,6 +651,13 @@ const COMPILER_MODULE: &str = "Compiler";
 
 /// Whether `path` is a build script, by whether it imports `modules/Compiler`.
 ///
+/// Takes `text` already read from disk rather than reading `path` itself. Every caller either goes
+/// on to compile `path` (as a script or as an ordinary program) or has already read it for some
+/// other reason, so a `std::fs::read_to_string` inside this function would be a second read of bytes
+/// the caller already has — measured, on a trivial program, as a wholly avoidable parse-and-lower on
+/// top of the one `run_script` or `build` performs anyway. Reading once and handing the text in is
+/// the caller's job now; this function only decides.
+///
 /// Reads the file's **own** import list, which needs one parse and one lowering and **no module
 /// loading at all** — `imports_of` asks for `file_hir` and nothing else. So `jr build` on an ordinary
 /// program pays a parse of one file to learn it is not a script, rather than a second module tree.
@@ -658,11 +668,9 @@ const COMPILER_MODULE: &str = "Compiler";
 /// be the wrong trade.
 ///
 /// # Errors
-/// When the file cannot be read or registered.
-pub fn is_build_script(path: &std::path::Path) -> Result<bool, String> {
+/// When `path` cannot be registered with the database.
+pub fn is_build_script(path: &std::path::Path, text: &str) -> Result<bool, String> {
     let mut db = JairsDatabase::default();
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let key = path.to_string_lossy().into_owned();
     let _ = db.set_file_text(key.clone(), text);
     let root = db

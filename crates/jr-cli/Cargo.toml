@@ -32,6 +32,8 @@ jr-driver.workspace = true
 jr-hir.workspace = true
 jr-syntax.workspace = true
 jr-fmt.workspace = true
+jr-stdlib.workspace = true
+jr-manifest.workspace = true
 jr-lsp.workspace = true
 # `jr bench` builds the `Range` a code-action request carries (ADR-0033 §3).
 lsp-types.workspace = true
@@ -40,6 +42,7 @@ anyhow.workspace = true
 tempfile = "3"
 
 [dev-dependencies]
+toml.workspace = true
 gimli.workspace = true
 object.workspace = true
 serde_json.workspace = true
