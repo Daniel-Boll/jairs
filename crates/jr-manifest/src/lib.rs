@@ -25,9 +25,11 @@
 //! formatter bug, and the user has no way to tell a key that does nothing from a key that is not
 //! read yet. Refusing the file names the mistake at the only moment anyone can act on it.
 //!
-//! That decision is also why this crate exposes no setting the tools do not honour. The
-//! formatter's `max_width` was declared, defaulted and **never read** — dead since it was
-//! written — so it is absent here rather than offered.
+//! That decision is also why this crate exposes no setting the tools do not honour. `max_width`
+//! was absent here for exactly that reason — declared in the formatter, defaulted and **never
+//! read**. It is offered now because line wrapping exists, and its documentation states the
+//! scope rather than implying a guarantee: two constructs are broken, comments are never
+//! reflowed, and a formatted file may still hold a longer line.
 
 use std::path::{Path, PathBuf};
 
@@ -79,6 +81,17 @@ pub struct Fmt {
     /// it looks. Documented here and in the scaffolded manifest, so the interaction is stated
     /// rather than discovered.
     pub indent_width: Option<usize>,
+    /// The column a line should not exceed.
+    ///
+    /// **Read the scope before setting it.** It breaks a call's argument list and a procedure's
+    /// parameter list; it does not reflow comments and does not break a boolean chain, so a
+    /// formatted file may still hold longer lines. [`jr_fmt::Config::max_width`] states exactly
+    /// what is covered and why, with the corpus measurement behind the decision.
+    ///
+    /// This key was **absent** until line wrapping existed. It was declared in the formatter,
+    /// defaulted to 100 and never read, so offering it would have been a setting that appears to
+    /// work — which is the same reason unknown keys are refused here.
+    pub max_width: Option<usize>,
 }
 
 /// What one level of indentation is made of, as spelled in the manifest.
@@ -163,6 +176,9 @@ impl Located {
         }
         if let Some(width) = self.manifest.fmt.indent_width {
             config.indent_width = width;
+        }
+        if let Some(width) = self.manifest.fmt.max_width {
+            config.max_width = width;
         }
         config
     }
@@ -280,6 +296,7 @@ mod tests {
         assert_eq!(l.entry(), Path::new("/proj/src/main.jr"));
         assert_eq!(l.fmt_config().indent_width, 4);
         assert_eq!(l.fmt_config().indent_style, jr_fmt::IndentStyle::Space);
+        assert_eq!(l.fmt_config().max_width, 100);
         assert!(l.module_paths().is_empty());
     }
 
@@ -287,6 +304,14 @@ mod tests {
     fn tabs_are_selectable() {
         let l = located("[fmt]\nindent_style = \"tab\"\n");
         assert_eq!(l.fmt_config().indent_style, jr_fmt::IndentStyle::Tab);
+    }
+
+    #[test]
+    fn max_width_is_read() {
+        let l = located("[fmt]\nmax_width = 60\n");
+        assert_eq!(l.fmt_config().max_width, 60);
+        // Setting one key must not disturb the others.
+        assert_eq!(l.fmt_config().indent_width, 4);
     }
 
     #[test]

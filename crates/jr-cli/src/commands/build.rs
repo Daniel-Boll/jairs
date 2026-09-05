@@ -80,7 +80,7 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
     let text = std::fs::read_to_string(&path)
         .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
     if args.script || jr_driver::is_build_script(&path, &text).map_err(|e| anyhow::anyhow!(e))? {
-        return run_script(&args, &path, &renderer, module_paths);
+        return run_script(&args, &path, &text, &renderer, module_paths);
     }
 
     if !args.script_args.is_empty() {
@@ -148,11 +148,15 @@ fn library_paths(args: &crate::cli::BuildArgs) -> Vec<std::path::PathBuf> {
 fn run_script(
     args: &BuildArgs,
     path: &std::path::Path,
+    source: &str,
     renderer: &jr_diag::Renderer,
     module_paths: Vec<std::path::PathBuf>,
 ) -> Result<i32> {
     let request = ScriptRequest {
         path: path.to_path_buf(),
+        // The text `run` already read for the build-script detection, handed on rather than read
+        // a second time by the driver.
+        source: source.to_owned(),
         module_paths,
         library_paths: library_paths(args),
         arguments: args.script_args.clone(),

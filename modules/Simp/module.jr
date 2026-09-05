@@ -274,7 +274,17 @@ immediate_quad :: (x0: float32, y0: float32, x1: float32, y1: float32, color: Ve
 /// Jai's four-corner overload, whose colour and four uvs all have defaults. Jairs has no overloading and
 /// no defaulted aggregate, so this is a distinct name and every argument is explicit. Corner order is
 /// Jai's: `p0` bottom-left, then anticlockwise.
-immediate_quad_corners :: (p0: Vector2, p1: Vector2, p2: Vector2, p3: Vector2, color: Vector4, uv0: Vector2, uv1: Vector2, uv2: Vector2, uv3: Vector2) {
+immediate_quad_corners :: (
+    p0: Vector2,
+    p1: Vector2,
+    p2: Vector2,
+    p3: Vector2,
+    color: Vector4,
+    uv0: Vector2,
+    uv1: Vector2,
+    uv2: Vector2,
+    uv3: Vector2,
+) {
     // Two triangles, six vertices, no index list — which is what Jai's does: its `Immediate_Vertex`
     // buffer is drawn with `glDrawArrays(GL_TRIANGLES, …)`.
     if vertex_count + 6 > MAX_VERTICES {

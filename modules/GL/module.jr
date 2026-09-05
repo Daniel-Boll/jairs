@@ -302,7 +302,14 @@ upload_array_buffer :: (bytes: s64, data: *u8) {
 /// `normalised = false`: these are real coordinates and real 0..1 colours, not integers to be scaled.
 enable_vertex_attribute :: (index: s64, components: s64, stride: s64, offset: s64) {
     gl_enable_vertex_attrib_array(cast(u32, index));
-    gl_vertex_attrib_pointer(cast(u32, index), cast(s32, components), FLOAT, cast(u8, 0), cast(s32, stride), offset);
+    gl_vertex_attrib_pointer(
+        cast(u32, index),
+        cast(s32, components),
+        FLOAT,
+        cast(u8, 0),
+        cast(s32, stride),
+        offset,
+    );
 }
 
 /// Disables the vertex attribute at `index`.
@@ -377,7 +384,17 @@ upload_texture_rgba :: (width: s64, height: s64, pixels: *u8) {
     // `GLenum`, so the same constant crosses at two widths in one call — which is exactly what a cast is
     // for, and what it could not say while every constant was an `s64` and every argument needed one
     // (ADR-0190 §3).
-    gl_tex_image_2d(TEXTURE_2D, 0, cast(s32, RGBA), cast(s32, width), cast(s32, height), 0, RGBA, UNSIGNED_BYTE, pixels);
+    gl_tex_image_2d(
+        TEXTURE_2D,
+        0,
+        cast(s32, RGBA),
+        cast(s32, width),
+        cast(s32, height),
+        0,
+        RGBA,
+        UNSIGNED_BYTE,
+        pixels,
+    );
     gl_tex_parameter_i(TEXTURE_2D, TEXTURE_MIN_FILTER, LINEAR);
     gl_tex_parameter_i(TEXTURE_2D, TEXTURE_MAG_FILTER, LINEAR);
 }
@@ -547,7 +564,14 @@ gl_disable_vertex_attrib_array :: (index: u32) #foreign gl "glDisableVertexAttri
 /// The last argument is a **byte offset** into the bound buffer, not a pointer, which is why it is an
 /// `s64` here rather than a `*u8`: GL reinterprets an integer as an offset when a buffer is bound, and a
 /// pointer type would invite a caller to pass an address.
-gl_vertex_attrib_pointer :: (index: u32, size: s32, kind: u32, normalised: u8, stride: s32, offset: s64) #foreign gl "glVertexAttribPointer";
+gl_vertex_attrib_pointer :: (
+    index: u32,
+    size: s32,
+    kind: u32,
+    normalised: u8,
+    stride: s32,
+    offset: s64,
+) #foreign gl "glVertexAttribPointer";
 
 /// `glDrawArrays(GLenum, GLint, GLsizei)`.
 gl_draw_arrays :: (mode: u32, first: s32, count: s32) #foreign gl "glDrawArrays";
@@ -571,7 +595,17 @@ gl_active_texture :: (unit: u32) #foreign gl "glActiveTexture";
 gl_bind_texture :: (target: u32, texture: u32) #foreign gl "glBindTexture";
 
 /// `glTexImage2D(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *)`.
-gl_tex_image_2d :: (target: u32, level: s32, internal_format: s32, width: s32, height: s32, border: s32, format: u32, kind: u32, pixels: *u8) #foreign gl "glTexImage2D";
+gl_tex_image_2d :: (
+    target: u32,
+    level: s32,
+    internal_format: s32,
+    width: s32,
+    height: s32,
+    border: s32,
+    format: u32,
+    kind: u32,
+    pixels: *u8,
+) #foreign gl "glTexImage2D";
 
 /// `GL_UNPACK_ALIGNMENT`.
 UNPACK_ALIGNMENT : u32 : 3317;

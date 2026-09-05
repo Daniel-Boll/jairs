@@ -99,7 +99,10 @@ main :: () {
         total = total + 16;
     }
     // `?` is exactly one byte, so it must not match zero and must not match two.
-    if S.wildcard_match("a.c", "?.c") && !S.wildcard_match(".c", "?.c") && !S.wildcard_match("ab.c", "?.c") {
+    if S.wildcard_match("a.c", "?.c") && !S.wildcard_match(".c", "?.c") && !S.wildcard_match(
+        "ab.c",
+        "?.c",
+    ) {
         total = total + 32;
     }
     // A bare `*` matches everything including the empty string; an empty pattern matches only the empty

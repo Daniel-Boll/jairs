@@ -52,7 +52,10 @@ main :: () {
     }
 
     // Windows is the ordinary form under a different name.
-    if Str.equal(GL.gl_library_for(Operating_System.WINDOWS), "gl :: #system_library \"opengl32\";") {
+    if Str.equal(
+        GL.gl_library_for(Operating_System.WINDOWS),
+        "gl :: #system_library \"opengl32\";",
+    ) {
         n = n + 4;
     }
 

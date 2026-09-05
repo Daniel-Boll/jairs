@@ -103,7 +103,12 @@ main :: () {
 
     // And the printed output itself, which is the whole point of the wave.
     print("enum %, view %, array %\n", Colour.BLUE, v, a);
-    print("names % % %\n", type_info(type_of(a)).name, type_info(type_of(v)).name, type_info(**Node).name);
+    print(
+        "names % % %\n",
+        type_info(type_of(a)).name,
+        type_info(type_of(v)).name,
+        type_info(**Node).name,
+    );
 
     // **The gap that remains**, asserted rather than omitted: a field's type is an *id*, so
     // `format_field` compares it against the builtins and prints `..` for anything else — a nested

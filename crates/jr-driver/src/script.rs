@@ -617,6 +617,14 @@ fn spawn(words: &[String]) -> (i64, String) {
 pub struct ScriptRequest {
     /// The script to compile and run.
     pub path: PathBuf,
+    /// The script's source, already read by the caller.
+    ///
+    /// Carried rather than read here because `jr build` has **already** read this file — the
+    /// build-script detection needs its `#import` list, so the driver reading it again was a
+    /// second disk read of a file the caller is holding. Making it a field rather than an
+    /// `Option` means the exhaustive-initialiser rule forces every construction site to supply
+    /// it, so no caller can silently fall back to a read that no longer happens.
+    pub source: String,
     /// `#import` search directories, for the script **and** inherited by every target it builds.
     pub module_paths: Vec<PathBuf>,
     /// `#system_library` search directories, inherited by every target.
@@ -693,10 +701,8 @@ pub fn run_script(request: &ScriptRequest) -> Result<ScriptResult, String> {
     // asked about. Standard, unconditionally, so a script's own speed is not a variable.
     let config = db.set_build_config(true, OptLevel::Standard);
 
-    let text = std::fs::read_to_string(&request.path)
-        .map_err(|e| format!("cannot read {}: {e}", request.path.display()))?;
     let key = request.path.to_string_lossy().into_owned();
-    let _ = db.set_file_text(key.clone(), text);
+    let _ = db.set_file_text(key.clone(), request.source.clone());
     let root = db
         .source_file(&key)
         .ok_or_else(|| format!("internal error: {key} was not registered"))?;

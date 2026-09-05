@@ -18,8 +18,28 @@
 //!
 //! ## Line wrapping
 //!
-//! Line wrapping is **not implemented**. `max_width` is accepted and stored
-//! but is currently advisory only — it is not used to break long lines.
+//! Two constructs are broken when they would overflow [`Config::max_width`]: a call's **argument
+//! list** and a procedure's **parameter list**. One item per line, a trailing comma, the closer
+//! back at the construct's own indentation — a shape verified to parse before it was emitted.
+//!
+//! **Nothing else is broken, and that is a decision rather than a gap.** The scope came from
+//! measuring this corpus rather than from taste: of 25,865 lines, **3472 exceed 100 columns and
+//! 3436 of those are comments**. Only **25 are code** — 11 argument lists, 10 parameter lists,
+//! and 4 boolean chains.
+//!
+//! - **A comment is never reflowed.** It would touch 3436 lines here, and this repository's
+//!   comments carry tables, code samples and deliberate alignment that a reflow destroys.
+//!   `rustfmt` takes the same position: its `wrap_comments` is off by default and still unstable.
+//! - **A boolean chain is not broken.** `a || b || c` is a *nested* left-recursive
+//!   `BINARY_EXPR`, so breaking it needs same-precedence chain flattening plus a "do not
+//!   re-decide" flag threaded through every inner node. Four lines here, the widest 4 columns
+//!   over, against a real risk of non-idempotent output — which would break invariant 2. The
+//!   boundary is asserted by a test rather than left to be rediscovered.
+//! - **A long string literal cannot be broken at all** without changing the program (ADR-0004:
+//!   a `string` is `{data, count}` with no continuation syntax). 11 lines here.
+//!
+//! So a formatted file may still contain lines over the width. That is the setting's stated
+//! scope, not a defect.
 //!
 //! ## Aligned `::` columns
 //!
@@ -60,6 +80,22 @@ pub struct Config {
     /// Number of spaces per indentation level, when [`Config::indent_style`] is
     /// [`IndentStyle::Space`].
     pub indent_width: usize,
+    /// The column a line should not exceed.
+    ///
+    /// **What this covers, exactly.** A call's argument list and a procedure's parameter list are
+    /// broken one item per line when the whole construct would not fit. Nothing else is: a long
+    /// boolean chain is left alone (see the module docs for why), and a **comment is never
+    /// reflowed** — which is also `rustfmt`'s default, and the right call in a repository whose
+    /// comments carry tables and code samples that a reflow would destroy.
+    ///
+    /// So a formatted file may still hold lines longer than this, and that is not a bug. The
+    /// setting is a budget for the constructs named above, not a guarantee about every line.
+    /// Measured against this corpus: 25 code lines in 25,865 exceeded 100 columns, of which 21
+    /// are the two constructs this breaks.
+    ///
+    /// Counted in **characters, not display columns**. A tab counts as one, because a formatter
+    /// cannot know how wide a reader's editor renders it.
+    pub max_width: usize,
 }
 
 impl Default for Config {
@@ -67,6 +103,7 @@ impl Default for Config {
         Self {
             indent_style: IndentStyle::Space,
             indent_width: 4,
+            max_width: 100,
         }
     }
 }
@@ -115,6 +152,8 @@ struct Formatter {
     /// Held as a string rather than a width and a style, so that the formatter's hot path
     /// pushes bytes and never re-decides what an indent is made of.
     indent_unit: String,
+    /// The column a line should not exceed; see [`Config::max_width`] for exactly what it covers.
+    max_width: usize,
 }
 
 impl Formatter {
@@ -126,6 +165,7 @@ impl Formatter {
                 IndentStyle::Space => " ".repeat(config.indent_width),
                 IndentStyle::Tab => "\t".to_owned(),
             },
+            max_width: config.max_width,
         }
     }
 
@@ -164,6 +204,57 @@ impl Formatter {
         for _ in 0..self.indent {
             self.out.push_str(&self.indent_unit);
         }
+    }
+
+    // ---- line-width helpers -----------------------------------------------
+
+    /// The column the next character would be written at, counted in **characters**.
+    ///
+    /// Characters and not bytes, so a line of prose with an em-dash in it is not reported four
+    /// columns wider than it looks. And not display columns either: under
+    /// [`IndentStyle::Tab`] a tab counts as one, because a formatter cannot know how wide a
+    /// reader's editor renders it — stated in [`Config::max_width`] rather than guessed at.
+    fn column(&self) -> usize {
+        let line = match self.out.rfind('\n') {
+            Some(newline) => &self.out[newline + 1..],
+            None => self.out.as_str(),
+        };
+        line.chars().count()
+    }
+
+    /// Renders `body` into a scratch buffer and returns what it wrote, leaving the emitter as it
+    /// was.
+    ///
+    /// This is how a construct is **measured before** it is committed to, which is the whole
+    /// mechanism behind breaking a long line: render flat, ask whether it fits, then either emit
+    /// that text or take the broken path instead.
+    ///
+    /// `out` and `indent` are the only fields a format method mutates, and both are restored —
+    /// `indent` too, because a body that breaks increases it and an abandoned measurement must
+    /// not leak that.
+    ///
+    /// Rendering twice is affordable because it happens once per argument or parameter list, and
+    /// the alternative — a width computed from the CST without rendering — would be a second
+    /// implementation of the emitter that could disagree with it about what a construct looks
+    /// like. That class of duplication is a documented failure mode in this repository.
+    fn measure(&mut self, body: impl FnOnce(&mut Self)) -> String {
+        let saved_out = std::mem::take(&mut self.out);
+        let saved_indent = self.indent;
+        body(self);
+        self.indent = saved_indent;
+        std::mem::replace(&mut self.out, saved_out)
+    }
+
+    /// Whether `text` fits on the current line, with `reserve` characters kept for what will
+    /// follow it there.
+    ///
+    /// `reserve` is what makes a parameter list's decision honest: the `-> T #must {` after it
+    /// lands on the same line, so a budget that ignored it would emit a "fitting" signature that
+    /// overflows anyway.
+    fn fits(&self, text: &str, reserve: usize) -> bool {
+        // A construct that already contains a newline has been broken by something inside it, so
+        // it is not a candidate for the flat form regardless of width.
+        !text.contains('\n') && self.column() + text.chars().count() + reserve <= self.max_width
     }
 
     /// Trim trailing spaces (but not newlines) from the output.
@@ -513,8 +604,31 @@ impl Formatter {
 
     fn format_proc(&mut self, node: &SyntaxNode) {
         if let Some(params) = node.children().find(|n| n.kind() == PARAM_LIST) {
-            self.format_param_list(&params);
+            // **Measure the signature's tail before deciding the parameter list**, because
+            // `-> T #must {` lands on the same line and a budget that ignored it would call a
+            // signature "fitting" and then overflow it. Rendered rather than estimated, so the
+            // reserve is the real width of what follows and cannot drift from what is emitted.
+            let tail = self.measure(|f| {
+                f.format_proc_signature_tail(node);
+                // The body's opening brace, which lands on this line too.
+                f.emit(" {");
+            });
+            // **Only the first line counts.** A `#modify { … }` attribute carries a block, so the
+            // tail can itself contain newlines — and characters past the first one are some other
+            // line's problem, not this budget's.
+            let reserve = tail.split('\n').next().unwrap_or_default().chars().count();
+            self.format_param_list(&params, reserve);
         }
+        self.format_proc_signature_tail(node);
+        self.format_proc_body(node);
+    }
+
+    /// A procedure's return type and attributes — everything after the parameter list that lands
+    /// on the **same line**.
+    ///
+    /// Factored out so [`Self::format_proc`] can render it twice — once to measure, once for
+    /// real — with no chance of the two disagreeing about its width.
+    fn format_proc_signature_tail(&mut self, node: &SyntaxNode) {
         if let Some(ret) = node.children().find(|n| n.kind() == RET_TYPE) {
             self.emit(" -> ");
             // `-> (s64, bool)` (ADR-0052 §1). A `RESULT_LIST` is **not** a type node, so
@@ -599,6 +713,16 @@ impl Formatter {
                 _ => {}
             }
         }
+    }
+
+    /// A procedure's body, or the `#foreign` declaration that stands in for one.
+    ///
+    /// Split from [`Self::format_proc_signature_tail`] because that one is rendered **twice** —
+    /// once to measure the signature's width — and this one emits newlines. Measuring a body
+    /// would put its whole character count into the width budget, which is exactly the defect
+    /// this split fixes: every two-parameter signature in the corpus was being broken, because
+    /// `reserve` had counted the body.
+    fn format_proc_body(&mut self, node: &SyntaxNode) {
         if let Some(body) = node.children().find(|n| n.kind() == BLOCK) {
             self.emit(" ");
             self.format_block(&body);
@@ -611,15 +735,45 @@ impl Formatter {
         }
     }
 
-    fn format_param_list(&mut self, node: &SyntaxNode) {
-        self.emit("(");
+    /// Emits a parameter list, broken one per line if the flat form would overflow.
+    ///
+    /// `reserve` is the width of what the caller will put after the closing paren on the same
+    /// line — `-> T`, any attributes, and the opening brace. Without it the decision is made
+    /// against a shorter line than the one that gets written.
+    fn format_param_list(&mut self, node: &SyntaxNode, reserve: usize) {
         let params: Vec<SyntaxNode> = node.children().filter(|n| n.kind() == PARAM).collect();
-        for (i, param) in params.iter().enumerate() {
-            if i > 0 {
-                self.emit(", ");
+
+        let flat = self.measure(|f| {
+            f.emit("(");
+            for (i, param) in params.iter().enumerate() {
+                if i > 0 {
+                    f.emit(", ");
+                }
+                f.format_param(param);
             }
-            self.format_param(param);
+            f.emit(")");
+        });
+
+        // An empty list has no broken form worth writing — `(\n)` is worse than `()` at any
+        // width, and a list of one is not improved by a line of its own either.
+        if params.len() < 2 || self.fits(&flat, reserve) {
+            self.emit(&flat);
+            return;
         }
+
+        self.emit("(");
+        self.indent += 1;
+        for param in &params {
+            self.newline();
+            self.emit_indent();
+            self.format_param(param);
+            // A trailing comma on the last one too, so adding a parameter is a one-line diff.
+            // Verified to parse before this was emitted, rather than assumed.
+            self.emit(",");
+        }
+        self.indent -= 1;
+        self.newline();
+        self.emit_indent();
         self.emit(")");
     }
 
@@ -1856,8 +2010,13 @@ impl Formatter {
         }
     }
 
+    /// Emits an argument list, broken one per line if the flat form would overflow.
+    ///
+    /// Unlike a parameter list this takes no `reserve`: what follows a call on its line is a `;`,
+    /// a `)` or an operator — one or two characters, where a signature's tail can be twenty. The
+    /// asymmetry is deliberate rather than an omission; budgeting a character here would add a
+    /// parameter to every call site to buy nothing.
     fn format_arg_list(&mut self, node: &SyntaxNode) {
-        self.emit("(");
         // **A `NAMED_ARG` is not an expression kind**, so filtering on `is_expr_kind` alone dropped
         // every named argument silently — `draw(y = 2, x = 1)` became `draw()`, which changes what
         // the program computes. Both kinds are collected and each formatted by its own shape.
@@ -1865,16 +2024,42 @@ impl Formatter {
             .children()
             .filter(|n| is_expr_kind(n.kind()) || n.kind() == NAMED_ARG)
             .collect();
-        for (i, arg) in args.iter().enumerate() {
-            if i > 0 {
-                self.emit(", ");
-            }
+
+        let emit_arg = |f: &mut Self, arg: &SyntaxNode| {
             if arg.kind() == NAMED_ARG {
-                self.format_named_arg(arg);
+                f.format_named_arg(arg);
             } else {
-                self.format_expr(arg);
+                f.format_expr(arg);
             }
+        };
+
+        let flat = self.measure(|f| {
+            f.emit("(");
+            for (i, arg) in args.iter().enumerate() {
+                if i > 0 {
+                    f.emit(", ");
+                }
+                emit_arg(f, arg);
+            }
+            f.emit(")");
+        });
+
+        if args.len() < 2 || self.fits(&flat, 1) {
+            self.emit(&flat);
+            return;
         }
+
+        self.emit("(");
+        self.indent += 1;
+        for arg in &args {
+            self.newline();
+            self.emit_indent();
+            emit_arg(self, arg);
+            self.emit(",");
+        }
+        self.indent -= 1;
+        self.newline();
+        self.emit_indent();
         self.emit(")");
     }
 
@@ -3293,5 +3478,212 @@ mod tests {
         // The parser will reject deeply nested input (depth guard), so we
         // accept either Ok or Err — the important thing is no panic/overflow.
         let _ = result;
+    }
+}
+
+#[cfg(test)]
+mod wrapping {
+    use super::{Config, format};
+    use jr_base::FileId;
+    use jr_syntax::parser::parse;
+
+    fn file() -> FileId {
+        FileId::from_usize(0)
+    }
+
+    fn fmt(src: &str) -> String {
+        format(src, file(), &Config::default()).expect("format failed")
+    }
+
+    fn fmt_at(src: &str, max_width: usize) -> String {
+        let config = Config {
+            max_width,
+            ..Config::default()
+        };
+        format(src, file(), &config).expect("format failed")
+    }
+
+    /// Every line of `text`, with its character width.
+    fn widest(text: &str) -> usize {
+        text.lines().map(|l| l.chars().count()).max().unwrap_or(0)
+    }
+
+    /// A signature that fits is left on one line.
+    #[test]
+    fn a_short_parameter_list_stays_flat() {
+        let out = fmt("add :: (a: s64, b: s64) -> s64 {\n    return a + b;\n}\n");
+        assert!(
+            out.contains("add :: (a: s64, b: s64) -> s64 {"),
+            "got:\n{out}"
+        );
+    }
+
+    /// A signature that does not fit is broken one parameter per line.
+    #[test]
+    fn a_long_parameter_list_breaks() {
+        let src = "wide :: (alpha: s64, bravo: s64, charlie: s64, delta: s64, echo: s64, \
+                   foxtrot: s64, golf: s64) -> s64 {\n    return alpha;\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("wide :: (\n"),
+            "the paren should open the break:\n{out}"
+        );
+        assert!(
+            out.contains("\n    alpha: s64,\n"),
+            "one per line, indented:\n{out}"
+        );
+        assert!(
+            out.contains("\n    golf: s64,\n"),
+            "trailing comma on the last:\n{out}"
+        );
+        assert!(
+            out.contains("\n) -> s64 {"),
+            "closer at the outer indent:\n{out}"
+        );
+    }
+
+    /// A call that does not fit is broken the same way.
+    #[test]
+    fn a_long_argument_list_breaks() {
+        let src = "f :: () {\n    g(111111111, 222222222, 333333333, 444444444, 555555555, \
+                   666666666, 777777777, 888888888, 999999999, 101010101, 111111112);\n}\n";
+        let out = fmt(src);
+        assert!(out.contains("g(\n"), "got:\n{out}");
+        assert!(
+            out.contains("\n        111111111,\n"),
+            "indented inside the body:\n{out}"
+        );
+        assert!(
+            out.contains("\n    );"),
+            "closer at the statement's indent:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_short_argument_list_stays_flat() {
+        let out = fmt("f :: () {\n    g(1, 2);\n}\n");
+        assert!(out.contains("    g(1, 2);"), "got:\n{out}");
+    }
+
+    /// **The property that matters most**: what a break emits must still parse.
+    ///
+    /// A formatter that produced an unparseable file would be worse than one that never wrapped,
+    /// and the trailing comma this emits is exactly the kind of thing a grammar can refuse. It was
+    /// verified against the real compiler before being emitted, and this pins it.
+    #[test]
+    fn a_broken_construct_still_parses() {
+        let src = "wide :: (alpha: s64, bravo: s64, charlie: s64, delta: s64, echo: s64, \
+                   foxtrot: s64, golf: s64) -> s64 {\n    return golf;\n}\n\
+                   main :: () {\n    n := wide(111111111, 222222222, 333333333, 444444444, \
+                   555555555, 666666666, 777777777, 888888888, 999999999, 101010101);\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("wide :: (\n") && out.contains("wide(\n"),
+            "both broke:\n{out}"
+        );
+        let parsed = parse(&out, file());
+        assert!(
+            !parsed.has_errors(),
+            "the formatter's own output must parse, got {:?} for:\n{out}",
+            parsed.diagnostics()
+        );
+    }
+
+    /// Breaking is stable: the broken form formats to itself.
+    #[test]
+    fn breaking_is_idempotent() {
+        let src = "wide :: (alpha: s64, bravo: s64, charlie: s64, delta: s64, echo: s64, \
+                   foxtrot: s64, golf: s64) -> s64 {\n    return alpha;\n}\n";
+        let once = fmt(src);
+        let twice = fmt(&once);
+        assert_eq!(once, twice, "invariant 2 must hold across a break");
+    }
+
+    /// The width is honoured, not hard-coded.
+    #[test]
+    fn the_configured_width_decides() {
+        let src = "add :: (a: s64, b: s64) -> s64 {\n    return a + b;\n}\n";
+        assert!(
+            fmt_at(src, 100).contains("add :: (a: s64, b: s64)"),
+            "fits at 100"
+        );
+        assert!(
+            fmt_at(src, 20).contains("add :: (\n"),
+            "the same signature must break at 20"
+        );
+    }
+
+    /// A single parameter is never given a line of its own.
+    ///
+    /// Breaking one item buys no width — the item is the overflow — and it produces the shape
+    /// nobody writes by hand.
+    #[test]
+    fn a_single_long_parameter_is_not_broken() {
+        let src = "f :: (an_extremely_long_parameter_name_that_goes_on_and_on_and_on_for_ages: \
+                   s64) -> s64 {\n    return 1;\n}\n";
+        let out = fmt(src);
+        assert!(
+            !out.contains("f :: (\n"),
+            "one parameter must stay put:\n{out}"
+        );
+    }
+
+    // ---- asserted boundaries ----------------------------------------------
+    //
+    // These record what wrapping deliberately does **not** do. An absence that is asserted is a
+    // boundary; one merely omitted is something the next reader rediscovers.
+
+    /// A comment over the width is **not** reflowed.
+    ///
+    /// 3436 of this corpus's 3472 over-width lines are comments, and they carry tables, code
+    /// samples and deliberate alignment. `rustfmt` takes the same position by default.
+    #[test]
+    fn a_long_comment_is_left_alone() {
+        let comment = "// ".to_owned() + &"word ".repeat(40);
+        let src = format!("{comment}\nf :: () {{\n    return;\n}}\n");
+        let out = fmt(&src);
+        assert!(
+            out.contains(comment.trim_end()),
+            "the comment must survive verbatim:\n{out}"
+        );
+        assert!(
+            widest(&out) > 100,
+            "and it is still over the width, by design"
+        );
+    }
+
+    /// A long boolean chain is **not** broken.
+    ///
+    /// `a || b || c` is a nested left-recursive `BINARY_EXPR`, so breaking it needs
+    /// same-precedence chain flattening plus a "do not re-decide" flag threaded through every
+    /// inner node — against 4 corpus lines, the widest 4 columns over. If that is ever built,
+    /// invert this test rather than deleting it.
+    #[test]
+    fn a_long_boolean_chain_is_left_alone() {
+        let src = "f :: (aaaaaaaaaaaaaaaa: bool, bbbbbbbbbbbbbbbb: bool) -> bool {\n    \
+                   return aaaaaaaaaaaaaaaa || bbbbbbbbbbbbbbbb || aaaaaaaaaaaaaaaa || \
+                   bbbbbbbbbbbbbbbb || aaaaaaaaaaaaaaaa || bbbbbbbbbbbbbbbb;\n}\n";
+        let out = fmt(src);
+        let chain = out
+            .lines()
+            .find(|l| l.contains("||"))
+            .expect("the chain survives on one line");
+        assert!(
+            chain.chars().count() > 100,
+            "the chain is left over the width, by design: {} cols",
+            chain.chars().count()
+        );
+    }
+
+    /// A long string literal is **not** broken.
+    ///
+    /// A Jairs `string` is `{data, count}` with no continuation syntax (ADR-0004), so a break here
+    /// would change the program rather than its formatting.
+    #[test]
+    fn a_long_string_literal_is_left_alone() {
+        let literal = format!("\"{}\"", "x".repeat(120));
+        let src = format!("f :: () {{\n    s := {literal};\n}}\n");
+        let out = fmt(&src);
+        assert!(out.contains(&literal), "the literal must be intact:\n{out}");
     }
 }

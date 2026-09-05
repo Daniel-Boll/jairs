@@ -219,7 +219,13 @@ load_bmp :: (path: *u8) -> (Surface, bool) #must {
 /// nothing binary lives in the repository. A caller building an image procedurally wants it too.
 create_surface :: (width: s64, height: s64) -> (Surface, bool) #must {
     s: Surface;
-    s.handle = sdl_create_surface(0, cast(s32, width), cast(s32, height), 32, cast(u32, GL_UPLOAD_FORMAT));
+    s.handle = sdl_create_surface(
+        0,
+        cast(s32, width),
+        cast(s32, height),
+        32,
+        cast(u32, GL_UPLOAD_FORMAT),
+    );
     return s, s.handle != null;
 }
 
@@ -427,7 +433,13 @@ sdl_load_bmp_rw :: (source: *u8, free_source: s32) -> *Surface_Data #foreign sdl
 sdl_save_bmp_rw :: (surface: *Surface_Data, destination: *u8, free_destination: s32) -> s32 #foreign sdl "SDL_SaveBMP_RW";
 
 /// `SDL_CreateRGBSurfaceWithFormat(Uint32 flags, int w, int h, int depth, Uint32 format)`.
-sdl_create_surface :: (flags: u32, width: s32, height: s32, depth: s32, format: u32) -> *Surface_Data #foreign sdl "SDL_CreateRGBSurfaceWithFormat";
+sdl_create_surface :: (
+    flags: u32,
+    width: s32,
+    height: s32,
+    depth: s32,
+    format: u32,
+) -> *Surface_Data #foreign sdl "SDL_CreateRGBSurfaceWithFormat";
 
 /// `SDL_FreeSurface`.
 sdl_free_surface :: (surface: *Surface_Data) #foreign sdl "SDL_FreeSurface";
