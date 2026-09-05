@@ -1,0 +1,167 @@
+// **The last of `modules/String`'s Jai surface** (ADR-0198 §1) — C strings, glob matching, a float parse,
+// and the case-insensitive *search* pair.
+//
+// # Why this file exists separately from `147-string-surface.jr`
+//
+// That file covered the algorithms an inventory of Jai's `modules/String` found missing. Re-running the
+// inventory against the result found four more, and they are a different *kind* of gap rather than more of
+// the same one:
+//
+//   * `c_style_strlen` and `to_string` are the FFI boundary. Every `#foreign` call returning `*u8` returns a
+//     C string, and a Jairs `string` is `{data, count}` with no NUL (ADR-0004), so nothing could turn one
+//     into the other without counting bytes by hand at every call site.
+//   * `wildcard_match` is what a build script uses to select files.
+//   * `string_to_float` is `to_integer`'s missing sibling.
+//   * `find_nocase` and `contains_nocase` closed a real **asymmetry**: `equal_nocase`, `compare_nocase`,
+//     `starts_with_nocase` and `ends_with_nocase` all existed while the two *search* routines did not, so a
+//     case-insensitive match meant lowering a copy of the whole haystack first.
+//
+// # The checksum
+//
+// Every answer is scaled by a distinct multiplier and summed, so the exit code is **ordered**: a plain sum
+// cannot tell a swapped pair from a correct one. The total is taken modulo 251 — a prime under 256, so no
+// two of the sixteen groups can cancel and the wrap cannot coincide with a passing value by construction.
+//
+// A `float` answer is folded as an **integer comparison against an expected value**, never as the float
+// itself: comparing a parsed `float64` for equality is exactly the thing this file must not depend on, and
+// what matters is that both engines agree the parse was right.
+
+#import "Basic";
+S :: #import "String";
+
+libc_alloc :: (n: s64) -> *u8 {
+    return malloc(n);
+}
+
+libc_free :: (p: *u8) {
+    free(p);
+}
+
+main :: () {
+    context.allocator = libc_alloc;
+    context.allocator_free = libc_free;
+
+    total := 0;
+
+    // ---- C strings ------------------------------------------------------------------------------------
+    //
+    // Built here rather than taken from libc, so the length is known independently of the routine under
+    // test. A NUL is written at index 3 and a further byte after it: `c_style_strlen` must stop at the NUL
+    // and not at the end of the buffer.
+    buf := context.allocator(5);
+    bytes := view(buf, 5);
+    bytes[0] = cast(u8, 97);
+    bytes[1] = cast(u8, 98);
+    bytes[2] = cast(u8, 99);
+    bytes[3] = cast(u8, 0);
+    bytes[4] = cast(u8, 100);
+
+    if S.c_style_strlen(buf) == 3 {
+        total = total + 1;
+    }
+    // A null pointer answers 0 rather than trapping, which is what makes the routine usable directly on a
+    // `getenv` result.
+    //
+    // The null is **bound to a typed local** rather than written inline. A bare `null` in an argument
+    // position takes its type from the callee's signature, and `jr-sema`'s corpus harness deliberately
+    // loads no modules — so the imported signature is unknown there and the bare form is E0257, "`null`
+    // needs a pointer type from its context". Tolerating that code in the harness was the alternative and
+    // is worse: it would also stop the harness catching a genuinely untyped `null` in a same-file call.
+    nothing: *u8 = null;
+    if S.c_style_strlen(nothing) == 0 {
+        total = total + 2;
+    }
+    borrowed := S.to_string(buf);
+    if borrowed.count == 3 && S.equal(borrowed, "abc") {
+        total = total + 4;
+    }
+    // **It borrows.** The result's `data` is the buffer itself, not a copy — asserted, because a version
+    // that copied would pass every other check here and leak on every call.
+    if borrowed.data == buf {
+        total = total + 8;
+    }
+    context.allocator_free(buf);
+
+    // **A real C string from libc is deliberately not tested here** (ADR-0198 §3). `getenv` returns a
+    // pointer into the *host's* environment, and a Jairs pointer is an offset into the VM's own region
+    // (ADR-0061) — so `jr run` traps reading it while a native binary reads it fine. A program whose two
+    // engines legitimately differ has no home in `tests/corpus/valid/`, whose whole premise is that they
+    // agree, which is the call ADR-0158 made for `modules/Process`. That assertion lives in a native-only
+    // `jr-cli` integration test instead.
+    //
+    // Getting there took two wrong answers worth recording: the first version passed `"PATH".data` straight
+    // to `getenv` and got null in **both** engines, because a literal has no NUL — which is what
+    // `to_c_string` exists for, and which the differential harness could never have caught.
+
+    // ---- glob matching --------------------------------------------------------------------------------
+
+    if S.wildcard_match("main.jr", "*.jr") && !S.wildcard_match("main.c", "*.jr") {
+        total = total + 16;
+    }
+    // `?` is exactly one byte, so it must not match zero and must not match two.
+    if S.wildcard_match("a.c", "?.c") && !S.wildcard_match(".c", "?.c") && !S.wildcard_match("ab.c", "?.c") {
+        total = total + 32;
+    }
+    // A bare `*` matches everything including the empty string; an empty pattern matches only the empty
+    // string. These are the two edges a hand-written matcher gets wrong.
+    if S.wildcard_match("", "*") && S.wildcard_match("anything", "*") && S.wildcard_match("", "") {
+        total = total + 64;
+    }
+    if !S.wildcard_match("x", "") {
+        total = total + 128;
+    }
+    // Several `*`s, and the backtracking case: the first `*` must give ground so a later literal can match.
+    if S.wildcard_match("src/main.jr", "*/*.jr") && S.wildcard_match("aXbXc", "a*b*c") {
+        total = total + 256;
+    }
+    // The pathological input for a recursive matcher. It answers `false`, and the point is that it answers
+    // at all rather than taking exponential time.
+    if !S.wildcard_match("aaaaaaaaaaaaaaaaaaaaaaaa", "*a*a*a*a*a*b") {
+        total = total + 512;
+    }
+
+    // ---- float parsing --------------------------------------------------------------------------------
+    //
+    // Folded as integers throughout. `value * 100` compared against an exact integer says the parse landed
+    // on the right number without this file ever comparing two floats.
+    v1, ok1, rest1 := S.string_to_float("3.25rest");
+    if ok1 && cast(s64, v1 * 100.0) == 325 && S.equal(rest1, "rest") {
+        total = total + 1024;
+    }
+    v2, ok2, _ := S.string_to_float("-0.5");
+    if ok2 && cast(s64, v2 * 100.0) == -50 {
+        total = total + 2048;
+    }
+    // An exponent, and the reason the extent is computed here rather than left to `strtod`.
+    v3, ok3, _ := S.string_to_float("1.5e2");
+    if ok3 && cast(s64, v3) == 150 {
+        total = total + 4096;
+    }
+    // An **incomplete** exponent is not part of the number: `"1e"` is the number 1 followed by an `e`.
+    v4, ok4, rest4 := S.string_to_float("1e");
+    if ok4 && cast(s64, v4) == 1 && S.equal(rest4, "e") {
+        total = total + 8192;
+    }
+    // Nothing readable: no digits at all, and a lone `.`. Both must report failure and leave `s` whole,
+    // rather than reporting success with 0.
+    _, ok5, rest5 := S.string_to_float("abc");
+    _, ok6, _ := S.string_to_float(".");
+    if !ok5 && !ok6 && S.equal(rest5, "abc") {
+        total = total + 16384;
+    }
+
+    // ---- case-insensitive search ----------------------------------------------------------------------
+
+    if S.find_nocase("Hello World", "WORLD") == 6 && S.find_nocase("Hello", "xyz") == -1 {
+        total = total + 32768;
+    }
+    if S.contains_nocase("README.MD", "readme") && !S.contains_nocase("readme", "README.MD") {
+        total = total + 65536;
+    }
+
+    // All 17 groups is 131071, and 131071 = 522 * 251 + 49.
+    if total != 131071 {
+        exit(1);
+    }
+    exit(49);
+}

@@ -97,7 +97,7 @@
 #h(4pt)
 #pill[1082 tests]
 #h(4pt)
-#pill[ADR-0197 latest]
+#pill[ADR-0198 latest]
 #h(4pt)
 #pill(fill: rgb("#eaf5ee"), stroke: good)[ALL TWELVE WAVES DONE]
 #h(4pt)
@@ -109,9 +109,9 @@
 #grid(
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   gutter: 8pt,
-  metric("Tests", "1103", "workspace, all seven gates"),
-  metric("Corpus", "280", "jr files, all three engines"),
-  metric("ADRs", "197", "0001 to 0197, immutable"),
+  metric("Tests", "1109", "workspace, all seven gates"),
+  metric("Corpus", "281", "jr files, all three engines"),
+  metric("ADRs", "198", "0001 to 0198, immutable"),
   metric("Diagnostics", "131", "declared codes, E0296 next"),
   metric("Editor checks", "170", "Neovim, verified not gated"),
 )
@@ -498,6 +498,25 @@
       (a static archive with a `main` fails a C link), and `\#program_export` was wired correctly
       everywhere while the symbol stayed *absent from the archive*, because reachability walks from
       `main` and a library has none — an export must be a *reachability root*.
+    ]
+
+    #v(0.3em)
+    #text(size: 7.4pt)[
+      *Re-running that inventory against its own result found four more gaps, and one of them is a lesson.*
+      ADR-0198. The corpus program handed `"PATH".data` to `getenv` and got null — in *both* engines, because
+      a string literal has no NUL — so the differential harness could never have caught it, and only running
+      the program did. `to_c_string` exists because of that; with `to_string` and `c_style_strlen` it is the
+      whole FFI boundary, one direction borrowing and the other unable to.
+    ]
+
+    #v(0.3em)
+    #text(size: 7.4pt)[
+      *Writing the float scanner found a latent SSA defect — the fourth surfaced by a library rather than by
+      a compiler test.* `try_remove_trivial_phi` cascades, and returned a replacement its own cascade could
+      remove, so a `goto` carried a parameter that no longer existed. The first fix was *wrong*: reserving
+      placeholder arguments made an unfinished parameter look finished to the code whose job is asking
+      whether it is finished. And two of ADR-0197's five refusals were withdrawn — `BuildCpp` and a custom
+      link command *compose*, verified by running the artefacts.
     ]
 
     #v(0.3em)

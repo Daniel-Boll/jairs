@@ -484,9 +484,18 @@ shell :: (program: string, args: []string) -> s64 #must {
 // `CLOCK_MONOTONIC` and ADR-0157 for `O_CREAT`. Meanwhile a script can shell out to `rescle` or `mt.exe`
 // with [`command`], which is what the feature would do anyway.
 //
-// **A C bindings generator** — `Bindings_Generator`, `BuildCpp`. Absent because it is a C header parser,
-// which is a project of its own and not a build-script feature: Jai's is a separate module that a build
-// script *calls*, and the same would be true here. A script can shell out to one today.
+// **A C bindings generator** — `Bindings_Generator`. Absent because it is a C header parser, which is a
+// project of its own and not a build-script feature: Jai's is a separate module that a build script *calls*,
+// and the same would be true here. A script can shell out to one today.
+//
+// **`BuildCpp` was in this list and should not have been** (ADR-0198 §4). It is not a refusal and not a gap:
+// a script compiles the C half with [`command`] and links it in through `Build_Options.library_paths`, which
+// `crates/jr-cli/tests/integration.rs`'s `a_script_compiles_c_and_links_it_in` does end to end — the linked
+// binary exits 42, so the C function really ran. A custom link command was in the same list for the same
+// wrong reason: `Output_Kind.OBJECT` stops after codegen and the script runs its own `cc`.
+//
+// Worth keeping as a note rather than a silent edit, because describing a **composition** as a missing
+// feature is the specific mistake ADR-0197 warned about two sections before making it.
 
 /// Which operating system the build is running on.
 os :: () -> Operating_System {

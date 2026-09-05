@@ -575,35 +575,39 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0197 answered "is this actually capable of the same work as a real `build.jai`?" by measuring it
-> against 23 of them.** It was not, and the gaps were specific rather than diffuse:
-> `Build_Options.output_type` is set by **13 of 23** scripts, and this compiler could not build a library at
-> all. That is the single most-used option in the corpus.
+> **ADR-0198 re-ran ADR-0197's own inventory against its result, and the most useful thing it found was
+> *why* one gap existed.** The corpus program passed `"PATH".data` to `getenv` and got null — in **both**
+> engines, because a string literal's bytes are not followed by a NUL (ADR-0004). Both engines agreeing is
+> the part to keep: the differential harness compares them, so a bug that makes both read past the same
+> string is invisible to it. Only running the program found it. `to_c_string` exists because of that.
 >
-> **Closed:** libraries in both kinds (`--output-kind static-library|dynamic-library`, verified by linking
-> C against each and calling in), `#program_export` for a C-visible symbol, `additional_linker_arguments`,
-> `emit_object`, `add_build_string`, `set_working_directory`, `provide_import`, and host-mediated
-> `read_file`/`write_file` in a `#run`. `modules/String` grew the algorithm surface it was missing —
-> starting with `trim`, which was absent entirely.
+> **Closed in `modules/String`:** `c_style_strlen`, `to_string`, `to_c_string` (the FFI boundary — one
+> direction borrows, the other cannot), `wildcard_match`, `string_to_float`, `find_nocase`,
+> `contains_nocase`.
 >
-> **Two findings to carry.** A `bool` was the wrong shape for the entry point and a *test* found it: an
-> executable requires a `main`, a library must have none (a static archive with one fails a C link with
-> `duplicate symbol '_main'`), an object works either way. And `#program_export` was wired correctly
-> everywhere and the symbol was **still missing from the archive**, because reachability walks from `main`
-> and a library has none — **an export must be a reachability root**.
+> **A latent SSA defect came out of writing the float scanner** — the fourth in this project found by
+> writing a library rather than by a compiler test. `try_remove_trivial_phi` **cascades**, and it returned
+> the replacement it had chosen *before* the cascade ran, so a `goto` could carry a parameter that no longer
+> existed. The trigger is entirely ordinary: a local before an `if`, a `while` whose condition
+> short-circuits, another `if` after the loop, an assignment to the outer local. **The first fix was wrong**
+> — reserving placeholder arguments made an unfinished parameter look finished to the code whose job is
+> asking whether it is finished.
 >
-> **Two renames, both forced by the flat namespace and both landing on Jai's own names**: `String.to_upper`
-> → `to_upper_copy` and `File_Utilities.join` → `path_join`. `Basic` gained a `u8` `to_upper` and `String`
-> a `[]string` `join`, so two corpus programs got E0211 on every use. The lesson is in AGENTS.md: when a
-> flat-namespace collision needs a rename, check what the language you are following calls both halves.
+> **ADR-0198 §4 withdraws two of ADR-0197 §5's five refusals.** `BuildCpp` and a custom link command are
+> **compositions**: a script compiles C with `Compiler.command` and links via `library_paths`, or asks for
+> `Output_Kind.OBJECT` and runs its own `cc`. Both pinned by tests that run the artefacts (42 and 7).
 >
-> **Owed, with reasons in `modules/Compiler`:** icons, manifests, `Bindings_Generator`, `BuildCpp`. A script
-> can shell out to any of them today, so none blocks anything. The **message loop stays refused**, not
-> missing — ADR-0153's reasoning is unchanged, and it is a property of a memoised query engine rather than a
-> missing feature.
+> **Still owed, with reasons in `modules/Compiler`:** icons and manifests (platform resource formats) and
+> `Bindings_Generator` (a C parser). The message loop stays **refused** (ADR-0153).
 >
-> **1103 workspace tests (1109 under gate 7), 280 corpus files, 197 ADRs, all seven gates green. E0296 is still the first free
-> diagnostic code** — every refusal in that wave is a library note or an existing code.
+> **Read `integration.rs`'s `Artefact` doc before adding a build-script test.** Nothing in that file may
+> change the process CWD — the tests share one process and run in parallel — and two new tests called
+> `Compiler.set_working_directory` anyway, making an unrelated test fail intermittently while passing in
+> isolation. That option is now tested in a subprocess.
+>
+> **1109 workspace tests (1115 under gate 7), 281 corpus files, 198 ADRs, all seven gates green. E0296 is
+> still the first free diagnostic code.**
+
 
 > [!IMPORTANT]
 > **Five language utilities the plan had owed, in five waves** — ADR-0190 to ADR-0194. Typed constants

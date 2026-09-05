@@ -105,6 +105,16 @@ pub(crate) struct SsaBuilder {
     phis: FxHashMap<ValueId, PhiOrigin>,
     /// Reads that reached the entry without finding a definition.
     undefined: Vec<UndefinedRead>,
+    /// What each collapsed parameter was replaced by (ADR-0198 §2).
+    ///
+    /// Kept because `try_remove_trivial_phi` **cascades**: collapsing one parameter can make another
+    /// trivial, and the second collapse can remove the very value the first chose as its replacement.
+    /// Every operand this builder is about to hand back or write into the MIR is resolved through
+    /// here first, so a caller can never receive a value that has since ceased to exist.
+    ///
+    /// Flat rather than a chain: `replace_uses` rewrites existing entries as it goes, so one lookup
+    /// is always enough and there is no cycle to walk.
+    replaced: FxHashMap<ValueId, Operand>,
 }
 
 impl SsaBuilder {
@@ -151,7 +161,10 @@ impl SsaBuilder {
         span: MirSpan,
     ) -> Operand {
         if let Some(value) = self.current.get(&(block, local)) {
-            return *value;
+            // Resolved rather than returned raw: `replace_uses` keeps this memo current, but a
+            // collapse that happened while *this* entry was being computed can still leave it one
+            // step behind (ADR-0198 §2).
+            return self.resolve(*value);
         }
         self.read_variable_recursive(mir, block, local, ty, span)
     }
@@ -263,12 +276,24 @@ impl SsaBuilder {
         // parameters in a predecessor and append arguments to *its* incoming edges.
         // Target positions are stable under argument appends, so the indices
         // collected above stay correct.
+        //
+        // **And every value is resolved again on the way out** (ADR-0198 §2). A read can *remove* a
+        // parameter it decided was trivial, and `try_remove_trivial_phi` repairs uses by rewriting
+        // the MIR and this struct's memo — neither of which reaches an operand parked in this local
+        // `Vec`. Without the resolve, an operand read early and invalidated by a later read is
+        // written into the MIR as a reference to a value nothing defines. That was the defect:
+        // `goto bb13(v13)` where `v13` had been collapsed two reads afterwards.
+        //
+        // Filling the slots eagerly instead — reserving a placeholder so `replace_uses` could see
+        // them — was tried and is **wrong**: `try_remove_trivial_phi` deliberately bails out when an
+        // edge has not supplied its argument yet, and a placeholder makes an unfinished parameter
+        // look finished, so it collapses against operands that are not the real ones.
         let mut values = Vec::with_capacity(edges.len());
         for edge in &edges {
             values.push(self.read_variable(mir, edge.from, local, ty, span));
         }
         for (edge, value) in edges.iter().zip(values) {
-            push_argument(mir, *edge, value);
+            push_argument(mir, *edge, self.resolve(value));
         }
     }
 
@@ -328,13 +353,37 @@ impl SsaBuilder {
             }
         }
 
-        replacement
+        // **Resolved after the cascade, not before** (ADR-0198 §2). `replacement` was chosen from
+        // this parameter's operands, and one of the collapses just above can have removed it — so
+        // returning it unresolved hands the caller a value nothing defines. That was the defect:
+        // a `goto` carried the *intermediate* parameter of a loop header whose own collapse had
+        // already replaced it with a constant.
+        self.resolve(replacement)
+    }
+
+    /// Follows a collapsed parameter to what replaced it.
+    ///
+    /// The identity for anything this builder did not collapse, which is every constant and every
+    /// ordinary value, so callers apply it unconditionally rather than asking first.
+    fn resolve(&self, operand: Operand) -> Operand {
+        match operand {
+            Operand::Value(value) => self.replaced.get(&value).copied().unwrap_or(operand),
+            Operand::Constant(_) => operand,
+        }
     }
 
     /// Rewrites every use of `param` to `replacement`, including inside this
     /// builder's own memo of current variable values.
     fn replace_uses(&mut self, mir: &mut MirBody, param: ValueId, replacement: Operand) {
         let old = Operand::Value(param);
+        // Recorded before anything else, and existing entries rewritten, so the map stays flat: an
+        // earlier collapse that chose `param` now points at whatever replaced it (ADR-0198 §2).
+        for value in self.replaced.values_mut() {
+            if *value == old {
+                *value = replacement;
+            }
+        }
+        self.replaced.insert(param, replacement);
         for value in self.current.values_mut() {
             if *value == old {
                 *value = replacement;
