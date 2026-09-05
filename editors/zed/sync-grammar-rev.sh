@@ -29,7 +29,7 @@ if ! git -C "$repo" diff --quiet -- tree-sitter-jairs; then
 fi
 
 # `-i ''` is the BSD spelling; this repository is developed on macOS.
-sed -i '' -E "s/^commit = \"[0-9a-f]{40}\"$/commit = \"$rev\"/" "$manifest"
+sed -i '' -E "s/^rev = \"[0-9a-f]{40}\"$/rev = \"$rev\"/" "$manifest"
 
 echo "sync-grammar-rev.sh: grammar revision is now $rev"
 echo "  Re-install the dev extension in Zed to rebuild the parser."

@@ -10,7 +10,10 @@ repository = "https://github.com/dboll/jairs"
 # `src/jairs.rs` supplies the command, because Zed requires Rust for a language server.
 [language_servers.jairs]
 name = "Jairs"
-language = "Jairs"
+# `languages`, not the singular `language`: Zed's manifest marks that one
+# "Deprecated in favor of `languages`" (read from `extension_manifest.rs`), and it still accepts both
+# only because it has not finished removing it.
+languages = ["Jairs"]
 
 # **Zed builds a grammar by cloning this repository and running `clang` over `src/parser.c`.**
 # It never runs `tree-sitter generate` (verified in Zed's `extension_builder.rs`), which is why
@@ -19,12 +22,13 @@ language = "Jairs"
 # `path` points at the grammar inside this repository rather than a repository of its own, so the
 # grammar and the compiler that must agree with it cannot drift apart.
 #
-# `commit` must be a revision the clone can fetch. `./sync-grammar-rev.sh` stamps the current
-# `HEAD`; run it after any `grammar.js` change, and re-install the dev extension. When this
+# `rev` must be a revision the clone can fetch — `commit` is only a serde alias for it.
+# `./sync-grammar-rev.sh` stamps the current `HEAD`; run it after any `grammar.js` change, then
+# re-install the dev extension so the parser is rebuilt. When this
 # repository is published, replace `repository` with the `https://` URL — the `file://` form is
 # Zed's documented spelling for a grammar on the local filesystem, and it is the honest one while
 # the only copy of this grammar is the one on this machine.
 [grammars.jairs]
 repository = "file:///Users/dboll/dev/p/jairs"
 path = "tree-sitter-jairs"
-commit = "88a7e4963f72e77d97ef6d094ede5e27c2032810"
+rev = "275742bb2523c554d78368a3bf9daee737ce4275"
