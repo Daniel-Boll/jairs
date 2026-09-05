@@ -82,7 +82,20 @@ import tomllib
 print(tomllib.load(open('$here/extension.toml','rb'))['grammars']['jairs']['rev'])
 ")"
 
-check "the pinned revision exists" git -C "$repo" cat-file -e "$rev^{commit}"
+# **Reachable from a branch**, not merely present as an object. A history rewrite leaves the old
+# commits alive under `refs/original/` until the next `gc`, so `cat-file -e` answers yes for a
+# revision that is about to disappear — this script passed on exactly that after ADR-0201's rewrite,
+# which is a false green in the check whose whole job is to say the pin is good.
+reachable_rev() {
+  git -C "$repo" cat-file -e "$rev^{commit}" &&
+    git -C "$repo" for-each-ref --format='%(refname)' refs/heads |
+    while read -r branch; do
+      git -C "$repo" merge-base --is-ancestor "$rev" "$branch" && exit 0
+    done
+  # `exit 0` above leaves the pipeline; reaching here means no branch contains it.
+  return 1
+}
+check "the pinned revision is reachable from a branch" reachable_rev
 
 # Exactly what Zed does: `git fetch --depth 1 origin <rev>` then `git checkout <rev>`.
 clone_grammar() {
