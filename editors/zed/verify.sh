@@ -87,12 +87,17 @@ print(tomllib.load(open('$here/extension.toml','rb'))['grammars']['jairs']['rev'
 # revision that is about to disappear — this script passed on exactly that after ADR-0201's rewrite,
 # which is a false green in the check whose whole job is to say the pin is good.
 reachable_rev() {
-  git -C "$repo" cat-file -e "$rev^{commit}" &&
-    git -C "$repo" for-each-ref --format='%(refname)' refs/heads |
-    while read -r branch; do
-      git -C "$repo" merge-base --is-ancestor "$rev" "$branch" && exit 0
-    done
-  # `exit 0` above leaves the pipeline; reaching here means no branch contains it.
+  git -C "$repo" cat-file -e "$rev^{commit}" || return 1
+  # A `for` over command substitution, **not** a piped `while`: a `while` on the right of a pipe runs
+  # in a subshell, so its `exit 0` leaves only that subshell and the `return 1` after the pipeline
+  # always won. The first version of this function did exactly that and reported a revision on `main`
+  # as unreachable.
+  local branch
+  for branch in $(git -C "$repo" for-each-ref --format='%(refname)' refs/heads); do
+    if git -C "$repo" merge-base --is-ancestor "$rev" "$branch"; then
+      return 0
+    fi
+  done
   return 1
 }
 check "the pinned revision is reachable from a branch" reachable_rev
