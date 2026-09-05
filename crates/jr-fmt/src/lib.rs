@@ -34,23 +34,38 @@ use jr_syntax::{SyntaxElement, SyntaxKind, SyntaxKind::*, SyntaxNode, SyntaxToke
 // Public API
 // ---------------------------------------------------------------------------
 
+/// What one level of indentation is made of.
+///
+/// A named enum rather than a `bool`, so that a call site reads `IndentStyle::Tab` instead of
+/// `true` — and so that adding a third style is a compile error at every site that must decide,
+/// which is this project's house rule for exactly this reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IndentStyle {
+    /// [`Config::indent_width`] spaces per level.
+    #[default]
+    Space,
+    /// One tab per level, whatever width the reader's editor renders it at.
+    ///
+    /// [`Config::indent_width`] is **not** read in this mode: a formatter emitting a tab does
+    /// not choose how wide it looks, so honouring a width here would be a setting that appears
+    /// to do something and does not.
+    Tab,
+}
+
 /// Formatting configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Maximum line width (advisory; line wrapping is not yet implemented).
-    ///
-    /// The value is stored and will be honoured in a future wave. For now
-    /// the formatter emits lines without breaking them regardless of this
-    /// setting.
-    pub max_width: usize,
-    /// Number of spaces per indentation level.
+    /// What one level of indentation is made of.
+    pub indent_style: IndentStyle,
+    /// Number of spaces per indentation level, when [`Config::indent_style`] is
+    /// [`IndentStyle::Space`].
     pub indent_width: usize,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            max_width: 100,
+            indent_style: IndentStyle::Space,
             indent_width: 4,
         }
     }
@@ -93,10 +108,13 @@ pub fn format_default(text: &str, file: FileId) -> Result<String, Diagnostics> {
 struct Formatter {
     /// Output buffer.
     out: String,
-    /// Current indentation level (number of levels, not spaces).
+    /// Current indentation level (number of levels, not characters).
     indent: usize,
-    /// Spaces per indent level.
-    indent_width: usize,
+    /// The text of exactly one indentation level, resolved from the config once.
+    ///
+    /// Held as a string rather than a width and a style, so that the formatter's hot path
+    /// pushes bytes and never re-decides what an indent is made of.
+    indent_unit: String,
 }
 
 impl Formatter {
@@ -104,7 +122,10 @@ impl Formatter {
         Self {
             out: String::new(),
             indent: 0,
-            indent_width: config.indent_width,
+            indent_unit: match config.indent_style {
+                IndentStyle::Space => " ".repeat(config.indent_width),
+                IndentStyle::Tab => "\t".to_owned(),
+            },
         }
     }
 
@@ -126,10 +147,6 @@ impl Formatter {
 
     // ---- output helpers ---------------------------------------------------
 
-    fn indent_str(&self) -> String {
-        " ".repeat(self.indent * self.indent_width)
-    }
-
     fn emit(&mut self, s: &str) {
         self.out.push_str(s);
     }
@@ -138,9 +155,15 @@ impl Formatter {
         self.out.push('\n');
     }
 
+    /// Writes the current indentation.
+    ///
+    /// Pushes the unit `indent` times rather than building a string and pushing that: this runs
+    /// once per output line, and the old shape allocated a fresh `String` every time.
     fn emit_indent(&mut self) {
-        let s = self.indent_str();
-        self.out.push_str(&s);
+        self.out.reserve(self.indent * self.indent_unit.len());
+        for _ in 0..self.indent {
+            self.out.push_str(&self.indent_unit);
+        }
     }
 
     /// Trim trailing spaces (but not newlines) from the output.

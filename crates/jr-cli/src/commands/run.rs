@@ -54,17 +54,20 @@ pub fn run(args: RunArgs, global: &GlobalArgs) -> Result<i32> {
         }
     }
 
-    let mut search_paths = args.module_paths.clone();
-    search_paths.push(crate::commands::check::bundled_module_dir());
-    let search = db.set_module_search_paths(search_paths);
+    // The entry point and the search paths both come from `crate::project`, so that the
+    // command line, the manifest and the bundled library are ranked in one place rather than
+    // once per subcommand (see that module's docs).
+    let path = crate::project::entry(args.path)?;
+    let search =
+        db.set_module_search_paths(crate::project::module_search_paths(&args.module_paths)?);
     // The build setting, before any MIR query runs. ADR-0058 §2 makes it a salsa input so that
     // setting it late would still invalidate correctly — but setting it here means no query ever
     // runs under a value the user did not ask for, which is one fewer thing to reason about.
     let config = db.set_build_config(!args.no_bounds_check, args.opt_level.into());
 
-    let text = std::fs::read_to_string(&args.path)
-        .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", args.path.display()))?;
-    let key = args.path.to_string_lossy().into_owned();
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
+    let key = path.to_string_lossy().into_owned();
     let _ = db.set_file_text(key.clone(), text);
     let root = db
         .source_file(&key)
@@ -118,9 +121,6 @@ pub fn run(args: RunArgs, global: &GlobalArgs) -> Result<i32> {
         }
         // Assembling the program failed, which is a compiler problem rather than a
         // program one, so it propagates as an error rather than an exit status.
-        Err(message) => Err(anyhow::anyhow!(
-            "cannot run {}: {message}",
-            args.path.display()
-        )),
+        Err(message) => Err(anyhow::anyhow!("cannot run {}: {message}", path.display())),
     }
 }

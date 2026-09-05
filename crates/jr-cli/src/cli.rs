@@ -72,6 +72,20 @@ impl ColorChoice {
 /// Available subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Create a new Jairs project in a new directory.
+    ///
+    /// Scaffolds `jairs.toml`, `src/main.jr`, `build.jr` and `.gitignore`, and refuses rather
+    /// than overwrite if the directory already exists. The manifest is what makes a bare
+    /// `jr run` work anywhere inside the tree.
+    New(NewArgs),
+
+    /// Scaffold a Jairs project in an existing directory.
+    ///
+    /// As `jr new`, but for a directory that is already there — the working directory by
+    /// default. Refuses if a `jairs.toml` already exists; any other file it would write is
+    /// kept and reported rather than replaced.
+    Init(InitArgs),
+
     /// Parse one or more `.jr` files and report diagnostics.
     ///
     /// Accepts files and directories (directories are expanded to `**/*.jr`).
@@ -176,11 +190,39 @@ impl From<BackendArg> for jr_db::BackendChoice {
     }
 }
 
+/// Arguments for `jr new`.
+#[derive(Debug, Args)]
+pub struct NewArgs {
+    /// The directory to create.
+    #[arg(value_name = "PATH")]
+    pub path: std::path::PathBuf,
+
+    /// The project's name. Defaults to the directory's own name.
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
+}
+
+/// Arguments for `jr init`.
+#[derive(Debug, Args)]
+pub struct InitArgs {
+    /// The directory to scaffold in. Defaults to the working directory.
+    #[arg(value_name = "PATH")]
+    pub path: Option<std::path::PathBuf>,
+
+    /// The project's name. Defaults to the directory's own name.
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
+}
+
 /// Arguments for `jr check`.
 #[derive(Debug, Args)]
 pub struct CheckArgs {
     /// Files or directories to check (directories expand to `**/*.jr`).
-    #[arg(required = true, value_name = "PATH")]
+    ///
+    /// Optional inside a project: with none given, the entry point `jairs.toml` declares is
+    /// checked. Outside a project a path is still required, and its absence is reported with
+    /// both ways to supply one.
+    #[arg(value_name = "PATH")]
     pub paths: Vec<std::path::PathBuf>,
 
     /// Directory to search for imported modules. May be repeated; searched in
@@ -193,8 +235,11 @@ pub struct CheckArgs {
 #[derive(Debug, Args)]
 pub struct RunArgs {
     /// The program to run. Must declare `main`.
+    ///
+    /// Optional inside a project: with none given, the entry point `jairs.toml` declares is
+    /// rund.
     #[arg(value_name = "PATH")]
-    pub path: std::path::PathBuf,
+    pub path: Option<std::path::PathBuf>,
 
     /// Compile without array bounds checks (ADR-0003, ADR-0058 §1).
     ///
@@ -232,8 +277,11 @@ pub struct RunArgs {
 #[derive(Debug, Args)]
 pub struct BuildArgs {
     /// The program to compile. Must declare `main`.
+    ///
+    /// Optional inside a project: with none given, the entry point `jairs.toml` declares is
+    /// compiled.
     #[arg(value_name = "PATH")]
-    pub path: std::path::PathBuf,
+    pub path: Option<std::path::PathBuf>,
 
     /// Where to write the executable. Defaults to the input's name without its
     /// extension.

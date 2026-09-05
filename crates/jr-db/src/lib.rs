@@ -683,12 +683,11 @@ impl JairsDatabase {
             }
         }
 
-        // Read the file content.
-        let content = if let Some(ref mem) = self.in_memory_modules {
-            mem.get(path)?.to_owned()
-        } else {
-            std::fs::read_to_string(path).ok()?
-        };
+        // **One reader.** This used to duplicate `read_module_file`'s body, which meant the
+        // existence probe and the load could in principle disagree about whether a module is
+        // there — and once the bundled standard library became a third source, they would have
+        // had to learn about it twice.
+        let content = <Self as Db>::read_module_file(self, path)?;
 
         let text: Arc<str> = content.into();
 
@@ -764,7 +763,20 @@ impl Db for JairsDatabase {
     }
 
     fn read_module_file(&self, path: &Path) -> Option<String> {
-        if let Some(ref mem) = self.in_memory_modules {
+        // **The bundled standard library is checked first, and that is not a precedence
+        // decision.** It answers only for paths under its own synthetic root, `<bundled>`,
+        // which no filesystem can produce — so there is no path both this and the two branches
+        // below could answer for, and asking it first merely avoids a pointless `stat`.
+        // Precedence between the bundled library and a real directory is decided where it
+        // belongs, in the *order of the search paths*: an explicit `-I` is searched first and
+        // `<bundled>` is appended last (ADR-0014 §1).
+        if let Some(source) = jr_stdlib::source(path) {
+            return Some(source.to_owned());
+        }
+        if let Some(mem) = &self.in_memory_modules {
+            // Deliberately exclusive rather than a fallback: a test that supplies an in-memory
+            // module set is asserting that no filesystem access happens, and falling through
+            // on a miss would quietly break that.
             mem.get(path).map(|s| s.to_owned())
         } else {
             std::fs::read_to_string(path).ok()

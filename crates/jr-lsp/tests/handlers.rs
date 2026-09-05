@@ -2413,6 +2413,75 @@ fn formatting_a_file_that_does_not_parse_declines() {
     );
 }
 
+/// The **project's** style applies over the protocol, not the built-in default.
+///
+/// An editor is where most formatting actually happens, so a `jairs.toml` that `jr fmt` honours and
+/// the language server ignores is a setting that appears to work only from a terminal. Needs a real
+/// path on disk, because that is what the manifest walk resolves from — the shared `program`
+/// fixture uses a synthetic path deliberately, which is also why every other test here is
+/// unaffected by a manifest existing anywhere.
+#[test]
+fn formatting_honours_the_projects_manifest() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("jairs.toml"),
+        "[fmt]\nindent_style = \"tab\"\n",
+    )
+    .expect("write the manifest");
+
+    let source = "main :: () {\n    a := 1;\n}\n";
+    let path = dir.path().join("main.jr");
+    std::fs::write(&path, source).expect("write the source");
+
+    let mut db = JairsDatabase::default();
+    let _search = db.set_module_search_paths(vec![modules()]);
+    let key = path.to_string_lossy().into_owned();
+    db.set_file_text(key.as_str(), source);
+    let file = db
+        .source_file(key.as_str())
+        .expect("the file was just added");
+
+    let edits = jr_lsp::formatting(&db, file).expect("a file that parses must format");
+    let edit = edits
+        .first()
+        .expect("re-indenting with tabs is a change, so there must be an edit");
+    assert!(
+        edit.new_text.contains("\n\ta := 1;"),
+        "expected a tab from the manifest, got {:?}",
+        edit.new_text
+    );
+}
+
+/// A file with no manifest anywhere formats with the built-in default.
+///
+/// The compatibility half of the test above: the manifest is an override, so its absence must leave
+/// the server behaving exactly as it did before it could read one.
+#[test]
+fn formatting_without_a_manifest_uses_the_default() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let source = "main :: () {\na := 1;\n}\n";
+    let path = dir.path().join("main.jr");
+    std::fs::write(&path, source).expect("write");
+
+    let mut db = JairsDatabase::default();
+    let _search = db.set_module_search_paths(vec![modules()]);
+    let key = path.to_string_lossy().into_owned();
+    db.set_file_text(key.as_str(), source);
+    let file = db
+        .source_file(key.as_str())
+        .expect("the file was just added");
+
+    let edits = jr_lsp::formatting(&db, file).expect("a file that parses must format");
+    let edit = edits
+        .first()
+        .expect("the source is unindented, so it changes");
+    assert!(
+        edit.new_text.contains("\n    a := 1;"),
+        "expected four spaces, got {:?}",
+        edit.new_text
+    );
+}
+
 /// The capability is advertised, so a client offers `Format Document` without configuration.
 ///
 /// Asserted because the handler working and the client knowing about it are different facts, and the

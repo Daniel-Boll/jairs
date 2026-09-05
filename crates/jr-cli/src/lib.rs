@@ -13,4 +13,5 @@
 pub mod cli;
 pub mod commands;
 pub mod files;
+pub mod project;
 pub mod report;

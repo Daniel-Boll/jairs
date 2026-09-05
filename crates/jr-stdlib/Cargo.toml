@@ -1,0 +1,19 @@
+[package]
+name = "jr-stdlib"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# **The build script is not optional.** `modules/` sits at the workspace root,
+# outside this package's directory, so Cargo's default "scan the whole package
+# directory" rule does not cover it. Without the `rerun-if-changed` this script
+# emits, adding or removing a module silently produces a stale binary.
+build = "build.rs"
+
+[lints]
+workspace = true
+
+[dependencies]

@@ -50,6 +50,19 @@ pub struct BuildRequest {
     /// file. A caller that has an explicit `-o` puts it here, and it is used unchanged and
     /// **unchecked** — confinement applies only to a declared name (ADR-0122).
     pub output: Option<PathBuf>,
+    /// The name to use when nothing else names one — the *last* resort, not an override.
+    ///
+    /// Consulted only after [`Self::output`] and a declared `BUILD_OUTPUT`, and before falling
+    /// back to the root file's own stem. That position is the whole point: a project manifest
+    /// naming the artefact is a default the project chose, so it outranks the file's name but is
+    /// outranked by anything the source or the operator said (the ADR-0102 §2 asymmetry). Passed
+    /// in rather than read here, because a manifest is a command-line concept and this crate has
+    /// no business knowing that one exists.
+    ///
+    /// **Unchecked by `confined_output`**, deliberately and for the same reason [`Self::output`]
+    /// is: confinement applies to a name a *program* declared, and this one comes from the person
+    /// running the build (ADR-0122).
+    pub default_output: Option<PathBuf>,
     /// Write the object file beside the output and stop, rather than linking.
     ///
     /// Kept beside `kind` rather than folded into it, because the two answer different questions: this is
@@ -274,7 +287,10 @@ pub fn build(request: &BuildRequest) -> Result<BuildOutcome, String> {
                     )));
                 }
             },
-            None => request.path.with_extension(""),
+            None => match request.default_output.clone() {
+                Some(fallback) => fallback,
+                None => request.path.with_extension(""),
+            },
         },
     };
 

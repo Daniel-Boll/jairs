@@ -26,7 +26,10 @@
 //! links, so a binary produced through `cc` arrives already signed. The explicit
 //! `codesign` pass here is a fallback for a toolchain that does not, and it is
 //! skipped when the binary already has a signature — running it twice is an error,
-//! not a no-op.
+//! not a no-op. Whether it already has one is answered by reading the Mach-O load
+//! command table in-process rather than spawning `codesign --verify`: the two are
+//! the same question, and parsing bytes already on disk is cheaper than a fork+exec
+//! whose answer is "yes, signed" on every normal build.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -90,9 +93,11 @@ impl From<std::io::Error> for LinkError {
 /// Which linker argument a library's name becomes (ADR-0183 §1).
 ///
 /// Declared **here** rather than imported from `jr-pool`, which also has one, because this crate has
-/// **no dependencies at all** — that is the seam ADR-0009 drew, and it is why the linker can be read and
-/// tested without the compiler. The caller converts; the duplication is two variants and it buys a leaf
-/// crate.
+/// **no dependency on the rest of the compiler** — that is the seam ADR-0009 drew, and it is why the
+/// linker can be read and tested without the compiler. (`object`, used to read back this crate's own
+/// output when checking a signature, is a leaf dependency on a binary-format parser, not on a Jairs
+/// crate, and does not reopen that seam.) The caller converts; the duplication is two variants and it
+/// buys a leaf crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkKind {
     /// `-lNAME`, searched for in the `-L` paths. Every target supports this form.
@@ -241,62 +246,30 @@ pub fn link(request: &LinkRequest<'_>) -> Result<(), LinkError> {
         return result;
     }
 
-    let driver = find_driver().ok_or_else(|| {
-        LinkError::NoDriver(DRIVERS.iter().map(|name| (*name).to_owned()).collect())
-    })?;
-
-    let mut command = Command::new(&driver);
-    // **The kind flag first**, before the object: `cc` accepts it anywhere, but a reader of the failing
-    // command line should see what kind of link was attempted before what went into it.
-    //
-    // `-dynamiclib` is Apple's and `-shared` is everyone else's; they are not aliases, and `clang` on macOS
-    // accepts `-shared` while producing something `-lNAME` will not find, which is the silent-wrong-answer
-    // shape this project avoids by naming the platform rather than hoping.
-    if request.kind == OutputKind::Dynamic {
-        command.arg(if cfg!(target_os = "macos") {
-            "-dynamiclib"
-        } else {
-            "-shared"
-        });
+    // **One spawn per driver, not two.** The previous version spawned `<name> --version` merely to
+    // test whether `<name>` could be executed, then spawned the winner again to do the real link.
+    // Attempting the real link answers both questions at once: if the spawn itself fails, `<name>`
+    // is not a usable driver and the next name gets a turn; if it spawns and exits non-zero, that is
+    // a genuine link failure (an undefined symbol, a missing library) and it MUST be reported as
+    // such rather than swallowed by falling through to the next driver — falling through would
+    // replace a precise "undefined symbol `foo`" with a misleading "no C driver found" once all
+    // three have been (wrongly) tried, which is a strictly worse diagnostic for a strictly worse
+    // reason. See `try_driver`.
+    let mut linked = false;
+    for name in DRIVERS {
+        match try_driver(name, request, &object_path) {
+            Ok(()) => {
+                linked = true;
+                break;
+            }
+            Err(None) => continue,
+            Err(Some(error)) => return Err(error),
+        }
     }
-    command.arg(not_a_flag(&object_path));
-    command.arg("-o").arg(not_a_flag(request.output));
-    // **Search paths before the libraries**, which is what `ld` requires: a `-L` affects the `-l`s that
-    // follow it, so emitting them the other way round would look right and find nothing.
-    for path in request.library_paths {
-        command.arg(format!("-L{}", path.display()));
-    }
-    // **Two forms, and the declaration says which** (ADR-0183 §1). `-lNAME` searches the `-L` paths;
-    // `-framework NAME` asks the macOS linker for a framework bundle, and is two arguments rather than
-    // one concatenated word — `-frameworkOpenGL` is not a thing `ld` accepts.
-    //
-    // No inference from the name, and no `-l` fallback after a failed `-framework`: the compiler cannot
-    // know which a name means, and guessing would make `#system_library "SDL2"` on macOS try a framework
-    // that does not exist before finding the dylib that does. The source says which, and after ADR-0184
-    // the *declaration itself* is generated per OS — so no file carries a form that is wrong elsewhere.
-    for library in request.libraries {
-        match library.kind {
-            LinkKind::Library => command.arg(format!("-l{}", library.name)),
-            LinkKind::Framework => command
-                .arg("-framework")
-                .arg(not_a_flag_name(&library.name)),
-        };
-    }
-
-    // **Last, so a script can override what this crate chose** — see `LinkRequest::linker_arguments`.
-    for argument in request.linker_arguments {
-        command.arg(argument);
-    }
-
-    let output = command.output()?;
-    if !output.status.success() {
-        let mut text = String::from_utf8_lossy(&output.stderr).into_owned();
-        text.push_str(&String::from_utf8_lossy(&output.stdout));
-        return Err(LinkError::Failed {
-            driver: driver.to_string_lossy().into_owned(),
-            status: output.status.to_string(),
-            output: text,
-        });
+    if !linked {
+        return Err(LinkError::NoDriver(
+            DRIVERS.iter().map(|name| (*name).to_owned()).collect(),
+        ));
     }
 
     // The object has served its purpose; a successful link leaves only the binary.
@@ -387,22 +360,81 @@ fn not_a_flag_name(name: &str) -> String {
     name.to_owned()
 }
 
-/// The first C driver on `PATH`.
-fn find_driver() -> Option<PathBuf> {
-    for name in DRIVERS {
-        // `--version` rather than `which`: it answers the question that matters — can
-        // this be executed — on any platform, without depending on a shell builtin.
-        if Command::new(name)
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
-        {
-            return Some(PathBuf::from(name));
-        }
+/// Tries to link with `driver`, building the same command line a single found driver always used to
+/// build.
+///
+/// One spawn answers both questions this crate used to ask separately — whether `driver` exists and
+/// is executable, and whether the link itself succeeds. The two failure shapes are **not** the same
+/// thing and must not be collapsed:
+///
+/// - `Err(None)`: the spawn itself failed. `Command::output` can only return `Err` before the child
+///   ever ran — a `NotFound` or `PermissionDenied` from the OS's exec, typically — so this says
+///   nothing about whether the *link* would work, only that this one name is not a usable binary,
+///   and [`link`] tries the next name.
+/// - `Err(Some(_))`: `driver` ran and exited non-zero. A **real** link error, with the driver's own
+///   diagnostics attached, and it MUST propagate rather than be discarded in favour of trying
+///   another driver — the next driver did not fail to find the same symbol, or fail at all, so
+///   reporting "no C driver found" after an undefined-symbol error would send the reader looking for
+///   a missing compiler instead of a missing definition.
+fn try_driver(
+    driver: &str,
+    request: &LinkRequest<'_>,
+    object_path: &Path,
+) -> Result<(), Option<LinkError>> {
+    let mut command = Command::new(driver);
+    // **The kind flag first**, before the object: `cc` accepts it anywhere, but a reader of the failing
+    // command line should see what kind of link was attempted before what went into it.
+    //
+    // `-dynamiclib` is Apple's and `-shared` is everyone else's; they are not aliases, and `clang` on macOS
+    // accepts `-shared` while producing something `-lNAME` will not find, which is the silent-wrong-answer
+    // shape this project avoids by naming the platform rather than hoping.
+    if request.kind == OutputKind::Dynamic {
+        command.arg(if cfg!(target_os = "macos") {
+            "-dynamiclib"
+        } else {
+            "-shared"
+        });
     }
-    None
+    command.arg(not_a_flag(object_path));
+    command.arg("-o").arg(not_a_flag(request.output));
+    // **Search paths before the libraries**, which is what `ld` requires: a `-L` affects the `-l`s that
+    // follow it, so emitting them the other way round would look right and find nothing.
+    for path in request.library_paths {
+        command.arg(format!("-L{}", path.display()));
+    }
+    // **Two forms, and the declaration says which** (ADR-0183 §1). `-lNAME` searches the `-L` paths;
+    // `-framework NAME` asks the macOS linker for a framework bundle, and is two arguments rather than
+    // one concatenated word — `-frameworkOpenGL` is not a thing `ld` accepts.
+    //
+    // No inference from the name, and no `-l` fallback after a failed `-framework`: the compiler cannot
+    // know which a name means, and guessing would make `#system_library "SDL2"` on macOS try a framework
+    // that does not exist before finding the dylib that does. The source says which, and after ADR-0184
+    // the *declaration itself* is generated per OS — so no file carries a form that is wrong elsewhere.
+    for library in request.libraries {
+        match library.kind {
+            LinkKind::Library => command.arg(format!("-l{}", library.name)),
+            LinkKind::Framework => command
+                .arg("-framework")
+                .arg(not_a_flag_name(&library.name)),
+        };
+    }
+
+    // **Last, so a script can override what this crate chose** — see `LinkRequest::linker_arguments`.
+    for argument in request.linker_arguments {
+        command.arg(argument);
+    }
+
+    let output = command.output().map_err(|_| None)?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let mut text = String::from_utf8_lossy(&output.stderr).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stdout));
+    Err(Some(LinkError::Failed {
+        driver: driver.to_owned(),
+        status: output.status.to_string(),
+        output: text,
+    }))
 }
 
 /// Ad-hoc signs `path` on Apple platforms if it is not already signed.
@@ -415,14 +447,7 @@ fn ensure_signed(path: &Path) {
     if !cfg!(target_os = "macos") {
         return;
     }
-    let signed = Command::new("codesign")
-        .arg("--verify")
-        .arg(not_a_flag(path))
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
-    if signed {
+    if is_signed(path) {
         return;
     }
     let _ = Command::new("codesign")
@@ -433,11 +458,56 @@ fn ensure_signed(path: &Path) {
         .status();
 }
 
+/// Whether `path` already carries a Mach-O `LC_CODE_SIGNATURE` load command.
+///
+/// Reads the load command table in-process instead of spawning `codesign --verify`, which asked the
+/// same question for the cost of a fork+exec (measured at 16ms) rather than a `read` of bytes
+/// `ensure_signed`'s caller just wrote. `ld64` ad-hoc-signing what it links leaves the signature as a
+/// load command, so this is exact, not a heuristic standing in for one.
+///
+/// An unparseable file, or one that parses as something other than Mach-O, is **not** evidence of
+/// being signed — it is evidence this function could not check — so both return `false` and let the
+/// caller fall through to (re-)signing, the same conservative answer a failed `codesign --verify`
+/// would have given.
+fn is_signed(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    // `object::File` is `#[non_exhaustive]` over every format it can parse (ELF, PE, Wasm, …); a `_`
+    // arm is not this crate relaxing its own exhaustive-match rule, it is the only way any downstream
+    // crate can match this type at all, and the two arms it does name are the only ones we can produce.
+    match object::File::parse(&*bytes) {
+        Ok(object::File::MachO32(macho)) => has_code_signature(&macho),
+        Ok(object::File::MachO64(macho)) => has_code_signature(&macho),
+        _ => false,
+    }
+}
+
+/// Whether a parsed Mach-O file's load commands include `LC_CODE_SIGNATURE`.
+///
+/// A malformed individual load command is skipped rather than treated as a parse failure: this only
+/// needs to find one specific command, and a corrupt entry elsewhere in the table says nothing about
+/// whether this one is present.
+fn has_code_signature<'data, Mach, R>(
+    macho: &object::read::macho::MachOFile<'data, Mach, R>,
+) -> bool
+where
+    Mach: object::read::macho::MachHeader,
+    R: object::ReadRef<'data>,
+{
+    let Ok(commands) = macho.macho_load_commands() else {
+        return false;
+    };
+    commands
+        .flatten()
+        .any(|command| command.cmd() == object::macho::LC_CODE_SIGNATURE)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
-    use super::not_a_flag;
+    use super::{LinkError, LinkRequest, OutputKind, not_a_flag, try_driver};
 
     #[test]
     fn an_ordinary_path_is_unchanged() {
@@ -455,5 +525,42 @@ mod tests {
             Path::new("./-Wl,--version")
         );
         assert_eq!(not_a_flag(Path::new("-o")), Path::new("./-o"));
+    }
+
+    /// A request whose only role is to give `try_driver` something to build a command line from;
+    /// neither test lets a command line reach a real linker.
+    fn empty_request(output: &Path) -> LinkRequest<'_> {
+        LinkRequest {
+            kind: OutputKind::Executable,
+            linker_arguments: &[],
+            object: &[],
+            output,
+            libraries: &[],
+            library_paths: &[],
+        }
+    }
+
+    #[test]
+    fn a_driver_that_cannot_be_spawned_falls_through() {
+        let output = Path::new("test-output");
+        let request = empty_request(output);
+        let result = try_driver(
+            "jr-link-test-driver-that-does-not-exist",
+            &request,
+            Path::new("test.o"),
+        );
+        // `Err(None)` is specifically "try the next driver", not "the link failed".
+        assert!(matches!(result, Err(None)));
+    }
+
+    #[test]
+    fn a_driver_that_runs_and_fails_does_not_fall_through() {
+        let output = Path::new("test-output");
+        let request = empty_request(output);
+        // `false` is on every macOS and Linux `PATH`, exits 1 unconditionally, and ignores every
+        // argument it is given — indistinguishable, from `try_driver`'s side, from a real driver
+        // that spawned successfully and rejected the link.
+        let result = try_driver("false", &request, Path::new("test.o"));
+        assert!(matches!(result, Err(Some(LinkError::Failed { .. }))));
     }
 }

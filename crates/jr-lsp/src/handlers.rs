@@ -69,7 +69,21 @@ pub fn formatting(db: &dyn Db, file: SourceFile) -> Option<Vec<lsp_types::TextEd
     // `None` means the file is not in the source map, which cannot happen for a file the client
     // has open — but a formatter that panicked on it would take the server down.
     let id = map.file_id(file.path(db).as_ref())?;
-    let formatted = jr_fmt::format_default(text.as_ref(), id).ok()?;
+    // **The project's own style, not the built-in default** — an editor is where most formatting
+    // actually happens, so `jr fmt` honouring `jairs.toml` while the language server ignored it
+    // would make the file's settings appear to work only from a terminal.
+    //
+    // Resolved from the file's path on each request rather than cached: this is not a tracked
+    // query, so it already re-runs per request, and a manifest the user has just edited must take
+    // effect on the next save without restarting the server. A broken manifest falls back to the
+    // defaults here rather than refusing — a server that stops formatting is indistinguishable
+    // from one that has crashed, and `jr fmt` is the surface that reports that error properly.
+    let config = jr_manifest::find(std::path::Path::new(file.path(db).as_ref()))
+        .ok()
+        .flatten()
+        .map(|located| located.fmt_config())
+        .unwrap_or_default();
+    let formatted = jr_fmt::format(text.as_ref(), id, &config).ok()?;
     if formatted == text.as_ref() {
         // Already formatted. An empty list rather than one no-op edit, so a client does not mark the
         // buffer dirty for a change that is not one.
