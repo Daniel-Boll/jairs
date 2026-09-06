@@ -396,7 +396,7 @@ impl Decl<'_> {
 pub fn import_card(module: &str, found: Option<&std::path::Path>, docs: Option<&str>) -> Card {
     let mut body = match found {
         Some(path) => format!("{}", path.display()),
-        None => String::from("not found on any module search path"),
+        None => String::from("not found in the project module catalog"),
     };
     if let Some(docs) = docs {
         body.push_str("\n\n");

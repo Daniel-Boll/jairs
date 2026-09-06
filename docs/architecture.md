@@ -39,6 +39,7 @@ engines might execute is bit-identical in each.
 |---|---|
 | `jr-base` | Foundational types: source spans, `FileId`, string interning, arenas, newtype IDs |
 | `jr-diag` | Diagnostic model (severity, spans, notes, instantiation backtraces) and rustc-identical renderer |
+| `jr-project` | Project discovery and immutable module catalog: implicit `src` modules, exact dependencies, bundled modules, and compatibility roots (ADR-0213) |
 | `jr-syntax` | Lexer, `SyntaxKind`, error-recovering recursive-descent parser, lossless `rowan` CST, typed AST accessors |
 | `jr-fmt` | Canonical formatter — a pure function over the lossless CST |
 | `jr-hir` | Desugared high-level IR: module graph, `#import` resolution, scopes, name binding |
@@ -51,6 +52,6 @@ engines might execute is bit-identical in each.
 | `jr-codegen-llvm` | LLVM back end via `inkwell`, behind a default-off `llvm` cargo feature and gate 7 (ADR-0143). The third execution engine the differential harness compares |
 | `jr-link` | Object-file emission and system linker driver, including macOS ad-hoc codesigning |
 | `jr-db` | salsa query database — single source of truth shared by the batch driver and the LSP; the type pool is an `RwLock` whose read half is `Db::read_pool` (ADR-0149 §1) |
-| `jr-driver` | Compilation orchestration: workspaces, compiler message queue, build metaprograms. Still a one-line stub — see `PLAN.md` §1.5 |
+| `jr-driver` | Compilation orchestration: native artefacts and Jairs build metaprograms, all inheriting one discovered project catalog |
 | `jr-lsp` | Language server — a consumer of `jr-db` queries, never a second frontend |
 | `jr-cli` | The `jr` binary (`jr build`, `jr run`, `jr fmt`, `jr check`) |

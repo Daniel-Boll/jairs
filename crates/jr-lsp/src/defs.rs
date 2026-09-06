@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use jr_base::{Span, Symbol};
-use jr_db::{Db, ModuleSearchPaths, SourceFile};
+use jr_db::{Db, ModuleCatalog, SourceFile};
 use jr_hir::{Expr, ExprScope, FileHir, ItemKind, Res};
 
 /// Which declaration a search is about.
@@ -105,21 +105,19 @@ pub struct Reference {
 pub fn definition_at(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     offset: jr_base::TextSize,
 ) -> Option<DefId> {
     let hir = jr_db::file_hir(db, file);
     let path = PathBuf::from(file.path(db).as_ref());
 
     if let Some(found) = crate::locate(hir.as_ref(), offset) {
-        let res = jr_db::resolved(db, file, search_paths)
+        let res = jr_db::resolved(db, file, catalog)
             .map
             .get(found.scope, found.expr)?;
         return match res {
             Res::Item(item) => Some(DefId::Item { file: path, item }),
-            Res::Imported(import, name) => {
-                imported_def(db, hir.as_ref(), search_paths, import, name)
-            }
+            Res::Imported(import, name) => imported_def(db, hir.as_ref(), catalog, import, name),
             Res::Param(param) => {
                 let ExprScope::Body(body) = found.scope else {
                     return None;
@@ -204,14 +202,14 @@ pub fn definition_at(
 fn imported_def(
     db: &dyn Db,
     hir: &FileHir,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     import: jr_hir::ItemId,
     name: Symbol,
 ) -> Option<DefId> {
     let ItemKind::Import { path, .. } = &hir.items.get(import.index())?.kind else {
         return None;
     };
-    let found = jr_db::module_file(db, search_paths, Arc::from(path.as_str())).found?;
+    let found = jr_db::module_file(db, catalog, Arc::from(path.as_str())).found?;
     let module = db.source_file_for_path(found.to_string_lossy().as_ref())?;
     let other = jr_db::file_hir(db, module);
     let item = other.scope.get(name)?;
@@ -227,7 +225,7 @@ fn imported_def(
 #[must_use]
 pub fn references(
     db: &dyn Db,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     def: &DefId,
     files: &[PathBuf],
 ) -> Vec<Reference> {
@@ -253,12 +251,12 @@ pub fn references(
             continue;
         };
         let hir = jr_db::file_hir(db, file);
-        let resolve = jr_db::resolved(db, file, search_paths).map;
+        let resolve = jr_db::resolved(db, file, catalog).map;
         let here = PathBuf::from(file.path(db).as_ref());
 
         collect(
             db,
-            search_paths,
+            catalog,
             def,
             hir.as_ref(),
             &resolve,
@@ -270,7 +268,7 @@ pub fn references(
         for (index, body) in hir.bodies.iter().enumerate() {
             collect(
                 db,
-                search_paths,
+                catalog,
                 def,
                 hir.as_ref(),
                 &resolve,
@@ -296,7 +294,7 @@ pub fn references(
 #[allow(clippy::too_many_arguments, reason = "a scan needs its whole context")]
 fn collect(
     db: &dyn Db,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     def: &DefId,
     hir: &FileHir,
     resolve: &jr_hir::ResolveMap,
@@ -318,7 +316,7 @@ fn collect(
                 file: file.to_path_buf(),
                 item,
             }),
-            Res::Imported(import, name) => imported_def(db, hir, search_paths, import, name),
+            Res::Imported(import, name) => imported_def(db, hir, catalog, import, name),
             Res::Param(param) => match scope {
                 ExprScope::Body(body) => owner_of(hir, body).map(|proc| DefId::Param {
                     file: file.to_path_buf(),

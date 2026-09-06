@@ -1,4 +1,4 @@
-//! The three capabilities, tested without a transport.
+//! LSP handlers tested as pure functions without a transport.
 //!
 //! [ADR-0024](../../../docs/adr/0024-language-server.md) §4 keeps every handler a pure
 //! function of `(&db, params)` so that these tests exist at all. `tests/stdio.rs` is the
@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use jr_db::{JairsDatabase, ModuleSearchPaths, SourceFile};
+use jr_db::{JairsDatabase, ModuleCatalog, SourceFile};
 use jr_lsp::{Encoding, completion, diagnostics, goto_definition, hover};
 use lsp_types::{HoverContents, MarkupContent, Position};
 
@@ -24,14 +24,13 @@ fn modules() -> PathBuf {
 ///
 /// The path must be absolute because a `Location` carries a `file:` URI, and
 /// `jr_lsp::uri::from_path` refuses a relative path rather than inventing a base for it.
-fn program(source: &str) -> (JairsDatabase, ModuleSearchPaths, SourceFile) {
+fn program(source: &str) -> (JairsDatabase, ModuleCatalog, SourceFile) {
     let mut db = JairsDatabase::default();
-    let search = db.set_module_search_paths(vec![modules()]);
+    let catalog = db.set_module_search_paths(vec![modules()]);
     let path = "/jairs-lsp-test/main.jr";
     db.set_file_text(path, source);
     let file = db.source_file(path).expect("the file was just added");
-    db.load_modules_transitively(file);
-    (db, search, file)
+    (db, catalog, file)
 }
 
 /// The offset of `needle` in `source`, as a zero-based line and UTF-8 column.
@@ -136,7 +135,7 @@ fn completing_a_field_on_an_array_offers_count_and_not_data() {
     // added. A completion list that offered it would advertise a field sema rejects.
     let source = "main :: () {\n    buf: [4]u8;\n    n := buf.\n}\n";
     let (db, search, file) = program(source);
-    let items = completion(&db, file, search, Encoding::Utf8, at(source, "\n}"), None);
+    let items = completion(&db, file, search, Encoding::Utf8, at(source, "\n}"));
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
     assert!(
         labels.contains(&"count"),
@@ -534,7 +533,7 @@ fn a_non_ascii_line_places_the_range_correctly_under_both_encodings() {
 fn labels(source: &str, needle: &str) -> Vec<String> {
     let (db, search, file) = program(source);
     let mut out: Vec<String> =
-        jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, needle), None)
+        jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, needle))
             .into_iter()
             .map(|item| item.label)
             .collect();
@@ -542,46 +541,17 @@ fn labels(source: &str, needle: &str) -> Vec<String> {
     out
 }
 
-/// A program whose workspace has been discovered and loaded, so the unimported source can run.
-///
-/// The difference from [`program`] is the two calls at the end, and it is the whole reason the
-/// unimported half needs its own fixture: `None` for the workspace input means "discovery has not
-/// run", which is what every other completion test wants — an in-scope assertion must not suddenly
-/// compete with several hundred importable names (ADR-0199 §8).
-fn program_with_workspace(
-    source: &str,
-) -> (
-    JairsDatabase,
-    ModuleSearchPaths,
-    SourceFile,
-    Option<jr_db::WorkspaceFiles>,
-) {
-    let mut db = JairsDatabase::default();
-    let search = db.set_module_search_paths(vec![modules()]);
-    let path = "/jairs-lsp-test/main.jr";
-    db.set_file_text(path, source);
-    let file = db.source_file(path).expect("the file was just added");
-    db.load_modules_transitively(file);
-    // Discovery over the real `modules/` tree, then the load that turns paths into `SourceFile`s.
-    // Both are writes, which is why the server does them in `dispatch` and not in a query.
-    let workspace = db.set_workspace_roots(&[modules()]);
-    db.load_workspace_files();
-    (db, search, file, Some(workspace))
+/// A program with an eagerly installed module catalog and no workspace discovery.
+fn program_with_catalog(source: &str) -> (JairsDatabase, ModuleCatalog, SourceFile) {
+    program(source)
 }
 
-/// The completion item for `label` at `needle`, with the workspace discovered.
+/// The completion item for `label` at `needle`, from the installed catalog alone.
 fn unimported_item(source: &str, needle: &str, label: &str) -> Option<lsp_types::CompletionItem> {
-    let (db, search, file, workspace) = program_with_workspace(source);
-    jr_lsp::completion(
-        &db,
-        file,
-        search,
-        Encoding::Utf8,
-        at(source, needle),
-        workspace,
-    )
-    .into_iter()
-    .find(|item| item.label == label)
+    let (db, search, file) = program_with_catalog(source);
+    jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, needle))
+        .into_iter()
+        .find(|item| item.label == label)
 }
 
 /// A name from a module this file never imported is offered, and carries its own `#import`.
@@ -653,15 +623,8 @@ main :: () {
     start
 }
 ";
-    let (db, search, file, workspace) = program_with_workspace(source);
-    let items = jr_lsp::completion(
-        &db,
-        file,
-        search,
-        Encoding::Utf8,
-        at(source, "\n}"),
-        workspace,
-    );
+    let (db, search, file) = program_with_catalog(source);
+    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "\n}"));
 
     let local = items
         .iter()
@@ -694,18 +657,11 @@ main :: () {
 #[test]
 fn an_already_imported_name_carries_no_import_edit() {
     let source = "#import \"Window\";\n\nmain :: () {\n    create_window\n}\n";
-    let (db, search, file, workspace) = program_with_workspace(source);
-    let offers: Vec<_> = jr_lsp::completion(
-        &db,
-        file,
-        search,
-        Encoding::Utf8,
-        at(source, "\n}"),
-        workspace,
-    )
-    .into_iter()
-    .filter(|item| item.label == "create_window")
-    .collect();
+    let (db, search, file) = program_with_catalog(source);
+    let offers: Vec<_> = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "\n}"))
+        .into_iter()
+        .filter(|item| item.label == "create_window")
+        .collect();
 
     assert_eq!(
         offers.len(),
@@ -731,17 +687,10 @@ fn a_module_private_name_is_never_offered() {
         "main :: () {\n    window_position\n}\n",
         "#import \"Window\";\n\nmain :: () {\n    window_position\n}\n",
     ] {
-        let (db, search, file, workspace) = program_with_workspace(source);
-        let found = jr_lsp::completion(
-            &db,
-            file,
-            search,
-            Encoding::Utf8,
-            at(source, "\n}"),
-            workspace,
-        )
-        .into_iter()
-        .any(|item| item.label == "window_position");
+        let (db, search, file) = program_with_catalog(source);
+        let found = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "\n}"))
+            .into_iter()
+            .any(|item| item.label == "window_position");
         assert!(
             !found,
             "`window_position` is `#scope_module` in `modules/Window` and must not be offered for:\n{source}"
@@ -749,21 +698,17 @@ fn a_module_private_name_is_never_offered() {
     }
 }
 
-/// With no workspace discovered, the list is exactly what it was before this feature.
-///
-/// `None` means "discovery has not run", which is deliberately not the same as an empty workspace —
-/// and it is what every other test in this section passes, so this pins that those tests still
-/// measure the in-scope surface rather than silently gaining the whole module tree.
+/// Import availability comes from the catalog even when workspace ownership was never discovered.
 #[test]
-fn without_discovery_no_unimported_name_is_offered() {
+fn without_workspace_discovery_an_unimported_name_is_still_offered() {
     let source = "main :: () {\n    create_window\n}\n";
     let (db, search, file) = program(source);
-    let found = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "\n}"), None)
+    let found = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "\n}"))
         .into_iter()
         .any(|item| item.label == "create_window");
     assert!(
-        !found,
-        "with no workspace input there is nothing to enumerate, so nothing may be offered"
+        found,
+        "the catalog is an availability snapshot and must not depend on workspace ownership"
     );
 }
 
@@ -794,7 +739,7 @@ fn a_dot_on_a_string_offers_its_pseudo_fields() {
 fn a_field_completion_carries_its_type_as_detail() {
     let source = "Point :: struct { x: s64; }\n\nmain :: () {\n    p: Point;\n    n := p.;\n}\n";
     let (db, search, file) = program(source);
-    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, ";\n}"), None);
+    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, ";\n}"));
     let x = items.iter().find(|i| i.label == "x").expect("field x");
     assert_eq!(x.detail.as_deref(), Some("s64"));
 }
@@ -807,15 +752,8 @@ fn a_field_completion_carries_its_type_as_detail() {
 #[test]
 fn a_dot_after_an_import_alias_offers_the_modules_names() {
     let source = "Window :: #import \"Window\";\n\nmain :: () {\n    Window.\n}\n";
-    let (db, search, file, workspace) = program_with_workspace(source);
-    let items = jr_lsp::completion(
-        &db,
-        file,
-        search,
-        Encoding::Utf8,
-        at(source, "\n}"),
-        workspace,
-    );
+    let (db, search, file) = program_with_catalog(source);
+    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "\n}"));
     let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
     assert!(
         labels.contains(&"create_window"),
@@ -856,18 +794,12 @@ fn a_dot_after_an_import_alias_offers_the_modules_names() {
 #[test]
 fn a_local_shadowing_an_alias_gets_field_completion_instead() {
     let source = "Window :: #import \"Window\";\n\nPoint :: struct { x: s64; }\n\nmain :: () {\n    Window: Point;\n    n := Window.;\n}\n";
-    let (db, search, file, workspace) = program_with_workspace(source);
-    let labels: Vec<String> = jr_lsp::completion(
-        &db,
-        file,
-        search,
-        Encoding::Utf8,
-        at(source, ";\n}"),
-        workspace,
-    )
-    .into_iter()
-    .map(|item| item.label)
-    .collect();
+    let (db, search, file) = program_with_catalog(source);
+    let labels: Vec<String> =
+        jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, ";\n}"))
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
     assert_eq!(
         labels,
         vec!["x"],
@@ -879,15 +811,8 @@ fn a_local_shadowing_an_alias_gets_field_completion_instead() {
 #[test]
 fn a_dot_after_a_name_that_is_no_alias_is_unchanged() {
     let source = "main :: () {\n    Nope.\n}\n";
-    let (db, search, file, workspace) = program_with_workspace(source);
-    let items = jr_lsp::completion(
-        &db,
-        file,
-        search,
-        Encoding::Utf8,
-        at(source, "\n}"),
-        workspace,
-    );
+    let (db, search, file) = program_with_catalog(source);
+    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "\n}"));
     assert!(
         items.is_empty(),
         "an unknown receiver has neither fields nor a module, got {:?}",
@@ -903,11 +828,10 @@ fn a_hash_offers_directives() {
     let mut position = at(source, "#");
     position.character += 1;
     let (db, search, file) = program(source);
-    let mut offered: Vec<String> =
-        jr_lsp::completion(&db, file, search, Encoding::Utf8, position, None)
-            .into_iter()
-            .map(|item| item.label)
-            .collect();
+    let mut offered: Vec<String> = jr_lsp::completion(&db, file, search, Encoding::Utf8, position)
+        .into_iter()
+        .map(|item| item.label)
+        .collect();
     offered.sort();
     assert_eq!(
         offered,
@@ -948,7 +872,7 @@ fn a_procedure_completes_as_a_call_snippet() {
     let source =
         "add :: (a: s64, b: s64) -> s64 {\n    return a + b;\n}\n\nmain :: () {\n    n := a\n}\n";
     let (db, search, file) = program(source);
-    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "a\n}"), None);
+    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "a\n}"));
     let add = items
         .iter()
         .find(|i| i.label == "add")
@@ -968,7 +892,7 @@ fn a_procedure_completes_as_a_call_snippet() {
 fn an_imported_name_is_offered_with_its_module() {
     let source = "#import \"Basic\";\n\nmain :: () {\n    p\n}\n";
     let (db, search, file) = program(source);
-    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "p\n}"), None);
+    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "p\n}"));
     let print = items
         .iter()
         .find(|i| i.label == "print")
@@ -995,7 +919,7 @@ fn the_list_carries_no_documentation_until_resolved() {
     let source =
         "/// Adds.\nadd :: (a: s64) -> s64 {\n    return a;\n}\n\nmain :: () {\n    n := a\n}\n";
     let (db, search, file) = program(source);
-    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "a\n}"), None);
+    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "a\n}"));
     let add = items
         .iter()
         .find(|i| i.label == "add")
@@ -1012,7 +936,7 @@ fn resolving_an_item_agrees_with_the_hover_card() {
     let source = "/// Adds two numbers.\nadd :: (a: s64, b: s64) -> s64 {\n    return a + b;\n}\n\nmain :: () {\n    n := a\n}\n";
     let (db, search, file) = program(source);
 
-    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "a\n}"), None);
+    let items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, "a\n}"));
     let add = items
         .iter()
         .find(|i| i.label == "add")
@@ -1056,7 +980,6 @@ fn completing_in_an_empty_file_offers_keywords_rather_than_failing() {
             line: 0,
             character: 0,
         },
-        None,
     );
     assert!(
         items.iter().any(|i| i.label == "struct"),
@@ -1119,9 +1042,7 @@ fn the_hover_range_covers_the_name_and_not_the_body() {
 ///
 /// Files are written to a real temporary directory rather than injected, because ADR-0029's
 /// walk is the thing under test in half of these and a walk needs a filesystem.
-fn workspace(
-    files: &[(&str, &str)],
-) -> (jr_db::JairsDatabase, ModuleSearchPaths, tempfile::TempDir) {
+fn workspace(files: &[(&str, &str)]) -> (jr_db::JairsDatabase, ModuleCatalog, tempfile::TempDir) {
     let dir = tempfile::TempDir::new().expect("a temporary directory");
     for (name, text) in files {
         let path = dir.path().join(name);
@@ -1564,11 +1485,10 @@ fn workspace_symbols_proceed_on_a_truncated_list() {
 /// the real message wording had drifted out from under the action.
 fn actions_at(
     db: &JairsDatabase,
-    search: ModuleSearchPaths,
+    search: ModuleCatalog,
     file: SourceFile,
     source: &str,
     needle: &str,
-    workspace: &jr_db::WorkspaceFileList,
 ) -> Vec<lsp_types::CodeAction> {
     let position = at(source, needle);
     let range = lsp_types::Range {
@@ -1579,7 +1499,7 @@ fn actions_at(
         .into_iter()
         .filter(|d| d.range.start.line == position.line)
         .collect();
-    jr_lsp::code_actions(db, file, search, Encoding::Utf8, range, &diags, workspace)
+    jr_lsp::code_actions(db, file, search, Encoding::Utf8, range, &diags)
         .into_iter()
         .filter_map(|action| match action {
             lsp_types::CodeActionOrCommand::CodeAction(action) => Some(action),
@@ -1658,11 +1578,9 @@ fn apply(source: &str, action: &lsp_types::CodeAction) -> String {
 #[test]
 fn an_unresolved_name_offers_an_import_of_the_module_that_exports_it() {
     let source = "main :: () {\n    print(\"hi\\n\");\n}\n";
-    let (db, search, dir) = workspace(&[("main.jr", source)]);
-    let file = file_in(&db, &dir, "main.jr");
-    let list = list_of(&db);
+    let (db, search, file) = program(source);
 
-    let actions = actions_at(&db, search, file, source, "print", &list);
+    let actions = actions_at(&db, search, file, source, "print");
     let titles = titles(&actions);
     assert!(
         titles.contains(&String::from("import `Basic` for `print`")),
@@ -1684,9 +1602,8 @@ fn a_module_that_does_not_export_the_name_is_not_offered() {
     let source = "main :: () {\n    nonexistent_thing();\n}\n";
     let (db, search, dir) = workspace(&[("main.jr", source), ("Other.jr", "OTHER :: 1;\n")]);
     let file = file_in(&db, &dir, "main.jr");
-    let list = list_of(&db);
 
-    let actions = actions_at(&db, search, file, source, "nonexistent_thing", &list);
+    let actions = actions_at(&db, search, file, source, "nonexistent_thing");
     let imports: Vec<String> = titles(&actions)
         .into_iter()
         .filter(|title| title.starts_with("import "))
@@ -1699,10 +1616,9 @@ fn an_import_that_is_already_present_is_not_offered_again() {
     let source = "#import \"Basic\";\n\nmain :: () {\n    print(\"hi\\n\");\n}\n";
     let (db, search, dir) = workspace(&[("main.jr", source)]);
     let file = file_in(&db, &dir, "main.jr");
-    let list = list_of(&db);
 
     // `print` resolves here, so there is no E0201 at all and therefore no offer.
-    let actions = actions_at(&db, search, file, source, "print(", &list);
+    let actions = actions_at(&db, search, file, source, "print(");
     let imports: Vec<String> = titles(&actions)
         .into_iter()
         .filter(|title| title.starts_with("import "))
@@ -1715,9 +1631,8 @@ fn an_unused_import_offers_removal_that_deletes_the_whole_line() {
     let source = "#import \"Basic\";\n\nmain :: () {\n}\n";
     let (db, search, dir) = workspace(&[("main.jr", source)]);
     let file = file_in(&db, &dir, "main.jr");
-    let list = list_of(&db);
 
-    let actions = actions_at(&db, search, file, source, "#import", &list);
+    let actions = actions_at(&db, search, file, source, "#import");
     let titles = titles(&actions);
     assert!(
         titles.contains(&String::from("remove unused import `Basic`")),
@@ -1741,9 +1656,8 @@ fn two_unused_imports_offer_one_organise_action_as_well() {
     let source = "#import \"Basic\";\n#import \"Colors\";\n\nmain :: () {\n}\n";
     let (db, search, dir) = workspace(&[("main.jr", source), ("Colors.jr", "BLACK :: 0;\n")]);
     let file = file_in(&db, &dir, "main.jr");
-    let list = list_of(&db);
 
-    let actions = actions_at(&db, search, file, source, "#import \"Basic\"", &list);
+    let actions = actions_at(&db, search, file, source, "#import \"Basic\"");
     let organise = actions
         .iter()
         .find(|a| a.kind == Some(lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS))
@@ -1760,9 +1674,8 @@ fn one_unused_import_offers_no_organise_action() {
     let source = "#import \"Basic\";\n\nmain :: () {\n}\n";
     let (db, search, dir) = workspace(&[("main.jr", source)]);
     let file = file_in(&db, &dir, "main.jr");
-    let list = list_of(&db);
 
-    let actions = actions_at(&db, search, file, source, "#import", &list);
+    let actions = actions_at(&db, search, file, source, "#import");
     assert!(
         !actions
             .iter()
@@ -1777,9 +1690,8 @@ fn a_misspelled_field_offers_the_name_the_compiler_suggested() {
     let source = "Rect :: struct {\n    width: s64;\n}\n\nmain :: () {\n    r: Rect;\n    n := r.widht;\n}\n";
     let (db, search, dir) = workspace(&[("main.jr", source)]);
     let file = file_in(&db, &dir, "main.jr");
-    let list = list_of(&db);
 
-    let actions = actions_at(&db, search, file, source, "widht", &list);
+    let actions = actions_at(&db, search, file, source, "widht");
     let titles = titles(&actions);
     assert!(
         titles.contains(&String::from("change to `width`")),
@@ -1801,9 +1713,8 @@ fn a_field_with_no_near_name_offers_nothing() {
         "Point :: struct {\n    x: s64;\n}\n\nmain :: () {\n    p: Point;\n    n := p.zzzzz;\n}\n";
     let (db, search, dir) = workspace(&[("main.jr", source)]);
     let file = file_in(&db, &dir, "main.jr");
-    let list = list_of(&db);
 
-    let actions = actions_at(&db, search, file, source, "zzzzz", &list);
+    let actions = actions_at(&db, search, file, source, "zzzzz");
     let changes: Vec<String> = titles(&actions)
         .into_iter()
         .filter(|title| title.starts_with("change to"))
@@ -1817,9 +1728,8 @@ fn a_misspelled_type_offers_the_type_the_compiler_suggested() {
         "Rectangle :: struct {\n    width: s64;\n}\n\nmain :: () {\n    r: Recatngle;\n}\n";
     let (db, search, dir) = workspace(&[("main.jr", source)]);
     let file = file_in(&db, &dir, "main.jr");
-    let list = list_of(&db);
 
-    let actions = actions_at(&db, search, file, source, "Recatngle", &list);
+    let actions = actions_at(&db, search, file, source, "Recatngle");
     let titles = titles(&actions);
     assert!(
         titles.contains(&String::from("change to `Rectangle`")),
@@ -1832,9 +1742,8 @@ fn a_procedure_with_no_body_is_offered_one() {
     let source = "add :: (a: s64) -> s64;\n";
     let (db, search, dir) = workspace(&[("main.jr", source)]);
     let file = file_in(&db, &dir, "main.jr");
-    let list = list_of(&db);
 
-    let actions = actions_at(&db, search, file, source, "add", &list);
+    let actions = actions_at(&db, search, file, source, "add");
     let titles = titles(&actions);
     assert!(
         titles.contains(&String::from("give this procedure an empty body")),
@@ -1847,9 +1756,8 @@ fn a_comment_above_a_declaration_can_become_documentation() {
     let source = "// Adds two numbers.\nadd :: (a: s64, b: s64) -> s64 {\n    return a + b;\n}\n";
     let (db, search, dir) = workspace(&[("main.jr", source)]);
     let file = file_in(&db, &dir, "main.jr");
-    let list = list_of(&db);
 
-    let actions = actions_at(&db, search, file, source, "// Adds", &list);
+    let actions = actions_at(&db, search, file, source, "// Adds");
     let action = actions
         .iter()
         .find(|a| a.title == "make this comment documentation")
@@ -1873,9 +1781,8 @@ fn a_comment_above_nothing_is_not_offered_documentation() {
     let source = "main :: () {\n}\n\n// A trailing note about the file.\n";
     let (db, search, dir) = workspace(&[("main.jr", source)]);
     let file = file_in(&db, &dir, "main.jr");
-    let list = list_of(&db);
 
-    let actions = actions_at(&db, search, file, source, "// A trailing", &list);
+    let actions = actions_at(&db, search, file, source, "// A trailing");
     assert!(
         !titles(&actions).contains(&String::from("make this comment documentation")),
         "{:?}",
@@ -1888,9 +1795,8 @@ fn a_doc_comment_is_not_offered_promotion_again() {
     let source = "/// Already documentation.\nadd :: (a: s64) -> s64 {\n    return a;\n}\n";
     let (db, search, dir) = workspace(&[("main.jr", source)]);
     let file = file_in(&db, &dir, "main.jr");
-    let list = list_of(&db);
 
-    let actions = actions_at(&db, search, file, source, "/// Already", &list);
+    let actions = actions_at(&db, search, file, source, "/// Already");
     assert!(
         !titles(&actions).contains(&String::from("make this comment documentation")),
         "{:?}",
@@ -1905,9 +1811,8 @@ fn four_slashes_stay_an_ordinary_comment() {
     let source = "//// A banner, not documentation.\nadd :: (a: s64) -> s64 {\n    return a;\n}\n";
     let (db, search, dir) = workspace(&[("main.jr", source)]);
     let file = file_in(&db, &dir, "main.jr");
-    let list = list_of(&db);
 
-    let actions = actions_at(&db, search, file, source, "////", &list);
+    let actions = actions_at(&db, search, file, source, "////");
     assert!(
         !titles(&actions).contains(&String::from("make this comment documentation")),
         "{:?}",

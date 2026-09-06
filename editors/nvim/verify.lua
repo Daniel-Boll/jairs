@@ -1533,9 +1533,8 @@ if config then
       "codeActionProvider",
       "signatureHelpProvider",
       "inlayHintProvider",
-      -- ADR-0159: the fourteenth and last capability, and the only one whose value is information the
-      -- grammar cannot have. Checked here rather than in its own block because it needs the same
-      -- assertion the other three do.
+      -- ADR-0159: semantic classification carries information the grammar cannot have. Checked here
+      -- rather than in its own block because it needs the same advertisement assertion.
       "semanticTokensProvider",
     }) do
       local advertised = client.server_capabilities[capability]

@@ -13,9 +13,9 @@
 //!
 //! # Why the script's own compilation is an ordinary `BuildRequest`
 //!
-//! It is one: a program with a `main`, compiled with the operator's module paths. Sharing the path
-//! means a broken script gets the diagnostics any broken program gets, at its own lines, and there is
-//! no second notion of "how a file becomes runnable" to keep in step.
+//! It is one: a program with a `main`, compiled in the operator's discovered project context.
+//! Sharing the context means a broken script gets the diagnostics any broken program gets, at its
+//! own lines, and there is no second notion of "how a file becomes runnable" to keep in step.
 
 use std::path::PathBuf;
 
@@ -58,7 +58,7 @@ struct Target {
     linker_arguments: Vec<String>,
     /// Generated source text, each entry becoming part of the `Build` module.
     build_strings: Vec<String>,
-    /// Module name to directory, for a module the ordinary search path would not find.
+    /// Exact module name and source path supplied by `provide_import`.
     provided_imports: Vec<(String, PathBuf)>,
 }
 
@@ -122,8 +122,8 @@ pub struct ScriptOutcome {
 /// The state a running script is filling in, and the compilations it triggers.
 ///
 /// Implements [`Host`], so the VM forwards `#foreign compiler "…"` here. Holds the operator's own
-/// settings because a target inherits them: a script that adds no module path still needs the ones
-/// `jr build --script -I modules` was given, or `#import "Basic"` in the *target* would fail for a
+/// settings because a target inherits them: a script that adds no module root still needs the
+/// project catalog `jr build --script` discovered, or an import in the *target* would fail for a
 /// reason the script never mentioned.
 struct ScriptState {
     /// Whether the script has reached the driver at all (ADR-0196 §9).
@@ -141,8 +141,8 @@ struct ScriptState {
     pending: Vec<i64>,
     /// Commands the script has assembled, in creation order.
     commands: Vec<Command>,
-    /// The module paths the operator gave, inherited by every target.
-    inherited_module_paths: Vec<PathBuf>,
+    /// The discovered project inherited by every target.
+    inherited_project: jr_project::ProjectContext,
     /// The library paths the operator gave, inherited by every target.
     inherited_library_paths: Vec<PathBuf>,
     /// What followed `--` on the command line.
@@ -461,8 +461,20 @@ impl ScriptState {
             _ => OptLevel::Standard,
         };
 
-        let mut module_paths = target.module_paths.clone();
-        module_paths.extend(self.inherited_module_paths.iter().cloned());
+        let project = match self
+            .inherited_project
+            .derive_module_roots(target.module_paths.clone())
+        {
+            Ok(project) => project,
+            Err(error) => {
+                self.outcome.reports.push(format!(
+                    "target `{}` has unusable module paths: {error}",
+                    target.name
+                ));
+                self.outcome.ok = false;
+                return false;
+            }
+        };
         let mut library_paths = target.library_paths.clone();
         library_paths.extend(self.inherited_library_paths.iter().cloned());
 
@@ -530,7 +542,7 @@ impl ScriptState {
 
             let request = BuildRequest {
                 path: file.clone(),
-                module_paths: module_paths.clone(),
+                project: project.clone(),
                 library_paths: library_paths.clone(),
                 opt_level: Some(opt_level),
                 bounds_checks: target.bounds_checks,
@@ -625,8 +637,8 @@ pub struct ScriptRequest {
     /// `Option` means the exhaustive-initialiser rule forces every construction site to supply
     /// it, so no caller can silently fall back to a read that no longer happens.
     pub source: String,
-    /// `#import` search directories, for the script **and** inherited by every target it builds.
-    pub module_paths: Vec<PathBuf>,
+    /// The discovered project for the script, inherited by every target it builds.
+    pub project: jr_project::ProjectContext,
     /// `#system_library` search directories, inherited by every target.
     pub library_paths: Vec<PathBuf>,
     /// What followed `--` on the command line, readable as `Compiler.arguments()`.
@@ -695,7 +707,7 @@ pub fn is_build_script(path: &std::path::Path, text: &str) -> Result<bool, Strin
 /// When the script cannot be read or registered.
 pub fn run_script(request: &ScriptRequest) -> Result<ScriptResult, String> {
     let mut db = JairsDatabase::default();
-    let search = db.set_module_search_paths(request.module_paths.clone());
+    let search = db.install_module_catalog(request.project.catalog());
     // The script is not the thing being optimised, and nothing it declares can change that: a
     // `BUILD_OPT_LEVEL` in a *script* would be describing the script's own compilation, which nobody
     // asked about. Standard, unconditionally, so a script's own speed is not a variable.
@@ -713,7 +725,7 @@ pub fn run_script(request: &ScriptRequest) -> Result<ScriptResult, String> {
         targets: Vec::new(),
         pending: Vec::new(),
         commands: Vec::new(),
-        inherited_module_paths: request.module_paths.clone(),
+        inherited_project: request.project.clone(),
         inherited_library_paths: request.library_paths.clone(),
         arguments: request.arguments.clone(),
         // **`true` until something fails.** A script that builds nothing at all succeeded at what it

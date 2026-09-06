@@ -44,7 +44,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use jr_db::{Db as _, JairsDatabase, ModuleSearchPaths, SourceFile};
+use jr_db::{Db as _, JairsDatabase, ModuleCatalog, SourceFile};
 use jr_lsp::Encoding;
 
 use crate::cli::{BenchArgs, GlobalArgs};
@@ -126,7 +126,7 @@ pub fn run(args: BenchArgs, global: &GlobalArgs) -> Result<i32> {
     // Through the one resolver, so a benchmark measures the same module set the compiler would
     // actually use on this project — a measurement taken against a *different* search path than
     // the real build is a measurement of something nobody runs (ADR-0202 §2).
-    let search_paths = crate::project::module_search_paths(&args.module_paths)?;
+    let project = crate::project::context_for(&path, &args.module_paths)?;
 
     let at = cursor(&text);
     let iterations = args.iterations.max(1);
@@ -137,7 +137,7 @@ pub fn run(args: BenchArgs, global: &GlobalArgs) -> Result<i32> {
     for (operation, run_one) in operations() {
         let mut samples = Vec::with_capacity(iterations);
         for _ in 0..iterations {
-            let (db, file, input) = fresh(&path, &text, &search_paths)?;
+            let (db, file, input) = fresh(&path, &text, &project)?;
             let start = Instant::now();
             run_one(&db, file, input, at);
             samples.push(start.elapsed());
@@ -150,7 +150,7 @@ pub fn run(args: BenchArgs, global: &GlobalArgs) -> Result<i32> {
     }
 
     // Warm and after-edit share one database, built once.
-    let (mut db, file, input) = fresh(&path, &text, &search_paths)?;
+    let (mut db, file, input) = fresh(&path, &text, &project)?;
     for (operation, run_one) in operations() {
         // Prime the memo, so the first warm sample is not a cold one in disguise.
         run_one(&db, file, input, at);
@@ -195,13 +195,8 @@ pub fn run(args: BenchArgs, global: &GlobalArgs) -> Result<i32> {
     let mut discovered = 0usize;
     for _ in 0..iterations {
         let mut db = JairsDatabase::default();
-        let _ = db.set_module_search_paths(search_paths.clone());
-        let roots: Vec<PathBuf> = search_paths
-            .iter()
-            .cloned()
-            .chain(path.parent().map(Path::to_path_buf))
-            .collect();
-        db.set_workspace_roots(&roots);
+        let _ = db.install_module_catalog(project.catalog());
+        db.set_workspace_roots(project.owned_roots());
         let start = Instant::now();
         discovered = db.load_workspace_files();
         samples.push(start.elapsed());
@@ -224,7 +219,7 @@ pub fn run(args: BenchArgs, global: &GlobalArgs) -> Result<i32> {
 /// (ADR-0033 §1).
 type Operation = (
     &'static str,
-    fn(&JairsDatabase, SourceFile, ModuleSearchPaths, lsp_types::Position),
+    fn(&JairsDatabase, SourceFile, ModuleCatalog, lsp_types::Position),
 );
 
 fn operations() -> Vec<Operation> {
@@ -236,31 +231,16 @@ fn operations() -> Vec<Operation> {
             let _ = jr_lsp::hover(db, file, input, Encoding::Utf8, at);
         }),
         ("completion", |db, file, input, at| {
-            // **With the workspace input**, so the number covers the unimported-symbol source
-            // (ADR-0199 §7). Passing `None` here would measure the in-scope half alone and report
-            // a latency the real server never has — the cost ADR-0033 §3 declined to guess at is
-            // precisely this one, so measuring the cheap path would answer the wrong question.
-            let _ = jr_lsp::completion(db, file, input, Encoding::Utf8, at, db.workspace_files());
+            // The catalog itself is now the complete unimported-symbol source (ADR-0213 §5).
+            let _ = jr_lsp::completion(db, file, input, Encoding::Utf8, at);
         }),
         ("code_action", |db, file, input, at| {
             // Given the file's own diagnostics, which is what a client sends. An empty list
             // would measure a code-action request with nothing to offer — the cheap case,
             // and not the one ADR-0031 §5 is about.
             let diagnostics = jr_lsp::diagnostics(db, file, input, Encoding::Utf8);
-            let workspace = db
-                .workspace_files()
-                .map(|files| files.list(db))
-                .unwrap_or_default();
             let range = lsp_types::Range { start: at, end: at };
-            let _ = jr_lsp::code_actions(
-                db,
-                file,
-                input,
-                Encoding::Utf8,
-                range,
-                &diagnostics,
-                &workspace,
-            );
+            let _ = jr_lsp::code_actions(db, file, input, Encoding::Utf8, range, &diagnostics);
         }),
         // The two rows below are **not** requests any client sends. They are the split that
         // turns "references is slow" into "parsing is slow" — see ADR-0034 §3, which is the
@@ -392,10 +372,10 @@ fn cursor(text: &str) -> lsp_types::Position {
 fn fresh(
     path: &Path,
     text: &str,
-    search_paths: &[PathBuf],
-) -> Result<(JairsDatabase, SourceFile, ModuleSearchPaths)> {
+    project: &jr_project::ProjectContext,
+) -> Result<(JairsDatabase, SourceFile, ModuleCatalog)> {
     let mut db = JairsDatabase::default();
-    let input = db.set_module_search_paths(search_paths.to_vec());
+    let input = db.install_module_catalog(project.catalog());
     let key = path.to_string_lossy().into_owned();
     let _ = db.set_file_text(key.clone(), text.to_owned());
     let file = db
@@ -403,12 +383,7 @@ fn fresh(
         .ok_or_else(|| anyhow::anyhow!("internal error: {key} was not registered"))?;
     db.load_modules_transitively(file);
 
-    let roots: Vec<PathBuf> = search_paths
-        .iter()
-        .cloned()
-        .chain(path.parent().map(Path::to_path_buf))
-        .collect();
-    db.set_workspace_roots(&roots);
+    db.set_workspace_roots(project.owned_roots());
     db.load_workspace_files();
 
     Ok((db, file, input))
@@ -545,7 +520,7 @@ fn throughput(args: &BenchArgs, global: &GlobalArgs) -> Result<i32> {
     // Through the one resolver, so a benchmark measures the same module set the compiler would
     // actually use on this project — a measurement taken against a *different* search path than
     // the real build is a measurement of something nobody runs (ADR-0202 §2).
-    let search_paths = crate::project::module_search_paths(&args.module_paths)?;
+    let project = crate::project::context_for(&args.file, &args.module_paths)?;
 
     let iterations = args.iterations.max(1);
     let mut rows = Vec::new();
@@ -556,14 +531,14 @@ fn throughput(args: &BenchArgs, global: &GlobalArgs) -> Result<i32> {
     for (operation, compile) in [
         (
             "check",
-            check_all as fn(&mut JairsDatabase, &[(PathBuf, String)], ModuleSearchPaths),
+            check_all as fn(&mut JairsDatabase, &[(PathBuf, String)], ModuleCatalog),
         ),
         ("build", build_all),
     ] {
         let mut samples = Vec::with_capacity(iterations);
         for _ in 0..iterations {
             let mut db = JairsDatabase::default();
-            let input = db.set_module_search_paths(search_paths.clone());
+            let input = db.install_module_catalog(project.catalog());
             // Registering the text is *setup*, not compilation: a real command reads its
             // files before it starts, so the clock starts after.
             for (path, text) in &sources {
@@ -587,7 +562,7 @@ fn throughput(args: &BenchArgs, global: &GlobalArgs) -> Result<i32> {
 }
 
 /// Every diagnostic for every file, which is `jr check`'s work (ADR-0146 §1).
-fn check_all(db: &mut JairsDatabase, sources: &[(PathBuf, String)], input: ModuleSearchPaths) {
+fn check_all(db: &mut JairsDatabase, sources: &[(PathBuf, String)], input: ModuleCatalog) {
     for (path, _) in sources {
         let Some(file) = db.source_file(&path.to_string_lossy()) else {
             continue;
@@ -602,7 +577,7 @@ fn check_all(db: &mut JairsDatabase, sources: &[(PathBuf, String)], input: Modul
 /// The link is excluded because it is `cc` rather than this compiler (ADR-0146 §1). A file
 /// with no `main` contributes its *check* cost and no object, which is honest: `build_object`
 /// refuses it, and skipping the refusal would be measuring a different program.
-fn build_all(db: &mut JairsDatabase, sources: &[(PathBuf, String)], input: ModuleSearchPaths) {
+fn build_all(db: &mut JairsDatabase, sources: &[(PathBuf, String)], input: ModuleCatalog) {
     let config = db.build_config();
     for (path, _) in sources {
         let Some(file) = db.source_file(&path.to_string_lossy()) else {

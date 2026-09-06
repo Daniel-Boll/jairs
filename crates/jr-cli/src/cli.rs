@@ -116,9 +116,10 @@ pub enum Command {
 
     /// Run the language server over stdin and stdout.
     ///
-    /// Speaks LSP 3.17 and provides exactly what `PLAN.md` §1.4 asks for: diagnostics,
-    /// hover and goto-definition. Point an editor at `jr lsp`; anything richer is wave
-    /// W9's (`PLAN.md` §2.1).
+    /// Implements compiler-backed LSP 3.17 diagnostics, navigation, completion,
+    /// refactors, signature and inlay hints, semantic tokens, and formatting. Configure
+    /// an LSP client to launch `jr lsp`; packaged integrations for Neovim and Zed live
+    /// in `editors/`.
     Lsp(LspArgs),
 
     /// Measure how long language-server requests take on a file.

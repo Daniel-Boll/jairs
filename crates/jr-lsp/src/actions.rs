@@ -19,16 +19,14 @@
 //! would be a second formatter — the shape of mistake ADR-0028 §1 exists to prevent one
 //! layer up.
 
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Arc;
-
-use jr_db::{Db, ModuleSearchPaths, SourceFile};
+use jr_db::{Db, ModuleCatalog, SourceFile};
 use jr_hir::ItemKind;
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, NumberOrString, TextEdit,
     WorkspaceEdit,
 };
+use std::collections::HashMap;
+use std::path::Path;
 
 use crate::position::{Encoding, Positions};
 
@@ -41,11 +39,10 @@ use crate::position::{Encoding, Positions};
 pub fn code_actions(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     encoding: Encoding,
     range: lsp_types::Range,
     diagnostics: &[Diagnostic],
-    workspace: &jr_db::WorkspaceFileList,
 ) -> Vec<CodeActionOrCommand> {
     let text = file.text(db);
     let index = jr_db::line_index(db, file);
@@ -63,13 +60,7 @@ pub fn code_actions(
         };
         match code.as_str() {
             "E0201" => out.extend(auto_imports(
-                db,
-                file,
-                search_paths,
-                &positions,
-                &uri,
-                diagnostic,
-                workspace,
+                db, file, catalog, &positions, &uri, diagnostic,
             )),
             "E0231" => out.extend(remove_import(&uri, diagnostic)),
             // Both carry the suggestion as a `help:` line that `jr-sema` computed, so the
@@ -84,14 +75,7 @@ pub fn code_actions(
     // Offered once for the file rather than once per diagnostic, and only when more than
     // one import is unused: with exactly one it would duplicate the single-import action
     // under a different title.
-    out.extend(organise_imports(
-        db,
-        file,
-        search_paths,
-        &positions,
-        &uri,
-        &text,
-    ));
+    out.extend(organise_imports(db, file, catalog, &positions, &uri, &text));
 
     out.extend(document_comment(db, file, &positions, &uri, &text, range));
 
@@ -143,10 +127,10 @@ fn quickfix(
 
 /// `#import "M";` for every discovered module that exports the unresolved name.
 ///
-/// ADR-0031 §5: the discovered modules are parsed *on this request*, because ADR-0029
-/// deliberately yielded paths rather than loaded files. Where several modules export the
-/// name, all are offered as separate actions rather than one guess — and none is preferred,
-/// so a client cannot silently pick.
+/// The catalog eagerly installs every source, and [`jr_db::module_index`] derives exports from that
+/// immutable availability snapshot. Workspace ownership does not participate. Where several
+/// modules export the name, all are offered as separate actions rather than one guess — and none is
+/// preferred, so a client cannot silently pick.
 ///
 /// The name comes from the diagnostic's own message rather than from the cursor, because a
 /// code-action request carries a range and not a position, and the range may cover the
@@ -154,11 +138,10 @@ fn quickfix(
 fn auto_imports(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     positions: &Positions<'_>,
     uri: &lsp_types::Uri,
     diagnostic: &Diagnostic,
-    workspace: &jr_db::WorkspaceFileList,
 ) -> Vec<CodeActionOrCommand> {
     let Some(name) = backticked(&diagnostic.message) else {
         return Vec::new();
@@ -178,38 +161,18 @@ fn auto_imports(
         .collect();
 
     let insert = import_insertion_point(db, file, positions);
-    let own_path = file.path(db);
-
     let mut out = Vec::new();
-    let mut offered: Vec<String> = Vec::new();
-    for candidate in workspace.files.iter() {
-        if candidate.to_string_lossy().as_ref() == own_path.as_ref() {
+    let index = jr_db::module_index(db, catalog);
+    let candidates: Vec<_> = index
+        .exporters_of(symbol)
+        .filter(|module| !already.contains(&module.name.as_ref()))
+        .collect();
+    let preferred = candidates.len() == 1;
+    for candidate in candidates {
+        let module = candidate.name.as_ref();
+        if candidate.file == file {
             continue;
         }
-        let module = crate::render::container_of(candidate.to_string_lossy().as_ref());
-        // Already imported, or already offered by another file of the same module name.
-        if already.contains(&module.as_str()) || offered.contains(&module) {
-            continue;
-        }
-        // The module must resolve *by name* to this very file, or `#import "M";` would
-        // import something else: discovery finds `x.jr` anywhere in the tree, and only a
-        // file on a search path is reachable by an import at all.
-        let lookup = jr_db::module_file(db, search_paths, Arc::from(module.as_str()));
-        let Some(found) = lookup.found else { continue };
-        if found != *candidate {
-            continue;
-        }
-        let Some(source) = db.source_file_for_path(found.to_string_lossy().as_ref()) else {
-            continue;
-        };
-        // Only a module that actually exports the name is offered. This is the whole point
-        // of parsing them: an offer for a module that does not export it replaces one error
-        // with two.
-        if jr_db::file_exports(db, source).get(symbol).is_none() {
-            continue;
-        }
-
-        offered.push(module.clone());
         out.push(quickfix(
             format!("import `{module}` for `{name}`"),
             uri,
@@ -218,7 +181,7 @@ fn auto_imports(
                 range: insert,
                 new_text: format!("#import \"{module}\";\n"),
             }],
-            false,
+            preferred,
         ));
     }
     out
@@ -329,12 +292,12 @@ fn remove_import(uri: &lsp_types::Uri, diagnostic: &Diagnostic) -> Vec<CodeActio
 fn organise_imports(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     positions: &Positions<'_>,
     uri: &lsp_types::Uri,
     _text: &str,
 ) -> Vec<CodeActionOrCommand> {
-    let unused = jr_db::unused_imports(db, file, search_paths);
+    let unused = jr_db::unused_imports(db, file, catalog);
     if unused.len() < 2 {
         return Vec::new();
     }

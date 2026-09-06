@@ -296,7 +296,7 @@
 
 #let stages = (
   ("Lexer, parser, CST, typed AST", "works", "Hand-written, error-recovering, trivia-preserving"),
-  ("Formatter", "works", "Pure function over the CST; has lost a construct in most waves that added a node kind — #simd made it 9"),
+  ("Formatter", "works, safety redesign pending", "ADR-0212 fixes #program_export being deleted — an ABI change disguised as formatting. Typed exhaustive dispatch remains the structural follow-up"),
   ("HIR, name resolution, modules", "works", "Flat import merge; cycles legal; export filtering"),
   ("InternPool: types, values, layout", "works", "One layout computation and one integer evaluator, shared. Behind an RwLock: reads share, interning excludes"),
   ("Sema: signatures, checking", "works", "131 codes, E0296 next free, ownership enforced by a cross-crate test; folds size_of, os() and type_of; no const-eval here, by design"),
@@ -307,8 +307,8 @@
   ("Cranelift back end", "works", "Aggregate returns via sret; indirect calls via func_addr; a vector is one register; .debug_line and .debug_info written by hand with gimli"),
   ("LLVM back end", "works", "Via inkwell + LLVM 21, behind a default-off cargo feature; gate 7 is its own test run; DWARF via !dbg metadata, so none of the gimli work carries over"),
   ("DWARF debug info", "works", "Line tables, base and struct type DIEs with real field offsets, a subprogram per function, and stack-resident locals — in BOTH back ends, from one span source"),
-  ("Language server", "13 caps", "Diagnostics, hover, goto, completion, rename, actions, hints, symbols, signature help, and semantic tokens — the last one landed in ADR-0159, so the set is complete"),
-  ("Neovim integration", "works", "Runtimepath dir, no plugin manager; 170 checks"),
+  ("Language server", "works, not finished", "Diagnostics, navigation, completion, rename, actions, hints, symbols, semantic tokens and formatting. ADR-0211 inventories the shipped surface; freshness, exact related locations, scoped completion and protocol hardening remain"),
+  ("Neovim integration", "works", "Runtimepath dir, no plugin manager; real-client verifier"),
   ("Driver", "stub", "Should consume the workspace notion that now exists"),
 )
 
@@ -377,7 +377,7 @@
   ),
   (
     "W9 Tooling depth", "done",
-    "DONE, closed by ADR-0159. Semantic tokens were the one LSP capability still missing and the other thirteen had landed early; the set is now complete. The wave also RE-SCOPED its own DWARF item with evidence rather than carrying the plan's description: the plan said 'richer DWARF (locals, struct layouts)' as one line, and probing showed it is two implementations — Cranelift wants .debug_info DIEs written by hand while LLVM writes DWARF itself from metadata — so it moved to W12 where it could be budgeted honestly. VS Code stays descoped by ADR-0036, and any LSP client works unpackaged.",
+    "DONE as scoped at ADR-0159: semantic tokens supplied the semantic classification tree-sitter cannot. Later waves added formatting and more navigation, so ADR-0211 replaces the old finality/count claim with a live capability inventory and names the remaining correctness work. The wave also RE-SCOPED its own DWARF item with evidence rather than carrying the plan's description: the plan said 'richer DWARF (locals, struct layouts)' as one line, and probing showed it is two implementations — Cranelift wants .debug_info DIEs written by hand while LLVM writes DWARF itself from metadata — so it moved to W12 where it could be budgeted honestly. VS Code stays descoped by ADR-0036; other clients may launch the editor-agnostic server.",
   ),
   (
     "W10 Graphics, in Jairs", "done",

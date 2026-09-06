@@ -105,7 +105,7 @@ chapter exists.
 | E0207 | a declaration, or `#run`, inside a procedure body |
 | E0208 | `#import` outside file scope |
 | E0209 | a directive used where it is not valid |
-| E0210 | module not found (lists every path searched) — emitted by `jr-db` |
+| E0210 | module not found (lists the catalog's candidate locations) — emitted by `jr-db` |
 | E0211 | ambiguous name provided by two or more imported modules; in type position, emitted by `jr-sema` |
 | E0231 | an `#import` nothing in the file uses — a **warning**, emitted by `jr-db` |
 
@@ -167,22 +167,30 @@ valid at file scope (E0208). The full rules are in
 
 ### Finding a module
 
-`#import` names a *module*, not a path. The importing file's own directory is
-**not** searched — relative inclusion will be a separate `#load` in a later wave.
-Search order:
+`#import` names a *module*, not a path. Project discovery builds one immutable catalog before
+semantic queries run (ADR-0213). In a project governed by `jairs.toml`, direct children
+`src/<Name>.jr` and `src/<Name>/module.jr` are implicit modules. If both forms declare the same
+name, project discovery fails rather than choosing one.
 
-1. each `--module-path` given on the command line, in order
-2. the compiler's bundled `modules/` directory
+External modules are exact manifest dependencies:
 
-Within each directory, two layouts are tried:
+```toml
+[dependencies]
+Geometry = { path = "../geometry" }
+Noise = { path = "../vendor/noise.jr" }
+```
 
-| Order | Layout | Why |
-|---|---|---|
-| 1 | `<Name>/module.jr` | a module can grow from one file to many without its importers changing |
-| 2 | `<Name>.jr` | a small module needs no directory |
+A file path names exactly that file; a directory names exactly its `module.jr`. Imports remain
+flat, and an exact dependency does not expose sibling files. Command-line `-I` and
+`[build].module_paths` remain compatibility adapters that are expanded into catalog entries before
+compilation; tracked queries do not probe the filesystem.
 
-A module that cannot be found is **E0210**, and the diagnostic lists every path
-that was probed.
+The effective precedence is operator `-I`, project-local and exact dependencies, legacy manifest
+roots, then bundled modules. Local/exact duplicates are errors. An implicit local or legacy module
+cannot silently shadow the standard library; an exact dependency or explicit `-I` can.
+
+A module absent from the catalog is **E0210**. Its diagnostic lists candidate locations useful for
+repairing the project declaration.
 
 ### What importing does
 

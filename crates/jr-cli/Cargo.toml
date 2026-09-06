@@ -34,6 +34,7 @@ jr-syntax.workspace = true
 jr-fmt.workspace = true
 jr-stdlib.workspace = true
 jr-manifest.workspace = true
+jr-project.workspace = true
 jr-lsp.workspace = true
 # `jr bench` builds the `Range` a code-action request carries (ADR-0033 §3).
 lsp-types.workspace = true

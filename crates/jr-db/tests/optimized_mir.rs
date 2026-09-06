@@ -10,8 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use jr_db::{
-    Db, JairsDatabase, ModuleSearchPaths, SourceFile, dump_optimized_mir, file_mir,
-    optimized_file_mir,
+    Db, JairsDatabase, ModuleCatalog, SourceFile, dump_optimized_mir, file_mir, optimized_file_mir,
 };
 
 // ---------------------------------------------------------------------------
@@ -24,7 +23,7 @@ fn corpus(relative: &str) -> PathBuf {
         .join(relative)
 }
 
-fn database() -> (JairsDatabase, ModuleSearchPaths) {
+fn database() -> (JairsDatabase, ModuleCatalog) {
     let mut db = JairsDatabase::default();
     let search = db.set_module_search_paths(vec![corpus("../modules"), corpus("corpus/modules")]);
     (db, search)
@@ -49,14 +48,7 @@ fn add_file(db: &mut JairsDatabase, path: &str, text: &str) -> SourceFile {
 /// Returns the build settings too, with bounds checks **on** — the program as written, which is
 /// what every test here but the two named for ADR-0058 wants. Returned rather than looked up per
 /// test so that a test which needs them *off* has to say so.
-fn program(
-    text: &str,
-) -> (
-    JairsDatabase,
-    ModuleSearchPaths,
-    SourceFile,
-    jr_db::BuildConfig,
-) {
+fn program(text: &str) -> (JairsDatabase, ModuleCatalog, SourceFile, jr_db::BuildConfig) {
     let (mut db, search) = database();
     let file = add_file(&mut db, "main.jr", text);
     db.load_modules_transitively(file);
@@ -68,7 +60,7 @@ fn program(
 fn calls_left(
     db: &JairsDatabase,
     file: SourceFile,
-    search: ModuleSearchPaths,
+    search: ModuleCatalog,
     config: jr_db::BuildConfig,
     name: &str,
 ) -> usize {
@@ -121,7 +113,7 @@ fn proc_named(db: &JairsDatabase, file: SourceFile, name: &str) -> jr_hir::ProcI
 fn unchanged(
     db: &JairsDatabase,
     file: SourceFile,
-    search: ModuleSearchPaths,
+    search: ModuleCatalog,
     config: jr_db::BuildConfig,
     name: &str,
 ) -> bool {
@@ -479,7 +471,7 @@ fn write_only_slots(body: &jr_mir::MirBody) -> usize {
 fn checks_left(
     db: &JairsDatabase,
     file: SourceFile,
-    search: ModuleSearchPaths,
+    search: ModuleCatalog,
     config: jr_db::BuildConfig,
     name: &str,
 ) -> usize {

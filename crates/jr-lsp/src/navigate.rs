@@ -18,7 +18,7 @@
 
 use std::path::PathBuf;
 
-use jr_db::{Db, ModuleSearchPaths, SourceFile};
+use jr_db::{Db, ModuleCatalog, SourceFile};
 use jr_hir::{ConstValue, FileHir, ItemKind};
 use lsp_types::{
     DocumentHighlight, DocumentHighlightKind, DocumentSymbol, Location, PrepareRenameResponse,
@@ -89,7 +89,7 @@ impl std::fmt::Display for RenameRefusal {
 pub fn find_references(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     encoding: Encoding,
     position: lsp_types::Position,
     include_declaration: bool,
@@ -98,11 +98,11 @@ pub fn find_references(
     let text = file.text(db);
     let index = jr_db::line_index(db, file);
     let positions = Positions::new(text.as_ref(), &index, encoding);
-    let Some(def) = definition_at(db, file, search_paths, positions.offset(position)) else {
+    let Some(def) = definition_at(db, file, catalog, positions.offset(position)) else {
         return Vec::new();
     };
 
-    references(db, search_paths, &def, &with_open_file(db, file, workspace))
+    references(db, catalog, &def, &with_open_file(db, file, workspace))
         .into_iter()
         .filter(|found| include_declaration || !found.is_declaration)
         .filter_map(|found| location_of(db, encoding, &found.file, found.span))
@@ -117,19 +117,19 @@ pub fn find_references(
 pub fn document_highlight(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     encoding: Encoding,
     position: lsp_types::Position,
 ) -> Vec<DocumentHighlight> {
     let text = file.text(db);
     let index = jr_db::line_index(db, file);
     let positions = Positions::new(text.as_ref(), &index, encoding);
-    let Some(def) = definition_at(db, file, search_paths, positions.offset(position)) else {
+    let Some(def) = definition_at(db, file, catalog, positions.offset(position)) else {
         return Vec::new();
     };
     let here = vec![PathBuf::from(file.path(db).as_ref())];
 
-    references(db, search_paths, &def, &here)
+    references(db, catalog, &def, &here)
         .into_iter()
         .filter(|found| found.file == here[0])
         .map(|found| DocumentHighlight {
@@ -152,7 +152,7 @@ pub fn document_highlight(
 pub fn prepare_rename(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     encoding: Encoding,
     position: lsp_types::Position,
 ) -> Option<PrepareRenameResponse> {
@@ -160,19 +160,14 @@ pub fn prepare_rename(
     let index = jr_db::line_index(db, file);
     let positions = Positions::new(text.as_ref(), &index, encoding);
     let offset = positions.offset(position);
-    let def = definition_at(db, file, search_paths, offset)?;
+    let def = definition_at(db, file, catalog, offset)?;
     let name = declaration_name(db, &def)?;
     let span = declaration_span(db, &def)?;
 
     // The range returned is the *occurrence under the cursor*, not the declaration's — a
     // client uses it to seed its input box, and seeding it from another file's span would
     // put the box in the wrong place.
-    let here = references(
-        db,
-        search_paths,
-        &def,
-        &[PathBuf::from(file.path(db).as_ref())],
-    );
+    let here = references(db, catalog, &def, &[PathBuf::from(file.path(db).as_ref())]);
     let at_cursor = here
         .iter()
         .find(|found| found.span.range.contains_inclusive(offset))
@@ -191,7 +186,7 @@ pub fn prepare_rename(
 pub fn rename(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     encoding: Encoding,
     position: lsp_types::Position,
     new_name: &str,
@@ -204,7 +199,7 @@ pub fn rename(
     let text = file.text(db);
     let index = jr_db::line_index(db, file);
     let positions = Positions::new(text.as_ref(), &index, encoding);
-    let def = definition_at(db, file, search_paths, positions.offset(position))
+    let def = definition_at(db, file, catalog, positions.offset(position))
         .ok_or(RenameRefusal::NotRenameable)?;
 
     // A file-local rename does not depend on the workspace being complete, so a truncated
@@ -215,7 +210,7 @@ pub fn rename(
 
     let found = references(
         db,
-        search_paths,
+        catalog,
         &def,
         &with_open_file(db, file, &workspace.files),
     );
@@ -368,14 +363,14 @@ fn is_identifier(text: &str) -> bool {
 pub fn document_symbol(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     encoding: Encoding,
 ) -> Vec<DocumentSymbol> {
     let text = file.text(db);
     let index = jr_db::line_index(db, file);
     let positions = Positions::new(text.as_ref(), &index, encoding);
     let hir = jr_db::file_hir(db, file);
-    let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
+    let sigs = jr_db::file_signatures(db, file, catalog).signatures;
     let docs = jr_db::file_docs(db, file);
     let container = container_of(file.path(db).as_ref());
     let pool = db.read_pool();
@@ -461,7 +456,7 @@ fn struct_children(
 #[must_use]
 pub fn workspace_symbol(
     db: &dyn Db,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     encoding: Encoding,
     query: &str,
     workspace: &[PathBuf],
@@ -474,7 +469,7 @@ pub fn workspace_symbol(
             continue;
         };
         let hir = jr_db::file_hir(db, file);
-        let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
+        let sigs = jr_db::file_signatures(db, file, catalog).signatures;
         let docs = jr_db::file_docs(db, file);
         let container = container_of(path.to_string_lossy().as_ref());
         let text = file.text(db);

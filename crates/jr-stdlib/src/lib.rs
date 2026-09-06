@@ -37,12 +37,10 @@
 //!
 //! # The seam
 //!
-//! Module resolution funnels through one function, `jr_db::Db::read_module_file`, which both
-//! the existence probe and the load go through. So the bundled library is reachable by
-//! answering there for paths under one synthetic root — [`root`] — and the whole of the
-//! path-based search machinery is untouched. A synthetic path rather than a separate lookup
-//! tier is deliberate: it keeps `module_file`'s "first hit wins" ordering, its list of searched
-//! candidates and the E0210 diagnostic that prints them all working with no new concept.
+//! Project discovery includes every bundled module as a catalog entry under one synthetic root —
+//! [`root`]. Keeping a synthetic path still matters: diagnostics can distinguish a built-in source
+//! from a filesystem path, while the catalog gives every consumer the same module identity without
+//! probing the filesystem from a tracked query (ADR-0213).
 
 // Defines `BUNDLED`: every bundled module as `(name, source)`, sorted by name. The doc comment
 // travels with the item in the generated file, which is why there is none here.
@@ -60,12 +58,11 @@ const MODULE_FILE: &str = "module.jr";
 /// a user creates can shadow the bundled library or be shadowed by it.
 const ROOT: &str = "<bundled>";
 
-/// The search path the bundled standard library answers for.
+/// The synthetic catalog root used for bundled standard-library entries.
 ///
-/// Append this last when building a module search path, so an explicit `-I` still wins
-/// (ADR-0014 §1). Named in prose rather than linked to `jr_db::ModuleSearchPaths`, because this
-/// crate deliberately depends on nothing — it is a leaf, and a doc link would be the one edge
-/// that made it otherwise.
+/// Operator `-I` entries and exact dependencies may override a bundled module; implicit local and
+/// legacy path entries may not (ADR-0213 §4). This crate deliberately depends on nothing, so it
+/// exposes only the path and source table rather than the catalog type that consumes them.
 #[must_use]
 pub fn root() -> &'static Path {
     Path::new(ROOT)

@@ -1,10 +1,10 @@
-//! Module resolution: search paths, file lookup, and the salsa queries that
+//! Module resolution: catalog lookup and the salsa queries that
 //! wire `jr-hir` lowering and resolution into the incremental database.
 //!
 //! # Query dependency graph
 //!
 //! ```text
-//! module_search_paths (salsa input)
+//! module_catalog (salsa input)
 //!        │
 //!        ▼
 //! module_file(name) ──────────────────────────────────────────────────────┐
@@ -37,12 +37,10 @@
 //!
 //! ## Module loading and the filesystem seam
 //!
-//! Module files are loaded into the database **before** running resolution
-//! queries. The [`crate::JairsDatabase::load_module`] method (called by the
-//! batch driver and LSP) reads a module file from the filesystem (or an
-//! in-memory map for tests) and registers it as a salsa [`SourceFile`] input.
-//! The `resolved` query then looks up already-loaded files by path — it never
-//! touches the filesystem itself.
+//! [`crate::JairsDatabase::install_module_catalog`] registers every discovered
+//! module as a salsa [`SourceFile`] input **before** running resolution queries.
+//! The `resolved` query then looks up already-loaded files in the immutable
+//! catalog — it never touches the filesystem itself.
 //!
 //! This separation keeps tracked queries pure (no filesystem I/O inside
 //! salsa queries) and avoids the need for `&mut db` inside a tracked query.
@@ -87,39 +85,53 @@ const E0245: &str = "E0245";
 pub type ModuleName = Arc<str>;
 
 // ---------------------------------------------------------------------------
-// ModuleSearchPaths — salsa input
+// ModuleCatalog — salsa input
 // ---------------------------------------------------------------------------
+
+/// One already-loaded module in a [`ModuleCatalog`].
+///
+/// The project layer owns discovery and source reads; this database-side form adds the stable
+/// [`SourceFile`] identity that tracked queries consume.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ModuleCatalogEntry {
+    /// The flat name used by `#import`.
+    pub name: ModuleName,
+    /// The source's stable path.
+    pub path: PathBuf,
+    /// The source input registered before the catalog was installed.
+    pub file: SourceFile,
+    /// Why the project catalog contains this module.
+    pub origin: jr_project::ModuleOrigin,
+}
 
 // The salsa macro generates undocumented associated functions (new, field
 // getters, field setters). We allow missing_docs for the input struct
 // rather than for the whole module.
 #[allow(missing_docs)]
-mod search_paths_input {
+mod catalog_input {
     use std::{path::PathBuf, sync::Arc};
 
-    /// The ordered list of directories to search for modules.
+    use super::ModuleCatalogEntry;
+
+    /// An immutable snapshot of every module available to `#import`.
     ///
-    /// This is a salsa input so that changing `--module-path` on the command line
-    /// correctly invalidates all `module_file` queries and their dependents.
+    /// Discovery and source reads happen before this input is installed. Tracked queries therefore
+    /// depend on explicit data and never perform filesystem I/O that salsa could not observe.
     ///
-    /// **Why a salsa input?** Module search paths are configuration that comes
-    /// from outside the source files. If they change (e.g. the user adds a new
-    /// `--module-path`), every `module_file` lookup may return a different result.
-    /// Making them a salsa input ensures that salsa tracks the dependency and
-    /// re-runs affected queries automatically.
+    /// The compatibility probe roots are retained only for E0210's searched-path explanation.
     #[salsa::input]
-    pub struct ModuleSearchPaths {
-        /// The ordered list of search directories.
-        ///
-        /// Each entry is an absolute (or workspace-relative) path to a directory
-        /// that is searched for modules. Entries are tried in order; the first
-        /// hit wins.
+    pub struct ModuleCatalog {
+        /// Exact entries, sorted by flat import name.
         #[returns(clone)]
-        pub paths: Arc<[PathBuf]>,
+        pub entries: Arc<[ModuleCatalogEntry]>,
+
+        /// Compatibility roots used to render candidates for a missing import.
+        #[returns(clone)]
+        pub probe_roots: Arc<[PathBuf]>,
     }
 }
 
-pub use search_paths_input::ModuleSearchPaths;
+pub use catalog_input::ModuleCatalog;
 
 // ---------------------------------------------------------------------------
 // ModuleLookupResult
@@ -127,16 +139,15 @@ pub use search_paths_input::ModuleSearchPaths;
 
 /// The result of looking up a module by name.
 ///
-/// Carries both the resolved file path (if found) and the list of paths that
-/// were searched, so that E0210 can list every location tried.
+/// Carries both the resolved file path (if found) and the candidate paths E0210 should render on a
+/// miss. Catalog lookup itself does not probe those paths.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleLookupResult {
     /// The resolved file path, if the module was found.
     pub found: Option<PathBuf>,
-    /// Every path that was probed, in search order.
+    /// The exact matched path on success, or every legacy candidate on a miss.
     ///
-    /// This is always populated (even on success) so that diagnostics can
-    /// show the full search list.
+    /// Miss candidates preserve the old directory-form-before-file-form order for each probe root.
     pub searched: Vec<PathBuf>,
 }
 
@@ -161,49 +172,31 @@ pub struct ResolveResult {
 // module_file — tracked query
 // ---------------------------------------------------------------------------
 
-/// Looks up a module by name and returns the path to its entry file, if found.
-///
-/// Search order (ADR-0014 §1):
-/// 1. For each search path, in order:
-///    a. `<path>/<Name>/module.jr` — directory form (tried first)
-///    b. `<path>/<Name>.jr` — single-file form
-/// 2. First hit wins.
-///
-/// The importing file's own directory is deliberately **not** searched.
+/// Looks up a module by flat name in an already-loaded catalog.
 ///
 /// Returns a [`ModuleLookupResult`] that carries both the found path (if any)
-/// and the full list of paths that were probed, so that E0210 can list them.
+/// and the compatibility paths E0210 should display on a miss.
 #[salsa::tracked(returns(clone))]
-pub fn module_file(
-    db: &dyn Db,
-    search_paths: ModuleSearchPaths,
-    name: ModuleName,
-) -> ModuleLookupResult {
-    let paths = search_paths.paths(db);
-    let mut searched = Vec::new();
-
-    for dir in paths.iter() {
-        // Try directory form first: <dir>/<Name>/module.jr
-        let dir_form = dir.join(name.as_ref()).join("module.jr");
-        searched.push(dir_form.clone());
-        if db.read_module_file(&dir_form).is_some() {
-            return ModuleLookupResult {
-                found: Some(dir_form),
-                searched,
-            };
-        }
-
-        // Try single-file form: <dir>/<Name>.jr
-        let file_form = dir.join(format!("{}.jr", name.as_ref()));
-        searched.push(file_form.clone());
-        if db.read_module_file(&file_form).is_some() {
-            return ModuleLookupResult {
-                found: Some(file_form),
-                searched,
-            };
-        }
+pub fn module_file(db: &dyn Db, catalog: ModuleCatalog, name: ModuleName) -> ModuleLookupResult {
+    let entries = catalog.entries(db);
+    if let Ok(index) = entries.binary_search_by(|entry| entry.name.as_ref().cmp(name.as_ref())) {
+        let path = entries[index].path.clone();
+        return ModuleLookupResult {
+            found: Some(path.clone()),
+            searched: vec![path],
+        };
     }
 
+    let searched = catalog
+        .probe_roots(db)
+        .iter()
+        .flat_map(|root| {
+            [
+                root.join(name.as_ref()).join("module.jr"),
+                root.join(format!("{}.jr", name.as_ref())),
+            ]
+        })
+        .collect();
     ModuleLookupResult {
         found: None,
         searched,
@@ -306,77 +299,29 @@ pub fn module_name_of(path: &Path) -> String {
 /// `create_window`?". This is that index, and it is what lets completion offer a name the file has
 /// not imported (ADR-0199 §3).
 ///
-/// # Why it is a query over two inputs and not a directory walk
+/// # Why it is a query over one input and not a directory walk
 ///
 /// A walk is untracked I/O and **must not live in a query** (ADR-0029 §2): salsa cannot know the
-/// filesystem changed, so a query that walked would be stale with no way to notice. Both of its
-/// inputs are already walked outside the database — [`ModuleSearchPaths`] is set from the command
-/// line and [`crate::WorkspaceFiles`] by `set_workspace_roots` — so this derives from them and
-/// invalidates exactly when they do. Editing one module re-runs that module's [`file_exports`] leg
-/// and nothing else.
-///
-/// # How a path becomes a module
-///
-/// Discovery finds every `.jr` file in the workspace, and most of them are not modules. A candidate
-/// is kept only when [`module_name_of`] gives a name that [`module_file`] resolves **back to that
-/// very path** — the round-trip the auto-import quick fix has always done (ADR-0031 §5), and the
-/// check that matters: without it, a `helpers.jr` sitting outside every search path would be offered
-/// as `#import "helpers";`, which resolves to nothing or, worse, to a different file of that name
-/// earlier on the path.
-///
-/// **A name is claimed only once a candidate has passed every check.** The first version marked the
-/// name seen *before* the round-trip, so a file that merely produced the name and then failed took it
-/// with it and the real module below was skipped as a duplicate. That is not a hypothetical: Zed
-/// builds a dev extension by cloning the grammar's repository into the extension directory, which
-/// puts a **second copy of this repository inside it** — `editors/zed/grammars/jairs/modules/…`
-/// sorts before `modules/…`, claimed every module name, failed the round-trip on each, and left the
-/// index **empty**, so completion offered no unimported name anywhere in the tree. Neither the name
-/// nor the round-trip was wrong; the order of the two was.
-///
-/// A repeated `module_file` probe costs nothing, because it is a query memoised on its name.
-///
-/// # What it does not do
-///
-/// It does not load files. A path discovered but never read has no [`SourceFile`], and
-/// `source_file_for_path` answers `None` — the same silent skip [`resolved`] documents. A caller
-/// wanting the whole index must run `load_workspace_files` first, which is a write and therefore
-/// happens outside any query.
+/// filesystem changed, so a query that walked would be stale with no way to notice. The catalog was
+/// discovered, read and installed outside salsa; this query only derives exports from its exact
+/// entries. Workspace ownership is deliberately absent: availability to import and permission to
+/// perform workspace edits are separate facts.
 ///
 /// Uses `no_eq` because [`ItemScope`] does not implement [`PartialEq`].
 #[salsa::tracked(returns(clone), no_eq)]
-pub fn module_index(
-    db: &dyn Db,
-    search_paths: ModuleSearchPaths,
-    workspace: crate::WorkspaceFiles,
-) -> Arc<ModuleIndex> {
-    let list = workspace.list(db);
-    let mut modules: Vec<IndexedModule> = Vec::new();
-    let mut seen: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
-    for path in list.files.iter() {
-        let name = module_name_of(path);
-        if name.is_empty() || seen.contains(&name) {
-            continue;
-        }
-        // The round-trip. `found` must be this path, or the name means a different file.
-        let lookup = module_file(db, search_paths, Arc::from(name.as_str()));
-        let Some(found) = lookup.found else { continue };
-        if found != *path {
-            continue;
-        }
-        let Some(source) = db.source_file_for_path(&found.to_string_lossy()) else {
-            continue;
-        };
-        // Claimed here, with the candidate accepted: see the doc above.
-        seen.insert(name.clone());
-        modules.push(IndexedModule {
-            name: Arc::from(name.as_str()),
-            file: source,
-            exports: file_exports(db, source),
-        });
-    }
+pub fn module_index(db: &dyn Db, catalog: ModuleCatalog) -> Arc<ModuleIndex> {
+    let modules = catalog
+        .entries(db)
+        .iter()
+        .map(|entry| IndexedModule {
+            name: Arc::clone(&entry.name),
+            file: entry.file,
+            exports: file_exports(db, entry.file),
+        })
+        .collect();
     Arc::new(ModuleIndex {
         modules,
-        truncated: list.truncated,
+        truncated: false,
     })
 }
 
@@ -398,13 +343,12 @@ pub struct IndexedModule {
 /// Every `#import`able module and its exported names ([`module_index`]).
 #[derive(Clone)]
 pub struct ModuleIndex {
-    /// The modules, in workspace-file order, each name appearing once.
+    /// The modules, in catalog order, each name appearing once.
     pub modules: Vec<IndexedModule>,
-    /// Whether discovery hit its file cap, so this is **not** every module.
+    /// Always `false`: a catalog is an exact availability snapshot, not a capped workspace walk.
     ///
-    /// Carried rather than hidden for the reason `WorkspaceFileList::truncated` is (ADR-0029 §4):
-    /// a consumer that must be exhaustive has to be able to refuse, and one that merely offers
-    /// suggestions can proceed. Completion is the second kind.
+    /// Retained in the public result during the staged migration so existing completion consumers
+    /// need not change shape at the same time as they stop passing workspace ownership.
     pub truncated: bool,
 }
 
@@ -470,7 +414,7 @@ pub fn imports_of(db: &dyn Db, file: SourceFile) -> Arc<[ModuleName]> {
 /// Uses `no_eq` because [`ResolveResult`] contains [`Diagnostics`] which is
 /// not `Eq`.
 #[salsa::tracked(returns(clone), no_eq)]
-pub fn resolved(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) -> ResolveResult {
+pub fn resolved(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> ResolveResult {
     let hir = file_hir(db, file);
     let import_names = imports_of(db, file);
     let interner = db.interner();
@@ -484,7 +428,7 @@ pub fn resolved(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
     let mut import_scopes: Vec<(String, Arc<ItemScope>)> = Vec::new();
 
     for name in import_names.iter() {
-        let lookup = module_file(db, search_paths, name.clone());
+        let lookup = module_file(db, catalog, name.clone());
 
         if let Some(ref found_path) = lookup.found {
             // Self-import: a file importing itself is a no-op (ADR-0014 §6).
@@ -503,7 +447,7 @@ pub fn resolved(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
             // on disk but not yet loaded into the database. This should not
             // happen if the caller pre-loads all modules correctly.
         } else {
-            // Module not found — emit E0210 with the full search path list.
+            // Module not found — emit E0210 with the catalog's diagnostic probe list.
             let import_span = find_import_span(&hir, name.as_ref());
 
             // The searched paths go in NOTES, one per path -- not in the
@@ -521,7 +465,7 @@ pub fn resolved(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
                 diag = diag.with_note(format!("  {}", path.display()));
             }
             diag = diag.with_help(
-                "add the module's directory with `--module-path <DIR>`, or check the spelling",
+                "add it under `src`, declare it in `jairs.toml`, use `--module-path <DIR>`, or check the spelling",
             );
             diags.push(diag);
         }
@@ -595,7 +539,7 @@ pub(crate) fn imported_modules_for_resolve<'a, K: AsRef<str>>(
 pub fn frontend_diagnostics(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
 ) -> Arc<Diagnostics> {
     let mut all = Diagnostics::new();
 
@@ -611,15 +555,15 @@ pub fn frontend_diagnostics(
     all.extend(lower_diags.iter().cloned());
 
     // Resolution diagnostics (E0200, E0201, E0210, E0211).
-    let resolve_result = resolved(db, file, search_paths);
+    let resolve_result = resolved(db, file, catalog);
     all.extend(resolve_result.diagnostics.iter().cloned());
 
     // Declaration typing (E0204, E0212–E0214, E0226) and body checking
     // (E0214–E0225). Both phases run: signatures own the file's declarations and
     // the check owns its bodies, so neither subsumes the other.
-    let signatures = crate::sema::file_signatures(db, file, search_paths);
+    let signatures = crate::sema::file_signatures(db, file, catalog);
     all.extend(signatures.diagnostics.iter().cloned());
-    let checked = crate::sema::checked(db, file, search_paths);
+    let checked = crate::sema::checked(db, file, catalog);
     all.extend(checked.diagnostics.iter().cloned());
 
     Arc::new(all)
@@ -642,28 +586,24 @@ pub fn frontend_diagnostics(
 ///
 /// Uses `no_eq` because [`Diagnostics`] is not `Eq`.
 #[salsa::tracked(returns(clone), no_eq)]
-pub fn file_diagnostics(
-    db: &dyn Db,
-    file: SourceFile,
-    search_paths: ModuleSearchPaths,
-) -> Arc<Diagnostics> {
+pub fn file_diagnostics(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> Arc<Diagnostics> {
     let mut all = Diagnostics::new();
-    all.extend(frontend_diagnostics(db, file, search_paths).iter().cloned());
+    all.extend(frontend_diagnostics(db, file, catalog).iter().cloned());
 
     // E0230: a `#run` or a constant that could not be evaluated. Reported here rather
     // than in `frontend_diagnostics` because MIR's gate reads that query, and a
     // constant with no value is precisely a thing MIR must still be asked to lower —
     // it refuses the bodies that needed the value, which is the correct outcome.
-    let consts = crate::consts::file_consts(db, file, search_paths);
+    let consts = crate::consts::file_consts(db, file, catalog);
     all.extend(consts.diagnostics.iter().cloned());
 
     // E0231: an import nothing in the file uses. A warning rather than an error, and here
     // rather than in `frontend_diagnostics` for the same reason E0230 is: MIR's gate reads
     // that query, and an unused import must not stop a file being lowered.
-    let unused = crate::imports::unused_imports(db, file, search_paths);
+    let unused = crate::imports::unused_imports(db, file, catalog);
     all.extend(unused.diagnostics().into_vec());
 
-    let mir = crate::mir::file_mir(db, file, search_paths);
+    let mir = crate::mir::file_mir(db, file, catalog);
     // Diagnostics only the **expanded** tree can produce (ADR-0073 §1): the unexpanded resolve withholds
     // unresolved-name errors in a body holding a pending computed `#insert`, because it cannot know what
     // the insert declares. Reported here rather than in `frontend_diagnostics` because expansion needs
@@ -824,5 +764,15 @@ impl InMemoryModules {
     /// Returns the content of a file, if it exists.
     pub fn get(&self, path: &Path) -> Option<&str> {
         self.files.get(path).map(|s| s.as_str())
+    }
+
+    /// Every virtual path and source, in deterministic path order.
+    ///
+    /// The compatibility search-path adapter uses this outside tracked queries to turn legacy
+    /// roots into exact catalog entries.
+    pub fn iter(&self) -> impl Iterator<Item = (&Path, &str)> {
+        self.files
+            .iter()
+            .map(|(path, source)| (path.as_path(), source.as_str()))
     }
 }

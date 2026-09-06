@@ -27,7 +27,7 @@
 
 use std::sync::Arc;
 
-use jr_db::{Db, ModuleSearchPaths, SourceFile};
+use jr_db::{Db, ModuleCatalog, SourceFile};
 use jr_hir::{FileHir, ItemKind};
 use jr_pool::{Item, PoolId};
 use lsp_types::{
@@ -94,10 +94,9 @@ enum Context {
 pub fn completion(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     encoding: Encoding,
     position: lsp_types::Position,
-    workspace: Option<jr_db::WorkspaceFiles>,
 ) -> Vec<CompletionItem> {
     let text = file.text(db);
     let index = jr_db::line_index(db, file);
@@ -109,8 +108,8 @@ pub fn completion(
         // is asked first — and only when nothing shadows the alias, which is the rule lowering
         // applies at the same fork.
         Context::Field { dot } => ident_before(text.as_ref(), dot)
-            .and_then(|receiver| qualified_members(db, file, search_paths, receiver, offset))
-            .unwrap_or_else(|| fields_at(db, file, search_paths, dot)),
+            .and_then(|receiver| qualified_members(db, file, catalog, receiver, offset))
+            .unwrap_or_else(|| fields_at(db, file, catalog, dot)),
         Context::Directive => DIRECTIVES
             .iter()
             .map(|name| CompletionItem {
@@ -119,7 +118,7 @@ pub fn completion(
                 ..CompletionItem::default()
             })
             .collect(),
-        Context::Name => names_at(db, file, search_paths, offset, workspace, &positions),
+        Context::Name => names_at(db, file, catalog, offset, &positions),
     };
 
     // Stamped here rather than at each construction site, because forgetting it at one of
@@ -215,12 +214,15 @@ fn ident_before(text: &str, dot: usize) -> Option<&str> {
 fn qualified_members(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     receiver: &str,
     offset: usize,
 ) -> Option<Vec<CompletionItem>> {
-    let symbol = db.interner().get(receiver)?;
     let hir = jr_db::file_hir(db, file);
+    // Lower first: a freshly opened, syntactically incomplete file may not have interned the alias
+    // yet. The old server's transitive-module preload happened to lower the root before completion
+    // and masked this ordering dependency.
+    let symbol = db.interner().get(receiver)?;
     if shadows_alias(hir.as_ref(), symbol, offset) {
         return None;
     }
@@ -233,12 +235,12 @@ fn qualified_members(
         _ => None,
     })?;
 
-    let lookup = jr_db::module_file(db, search_paths, Arc::from(path.as_str()));
+    let lookup = jr_db::module_file(db, catalog, Arc::from(path.as_str()));
     let found = lookup.found?;
     let module = db.source_file_for_path(found.to_string_lossy().as_ref())?;
 
     let other = jr_db::file_hir(db, module);
-    let sigs = jr_db::file_signatures(db, module, search_paths).signatures;
+    let sigs = jr_db::file_signatures(db, module, catalog).signatures;
     let docs = jr_db::file_docs(db, module);
     let exports = jr_db::file_exports(db, module);
     let container = container_of(found.to_string_lossy().as_ref());
@@ -297,7 +299,7 @@ fn shadows_alias(hir: &FileHir, name: jr_base::Symbol, offset: usize) -> bool {
 fn fields_at(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     dot: usize,
 ) -> Vec<CompletionItem> {
     let hir = jr_db::file_hir(db, file);
@@ -306,11 +308,11 @@ fn fields_at(
     let Some(found) = locate(hir.as_ref(), (dot.saturating_sub(1) as u32).into()) else {
         return Vec::new();
     };
-    let types = jr_db::checked(db, file, search_paths).types;
+    let types = jr_db::checked(db, file, catalog).types;
     let Some(mut ty) = types.expr_type(found.scope, found.expr) else {
         return Vec::new();
     };
-    let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
+    let sigs = jr_db::file_signatures(db, file, catalog).signatures;
     let pool = db.read_pool();
 
     // Auto-deref, exactly as the checker does.
@@ -348,13 +350,12 @@ fn fields_at(
 fn names_at(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     offset: usize,
-    workspace: Option<jr_db::WorkspaceFiles>,
     positions: &Positions<'_>,
 ) -> Vec<CompletionItem> {
     let hir = jr_db::file_hir(db, file);
-    let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
+    let sigs = jr_db::file_signatures(db, file, catalog).signatures;
     let docs = jr_db::file_docs(db, file);
     let container = container_of(file.path(db).as_ref());
     let mut out = Vec::new();
@@ -364,10 +365,9 @@ fn names_at(
     // `std::sync::Mutex` is not reentrant. The first version of this function did exactly
     // that and hung the test run with no output at all, which is what a deadlock looks
     // like from outside.
-    let types = jr_db::checked(db, file, search_paths).types;
-    let imported = imported_completions(db, hir.as_ref(), search_paths);
-    let unimported =
-        unimported_completions(db, file, hir.as_ref(), search_paths, workspace, positions);
+    let types = jr_db::checked(db, file, catalog).types;
+    let imported = imported_completions(db, hir.as_ref(), catalog);
+    let unimported = unimported_completions(db, file, hir.as_ref(), catalog, positions);
 
     {
         let pool = db.read_pool();
@@ -548,11 +548,7 @@ fn call_snippet(name: &str, params: &[jr_hir::Param], interner: &jr_base::Intern
 /// other file's raw items, so `#scope_module` is respected (ADR-0054 §3). Reading the items directly
 /// offered names sema rejects — the code-action path had always filtered correctly, so the two
 /// disagreed about what a module offers.
-fn imported_completions(
-    db: &dyn Db,
-    hir: &FileHir,
-    search_paths: ModuleSearchPaths,
-) -> Vec<CompletionItem> {
+fn imported_completions(db: &dyn Db, hir: &FileHir, catalog: ModuleCatalog) -> Vec<CompletionItem> {
     let mut out = Vec::new();
     for item in &hir.items {
         let ItemKind::Import { path, alias, .. } = &item.kind else {
@@ -562,14 +558,14 @@ fn imported_completions(
         if alias.is_some() {
             continue;
         }
-        let lookup = jr_db::module_file(db, search_paths, Arc::from(path.as_str()));
+        let lookup = jr_db::module_file(db, catalog, Arc::from(path.as_str()));
         let Some(found) = lookup.found else { continue };
         let Some(module) = db.source_file_for_path(found.to_string_lossy().as_ref()) else {
             continue;
         };
 
         let other = jr_db::file_hir(db, module);
-        let sigs = jr_db::file_signatures(db, module, search_paths).signatures;
+        let sigs = jr_db::file_signatures(db, module, catalog).signatures;
         let docs = jr_db::file_docs(db, module);
         let exports = jr_db::file_exports(db, module);
         let container = container_of(found.to_string_lossy().as_ref());
@@ -636,17 +632,10 @@ fn unimported_completions(
     db: &dyn Db,
     file: SourceFile,
     hir: &FileHir,
-    search_paths: ModuleSearchPaths,
-    workspace: Option<jr_db::WorkspaceFiles>,
+    catalog: ModuleCatalog,
     positions: &Positions<'_>,
 ) -> Vec<CompletionItem> {
-    // `None` means discovery has not run, which is **not** an empty workspace. Answering with
-    // nothing is right either way here, but the two are kept apart deliberately: walking a
-    // directory to find out would be untracked I/O inside a request, which ADR-0029 §2 forbids.
-    let Some(workspace) = workspace else {
-        return Vec::new();
-    };
-    let index = jr_db::module_index(db, search_paths, workspace);
+    let index = jr_db::module_index(db, catalog);
     if index.modules.is_empty() {
         return Vec::new();
     }
@@ -685,14 +674,14 @@ fn unimported_completions(
             continue;
         }
         let mut ids: Vec<jr_hir::ItemId> = module.exports.names.values().copied().collect();
-        // Sorted, so two runs over one unchanged workspace produce the same list. A `FxHashMap`'s
+        // Sorted, so two runs over one unchanged catalog produce the same list. A `FxHashMap`'s
         // iteration order is not stable across processes, and an unstable completion list is the
         // kind of flake that reads as a race in whatever consumes it.
         ids.sort_unstable_by_key(|id| id.index());
         gathered.push(Gathered {
             module: Arc::clone(&module.name),
             hir: jr_db::file_hir(db, module.file),
-            sigs: jr_db::file_signatures(db, module.file, search_paths).signatures,
+            sigs: jr_db::file_signatures(db, module.file, catalog).signatures,
             docs: jr_db::file_docs(db, module.file),
             ids,
         });
@@ -748,7 +737,7 @@ fn unimported_completions(
 pub fn resolve_completion(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     mut item: CompletionItem,
 ) -> CompletionItem {
     let Some(data) = item.data.clone() else {
@@ -763,7 +752,7 @@ pub fn resolve_completion(
     // one: the `ItemId` indexes the declaring file's items.
     let target = match data.get("module").and_then(serde_json::Value::as_str) {
         Some(path) => {
-            let lookup = jr_db::module_file(db, search_paths, Arc::from(path));
+            let lookup = jr_db::module_file(db, catalog, Arc::from(path));
             lookup
                 .found
                 .and_then(|found| db.source_file_for_path(found.to_string_lossy().as_ref()))
@@ -773,7 +762,7 @@ pub fn resolve_completion(
     let Some(target) = target else { return item };
 
     let hir = jr_db::file_hir(db, target);
-    let sigs = jr_db::file_signatures(db, target, search_paths).signatures;
+    let sigs = jr_db::file_signatures(db, target, catalog).signatures;
     let docs = jr_db::file_docs(db, target);
     let container = container_of(target.path(db).as_ref());
     let pool = db.read_pool();

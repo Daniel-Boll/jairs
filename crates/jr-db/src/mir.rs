@@ -51,7 +51,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
     BuildConfig, Db, SourceFile,
-    module_loader::{ModuleSearchPaths, file_hir, frontend_diagnostics, module_file, resolved},
+    module_loader::{ModuleCatalog, file_hir, frontend_diagnostics, module_file, resolved},
     sema::checked,
 };
 
@@ -83,13 +83,9 @@ use crate::{
 /// the result, and lowering refuses such a call. Distinguishing "not a procedure"
 /// from "not found" would have no consumer.
 #[salsa::tracked(returns(clone), no_eq)]
-pub fn imported_procs(
-    db: &dyn Db,
-    file: SourceFile,
-    search_paths: ModuleSearchPaths,
-) -> Arc<ImportedProcs> {
+pub fn imported_procs(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> Arc<ImportedProcs> {
     let hir = file_hir(db, file);
-    let resolve = resolved(db, file, search_paths).map;
+    let resolve = resolved(db, file, catalog).map;
 
     // Every distinct imported name actually referred to, sorted so that the walk
     // is deterministic. The map itself is order-insensitive, but a deterministic
@@ -119,7 +115,7 @@ pub fn imported_procs(
     for (import, name) in pairs {
         let target = modules
             .entry(import)
-            .or_insert_with(|| import_target(db, &hir, search_paths, import))
+            .or_insert_with(|| import_target(db, &hir, catalog, import))
             .clone();
         let Some((other_file, other_hir)) = target else {
             continue;
@@ -165,16 +161,16 @@ pub fn imported_procs(
 /// — and on nothing in the importing file. So an edge from A's lowering to B's const-eval has no path
 /// back, and two modules importing each other is fine for the reason ADR-0014 §4 makes cycles legal.
 ///
-/// The same `search_paths` are passed through, so a module's constants cannot depend on who imported
+/// The same `catalog` are passed through, so a module's constants cannot depend on who imported
 /// it — the action at a distance ADR-0014 §3 objects to throughout.
 #[salsa::tracked(returns(clone))]
 pub fn imported_values(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
 ) -> Arc<jr_mir::ImportedValues> {
     let hir = file_hir(db, file);
-    let resolve = resolved(db, file, search_paths).map;
+    let resolve = resolved(db, file, catalog).map;
 
     let mut pairs: Vec<(ItemId, Symbol)> = resolve
         .resolutions
@@ -202,13 +198,13 @@ pub fn imported_values(
                 // `import_target` yields the `FileHir` but not the `SourceFile` that `file_consts`
                 // needs, so the module is looked up once more here. One extra `module_file` call per
                 // *import*, memoised by salsa and by the `evaluated` map — not per name.
-                let (_, other_hir) = import_target(db, &hir, search_paths, import)?;
+                let (_, other_hir) = import_target(db, &hir, catalog, import)?;
                 let path = module_path_of(&hir, import)?;
-                let found = module_file(db, search_paths, path).found?;
+                let found = module_file(db, catalog, path).found?;
                 let other = db.source_file_for_path(found.to_string_lossy().as_ref())?;
                 Some((
                     other_hir,
-                    crate::consts::file_consts(db, other, search_paths).values,
+                    crate::consts::file_consts(db, other, catalog).values,
                 ))
             })
             .clone();
@@ -250,13 +246,13 @@ fn module_path_of(hir: &FileHir, import: ItemId) -> Option<Arc<str>> {
 fn import_target(
     db: &dyn Db,
     hir: &FileHir,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     import: ItemId,
 ) -> Option<(FileId, Arc<FileHir>)> {
     let ItemKind::Import { path, .. } = &hir.items.get(import.index())?.kind else {
         return None;
     };
-    let lookup = module_file(db, search_paths, Arc::from(path.as_str()));
+    let lookup = module_file(db, catalog, Arc::from(path.as_str()));
     let found = lookup.found?;
     let module = db.source_file_for_path(found.to_string_lossy().as_ref())?;
     Some((
@@ -318,17 +314,17 @@ const E0281: &str = "E0281";
 ///
 /// Uses `no_eq` to match the rest of this crate's queries.
 #[salsa::tracked(returns(clone), no_eq)]
-pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) -> MirResult {
+pub fn file_mir(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> MirResult {
     // The gate first, so that a file with errors costs nothing beyond the
     // diagnostics that were going to be computed anyway.
-    if frontend_diagnostics(db, file, search_paths).has_errors() {
+    if frontend_diagnostics(db, file, catalog).has_errors() {
         return MirResult {
             mir: Arc::new(FileMir::new()),
             gated: true,
             // Nothing was expanded: the gate ran before the operand pre-pass.
             expanded_diagnostics: Arc::new(jr_diag::Diagnostics::new()),
             hir: file_hir(db, file),
-            signatures: crate::sema::file_signatures(db, file, search_paths).signatures,
+            signatures: crate::sema::file_signatures(db, file, catalog).signatures,
         };
     }
 
@@ -339,7 +335,7 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
     //
     // Acyclic: `insert_operands` reaches `file_consts` → `frontend_diagnostics`, which is mir-free (only
     // `file_diagnostics` calls this query), so nothing here loops back.
-    let operands = crate::consts::insert_operands(db, file, search_paths);
+    let operands = crate::consts::insert_operands(db, file, catalog);
     #[allow(clippy::type_complexity)]
     let expanded: Option<(
         Arc<FileHir>,
@@ -362,7 +358,7 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
             jr_hir::lower_file_with_inserts(&parse, file_id, interner, operands.as_ref());
         let tree = Arc::new(tree);
         let (resolve_map, check, mut diags, signatures) =
-            crate::sema::checked_expanded(db, file, search_paths, tree.as_ref());
+            crate::sema::checked_expanded(db, file, catalog, tree.as_ref());
         // **The lowering's first**, so a reader sees the cause above the consequences: the refusal
         // explains why the names that follow it do not resolve.
         let mut ordered = lower_diags;
@@ -388,9 +384,9 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
         // renumbered, so a `$N` call here is refused (E0281) rather than paired with a value that may
         // belong to another expression (ADR-0120 §6).
         Some((tree, _, check, _, _)) => {
-            crate::sema::instantiated_from(db, file, search_paths, tree.clone(), check, None)
+            crate::sema::instantiated_from(db, file, catalog, tree.clone(), check, None)
         }
-        None => crate::sema::instantiated(db, file, search_paths),
+        None => crate::sema::instantiated(db, file, catalog),
     };
 
     // **The instantiated tree wins where both exist**, because instantiation now runs *on* the
@@ -404,9 +400,9 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
     let own_resolve = match (&instantiated, &expanded) {
         (Some(inst), _) => inst.resolve.clone(),
         (_, Some((_, resolve_map, _, _, _))) => resolve_map.clone(),
-        _ => resolved(db, file, search_paths).map,
+        _ => resolved(db, file, catalog).map,
     };
-    let base_sigs = crate::sema::file_signatures(db, file, search_paths);
+    let base_sigs = crate::sema::file_signatures(db, file, catalog);
     let own_signatures = match (&instantiated, &expanded) {
         (Some(inst), _) => inst.signatures.clone(),
         // **The insert-expanded tree's signatures** (ADR-0184 §3). This arm did not exist while a
@@ -419,17 +415,17 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
     let checked_file = match (&instantiated, &expanded) {
         (Some(inst), _) => inst.check.clone(),
         (_, Some((_, _, check, _, _))) => check.clone(),
-        _ => checked(db, file, search_paths),
+        _ => checked(db, file, catalog),
     };
     let types = checked_file.types;
     let operators = checked_file.operator_calls;
     let filled = checked_file.filled_args;
-    let imports = imported_procs(db, file, search_paths);
-    let imported_constants = imported_values(db, file, search_paths);
+    let imports = imported_procs(db, file, catalog);
+    let imported_constants = imported_values(db, file, catalog);
     // The const values, plus the call→instantiation redirects (ADR-0082): `call_rvalue` consults these to
     // target the appended procedure rather than the template.
     let consts = {
-        let base = crate::consts::file_consts(db, file, search_paths).values;
+        let base = crate::consts::file_consts(db, file, catalog).values;
         // **Every expression-keyed record is stale once a body expands** (ADR-0101 §3, widened by
         // ADR-0207 §5). `file_consts` records against the *unexpanded* tree, and an expansion renumbers
         // every id after the splice — so in the expanded tree those ids name *different* expressions.
@@ -454,13 +450,13 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
                 let mut values = (*base).clone();
 
                 // Gathered before the pool is locked: the lock must never be held across a nested query.
-                let base_sigs_for_folds = crate::sema::file_signatures(db, file, search_paths);
-                let imported_sigs = crate::sema::imported_signatures(db, file, search_paths);
+                let base_sigs_for_folds = crate::sema::file_signatures(db, file, catalog);
+                let imported_sigs = crate::sema::imported_signatures(db, file, catalog);
 
                 // Every body scope the *unexpanded* check recorded anything for. A `BodyId` survives an
                 // expansion — only the expression ids inside a body move — so this is exactly the set of
                 // scopes whose records are suspect.
-                let unexpanded = checked(db, file, search_paths);
+                let unexpanded = checked(db, file, catalog);
                 let mut stale: Vec<jr_hir::ExprScope> = Vec::new();
                 let mut note = |scope: jr_hir::ExprScope| {
                     if !stale.contains(&scope) {
@@ -631,9 +627,9 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
                     values.set_atomic(*scope, *expr, *code);
                 }
                 if !inst.check.type_info_calls.is_empty() {
-                    let base_sigs_for_ti = crate::sema::file_signatures(db, file, search_paths);
+                    let base_sigs_for_ti = crate::sema::file_signatures(db, file, catalog);
                     let module_sigs: Vec<Arc<jr_sema::FileSignatures>> =
-                        crate::sema::imported_signatures(db, file, search_paths);
+                        crate::sema::imported_signatures(db, file, catalog);
                     let mut pool = crate::sema::lock_pool(db);
                     let interner = db.interner();
                     let mut all_sigs: Vec<&jr_sema::FileSignatures> = vec![
@@ -737,8 +733,8 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
 /// Not a tracked query: it is a rendering of one, and memoising a `String` nothing
 /// compares would cost memory for no invalidation benefit.
 #[must_use]
-pub fn dump_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) -> String {
-    render(db, file_mir(db, file, search_paths))
+pub fn dump_mir(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> String {
+    render(db, file_mir(db, file, catalog))
 }
 
 /// A textual dump of a file's MIR *after* inlining.
@@ -750,10 +746,10 @@ pub fn dump_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
 pub fn dump_optimized_mir(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     config: BuildConfig,
 ) -> String {
-    render(db, optimized_file_mir(db, file, search_paths, config))
+    render(db, optimized_file_mir(db, file, catalog, config))
 }
 
 fn render(db: &dyn Db, result: MirResult) -> String {
@@ -810,18 +806,18 @@ fn render(db: &dyn Db, result: MirResult) -> String {
 pub fn optimized_file_mir(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     config: BuildConfig,
 ) -> MirResult {
-    let built = file_mir(db, file, search_paths);
+    let built = file_mir(db, file, catalog);
     if built.gated {
         return built;
     }
 
     let hir = file_hir(db, file);
     let file_id = crate::queries::resolve_file_id(db, file);
-    let resolve = resolved(db, file, search_paths).map;
-    let imports = imported_procs(db, file, search_paths);
+    let resolve = resolved(db, file, catalog).map;
+    let imports = imported_procs(db, file, catalog);
     let frozen = frozen_procs(
         file_id,
         &built.mir,
@@ -831,9 +827,9 @@ pub fn optimized_file_mir(
     // Every module this file imports, because `imported_procs` only ever resolves a
     // callee in a *direct* import, so a transitive walk would read MIR no
     // `Callee::Direct` in this file can name.
-    let modules: Vec<Arc<FileMir>> = imported_modules(db, &hir, search_paths)
+    let modules: Vec<Arc<FileMir>> = imported_modules(db, &hir, catalog)
         .into_iter()
-        .map(|module| file_mir(db, module, search_paths))
+        .map(|module| file_mir(db, module, catalog))
         .filter(|result| !result.gated)
         .map(|result| result.mir)
         .collect();
@@ -1004,17 +1000,13 @@ fn same_file_callees(body: &jr_mir::MirBody, file: FileId) -> Vec<jr_hir::ProcId
 /// A self-import is skipped for the same reason `run::reachable_files` skips one:
 /// ADR-0014 §6 makes it a no-op, and reading a file's own MIR from its own optimized
 /// query would be a salsa cycle rather than merely redundant.
-fn imported_modules(
-    db: &dyn Db,
-    hir: &FileHir,
-    search_paths: ModuleSearchPaths,
-) -> Vec<crate::SourceFile> {
+fn imported_modules(db: &dyn Db, hir: &FileHir, catalog: ModuleCatalog) -> Vec<crate::SourceFile> {
     let mut out: Vec<crate::SourceFile> = Vec::new();
     for item in &hir.items {
         let ItemKind::Import { path, .. } = &item.kind else {
             continue;
         };
-        let lookup = module_file(db, search_paths, Arc::from(path.as_str()));
+        let lookup = module_file(db, catalog, Arc::from(path.as_str()));
         let Some(found) = lookup.found else { continue };
         let Some(module) = db.source_file_for_path(found.to_string_lossy().as_ref()) else {
             continue;

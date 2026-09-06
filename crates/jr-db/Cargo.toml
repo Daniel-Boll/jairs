@@ -20,6 +20,7 @@ llvm = ["dep:jr-codegen-llvm", "jr-codegen-llvm/llvm"]
 [dependencies]
 jr-base.workspace = true
 jr-diag.workspace = true
+jr-project.workspace = true
 jr-syntax.workspace = true
 jr-stdlib.workspace = true
 jr-hir.workspace = true

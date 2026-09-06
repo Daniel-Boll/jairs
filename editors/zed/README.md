@@ -1,7 +1,7 @@
 # The Jairs extension for Zed
 
-Syntax, diagnostics, completion with auto-import, and formatting — all from the same `jr` binary
-that compiles the language.
+Tree-sitter syntax plus compiler-backed diagnostics, navigation, completion with auto-import,
+hints, semantic tokens and formatting from the same `jr` binary that compiles the language.
 
 ## Install
 
@@ -23,7 +23,7 @@ downloads — point it at an existing one with `WASI_SDK_PATH` if you have it.
 | Highlighting, brackets, indentation, outline | the tree-sitter grammar in `tree-sitter-jairs/` |
 | Diagnostics, hover, goto-definition, references, rename, inlay hints, signature help, semantic tokens, code actions | `jr lsp` |
 | **Completion of names you have not imported**, each inserting its own `#import` | `jr lsp` (ADR-0199) |
-| **Format on save** | `jr lsp`'s `textDocument/formatting` |
+| Whole-document LSP formatting, usable for format-on-save | `jr lsp`'s `textDocument/formatting` |
 
 Formatting arrives over the protocol rather than as an external command, so no `formatter` setting
 is needed. `jr fmt --stdin` still exists if you want to configure one anyway.

@@ -35,6 +35,10 @@ so a typo is reported instead of silently doing nothing:
 name = "hello"
 # entry = "src/main.jr"        # what a bare `jr build` / `jr run` / `jr check` compiles
 
+[dependencies]
+# Geometry = { path = "../geometry" }       # exactly ../geometry/module.jr
+# Noise = { path = "../vendor/noise.jr" }   # exactly this file
+
 [fmt]
 indent_style = "space"         # "space" or "tab"
 indent_width = 4               # spaces per level; not read when indent_style = "tab"
@@ -42,13 +46,17 @@ max_width = 100                # breaks a long argument or parameter list. Comme
                                # never reflowed, so a longer line can still survive.
 
 [build]
-# module_paths = ["vendor"]    # extra directories for `#import`. The standard library
-#                              # is built in, so it needs no entry here.
+# module_paths = ["vendor"]    # legacy directory search; prefer exact dependencies.
 ```
+
+In a manifest-backed project, `src/Foo.jr` and `src/Foo/module.jr` are both importable as
+`#import "Foo"` without `-I`. Dependencies are exact: naming a directory exposes only its
+`module.jr`, not neighbouring modules. The CLI, build driver, database, and language server all
+consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0210.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0213.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -58,7 +66,8 @@ file-scope mutable state, a **Simp-shaped 2D graphics subset** that draws throug
 OpenGL, and **build scripts written in the language
 itself**. It **installs with one command** and carries its own standard
 library, so `cargo install` is the whole procedure and `#import "Basic"` needs
-no search path. Every one of those claims has a capability
+no search path. Manifest projects also discover direct modules under `src` and exact named path
+dependencies through one catalog shared with the editor and build driver. Every one of those claims has a capability
 table behind it, kept honest at the end of every wave — if a table and the code
 disagree, the code is right and the table has a bug.
 
@@ -120,8 +129,8 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1228** workspace tests (1237 under gate 7), all seven gates green.
-- **283** `.jr` corpus files, **210** accepted ADRs, **25** standard library
+- **1256** workspace tests (1265 under gate 7), all seven gates green.
+- **283** `.jr` corpus files, **213** accepted ADRs, **25** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative
@@ -236,7 +245,7 @@ before: two gates run at once and race a shared binary.
 - **[`docs/jai-game-development-audit.md`](docs/jai-game-development-audit.md)** —
   the primary-source games audit, language/library gaps, and the staged `Game`
   facade plan whose foundation is now implemented.
-- **[`docs/adr/README.md`](docs/adr/README.md)** — all 210 accepted decision
+- **[`docs/adr/README.md`](docs/adr/README.md)** — all 213 accepted decision
   records.
 - **[`docs/spec/`](docs/spec/)** — the language specification chapters.
 - **[`examples/`](examples/)** — runnable programs, each verified.

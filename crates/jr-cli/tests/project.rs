@@ -310,6 +310,122 @@ fn the_manifest_can_add_a_module_search_path() {
 }
 
 #[test]
+fn manifest_projects_import_direct_children_of_src_without_a_modules_directory() {
+    let (_guard, root) = scaffolded();
+    std::fs::write(root.join("src").join("Numbers.jr"), "ANSWER :: 40;\n").expect("write");
+    std::fs::create_dir_all(root.join("src").join("More")).expect("mkdir");
+    std::fs::write(
+        root.join("src").join("More").join("module.jr"),
+        "EXTRA :: 2;\n",
+    )
+    .expect("write");
+    std::fs::write(
+        root.join("src").join("main.jr"),
+        "#import \"Basic\";\n#import \"Numbers\";\n#import \"More\";\nmain :: () {\n    exit(ANSWER + EXTRA);\n}\n",
+    )
+    .expect("write");
+
+    let (code, _, stderr) = run_in(&root, &["check"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let (code, _, stderr) = run_in(&root, &["run"]);
+    assert_eq!(code, 42, "stderr: {stderr}");
+}
+
+#[test]
+fn exact_dependencies_name_a_file_or_only_a_directories_module_file() {
+    let (_guard, root) = scaffolded();
+    std::fs::create_dir_all(root.join("vendor").join("Geometry")).expect("mkdir");
+    std::fs::write(
+        root.join("vendor").join("Geometry").join("module.jr"),
+        "POINTS :: 40;\n",
+    )
+    .expect("write");
+    // This sibling must not become importable merely because Geometry's directory was named.
+    std::fs::write(
+        root.join("vendor").join("Geometry").join("Hidden.jr"),
+        "HIDDEN :: 99;\n",
+    )
+    .expect("write");
+    std::fs::write(root.join("vendor").join("Noise.jr"), "NOISE :: 2;\n").expect("write");
+    std::fs::write(
+        root.join("jairs.toml"),
+        "[project]\nname = \"demo\"\n\n\
+         [dependencies]\n\
+         Geometry = { path = \"vendor/Geometry\" }\n\
+         Noise = { path = \"vendor/Noise.jr\" }\n",
+    )
+    .expect("write");
+    std::fs::write(
+        root.join("src").join("main.jr"),
+        "#import \"Basic\";\n#import \"Geometry\";\n#import \"Noise\";\nmain :: () {\n    exit(POINTS + NOISE);\n}\n",
+    )
+    .expect("write");
+
+    let (code, _, stderr) = run_in(&root, &["run"]);
+    assert_eq!(code, 42, "stderr: {stderr}");
+
+    std::fs::write(
+        root.join("src").join("main.jr"),
+        "#import \"Hidden\";\nmain :: () {}\n",
+    )
+    .expect("write");
+    let (code, _, stderr) = run_in(&root, &["check"]);
+    assert_ne!(
+        code, 0,
+        "a sibling of an exact dependency leaked into the catalog"
+    );
+    assert!(stderr.contains("Hidden"), "stderr: {stderr}");
+}
+
+#[test]
+fn two_local_spellings_of_one_module_are_a_configuration_error() {
+    let (_guard, root) = scaffolded();
+    std::fs::write(root.join("src").join("Same.jr"), "A :: 1;\n").expect("write");
+    std::fs::create_dir_all(root.join("src").join("Same")).expect("mkdir");
+    std::fs::write(root.join("src").join("Same").join("module.jr"), "B :: 2;\n").expect("write");
+
+    let (code, _, stderr) = run_in(&root, &["check"]);
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("Same") && stderr.contains("declared twice"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn implicit_local_modules_cannot_accidentally_shadow_the_standard_library() {
+    let (_guard, root) = scaffolded();
+    std::fs::write(root.join("src").join("Basic.jr"), "MINE :: 1;\n").expect("write");
+
+    let (code, _, stderr) = run_in(&root, &["check"]);
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("Basic") && stderr.contains("exact dependency"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn an_exact_dependency_can_explicitly_replace_a_bundled_module() {
+    let (_guard, root) = scaffolded();
+    std::fs::write(root.join("replacement.jr"), "MINE :: 42;\n").expect("write");
+    std::fs::write(
+        root.join("jairs.toml"),
+        "[project]\nname = \"demo\"\n\n\
+         [dependencies]\nBasic = { path = \"replacement.jr\" }\n",
+    )
+    .expect("write");
+    std::fs::write(
+        root.join("src").join("main.jr"),
+        "#import \"Basic\";\nmain :: () {\n    n := MINE;\n}\n",
+    )
+    .expect("write");
+
+    let (code, _, stderr) = run_in(&root, &["check"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+}
+
+#[test]
 fn an_entry_the_manifest_names_but_does_not_exist_is_an_error() {
     // Rather than falling back to `src/main.jr`, which would hide the mistake in the manifest.
     let (_guard, root) = scaffolded();
@@ -372,13 +488,13 @@ fn an_explicit_path_still_works_with_no_manifest_anywhere() {
 }
 
 // ---------------------------------------------------------------------------
-// The manifest reaches the other two subcommands that take module paths
+// The manifest reaches the remaining project-aware command surfaces
 // ---------------------------------------------------------------------------
 
 /// Sends one LSP session over stdio and returns every diagnostic message published for `file`.
 ///
-/// A real subprocess in `dir`, because the server resolves its search paths from the working
-/// directory — the whole point of the test below.
+/// A real subprocess in `dir`, because the server discovers its project from the initialized
+/// workspace root — the whole point of the tests below.
 fn lsp_diagnostics(dir: &Path, file: &Path) -> Vec<String> {
     use std::io::Write as _;
 
@@ -511,6 +627,27 @@ fn the_language_server_still_reports_a_module_that_nothing_declares() {
     assert!(
         diagnostics.iter().any(|m| m.contains("Vend")),
         "an undeclared module must still be reported, got {diagnostics:?}"
+    );
+}
+
+/// A malformed project file is an editor diagnostic, not only stderr from a terminal command.
+#[test]
+fn the_language_server_publishes_a_malformed_manifest_diagnostic() {
+    let (_guard, root) = scaffolded();
+    std::fs::write(
+        root.join("jairs.toml"),
+        "[project]\nname = \"demo\"\nunknown_setting = true\n",
+    )
+    .expect("write");
+    let source = root.join("src").join("main.jr");
+
+    let diagnostics = lsp_diagnostics(&root, &source);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|message| message.contains("not a valid manifest")
+                && message.contains("unknown_setting")),
+        "the manifest error must be published through LSP, got {diagnostics:?}"
     );
 }
 

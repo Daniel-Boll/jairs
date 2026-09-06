@@ -225,6 +225,10 @@ max_width = 100                # breaks a long argument or parameter list. Comme
 # module_paths = [\"vendor\"]    # extra directories to search for `#import`ed modules.
 #                              # The standard library is compiled into `jr` and always
 #                              # available, so it needs no entry here.
+
+[dependencies]
+# Geometry = {{ path = \"../geometry\" }} # exact `#import \"Geometry\"` source. A directory
+#                                        # names only its `module.jr`; siblings stay private.
 "
     )
 }

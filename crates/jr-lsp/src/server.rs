@@ -44,11 +44,12 @@
 //! is observed would be the same mistake as building `AstIdMap` before measuring.
 
 use std::panic::AssertUnwindSafe;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crossbeam_channel::Sender;
-use jr_db::{JairsDatabase, ModuleSearchPaths, SourceFile};
+use jr_db::{JairsDatabase, ModuleCatalog, SourceFile};
+use jr_project::{DiscoverRequest, ProjectContext};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
     Diagnostic, GotoDefinitionResponse, HoverProviderCapability, InitializeParams, OneOf,
@@ -63,19 +64,20 @@ use crate::uri;
 /// How the server was configured.
 #[derive(Debug, Clone, Default)]
 pub struct ServerOptions {
-    /// Where to look for `#import`ed modules.
+    /// Ordered compatibility roots supplied by the operator.
     ///
-    /// Supplied by the caller rather than discovered, for the reason `jr check
-    /// --module-path` exists: guessing a search path silently changes which module a
-    /// program means.
-    pub module_search_paths: Vec<PathBuf>,
+    /// Project manifests, implicit local modules, and bundled modules are discovered after
+    /// `initialize`; only explicit `-I`-style roots cross this boundary.
+    pub operator_module_roots: Vec<PathBuf>,
 }
 
 /// The capabilities this server advertises, under a negotiated encoding.
 ///
-/// Twelve now. Each is advertised only where it is implemented for every case a client may
+/// Each capability is advertised only where it is implemented for every case a client may
 /// send: advertising one that answers "nothing" for half its inputs is worse than not
-/// advertising it, because the client stops offering the user an alternative.
+/// advertising it, because the client stops offering the user an alternative. ADR-0211
+/// deliberately keeps this as an explicit structural value rather than maintaining a
+/// separate capability count.
 #[must_use]
 pub fn capabilities(encoding: Encoding) -> ServerCapabilities {
     ServerCapabilities {
@@ -177,13 +179,13 @@ fn client_can_watch(params: &InitializeParams) -> bool {
         .unwrap_or(false)
 }
 
-/// The directories discovery walks: the search paths, plus the client's root.
-///
-/// ADR-0029 §1. The root arrives from the client at `initialize`; a client that sends none
-/// leaves only the search paths, which is correct rather than degraded — that is exactly
-/// the situation `jr check --module-path` is in.
-fn workspace_roots(options: &ServerOptions, params: &InitializeParams) -> Vec<PathBuf> {
-    let mut roots = options.module_search_paths.clone();
+/// The project anchors supplied by `initialize`.
+#[allow(
+    deprecated,
+    reason = "older LSP clients still send rootUri/rootPath without workspaceFolders"
+)]
+fn initialization_roots(params: &InitializeParams) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
     if let Some(folders) = params.workspace_folders.as_ref() {
         for folder in folders {
             if let Some(path) = uri::to_path(&folder.uri) {
@@ -191,10 +193,21 @@ fn workspace_roots(options: &ServerOptions, params: &InitializeParams) -> Vec<Pa
             }
         }
     }
+    if roots.is_empty()
+        && let Some(root_uri) = params.root_uri.as_ref()
+        && let Some(path) = uri::to_path(root_uri)
+    {
+        roots.push(path);
+    }
+    if roots.is_empty()
+        && let Some(root_path) = params.root_path.as_ref()
+    {
+        roots.push(PathBuf::from(root_path));
+    }
     roots
 }
 
-/// Asks the client to watch `**/*.jr`.
+/// Asks the client to watch Jairs sources and project manifests.
 ///
 /// Sent as a `client/registerCapability` request. The response is not awaited: the reply
 /// carries no information beyond success, and blocking the message loop on it would delay
@@ -205,10 +218,16 @@ fn register_watcher(connection: &Connection) {
         method: String::from("workspace/didChangeWatchedFiles"),
         register_options: serde_json::to_value(
             lsp_types::DidChangeWatchedFilesRegistrationOptions {
-                watchers: vec![lsp_types::FileSystemWatcher {
-                    glob_pattern: lsp_types::GlobPattern::String(String::from("**/*.jr")),
-                    kind: None,
-                }],
+                watchers: vec![
+                    lsp_types::FileSystemWatcher {
+                        glob_pattern: lsp_types::GlobPattern::String(String::from("**/*.jr")),
+                        kind: None,
+                    },
+                    lsp_types::FileSystemWatcher {
+                        glob_pattern: lsp_types::GlobPattern::String(String::from("**/jairs.toml")),
+                        kind: None,
+                    },
+                ],
             },
         )
         .ok(),
@@ -221,6 +240,241 @@ fn register_watcher(connection: &Connection) {
         },
     );
     let _ = connection.sender.send(Message::Request(request));
+}
+
+/// One independently discovered project and its stable database catalog input.
+struct RegisteredProject {
+    anchor: PathBuf,
+    context: ProjectContext,
+    catalog: ModuleCatalog,
+    config_diagnostic: Option<PathBuf>,
+}
+
+/// Catalogs are selected by ownership, while workspace files remain the edit/search boundary.
+struct ProjectRegistry {
+    projects: Vec<RegisteredProject>,
+    operator_roots: Vec<PathBuf>,
+}
+
+impl ProjectRegistry {
+    fn discover_initial(
+        db: &mut JairsDatabase,
+        out: &Sender<Message>,
+        roots: &[PathBuf],
+        operator_roots: Vec<PathBuf>,
+    ) -> Self {
+        let mut registry = Self {
+            projects: Vec::new(),
+            operator_roots,
+        };
+        for root in roots {
+            registry.register(db, out, root.clone());
+        }
+        if registry.projects.is_empty() {
+            let anchor = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+            registry.register(db, out, anchor);
+        }
+        if registry.projects.is_empty() {
+            // A malformed manifest may govern the working directory. The diagnostic above is
+            // still published; this catalog is only the non-project fallback needed to answer
+            // requests while the configuration is being repaired.
+            registry.register(db, out, std::env::temp_dir());
+        }
+        registry
+    }
+
+    fn register(&mut self, db: &mut JairsDatabase, out: &Sender<Message>, anchor: PathBuf) {
+        let request = DiscoverRequest::new(anchor.clone())
+            .with_operator_roots(self.operator_roots.iter().cloned());
+        match ProjectContext::discover(request) {
+            Ok(context) => {
+                let identity = project_identity(&context, &anchor);
+                if self
+                    .projects
+                    .iter()
+                    .any(|project| project_identity(&project.context, &project.anchor) == identity)
+                {
+                    return;
+                }
+                let catalog = db.create_module_catalog(context.catalog());
+                self.projects.push(RegisteredProject {
+                    anchor,
+                    context,
+                    catalog,
+                    config_diagnostic: None,
+                });
+            }
+            Err(error) => {
+                let path = discovery_diagnostic_path(&anchor, &error);
+                publish_config_error(out, &path, &error.to_string());
+                let fallback = ProjectContext::discover(
+                    DiscoverRequest::new(std::env::temp_dir())
+                        .with_operator_roots(self.operator_roots.iter().cloned()),
+                )
+                .expect("the temporary directory is a manifest-free scratch project");
+                let catalog = db.create_module_catalog(fallback.catalog());
+                self.projects.push(RegisteredProject {
+                    anchor,
+                    context: fallback,
+                    catalog,
+                    config_diagnostic: Some(path),
+                });
+            }
+        }
+    }
+
+    fn ensure_for_source(&mut self, db: &mut JairsDatabase, out: &Sender<Message>, path: &Path) {
+        let request = DiscoverRequest::new(path.to_path_buf())
+            .with_operator_roots(self.operator_roots.iter().cloned());
+        match ProjectContext::discover(request) {
+            Ok(context) => {
+                let identity = project_identity(&context, path);
+                let manifest = context.root().map(|root| root.join(jr_manifest::FILE_NAME));
+                if let Some(project) = self
+                    .projects
+                    .iter_mut()
+                    .find(|project| project.config_diagnostic.as_ref() == manifest.as_ref())
+                {
+                    db.refresh_module_catalog(project.catalog, context.catalog());
+                    if let Some(config) = project.config_diagnostic.take() {
+                        publish(out, config.to_string_lossy().as_ref(), Vec::new());
+                    }
+                    project.context = context;
+                    return;
+                }
+                if self
+                    .projects
+                    .iter()
+                    .any(|project| project_identity(&project.context, &project.anchor) == identity)
+                {
+                    return;
+                }
+                let catalog = db.create_module_catalog(context.catalog());
+                self.projects.push(RegisteredProject {
+                    anchor: path.to_path_buf(),
+                    context,
+                    catalog,
+                    config_diagnostic: None,
+                });
+            }
+            Err(error) => {
+                let config = discovery_diagnostic_path(path, &error);
+                publish_config_error(out, &config, &error.to_string());
+                if self.projects.iter().any(|project| project.anchor == path) {
+                    return;
+                }
+                let fallback = ProjectContext::discover(
+                    DiscoverRequest::new(std::env::temp_dir())
+                        .with_operator_roots(self.operator_roots.iter().cloned()),
+                )
+                .expect("the temporary directory is a manifest-free scratch project");
+                let catalog = db.create_module_catalog(fallback.catalog());
+                self.projects.push(RegisteredProject {
+                    anchor: path.to_path_buf(),
+                    context: fallback,
+                    catalog,
+                    config_diagnostic: Some(config),
+                });
+            }
+        }
+    }
+
+    fn refresh_all(&mut self, db: &mut JairsDatabase, out: &Sender<Message>) {
+        for project in &mut self.projects {
+            let request = DiscoverRequest::new(project.anchor.clone())
+                .with_operator_roots(self.operator_roots.iter().cloned());
+            match ProjectContext::discover(request) {
+                Ok(context) => {
+                    db.refresh_module_catalog(project.catalog, context.catalog());
+                    if let Some(path) = project.config_diagnostic.take() {
+                        publish(out, path.to_string_lossy().as_ref(), Vec::new());
+                    }
+                    project.context = context;
+                }
+                Err(error) => {
+                    let path = discovery_diagnostic_path(&project.anchor, &error);
+                    publish_config_error(out, &path, &error.to_string());
+                    project.config_diagnostic = Some(path);
+                }
+            }
+        }
+    }
+
+    fn catalog_for_path(&self, path: &Path) -> ModuleCatalog {
+        self.projects
+            .iter()
+            .filter_map(|project| {
+                project
+                    .context
+                    .owned_roots()
+                    .iter()
+                    .filter(|root| path.starts_with(root))
+                    .map(|root| (root.components().count(), project.catalog))
+                    .max_by_key(|(depth, _)| *depth)
+            })
+            .max_by_key(|(depth, _)| *depth)
+            .map(|(_, catalog)| catalog)
+            .unwrap_or_else(|| self.default_catalog())
+    }
+
+    fn default_catalog(&self) -> ModuleCatalog {
+        self.projects
+            .first()
+            .expect("the registry always has a fallback project")
+            .catalog
+    }
+}
+
+fn project_identity(context: &ProjectContext, anchor: &Path) -> PathBuf {
+    context
+        .root()
+        .map(Path::to_path_buf)
+        .or_else(|| context.owned_roots().first().cloned())
+        .unwrap_or_else(|| anchor.to_path_buf())
+}
+
+fn discovery_diagnostic_path(anchor: &Path, error: &jr_project::Error) -> PathBuf {
+    if let jr_project::Error::Manifest(error) = error {
+        return match error {
+            jr_manifest::Error::Read { path, .. } | jr_manifest::Error::Parse { path, .. } => {
+                path.clone()
+            }
+        };
+    }
+    match jr_manifest::find(anchor) {
+        Ok(Some(located)) => located.root.join(jr_manifest::FILE_NAME),
+        Err(jr_manifest::Error::Read { path, .. })
+        | Err(jr_manifest::Error::Parse { path, .. }) => path,
+        Ok(None) => {
+            let dir = if anchor.is_dir() {
+                anchor
+            } else {
+                anchor.parent().unwrap_or(anchor)
+            };
+            dir.join(jr_manifest::FILE_NAME)
+        }
+    }
+}
+
+fn publish_config_error(out: &Sender<Message>, path: &Path, message: &str) {
+    let zero = lsp_types::Position {
+        line: 0,
+        character: 0,
+    };
+    publish(
+        out,
+        path.to_string_lossy().as_ref(),
+        vec![Diagnostic {
+            range: lsp_types::Range {
+                start: zero,
+                end: zero,
+            },
+            severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+            source: Some(String::from("jairs")),
+            message: message.to_owned(),
+            ..Diagnostic::default()
+        }],
+    );
 }
 
 /// Runs the server over stdin and stdout until the client shuts it down.
@@ -248,20 +502,32 @@ pub fn run_stdio(options: &ServerOptions) -> Result<(), Box<dyn std::error::Erro
     connection.initialize_finish(id, init)?;
 
     let mut db = JairsDatabase::default();
-    let search_paths = db.set_module_search_paths(options.module_search_paths.clone());
+    let project_roots = initialization_roots(&params);
+    let initial_anchors = if project_roots.is_empty() {
+        vec![std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir())]
+    } else {
+        project_roots.clone()
+    };
+    let mut registry = ProjectRegistry::discover_initial(
+        &mut db,
+        &connection.sender,
+        &initial_anchors,
+        options.operator_module_roots.clone(),
+    );
 
-    // Discovery runs once here, on the main thread, outside any query — which is ADR-0029
-    // §2's requirement, not a convenience.
-    let roots = workspace_roots(options, &params);
+    // Ownership remains a separate workspace concern. Operator roots keep their historical
+    // participation in references/rename discovery, while catalogs independently describe
+    // what each project may import.
+    let mut roots = options.operator_module_roots.clone();
+    roots.extend(initial_anchors);
     db.set_workspace_roots(&roots);
 
-    let mut roots = roots;
     let watching = client_can_watch(&params);
     if watching {
         register_watcher(&connection);
     }
 
-    let (jobs, worker) = spawn_worker(connection.sender.clone(), search_paths, encoding);
+    let (jobs, worker) = spawn_worker(connection.sender.clone(), encoding);
 
     for message in &connection.receiver {
         match message {
@@ -269,17 +535,23 @@ pub fn run_stdio(options: &ServerOptions) -> Result<(), Box<dyn std::error::Erro
                 if connection.handle_shutdown(&request)? {
                     break;
                 }
-                dispatch(&mut db, &jobs, request);
+                dispatch(&mut db, &registry, &jobs, request);
             }
             Message::Notification(notification) => {
                 if notification.method == "workspace/didChangeWatchedFiles" {
-                    // A whole re-walk rather than applying the delta. The notification's
-                    // `changes` are enough to patch the list, but a re-walk is one code
-                    // path instead of two and cannot drift from the walk's own rules about
-                    // symlinks and ignored directories. It is also what the fallback below
-                    // does, so both routes converge on the same state.
+                    if watched_changes_require_catalog_refresh(&notification) {
+                        registry.refresh_all(&mut db, &connection.sender);
+                    }
+                    // Ownership still uses the existing whole-workspace fallback. A re-walk
+                    // keeps create/delete/rename handling on the same path as clients without
+                    // dynamic watchers.
                     db.set_workspace_roots(&roots);
                     continue;
+                }
+                if notification.method == "textDocument/didOpen"
+                    && let Some(path) = notification_path(&notification)
+                {
+                    registry.ensure_for_source(&mut db, &connection.sender, &path);
                 }
                 // A write. It happens on this thread, and salsa cancels whatever the
                 // worker had in flight against the previous revision.
@@ -312,23 +584,27 @@ pub fn run_stdio(options: &ServerOptions) -> Result<(), Box<dyn std::error::Erro
                         db.set_workspace_roots(&roots);
                     }
                 }
-                // The fallback for a client that cannot watch (ADR-0029 §2). Re-walking on
-                // every keystroke would be indefensible, so it is tied to open and save —
-                // which is why a client *with* a watcher is much fresher, and why the
-                // difference is stated rather than hidden.
+                // The fallback for a client that cannot watch (ADR-0029 §2). Rediscovery on every
+                // keystroke would be indefensible, so both the catalog refresh and ownership walk
+                // are tied to open and save.
                 if !watching
                     && matches!(
                         notification.method.as_str(),
                         "textDocument/didOpen" | "textDocument/didSave"
                     )
                 {
+                    registry.refresh_all(&mut db, &connection.sender);
                     db.set_workspace_roots(&roots);
                 }
                 // Only now, with no write left to cancel it.
                 if let Some(file) = touched {
-                    let _ = jobs.send(Job::Diagnostics {
-                        db: Box::new(db.snapshot()),
-                        file,
+                    let path = PathBuf::from(file.path(&db).as_ref());
+                    let _ = jobs.send(QueuedJob {
+                        catalog: registry.catalog_for_path(&path),
+                        job: Job::Diagnostics {
+                            db: Box::new(db.snapshot()),
+                            file,
+                        },
                     });
                 }
             }
@@ -383,13 +659,61 @@ fn apply(db: &mut JairsDatabase, notification: &Notification) -> Option<SourceFi
     let path = path.to_string_lossy().into_owned();
     db.set_file_text(path.clone(), text);
     let file = db.source_file(&path)?;
-    db.load_modules_transitively(file);
     Some(file)
+}
+
+fn notification_path(notification: &Notification) -> Option<PathBuf> {
+    let uri = match notification.method.as_str() {
+        "textDocument/didOpen" => {
+            serde_json::from_value::<lsp_types::DidOpenTextDocumentParams>(
+                notification.params.clone(),
+            )
+            .ok()?
+            .text_document
+            .uri
+        }
+        "textDocument/didChange" => {
+            serde_json::from_value::<lsp_types::DidChangeTextDocumentParams>(
+                notification.params.clone(),
+            )
+            .ok()?
+            .text_document
+            .uri
+        }
+        _ => return None,
+    };
+    uri::to_path(&uri)
+}
+
+fn watched_changes_require_catalog_refresh(notification: &Notification) -> bool {
+    let Ok(params) = serde_json::from_value::<lsp_types::DidChangeWatchedFilesParams>(
+        notification.params.clone(),
+    ) else {
+        return false;
+    };
+    params.changes.iter().any(|change| {
+        let Some(path) = uri::to_path(&change.uri) else {
+            return false;
+        };
+        let manifest = path.file_name().is_some_and(|name| name == "jairs.toml");
+        let source = path.extension().is_some_and(|extension| extension == "jr");
+        manifest
+            || source
+                && matches!(
+                    change.typ,
+                    lsp_types::FileChangeType::CREATED | lsp_types::FileChangeType::DELETED
+                )
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------------
+
+struct QueuedJob {
+    catalog: ModuleCatalog,
+    job: Job,
+}
 
 /// One unit of read-only work for the worker.
 ///
@@ -421,15 +745,6 @@ enum Job {
         id: RequestId,
         file: SourceFile,
         position: lsp_types::Position,
-        /// The workspace-files salsa **input**, so `module_index` can be a cached query.
-        ///
-        /// The input rather than the list, because that is what the query is keyed on — and it is
-        /// threaded like `ModuleSearchPaths` for the same reason: both are created once and
-        /// re-`set` thereafter, so the id stays valid across every snapshot (ADR-0199 §4).
-        ///
-        /// `None` means discovery has not run, which a consumer must not read as an empty
-        /// workspace.
-        workspace: Option<jr_db::WorkspaceFiles>,
     },
     /// `textDocument/formatting`: reprint the whole file (ADR-0199 §9).
     ///
@@ -504,8 +819,6 @@ enum Job {
         /// exactly where the user already sees a problem — and because a client may hold a
         /// diagnostic from a revision this snapshot has moved past (ADR-0031 §4).
         diagnostics: Vec<lsp_types::Diagnostic>,
-        /// Captured at dispatch: auto-import consults the discovered modules.
-        workspace: Arc<jr_db::WorkspaceFileList>,
     },
     SignatureHelp {
         db: Box<JairsDatabase>,
@@ -526,6 +839,29 @@ enum Job {
     },
     /// A request naming a file this server has never been told about.
     Unknown { id: RequestId },
+}
+
+impl Job {
+    fn source_file(&self) -> Option<SourceFile> {
+        match self {
+            Self::Diagnostics { file, .. }
+            | Self::Hover { file, .. }
+            | Self::Definition { file, .. }
+            | Self::Completion { file, .. }
+            | Self::Formatting { file, .. }
+            | Self::References { file, .. }
+            | Self::Highlight { file, .. }
+            | Self::PrepareRename { file, .. }
+            | Self::Rename { file, .. }
+            | Self::DocumentSymbols { file, .. }
+            | Self::CodeActions { file, .. }
+            | Self::SignatureHelp { file, .. }
+            | Self::InlayHints { file, .. }
+            | Self::SemanticTokens { file, .. } => Some(*file),
+            Self::ResolveCompletion { file, .. } => *file,
+            Self::WorkspaceSymbols { .. } | Self::Unknown { .. } => None,
+        }
+    }
 }
 
 /// Adds the opened file's directory to `roots` when discovery does not already cover it.
@@ -559,36 +895,21 @@ fn adopt_root(db: &mut JairsDatabase, roots: &mut Vec<PathBuf>, file: SourceFile
 fn needs_whole_workspace(method: &str) -> bool {
     matches!(
         method,
-        "textDocument/references"
-            | "textDocument/rename"
-            | "workspace/symbol"
-            // Auto-import must know which discovered module exports the missing name, and
-            // discovery yields paths rather than loaded files (ADR-0031 §5). Without this
-            // the quick fix silently offers only modules the editor happens to have open,
-            // and an absent offer reads as "there is nothing to import".
-            | "textDocument/codeAction"
-            // **Completion joins for exactly the reason above** (ADR-0199 §4). Offering a name
-            // the file has not imported needs the same index of what every module exports, so
-            // without this a keystroke sees only opened files and the offer is missing rather
-            // than wrong — the same silent failure, in the surface a person uses far more often.
-            //
-            // It is the costliest entry in this list, because completion fires per keystroke
-            // where a code action fires on a click. It is affordable because loading is
-            // idempotent: the first request pays, and `load_workspace_files` skips every file
-            // already in the database thereafter.
-            | "textDocument/completion"
+        "textDocument/references" | "textDocument/rename" | "workspace/symbol"
     )
 }
 
-fn dispatch(db: &mut JairsDatabase, jobs: &Sender<Job>, request: Request) {
+fn dispatch(
+    db: &mut JairsDatabase,
+    registry: &ProjectRegistry,
+    jobs: &Sender<QueuedJob>,
+    request: Request,
+) {
     if needs_whole_workspace(&request.method) {
         db.load_workspace_files();
     }
-    // Both halves of the workspace, captured together so every job in this dispatch sees one
-    // consistent view: the **list** for the features that iterate paths, and the salsa **input** for
-    // `module_index`, which is keyed on it (ADR-0199 §4).
-    let workspace_input = db.workspace_files();
-    let workspace = workspace_input
+    let workspace = db
+        .workspace_files()
         .map(|files| files.list(db))
         .unwrap_or_default();
 
@@ -629,7 +950,6 @@ fn dispatch(db: &mut JairsDatabase, jobs: &Sender<Job>, request: Request) {
                         id: id.clone(),
                         file,
                         position: params.text_document_position.position,
-                        workspace: workspace_input,
                     })
                 })
         }
@@ -745,7 +1065,6 @@ fn dispatch(db: &mut JairsDatabase, jobs: &Sender<Job>, request: Request) {
                         file,
                         range: params.range,
                         diagnostics: params.context.diagnostics,
-                        workspace: Arc::clone(&workspace),
                     })
                 })
         }
@@ -793,7 +1112,15 @@ fn dispatch(db: &mut JairsDatabase, jobs: &Sender<Job>, request: Request) {
     // Every request gets an answer, including one this server does not implement and one
     // naming a file it has never been told about. A client left waiting is worse than a
     // client told "nothing here".
-    let _ = jobs.send(job.unwrap_or(Job::Unknown { id }));
+    let job = job.unwrap_or(Job::Unknown { id });
+    let catalog = job
+        .source_file()
+        .map(|file| {
+            let path = PathBuf::from(file.path(db).as_ref());
+            registry.catalog_for_path(&path)
+        })
+        .unwrap_or_else(|| registry.default_catalog());
+    let _ = jobs.send(QueuedJob { catalog, job });
 }
 
 fn file_of(db: &JairsDatabase, uri_value: &Uri) -> Option<SourceFile> {
@@ -804,15 +1131,14 @@ fn file_of(db: &JairsDatabase, uri_value: &Uri) -> Option<SourceFile> {
 /// Starts the reader thread.
 fn spawn_worker(
     out: Sender<Message>,
-    search_paths: ModuleSearchPaths,
     encoding: Encoding,
-) -> (Sender<Job>, std::thread::JoinHandle<()>) {
-    let (send, receive) = crossbeam_channel::unbounded::<Job>();
+) -> (Sender<QueuedJob>, std::thread::JoinHandle<()>) {
+    let (send, receive) = crossbeam_channel::unbounded::<QueuedJob>();
     let handle = std::thread::Builder::new()
         .name(String::from("jairs-lsp-reader"))
         .spawn(move || {
-            for job in receive {
-                run(&out, search_paths, encoding, job);
+            for queued in receive {
+                run(&out, queued.catalog, encoding, queued.job);
             }
         })
         .expect("spawning a thread");
@@ -820,7 +1146,7 @@ fn spawn_worker(
 }
 
 /// Runs one job, answering a cancellation rather than dying of it.
-fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encoding, job: Job) {
+fn run(out: &Sender<Message>, catalog: ModuleCatalog, encoding: Encoding, job: Job) {
     match job {
         Job::Unknown { id } => {
             let _ = out.send(Message::Response(Response::new_ok(
@@ -831,7 +1157,7 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
         Job::Diagnostics { db, file } => {
             let db = db.as_ref();
             let path = file.path(db);
-            let computed = catch(|| handlers::diagnostics(db, file, search_paths, encoding));
+            let computed = catch(|| handlers::diagnostics(db, file, catalog, encoding));
             // A cancelled diagnostics pass is not published — but that is only correct
             // when a **re-queueing** writer cancelled it (ADR-0032 §2). `set_file_text`
             // re-queues; `set_workspace_roots` does not, and this comment used to claim
@@ -849,7 +1175,7 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
             position,
         } => {
             let db = db.as_ref();
-            let computed = catch(|| handlers::hover(db, file, search_paths, encoding, position));
+            let computed = catch(|| handlers::hover(db, file, catalog, encoding, position));
             answer(out, id, computed.map(serde_json::to_value));
         }
         Job::Definition {
@@ -860,7 +1186,7 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
         } => {
             let db = db.as_ref();
             let computed = catch(|| {
-                handlers::goto_definition(db, file, search_paths, encoding, position)
+                handlers::goto_definition(db, file, catalog, encoding, position)
                     .map(GotoDefinitionResponse::Scalar)
             });
             answer(out, id, computed.map(serde_json::to_value));
@@ -870,7 +1196,6 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
             id,
             file,
             position,
-            workspace,
         } => {
             let db = db.as_ref();
             let computed = catch(|| {
@@ -879,14 +1204,7 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
                 // keeps typing rather than asking again on every keystroke.
                 lsp_types::CompletionResponse::List(lsp_types::CompletionList {
                     is_incomplete: false,
-                    items: crate::completion::completion(
-                        db,
-                        file,
-                        search_paths,
-                        encoding,
-                        position,
-                        workspace,
-                    ),
+                    items: crate::completion::completion(db, file, catalog, encoding, position),
                 })
             });
             answer(out, id, computed.map(serde_json::to_value));
@@ -911,7 +1229,7 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
                 crate::navigate::find_references(
                     db,
                     file,
-                    search_paths,
+                    catalog,
                     encoding,
                     position,
                     include_declaration,
@@ -928,7 +1246,7 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
         } => {
             let db = db.as_ref();
             let computed = catch(|| {
-                crate::navigate::document_highlight(db, file, search_paths, encoding, position)
+                crate::navigate::document_highlight(db, file, catalog, encoding, position)
             });
             answer(out, id, computed.map(serde_json::to_value));
         }
@@ -939,9 +1257,8 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
             position,
         } => {
             let db = db.as_ref();
-            let computed = catch(|| {
-                crate::navigate::prepare_rename(db, file, search_paths, encoding, position)
-            });
+            let computed =
+                catch(|| crate::navigate::prepare_rename(db, file, catalog, encoding, position));
             answer(out, id, computed.map(serde_json::to_value));
         }
         Job::Rename {
@@ -957,7 +1274,7 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
                 crate::navigate::rename(
                     db,
                     file,
-                    search_paths,
+                    catalog,
                     encoding,
                     position,
                     &new_name,
@@ -983,10 +1300,7 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
             let db = db.as_ref();
             let computed = catch(|| {
                 lsp_types::DocumentSymbolResponse::Nested(crate::navigate::document_symbol(
-                    db,
-                    file,
-                    search_paths,
-                    encoding,
+                    db, file, catalog, encoding,
                 ))
             });
             answer(out, id, computed.map(serde_json::to_value));
@@ -999,20 +1313,14 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
         } => {
             let db = db.as_ref();
             let computed = catch(|| {
-                crate::navigate::workspace_symbol(
-                    db,
-                    search_paths,
-                    encoding,
-                    &query,
-                    &workspace.files,
-                )
+                crate::navigate::workspace_symbol(db, catalog, encoding, &query, &workspace.files)
             });
             answer(out, id, computed.map(serde_json::to_value));
         }
         Job::ResolveCompletion { db, id, file, item } => {
             let db = db.as_ref();
             let computed = catch(|| match file {
-                Some(file) => crate::completion::resolve_completion(db, file, search_paths, *item),
+                Some(file) => crate::completion::resolve_completion(db, file, catalog, *item),
                 None => *item,
             });
             answer(out, id, computed.map(serde_json::to_value));
@@ -1023,19 +1331,10 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
             file,
             range,
             diagnostics,
-            workspace,
         } => {
             let db = db.as_ref();
             let computed = catch(|| {
-                crate::actions::code_actions(
-                    db,
-                    file,
-                    search_paths,
-                    encoding,
-                    range,
-                    &diagnostics,
-                    workspace.as_ref(),
-                )
+                crate::actions::code_actions(db, file, catalog, encoding, range, &diagnostics)
             });
             answer(out, id, computed.map(serde_json::to_value));
         }
@@ -1047,7 +1346,7 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
         } => {
             let db = db.as_ref();
             let computed =
-                catch(|| crate::hints::signature_help(db, file, search_paths, encoding, position));
+                catch(|| crate::hints::signature_help(db, file, catalog, encoding, position));
             answer(out, id, computed.map(serde_json::to_value));
         }
         Job::InlayHints {
@@ -1057,8 +1356,7 @@ fn run(out: &Sender<Message>, search_paths: ModuleSearchPaths, encoding: Encodin
             range,
         } => {
             let db = db.as_ref();
-            let computed =
-                catch(|| crate::hints::inlay_hints(db, file, search_paths, encoding, range));
+            let computed = catch(|| crate::hints::inlay_hints(db, file, catalog, encoding, range));
             answer(out, id, computed.map(serde_json::to_value));
         }
         Job::SemanticTokens { db, id, file } => {
@@ -1127,4 +1425,176 @@ fn publish(out: &Sender<Message>, path: &str, items: Vec<Diagnostic>) {
         method: String::from("textDocument/publishDiagnostics"),
         params,
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::sync::Arc;
+
+    use crossbeam_channel::{Receiver, unbounded};
+    use lsp_server::Message;
+    use lsp_types::{
+        DidChangeWatchedFilesParams, FileChangeType, FileEvent, PublishDiagnosticsParams,
+    };
+
+    use super::*;
+
+    fn write(path: &Path, text: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create parent directories");
+        }
+        fs::write(path, text).expect("write fixture");
+    }
+
+    fn published(receiver: &Receiver<Message>) -> PublishDiagnosticsParams {
+        let Message::Notification(notification) = receiver.recv().expect("a published diagnostic")
+        else {
+            panic!("expected a notification");
+        };
+        assert_eq!(
+            notification.method, "textDocument/publishDiagnostics",
+            "unexpected notification"
+        );
+        serde_json::from_value(notification.params).expect("valid publishDiagnostics params")
+    }
+
+    fn watched(path: &Path, typ: FileChangeType) -> Notification {
+        let uri = uri::from_path(path).expect("an absolute fixture path");
+        Notification {
+            method: String::from("workspace/didChangeWatchedFiles"),
+            params: serde_json::to_value(DidChangeWatchedFilesParams {
+                changes: vec![FileEvent { uri, typ }],
+            })
+            .expect("watch params serialize"),
+        }
+    }
+
+    #[test]
+    fn the_longest_owned_root_selects_a_nested_projects_catalog() {
+        let dir = tempfile::TempDir::new().expect("temporary directory");
+        let outer = dir.path();
+        let nested = outer.join("nested");
+        write(&outer.join("jairs.toml"), "");
+        write(&outer.join("src/Shared.jr"), "OUTER :: 1;\n");
+        write(&nested.join("jairs.toml"), "");
+        write(&nested.join("src/Shared.jr"), "INNER :: 2;\n");
+
+        let (sender, _receiver) = unbounded();
+        let mut db = JairsDatabase::default();
+        let mut registry =
+            ProjectRegistry::discover_initial(&mut db, &sender, &[outer.to_path_buf()], Vec::new());
+        let nested_main = nested.join("src/main.jr");
+        registry.ensure_for_source(&mut db, &sender, &nested_main);
+
+        let outer_lookup = jr_db::module_file(
+            &db,
+            registry.catalog_for_path(&outer.join("src/main.jr")),
+            Arc::from("Shared"),
+        );
+        let nested_lookup = jr_db::module_file(
+            &db,
+            registry.catalog_for_path(&nested_main),
+            Arc::from("Shared"),
+        );
+        assert_eq!(outer_lookup.found, Some(outer.join("src/Shared.jr")));
+        assert_eq!(nested_lookup.found, Some(nested.join("src/Shared.jr")));
+    }
+
+    #[test]
+    fn refresh_keeps_the_catalog_input_and_unsaved_module_text() {
+        let dir = tempfile::TempDir::new().expect("temporary directory");
+        let root = dir.path();
+        let module = root.join("src/Shared.jr");
+        write(&root.join("jairs.toml"), "");
+        write(&module, "VALUE :: 1;\n");
+
+        let (sender, _receiver) = unbounded();
+        let mut db = JairsDatabase::default();
+        let mut registry =
+            ProjectRegistry::discover_initial(&mut db, &sender, &[root.to_path_buf()], Vec::new());
+        let catalog = registry.catalog_for_path(&root.join("src/main.jr"));
+        db.set_file_text(module.to_string_lossy().into_owned(), "VALUE :: 9;\n");
+        write(&module, "VALUE :: 2;\n");
+
+        registry.refresh_all(&mut db, &sender);
+
+        let refreshed = registry.catalog_for_path(&root.join("src/main.jr"));
+        assert!(
+            catalog == refreshed,
+            "refresh must update the stable catalog input rather than replace it"
+        );
+        let found = jr_db::module_file(&db, refreshed, Arc::from("Shared"))
+            .found
+            .expect("Shared remains in the catalog");
+        let source = db
+            .source_file(found.to_string_lossy().as_ref())
+            .expect("catalog source is installed");
+        assert_eq!(source.text(&db).as_ref(), "VALUE :: 9;\n");
+    }
+
+    #[test]
+    fn a_manifest_error_is_published_and_cleared_after_refresh() {
+        let dir = tempfile::TempDir::new().expect("temporary directory");
+        let manifest = dir.path().join("jairs.toml");
+        write(&manifest, "not_a_real_key = true\n");
+
+        let (sender, receiver) = unbounded();
+        let mut db = JairsDatabase::default();
+        let mut registry = ProjectRegistry::discover_initial(
+            &mut db,
+            &sender,
+            &[dir.path().to_path_buf()],
+            Vec::new(),
+        );
+
+        let error = published(&receiver);
+        assert_eq!(
+            uri::to_path(&error.uri).as_deref(),
+            Some(manifest.as_path())
+        );
+        assert_eq!(error.diagnostics.len(), 1);
+        assert_eq!(
+            error.diagnostics[0].severity,
+            Some(lsp_types::DiagnosticSeverity::ERROR)
+        );
+        assert_eq!(error.diagnostics[0].source.as_deref(), Some("jairs"));
+
+        write(&manifest, "");
+        registry.refresh_all(&mut db, &sender);
+        let cleared = published(&receiver);
+        assert_eq!(
+            uri::to_path(&cleared.uri).as_deref(),
+            Some(manifest.as_path())
+        );
+        assert!(cleared.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn only_catalog_shaping_watch_events_trigger_rediscovery() {
+        let dir = tempfile::TempDir::new().expect("temporary directory");
+        let source = dir.path().join("src/main.jr");
+        let manifest = dir.path().join("jairs.toml");
+        assert!(!watched_changes_require_catalog_refresh(&watched(
+            &source,
+            FileChangeType::CHANGED
+        )));
+        assert!(watched_changes_require_catalog_refresh(&watched(
+            &source,
+            FileChangeType::CREATED
+        )));
+        assert!(watched_changes_require_catalog_refresh(&watched(
+            &manifest,
+            FileChangeType::CHANGED
+        )));
+    }
+
+    #[test]
+    fn import_surfaces_do_not_require_workspace_ownership() {
+        assert!(!needs_whole_workspace("textDocument/completion"));
+        assert!(!needs_whole_workspace("textDocument/codeAction"));
+        assert!(needs_whole_workspace("textDocument/references"));
+        assert!(needs_whole_workspace("textDocument/rename"));
+        assert!(needs_whole_workspace("workspace/symbol"));
+    }
 }

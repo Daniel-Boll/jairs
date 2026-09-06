@@ -1,4 +1,4 @@
-//! One test that speaks the real LSP protocol to the real binary.
+//! Protocol tests that speak LSP to the real `jr` binary.
 //!
 //! # Why this exists when `jr-lsp`'s own tests already pass
 //!

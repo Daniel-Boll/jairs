@@ -63,8 +63,7 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
 
     // Resolved through `crate::project` so that the command line, the manifest and the bundled
     // library rank identically here and in every other subcommand.
-    let path = crate::project::entry(args.path.clone())?;
-    let module_paths = crate::project::module_search_paths(&args.module_paths)?;
+    let (path, project) = crate::project::entry_and_context(args.path.clone(), &args.module_paths)?;
 
     // **`--script` is now an override, not the only way in** (ADR-0195 §6). A file that imports
     // `modules/Compiler` *is* a build script — that import is what gives it the driver's vocabulary —
@@ -80,7 +79,7 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
     let text = std::fs::read_to_string(&path)
         .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
     if args.script || jr_driver::is_build_script(&path, &text).map_err(|e| anyhow::anyhow!(e))? {
-        return run_script(&args, &path, &text, &renderer, module_paths);
+        return run_script(&args, &path, &text, &renderer, project);
     }
 
     if !args.script_args.is_empty() {
@@ -91,7 +90,7 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
 
     let request = BuildRequest {
         path: path.clone(),
-        module_paths,
+        project: project.clone(),
         library_paths: library_paths(&args),
         // `None` lets a declared `BUILD_OPT_LEVEL` decide; an explicit `-O` outranks it, which is
         // ADR-0102 §2's asymmetry — a declared name is a value the *artefact* chose, a flag is an
@@ -102,7 +101,7 @@ pub fn run(args: BuildArgs, global: &GlobalArgs) -> Result<i32> {
         output: args.output.clone(),
         // The project's own name, when it has one. Only reached if neither `-o` nor a declared
         // `BUILD_OUTPUT` named the artefact, so this cannot override either.
-        default_output: crate::project::default_output()?,
+        default_output: project.default_output().map(std::path::Path::to_path_buf),
         emit_object: args.emit_object,
         kind: args.output_kind.into(),
         linker_arguments: args.linker_args.clone(),
@@ -150,14 +149,14 @@ fn run_script(
     path: &std::path::Path,
     source: &str,
     renderer: &jr_diag::Renderer,
-    module_paths: Vec<std::path::PathBuf>,
+    project: jr_project::ProjectContext,
 ) -> Result<i32> {
     let request = ScriptRequest {
         path: path.to_path_buf(),
         // The text `run` already read for the build-script detection, handed on rather than read
         // a second time by the driver.
         source: source.to_owned(),
-        module_paths,
+        project,
         library_paths: library_paths(args),
         arguments: args.script_args.clone(),
     };
