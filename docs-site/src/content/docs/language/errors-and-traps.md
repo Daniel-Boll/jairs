@@ -38,9 +38,10 @@ false)` for a missing key, `String.find` returns `-1` when the needle is absent.
 routine uses is a small design decision each one makes — a two-value return when the *element*
 has no out-of-domain value to spare, a sentinel when it does.
 
-The planned `#must` attribute will make it a *compile error* to ignore the status flag,
-closing the "forgot to check" gap. It is <span class="jairs-status absent">absent</span> today
-and owed its own design.
+The `#must` attribute closes the "forgot to check" gap: `f :: (…) -> (T, bool) #must { … }`
+makes it a *compile error* to call `f` and drop its whole result as a bare statement. `_ =
+f();` is the deliberate way to discard it anyway — visible in a diff, unlike a wrapper
+procedure that would swallow the flag silently.
 
 ## Traps
 
@@ -62,9 +63,10 @@ the native binary faults the same way, and — the property Jairs is built aroun
 engines report the *same* location, because the differential test checks that they do.
 
 ```
-trap: integer overflow
-  at add (prog.jr:12)
-  at main (prog.jr:20)
+error: addition overflowed
+  --> prog.jr:4:12
+  in add
+  in main
 ```
 
 Inlined frames do not appear in the backtrace, because at run time they did not exist — Jairs

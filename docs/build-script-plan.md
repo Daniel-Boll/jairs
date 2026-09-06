@@ -1,6 +1,7 @@
-# A build script written in Jairs — research and implementation plan
+# A build script written in Jairs — historical research and implementation plan
 
-> **Status:** research complete, plan proposed, nothing implemented.
+> **Status:** historical. The implementation shipped in ADR-0195 through ADR-0198; current behaviour
+> is documented in `modules/Compiler/module.jr` and `docs/capabilities.md`.
 > **Date:** 2026-09-04. **Author:** this session. **Would become:** ADR-0195.
 
 The ask: several Jai projects carry a `build.jai` and are built with `jai build.jai` rather than a

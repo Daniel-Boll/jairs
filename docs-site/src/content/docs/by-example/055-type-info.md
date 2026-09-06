@@ -115,8 +115,142 @@ Ten assertions each add a distinct power of two, summing to `1023`. The `exit` e
 which held, so `jr run` and `jr build` can be asserted to agree byte-for-byte on a reflected
 program — including the fixed per-kind facts `count` (field count) and, elsewhere, `element`.
 
+## Fields, members, and a view's stride
+
+```jr
+#import "Basic";
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+Colour :: enum {
+    RED;
+    GREEN;
+    BLUE;
+}
+
+/// Compares two strings by contents.
+same :: (a: string, b: string) -> bool {
+    if a.count != b.count {
+        return false;
+    }
+    i := 0;
+    while i < a.count {
+        p := a.data + i;
+        q := b.data + i;
+        if p.* != q.* {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+main :: () {
+    n := 0;
+
+    // Every field, in declaration order (ADR-0152).
+    p := type_info(Point);
+    if p.fields.count == 2 { n = n + 1; }
+    if same(p.fields[0].name, "x") && p.fields[0].offset == 0 { n = n + 2; }
+    if same(p.fields[1].name, "y") && p.fields[1].offset == 8 { n = n + 4; }
+
+    // Every member of an enum, in declaration order (ADR-0193 §1).
+    c := type_info(Colour);
+    if c.members.count == 3 { n = n + 8; }
+    if same(c.members[1].name, "GREEN") && c.members[1].value == 1 { n = n + 16; }
+
+    // A view's element size, the stride `element` alone cannot give (ADR-0193 §2).
+    xs: [4]s64;
+    view := xs[];
+    vi := type_info(type_of(view));
+    if vi.element_size == 8 { n = n + 32; }
+
+    // Whether an integer is signed (ADR-0189 §3).
+    if type_info(s64).signed && !type_info(u64).signed { n = n + 64; }
+
+    // Every assertion: 127.
+    if n == 127 {
+        exit(0);
+    }
+    exit(1);
+}
+```
+
+`Type_Info.fields` (ADR-0152) is a view over every field of a struct, union or variant, in
+declaration order, each carrying its own `name`, `ty` and byte `offset`. It points into a
+read-only table the compiler emits once per type, so it costs nothing to read repeatedly and must
+not be written through. `Type_Info.members` (ADR-0193 §1) is the same idea for an enum: its
+members' source names, in declaration order, which is what lets `print` show `Colour.GREEN`
+instead of `1`. `element_size` (ADR-0193 §2) is the size of one element of an array, view or
+dynamic array — needed because `element` is only a type *id* and gives no stride, so without it a
+view's elements were unreachable even though its header holds `data` and `count`. `signed`
+(ADR-0189 §3) is meaningful only where `kind` is `INTEGER`, and is what lets a formatter print an
+unsigned `u64` above 2^63 without guessing from the first letter of its name.
+
+## `type_of` and a pointer type argument
+
+```jr
+#import "Basic";
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+// A polymorphic procedure: the parameter's type has no spelling at the call site,
+// so nothing else can name it.
+describe :: (v: $T) -> s64 {
+    return size_of(type_of(v));
+}
+
+main :: () {
+    n := 0;
+
+    p: Point;
+    ptr := *p;
+
+    // `type_of(x)` is the inverse of `size_of(T)`: it takes a value and gives a type (ADR-0192).
+    if type_info(type_of(p)).id == type_info(Point).id { n = n + 1; }
+
+    // Composes with a pointer type argument (ADR-0191): `type_of(ptr)` is `*Point`.
+    if type_info(type_of(ptr)).kind == Type_Info_Kind.POINTER { n = n + 2; }
+
+    // A pointer type read directly, the same way any other type argument is.
+    if size_of(*Point) == size_of(*u8) { n = n + 4; }
+
+    // Through the polymorphic parameter, where the type has no other spelling.
+    if describe(p) == 16 { n = n + 8; }
+
+    // Every assertion: 15.
+    if n == 15 {
+        exit(0);
+    }
+    exit(1);
+}
+```
+
+`type_of(x)` (ADR-0192) is the inverse of every other type argument: `size_of(T)` takes a type and
+gives a number, `type_of(x)` takes a value and gives a type. Its main use is inside a polymorphic
+procedure, where the parameter's type has no spelling at the call site and nothing else can name
+it — `describe` above reads `$T`'s size through `type_of(v)` with no other way to reach it. It
+composes with a **pointer type as an intrinsic's type argument** (ADR-0191): `*Point` is not a
+`TypeRef` here but a unary address-of applied to a name, so `any_as`, `size_of` and `type_info`
+all read it the same way, and it recurses (`**s64` works too).
+
 ## What is still absent
 
-The variable-length field **list** is not here yet: exposing a struct's fields one by one wants a
-memory-ownership decision of its own (ADR-0078 §4). Reflection currently gives you the fixed facts
-about a type, not a walk over its members.
+`element` and a field's `ty` are opaque type **ids**, not `*Type_Info` pointers, so nothing can
+follow one back to a `Type_Info` — a pointer to the element's own info would need that info built
+and stored somewhere, and an id needs nothing built. That is the one real gap left: a nested
+field cannot be described, only compared against an id the caller already holds. `print` runs
+into exactly this — a struct nested inside another prints as `{inner = ..}` rather than recursing
+into `inner`'s own fields, because `format_aggregate` has no way to turn `ty` into a `Type_Info`
+for the field it is printing.
+
+A structural type's `name` — an array's, a pointer's, a view's, a dynamic array's — is a full
+recursive spelling like `[3]s64` or `*Point` (ADR-0193 §3), not the lowercased kind. The one shape
+that still falls back to its lowercased kind is a **procedure type**: `type_info(type_of(add)).name`
+reads `"procedure"` rather than a rendered signature, because nothing has needed one yet.

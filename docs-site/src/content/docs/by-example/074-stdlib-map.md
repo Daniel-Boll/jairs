@@ -10,9 +10,11 @@ exercises what the earlier containers built: a heap array of *structs* (typed al
 allocate-copy-free like `List`, with field access through pointer arithmetic. Like `List`, it owns heap
 memory and there are no destructors, so a caller **must** call `free_map`.
 
-The types are declared parameterised (`struct($K, $V)`) but, as with `Array` and `List`, the operations
-are provided only for the concrete `s64 -> s64` instance, because inference through a parameterised
-struct and cross-file parameterised structs are still deferred. So a caller declares `Map(s64, s64)`.
+The types are declared parameterised (`struct($K, $V)`) — and, since ADR-0117, a parameterised struct
+genuinely does cross a module boundary. What stays concrete, as with `Array` and `List`, is the
+*procedures*: an imported polymorphic procedure is refused with `E0268`, so `put :: (m: *Map($K, $V), …)`
+would be uncallable by every importer. So a caller declares `Map(s64, s64)`, and every routine below
+becomes `$K, $V`-generic to its callers once cross-file instantiation lands.
 
 ## The types
 
@@ -180,3 +182,14 @@ arithmetic with no FFI, so both engines compute the same bucket.
 `get`, `has` and the two-value return pattern follow the same reasoning as the other containers: every
 `s64` is a legitimate value, so `get` returns `(value, present)` rather than a sentinel. `free_map` is
 safe on a map that never grew (`slots` is null) and safe twice, because it resets `slots`.
+
+## What is still missing
+
+The obvious next instance is a **string-keyed table** — looking up a value by name is what a real
+program reaches for a map to do — and it is high-value and still absent. It is blocked on the same
+`E0268` that shapes everything else here: a second concrete instance, `Map(string, s64)` written by
+hand beside this one, would be a *copy* of `Map` rather than a general answer, and copying the open
+addressing, the tombstone bookkeeping and the growth policy a second time is exactly the duplication a
+generic type exists to avoid.
+
+See also [Book I — The Jairs Language](/language/introduction/).

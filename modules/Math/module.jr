@@ -1022,10 +1022,12 @@ quat_slerp :: (a: Quaternion, b: Quaternion, t: float64) -> Quaternion {
         return quat_normalize(a + (b2 - a) * t);
     }
     theta := 0.0;
-    // arccos via `atan2`-less path: `theta = acos(d)`. `acos` is not in this
-    // module, so `sin` and `cos` of `acos(d)` are computed indirectly.
-    // Standard slerp:  q(t) = (sin((1-t)*θ) * a + sin(t*θ) * b) / sin(θ)
-    // where θ = acos(d). Requires `acos`; add it as a libm wrap here.
+    // Standard slerp: `q(t) = (sin((1-t)*θ) * a + sin(t*θ) * b) / sin(θ)`, where `θ = acos(d)`.
+    //
+    // This comment used to say `acos` "is not in this module, so `sin` and `cos` of `acos(d)` are
+    // computed indirectly", and end "requires `acos`; add it as a libm wrap here". `acos` **is** in
+    // this module — declared above as a libm wrap — and the next line calls it directly, so the
+    // comment described a workaround the code never used for an absence that had already been filled.
     theta = acos(d);
     sin_theta := sin(theta);
     factor_a := sin((1.0 - t) * theta) / sin_theta;

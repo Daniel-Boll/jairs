@@ -44,10 +44,10 @@ main :: () {
 }
 ```
 
-The caller must name every result (or discard it with `_`). There is a planned `#must`
-attribute that will make *ignoring* the flag a compile error — the other half of Jairs' error
-model — but it is <span class="jairs-status absent">absent</span> today and owed its own
-design decision.
+The caller must name every result (or discard it with `_`). The `#must` attribute closes the
+other half of the model: `f :: (…) -> (s64, bool) #must { … }` makes it a *compile error* to
+call `f` and drop its whole result as a bare statement. `_ = f();` is the deliberate escape
+hatch — visible in a diff, unlike a wrapper that swallows the flag silently.
 
 ## Named and default arguments
 
@@ -110,15 +110,38 @@ arrow for one that returns nothing. This is what makes the allocator protocol an
 like `Sort.sort(xs, less)` possible.
 
 Some procedure-value cases are still <span class="jairs-status absent">absent</span>: a
-*cross-file* or `#foreign` procedure used as a value, comparing or printing a procedure
-value, and a `#c_call` procedure-pointer type.
+*cross-file* or `#foreign` procedure used as a value, and comparing or printing a procedure
+value. A `#c_call` procedure-pointer *type* does exist — `(*u8) -> *u8 #c_call` is how
+[`Thread.spawn`](/language/concurrency/) takes a thread body — because without it a Jairs
+procedure meant for C could not be named in a signature at all.
 
 ## The implicit context
 
-Every ordinary Jairs procedure receives a hidden trailing parameter — the `context` — passed
-by pointer. You never write it in the parameter list, but it is how allocation travels down a
-call chain without every procedure taking an allocator argument. A `#c_call` procedure opts
-out and gets none. The context has its own chapter, [Memory](/language/memory/).
+Every ordinary Jairs procedure receives a hidden **leading** parameter — the `context` —
+passed by pointer. You never write it in the parameter list, but it is how allocation
+travels down a call chain without every procedure taking an allocator argument. A `#c_call`
+procedure opts out and gets none. The context has its own chapter, [Memory](/language/memory/).
+
+## Variadic parameters
+
+A procedure's last parameter can be marked `..T`, and the callee sees the trailing arguments
+as an ordinary view `[]T`:
+
+```jr
+sum :: (args: ..s64) -> s64 {
+    t := 0;
+    for x: args {
+        t = t + x;
+    }
+    return t;
+}
+```
+
+`..Any` is the same shape at the erased type, and it is how `print` is declared —
+`print :: (fmt: string, args: ..Any) -> s64` — so `print("%, %\n", a, b)` takes arguments of
+any type, mixed freely. At the call site, each trailing argument — `sum(1, 2, 3)`,
+`print("%", x)` — is packed into a stack array and handed to the callee as that array's view;
+passing an explicit `[]T` (or `[]Any`) view works too, for a caller who already has one.
 
 Next: [Control flow](/language/control-flow/) — `if`, `while`, `for`, `switch`, `defer`, and
 labelled loops.

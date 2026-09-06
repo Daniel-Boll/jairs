@@ -5,10 +5,11 @@ sidebar:
   order: 8
 ---
 
-Jairs has two array-shaped types today: **fixed-size arrays** `[N]T`, which own their
-storage, and **views** `[]T`, which borrow a run of elements. (A growable, heap-backed
-dynamic array is provided by the [`List`](/language/the-standard-library/) module rather than
-as a language built-in.)
+Jairs has four array-shaped types today: **fixed-size arrays** `[N]T`, which own their
+storage; **views** `[]T`, which borrow a run of elements; **dynamic arrays** `[..]T`, which
+own a growable heap block; and `#simd [N]T`, a vector held in a machine register rather than
+memory. This chapter covers all four, plus the two attributes — `#soa` and `#align`/`#place`
+— that control a struct's layout.
 
 ## Fixed arrays
 
@@ -33,9 +34,29 @@ N :: 4;
 grid: [N]s64;         // fine — N is a literal one name away
 ```
 
-A length that needs *evaluation* — arithmetic like `[2 + 2]u8`, a `#run`, or another file's
-constant — is <span class="jairs-status absent">absent</span>, as are array *literals* like
-`[1, 2, 3]`.
+A length that needs *evaluation* — arithmetic like `[2 + 2]u8`, a `#run`, or a constant from
+another file — is <span class="jairs-status absent">absent</span>: the length must be an
+integer literal or a name for a constant whose value is one, because the compiler resolves an
+array's length before the const-evaluator that would compute the other kinds exists yet at
+that phase.
+
+### Array literals
+
+A fixed array can be written as a literal by naming its element type before the brackets:
+
+```jr
+a := s64.[10, 20, 30];    // a [3]s64
+b := u8.[1, 2, 255];      // element type types each literal, so an overflow is a type error
+```
+
+`T.[a, b, c]` is a `[N]T` where `N` is the number of elements — naming the type answers the
+length, the element-constancy, and the context-typing questions in one spelling. The bare
+`[1, 2, 3]` form (with the element type inferred from the elements) is <span
+class="jairs-status absent">absent</span> — an array literal must name its element type.
+
+An array literal is not a *place*: `s64.[1, 2][0] = 5` is refused, and a literal cannot yet be
+folded into a compile-time constant (`A :: s64.[1, 2, 3];` is refused) — every use so far is
+inside a procedure body.
 
 ### Turning off the bounds check
 
@@ -101,6 +122,79 @@ unchecked** — a pointer's allocation size is tracked nowhere — and that is s
 rather than pretended away.
 
 Sub-slicing (`buf[1..3]`) and `==` on views are <span class="jairs-status absent">absent</span>.
+
+## Dynamic arrays
+
+`[..]T` is a **compiler-known** dynamic array: three words, `{data: *T, count: s64, capacity:
+s64}`, laid out the same way a hand-written growable buffer would be. All three fields are
+places — readable and writable — because a library `push` needs to update `.count` and
+`.capacity` after reallocating:
+
+```jr
+xs: [..]s64;          // zeroed: data is null, count and capacity are 0
+xs.count = 0;         // an ordinary field write, exactly like a struct's
+```
+
+The compiler owns the *type* and the *layout*; it does not own the *operations*. Growing,
+pushing and freeing are library code — [`List`](/language/the-standard-library/) is built
+directly on `[..]s64`, rather than providing its own growable type as a wrapper around it.
+There is no dedicated `for` shape for a dynamic array yet: reach its elements through
+`view(xs.data, xs.count)` or a library helper that returns one.
+
+## Struct layout: #soa, #align and #place
+
+Three attributes hand a systems program control over layout that the compiler otherwise
+chooses for you.
+
+`#soa(N)` turns a struct into **structure-of-arrays**: each field's declared type becomes
+`[N]T` instead of `T`, so a loop reading one field stays contiguous instead of striding over
+its neighbours.
+
+```jr
+Entities :: struct #soa(4) {
+    x: s64;
+    hp: u8;
+}
+// lays out as { x: [4]s64, hp: [4]u8 }
+```
+
+Indexing an `#soa` struct is legal only as the receiver of a field access — `e[i].x` means
+`e.x[i]` — because `e[i]` alone has no type of its own; used any other way it is refused.
+
+`#align` and `#place` are field attributes, written after a field's type:
+
+```jr
+Header :: struct {
+    kind: u8 #place 0;      // an exact byte offset — two fields may overlap on purpose
+    flags: u32 #align 16;   // a *minimum* alignment; the field's own alignment still applies
+}
+```
+
+`#align N` raises a field's alignment to `max(natural, N)` — it can only go up, never down, so
+there is no way to accidentally underalign something. `#place N` puts a field at an exact byte
+offset, and two fields placed at the same offset legitimately overlap, the same trade an
+untagged `union` already makes. Both exist because a struct that crosses the `#foreign`
+boundary or describes a hardware layout sometimes has to match bytes the language does not
+otherwise let you place.
+
+## #simd — vectors at register width
+
+`#simd` marks a fixed array as a **vector**, held in a machine register rather than in memory,
+with arithmetic operators instead of just storage:
+
+```jr
+a: #simd [4]s32;
+b: #simd [4]s32;
+c := a +% b;        // integer vectors take only the wrapping operators
+```
+
+The legal widths are exactly what a 128-bit register holds — `16×s8`, `8×s16`, `4×s32`, `2×s64`,
+`4×float32`, `2×float64`, signed and unsigned — because a vector type only earns its keep when
+it is a real register; any other width is a compile error naming the six shapes. An integer
+vector takes only the **wrapping** operators `+% -% *%` (a lane can't trap — no target has a
+per-lane overflow flag); a float vector keeps `+ - * /`, since a float never traps in the first
+place. Integer `/` on a vector, comparisons, and swizzles are all <span
+class="jairs-status absent">absent</span>.
 
 ## Arrays vs views, at a glance
 

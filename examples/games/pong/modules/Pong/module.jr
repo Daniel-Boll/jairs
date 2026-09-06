@@ -1,0 +1,280 @@
+//! Pong's rules, with no window, no renderer and no SDL2 anywhere.
+//!
+//! This module is the *simulation*: it advances a ball, two paddles and two scores by a time step
+//! and reports what happened. It imports nothing but `Math`, which means it runs in the compile-time
+//! VM — so `jr run examples/games/pong/sim.jr` exercises every rule in here with no display attached,
+//! and `examples/games/pong/main.jr` is the only file that needs a window.
+//!
+//! **That split is the point of the example.** `modules/Window`, `modules/Input` and `modules/Simp`
+//! cannot run under `jr run`: the comptime VM resolves a foreign symbol from the compiler's own
+//! process image, so it reaches libc and nothing else. Anything a game keeps *behind* that boundary
+//! stays testable at compile time; anything in front of it needs a built binary and a machine with
+//! SDL2 on it.
+//!
+//! # Units
+//!
+//! Everything here is in **world units**, not pixels: the field is `FIELD_WIDTH` by `FIELD_HEIGHT`
+//! with the origin bottom-left, and `main.jr` scales that to whatever the window turns out to be.
+//! A simulation that thinks in pixels cannot be resized and cannot be tested at a size nobody can
+//! see.
+//!
+//! Time is `float64` seconds. Positions are `float64` because `modules/Math` is `float64`
+//! throughout; `modules/Simp` takes `float32`, so the cast happens once, at the draw call.
+
+Math :: #import "Math";
+
+/// The field's width in world units.
+FIELD_WIDTH :: 200.0;
+
+/// The field's height in world units.
+FIELD_HEIGHT :: 150.0;
+
+/// A paddle's width in world units.
+PADDLE_WIDTH :: 4.0;
+
+/// A paddle's height in world units.
+PADDLE_HEIGHT :: 30.0;
+
+/// How far a paddle's centre sits from its own wall.
+PADDLE_INSET :: 8.0;
+
+/// How fast a paddle moves, in world units per second.
+PADDLE_SPEED :: 110.0;
+
+/// The ball's half-extent — it is drawn as a square, so this is half a side.
+BALL_RADIUS :: 2.5;
+
+/// The ball's starting speed, in world units per second.
+BALL_SPEED :: 90.0;
+
+/// How much faster the ball gets after each paddle hit.
+BALL_SPEEDUP :: 1.05;
+
+/// The fastest the ball may ever travel. Without a cap the ball eventually crosses a paddle's width
+/// within one frame and tunnels through it, which reads as a physics bug and is a step-size bug.
+BALL_MAX_SPEED :: 260.0;
+
+/// The score that ends the game.
+WINNING_SCORE :: 5;
+
+/// Nothing happened this step.
+EVENT_NONE :: 0;
+
+/// The ball bounced off the top or bottom wall.
+EVENT_WALL :: 1;
+
+/// The ball bounced off a paddle.
+EVENT_PADDLE :: 2;
+
+/// A point was scored, so the ball was re-served.
+EVENT_SCORE :: 3;
+
+/// The whole game, in one plain struct a caller owns.
+///
+/// No allocation and no pointers inside it, so a caller can copy one to snapshot a frame — which is
+/// what the headless runner does to check that a step is deterministic.
+State :: struct {
+    /// The ball's centre, in world units.
+    ball: Math.Vector2;
+    /// The ball's velocity, in world units per second.
+    ball_velocity: Math.Vector2;
+    /// The left paddle's centre height.
+    left_y: float64;
+    /// The right paddle's centre height.
+    right_y: float64;
+    /// The left player's score.
+    left_score: s64;
+    /// The right player's score.
+    right_score: s64;
+    /// A counter the serve direction and angle are derived from, so a serve needs no generator.
+    serves: s64;
+}
+
+/// A fresh game: paddles centred, ball served to the right, both scores zero.
+make :: () -> State {
+    s: State;
+    s.left_y = FIELD_HEIGHT / 2.0;
+    s.right_y = FIELD_HEIGHT / 2.0;
+    s.left_score = 0;
+    s.right_score = 0;
+    s.serves = 0;
+    serve(*s, 1.0);
+    return s;
+}
+
+/// Puts the ball back in the middle, travelling towards `direction` (`1.0` right, `-1.0` left).
+///
+/// The vertical component alternates with `serves` rather than coming from `modules/Random`,
+/// because a deterministic serve is what lets the headless runner assert an exact score. A real game
+/// wants a generator here and `modules/Random` is one call away — `Random.below(*rng, -30, 30)`.
+serve :: (state: *State, direction: float64) {
+    state.ball = Math.vec2(FIELD_WIDTH / 2.0, FIELD_HEIGHT / 2.0);
+    lift := 34.0;
+    if state.serves % 2 == 1 {
+        lift = -26.0;
+    }
+    state.ball_velocity = Math.vec2(BALL_SPEED * direction, lift);
+    state.serves = state.serves + 1;
+}
+
+/// Advances the game by `dt` seconds and reports the most interesting thing that happened.
+///
+/// `left` and `right` are each `-1`, `0` or `1`: down, still, up. Taking an integer rather than two
+/// booleans per paddle is what keeps this module ignorant of a keyboard — `main.jr` turns held keys
+/// into this, and the headless runner turns a scripted policy into it.
+///
+/// The return value is one of the `EVENT_*` constants. Reporting only the *last* event of a step is
+/// a deliberate simplification: at these speeds two collisions in one step is a step-size bug rather
+/// than a thing to report faithfully.
+update :: (state: *State, dt: float64, left: s64, right: s64) -> s64 {
+    event := EVENT_NONE;
+
+    state.left_y = move_paddle(state.left_y, left, dt);
+    state.right_y = move_paddle(state.right_y, right, dt);
+
+    state.ball = state.ball + state.ball_velocity * dt;
+
+    // Walls. The ball is *placed* back inside rather than merely reflected: reflecting a ball that
+    // is already outside leaves it outside for another step when `dt` is large, and it sticks.
+    if state.ball.y - BALL_RADIUS < 0.0 {
+        state.ball.y = BALL_RADIUS;
+        state.ball_velocity.y = Math.fabs(state.ball_velocity.y);
+        event = EVENT_WALL;
+    }
+    if state.ball.y + BALL_RADIUS > FIELD_HEIGHT {
+        state.ball.y = FIELD_HEIGHT - BALL_RADIUS;
+        state.ball_velocity.y = -Math.fabs(state.ball_velocity.y);
+        event = EVENT_WALL;
+    }
+
+    // Paddles. Only the approaching side is tested, so a ball that has already passed a paddle
+    // cannot be caught by its back face.
+    left_x := PADDLE_INSET;
+    right_x := FIELD_WIDTH - PADDLE_INSET;
+
+    if state.ball_velocity.x < 0.0 {
+        if hits_paddle(state.ball, left_x, state.left_y) {
+            state.ball.x = left_x + PADDLE_WIDTH / 2.0 + BALL_RADIUS;
+            bounce(state, state.left_y, 1.0);
+            event = EVENT_PADDLE;
+        }
+    }
+    if state.ball_velocity.x > 0.0 {
+        if hits_paddle(state.ball, right_x, state.right_y) {
+            state.ball.x = right_x - PADDLE_WIDTH / 2.0 - BALL_RADIUS;
+            bounce(state, state.right_y, -1.0);
+            event = EVENT_PADDLE;
+        }
+    }
+
+    // Scoring, tested after the paddles so a saved ball is not also a point.
+    if state.ball.x < 0.0 {
+        state.right_score = state.right_score + 1;
+        serve(state, -1.0);
+        return EVENT_SCORE;
+    }
+    if state.ball.x > FIELD_WIDTH {
+        state.left_score = state.left_score + 1;
+        serve(state, 1.0);
+        return EVENT_SCORE;
+    }
+
+    return event;
+}
+
+/// Whether the game is over — either score has reached `WINNING_SCORE`.
+is_over :: (state: *State) -> bool {
+    return state.left_score >= WINNING_SCORE || state.right_score >= WINNING_SCORE;
+}
+
+/// A paddle's bottom edge, which is what a renderer wants and what the centre is stored as.
+paddle_bottom :: (centre_y: float64) -> float64 {
+    return centre_y - PADDLE_HEIGHT / 2.0;
+}
+
+/// The left paddle's centre x.
+left_paddle_x :: () -> float64 {
+    return PADDLE_INSET;
+}
+
+/// The right paddle's centre x.
+right_paddle_x :: () -> float64 {
+    return FIELD_WIDTH - PADDLE_INSET;
+}
+
+/// A one-line opponent: move towards the ball's height, and stop inside a dead band.
+///
+/// The dead band is what stops the paddle oscillating around the ball by a fraction of a unit every
+/// frame. Exported because both the headless runner and `main.jr` use it — the runner for both
+/// paddles, `main.jr` for the right-hand one only.
+follow :: (paddle_y: float64, target_y: float64) -> s64 {
+    slack := 3.0;
+    if target_y > paddle_y + slack {
+        return 1;
+    }
+    if target_y < paddle_y - slack {
+        return -1;
+    }
+    return 0;
+}
+
+#scope_module
+
+/// A paddle moved by one step of input, clamped so it cannot leave the field.
+///
+/// `Math.clamp` is `s64`-only, so the two comparisons are written out. That is a real gap in
+/// `modules/Math` rather than a style choice here.
+move_paddle :: (y: float64, direction: s64, dt: float64) -> float64 {
+    moved := y;
+    if direction > 0 {
+        moved = y + PADDLE_SPEED * dt;
+    }
+    if direction < 0 {
+        moved = y - PADDLE_SPEED * dt;
+    }
+    half := PADDLE_HEIGHT / 2.0;
+    if moved < half {
+        moved = half;
+    }
+    if moved > FIELD_HEIGHT - half {
+        moved = FIELD_HEIGHT - half;
+    }
+    return moved;
+}
+
+/// Whether the ball's square overlaps the paddle at `(centre_x, centre_y)`.
+///
+/// Two axis-aligned boxes, tested by separation rather than by containment: a containment test on
+/// the ball's centre misses a ball whose centre passed the paddle but whose edge did not.
+hits_paddle :: (ball: Math.Vector2, centre_x: float64, centre_y: float64) -> bool {
+    half_w := PADDLE_WIDTH / 2.0;
+    half_h := PADDLE_HEIGHT / 2.0;
+    if ball.x + BALL_RADIUS < centre_x - half_w {
+        return false;
+    }
+    if ball.x - BALL_RADIUS > centre_x + half_w {
+        return false;
+    }
+    if ball.y + BALL_RADIUS < centre_y - half_h {
+        return false;
+    }
+    if ball.y - BALL_RADIUS > centre_y + half_h {
+        return false;
+    }
+    return true;
+}
+
+/// Reflects the ball off a paddle, steering it by where it hit and speeding it up a little.
+///
+/// `direction` is the x sign the ball leaves with. The vertical component comes from the offset
+/// between the ball and the paddle's centre, which is the whole reason Pong is a game rather than a
+/// screensaver: it is the only control the player has over the return.
+bounce :: (state: *State, paddle_y: float64, direction: float64) {
+    offset := (state.ball.y - paddle_y) / (PADDLE_HEIGHT / 2.0);
+    speed := Math.length2(state.ball_velocity) * BALL_SPEEDUP;
+    if speed > BALL_MAX_SPEED {
+        speed = BALL_MAX_SPEED;
+    }
+    steer := Math.vec2(direction * 0.85, offset * 0.75);
+    state.ball_velocity = Math.normalize2(steer) * speed;
+}

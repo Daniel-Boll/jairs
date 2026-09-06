@@ -40,20 +40,25 @@ too many bits *traps* are the same reason — Jairs refuses to guess.
 
 ## Two engines, one language
 
-A Jairs program can be executed two ways, and this shapes how the whole language is built:
+A Jairs program can be executed more than one way, and this shapes how the whole language is
+built:
 
 - `jr run file.jr` executes it in a **bytecode virtual machine**. This is also the engine
   that runs your `#run` blocks at compile time.
-- `jr build file.jr -o out` compiles it through **Cranelift** to a native executable.
+- `jr build file.jr -o out` compiles it to a native executable. There are **two** native back
+  ends — Cranelift by default, and LLVM behind `--backend llvm` for an optimised build —
+  rather than one.
 
-Both engines consume the *same* mid-level IR that the compiler produces. Because of that,
-the two are expected to agree — and a differential test in the compiler asserts they agree
-byte for byte: same output, same exit status, even the same reported location when a program
-traps. When you see an example in this book end with `exit(0)` on success, that exit status
-is being compared across both engines behind the scenes.
+All engines consume the *same* mid-level IR that the compiler produces. Because of that, they
+are expected to agree — and a differential test in the compiler checks it: two-way (VM versus
+Cranelift) by default, and three-way (VM ≡ Cranelift ≡ LLVM) under the build gate that
+compiles the LLVM back end in. Same output, same exit status, even the same reported location
+when a program traps. When you see an example in this book end with `exit(0)` on success,
+that exit status is being compared across engines behind the scenes.
 
 This is why Jairs can promise that compile-time execution and run-time execution never
-diverge. It is not a convention; it is a checked property.
+diverge, whichever native back end you build with. It is not a convention; it is a checked
+property.
 
 ## How to read this book
 
@@ -61,9 +66,8 @@ diverge. It is not a convention; it is a checked property.
   compiler's own corpus of test programs. If the book and the compiler ever disagree about
   syntax, the compiler is right.
 - **Absence is stated, not hidden.** Jairs is pre-alpha and deliberately small. Where a
-  feature does not exist yet, the text marks it <span class="jairs-status absent">absent</span>
-  and says which development *wave* introduces it. Anything shown without such a marker
-  actually runs today.
+  feature does not exist yet, the text marks it <span class="jairs-status absent">absent</span>.
+  Anything shown without such a marker actually runs today.
 - **Traps are a feature.** Jairs would rather stop your program with a clear location than
   let it compute a wrong answer. You will see the words "traps" a lot; each time, it means a
   well-defined, located run-time failure — not undefined behaviour.
@@ -125,7 +129,7 @@ A few things to notice, each of which gets a full chapter later:
 Run it both ways and you will get identical output:
 
 ```sh
-jr run hello.jr      # prints "hello from Jairs" then 5
+jr run hello.jr      # prints "hello from Jairs" then 9
 jr build hello.jr -o hello && ./hello
 ```
 

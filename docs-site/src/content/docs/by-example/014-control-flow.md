@@ -76,8 +76,8 @@ main :: () {
         inner := 2;
         outer = outer + inner;
         {
-            // Shadowing an outer name is permitted; wave W2 decides
-            // whether to warn.
+            // Shadowing an outer name is permitted. The compiler does not
+            // warn about it.
             inner := 3;
             outer = outer + inner;
         }
@@ -87,7 +87,7 @@ main :: () {
 
 A bare `{ ... }` introduces a nested scope. A name declared inside is visible only within that
 block, and an inner block may **shadow** a name from an outer one — the inner `inner := 3` is a
-new variable distinct from the outer `inner := 2`. Shadowing is permitted here; whether the
-compiler warns about it is a decision deferred to the wave labelled W2.
+new variable distinct from the outer `inner := 2`. Shadowing is permitted, and the compiler does
+not warn about it; whether it should is undecided.
 
 See also [Book I — The Jairs Language](/language/introduction/).

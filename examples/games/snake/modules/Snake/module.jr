@@ -1,0 +1,406 @@
+//! Snake's rules on a grid, with no window and no renderer.
+//!
+//! Same shape as `modules/Pong` in the example beside it, and for the same reason: a simulation that
+//! imports only `modules/Random` runs in the compile-time VM, so `jr run examples/games/snake/sim.jr`
+//! plays a whole game with no display attached. Only `main.jr` needs SDL2.
+//!
+//! # Why the body is a ring buffer in a fixed array
+//!
+//! A snake grows by one cell per apple, so the obvious storage is a `[..]Cell` dynamic array. This
+//! uses a fixed `[GRID_CELLS]Cell` with a head index instead, and the reason is worth stating: a
+//! `[..]T` needs `context.allocator`, and this module deliberately allocates nothing, so it can be
+//! played by a `#run` at compile time as well as by a built binary. The bound is not arbitrary either
+//! — a snake cannot be longer than the grid it lives on.
+//!
+//! Moving the head rather than shifting the body is what makes a step O(1): the tail is wherever the
+//! head was `length` cells ago.
+
+Random :: #import "Random";
+
+/// How many cells across the grid is.
+GRID_WIDTH :: 24;
+
+/// How many cells up the grid is.
+GRID_HEIGHT :: 18;
+
+/// Every cell of the grid, which is the longest a snake can be.
+///
+/// **A literal, and it has to be.** An array length may be an integer literal or a name for a
+/// constant whose value is one; `GRID_WIDTH * GRID_HEIGHT` is a *computed* constant, and using it as
+/// `[GRID_CELLS]Cell` below is E0233 — sema resolves array lengths before the compile-time evaluator
+/// runs. So the product is written out, and `GRID_CELLS_IS_CONSISTENT` beside it is the check that
+/// keeps the three numbers honest, in the same shape `modules/Input` checks its `#place` overlay with.
+GRID_CELLS :: 432;
+
+/// Whether `GRID_CELLS` really is the grid's area. A caller asserts this once; it costs nothing at run
+/// time, because it is folded at compile time.
+GRID_CELLS_IS_CONSISTENT :: GRID_CELLS == GRID_WIDTH * GRID_HEIGHT;
+
+/// The snake's length at the start.
+START_LENGTH :: 4;
+
+/// Seconds between steps at the start. A grid game moves in ticks, not continuously.
+START_STEP_SECONDS :: 0.16;
+
+/// How much of the step interval each apple removes.
+STEP_SPEEDUP :: 0.94;
+
+/// The shortest step interval, so the game stays playable rather than becoming a reflex test.
+MIN_STEP_SECONDS :: 0.06;
+
+/// Nothing happened this step.
+EVENT_NONE :: 0;
+
+/// The snake ate an apple and grew.
+EVENT_APPLE :: 1;
+
+/// The snake hit a wall or itself. The game is over.
+EVENT_DEAD :: 2;
+
+/// The snake filled the whole grid. There is nowhere left to put an apple.
+EVENT_WON :: 3;
+
+/// Not moving. Only the starting state is `DIR_NONE`; a step in it does nothing.
+DIR_NONE :: 0;
+
+/// Moving right.
+DIR_RIGHT :: 1;
+
+/// Moving up.
+DIR_UP :: 2;
+
+/// Moving left.
+DIR_LEFT :: 3;
+
+/// Moving down.
+DIR_DOWN :: 4;
+
+/// One grid cell.
+Cell :: struct {
+    /// The column, `0` to `GRID_WIDTH - 1`.
+    x: s64;
+    /// The row, `0` to `GRID_HEIGHT - 1`.
+    y: s64;
+}
+
+/// The whole game.
+///
+/// No pointers and no allocation, so a caller can copy one to snapshot a frame.
+State :: struct {
+    /// The body, newest cell at `head`, running backwards for `length` cells.
+    body: [GRID_CELLS]Cell;
+    /// Where in `body` the head currently is.
+    head: s64;
+    /// How many cells of `body` are the snake.
+    length: s64;
+    /// The direction the snake is travelling.
+    direction: s64;
+    /// The direction the next step will take, which is not the same thing — see `turn`.
+    next_direction: s64;
+    /// Where the apple is.
+    apple: Cell;
+    /// How many apples have been eaten.
+    score: s64;
+    /// Seconds between steps, which shortens with every apple.
+    step_seconds: float64;
+    /// Whether the snake is dead.
+    dead: bool;
+    /// Whether the grid is full.
+    won: bool;
+    /// The generator the apples come from, owned by the state so a game is reproducible from a seed.
+    rng: Random.Random;
+}
+
+/// A new game, seeded from `seed`.
+///
+/// The seed is a parameter and not a clock reading, because the same seed must give the same game:
+/// that is what lets the headless runner assert an exact score, and it is what makes a bug
+/// reproducible. `main.jr` passes a clock reading; the runner passes a constant.
+make :: (seed: u64) -> State {
+    s: State;
+    Random.seed(*s.rng, seed);
+
+    s.head = 0;
+    s.length = START_LENGTH;
+    s.direction = DIR_NONE;
+    s.next_direction = DIR_NONE;
+    s.score = 0;
+    s.step_seconds = START_STEP_SECONDS;
+    s.dead = false;
+    s.won = false;
+
+    // The snake starts stretched to the left of centre, so its first move right does not run into
+    // its own body. Cell `head` is the head; each earlier index is one cell further back.
+    start_x := GRID_WIDTH / 2;
+    start_y := GRID_HEIGHT / 2;
+    i := 0;
+    while i < START_LENGTH {
+        s.body[slot(0 - i)] = cell(start_x - i, start_y);
+        i = i + 1;
+    }
+
+    place_apple(*s);
+    return s;
+}
+
+/// Builds a cell.
+cell :: (x: s64, y: s64) -> Cell {
+    c: Cell;
+    c.x = x;
+    c.y = y;
+    return c;
+}
+
+/// Asks for a turn, which the next step will apply if it is legal.
+///
+/// **Buffered rather than immediate, and that is the whole trick of a playable Snake.** Applying a
+/// turn the moment a key arrives lets a player press up then left within one tick and reverse into
+/// their own neck — the game ends and the input looked correct. Storing the request and validating it
+/// against the direction the snake is *actually* travelling makes that impossible.
+///
+/// A reversal is rejected here rather than being a death, because a player pressing the opposite
+/// direction means "no" rather than "kill me".
+turn :: (state: *State, direction: s64) {
+    if direction == DIR_NONE {
+        return;
+    }
+    if is_reverse(state.direction, direction) {
+        return;
+    }
+    state.next_direction = direction;
+}
+
+/// Advances the game by one tick and reports what happened.
+///
+/// One *tick*, not one frame. `main.jr` accumulates real time and calls this when enough has passed,
+/// which is what keeps the snake's speed independent of the frame rate.
+step :: (state: *State) -> s64 {
+    if state.dead || state.won {
+        return EVENT_NONE;
+    }
+
+    state.direction = state.next_direction;
+    if state.direction == DIR_NONE {
+        return EVENT_NONE;
+    }
+
+    head := state.body[state.head];
+    next := head;
+    if state.direction == DIR_RIGHT {
+        next.x = head.x + 1;
+    }
+    if state.direction == DIR_LEFT {
+        next.x = head.x - 1;
+    }
+    if state.direction == DIR_UP {
+        next.y = head.y + 1;
+    }
+    if state.direction == DIR_DOWN {
+        next.y = head.y - 1;
+    }
+
+    if next.x < 0 || next.x >= GRID_WIDTH || next.y < 0 || next.y >= GRID_HEIGHT {
+        state.dead = true;
+        return EVENT_DEAD;
+    }
+
+    // The tail cell is vacated by this very step, so it must not count as a collision: a snake at
+    // full stretch moving forward is legal, and testing the whole body would kill it every tick.
+    // `length - 1` cells are tested rather than `length`.
+    if occupies(state, next, state.length - 1) {
+        state.dead = true;
+        return EVENT_DEAD;
+    }
+
+    state.head = slot(state.head + 1);
+    state.body[state.head] = next;
+
+    if next.x == state.apple.x && next.y == state.apple.y {
+        state.length = state.length + 1;
+        state.score = state.score + 1;
+        state.step_seconds = state.step_seconds * STEP_SPEEDUP;
+        if state.step_seconds < MIN_STEP_SECONDS {
+            state.step_seconds = MIN_STEP_SECONDS;
+        }
+        if state.length >= GRID_CELLS {
+            state.won = true;
+            return EVENT_WON;
+        }
+        place_apple(state);
+        return EVENT_APPLE;
+    }
+
+    return EVENT_NONE;
+}
+
+/// Whether the game has finished, either way.
+is_over :: (state: *State) -> bool {
+    return state.dead || state.won;
+}
+
+/// The snake's cell `age` steps back from the head — `0` is the head, `length - 1` the tail.
+///
+/// The accessor a renderer wants, and the reason the ring buffer's index arithmetic does not leak out
+/// of this module.
+segment :: (state: *State, age: s64) -> Cell {
+    if age < 0 || age >= state.length {
+        return cell(-1, -1);
+    }
+    return state.body[slot(state.head - age)];
+}
+
+/// Whether any of the snake's first `limit` cells is `at`.
+occupies :: (state: *State, at: Cell, limit: s64) -> bool {
+    i := 0;
+    while i < limit && i < state.length {
+        c := state.body[slot(state.head - i)];
+        if c.x == at.x && c.y == at.y {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+/// A greedy autopilot: turn towards the apple, and prefer any legal turn over dying.
+///
+/// It is not a solver — it walks into its own tail eventually, which is what makes it useful for a
+/// headless test: the game ends by itself. `main.jr` uses it for a demo mode.
+autopilot :: (state: *State) -> s64 {
+    head := state.body[state.head];
+
+    wanted := state.direction;
+    if state.apple.x > head.x {
+        wanted = DIR_RIGHT;
+    }
+    if state.apple.x < head.x {
+        wanted = DIR_LEFT;
+    }
+    if state.apple.x == head.x {
+        if state.apple.y > head.y {
+            wanted = DIR_UP;
+        }
+        if state.apple.y < head.y {
+            wanted = DIR_DOWN;
+        }
+    }
+
+    if is_safe(state, wanted) {
+        return wanted;
+    }
+
+    // The preferred turn is blocked, so try the others in a fixed order. A fixed order rather than a
+    // random one keeps the autopilot deterministic, which is what the headless runner needs.
+    candidate := DIR_RIGHT;
+    while candidate <= DIR_DOWN {
+        if is_safe(state, candidate) {
+            return candidate;
+        }
+        candidate = candidate + 1;
+    }
+    return state.direction;
+}
+
+#scope_module
+
+/// Whether moving `direction` next tick stays on the grid and off the body.
+is_safe :: (state: *State, direction: s64) -> bool {
+    if direction == DIR_NONE {
+        return false;
+    }
+    if is_reverse(state.direction, direction) {
+        return false;
+    }
+
+    head := state.body[state.head];
+    next := head;
+    if direction == DIR_RIGHT {
+        next.x = head.x + 1;
+    }
+    if direction == DIR_LEFT {
+        next.x = head.x - 1;
+    }
+    if direction == DIR_UP {
+        next.y = head.y + 1;
+    }
+    if direction == DIR_DOWN {
+        next.y = head.y - 1;
+    }
+
+    if next.x < 0 || next.x >= GRID_WIDTH || next.y < 0 || next.y >= GRID_HEIGHT {
+        return false;
+    }
+    return !occupies(state, next, state.length - 1);
+}
+
+/// Whether `b` is the exact opposite of `a`. `DIR_NONE` reverses nothing.
+is_reverse :: (a: s64, b: s64) -> bool {
+    if a == DIR_RIGHT && b == DIR_LEFT {
+        return true;
+    }
+    if a == DIR_LEFT && b == DIR_RIGHT {
+        return true;
+    }
+    if a == DIR_UP && b == DIR_DOWN {
+        return true;
+    }
+    if a == DIR_DOWN && b == DIR_UP {
+        return true;
+    }
+    return false;
+}
+
+/// An index into `body`, wrapped into range.
+///
+/// Written as two `while` loops rather than `%` because a Jairs `%` on a negative left operand follows
+/// C: `-1 % 432` is `-1`, not `431`, and indexing with it traps on the bounds check. The loops run at
+/// most once each for the values this module produces.
+slot :: (index: s64) -> s64 {
+    wrapped := index;
+    while wrapped < 0 {
+        wrapped = wrapped + GRID_CELLS;
+    }
+    while wrapped >= GRID_CELLS {
+        wrapped = wrapped - GRID_CELLS;
+    }
+    return wrapped;
+}
+
+/// Puts the apple on a free cell.
+///
+/// Rejection sampling — pick a cell, try again if the snake is on it. That is the right algorithm
+/// while the snake is small and the wrong one when the grid is nearly full, so the attempt count is
+/// bounded and a scan is the fallback. An unbounded retry loop is how a Snake implementation hangs at
+/// the very end of a winning game, which is the least forgivable moment to hang.
+place_apple :: (state: *State) {
+    attempts := 0;
+    while attempts < 200 {
+        candidate := cell(
+            Random.below(*state.rng, 0, GRID_WIDTH),
+            Random.below(*state.rng, 0, GRID_HEIGHT),
+        );
+        if !occupies(state, candidate, state.length) {
+            state.apple = candidate;
+            return;
+        }
+        attempts = attempts + 1;
+    }
+
+    // The deterministic fallback: the first free cell, scanning the grid.
+    y := 0;
+    while y < GRID_HEIGHT {
+        x := 0;
+        while x < GRID_WIDTH {
+            candidate := cell(x, y);
+            if !occupies(state, candidate, state.length) {
+                state.apple = candidate;
+                return;
+            }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+
+    // No free cell at all: the snake has filled the grid.
+    state.won = true;
+}

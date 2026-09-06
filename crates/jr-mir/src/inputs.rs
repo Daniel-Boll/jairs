@@ -440,6 +440,37 @@ impl ConstValues {
         self.soa_fields.insert((scope, expr), position);
     }
 
+    /// Forgets every expression-keyed record in one body scope (ADR-0207 §5).
+    ///
+    /// The load-bearing half of re-recording a body whose statements moved. Every map here is keyed by
+    /// `(ExprScope, ExprId)`, and a computed `#insert` renumbers every id after its splice — so an entry
+    /// recorded against the *unexpanded* tree names a different expression in the expanded one. Two earlier
+    /// fixes cleared one map each: ADR-0101 §3 cleared `runs` after a stale fold left a `string` on an
+    /// arithmetic operand, and ADR-0188 §1 re-keyed the item values after a constant lost its value. Both of
+    /// those comments say every map keyed by a moving identity is suspect. It was, and the remaining ones
+    /// were not cleared:
+    ///
+    /// * a stale **variadic** record made lowering pack trailing arguments for a call that is not variadic —
+    ///   `internal compiler error: edge to block 2 supplies 2 arguments for 1 parameters`;
+    /// * a missing **`any_of`** lowering at the live id then gave `expected an aggregate, found a scalar`.
+    ///
+    /// Both on an ordinary program: a `noted_insert` splice in a body that also calls `print("%", x)`.
+    ///
+    /// Scope-wide rather than key-by-key, because the caller cannot enumerate what the *expanded* check will
+    /// record — only which body expanded. Clearing a whole scope and re-recording it from the check that saw
+    /// the ids MIR will use is the only version that cannot leave a stale entry behind.
+    pub fn clear_body_scope(&mut self, scope: ExprScope) {
+        self.runs.retain(|(recorded, _), _| *recorded != scope);
+        self.any_ops.retain(|(recorded, _), _| *recorded != scope);
+        self.pointer_views
+            .retain(|(recorded, _), _| *recorded != scope);
+        self.atomics.retain(|(recorded, _), _| *recorded != scope);
+        self.variadic_calls
+            .retain(|(recorded, _), _| *recorded != scope);
+        self.soa_fields
+            .retain(|(recorded, _), _| *recorded != scope);
+    }
+
     /// The `#soa` field position recorded for an index expression, if it is one.
     #[must_use]
     pub fn soa_field(&self, scope: ExprScope, expr: ExprId) -> Option<u32> {

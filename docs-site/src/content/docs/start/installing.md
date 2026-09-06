@@ -6,15 +6,22 @@ sidebar:
 ---
 
 Jairs has no released binaries yet. You build the compiler — a Rust workspace — from source,
-and it gives you a single driver binary called `jr`.
+and it gives you a single driver binary called `jr`. The standard library is **compiled into
+that binary**, so `jr` works from any directory and `#import "Basic";` needs no search path;
+`-I` exists for the modules you write and for reading this repository's own `modules/` tree
+rather than the compiled-in copy.
 
 ## Prerequisites
 
 - **Rust**, stable toolchain (the workspace pins its version through `rust-toolchain.toml`,
   so `rustup` will select the right one automatically).
 - A C compiler (`cc`) on your `PATH` — `jr build` uses it to link the final executable.
-- **macOS arm64** is the primary and only verified target. An x86-64 Linux target is
-  configured but, as of today, has never actually been run in CI.
+- **macOS arm64 and x86-64 Linux are both verified**: macOS locally, gate by gate, and Linux
+  in CI with all seven jobs passing. Windows is unverified — the declarations are written and
+  the link has never been tried.
+- **SDL2**, only if you want the graphics modules. See [Book IV](/games/) for how a drawing
+  program is built, and why the library's path is a flag rather than something a source file
+  can state.
 
 ## Build the compiler
 
@@ -24,28 +31,59 @@ cd jairs
 cargo build --release -p jr-cli
 ```
 
-That produces the driver at `target/release/jr`. Put it on your `PATH`, or invoke it through
-Cargo while developing:
+That produces the driver at `target/release/jr`. Put it on your `PATH`, install it with
+`cargo install --path crates/jr-cli`, or invoke it through Cargo while developing:
 
 ```sh
-cargo run -q -p jr-cli -- run examples/hello.jr
+cargo run -q -p jr-cli -- run examples/01-hello.jr -I modules
 ```
 
 The rest of this documentation writes commands as `jr <subcommand>`.
 
+## A project, or a loose file
+
+Either works. `jr new my-game` creates a directory, and `jr init` scaffolds one in place;
+both write a `jairs.toml`, a `src/main.jr`, a `build.jr` and a `.gitignore`. Inside a project
+every command takes its defaults from the manifest, so `jr build` with no path compiles the
+entry point the manifest declares, and `[build] module_paths` saves repeating `-I`.
+
+A manifest is never required: with none, every command works exactly as it does without one,
+and a missing `jairs.toml` is neither an error nor a warning. An **unrecognised key inside
+one** is an error, because a silently ignored setting is worse than a refused file.
+
 ## The driver
 
-`jr` is one binary with a handful of subcommands.
+`jr` is one binary with nine subcommands.
 
 | Command | What it does |
 | --- | --- |
+| `jr new name` | Create a project in a new directory. |
+| `jr init` | Scaffold a project in an existing directory. |
 | `jr run file.jr` | Check the program, then execute it in the **bytecode VM**. |
-| `jr build file.jr -o out` | Check, compile through Cranelift, and link a **native executable** at `out`. |
+| `jr build file.jr -o out` | Check, compile, and link a **native executable** at `out`. |
 | `jr check file.jr` | Type-check and report diagnostics; compile nothing. Accepts directories. |
 | `jr fmt [--check] paths…` | Format source canonically. `--check` exits non-zero if anything is unformatted; `--stdin` reads stdin for editor integration. |
 | `jr parse file.jr` | Debug aid: dump tokens or the syntax tree. |
-| `jr bench file.jr` | Report language-server latency (cold / warm / after-edit). Reports, never judges. |
+| `jr bench file.jr` | Report language-server latency (cold / warm / after-edit), or compile throughput with `--throughput`. Reports, never judges. |
 | `jr lsp` | Speak LSP 3.17 over stdin/stdout for an editor. |
+
+### The flags worth knowing on `jr build`
+
+| Flag | What it does |
+| --- | --- |
+| `-I, --module-path DIR` | Where to look for an `#import`, searched before the compiled-in modules. Repeatable. |
+| `-L, --library-path DIR` | Where to look for a `#system_library`, before the C driver's defaults. Repeatable, and how SDL2 is found. |
+| `-O, --opt-level 0\|1` | How much the mid-end may rewrite. `1` is the default and runs inline, store forwarding, const-prop and DCE; `0` runs none, so a wrong answer is attributable to lowering rather than to a pass. A level may never change what a program computes; the one thing `0` changes is a backtrace, because nothing is inlined. |
+| `--backend cranelift\|llvm` | Which code generator. Cranelift is the default and the verified one; LLVM needs a compiler built with `--features llvm` and is refused with a message naming the feature otherwise. |
+| `--output-kind` | `executable` (default), `dynamic-library`, `static-library` or `object`. A C program can link the libraries this produces. |
+| `--no-bounds-check` | Strips every bounds check. Undefined behaviour by construction, and deliberately does not change a `#no_abc` procedure or compile-time execution, where a trap is a diagnostic. |
+| `--script` | Treat the file as a **build script**: compile it, run it in the VM, then perform the compilations it asked for. |
+| `--linker-arg ARG` | An extra argument for the C driver, after everything the compiler generates. |
+
+A native binary carries real **DWARF** — line tables, struct layouts and stack-resident
+locals — in both back ends, so `lldb` can break on a line and print a local. One case is
+still <span class="jairs-status absent">absent</span>: a register-resident local, which needs
+a location list rather than a single register expression.
 
 ### Exit codes
 
@@ -93,14 +131,31 @@ jr build hello.jr -o hello
 ```
 
 Both should print exactly the same thing. That is not a coincidence — it is a property the
-compiler tests on every build. See [Two engines, one MIR](/language/introduction/#two-engines-one-language)
+compiler tests on every build. See [Two engines, one language](/language/introduction/#two-engines-one-language)
 in Book I for why.
 
 ## Editor support
 
-Jairs ships a language server (`jr lsp`, LSP 3.17) and a tree-sitter grammar. The repository
-packages a ready-to-use **Neovim** integration under `editors/nvim/` — two lines in your
-`init.lua` and one build script, with diagnostics, hover, goto-definition, completion,
-references, rename, code actions, signature help and inlay hints on stock Neovim 0.11+
-keybindings. Any other LSP-speaking editor works too: point it at the `jr lsp` command. A
-VS Code extension is deliberately **not** provided.
+Jairs ships a language server (`jr lsp`, LSP 3.17) with **fourteen** capabilities —
+diagnostics, hover, goto-definition, completion (including a name you have not imported yet,
+which comes with the `#import` line as an edit beside it), references, document highlight,
+rename, code actions, signature help, inlay hints, document and workspace symbols, formatting
+and semantic tokens — and a tree-sitter grammar.
+
+Two editors are packaged, both verified by a script rather than by hand:
+
+- **Neovim**, under `editors/nvim/` — two lines in your `init.lua` and one build script, on
+  stock Neovim 0.11+ keybindings. `nvim --headless -u NONE -l editors/nvim/verify.lua` runs
+  170 checks.
+- **Zed**, under `editors/zed/` — a dev extension carrying the grammar and all fourteen
+  capabilities, with format on save. `./editors/zed/verify.sh` runs 19 checks, which replicate
+  Zed's own grammar build.
+
+Any other LSP-speaking editor works too: point it at the `jr lsp` command. A VS Code
+extension is deliberately **not** provided.
+
+## Where to go next
+
+[Book I](/language/introduction/) is the narrative tour. [Book IV](/games/) is the shortest
+path to something on screen, and it starts by explaining why a drawing program is a
+`jr build` program and never a `jr run` one.

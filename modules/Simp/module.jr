@@ -1,10 +1,10 @@
-//! The Simp module: an immediate-mode 2D renderer with **Jai's API**, on OpenGL.
+//! The Simp module: a **Simp-shaped subset** for immediate-mode 2D drawing, on OpenGL.
 //!
 //! # What changed, and why it needed a compiler wave
 //!
 //! This module used to thread a `*Renderer` through every call — `immediate_quad(simp, x0, y0, …)` —
-//! and drew through `SDL_RenderGeometry`. Neither matches Jai. The real `Simp`, read from copies of
-//! Jai's own module vendored verbatim in two open-source projects and diffed against each other, is:
+//! and drew through `SDL_RenderGeometry`. Neither matches the no-state Simp family observed in public
+//! vendored snapshots. One of the source shapes ADR-0187 compared was:
 //!
 //! ```jai
 //! set_render_target   :: (window: Window_Type, coords := Simp_Coordinate_System.RIGHT_HANDED)
@@ -18,8 +18,13 @@
 //! **No state argument anywhere.** Jai keeps the immediate state in `#add_context simp:
 //! *Immediate_State` and its GL backend keeps the GL context in "one process-wide global". Jairs had
 //! neither: a file-scope `var` was E0245, *"a file-level item has no value until jr-vm"*, which is
-//! exactly why the old API took a handle. ADR-0186 built file-scope globals for this, so the state
-//! lives where Jai's does and every signature below can be Jai's.
+//! exactly why the old API took a handle. ADR-0186 built file-scope globals for this, so the public
+//! shape can follow that observed no-state family.
+//!
+//! **There is no public canonical signature set to claim exactly.** ADR-0208 compared Focus,
+//! Hitboxer and Voronoi snapshots and found differences in render targets, `immediate_begin`, font
+//! construction and text colour. The names below are recognisably Simp-shaped; they are not a promise
+//! of byte-for-byte parity with an unspecified Jai beta.
 //!
 //! `#add_context` is still owed and the difference is thread-locality: two threads drawing to two
 //! windows would share this module's state, where Jai's would not. No program here does that, and the
@@ -27,14 +32,15 @@
 //!
 //! # Why OpenGL, and which OpenGL
 //!
-//! Jai's `Simp` has a GL backend and only a GL backend — its own `#module_parameters` offers
-//! `NONE`, `SOFTWARE`, `OPENGL` and `METAL`, and only `.OPENGL` has a backend file. So drawing through
-//! `SDL_RenderGeometry` was the divergence, not a shortcut: it produced the right pixels through the
-//! wrong layer, and nothing built on it could ever grow a shader.
+//! The inspected Voronoi Simp snapshot has native WGL, GLX, NSOpenGL and EGL backend code. Its
+//! `#module_parameters` offers `NONE`, `SOFTWARE`, `OPENGL` and `METAL`, while that snapshot loads an
+//! implementation only for `.OPENGL`. So drawing through `SDL_RenderGeometry` was the divergence, not
+//! a shortcut: it produced the right pixels through the wrong layer, and nothing built on it could
+//! ever grow a shader.
 //!
 //! The version is **GL 2.1 with GLSL 1.20**, measured rather than assumed: that is what macOS hands a
 //! default SDL2 GL context (`GL_VERSION = "2.1 Metal - 90.5"`, `GL_SHADING_LANGUAGE_VERSION = "1.20"`,
-//! renderer "Apple M2 Pro"). Jai's backend asks for 3.3. Asking for 3.3 here was rejected for one
+//! renderer "Apple M2 Pro"). The inspected backend asks for 3.3. Asking for 3.3 here was rejected for one
 //! reason: on macOS a 3.3 context is **core profile only**, which removes the compatibility features
 //! this module does not use but which `modules/Image`'s texture path might later, and 2.1 is available
 //! on every target this library claims. A shader-based renderer needs GL 2.0, so 2.1 is enough.
@@ -49,10 +55,10 @@
 //!
 //! # What is absent
 //!
-//! No text and no fonts: Jai's `Simp` has `draw_text` over a `Dynamic_Font`, and that needs either
+//! No text and no fonts: the inspected Jai snapshots have `draw_text` over a `Dynamic_Font`, and that needs either
 //! `stb_truetype` or a bitmap glyph table, which is a module rather than a routine. No textures **here**
 //! — `modules/Image` owns loading and this module owns binding one. No 3D `immediate_quad` overloads:
-//! Jai has six, taking `Vector3` positions, and Jairs has no overloading, so the 2D forms are the ones
+//! the inspected source has six, taking `Vector3` positions, and Jairs has no overloading, so the 2D forms are the ones
 //! that exist and a name says which.
 //!
 //! Written in Jairs. ADR-0187.
@@ -64,24 +70,24 @@ Window :: #import "Window";
 // Public constants and types
 // ---------------------------------------------------------------------------
 
-/// Origin bottom-left, y upwards — Jai's default coordinate system.
+/// Origin bottom-left, y upwards — the default in the inspected snapshots.
 ///
 /// **This is a correction, not a choice.** The old SDL-based renderer used SDL's top-left origin with y
-/// downwards, so every quad a Jai programmer wrote came out mirrored vertically. Jai's
+/// downwards, so every quad written for that observed convention came out mirrored vertically. The
 /// `immediate_set_2d_projection` builds `orthographic_projection_matrix(0, width, 0, height, -1, 1)` for
 /// `RIGHT_HANDED`, which is this, and `RIGHT_HANDED` is its default.
 RIGHT_HANDED :: 1;
 
 /// Origin top-left, y downwards.
 ///
-/// Jai has this as `LEFT_HANDED` with a source comment reading "Will eventually be the default, but not
-/// for now". It exists here so a caller porting from the old SDL-shaped API has a way to keep its
+/// An inspected snapshot has this as `LEFT_HANDED` and says it may eventually become the default. It
+/// exists here so a caller porting from the old SDL-shaped API has a way to keep its
 /// coordinates, and because `modules/UI` is easier to read this way round.
 LEFT_HANDED :: 0;
 
 /// How many vertices one batch holds before it must be flushed.
 ///
-/// 2400, which is Jai's number (`immediate.jai:12`), not a guess. Six vertices per quad, so 400 quads.
+/// 2400, matching the inspected `immediate.jai:12`. Six vertices per quad, so 400 quads.
 MAX_VERTICES :: 2400;
 
 /// A 2D point.
@@ -94,8 +100,8 @@ Vector2 :: struct {
 
 /// An RGBA colour, each channel 0..1.
 ///
-/// Floats in 0..1 rather than bytes, which is Jai's convention throughout `Simp` — `immediate_quad`'s
-/// `color` parameter is a `Vector4` and `draw_text`'s default is `Vector4.{1,1,1,1}`.
+/// Floats in 0..1 rather than bytes, matching the inspected snapshots: `immediate_quad` takes a
+/// `Vector4`, and one `draw_text` form defaults to `Vector4.{1,1,1,1}`.
 Vector4 :: struct {
     /// Red, 0..1.
     x: float32;
@@ -109,10 +115,10 @@ Vector4 :: struct {
 
 /// One vertex as the shaders below read it: position, colour, texture coordinate.
 ///
-/// **Deliberately narrower than Jai's `Immediate_Vertex`**, which carries `position: Vector3`,
+/// **Deliberately narrower than the inspected `Immediate_Vertex`**, which carries `position: Vector3`,
 /// `color_scale: Vector4`, `uv0`, `uv1`, `normal: Vector3` and `tangent: Vector4` — and whose own source
 /// comment says it is "meant to be flexible rather than efficient". This one has the three a 2D renderer
-/// with no lighting reads. The names match Jai's where the field exists, so widening it later is
+/// with no lighting reads. The names match that snapshot where the field exists, so widening it later is
 /// additive rather than a rename.
 Vertex :: struct {
     /// Position in pixels.
@@ -126,7 +132,7 @@ Vertex :: struct {
 /// A texture the renderer can bind.
 ///
 /// `width` and `height` are here because every caller sizing a quad from an image needs them, which is
-/// the same reason Jai's `Texture` carries them. `modules/Image` produces one of these.
+/// the same reason the inspected `Texture` carries them. `modules/Image` produces one of these.
 Texture :: struct {
     /// The GL texture name. Zero when the texture is not loaded.
     handle: u32;
@@ -137,24 +143,25 @@ Texture :: struct {
 }
 
 // ---------------------------------------------------------------------------
-// Public API — Jai's signatures
+// Public API — the observed Simp-shaped subset
 // ---------------------------------------------------------------------------
 
 /// Points the renderer at `window`, creating the GL context on the first call (ADR-0187 §3).
 ///
-/// **Takes the window and returns nothing**, which is Jai's signature. It used to take a `*Renderer`, a
-/// `*Window.Window` and a flags word, and to return `bool #must`.
+/// **Takes the window and returns nothing**, following the observed no-state Simp shape. It used to
+/// take a `*Renderer`, a `*Window.Window` and a flags word, and to return `bool #must`.
 ///
-/// The GL context is created here rather than in `modules/Window`, and that placement is Jai's too: its
+/// The GL context is created here rather than in `modules/Window`, matching the inspected split: its
 /// `Window_Creation` creates no context and its `Simp/backend/gl.jai:backend_init` does, keeping one
 /// process-wide `the_gl_context`. The reasoning holds independently of Jai — a window is useful without
 /// a renderer, and a program that only reads events should not pay for a GL context.
 ///
 /// Idempotent. A second call with the same window re-makes the context current and re-reads the render
-/// dimensions, which is what a resize needs; `update_window` is the name Jai gives that.
+/// dimensions, which is what a resize needs; `update_window` is the observed name.
 // `coords` defaults to `1`, which is `RIGHT_HANDED`. Written as the literal because a default value
 // must be one (E0252): constants are evaluated after signatures are resolved, so a signature cannot
-// depend on one. Jai writes `coords := Simp_Coordinate_System.RIGHT_HANDED` here, and this is as close
+// depend on one. The inspected source writes `coords := Simp_Coordinate_System.RIGHT_HANDED` here,
+// and this is as close
 // as the language gets — the name is in the doc comment above so a reader is not left with a bare 1.
 set_render_target :: (window: *Window.Window, coords: s64 = 1) {
     if window.handle == null {
@@ -181,7 +188,7 @@ set_render_target :: (window: *Window.Window, coords: s64 = 1) {
 
 /// Re-reads the render dimensions and the projection after a resize.
 ///
-/// Jai's name and Jai's job: *"re-reads the render dimensions, resizes the backend target and
+/// The inspected name and job: *"re-reads the render dimensions, resizes the backend target and
 /// re-uploads the 2D projection. Must be called for every `Input.get_window_resizes()` record."* There
 /// is no separate backend target here, so it is the viewport and the projection.
 update_window :: (window: *Window.Window) {
@@ -194,7 +201,7 @@ update_window :: (window: *Window.Window) {
 
 /// The render target's size in pixels.
 ///
-/// **In this module and not in `Window`**, which is where Jai puts it — its own source notes the overlap
+/// **In this module and not in `Window`**, matching the inspected source, which notes the overlap
 /// with `Window_Creation.get_dimensions` and keeps both. They differ on a high-DPI display: this is
 /// backing-store pixels and `Window.get_window_size` is window-manager units, so a program that sized
 /// geometry from the wrong one draws at half scale.
@@ -210,8 +217,8 @@ get_render_dimensions :: (window: *Window.Window) -> (s64, s64) {
 
 /// Clears the whole target to one colour. Channels are 0..1.
 ///
-/// **Returns nothing**, which is Jai's signature — it used to return `bool #must`. Jai's body is
-/// `glClearColor` then `glClear`, and so is this.
+/// **Returns nothing**, matching the inspected signature — it used to return `bool #must`. The
+/// observed body is `glClearColor` then `glClear`, and so is this.
 clear_render_target :: (r: float32, g: float32, b: float32, a: float32) {
     GL.set_clear_color(r, g, b, a);
     GL.clear(GL.COLOR_BUFFER_BIT);
@@ -219,7 +226,7 @@ clear_render_target :: (r: float32, g: float32, b: float32, a: float32) {
 
 /// Selects the flat-colour shader, optionally with alpha blending.
 ///
-/// **No renderer argument and no return value**, which is Jai's signature. `enable_blend` defaults to
+/// **No renderer argument and no return value**, matching the inspected signature. `enable_blend` defaults to
 /// `false`, and that default is what makes the bare `set_shader_for_color()` a legal call — a real Jai
 /// program writes it that way.
 ///
@@ -237,7 +244,7 @@ set_shader_for_color :: (enable_blend: bool = false) {
 
 /// Selects the textured shader and binds `texture`.
 ///
-/// Takes a **pointer** to the texture, which is Jai's signature. Flushes first, for the reason
+/// Takes a **pointer** to the texture, matching the inspected signature. Flushes first, for the reason
 /// `set_shader_for_color` does.
 set_shader_for_images :: (texture: *Texture) {
     flush_if_open();
@@ -248,16 +255,16 @@ set_shader_for_images :: (texture: *Texture) {
 
 /// Opens a batch.
 ///
-/// Jai's whole body is `CheckInit()`: it does not reset the batch, sets no flag, and **is not required
-/// before a quad**. This one is the same — it exists so that a program written against Jai's `Simp`
-/// compiles here, and calling it is harmless.
+/// One inspected body's whole implementation is `CheckInit()`: it does not reset the batch, sets no
+/// flag, and **is not required before a quad**. This one is also harmless, while explicitly opening
+/// the local batch.
 immediate_begin :: () {
     in_batch = true;
 }
 
 /// An axis-aligned quad from two opposite corners, in one colour.
 ///
-/// Jai's two-corner overload, and the parameter is named `color` there too — a real call site uses it by
+/// The inspected two-corner overload also names the parameter `color`; a real call site uses it by
 /// name. Coordinates are **pixels** with the origin where `set_render_target`'s `coords` put it.
 immediate_quad :: (x0: float32, y0: float32, x1: float32, y1: float32, color: Vector4) {
     p0 := vector2(x0, y0);
@@ -271,9 +278,9 @@ immediate_quad :: (x0: float32, y0: float32, x1: float32, y1: float32, color: Ve
 
 /// A quad from four arbitrary corners with texture coordinates, in one colour.
 ///
-/// Jai's four-corner overload, whose colour and four uvs all have defaults. Jairs has no overloading and
+/// The inspected four-corner overload gives the colour and four uvs defaults. Jairs has no overloading and
 /// no defaulted aggregate, so this is a distinct name and every argument is explicit. Corner order is
-/// Jai's: `p0` bottom-left, then anticlockwise.
+/// the observed order: `p0` bottom-left, then anticlockwise.
 immediate_quad_corners :: (
     p0: Vector2,
     p1: Vector2,
@@ -285,7 +292,7 @@ immediate_quad_corners :: (
     uv2: Vector2,
     uv3: Vector2,
 ) {
-    // Two triangles, six vertices, no index list — which is what Jai's does: its `Immediate_Vertex`
+    // Two triangles, six vertices, no index list — matching the inspected source, whose `Immediate_Vertex`
     // buffer is drawn with `glDrawArrays(GL_TRIANGLES, …)`.
     if vertex_count + 6 > MAX_VERTICES {
         immediate_flush();
@@ -300,8 +307,8 @@ immediate_quad_corners :: (
 
 /// A single triangle in one colour.
 ///
-/// Jai's `immediate_triangle` takes `Vector3` positions and three separate colours. This takes 2D points
-/// and one colour, which is the 2D case; the name is Jai's so a reader knows what it is.
+/// The inspected `immediate_triangle` takes `Vector3` positions and three separate colours. This takes
+/// 2D points and one colour; the familiar name says which conceptual operation it narrows.
 immediate_triangle :: (p0: Vector2, p1: Vector2, p2: Vector2, color: Vector4) {
     if vertex_count + 3 > MAX_VERTICES {
         immediate_flush();
@@ -314,7 +321,7 @@ immediate_triangle :: (p0: Vector2, p1: Vector2, p2: Vector2, color: Vector4) {
 
 /// Draws everything pushed since the last flush.
 ///
-/// **Returns nothing**, which is Jai's signature — it used to return `bool #must`.
+/// **Returns nothing**, matching the inspected signature — it used to return `bool #must`.
 immediate_flush :: () {
     if vertex_count == 0 {
         in_batch = false;
@@ -332,8 +339,9 @@ immediate_flush :: () {
 
 /// Presents the frame.
 ///
-/// **Takes the window**, which is Jai's signature — it used to take the renderer. Jai flushes any open
-/// batch first and so does this, because a program that draws and then swaps without an explicit flush
+/// **Takes the window**, matching the inspected signature — it used to take the renderer. The
+/// inspected implementation flushes any open batch first and so does this, because a program that
+/// draws and then swaps without an explicit flush
 /// should see its drawing.
 ///
 /// `vsync` is accepted for signature compatibility and is applied at swap-interval level; SDL sets that
@@ -406,17 +414,16 @@ VERTEX_LAYOUT_IS_32 :: size_of(Vertex) == 32;
 #scope_module
 
 // ---------------------------------------------------------------------------
-// The module's state — file-scope globals, which is where Jai keeps it
+// The module's state — file-scope globals following the observed no-state shape
 // ---------------------------------------------------------------------------
 
 // **These globals are the whole reason ADR-0186 exists.** Jai holds the equivalent in
 // `#add_context simp: *Immediate_State` plus one process-wide `the_gl_context`, and a Jairs file-scope
-// `var` was E0245 until that wave. Everything below is what lets the public signatures above be Jai's
-// rather than carry a handle.
+// `var` was E0245 until that wave. Everything below lets the public signatures avoid a renderer handle.
 
 /// The one GL context, created on the first `set_render_target`.
 ///
-/// Named as Jai names it (`the_gl_context`, `gl.jai:85-92`), and one per process for the same reason:
+/// Named as the inspected source names it (`the_gl_context`, `gl.jai:85-92`), and one per process for the same reason:
 /// a GL program, a buffer and a texture binding all belong to a context, so a second context would
 /// need a second copy of everything below.
 the_gl_context: *u8 = ---;
@@ -457,7 +464,7 @@ in_batch: bool = false;
 /// The batch itself.
 ///
 /// A fixed array rather than a dynamic one, because it never grows: `immediate_quad` flushes when the
-/// next quad would not fit, which is Jai's discipline too.
+/// next quad would not fit, matching the inspected discipline.
 vertices: [MAX_VERTICES]Vertex = ---;
 
 // ---------------------------------------------------------------------------
@@ -535,7 +542,7 @@ compile_shader :: (kind: u32, source: string) -> u32 {
 /// Uploads the projection matrix for the current render dimensions.
 ///
 /// An orthographic projection in **pixels**: `(0, width, 0, height)` for `RIGHT_HANDED` and
-/// `(0, width, height, 0)` for `LEFT_HANDED`, which is exactly what Jai's
+/// `(0, width, height, 0)` for `LEFT_HANDED`, which is what the inspected
 /// `immediate_set_2d_projection` builds. So the coordinate system is one matrix and not a flip applied
 /// per quad — a per-quad flip is how two call sites come to disagree about which way is up.
 update_projection :: () {

@@ -1,9 +1,10 @@
-//! The Window module: window creation over SDL2's C API — Jai's `Window_Creation`.
+//! The Window module: window creation over SDL2's C API, shaped after observed `Window_Creation`.
 //!
 //! Narrowed to that in Group D of the Simp-shaped-graphics restructure (ADR-0182). It used to be a window
 //! *and* a renderer *and* an event queue; the renderer is `modules/Simp` now and the events are
-//! `modules/Input`. Jai splits the three, and the split is load-bearing rather than tidy: **all the
-//! per-platform work lives in window creation**, which is what lets one portable rendering API sit on top.
+//! `modules/Input`. The inspected Jai stack splits the three, and the split is load-bearing rather than
+//! tidy: window and input own native platform work, while Simp's GL backend owns platform-specific
+//! context plumbing. Jairs puts both concerns behind SDL2 and keeps drawing in `modules/Simp`.
 //!
 //! # Why SDL2 and not Cocoa
 //!
@@ -148,24 +149,24 @@ stop :: () {
 
 /// Opens a window `width` by `height`, titled `window_name` (ADR-0187 §2).
 ///
-/// **The argument order is Jai's**, and it is `width, height, title` rather than the `title, width,
+/// **The argument order matches the inspected declarations**, and it is `width, height, title` rather than the `title, width,
 /// height` this module used to take. That is not a cosmetic change: a Jai programmer writing
 /// `create_window(800, 600, "demo")` against the old signature got a type error at best, and the
-/// order comes from a *declaration* in Jai's own `Window_Creation/osx.jai:85`, cross-checked against
+/// order comes from a *declaration* in `Window_Creation/osx.jai:85`, cross-checked against
 /// the Linux and Windows files, rather than from a call site.
 ///
-/// `window_name` is a `string` and not a `*u8`, also matching Jai. SDL needs a NUL terminator and a
+/// `window_name` is a `string` and not a `*u8`, also matching those declarations. SDL needs a NUL terminator and a
 /// Jairs `string` carries a count instead, so the title is copied into temporary storage here — which
-/// is exactly what Jai's own version does with `temp_c_string`.
+/// follows the same purpose as the inspected `temp_c_string` call.
 ///
 /// `window_x` and `window_y` default to `0`, which this module reads as **centred** rather than as the
-/// top-left corner. Jai's macOS and Linux versions default both to `0` and its Windows version to
+/// top-left corner. The inspected macOS and Linux versions default both to `0` and Windows to
 /// `-1`; neither documents a centring rule, so this maps `0` to SDL's `CENTERED` because a window at
 /// the very corner of the screen is nobody's intent and a caller who wants it can pass `1`.
 ///
 /// # Why it returns no success flag
 ///
-/// Jai's returns a bare `Window_Type` and a caller checks it. This used to return `(Window, bool)`
+/// The inspected API returns a bare `Window_Type` and a caller checks it. This used to return `(Window, bool)`
 /// with `#must`, which is a better shape in the abstract — and it is dropped anyway, because a
 /// library whose whole purpose is to match another library's API does not get to improve one call in
 /// isolation. A null `handle` is the failure, `is_open` asks the question, and every routine here is
@@ -206,7 +207,7 @@ create_window :: (
     // headless, and a program that draws finds out from `Simp.is_ready()` rather than from a null
     // window — which puts the failure where the requirement is. The rejected alternative was a flags
     // argument, which is what this module used to have: it makes every caller decide a question only
-    // the renderer knows the answer to, and Jai's `create_window` has no such flag.
+    // the renderer knows the answer to, and the inspected `create_window` has no such flag.
     w.handle = sdl_create_window(
         c_title,
         cast(s32, x),
@@ -321,7 +322,7 @@ video_driver_count :: () -> s64 {
 /// reason this library and not OpenGL. Where it lives is the operator's business; see the module docs.
 /// Maps a caller's `0` to SDL's `CENTERED`, and anything else through unchanged (ADR-0187 §2).
 ///
-/// Jai's `create_window` defaults `window_x`/`window_y` to `0` on macOS and Linux and to `-1` on
+/// The inspected `create_window` defaults `window_x`/`window_y` to `0` on macOS and Linux and to `-1` on
 /// Windows, and documents no centring rule for either. A window at the very corner of the screen is
 /// nobody's intent, so `0` centres and a caller who genuinely wants the corner passes `1`.
 window_position :: (requested: s64) -> s64 {

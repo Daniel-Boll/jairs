@@ -112,7 +112,7 @@ silently skips. **Run gate 7 in any wave that touches MIR, `jr-pool`'s layout, `
 either back end** — those are exactly the places where a third engine has something to say.
 
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
-visible. **It is 1216 today (1222 under gate 7), with 282 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
+visible. **It is 1216 today (1222 under gate 7), with 283 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
 only the corpus one, which is the pattern every wave whose deliverable a `.jr` program can observe
 follows, and the reason the two counts are tracked apart. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
 → 969 (W5 sub-waves 1–4) → 974 (W5 sub-wave 5, polymorphic structs) → 976 (W5 sub-wave 6a, `$N` surface)
@@ -1699,6 +1699,108 @@ into a `cfg!`-selected Rust test, and `134`/`135`, whose whole subject is `os()`
 artifact. The exclusion list is hand-maintained and tolerable for one reason worth carrying: **it fails
 closed.** An unlisted `os()`-folding program fails the other platform's CI job by name, where
 `file_consts`' feature list and `TrapKind::ALL`'s length both failed open.
+
+**ADR-0207 holds at 1216** (1222 under gate 7) and adds one corpus file = **283** — a documentation wave, and the
+entry to read for how large a hand-maintained claim can get before anyone notices. The report was one sentence:
+*the doc site is not updated with new changes — for instance there is nothing about `Simp`*.
+
+**Both halves were true, and 47 statements in `docs-site/` were verified false.** Its absence inventory was
+written at roughly ADR-0140 against a project at ADR-0206, so `#must`, array literals, float printing, run-time
+reflection, DWARF, `#simd` and `#soa` were all documented as absent and the LLVM back end as a later wave.
+**Sixteen of twenty-four standard library modules had no page anywhere**, including all six graphics modules —
+which is the part that mattered, because this language exists to be good for writing games.
+
+**Fifth instance of the shape this file keeps recording** — after ADR-0125's README column, ADR-0168's three
+stale `[NOT DELIVERED]` markers, ADR-0184's expired `#insert` comment and ADR-0205's `libc`-versus-libm claim.
+**The new information is the scale.** 47 is not an oversight; it is what a document with no gate becomes over
+sixty waves, and no gate was added, because a prose page has nothing a test can assert. So the mitigation is a
+rule instead, in `docs-site/README.md`: **never paste a signature from memory.** Every declaration in Books II
+and IV is copied from a module source or from a program that was run. That is weaker than a gate and it is what
+is available.
+
+**Two of the three status badges had never been used, and the omission overstated every gap.** `.jairs-status
+absent` was doing the work of `refused` on 20 occurrences across 15 pages, so cross-file `$T` instantiation,
+`cast(Perm, 3)`, `Point.{1, 2}`, a `Code` value and an item-level `#if` all read as work somebody was going to
+do rather than as decisions. **A refusal described as an absence is a false promise**, and it is the kind a
+reader plans around.
+
+**Three games were written rather than described, and writing them found two language gaps by ordinary use.**
+An array length may be an integer literal or a name bound to one — so `GRID_WIDTH * GRID_HEIGHT` is **E0233**,
+and so is an alias of a literal, and so is a constant from another file, because sema resolves lengths before
+the compile-time evaluator runs. `modules/Snake` carries `GRID_CELLS :: 432;` plus a
+`GRID_CELLS_IS_CONSISTENT` constant for that reason. And `Math.clamp` is `s64`-only, so a paddle's position is
+clamped by two hand-written comparisons; the whole float half of `Math` is missing (no scalar `lerp`, no
+`atan2`, no `fmod`, no `PI` — the module declares **zero** constants — and **no way to rotate a `Vector2`**,
+which is the most common operation in 2D).
+
+**The structural lesson is the one worth copying, and it is forced rather than tasteful.** A drawing program
+cannot run under `jr run` at all: the comptime VM resolves a foreign symbol from the compiler's own process
+image (ADR-0158 §3). So a game's rules go in a module importing no graphics module — `modules/Pong` imports
+only `Math`, `modules/Snake` only `Random` — and `jr run examples/games/pong/sim.jr` then plays a whole match
+with no display attached, while `snake/sim.jr` asserts one seed replays identically. The boundary already
+existed; the only decision is which side the rules sit on.
+
+**Visual verification was not achieved, and every page that describes a game says so.** All three drawing
+programs build, link, run, and check `GL.error_code()` every frame — exiting 74 if one failed — so a clean exit
+means every GL call succeeded. Nobody compared pixels to a reference image: **an SDL window opens on a
+different macOS Space from a fullscreen terminal**, so `screencapture` photographed the terminal four times in
+a row. Worth knowing before spending time on it again, along with the reason a readback test cannot substitute:
+`modules/GL` binds no `glReadPixels`.
+
+**A measured surprise while trying:** an unfocused or invisible window is **not** vsync-throttled, so a
+900-frame run finished in under a second when the estimate said fifteen. A frame budget is not a clock.
+
+**Two defects in the compiler's own documentation came out of writing the book, and both are recorded rather
+than fixed.** `modules/GL`'s header claims *"OpenGL 1.1 only. Every entry point below is in the 1.1 core"* and
+the file binds **twenty post-1.1 symbols beneath that sentence** — GL 2.0 shaders, GL 1.5 buffers,
+`glActiveTexture`. And reading it for the book found two real gaps nothing had noticed: only
+`glDeleteTextures` is bound, so a shader, program or buffer created through the module **cannot be released**
+through it; and `glGetProgramInfoLog` is absent, so `program_linked` can report *that* a link failed and
+nothing can report *why*.
+
+**`docs/jai-parity.md` had itself gone stale in the direction that matters.** Three of its seven probed rows
+expired — array literals (ADR-0194), `type_of` (ADR-0192) and typed constants (ADR-0190) — and the third
+invalidated its own §2 item 6, whose stated imperfection was *"no typed constants, so `O_CREAT : u32 : 0x200`
+does not parse"*. That document's caveat already warned about exactly this in general; it now says it about
+itself. **A probed table is a claim about the last time somebody ran it.**
+
+**And the wave changed the compiler, because writing the prose meant running the program.** Book III's
+note-serialiser page had never been executed: it **checked clean and crashed both engines** —
+`internal compiler error: edge to block 2 supplies 2 arguments for 1 parameters` under `jr run`, a Cranelift
+verifier failure under `jr build`. The shape is ordinary. `#insert noted_insert("task", …)` generating a call,
+in a body that also calls `print("%", total)`.
+
+**Third instance of one shape, and the two previous instances both wrote down that it would happen again.** A
+computed `#insert` renumbers every expression id after its splice, and `file_consts` records its tables against
+the **unexpanded** tree. ADR-0101 §3 found that in `folded_calls`, cleared that one map, and its comment reads
+*"a stale entry the expanded check does not replace is exactly the wrong value at a live id"*. ADR-0188 §1 hit
+it one map over — a constant keyed by `ItemId` — and ends by saying every map keyed by that identity is
+suspect. **Six maps are keyed that way and one was being cleared.**
+
+**Fixing the reported half exposed the other half, which is why the fix is scope-wide.** Clearing the stale
+variadic record moved the failure to `expected an aggregate, found a scalar`: the *fresh* records were never
+threaded either, so the `any_of` coercion at the live id had no lowering. The version that works clears the
+whole body scope (`ConstValues::clear_body_scope`, all six maps) and re-records through
+`record_checked_folds` — the function ADR-0196 §6 created because *"two paths populating one `ConstValues`
+differently is the defect under all of this"*. **Per-key clearing cannot work**: the caller does not know
+which ids the expanded check will record, only which scope moved. A seventh map added there is covered
+without anybody remembering, which is the property the two earlier per-map fixes lacked.
+
+**Why the corpus never reached it:** `valid/082-note-driven-codegen.jr`'s tagged procedures contain only a
+`return`. The corpus had splices and it had variadics and no program had both in one body.
+`valid/150-splice-beside-a-variadic.jr` is that program, and it asserts the **printed line** as well as the
+exit status, because the print is the half that was broken.
+
+**The MIR snapshot gained 91 lines and lost none**, which is the evidence that no existing program's lowering
+moved — a stronger statement than "the tests still pass", and the reason to read a snapshot diff by direction
+rather than by size.
+
+**Three independent audits were run over the finished documentation before it was believed**, and they found
+**46 defects** across it, including four claims that no signature supported and three code fences that did not
+compile. Every one was proved by reading a module or by running the compiler. That is the number worth
+remembering next to the 47 this wave set out to fix: **fresh documentation written from real sources still
+arrives with roughly the same defect density as documentation that has rotted for sixty waves**, so the audit
+is not optional cleanup — it is the step that makes the writing worth anything.
 
 ## House style
 

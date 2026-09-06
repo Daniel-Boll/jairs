@@ -16,8 +16,8 @@ add :: (a: s64, b: s64) -> s64 {
     return a + b;
 }
 
-// Parameters of the same type still each need their own annotation in
-// Jairs-0; parameter grouping arrives with wave W2.
+// Parameters of the same type still each need their own annotation — there is
+// no `a, b: s64` grouping in Jairs today.
 clamp_low :: (value: s64, floor: s64) -> s64 {
     if value < floor {
         return floor;
@@ -35,7 +35,8 @@ Each parameter is written `name: Type`, and the return type follows a `-> ` arro
 worth noting:
 
 - Even when two parameters share a type, each still carries its own annotation — there is no
-  `a, b: s64` grouping in this slice of the language (that arrives in the wave labelled W2).
+  `a, b: s64` grouping. That grouping is <span class="jairs-status absent">absent</span>: it has
+  never been built, and is not blocked on anything in particular.
 - A procedure that returns nothing simply **omits the arrow**, as `discard` does. A bare
   `return;` with no value is how you leave such a procedure early.
 

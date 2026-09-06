@@ -1,11 +1,11 @@
 ---
-title: The three books
+title: The four books
 description: How this documentation is organised, and which book to read first.
 sidebar:
   order: 1
 ---
 
-Jairs' documentation is three books. They cover the same language from three angles, and
+Jairs' documentation is four books. They cover the same language from four angles, and
 they are meant to be used differently.
 
 ## Book I — The Jairs Language
@@ -43,9 +43,26 @@ for a pattern to copy.
 
 [See the programs →](/in-practice/)
 
+## Book IV — Games with Jairs
+
+**The graphics stack, and three games.** Jairs is meant to be ergonomic for writing games,
+the way Jai is, and this book is where that claim is either kept or shown up. It covers the
+six graphics modules — a window, an event queue, an immediate-mode renderer carrying Jai's
+own `Simp` API, an OpenGL binding, BMP loading and texture upload, and immediate-mode
+widgets — then walks through Pong, Snake, and a sprite-and-widget demo, all three of them
+built and run.
+
+Its last chapter is the one to read before planning anything: an inventory of what a game
+**cannot** do yet, each item marked as not built or deliberately refused, with the blocker
+named where there is one.
+
+[Write a game →](/games/)
+
 ## A word on scope
 
 Jairs is pre-alpha and deliberately small. These books describe **what exists today**. When
-something is not yet in the language, the text marks it <span class="jairs-status absent">absent</span>
-and names the wave that adds it, rather than pretending. That honesty is the point: you can
-trust that anything shown without a caveat actually runs.
+something is not yet in the language, the text marks it <span class="jairs-status absent">absent</span>;
+when the compiler deliberately refuses it, <span class="jairs-status refused">refused</span>.
+The distinction matters, because calling a refusal an absence reads as a gap that somebody is
+going to fill. That honesty is the point: you can trust that anything shown without a caveat
+actually runs.

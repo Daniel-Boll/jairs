@@ -2,6 +2,12 @@
 
 **Status:** research, not a plan. Nothing here is scheduled; `PLAN.md` §7 owns the order.
 
+**The games-facing view is `docs-site/src/content/docs/games/not-implemented.md`; the commit-pinned
+source audit and facade proposal are `docs/research/jai-games-primary-sources.md` and
+`docs/jai-game-development-audit.md`.** The site organises gaps by what a game developer goes looking
+for, while these research files preserve evidence and source revisions. When an item ships, every
+current-facing inventory loses its row.
+
 Two inventories, both built from **primary sources** and both **probed** where a probe was possible:
 
 1. **Syntax** — the constructs real Jai programs use, each tried against this compiler.
@@ -14,7 +20,7 @@ it. Four kinds of evidence appear, and every row says which it used:
 
 | Evidence | Proves | Example |
 |---|---|---|
-| **Vendored module source** | behaviour, and a signature | `focus-editor/focus` and `valignatev/hitboxer` both carry Jai's `Simp` verbatim; both were read and **diffed** |
+| **Vendored module source** | behaviour, and a signature at that revision | `focus-editor/focus` and `valignatev/hitboxer` both carry public `Simp` snapshots; they were read and **diffed**, and their differences are why neither is called canonical |
 | **A real program's call sites** | behaviour, not a declaration | `chess-jai/ui.jai` drives six `GetRect` widgets across 2244 lines |
 | **A file that imports 95 modules** | that a *name* is importable | `SogoCZE/jai_parser/tests/performance_test.jai`, a parser stress test |
 | **Beta users' documentation** | intent, weakest | the Jai Community Library wiki, `The_Way_to_Jai` |
@@ -36,13 +42,19 @@ document saying a feature works is a claim and not a result.
 
 | Construct | Occurrences | Jairs | Note |
 |---|---|---|---|
-| `s64.[1, 2, 4]` array literal | **39** | absent | Parse error. The most-used construct Jairs lacks |
+| `s64.[1, 2, 4]` array literal | **39** | **works** since ADR-0194 | Was the most-used construct Jairs lacked. Shipped as `T.[…]` — naming the element type is what made it buildable, and it composes with `Point.[…]`, `(*u8).[…]` and `type_of(x).[…]` for no extra code. The bare `[1, 2, 3]` spelling is still absent |
 | `Code` value + `for`-expansion macro | **58** call sites | absent | **One gap, one fix**: a for-expansion macro's second parameter is literally `body: Code` (`chess-jai/movegen.jai:1802`). ADR-0080 *declined* a `Code` value "until something can inspect a tree" — real code inspects one 58 times, so that decision now has evidence against it |
 | `cast,no_check` / `cast,trunc` | **65** | **works** — differently | Jairs traps on overflow (ADR-0002) and has `+% -% *%`. Probed: `1u64 << 63` and `cast(u64, -1)` both behave, so the bitboard patterns port |
-| `type_of(x)` | **14** | absent | E0201. Jairs has `type_info`, so this is a small addition beside it |
+| `type_of(x)` | **14** | **works** since ADR-0192 | Shipped beside `type_info`, as this row predicted it would be, by adding one arm to the function that answers "what type is this argument?" |
 | statement `#if` on a `$` parameter | ~**14** | absent | Parse error |
 | `for v, i: a` — element and index | **14** | **works** | Probed, exits 17 |
 | `for *p: a` — by pointer | **11** | absent | Parse error |
+
+**Three rows above expired between this document being written and being re-read**, which is the
+hazard its own caveat names two paragraphs below. Array literals and `type_of` shipped, and so did
+**typed constants** (`name : T : value`, ADR-0190) — which matters to §2's item 6, since that item's
+stated imperfection was "no typed constants, so `O_CREAT : u32 : 0x200` does not parse". It parses.
+Re-probe a row before planning around it.
 
 **One correction to this repository's own contract.** The brief for this research listed "no
 context-based `push_context`" as a known gap; `docs/adr/README.md:86` records **ADR-0063 as Accepted**
@@ -97,8 +109,10 @@ to straddle the two. ~150 lines; the context allocator already exists to install
 Jairs reports failure as a bare `bool` in `Window`, `Image`, `Socket` and `File`; only `Simp.get_error`
 reaches a message, and only SDL's. `System.get_error_value_and_string()` is the whole answer. `POSIX`
 additionally removes five hand-written `#foreign libc` blocks — `File`, `Process`, `Socket`, `Time` and
-`Thread` each has its own. The `POSIX` half lands imperfect: **no typed constants**, so
-`O_CREAT : u32 : 0x200` does not parse.
+`Thread` each has its own. **This item's stated imperfection has expired**: it read "no typed
+constants, so `O_CREAT : u32 : 0x200` does not parse", and ADR-0190 shipped that form — so a `POSIX`
+module can now declare a flag at the width C uses, and `modules/GL` already declares eleven of its
+fifteen constants that way. Nothing else about the item changed.
 
 ### 7. FreeType + text in `Simp` — the largest gap in the graphics stack
 

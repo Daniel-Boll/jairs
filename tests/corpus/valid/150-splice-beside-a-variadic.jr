@@ -1,0 +1,54 @@
+// **A metaprogram splice beside a variadic call** (ADR-0207 §5).
+//
+// The program shape is ordinary and had never been written: `#insert noted_insert(…)` generating a
+// call, in a body that also calls `print("%", …)`. It **checked clean and then crashed the compiler
+// in both engines** — `internal compiler error: edge to block 2 supplies 2 arguments for 1
+// parameters` under `jr run`, and a Cranelift verifier failure under `jr build`.
+//
+// # What was wrong, and why nothing caught it
+//
+// A computed `#insert` renumbers every expression id after its splice, and `file_consts` records its
+// tables against the *unexpanded* tree. ADR-0101 §3 found this in `folded_calls` and cleared that one
+// map; the rest were left, and its own comment said every map keyed by a moving identity was suspect.
+// So the **variadic** record stayed at an id the splice had moved, lowering packed trailing arguments
+// for a call that takes none, and the block argument counts stopped matching.
+//
+// `tests/corpus/valid/082-note-driven-codegen.jr`'s tagged procedures contain only a `return`, which
+// is why the corpus never reached it: this file's do the one thing that was missing — they print.
+//
+// # Why the checksum is what it is
+//
+// 1 + 2 + 4 = 7 over the three generated calls, then the printed line proves the *variadic* call
+// after the splice lowered too, which is the half that was broken. Both engines must agree on the
+// output as well as the status, so the `print` is the assertion and the exit code is its checksum.
+#import "Basic";
+
+first :: () -> s64 @step {
+    print("  first\n");
+    return 1;
+}
+
+second :: () -> s64 @step {
+    print("  second\n");
+    return 2;
+}
+
+main :: () {
+    total := 0;
+
+    // The splice, and then a variadic call in the same body. Either alone always worked.
+    #insert noted_insert("step", "total = total + #();");
+    print("total = %\n", total);
+
+    // Declared after the splice on purpose: the query walks the file's declarations rather than the
+    // names in scope where it is written, so this one is generated too (ADR-0101).
+    if total != 7 {
+        exit(1);
+    }
+    exit(total);
+}
+
+third :: () -> s64 @step {
+    print("  third\n");
+    return 4;
+}

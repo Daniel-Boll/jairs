@@ -971,7 +971,7 @@ fn record(values: &mut ConstValues, target: Wanted, value: PoolId) {
 ///
 /// What stays absent for a module is a value that genuinely needs *running* its own `#run`. A body
 /// needing one is still refused, and now says which body and why.
-fn record_checked_folds(
+pub(crate) fn record_checked_folds(
     values: &mut ConstValues,
     checked_file: &crate::sema::CheckResult,
     all_sigs: &[&jr_sema::FileSignatures],

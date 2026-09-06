@@ -134,27 +134,80 @@ the note query, the fold channel, and `#insert` of a computed string were all al
 nor already an operator. A note whose set is empty folds to `""`, splicing nothing — an empty
 generated section, not an error.
 
+### Reading declarations at run time
+
+`noted_declarations` is the run-time counterpart to `noted_count`/`noted_name`: it folds, at
+compile time, into a `[]Declaration` — a table the compiler emits once and a running program
+can loop over like any other view:
+
+```jr
+alpha :: () -> s64 @route "GET /a" { return 1; }
+beta  :: () -> s64 @route "GET /b" { return 2; }
+
+main :: () {
+    routes := noted_declarations("route");
+    for r: routes {
+        print("% -> %\n", r.name, r.note_value);
+    }
+}
+```
+
+`Declaration` has two fields — `name` and `note_value` — in **declaration order**, the same
+order `noted_count`/`noted_name` use. This is the difference from everything above it in this
+chapter: `#insert noted_insert(…)` generates code that exists before the program runs, while
+`noted_declarations` hands the *running* program a table it can genuinely iterate, count, or
+filter with an ordinary `for` and a `bool` you compute at run time.
+
 ## Build scripts
 
-A program can even name its own build artefact:
+A program can name its own build artefact from inside itself, as a declared constant rather
+than a call — a call's effect would depend on evaluation order, while a constant is simply a
+fact about the file:
 
 ```jr
 BUILD_OUTPUT :: #run choose_name();    // `jr build` writes this filename
+BUILD_OPT_LEVEL :: 1;                  // and this optimisation level
 ```
 
-It is a **declared constant** rather than a `set_output()` call, because a call's effect would
-depend on evaluation order while a constant is simply a fact about the file. An explicit `-o`
-on the command line still wins — that is the operator overriding on purpose — and the value is
-confined to the working directory so a compiled-from-source file can't write outside it. This
-is not a build *system* (no dependency graph, no incremental rules); it is the makefile's most
-basic job, done in the language.
+An explicit `-o` or `-O` on the command line still wins — the operator overriding the
+artefact's own preference on purpose — and `BUILD_OUTPUT`'s value is confined to the working
+directory, so a compiled-from-source file can't write outside it.
 
-## What's still missing
+That is a program naming *itself*; a real build script is a **separate program**. `jr build
+build.jr` treats a file that imports `modules/Compiler` specially: the file itself is
+compiled and run first, as an ordinary program in the bytecode VM, and the compilations *it*
+asks for happen afterwards:
 
-The honest gap: **run-time inspection** — a *run-time* loop reading declarations as values.
-Everything above happens while *checking*, so every argument must be readable then, and a
-`for` variable is not. Reading declarations at run time needs a compiler-emitted static table
-that both engines can read, which Jairs does not yet have. So notes can be counted, named, and
-generated *for* at compile time, and cannot yet be *looped over* at run time.
+```jr
+#import "Basic";
+#import "Compiler";
+
+main :: () {
+    t := create_target("myprog");
+    add_file(t, "src/main.jr");
+
+    o := options(t);
+    o.kind = Output_Kind.EXECUTABLE;
+    o.opt_level = 1;
+    set_options(t, o);
+
+    ok := build(t);
+    if !ok {
+        exit(1);
+    }
+}
+```
+
+`modules/Compiler` gives a script `create_target`, `options`/`set_options`, `add_file`,
+`add_linker_argument`, `add_build_string`, `command`/`argument_of`/`run`/`output` and a
+`shell` convenience, `read_file`/`write_file`, and `build` itself. The fallible ones —
+`write_file`, `build`, `run` and `shell` — are `#must`, so a script cannot silently ignore a
+failed build or a failed shell command; the rest either cannot fail or return nothing there
+would be to check. A target builds as an **executable**, a **static archive**, a **dynamic
+library**, or an **object file** — `#program_export` marks a procedure with a C-visible
+symbol, since a library that exports nothing is not one. Source
+text injected through `add_build_string` is visible to the target only through
+`#import "Build"`, since Jairs has no shared global scope for a generated name to land in
+unqualified.
 
 Next: [The standard library](/language/the-standard-library/).

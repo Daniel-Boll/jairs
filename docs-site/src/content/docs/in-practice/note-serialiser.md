@@ -96,8 +96,12 @@ The generation runs *while the program is being checked* — it has to, because 
 statements must exist before type-checking can see them. A run-time loop could never do this:
 by the time the program is running, its code is already compiled. This is why the metaprogram
 loop [lives inside the fold](/language/metaprogramming/#generating-code-for-each-noted-declaration)
-rather than being an ordinary `for`. What is still missing is the reverse — *inspecting*
-declarations as run-time values — which needs machinery Jairs does not yet have.
+rather than being an ordinary `for`. The reverse direction — *inspecting* declarations as
+run-time values — now exists too: `noted_declarations("task")` folds to a `[]Declaration` a
+program can loop over at run time, which
+[Book I covers](/language/metaprogramming/). The two are different tools, and the
+distinction is the one this page rests on: generating code needs the compile-time fold,
+because the statements must exist before type-checking sees them.
 
 ## What it demonstrates
 

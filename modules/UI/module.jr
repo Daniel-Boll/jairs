@@ -11,12 +11,13 @@
 //! the opposite of a clean cutover. That migration made `draw_button` take a `*Simp.Renderer` and draw
 //! through `SDL_RenderGeometry`.
 //!
-//! **This session's rewrite removes the renderer handle.** `Simp` matches Jai's real signatures now —
-//! `set_render_target`, `immediate_begin`, `immediate_quad` and the rest take no state argument, because
-//! ADR-0186 gave the language file-scope globals and `Simp` keeps its GL context and vertex batch in one
-//! (ADR-0187). So `draw_button` drops its `simp` parameter along with the handle it pointed at, and every
-//! call it makes returns nothing rather than `bool #must`: `Simp`'s calls no longer report failure, because
-//! the GL calls underneath them are `void` in the same way `Window`'s wrappers never were `bool`.
+//! **This session's rewrite removes the renderer handle.** `Simp` follows the no-state shape observed
+//! across public Jai snapshots — `set_render_target`, `immediate_begin`, `immediate_quad` and the rest
+//! take no state argument — because ADR-0186 gave the language file-scope globals and `Simp` keeps its
+//! GL context and vertex batch in one (ADR-0187, qualified by ADR-0208). So `draw_button` drops its
+//! `simp` parameter along with the handle it pointed at, and every call it makes returns nothing rather
+//! than `bool #must`: `Simp`'s calls no longer report failure, because the GL calls underneath them are
+//! `void` in the same way `Window`'s wrappers never were `bool`.
 //!
 //! **The interaction is untouched.** `button`, `feed`, the hot/active state machine and the id rules are
 //! exactly what they were, and the integration test's assertions are unchanged: the same button, clicked the
@@ -114,7 +115,7 @@ NONE :: 0;
 /// Named because a hairline is invisible on a high-DPI target and a caller who wants a different weight
 /// should be able to find the number — and because an outline made of quads has a thickness at all, which a
 /// line primitive did not (ADR-0182 §5).
-OUTLINE_THICKNESS :: 1.0;
+OUTLINE_THICKNESS : float32 : 1.0;
 
 /// Per-frame and persistent UI state.
 ///
@@ -312,10 +313,9 @@ is_active :: (ui: *UI, id: s64) -> bool {
 /// widget in one frame is a mistake — the state machine would see two presses — so a caller uses one or
 /// the other, and this one is the shape Jai has.
 draw_button :: (ui: *UI, id: s64, x: s64, y: s64, w: s64, h: s64) -> bool {
-    // Read the interaction **before** drawing, so the shades below reflect the state this frame ends in
-    // rather than the one it started in. A button clicked this frame draws as active, which is what a
-    // user sees in any immediate-mode UI; drawing first would show the previous frame's state and feel
-    // like a one-frame lag.
+    // Read the interaction **before** drawing, so the shades below reflect the state this frame ends in.
+    // A held press draws active. A click fires on release, which clears `active`, so a released button under
+    // the cursor draws hot on that frame rather than pretending it is still held.
     fired := button(ui, id, x, y, w, h);
     shade := 70;
     if is_active(ui, id) {
@@ -344,10 +344,8 @@ draw_button :: (ui: *UI, id: s64, x: s64, y: s64, w: s64, h: s64) -> bool {
     // The outline, inset nowhere: four quads one pixel thick along the edges, drawn *after* the body so they
     // win where they overlap. `OUTLINE_THICKNESS` rather than a bare `1.0` because a hairline is invisible on
     // a high-DPI target, and a caller who wants a different weight should be able to find the number.
-    // `cast` because `OUTLINE_THICKNESS` is a `float64`: a Jairs constant has no width annotation — probed,
-    // `OUTLINE_THICKNESS : float32 : 1.0` does not parse — which is the typed-constant gap ADR-0165 §5 already
-    // owed for `QUIT : u32 : 256`. The narrowing is exact for a small integral value, so this cannot be wrong.
-    t := cast(float32, OUTLINE_THICKNESS);
+    // The constant is explicitly `float32`, matching the vertex API without a narrowing cast.
+    t := OUTLINE_THICKNESS;
     Simp.immediate_quad(left, top, right, top + t, edge);
     Simp.immediate_quad(left, bottom - t, right, bottom, edge);
     Simp.immediate_quad(left, top, left + t, bottom, edge);

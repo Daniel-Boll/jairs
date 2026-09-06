@@ -4,18 +4,16 @@
 //
 //     cargo run -q -p jr-cli -- build examples/10-build-script.jr -I modules
 //
-// prints what it learned, then `note: built hello-from-a-build-script`. No `--script` flag: a file
-// that imports `modules/Compiler` *is* a build script, because that import is what gives it the
-// driver's vocabulary. Pass `-- release` to take the other branch.
+// prints what it learned, then `note: built hello-from-a-build-script`. Importing
+// `modules/Compiler` makes script detection automatic; `--script` remains an override for a script
+// whose import is hidden behind one of its own modules. Pass `-- release` to take the other branch.
 //
-// # Why this is a program and not a `#run`
+// # Why this example uses `main` rather than `#run`
 //
-// Jai puts its build script at compile time. That cannot work here: compile-time code may call no
-// `#foreign` procedure (ADR-0006), so a `#run` cannot read a file, shell out, print, or even
-// allocate — `Basic.malloc` is itself `#foreign`. And the power in a real `build.jai` is not the
-// compiler API at all; it is `Process`, `File` and `String`, which a program has and a `#run` does
-// not. So the script runs as an ordinary program and `modules/Compiler` is the small part that talks
-// to the compiler (ADR-0195).
+// A `#run` can use the driver-backed `Compiler` file and command procedures and can declare targets
+// with `request_build`. This example wants command-line arguments and immediate success flags from
+// `Compiler.build`, so an ordinary program is the clearer shape. `modules/Compiler` supports both
+// forms (ADR-0195–0198).
 
 #import "Basic";
 Compiler :: #import "Compiler";
