@@ -85,10 +85,13 @@ error: `#system_library "m"` cannot be loaded yet; only "c" is available
 dressed as a working one".
 
 **That reasoning admits `"m"` rather than excluding it.** The test is not whether the name is
-familiar; it is *whether this process is guaranteed to contain that library's symbols*. Rust's
-standard library links both `libc` and `libm` on every Unix target, so resolving `sqrt` from the image
-when the program asked libm for it is the **right** answer. Nothing guarantees SDL2 is loaded, so a
-hit there would be luck and a miss a confusing error — which is what the guard is for.
+familiar; it is *whether this process can be made to contain that library's symbols*. Nothing
+guarantees SDL2 is loaded, so a hit there would be luck and a miss a confusing error — which is what
+the guard is for.
+
+> **The first version of this section claimed "Rust's standard library links both `libc` and `libm` on
+> every Unix target". That is false, and §4c corrects it.** It is true on macOS, where both are
+> `libSystem`, and that is precisely why it read as universal.
 
 The allowlist is now a named list of two rather than a literal comparison, so the reason above governs
 every entry and adding a third is one edit in one place.
@@ -163,6 +166,39 @@ only to call `gl_library_for`, a compile-time text function; it never calls an O
 under that rule the link would need nothing. It is a real improvement and it is **owed rather than
 taken here**, because "only link what you use" is a behaviour change whose failure mode is a silently
 missing library — not something to land inside a change whose purpose is turning a red leg green.
+
+## 4c. A fourth failure, and it falsified this ADR's own §3
+
+The third push cleared the link entirely: native built and ran correctly on Linux. The **VM** then
+failed on six programs:
+
+```
+error: the foreign symbol `sqrt` was not found in this process
+```
+
+**So §3's premise was wrong.** On macOS every one of these symbols is in `libSystem`, which is always
+loaded, so searching the process image always worked and the rule read as though it were universal. On
+glibc `libm.so.6` is a **separate** library and `--as-needed` leaves it out of this binary's
+dependencies unless Rust itself needed it — so `sqrt` was genuinely absent from the process, and
+compile-time math failed on Linux only.
+
+That is the same shape as the bug this ADR is about, one level up: **a claim that holds on the only
+machine anyone runs.** Writing it down did not make it true; the CI leg did.
+
+**The fix loads the library the declaration named**, which is what the refusal has always promised by
+saying "cannot be loaded *yet*". Process image first, so the common case still costs no `dlopen` and no
+platform where the image already answers can change behaviour; the named library second.
+
+Two decisions inside it worth stating:
+
+- **A fixed table of filenames, not a pattern.** `lib{name}.so` would quietly widen the allowlist the
+  moment a third name is admitted for some other reason. `libc` is deliberately absent from the table:
+  it is always loaded, so a `dlopen` for it could only be a slower route to the answer the image
+  already gave.
+- **A test asserts a candidate filename actually opens, with `sqrt` in it.** This is the assertion no
+  amount of reading replaces: the fallback is only *taken* on glibc and is dead code on the machine it
+  was written on, so a typo'd soname would have been invisible until CI — which is how this ADR spent
+  four pushes. Whichever platform runs the suite checks its own name.
 
 ## 5. Three stale claims corrected while here
 

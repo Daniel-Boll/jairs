@@ -642,17 +642,127 @@ fn symbol(foreign: &ForeignProc) -> Result<CodePtr, VmError> {
     // SAFETY: `Library::this` takes a handle to the already-loaded process image and
     // does not run any initialiser; `get` is unsafe because it cannot check the type
     // of what it finds, which is exactly what the `#foreign` declaration asserts.
-    let found = unsafe {
+    let in_process = unsafe {
         let this = LibraryHandle::this();
         this.get::<*const ()>(foreign.symbol.as_bytes())
             .map(|symbol| *symbol)
     };
+    if let Ok(address) = in_process
+        && !address.is_null()
+    {
+        return Ok(CodePtr(address.cast_mut().cast()));
+    }
 
-    match found {
-        Ok(address) if !address.is_null() => Ok(CodePtr(address.cast_mut().cast())),
-        _ => Err(VmError::unsupported(format!(
-            "the foreign symbol `{}` was not found in this process",
-            foreign.symbol
-        ))),
+    // **The process image is not enough on every platform**, which is the correction ADR-0205 §4c
+    // had to make to its own §3. On macOS every one of these symbols is in `libSystem`, which is
+    // always loaded, so searching the image always worked and the rule read as though it were
+    // universal. On glibc `libm.so.6` is a **separate** library and `--as-needed` leaves it out of
+    // this binary's dependencies unless Rust itself needed it — so `sqrt` was genuinely absent and
+    // compile-time math failed on Linux only.
+    //
+    // Loading the library the declaration **named** is the honest fix, and it is what the refusal
+    // above has always promised by saying "cannot be loaded *yet*". Tried second rather than first
+    // so the common case still costs no `dlopen`, and so a platform where the image already
+    // answers cannot change behaviour.
+    for candidate in library_filenames(foreign.library.as_deref()) {
+        // SAFETY: `Library::new` runs the library's initialisers, which is what loading a system
+        // library means; the name comes from the allowlist above and never from user text. `get` is
+        // unsafe for the same reason as in the process case.
+        let found = unsafe {
+            LibraryHandle::new(candidate).ok().and_then(|library| {
+                library
+                    .get::<*const ()>(foreign.symbol.as_bytes())
+                    .ok()
+                    .map(|symbol| *symbol)
+            })
+        };
+        if let Some(address) = found
+            && !address.is_null()
+        {
+            return Ok(CodePtr(address.cast_mut().cast()));
+        }
+    }
+
+    Err(VmError::unsupported(format!(
+        "the foreign symbol `{}` was not found in this process or in {}",
+        foreign.symbol,
+        foreign.library.as_deref().map_or_else(
+            || "any library".to_owned(),
+            |library| format!("lib{library}")
+        )
+    )))
+}
+
+/// The filenames to try for a declared library name, in order.
+///
+/// Deliberately a **fixed table for the two allowed names** rather than a pattern like
+/// `lib{name}.so`: the allowlist above is what makes loading safe, and a constructed filename would
+/// quietly widen it the moment a third name is admitted for a different reason.
+///
+/// `libc` is never in this list. It is always loaded — this binary is written in Rust and linked
+/// against it — so a `dlopen` for it could only ever be a slower way to get the answer the process
+/// image already gave.
+fn library_filenames(library: Option<&str>) -> &'static [&'static str] {
+    match library {
+        // `libm.so.6` is glibc's soname; `libm.so` exists only with a `-dev` package installed, so
+        // the versioned name is tried first and the bare one is the musl/BSD fallback.
+        Some("m") if cfg!(target_os = "linux") => &["libm.so.6", "libm.so"],
+        // On macOS libm is an alias for `libSystem`, which the process image already answered for —
+        // so reaching here at all means something is wrong, and `libm.dylib` is the honest attempt.
+        Some("m") => &["libm.dylib"],
+        _ => &[],
+    }
+}
+
+#[cfg(test)]
+mod library_lookup {
+    use super::{LibraryHandle, library_filenames};
+
+    /// Only the library that needs loading has candidates.
+    #[test]
+    fn libc_needs_no_filename_and_libm_does() {
+        assert!(
+            library_filenames(Some("c")).is_empty(),
+            "libc is always loaded; a dlopen for it could only be a slower way to the same answer"
+        );
+        assert!(
+            library_filenames(None).is_empty(),
+            "an undeclared library names nothing"
+        );
+        assert!(
+            !library_filenames(Some("m")).is_empty(),
+            "libm is the reason this fallback exists"
+        );
+    }
+
+    /// **At least one candidate filename actually opens on this platform, and has `sqrt` in it.**
+    ///
+    /// This is the assertion that matters, and it is the one no amount of reading could replace: the
+    /// fallback is only ever *taken* on glibc, where libm is a separate library, and it is developed
+    /// on macOS where the process image answers first and the path is dead code. A typo in a soname
+    /// would therefore be invisible until CI — which is exactly how ADR-0205 spent three pushes.
+    ///
+    /// Whichever platform runs this checks its own name. `libm.dylib` opens on macOS; `libm.so.6` is
+    /// glibc's soname.
+    #[test]
+    fn a_candidate_filename_opens_on_this_platform() {
+        let candidates = library_filenames(Some("m"));
+        let opened = candidates.iter().any(|name| {
+            // SAFETY: loading a system library by a name from the fixed table above; running its
+            // initialisers is what loading means, and `get` asserts nothing about the type here
+            // because the address is discarded.
+            unsafe {
+                LibraryHandle::new(name).is_ok_and(|library| {
+                    library
+                        .get::<*const ()>(b"sqrt")
+                        .is_ok_and(|s| !(*s).is_null())
+                })
+            }
+        });
+        assert!(
+            opened,
+            "none of {candidates:?} could be opened with `sqrt` in it — the soname for this \
+             platform is wrong, and the fallback would silently never fire"
+        );
     }
 }

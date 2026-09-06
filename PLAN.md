@@ -621,7 +621,7 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
    — neither exceeded the width anywhere in this corpus, so there was nothing to measure. All three are
    candidates only when something overflows.
 
-**1207 workspace tests (1213 under gate 7), 281 corpus files, 205 ADRs, all seven gates green.**
+**1209 workspace tests (1215 under gate 7), 281 corpus files, 205 ADRs, all seven gates green.**
 ADR-0203 and ADR-0204 landed together: 1181 + 11 + 12 = 1204, and the two ADRs each state their own
 wave's contribution rather than a running total, which is why neither number matches this one.
 **E0296** is still the first free diagnostic code — this wave added none, because nothing it built is
