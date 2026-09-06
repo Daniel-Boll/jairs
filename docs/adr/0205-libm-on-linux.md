@@ -291,6 +291,7 @@ Six pushes, each reading the run rather than assuming. The progression is the po
 | 4 | link clear; VM: `sqrt` not found in this process on 6 programs |
 | 5 | VM crashes (`exit -1`) — my own dropped library handle |
 | 6 | **differential green**; 2 integration tests fail |
+| 7 | one integration test fixed (a macOS-only linker flag in the *test*); the aggregate ABI remains |
 
 **The differential harness now agrees across both engines on all 138 corpus programs on Linux**, which
 is the claim this ADR set out to make possible.
@@ -306,9 +307,15 @@ verified against a target this project has never run, and PLAN §1.5's owed Linu
 classification is wrong for one shape. Implementing System V's rules is the wave ADR-0160 described,
 and it now has the evidence it was waiting for.
 
-**`a_script_generates_source_and_provides_a_module` — the script exits 2 instead of 0.** A build script
-that generates source and provides a module fails on Linux. Uninvestigated: it is a distinct defect from
-everything above and deserves its own diagnosis rather than a guess appended here.
+**`a_script_generates_source_and_provides_a_module` — fixed, and it was the test's own fault.** The
+script exited 2 (`BUILD_EXIT`, a *target* failure) and the reason was in the log the test did not
+assert on: `/usr/bin/ld: Error: unable to disambiguate: -dead_strip`. That flag is `ld64`'s, and the
+test passes it to prove a script's linker argument *reaches* the linker — so the flag has to be real,
+and a real macOS flag is not a real Linux one. It is now `--gc-sections` there, GNU ld's equivalent.
+
+**Not a compiler defect: a test portability defect**, and worth separating from the six above because
+the fix is in `tests/`, not in `crates/`. It is the same *shape* though — a macOS-only thing applied
+unconditionally, invisible on the machine that runs.
 
 **What this wave changes about the project's honesty**, more than any individual fix: the README said
 "unverified" for waves. It now says what a run reported, and PLAN §7 names two specific defects instead

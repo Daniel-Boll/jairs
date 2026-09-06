@@ -4655,7 +4655,7 @@ fn a_script_generates_source_and_provides_a_module() {
              \x20   Compiler.set_options(t, o);\n\
              \x20   Compiler.add_build_string(t, \"STAMP :: \\\"stamped\\\";\");\n\
              \x20   Compiler.provide_import(t, \"Helper\", \"{}\");\n\
-             \x20   Compiler.add_linker_argument(t, \"-Wl,-dead_strip\");\n\
+             \x20   Compiler.add_linker_argument(t, \"{}\");\n\
              \x20   Compiler.add_file(t, \"{}\");\n\
              \x20   if !Compiler.build(t) {{ exit(1); }}\n\
              \x20   exit(0);\n\
@@ -4665,6 +4665,17 @@ fn a_script_generates_source_and_provides_a_module() {
                 .display(),
             artefact.path().display(),
             dir.path().join("vendor").display(),
+            // **A flag this platform's linker actually accepts.** The point of this assertion is that
+            // a script's argument *reaches* the linker, so the flag has to be real — and `-dead_strip`
+            // is `ld64`'s. GNU ld rejects it (`unable to disambiguate: -dead_strip`), which failed the
+            // x86-64 Linux leg for waves behind a link error that stopped the run earlier (ADR-0205
+            // §7). `--gc-sections` is GNU ld's equivalent: both discard unreachable sections, and
+            // both are harmless on a program this small.
+            if cfg!(target_os = "macos") {
+                "-Wl,-dead_strip"
+            } else {
+                "-Wl,--gc-sections"
+            },
             dir.path().join("app.jr").display(),
         ),
     )

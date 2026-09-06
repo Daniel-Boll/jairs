@@ -622,8 +622,10 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
      prerequisite**: implementing System V's classification needed "the owed Linux CI run" first. That
      run now exists and says the classification is wrong for one shape, so the wave ADR-0160 described
      has the evidence it was waiting for. This is the next real piece of work.
-   - **`a_script_generates_source_and_provides_a_module` — the script exits 2 instead of 0.**
-     Uninvestigated, and distinct from everything above.
+   - ~~`a_script_generates_source_and_provides_a_module`~~ **fixed**: the test passed `-Wl,-dead_strip`,
+     which is `ld64`'s flag, to prove a script's linker argument reaches the linker. GNU ld rejects it.
+     Now `--gc-sections` on Linux — a *test* portability defect rather than a compiler one, but the same
+     shape as the other six.
 4. **A boolean chain is still not wrapped** (ADR-0204 §2), and a struct or array literal is not either
    — neither exceeded the width anywhere in this corpus, so there was nothing to measure. All three are
    candidates only when something overflows.
