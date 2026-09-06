@@ -855,3 +855,51 @@ fn a_globals_initialiser_cannot_read_another_global() {
         "reading `a` from `b`'s initialiser must be a clean refusal, got {outcome:?}"
     );
 }
+
+/// A `#foreign` declaration naming **libm** resolves, and one naming an arbitrary library does not.
+///
+/// The rule is not "is the name familiar" but *is this process guaranteed to contain that library's
+/// symbols*. Rust's standard library links `libc` and `libm` on every Unix target, so finding `sqrt`
+/// in the image when the program asked libm for it is the right answer; nothing guarantees SDL2 is
+/// loaded, so a hit there would be luck.
+///
+/// **This exists because `modules/Math` shipped its whole life bound to the wrong library.** Its
+/// routines were `#foreign libc` while its own docs said libm, and on macOS that is invisible —
+/// `libm.tbd` is a symlink to `libSystem.tbd`. On glibc they are separate, and the native link failed
+/// with `undefined reference to 'sin'` (ADR-0205). The positive half of this test is what the fix
+/// needed; the negative half is what stops the fix from becoming "allow every library".
+#[test]
+fn libm_resolves_and_an_arbitrary_library_does_not() {
+    let source = "libm :: #system_library \"m\";\n\
+         libsdl :: #system_library \"SDL2\";\n\
+         root :: (x: float64) -> float64 #foreign libm \"sqrt\";\n\
+         elsewhere :: (x: float64) -> float64 #foreign libsdl \"sqrt\";\n\
+         go :: () -> float64 { return root(4.0); }\n\
+         nope :: () -> float64 { return elsewhere(4.0); }\n";
+    let fixture = Fixture::build(source);
+
+    // The positive half: asserted on the *value*, not merely on the absence of an error. A resolver
+    // that found some other `sqrt` — or returned zero — would pass an "it did not fail" check.
+    match fixture.call("go", vec![], Mode::Runtime) {
+        // A `float64` is a `Scalar` holding the IEEE-754 bits (ADR-0040), so the value is recovered
+        // with `from_bits` rather than by a variant of its own.
+        Ok(Value::Scalar(bits)) => {
+            let got = f64::from_bits(bits);
+            assert!(
+                (got - 2.0).abs() < 1e-12,
+                "sqrt(4.0) must be 2.0, got {got}"
+            );
+        }
+        other => panic!("libm must resolve, got {other:?}"),
+    }
+
+    // The negative half: the guard still refuses a library this process cannot promise, and the
+    // message still names it so a reader knows which declaration to look at.
+    match fixture.call("nope", vec![], Mode::Runtime) {
+        Err(VmError::Unsupported(message)) => assert!(
+            message.contains("SDL2"),
+            "the refusal must name the library, got: {message}"
+        ),
+        other => panic!("an arbitrary library must be refused, got {other:?}"),
+    }
+}

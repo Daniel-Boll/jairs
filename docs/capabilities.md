@@ -9,10 +9,10 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1204** workspace tests, all seven gates green.
+- **1205** workspace tests, all seven gates green.
 - **281** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
   (**290** counting those).
-- **204** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **205** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **24** standard library modules under `modules/`.
 - Diagnostic codes run **E0001–E0295**; **E0296** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership
@@ -30,7 +30,7 @@ behind them — that narrative is not duplicated here):
 | Compile and run a program in the comptime VM | `jr run file.jr` | Register bytecode interpreter, no JIT tier |
 | Control a struct's layout | `x: s64 #align 16;`, `y: s64 #place 32;` | Raise a field's alignment, or put it at an exact byte offset (ADR-0144). `#align` is a *minimum*, a power of two up to 4096; `#place` takes any non-negative offset, may be unaligned, and **may overlap another field** — that is the point, and nothing checks for it, exactly as an untagged `union` reinterprets bits. A placed field never moves the ones after it. The operand is a literal or a named constant; arithmetic needs the compile-time evaluator, which runs after a struct is laid out |
 | Choose a code generator | `jr build file.jr --backend llvm` | Cranelift by default and LLVM 21 on request (ADR-0143). The LLVM path needs a compiler built with `--features llvm`; without it the flag is refused with a message naming the feature, rather than reported as unknown. The three engines are held to agreement by the differential harness — all corpus programs and every hand-tried trap matched the VM on the first run |
-| Compile to a native executable | `jr build file.jr -o out` | arm64 macOS verified. x86-64 Linux is **unverified**: `main` was pushed for the first time on 2026-09-03, so the CI matrix has been triggered, but nobody has read the result and the outcome was not observed even once. The Linux leg is the only thing that has ever run this compiler on x86-64. A declared `BUILD_OUTPUT` is confined to the working directory (ADR-0122) |
+| Compile to a native executable | `jr build file.jr -o out` | arm64 macOS verified. **x86-64 Linux read at last, and it was failing** (ADR-0205): `modules/Math` bound the math routines to **libc**, which macOS resolves — `libm.tbd` is a symlink to `libSystem.tbd` — and glibc does not, since libm is a separate library there. `undefined reference to 'sin'`, from the one test that links natively. 66 of 67 targets already passed, so Linux was narrowly broken rather than unported. The claim had been "unverified" for waves while the answer sat unread in CI. A declared `BUILD_OUTPUT` is confined to the working directory (ADR-0122) |
 | Build without bounds checks | `jr build file.jr --no-bounds-check`, or `jr run` | ADR-0003's build setting, finally wired (ADR-0058). An out-of-range index is then undefined behaviour, which is the trade. `#no_abc` on a procedure does the same locally, whatever the build says; compile-time execution checks regardless |
 | Choose an optimisation level | `jr build file.jr -O0`, or `jr run -O0` | Two levels, `0` and `1` (the default, and what every build did before the flag). `-O0` runs no mid-end pass, so the code executed is exactly what lowering produced — which is how a wrong answer becomes attributable to lowering rather than to a pass. A level may **not** change what a program computes, and the differential harness sweeps every corpus program at both levels to check it (ADR-0142). The one thing `-O0` does change is a backtrace: nothing is inlined, so a trap inside a leaf names the leaf's own line. There is no `-O2` yet and no `--release` — deliberately, since a level with no pass behind it is a promise rather than a flag |
 | Get rustc-grade diagnostics | `jr check file.jr` | Codes across lexer, parser, HIR, sema, MIR and const-eval, with cross-crate uniqueness enforced by a test (ADR-0123). E0218 and E0212 suggest a near name; E0231 and E0245 are *warnings* — an unused `#import`, and a body the compiler could not lower |

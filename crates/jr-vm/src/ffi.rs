@@ -598,22 +598,44 @@ fn return_type(vm: &Vm<'_>, foreign: &ForeignProc) -> Result<Type, VmError> {
 /// Resolves a `#foreign` declaration to a callable address.
 ///
 /// Looks in the compiler's own process, which is where every symbol the slice needs
-/// already lives: `jr` is a Rust binary linked against the C library, so `write` and
-/// friends are present without loading anything. A declaration that names a library
-/// other than `"c"` is refused rather than resolved this way, because finding
+/// already lives: `jr` is a Rust binary linked against the C **and math** libraries, so
+/// `write` and `sqrt` are both present without loading anything. A declaration that
+/// names any other library is refused rather than resolved this way, because finding
 /// `write` in the process while the program asked some other library for it would be
 /// a wrong answer dressed as a working one.
+///
+/// **Why `"m"` qualifies where `"SDL2"` does not**, since the difference is the whole
+/// content of the rule: the test is not "is the name familiar" but *is this process
+/// guaranteed to contain that library's symbols*. Rust's standard library links both
+/// `libc` and `libm` on every Unix target, so resolving `sqrt` from the image when the
+/// program asked libm for it is the **right** answer rather than a coincidence. Nothing
+/// guarantees SDL2 is loaded, so a hit there would be luck and a miss would be a
+/// confusing error — which is exactly what this guard exists to prevent.
+///
+/// `modules/Math` is why the second name is here. Its routines were `#foreign libc`
+/// while its own docs said libm, and on macOS that is invisible because `libm.tbd` is a
+/// symlink to `libSystem.tbd`. On glibc the two are separate libraries and the native
+/// link failed with `undefined reference to 'sin'` — caught by the x86-64 Linux CI leg
+/// nobody had read (ADR-0205).
 ///
 /// `ForeignInfo::library` is still an unresolved `Option<Symbol>` in the HIR —
 /// `jr-sema` checks it names a library for E0225 and records nothing — so this is the
 /// second independent resolution of the same declaration. ADR-0018 §4 records that a
 /// third is the signal to intern the answer beside `Item::ForeignLibraryValue`.
 fn symbol(foreign: &ForeignProc) -> Result<CodePtr, VmError> {
+    // Kept as a list rather than a `match` on two literals so that adding a third name is
+    // one edit in one place, and so the *reason* above governs every entry.
+    const IN_THIS_PROCESS: [&str; 2] = ["c", "m"];
     if let Some(library) = &foreign.library
-        && library != "c"
+        && !IN_THIS_PROCESS.contains(&library.as_str())
     {
         return Err(VmError::unsupported(format!(
-            "`#system_library \"{library}\"` cannot be loaded yet; only \"c\" is available"
+            "`#system_library \"{library}\"` cannot be loaded yet; only {} are available",
+            IN_THIS_PROCESS
+                .iter()
+                .map(|name| format!("\"{name}\""))
+                .collect::<Vec<_>>()
+                .join(" and ")
         )));
     }
 
