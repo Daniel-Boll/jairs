@@ -253,6 +253,12 @@ Status of each slice component, so this is answerable without reading the tree.
 > window/event/context plumbing and BMP surfaces, OpenGL performs drawing, and no unspecified Jai beta
 > is claimed signature-identical. Public Focus, Hitboxer and Voronoi snapshots disagree on several
 > declarations.
+>
+> **Current test ergonomics (ADR-0209).** The exhaustive VM/Cranelift and VM/Cranelift/LLVM corpus
+> comparisons are four deterministic tests each, and the every-prefix parser proof is eight. Their
+> unions are exactly the old inputs; the change exposes parallel work rather than sampling coverage
+> away. `scripts/check fast` and `pre-commit` are local feedback lanes, while `scripts/check full`
+> remains the ordinary Cargo gate including doctests.
 
 | Component | Status | Notes |
 |---|---|---|
@@ -285,7 +291,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–**0208**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
+Accepted ADRs: 0001–**0209**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
 counts here are why the ADR index row and this line move in the same commit.
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
@@ -584,6 +590,30 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ---
 
 ## 7. Immediate next actions
+
+> [!IMPORTANT]
+> **ADR-0209 made routine feedback seconds-scale without weakening gate 3.** A controlled warm
+> before/after measured the authoritative default Cargo test gate at **222.59 → 122.54 seconds**, including
+> doctests. The differential target fell **140.74 → 62.99 seconds** and parser robustness
+> **24.41 → 5.96 seconds**. The two exhaustive properties are unchanged: four sorted-modulo shards
+> in each engine sweep cover every executable corpus program, and eight cover every
+> character-boundary prefix of every valid and invalid parser corpus file.
+>
+> **Use the lane that answers the question being asked.** `scripts/check fast` runs 1143 tests in
+> **12.95 seconds** and omits the differential target plus exhaustive prefix shards.
+> `scripts/check pre-commit` runs 1209 tests in **35.81 seconds** and omits only the twelve
+> exhaustive shards. `scripts/check full` is the mandatory ordinary `cargo test --workspace` gate.
+> Nextest never proves gate 3 green because it omits doctests and gives each test its own process.
+>
+> **The speedup came from test shape, not build caching.** Warm compilation was under half a second.
+> `sccache`, another profile and a faster linker are deferred; `target/` was already 30 GiB and the
+> measured cost was execution.
+
+**1226 workspace tests (1235 under gate 7), 283 corpus files, 209 ADRs, all seven gates green.**
+ADR-0209 replaces two default tests with twelve and one LLVM-only test with four; it moves no corpus
+file. **E0296** remains the first free diagnostic code.
+
+### Previous handoff: ADR-0208
 
 > [!IMPORTANT]
 > **ADR-0208 re-audited the games work against public source and changed the compatibility claim.**

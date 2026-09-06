@@ -48,7 +48,7 @@ max_width = 100                # breaks a long argument or parameter list. Comme
 
 ## Status, honestly
 
-**Pre-alpha.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0209.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -120,9 +120,13 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1216** workspace tests (1222 under gate 7), all seven gates green.
-- **283** `.jr` corpus files, **208** accepted ADRs, **24** standard library
+- **1226** workspace tests (1235 under gate 7), all seven gates green.
+- **283** `.jr` corpus files, **209** accepted ADRs, **24** standard library
   modules.
+- **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
+  and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative
+  `scripts/check full` still runs ordinary Cargo with doctests; sharding its two exhaustive sweeps
+  reduced the measured warm gate from 222.59 to 122.54 seconds (ADR-0209).
 - **Both platforms are verified green.** macOS arm64 locally, gate by gate, and
   **x86-64 Linux in CI** — all seven jobs passing, which had never happened
   before. Getting there took eight fixes read out of eight consecutive CI runs
@@ -195,14 +199,18 @@ pipeline diagram and the full crate-by-crate breakdown.
 
 ```sh
 # Requires Rust stable (pinned via rust-toolchain.toml).
-cargo test --workspace
+scripts/check fast        # broad inner-loop feedback
+scripts/check pre-commit  # all but the two exhaustive corpus-wide sweeps
+scripts/check full        # authoritative cargo test --workspace
 
 # Check formatting and lints before pushing:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-That is two of the project's seven gates. `AGENTS.md`'s "The six gates"
+The first two lanes require `cargo-nextest`; `scripts/check full` does not.
+Fast lanes are feedback, not release evidence: wave completion still requires
+the unchanged `cargo test --workspace` gate. `AGENTS.md`'s "The six gates"
 section has the rest — the corpus format check, the tree-sitter drift check,
 and the LLVM-gated seventh gate — plus the process traps that have bitten
 before: two gates run at once and race a shared binary.
@@ -223,7 +231,7 @@ before: two gates run at once and race a shared binary.
 - **[`docs/jai-game-development-audit.md`](docs/jai-game-development-audit.md)** —
   the primary-source games audit, language/library gaps, and the conditional
   `Game` facade plan.
-- **[`docs/adr/README.md`](docs/adr/README.md)** — all 208 accepted decision
+- **[`docs/adr/README.md`](docs/adr/README.md)** — all 209 accepted decision
   records.
 - **[`docs/spec/`](docs/spec/)** — the language specification chapters.
 - **[`examples/`](examples/)** — runnable programs, each verified.

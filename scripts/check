@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: scripts/check <lane> [runner arguments...]
+
+Lanes:
+  fast        Broad inner-loop coverage; skips the differential target and exhaustive prefix shards.
+  pre-commit  All ordinary tests except the two exhaustive corpus-wide sweeps.
+  full        The authoritative Cargo test gate, including doctests.
+
+Examples:
+  scripts/check fast
+  scripts/check pre-commit
+  scripts/check full
+EOF
+}
+
+lane="${1:-}"
+if [[ -z "$lane" ]]; then
+    usage >&2
+    exit 2
+fi
+shift
+
+case "$lane" in
+    fast | pre-commit)
+        if ! cargo nextest --version >/dev/null 2>&1; then
+            echo "error: cargo-nextest is required for the '$lane' lane" >&2
+            echo "install it with: cargo install cargo-nextest --locked" >&2
+            exit 2
+        fi
+        exec cargo nextest run --workspace --profile "$lane" "$@"
+        ;;
+    full)
+        exec cargo test --workspace "$@"
+        ;;
+    -h | --help | help)
+        usage
+        ;;
+    *)
+        echo "error: unknown check lane '$lane'" >&2
+        usage >&2
+        exit 2
+        ;;
+esac

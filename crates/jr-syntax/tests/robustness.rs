@@ -60,17 +60,46 @@ fn assert_round_trips(label: &str, text: &str) {
     );
 }
 
-#[test]
-fn every_prefix_of_every_corpus_file_round_trips() {
+const PREFIX_SHARD_COUNT: usize = 8;
+
+fn every_prefix_of_corpus_shard_round_trips(shard: usize) {
     // Truncating at a char boundary only: slicing mid-UTF-8 would panic in the
     // test harness rather than in the parser, which would be a false positive.
-    for (name, text) in corpus_files() {
+    let mut files_in_shard = 0;
+    for (index, (name, text)) in corpus_files().into_iter().enumerate() {
+        if index % PREFIX_SHARD_COUNT != shard {
+            continue;
+        }
+        files_in_shard += 1;
         for (offset, _) in text.char_indices() {
             assert_round_trips(&format!("{name} truncated at {offset}"), &text[..offset]);
         }
         assert_round_trips(&format!("{name} whole"), &text);
     }
+    assert!(files_in_shard > 0, "prefix shard {shard} is empty");
 }
+
+macro_rules! prefix_shard_tests {
+    ($($name:ident => $shard:expr),+ $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                every_prefix_of_corpus_shard_round_trips($shard);
+            }
+        )+
+    };
+}
+
+prefix_shard_tests!(
+    every_prefix_of_every_corpus_file_round_trips_shard_0 => 0,
+    every_prefix_of_every_corpus_file_round_trips_shard_1 => 1,
+    every_prefix_of_every_corpus_file_round_trips_shard_2 => 2,
+    every_prefix_of_every_corpus_file_round_trips_shard_3 => 3,
+    every_prefix_of_every_corpus_file_round_trips_shard_4 => 4,
+    every_prefix_of_every_corpus_file_round_trips_shard_5 => 5,
+    every_prefix_of_every_corpus_file_round_trips_shard_6 => 6,
+    every_prefix_of_every_corpus_file_round_trips_shard_7 => 7,
+);
 
 /// Every construct in the grammar that recurses, with the shape that actually
 /// exercises it.

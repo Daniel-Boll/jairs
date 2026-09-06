@@ -158,13 +158,30 @@ fn the_corpus_has_executable_programs() {
     );
 }
 
-#[test]
-fn every_corpus_program_behaves_identically_in_both_engines() {
+const CORPUS_SHARD_COUNT: usize = 4;
+
+fn executable_program_shard(shard: usize) -> Vec<PathBuf> {
+    let programs: Vec<PathBuf> = executable_programs()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, program)| (index % CORPUS_SHARD_COUNT == shard).then_some(program))
+        .collect();
+
+    assert!(
+        !programs.is_empty(),
+        "corpus shard {} of {} covered no programs",
+        shard + 1,
+        CORPUS_SHARD_COUNT,
+    );
+    programs
+}
+
+fn assert_corpus_shard_behaves_identically_in_both_engines(shard: usize) {
     let dir = TempDir::new().expect("a temporary directory");
     let mut checked = Vec::new();
     let mut disagreements = Vec::new();
 
-    for program in executable_programs() {
+    for program in executable_program_shard(shard) {
         let vm = run_in_vm(&program);
         let native = run_natively(&program, dir.path());
         let name = program
@@ -189,6 +206,32 @@ fn every_corpus_program_behaves_identically_in_both_engines() {
         disagreements.join("\n"),
     );
 }
+
+macro_rules! corpus_shard_test {
+    ($name:ident, $shard:expr) => {
+        #[test]
+        fn $name() {
+            assert_corpus_shard_behaves_identically_in_both_engines($shard);
+        }
+    };
+}
+
+corpus_shard_test!(
+    every_corpus_program_behaves_identically_in_both_engines_shard_1,
+    0
+);
+corpus_shard_test!(
+    every_corpus_program_behaves_identically_in_both_engines_shard_2,
+    1
+);
+corpus_shard_test!(
+    every_corpus_program_behaves_identically_in_both_engines_shard_3,
+    2
+);
+corpus_shard_test!(
+    every_corpus_program_behaves_identically_in_both_engines_shard_4,
+    3
+);
 
 #[test]
 fn the_slice_exit_criterion_produces_output_in_both_engines() {
@@ -2451,13 +2494,12 @@ fn run_with_llvm(program: &Path, dir: &Path, name: &str) -> Behaviour {
 /// ends could be either one. The existing sweep already ties the VM to Cranelift, so agreement
 /// with the VM ties all three together transitively.
 #[cfg(feature = "llvm")]
-#[test]
-fn every_corpus_program_behaves_identically_in_all_three_engines() {
+fn assert_corpus_shard_behaves_identically_in_all_three_engines(shard: usize) {
     let dir = TempDir::new().expect("a temporary directory");
     let mut checked = Vec::new();
     let mut disagreements = Vec::new();
 
-    for program in executable_programs() {
+    for program in executable_program_shard(shard) {
         let name = program
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -2482,6 +2524,37 @@ fn every_corpus_program_behaves_identically_in_all_three_engines() {
         disagreements.join("\n"),
     );
 }
+
+#[cfg(feature = "llvm")]
+macro_rules! llvm_corpus_shard_test {
+    ($name:ident, $shard:expr) => {
+        #[test]
+        fn $name() {
+            assert_corpus_shard_behaves_identically_in_all_three_engines($shard);
+        }
+    };
+}
+
+#[cfg(feature = "llvm")]
+llvm_corpus_shard_test!(
+    every_corpus_program_behaves_identically_in_all_three_engines_shard_1,
+    0
+);
+#[cfg(feature = "llvm")]
+llvm_corpus_shard_test!(
+    every_corpus_program_behaves_identically_in_all_three_engines_shard_2,
+    1
+);
+#[cfg(feature = "llvm")]
+llvm_corpus_shard_test!(
+    every_corpus_program_behaves_identically_in_all_three_engines_shard_3,
+    2
+);
+#[cfg(feature = "llvm")]
+llvm_corpus_shard_test!(
+    every_corpus_program_behaves_identically_in_all_three_engines_shard_4,
+    3
+);
 
 /// **A trap reads identically from all three engines, backtrace included** (ADR-0143 §7).
 ///
