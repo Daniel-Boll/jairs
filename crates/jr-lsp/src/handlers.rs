@@ -1,4 +1,4 @@
-//! The three capabilities `PLAN.md` §1.4 asks for, as pure functions.
+//! Core LSP handlers as pure functions, without transport state.
 //!
 //! # Why they are functions and not methods on a server
 //!

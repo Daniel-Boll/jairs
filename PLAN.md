@@ -199,14 +199,14 @@ flowchart LR
       VS Code as its example and the example was wrong for this project: the decider does
       not use it, so a packaging target there is unverifiable in practice and would rot the
       way this box's Neovim half rotted before ADR-0025. The *intent* — a real editor, over
-      LSP 3.17, against the real binary — is met twelve capabilities over, and
+      LSP 3.17, against the real binary — is met well beyond the original three methods, and
       `crates/jr-cli/tests/lsp_stdio.rs` asserts the protocol independently of any client.
       Closed rather than abandoned: five consecutive handoffs listed "a VS Code extension"
       as owed work nobody intended to do, which makes the whole list less trustworthy.
 - [x] Neovim: tree-sitter highlighting — and diagnostics, hover and goto-definition
       besides. `editors/nvim/` is a runtimepath directory needing no plugin manager
       (ADR-0025); two lines in `init.lua` and one build script. Verified by
-      `nvim --headless -u NONE -l editors/nvim/verify.lua`, 166 checks against the real
+      `nvim --headless -u NONE -l editors/nvim/verify.lua`, against the real
       editor and the real server. Verified rather than gated: Neovim is not a build
       dependency of this workspace.
 - [ ] CI green on macOS arm64 **and** Linux x86-64 — **`main` was pushed for the first
@@ -265,6 +265,13 @@ Status of each slice component, so this is answerable without reading the tree.
 > presentation and dependency-ordered idempotent teardown. Simp remains process-global, so Game
 > enforces one active App and requires its lifecycle to stay on one thread. Held input, drawing
 > helpers, generation-tagged textures, PNG, text and audio remain later slices.
+>
+> **Current tooling baseline (ADR-0211).** The language server's current inventories now follow
+> the capabilities it advertises instead of carrying a stale integer. Semantic tokens,
+> whole-document formatting, code actions, signature help, inlay hints and type-position
+> navigation all already exist. The optimisation audit therefore starts from the real gaps:
+> diagnostic freshness and related locations, canonical scope-aware completion, protocol
+> negotiation/lifecycle, deeper navigation and assists, and formatter safety/configuration parity.
 
 | Component | Status | Notes |
 |---|---|---|
@@ -293,12 +300,12 @@ Status of each slice component, so this is answerable without reading the tree.
 | `jr-codegen-clif` | **Done** | **A writable data object per global** (ADR-0186 §4), `Linkage::Local`, address via `symbol_value` exactly as a string constant's is — so every projection downstream is unchanged. Initial bytes from `jr_pool::static_image`, the renderer ADR-0152 §2 already built for compiler-emitted tables; a one-element table is exactly a global's initial value. **`Repr::Vector { ty, signed }`** — one vector register, deliberately **not** an aggregate, so `returns_via_sret` says no and sixteen bytes travel in `v0` (ADR-0148 §1). `vector_binary` dispatches on the *lane* type: a float vector reaching the integer path emitted `iadd.f64x2` and Cranelift's verifier answered with `unreachable!()`, a panic rather than the hard failure the neighbouring comment promises. Lane access needed only the `index_elem` arm, because the layouts are identical. A parameterised struct needed **no native change** beyond reading fields through `Pool::fields_of` (ADR-0085 §4): `Repr`/`field_type` compute an instance's layout from its substituted fields exactly as for an ordinary aggregate, which is why the differential's exit-15 check passes with both engines computing the layout independently. `aggregate_constant` materialises an aggregate constant into a stack slot and yields its **address**, exactly as a string's `{data, count}` pair (ADR-0074). The native half of the same conversion `jr-vm` does — two materialisations from one shared value, which is ADR-0019's arrangement and what the differential's exit-45 assertion checks. The **first mutable data objects this back end emits** (ADR-0066 §1): a shadow call stack of `(name, len)` pairs and a depth counter, both zero-initialised. A caller writes its callee's entry and bumps the depth around each *direct* call — an indirect one's target is a runtime pointer while the name is a compile-time constant, so that frame is absent, as an inlined one is. The generated trap helper grew a loop walking the stack downward, writing `  in `, the name and a newline per frame — three `write`s rather than one buffer, because a trap handler has no allocator. **The entry shim pushes `main`'s own frame**: every other frame is pushed by its caller, and `main`'s caller is the shim, so without it native printed one frame fewer than the VM. An `Item::ProcValue` lowers to `func_addr` of the target's already-imported `FuncRef`; `Callee::Indirect` emits `call_indirect` against a signature `indirect_signature` builds from the callee's `ProcType` — the same `repr::signature` a direct call uses, so the two cannot disagree about the parameter count (ADR-0059 §4). The `sret` slot, argument reads and result placement are shared with the direct path; only the call instruction branches. The context pointer is a second hidden parameter, **after** `sret` and before the declared ones, so the two cannot be confused and one shared predicate computes the offset — 0, 1 or 2 (ADR-0057 §4). The entry shim allocates a zeroed stack slot and passes its address. `default_libcall_names` now delegates to Cranelift's own namer: `format!("{libcall}")` gave `Memcpy` rather than `memcpy` and every aggregate copy failed to link — latent since the back end was written. MIR → Cranelift IR, layout via `jr-pool`, traps through a generated helper (ADR-0019). Multiple returns cost this crate **two lines**: `Repr::of` answers `Aggregate` for a results type and `field_type` reads its elements, after which ADR-0051's `sret` path carries it unchanged — the payoff for having done the ABI wave first. **Returns an aggregate** through a caller-allocated `sret` pointer in the leading parameter position, uniform for every size — `repr::returns_via_sret` is the single predicate both the signature and the body consult, because deciding it twice would shift every argument by one position (ADR-0051). Uncovered a **latent bug in every libcall**: the namer derived its symbol from `Display`, giving Cranelift's internal `Memcpy` where C exports `memcpy`, so any emitted libcall failed to link — invisible until this wave's first struct copy exceeded `emit_small_memory_copy`'s unrolling threshold. Now delegates to `cranelift_module::default_libcall_names`. Aggregate *parameters* on a `#foreign` procedure and an aggregate *return* from one both stay refused, with distinct messages: that needs each platform's own struct classification and a wrong guess puts garbage in a register with no diagnostic (ADR-0051 §4); a view is an aggregate in `Repr`, and its element place is a load of the `data` word followed by the *same* stride arithmetic an array's index uses — one helper replaced the array-only one rather than sitting beside it (ADR-0044); `fadd`/`fcmp`/`fneg` and the **saturating** `fcvt_to_sint_sat`, because the trapping form would put a trap back on a path ADR-0040 §1 made trap-free and disagree with the VM; `emit_small_memset` for a zeroed aggregate and an unsigned `icmp` into the existing cold trap block for a bounds check (ADR-0039); `ireduce`/`sextend`/`uextend` for a cast, with equal widths a pass-through because Cranelift rejects both. Aggregate params only; aggregate returns and indirect calls refused |
 | `jr-link` | **Done** | **A second argument form** (ADR-0183 §2): `-framework NAME`, as two arguments since `-frameworkOpenGL` is not a thing `ld` accepts. **No inference from the name and no fallback between the forms** — a `-l` retry after a failed `-framework` would make `#system_library "SDL2"` on macOS link for a reason the source never stated. The crate keeps **zero dependencies**: it declares its own `LinkKind`, and `jr-cli` converts exhaustively, so a third form is a compile error at the driver. A framework name that begins with `-` is **emptied** rather than `./`-prefixed, because the name is a separate argument and `#framework "-rpath"` would otherwise reach `cc` as a flag. `not_a_flag` prefixes `./` to any path handed to `cc` or `codesign` that begins with `-` (ADR-0122 §3), so a linker driver cannot be made to read its own arguments wrongly — `./-x` and `-x` name the same file, so it is behaviour-preserving. Deliberately redundant with the driver's confinement for a declared name, and load-bearing for an explicit `-o`, which is left unchecked on purpose. `cranelift-object` bytes, then `cc`; ad-hoc codesign is a fallback because `ld64` already signs |
 | `jr-codegen-llvm` | **Done** | **An internal mutable global per file-scope variable** (ADR-0186 §4), typed as an opaque `i8` array of the layout's size so this crate still computes no layout of its own. The same `static_image` renderer as Cranelift, and the **same symbol convention** — agreed between the two directly, because a differential harness compares them byte for byte. **`Repr::Vector { ty, signed }`** is `<N x T>`, and `vector_binary` is the *same* builder call the scalar path makes with a different operand type (ADR-0148 §4). The lane-type dispatch sits **before** the scalar float check for the reason the Cranelift twin gives: `into_int_value()` panics on a `VectorValue`, so a float vector falling through was a panic rather than an error. LLVM would in fact split a wider vector for free — and that is exactly why ADR-0148 §2 refused wider ones, since Cranelift cannot and the differential would compare two different programs. **The LLVM back end** (ADR-0143), behind a default-off `llvm` cargo feature and covered by **gate 7** rather than by the six, because `llvm-sys` needs an LLVM 21 it can find. MIR → LLVM IR with three differences from the Cranelift translation, each forced by LLVM: a block parameter becomes a `phi` filled from the predecessor side (MIR forbids critical edges, so this is bookkeeping rather than an unphi pass); every address is an opaque `ptr` and every offset a byte GEP over `i8`, with **no Jairs aggregate acquiring an LLVM `StructType`** — building one would put LLVM's padding rules in charge of where a field sits, a second layout computation ADR-0018 §2 forbids; and poison must be avoided rather than tolerated, so overflow goes through `llvm.{s,u}{add,sub,mul}.with.overflow`, shifts and divisions are checked before the operation, and float→int uses `llvm.fpto{s,u}i.sat` to match ADR-0040 §4's clamping. A pointer is an *integer* of the target's pointer width, exactly as in Cranelift, so ADR-0064's pointer arithmetic is one code path; `ptr` appears only at a load, a store or a GEP. Every `alloca` lives in a leading block that falls through, because an LLVM `alloca` inside a loop grows the stack where a Cranelift stack slot does not. Its own trap helper and `main` shim, its own shadow call stack with the same stride and capacity, so a trapping program's stderr matches the other two engines byte for byte. The module is **verified** before it is emitted, so a malformed `phi` names its instruction instead of surfacing as a bad object. `OptimizationLevel::None`: asking LLVM for `-O2` would put one engine's arithmetic through an optimiser the others lack |
-| `jr-lsp` | **Done** | Reads the pool through **`Db::read_pool`** rather than its own `pool().lock().unwrap_or_else(…)`, which four files had each re-implemented — a duplication `run.rs`'s docs already described as deliberately centralised, and which ADR-0149 §1's `RwLock` conversion turned into eight compile errors. Twelve capabilities over `jr-db` queries: diagnostics, hover, goto-definition, completion + resolve, references, documentHighlight, prepareRename + rename, documentSymbol, workspaceSymbol, **code actions**, **signatureHelp**, **inlay hints** (ADR-0024, ADR-0028, ADR-0030, ADR-0031). Rename is workspace-wide and refuses rather than half-renaming. No semantic tokens. The notification loop dispatches a job only after every write (ADR-0032): the old order let the no-watcher re-walk cancel `didOpen`'s diagnostics, publishing nothing |
+| `jr-lsp` | **Done, not finished** | **ADR-0211 removes the stale capability count and inventories the advertised surface:** compiler diagnostics; hover and definition including type positions; completion + resolve and auto-import; references and document highlights; document/workspace symbols; prepare-rename + workspace rename; code actions; signature help; inlay hints; full-document semantic tokens; whole-document formatting. It reads the pool through `Db::read_pool` rather than duplicating lock recovery. Rename is workspace-wide and refuses rather than half-renaming. The notification loop dispatches a job only after every write (ADR-0032). The optimisation audit found the next correctness work: dependency edits can leave importer diagnostics stale, LSP loses secondary ranges and instantiation frames, completion's vocabulary/scope is stale, and protocol negotiation/lifecycle needs hardening. |
 | `jr-driver` | **Done** | **This row said "Not started … still a one-line stub" until ADR-0205 measured it: the crate is 1430 lines** — `build.rs` (474) drives a compile-and-link, `script.rs` (919) runs a build script in the VM and performs the compilations it asked for (ADR-0195 … ADR-0197). It reads `jr-db`'s workspace rather than inventing a second, which is what the stale row asked for. `ScriptRequest` carries the script's **source** (ADR-0204 §5), so the driver no longer re-reads a file the caller already holds |
-| `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
-| VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
+| `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the real-editor verifier — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua` needs an editor CI does not have. The installed parser is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The verifier asserts tree-sitter node kinds and nesting that ADR-0010's error-count gate cannot see, plus live LSP requests against the real server. |
+| VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and another LSP client may launch it; the repository packages integrations for Neovim and Zed. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–**0210**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
+Accepted ADRs: 0001–**0211**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
 counts here are why the ADR index row and this line move in the same commit.
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
@@ -599,38 +606,69 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0210 starts `modules/Game` with the lifecycle seam, not a second renderer.** One explicit,
-> caller-owned `Game.App` now hides SDL/window/Simp startup and failure unwind, drains events once per
-> frame, latches close, reports unclamped monotonic delta time, presents, and tears down in dependency
-> order. A private guard refuses a second simultaneous App because Simp owns one process-global GL
-> context and batch. The App stays on the thread that opened it.
+> **ADR-0211 establishes the tooling optimisation baseline from the live server, not its stale
+> prose.** Semantic tokens, whole-document formatting, code actions, signature help, inlay hints
+> and type-position navigation already ship. Current inventories name the advertised capability
+> families and deliberately carry no total: diagnostics are notifications, completion resolve is a
+> second method in one feature, and prepare-rename may be counted with or apart from rename.
 >
-> **Both sides of the lifecycle are native integration tests.** The real-driver test opens, frames,
-> receives a synthetic SDL quit, closes twice and reopens; the dummy-driver test reaches the
-> no-GL-context failure and then proves a fresh raw Window lifecycle still works. Both are in
-> nextest's serial graphics group.
+> **The audit found correctness work before novelty.** Editing a dependency can leave an open
+> importer's diagnostics stale; secondary labels and instantiation frames lose their exact
+> locations over LSP; completion's keyword/directive vocabulary and block scope are stale; client
+> negotiation, `didClose`, protocol errors and cancellation need hardening. Type-definition,
+> implementation/call hierarchy, parameter hints and richer assists are the next depth layer.
 >
-> **The facade is deliberately incomplete.** ADR-0210 also fixes the later public direction:
-> generation-tagged texture handles, top-left/y-down coordinates, Jairs `snake_case`, caller-owned
-> simulation policy, and incremental slices whose beginner-facing v1 waits for PNG and text. No
-> allocator, drawing helper, held-input table, resource registry, text or audio was smuggled into the
-> foundation.
+> **The module complaint is architectural, not a folder-name problem.** Today a project is an
+> ordered list of search directories, so CLI, LSP, editors, bundled modules and build scripts each
+> reconstruct part of module discovery. The recommended replacement is one project-owned module
+> catalog: implicit local modules under `src`, exact external path dependencies, bundled modules,
+> legacy path adapters and explicit `-I` operator overrides behind one `resolve`/`entries` interface.
 
-**1228 workspace tests (1237 under gate 7), 283 corpus files, 210 ADRs, 25 modules, all seven gates
-green.** ADR-0210 adds two native integration tests and no corpus file. **E0296** remains the first
-free diagnostic code.
+**1228 workspace tests (1237 under gate 7), 283 corpus files, 211 ADRs, 25 modules, all seven gates
+green.** ADR-0211 changes documentation and no executable behavior, test, corpus file or module.
+**E0296** remains the first free diagnostic code.
 
-### Next wave: `Game` input state
+### Next decision: the project module catalog
 
-Write a new ADR and use a new `feat/game-input` branch. The already-decided boundary is:
+The decider must choose the public module model before code:
 
-1. caller-owned held/pressed/released keyboard and mouse snapshots inside `App`;
-2. a complete named key table rather than magic SDL scancodes;
-3. one update per `begin_frame`, derived from the event batch already drained there;
-4. no Escape-to-close policy in the module — callers choose it;
-5. native integration coverage for held state, one-frame edges and release.
+1. **Conventional source root:** implicitly add `src`; smallest change, but search-path ordering and
+   silent shadowing remain.
+2. **Exact module map:** declare every local and external module; deterministic, but routine local
+   files require manifest edits.
+3. **Project module catalog (recommended):** discover local `src/Foo.jr` and
+   `src/Foo/module.jr`, map external dependencies exactly, include bundled modules as catalog
+   entries, and retain `-I`/`[build].module_paths` through a compatibility adapter.
 
-Do not add primitives or resources in the input wave; each remains its own ADR and branch.
+Recommended associated rules: duplicate local/exact names are errors; standard-library shadowing
+requires an explicit override; imports remain flat; exact external files/directories come before a
+future package model; malformed LSP manifests publish a configuration diagnostic; implicit `src`
+exists only for manifest-backed projects. The branch after approval is
+`feat/project-module-catalog`, beginning with `ProjectContext::discover` and one
+`ModuleCatalog::{resolve, entries}` seam shared by CLI, database, LSP and build scripts.
+
+### Optimisation queue after the module decision
+
+1. fresh, navigable LSP diagnostics;
+2. canonical, context- and scope-aware completion with negotiated snippets;
+3. LSP lifecycle, capability negotiation, protocol errors and cancellation;
+4. formatter exhaustiveness, CLI/LSP configuration parity and a real `fmt --check` unified diff;
+5. executable dead-section elimination — measured at **134,056 → 111,728 bytes** for hello and
+   **156,600 → 131,856 bytes** for Snake, with link time effectively unchanged;
+6. type-definition, implementation/call hierarchy, parameter hints and richer assists;
+7. measure and retune MIR inlining, whose current `-O1` growth has no demonstrated benefit on the
+   short Snake workload.
+
+`Game` input state remains the next game-facade slice, but the decider explicitly reprioritised the
+tooling/project/binary programme ahead of it.
+
+### Previous handoff: ADR-0210
+
+ADR-0210's `Game.App` lifecycle foundation remains complete: explicit caller-owned state,
+SDL/window/Simp startup and unwind, one event drain, close latching, monotonic delta, presentation,
+idempotent dependency-ordered teardown, and two native integration tests. Its next slice is
+caller-owned held/pressed/released keyboard and mouse state with a complete named key table. It is
+deferred, not revoked.
 
 ### Previous handoff: ADR-0209
 
@@ -1021,7 +1059,7 @@ quietly dropped or quietly become a quarter of work.
 
 | Item | State |
 |---|---|
-| Semantic tokens | **done — ADR-0159.** The fourteenth and last LSP capability, and the only one whose value is information the parser does not have: a grammar sees `IDENT` where a reader sees a parameter, a field, a type or a module. Context leads and resolution follows, so a file that does not parse still colours |
+| Semantic tokens | **done — ADR-0159.** Full-document semantic classification, with no range or delta support. It supplies information the grammar does not have: a grammar sees `IDENT` where a reader sees a parameter, a field, a type or a module. Context leads and resolution follows, so a file that does not parse still colours |
 | Neovim packaging | **already done** — the runtime directory works unpackaged; VS Code declined by ADR-0036 |
 | Richer DWARF (locals, struct layouts) for lldb | **moved to W12.** This row used to say "line tables exist; locals and layouts do not", and that was **false** |
 

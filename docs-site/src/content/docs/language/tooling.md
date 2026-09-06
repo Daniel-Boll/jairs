@@ -78,7 +78,7 @@ because nothing then distinguishes a key that does nothing from one that has not
 
 ## The language server
 
-`jr lsp` speaks LSP 3.17 over stdio and provides fourteen capabilities:
+`jr lsp` speaks the LSP 3.17 protocol over stdio. Its current feature families are:
 
 - diagnostics
 - hover (including a type's docs, and which file an `#import` resolved to)
@@ -105,13 +105,16 @@ undo step as accepting it.
 ## Editors
 
 - **Neovim** is packaged directly, under `editors/nvim/`: two lines in your `init.lua` and one
-  build script, no plugin manager. Every capability lands on a stock Neovim 0.11+ default
-  keybinding (`K` for hover, `gd` for definition, `grn` for rename, and so on), so there are no
-  keymaps to add. It works on a standalone `.jr` file, not only inside a checkout.
-- **Zed** is packaged too, under `editors/zed/`: a tree-sitter-based extension with all fourteen
-  LSP capabilities, format-on-save, and its own 19-check `verify.sh`. An earlier decision had
-  declined a second editor; that decision is reversed.
-- **Any other LSP editor** works too — point it at the `jr lsp` command yourself.
+  build script, no plugin manager. Neovim 0.11+ supplies stock client behavior and default
+  mappings where it has them (`K` for hover, `gd` for definition, `grn` for rename, and so on),
+  so basic setup needs no custom keymaps. It works on a standalone `.jr` file, not only inside a
+  checkout.
+- **Zed** is packaged too, under `editors/zed/`: a tree-sitter-based extension wired to `jr lsp`.
+  Its verifier checks the mechanical links, grammar build and selected advertised capabilities;
+  installing and exercising the dev extension remains manual. An earlier decision had declined a
+  second editor; that decision is reversed.
+- **Another LSP editor** can be configured to launch `jr lsp`; the repository does not carry a
+  packaged integration or real-client verifier for it.
 - **VS Code** is deliberately not supported: a packaging target for an editor the maintainer
   doesn't use would rot. The server is editor-agnostic, so nothing stops a VS Code client from
   launching `jr lsp`.

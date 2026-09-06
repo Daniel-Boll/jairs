@@ -1,9 +1,10 @@
 # Jairs in Neovim
 
-Diagnostics, hover, goto-definition, completion, references, rename, symbols and tree-sitter highlighting, with **no plugin
-manager and no plugins**. This directory is a runtimepath entry: Neovim discovers an LSP
-config in `lsp/`, a parser in `parser/`, queries in `queries/`, filetype detection in
-`ftdetect/` and buffer settings in `ftplugin/` on its own.
+Diagnostics, hover, navigation, completion, references, rename, symbols, code actions, hints,
+semantic tokens, formatting and tree-sitter highlighting, with **no plugin manager and no
+plugins**. This directory is a runtimepath entry: Neovim discovers an LSP config in `lsp/`, a
+parser in `parser/`, queries in `queries/`, filetype detection in `ftdetect/` and buffer settings
+in `ftplugin/` on its own.
 
 Requires **Neovim 0.11 or newer** (for `vim.lsp.config`/`vim.lsp.enable`). Verified on
 0.12-dev.
@@ -31,14 +32,15 @@ hover, `gd` for goto-definition and `<C-x><C-o>` for completion once the server 
 nvim --headless -u NONE -l editors/nvim/verify.lua
 ```
 
-67 checks, exiting non-zero on the first failure. It drives the real Neovim against the
-real server: filetype, parser, every highlight capture it relies on (including
+The verifier reports failures and exits non-zero if any check fails. It drives the real Neovim
+against the real server: filetype, parser, every highlight capture it relies on (including
 `@comment.documentation`, whose `#lua-match?` predicate the tree-sitter CLI cannot
 validate), LSP attach, the negotiated position encoding, the resolved workspace root, four
 hovers asserted by *text* — one of them an imported procedure's full card, prose and all —
 a completion list with its snippet and its lazily-resolved documentation, field completion
-after a `.`, goto-definition across an `#import`, and a diagnostic on a deliberately broken
-file.
+after a `.`, goto-definition across an `#import`, prepare-rename, code actions, signature and
+inlay hints, semantic-token advertisement and legend, and diagnostics on a deliberately broken
+file. Handler and stdio tests cover the protocol paths the real-client verifier does not request.
 
 **This is verified, not gated.** It needs Neovim, which is not a build dependency of the
 workspace, so making it one of the six CI gates would fail `cargo test` on a machine with
@@ -51,16 +53,18 @@ integration is covered by CI.
 |---|---|
 | Syntax highlighting | tree-sitter, from the same `queries/*.scm` the drift gate checks — the files here are **symlinks**, so they cannot drift from the grammar's copies |
 | Diagnostics | Published on open and on every change, with the stable `E0…` code attached |
-| Hover | A card: the module or file, the declaration in Jairs syntax with parameter names, then its `///` documentation. Falls back to the type for an expression that is not a name. **A type annotation gets nothing** — `jr_hir::TypeRef` has no span (ADR-0028 §4). An `#import` line hovers as the module's resolved path plus its `//!` documentation |
+| Hover | A card: the module or file, the declaration in Jairs syntax with parameter names, then its `///` documentation. Falls back to the type for an expression that is not a name. A type annotation resolves through the CST (ADR-0200 §3). An `#import` line hovers as the module's resolved path plus its `//!` documentation |
 | Completion | Locals and parameters, file items, imported module items, keywords, builtin types; fields after `.`, directives after `#`. Procedures insert as call snippets with real parameter names; documentation arrives via `completionItem/resolve`. Scope is approximated as "declared earlier in this body" rather than by block |
 | Doc comments | `///` documents the declaration below it, `//!` the file. `////` is an ordinary comment. Highlighted distinctly from an aside |
-| Goto-definition | Locals, parameters, file-level items, across an `#import` into `modules/`, and on an **`#import` line itself** — from any column, landing at the start of the module file (ADR-0035) |
+| Goto-definition | Locals, parameters, file-level items and type annotations; across an `#import` into a module; and on an **`#import` line itself** — from any column, landing at the start of the module file (ADR-0035, ADR-0200) |
 | Folds, indent queries | Shipped; `foldexpr`/`indentexpr` are yours to set |
 | References, document highlight | `gr` / cursor-idle highlight. A reference search covers the whole workspace; a highlight is confined to the file on purpose, since a client sends it on every cursor move |
 | Rename | `grn`. Workspace-wide, and it **refuses** rather than half-renaming: on a name collision, on a syntax error in a file it would edit, or on a workspace over 10 000 files (ADR-0030 §3) |
 | Document and workspace symbols | `gO` for the outline (struct fields nested), and your picker's workspace-symbol command |
-| Code actions, inlay hints, `signatureHelp` | **Not implemented.** Next wave |
-| Formatting via LSP | **Not implemented.** Use `jr fmt`; `textDocument/formatting` is not advertised |
+| Code actions | Quick fixes keyed by compiler diagnostics, comment conversion, and source-level import organization |
+| Inlay hints, `signatureHelp` | Inferred local types, `#run` values, procedure signatures and the active argument |
+| Semantic tokens | Full-document semantic classification for identifiers, literals, comments and declarations; tree-sitter still supplies structural highlighting |
+| Formatting via LSP | Whole-document formatting through the same formatter as `jr fmt`; range formatting is deliberately not advertised |
 
 ## How it finds things
 

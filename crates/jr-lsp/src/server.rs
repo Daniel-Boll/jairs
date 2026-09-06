@@ -73,9 +73,11 @@ pub struct ServerOptions {
 
 /// The capabilities this server advertises, under a negotiated encoding.
 ///
-/// Twelve now. Each is advertised only where it is implemented for every case a client may
+/// Each capability is advertised only where it is implemented for every case a client may
 /// send: advertising one that answers "nothing" for half its inputs is worse than not
-/// advertising it, because the client stops offering the user an alternative.
+/// advertising it, because the client stops offering the user an alternative. ADR-0211
+/// deliberately keeps this as an explicit structural value rather than maintaining a
+/// separate capability count.
 #[must_use]
 pub fn capabilities(encoding: Encoding) -> ServerCapabilities {
     ServerCapabilities {

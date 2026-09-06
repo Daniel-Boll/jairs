@@ -1,6 +1,6 @@
 id = "jairs"
 name = "Jairs"
-description = "Jairs language support: syntax, diagnostics, completion with auto-import, and formatting."
+description = "Jairs language support: syntax, diagnostics, navigation, semantic tokens, completion, and formatting."
 version = "0.1.0"
 schema_version = 1
 authors = ["dboll"]

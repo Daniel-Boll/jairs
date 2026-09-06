@@ -136,23 +136,23 @@ in Book I for why.
 
 ## Editor support
 
-Jairs ships a language server (`jr lsp`, LSP 3.17) with **fourteen** capabilities —
+Jairs ships a language server (`jr lsp`, using the LSP 3.17 protocol) with these feature families —
 diagnostics, hover, goto-definition, completion (including a name you have not imported yet,
 which comes with the `#import` line as an edit beside it), references, document highlight,
 rename, code actions, signature help, inlay hints, document and workspace symbols, formatting
 and semantic tokens — and a tree-sitter grammar.
 
-Two editors are packaged, both verified by a script rather than by hand:
+Two editors are packaged:
 
 - **Neovim**, under `editors/nvim/` — two lines in your `init.lua` and one build script, on
-  stock Neovim 0.11+ keybindings. `nvim --headless -u NONE -l editors/nvim/verify.lua` runs
-  170 checks.
-- **Zed**, under `editors/zed/` — a dev extension carrying the grammar and all fourteen
-  capabilities, with format on save. `./editors/zed/verify.sh` runs 19 checks, which replicate
-  Zed's own grammar build.
+  stock Neovim 0.11+ client behavior and default mappings. The headless verifier exercises the
+  real editor against the real server.
+- **Zed**, under `editors/zed/` — a dev extension carrying the grammar and launching `jr lsp`.
+  `./editors/zed/verify.sh` mechanically checks the wiring, queries, grammar-build shape and
+  selected advertised capabilities; installing and exercising the extension remains manual.
 
-Any other LSP-speaking editor works too: point it at the `jr lsp` command. A VS Code
-extension is deliberately **not** provided.
+Another LSP-speaking editor can be configured to launch `jr lsp`, but this repository does not
+carry or verify that integration. A VS Code extension is deliberately **not** provided.
 
 ## Where to go next
 

@@ -12,7 +12,7 @@ behind them — that narrative is not duplicated here):
 - **1228** workspace tests (1237 under gate 7), all seven gates green.
 - **283** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
   (**294** counting those).
-- **210** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **211** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **25** standard library modules under `modules/`.
 - Diagnostic codes run **E0001–E0295**; **E0296** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership
@@ -47,11 +47,11 @@ behind them — that narrative is not duplicated here):
 | Draw a frame | `Simp.immediate_quad(x0, y0, x1, y1, colour)` from `modules/Simp` | A **Simp-shaped subset** over OpenGL (ADR-0187, ADR-0208): no state argument on any call, colours as `Vector4` in 0..1, and the origin **bottom-left with y upwards** by default. Public vendored Simp copies inspected for ADR-0208 disagree on several declarations, so this is not one exact canonical Jai API. Jairs uses SDL2 for windows, events and GL-context plumbing, then GL 2.1 / GLSL 1.20 for drawing. Absent: text and fonts, 3D overloads and `#add_context`. |
 | **Write a game** | `examples/games/`, and Book IV of `docs-site/` | Three built-and-run programs: Pong, Snake, and a sprite-and-widget demo, built by a Jairs build script (`jr build examples/games/build.jr -I modules`). Two keep their **rules** in a module importing no graphics module, so `jr run examples/games/pong/sim.jr` plays a whole match with no display. Each drawing program reads a frame budget and samples `GL.error_code()` every frame; a clean exit means no queued GL error was observed, not that shader results or pixels were proved correct. **Nobody has compared the pixels to a reference image** — `modules/GL` binds no `glReadPixels`, so a readback test cannot substitute (ADR-0207, ADR-0208). |
 | **Build a project with a Jairs program** — `jr build build.jr`, no flag. The script reads its command line, shells out (`git rev-parse`, a shader compiler, `codesign`), reads and writes files, chooses per OS, generates sources, and compiles **executables, static archives or dynamic libraries** at a chosen optimisation level | ADR-0195, ADR-0196, ADR-0197; `examples/10-build-script.jr` and `examples/11-run-build-script.jr` | Measured against **23 real `build.jai` scripts**, not guessed. Two spellings: a **`main`** script is run by the driver and gets `Compiler.build` (immediate, returns a `bool`); a **`#run`** script — Jai's shape, no `main` — allocates, prints, reads and writes files, and declares targets with `Compiler.request_build`, but cannot compile from inside itself (salsa: "Cannot change database mid-query"). `output_type` was the gap that mattered — **13 of 23** scripts set it and this compiler could not build a library at all. Still absent, each with a reason in `modules/Compiler`: icons and manifests (platform resource formats) and `Bindings_Generator` (a C parser). **`BuildCpp` and a custom link command are not absent** — ADR-0198 §4 withdraws that claim: a script compiles C with `Compiler.command` and links it through `library_paths`, or asks for `Output_Kind.OBJECT` and runs its own linker. Both verified end to end. The **message loop is refused**, not missing (ADR-0153) |
-| Edit in Neovim, with highlighting, diagnostics, hover, goto-definition, completion, rename, code actions, signature help and inlay hints | `editors/nvim/` | Two lines in `init.lua` and one build script; no plugin manager. Neovim **0.11+** — every capability is on a stock 0.11 default binding, so there are no keymaps to add. Works on a standalone `.jr` file too, not only inside a checkout. See [`editors/nvim/README.md`](../editors/nvim/README.md) |
+| Edit in Neovim, with highlighting and the `jr lsp` feature surface | `editors/nvim/` | Two lines in `init.lua` and one build script; no plugin manager. Neovim **0.11+** supplies stock client behavior and default mappings where it has them, so basic setup needs no custom keymaps. The headless verifier exercises the real editor and server, but not every protocol method. See [`editors/nvim/README.md`](../editors/nvim/README.md) |
 | **Complete a name you have not imported**, with its `#import` inserted for you | `jr lsp` | Typing `create_window` with no `#import "Window";` offers it, inserts a call snippet with the declaration's real parameter names (`Tab` walks the holes), shows the whole signature, and adds the import in the same undo step. Ranked after everything already in scope. Costs one 4 ms index build at the first completion of a session; unchanged warm and after an edit (ADR-0199) |
 | **Format over the protocol** | `jr lsp` | `textDocument/formatting`, whole-document. No editor needs to be told how to shell out to `jr fmt`, and a file that does not parse is declined rather than reprinted as a guess (ADR-0199 §9) |
-| Edit in Zed | `editors/zed/` | A dev extension: the tree-sitter grammar, all fourteen LSP capabilities, and **Format on save** with no formatter setting. `zed: install dev extension` on `editors/zed`; `editors/zed/verify.sh` checks all 19 mechanical links first, including a replication of Zed's own grammar build. See [`editors/zed/README.md`](../editors/zed/README.md) (ADR-0199) |
-| Use any other LSP editor | `jr lsp` | Speaks LSP 3.17 over stdio. The repository packages for Neovim and Zed, and **will not ship a VS Code extension** (ADR-0036 §1–2) — point your client at the command yourself |
+| Edit in Zed | `editors/zed/` | A dev extension wiring the tree-sitter grammar and `jr lsp`. `zed: install dev extension` on `editors/zed`; `editors/zed/verify.sh` checks the mechanical links, query validity, Zed's grammar-build shape, and that the server advertises completion and formatting. Installing and exercising the extension remains a manual check. See [`editors/zed/README.md`](../editors/zed/README.md) (ADR-0199) |
+| Use another LSP editor | `jr lsp` | Speaks the LSP 3.17 protocol over stdio. The repository packages integrations for Neovim and Zed, and **will not ship a VS Code extension** (ADR-0036 §1–2); another client can be configured to launch the command |
 
 ## The language today
 
@@ -142,8 +142,8 @@ missing feature.
 | salsa incremental database | **Works** | Built *and* optimized MIR staged (ADR-0021 §1); invalidation is at file grain |
 | Differential harness | **Works** | Compares stdout, stderr and exit status of the engines as subprocesses; each corpus program against **itself** at both optimisation levels (ADR-0142 §3), and under gate 7, **three-way**: VM ≡ Cranelift ≡ LLVM (ADR-0143 §8) |
 | LLVM back end | **Works** | `jr build --backend llvm` (ADR-0143), behind a default-off `llvm` cargo feature and gate 7. MIR → LLVM IR directly: block parameters become `phi`s, every offset is a byte GEP, and overflow/shift/division/float→int all go through checks or saturating intrinsics. No LLVM optimisation passes |
-| Language server | **Works** | `jr lsp`, twelve capabilities: diagnostics, hover, goto-definition, completion + resolve, references, documentHighlight, rename (workspace-wide, refuses rather than half-renaming), documentSymbol, workspaceSymbol, code actions, `signatureHelp`, inlay hints. No semantic tokens |
-| Neovim integration | **Works** | `editors/nvim/` (ADR-0025), verified against the real editor by a **166**-check script (170 with semantic tokens) — **not** by CI, which has no Neovim |
+| Language server | **Works** | `jr lsp`: compiler diagnostics; hover and definition including type positions; completion + resolve and auto-import; references and document highlights; document/workspace symbols; prepare-rename + workspace rename; code actions; signature help; inlay hints; full-document semantic tokens; whole-document formatting. Correctness and depth gaps remain—see ADR-0211 rather than reading this inventory as “finished” |
+| Neovim integration | **Works** | `editors/nvim/` (ADR-0025), verified against the real editor by `editors/nvim/verify.lua` — **not** by CI, which has no Neovim |
 | Zed integration | **Works** | `editors/zed/` (ADR-0199), verified by a **19**-check script that replicates Zed's own grammar build. The one manual step is `install dev extension`. ADR-0036 §3 had declined a second editor; that is reversed |
 | VS Code integration | **Will not be built** | ADR-0036 §1–2: the maintainer does not use it, and a packaging target for an unused editor rots. `jr lsp` is editor-agnostic, so any LSP client works |
 | Compilation driver / workspaces | **Partly** | `jr-driver` is still a one-line stub; the workspace *file list* exists in `jr-db::workspace` (ADR-0029): the search paths plus the root tree, walked and watched, bounded at 10 000 files |
@@ -282,13 +282,13 @@ missing feature.
   never feeds a field read.
 - **Neovim integration is verified on one machine, not gated.** The editor checks need an
   editor, and Neovim is not a build dependency of this workspace, so `cargo test` cannot run
-  them. No other editor is packaged for, deliberately (ADR-0036).
+  them. Zed is packaged separately, with a mechanical verifier and a manual install step.
 - **The tree-sitter parser must be rebuilt after a grammar change**, and highlighting fails
   *silently* if you forget — `ftplugin` starts tree-sitter under `pcall`.
 - **Hover on an `#import` shows which file it resolved to**, because `#import "Basic"` does not
   say *which* `Basic` — the module search-path order decides.
-- **Hover does not work on a type annotation.** `jr_hir::TypeRef::Name` carries a symbol and no
-  span, so there is no position to match a cursor against.
+- **Hover and definition on a type annotation read the CST.** `jr_hir::TypeRef::Name` still
+  carries no span; ADR-0200 deliberately avoided threading one through the HIR.
 - **Completion's idea of scope is "declared earlier in this body"**, not block scope. It
   over-offers and never under-offers.
 - **A rename can refuse, and it will.** On a name collision, a syntax error in any file it

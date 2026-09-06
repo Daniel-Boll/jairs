@@ -1,4 +1,4 @@
-//! The three capabilities, tested without a transport.
+//! LSP handlers tested as pure functions without a transport.
 //!
 //! [ADR-0024](../../../docs/adr/0024-language-server.md) §4 keeps every handler a pure
 //! function of `(&db, params)` so that these tests exist at all. `tests/stdio.rs` is the

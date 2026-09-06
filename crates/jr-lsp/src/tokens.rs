@@ -1,4 +1,4 @@
-//! Semantic tokens: the last LSP capability, and the one the grammar cannot give an editor.
+//! Semantic tokens: classification the grammar cannot give an editor.
 //!
 //! # Why this exists when `tree-sitter` highlighting already does
 //!
@@ -7,18 +7,17 @@
 //! cannot do is tell one identifier from another. `Point` and `count` are both `IDENT` to a grammar, and so
 //! are a parameter, a local, a field, a procedure and an imported module.
 //!
-//! A semantic-token response answers exactly that, and it is the only LSP capability whose whole value is
-//! information the parser does not have. That is why it is the last one: everything else the server offers
-//! (hover, definition, references, rename, completion, code actions, signature help, inlay hints) is a
-//! *lookup*, and this is a **classification of every token in the file**.
+//! A semantic-token response answers exactly that. Unlike lookup-oriented features such as hover,
+//! definition, references or completion, this is a **classification of every token in the file**.
 //!
 //! # Why this crate gained a dependency on `jr-syntax`
 //!
-//! Every other provider here works from the **HIR** and its spans, which is why `jr-lsp` had no syntax
-//! dependency for thirteen capabilities. This one cannot: a token classifier's whole job is to say what each
-//! token *is*, including the ones the HIR never sees — punctuation, keywords, comments, and the name of a
-//! declaration that failed to lower. The CST is the only artefact that has all of them, in order, with their
-//! offsets. Recorded because a new dependency on a crate this one deliberately avoided deserves a reason.
+//! The lookup-oriented providers work from the **HIR** and its spans, which is why `jr-lsp` originally had
+//! no syntax dependency. This provider cannot: a token classifier's whole job is to say what each token
+//! *is*, including the ones the HIR never sees — punctuation, keywords, comments, and the name of a
+//! declaration that failed to lower. The CST is the only artefact that has all of them, in order, with
+//! their offsets. Recorded because a new dependency on a crate this one deliberately avoided deserves a
+//! reason.
 //!
 //! # Why the CST leads and resolution follows
 //!
@@ -36,9 +35,10 @@
 //!
 //! # Why the token type list is short
 //!
-//! Eleven types and two modifiers, against the protocol's twenty-two and ten. A type earns its place by
-//! being **distinguishable by this compiler** and **useful to a reader**; anything else is a legend entry
-//! that never appears, which costs a client a lookup table for nothing.
+//! The legend is intentionally narrower than the protocol's vocabulary. A type earns its place by being
+//! **distinguishable by this compiler** and **useful to a reader**; anything else is a legend entry that
+//! never appears, which costs a client a lookup table for nothing. [`TOKEN_TYPES`] and
+//! [`TOKEN_MODIFIERS`] are the authoritative inventory.
 //!
 //! Notably absent: `class` and `interface` (this language has neither), `event` and `regexp` (likewise),
 //! `typeParameter` — which *is* distinguishable, and is reported as `type` because a reader wants `$T` to look
