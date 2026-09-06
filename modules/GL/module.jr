@@ -35,12 +35,26 @@
 //!
 //! # What is bound, and what is not
 //!
-//! **OpenGL 1.1 only.** Every entry point below is in the 1.1 core, which means it is exported by the
-//! library itself on all three targets and needs no loader. Anything later — shaders, VBOs, framebuffers —
-//! is reached on Windows through `wglGetProcAddress` rather than by linking, so a `#foreign` declaration of
-//! `glCreateShader` links on macOS and Linux and fails on Windows. That is a **loader**, it is its own
-//! wave, and `SDL_GL_GetProcAddress` is the portable way to write it — which keeps SDL2 as the platform
-//! layer exactly as Jai's `Simp` keeps `Window_Creation`.
+//! **GL 1.1 plus what a shader-based renderer needs.** This section used to read "OpenGL 1.1 only. Every
+//! entry point below is in the 1.1 core", and it was left behind by the wave beneath it: the "Shaders,
+//! buffers and drawing" section further down binds **twenty post-1.1 symbols** — GL 2.0's shader and
+//! program and vertex-attribute calls, GL 1.5's buffers, and GL 1.3's `glActiveTexture`. Sixteen 1.1 core
+//! entry points, one from 1.3, three from 1.5 and sixteen from 2.0.
+//!
+//! **The Windows caveat survives, scoped to the symbols it is about.** A post-1.1 entry point is reached on
+//! Windows through `wglGetProcAddress` rather than by linking, so those twenty `#foreign` declarations link
+//! on macOS and Linux and are unverified on Windows — which is the same "unverified" this module records for
+//! `-lopengl32` itself. That loader is its own wave, and `SDL_GL_GetProcAddress` is the portable way to
+//! write it, which keeps SDL2 as Jairs' platform and context-loading layer.
+//!
+//! **Nothing can be released except a texture.** `glDeleteTextures` is the only deletion bound, so a
+//! shader, a program or a buffer created through this module cannot be freed through it. Nothing leaks
+//! today, because `Simp.destroy_render_target` deletes the GL context and a context owns its program and
+//! buffers — but a caller that creates a shader per frame has no way to stop growing.
+//!
+//! **A failed link cannot be explained.** `glGetShaderInfoLog` is bound and surfaced as `shader_log`;
+//! `glGetProgramInfoLog` is not bound at all, so `program_linked` reports *that* a link failed and nothing
+//! reports *why*.
 //!
 //! **No context creation.** A GL call needs a current context, and creating one is per-OS window-system
 //! work (`CGL`, `GLX`, `WGL`) or one SDL2 call. `Window`/`Simp` own the window, so context creation belongs
@@ -377,7 +391,7 @@ set_unpack_alignment :: (bytes: s64) {
 
 /// Uploads RGBA pixels into the bound 2D texture and sets linear filtering.
 ///
-/// Linear rather than nearest, matching Jai's `Simp` default for a loaded image. `pixels` is
+/// Linear rather than nearest, matching the inspected `Simp` default for a loaded image. `pixels` is
 /// `width * height * 4` bytes, tightly packed.
 upload_texture_rgba :: (width: s64, height: s64, pixels: *u8) {
     // **The `cast(s32, RGBA)` is real and stays.** `internalformat` is a `GLint` while `format` is a

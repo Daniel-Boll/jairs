@@ -23,10 +23,17 @@ cargo run -q -p jr-cli -- run examples/<name>.jr -I modules
 | [`10-build-script.jr`](10-build-script.jr) | A **build script**: `jr build examples/10-build-script.jr -I modules` runs it, and it compiles another program. Shells out for a git hash, reads `-- release`, chooses per OS. |
 | [`11-run-build-script.jr`](11-run-build-script.jr) | The same, as a **`#run`** with no `main` — the shape a Jai `build.jai` has. Prints and allocates at compile time; declares its target with `request_build`, because compiling from inside a query is not possible. |
 
-A drawing program (`Simp`, `Window`, `Input`) needs SDL2 and cannot run under `jr run` —
-the compile-time VM reaches libc and nothing else. None is included here; see
-[`docs/capabilities.md`](../docs/capabilities.md) for what the graphics modules can do
-and how to `jr build` against them.
+## Games
+
+[`games/`](games) holds three complete programs — Pong, Snake, and a sprite-and-widget demo — with
+their own README and their own build script. Two of them split the game's rules into a module that
+imports no graphics module, so `jr run` plays a whole match with no display attached; the drawing
+halves need SDL2 and a `jr build`.
+
+A drawing program cannot run under `jr run` at all: the compile-time VM resolves a foreign symbol
+from the compiler's own process image, so it reaches libc and nothing else. See
+[`games/README.md`](games/README.md) for what a machine needs, and
+[Book IV of the documentation site](../docs-site/src/content/docs/games/) for the chapters.
 
 For the language itself, see [`../README.md`](../README.md) and
 [`../docs/spec/`](../docs/spec/).

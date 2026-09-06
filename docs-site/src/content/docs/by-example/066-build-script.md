@@ -60,7 +60,10 @@ constant still defaults to its own file stem — are pinned by separate driver i
 
 ## What this is not
 
-This is **not** a build *system*. There is no dependency graph, no incremental rule, and no way to build
-several artefacts. One build decision — the name of the output — has moved inside the language. The
-honest claim is that a build script *can* replace one makefile responsibility, not that it replaces the
+This constant is **not** a build *system* on its own. There is no dependency graph and no incremental
+rule here, and `BUILD_OUTPUT` alone cannot build several artefacts. A full [build
+script](/by-example/120-build-scripts/) — a program that imports `modules/Compiler` and calls
+`create_target`/`add_file`/`build` — *can* produce several artefacts from one file; this page's
+narrower feature is one build decision, the name of the output, moved inside the language. The honest
+claim is that this constant *can* replace one makefile responsibility, not that it replaces the
 makefile in general.

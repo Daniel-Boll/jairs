@@ -12,7 +12,7 @@ through by hand. This chapter explains that machinery.
 
 ## The context
 
-Every ordinary Jairs procedure receives a hidden trailing parameter, the **context**, passed
+Every ordinary Jairs procedure receives a hidden **leading** parameter, the **context**, passed
 by pointer. You never write it, but you can read and write it:
 
 ```jr
@@ -114,7 +114,7 @@ system](/language/the-type-system/#typed-allocation)):
 
 ```jr
 data := typed(s64, malloc(n * size_of(s64)));
-data[0] = 1;                    // ordinary *s64 use
+// … use data as an ordinary *s64 …
 free(untyped(data));
 ```
 

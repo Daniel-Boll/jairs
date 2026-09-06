@@ -1,0 +1,150 @@
+// Builds every game in this directory, from one build script written in Jairs.
+//
+// Verified: from the repository root,
+//
+//     cargo run -q -p jr-cli -- build examples/games/build.jr -I modules
+//
+// declares five targets and builds them into `build/`. Pass `-- release` for `-O1` with no bounds
+// checks.
+//
+// # Why a build script rather than a shell loop
+//
+// Each game has its own `modules/` directory, so each needs a different `-I` list, and the three
+// drawing programs additionally need a `-L` for SDL2. That per-target argument list is exactly what a
+// makefile exists to hold, and here it is ordinary Jairs code (ADR-0195).
+//
+// # Why this is a program rather than a file-scope `#run`
+//
+// `Compiler.read_file`, `Compiler.write_file`, `Compiler.command` and `Compiler.request_build` are all
+// available to compile-time code through the driver. This script uses `main` because it wants ordinary
+// command-line arguments and immediate success flags from five `Compiler.build` calls. Importing
+// `modules/Compiler` makes detection automatic; `--script` still exists as an override for a script whose
+// import is hidden behind one of its own helper modules.
+
+#import "Basic";
+Compiler :: #import "Compiler";
+String :: #import "String";
+
+// Where SDL2 lives on this machine. A property of the *machine*, which is why `jr build` takes `-L`
+// and a `#system_library` declaration cannot say it (ADR-0163 §2): a source file naming
+// `/opt/homebrew/lib` is unbuildable anywhere else. Homebrew on arm64 macOS; a Debian box wants
+// `/usr/lib/x86_64-linux-gnu`, an Intel Mac `/usr/local/lib`.
+SDL2_DIRECTORY :: "/opt/homebrew/lib";
+
+libc_alloc :: (n: s64) -> *u8 {
+    return malloc(n);
+}
+
+libc_free :: (p: *u8) {
+    free(p);
+}
+
+main :: () {
+    // `Compiler.arguments()` allocates, so a script that reads its command line installs an allocator
+    // first.
+    context.allocator = libc_alloc;
+    context.allocator_free = libc_free;
+
+    args := Compiler.arguments();
+    is_release := args.count > 0 && String.equal(args[0], "release");
+
+    level: s64 = 0;
+    if is_release {
+        level = 1;
+    }
+
+    // A literal must be named before it is viewed: there is no implicit array-to-view conversion. Each
+    // target gets its own pair of arrays because `module_paths` is a `[]string` — a view — and two
+    // targets sharing one would share whatever it last pointed at.
+    library_paths := string.[SDL2_DIRECTORY];
+
+    // The two headless simulations first. Neither imports a graphics module, so neither needs SDL2 —
+    // and both also run under `jr run`, which is the whole point of keeping a game's rules in a module
+    // that imports only `Math` or `Random`.
+    pong_modules := string.["modules", "examples/games/pong/modules"];
+    snake_modules := string.["modules", "examples/games/snake/modules"];
+    plain_modules := string.["modules"];
+
+    empty: []string;
+    ok := true;
+
+    ok = ok && target(
+        "examples/games/pong/sim.jr",
+        "pong-sim",
+        pong_modules[],
+        empty,
+        level,
+        is_release,
+    );
+    ok = ok && target(
+        "examples/games/snake/sim.jr",
+        "snake-sim",
+        snake_modules[],
+        empty,
+        level,
+        is_release,
+    );
+
+    // The three drawing programs, each linking SDL2.
+    ok = ok && target(
+        "examples/games/pong/main.jr",
+        "pong",
+        pong_modules[],
+        library_paths[],
+        level,
+        is_release,
+    );
+    ok = ok && target(
+        "examples/games/snake/main.jr",
+        "snake",
+        snake_modules[],
+        library_paths[],
+        level,
+        is_release,
+    );
+    ok = ok && target(
+        "examples/games/sprites/main.jr",
+        "sprites",
+        plain_modules[],
+        library_paths[],
+        level,
+        is_release,
+    );
+
+    if !ok {
+        Compiler.report("at least one target did not build");
+        exit(1);
+    }
+    exit(0);
+}
+
+// Declares and builds one target, and reports whether it worked.
+//
+// `Compiler.build` is `#must`: a script that ignores it prints nothing and produces nothing, which is
+// the failure mode the marker exists to stop (ADR-0151).
+target :: (
+    source: string,
+    name: string,
+    module_paths: []string,
+    library_paths: []string,
+    level: s64,
+    is_release: bool,
+) -> bool {
+    t := Compiler.create_target(name);
+    o := Compiler.options(t);
+    o.output = name;
+    o.output_path = "build";
+    o.opt_level = level;
+    o.bounds_checks = !is_release;
+    o.module_paths = module_paths;
+    o.library_paths = library_paths;
+    Compiler.set_options(t, o);
+    Compiler.add_file(t, source);
+
+    if !Compiler.build(t) {
+        Compiler.report("a target did not build");
+        return false;
+    }
+    print("built build/%\n", name);
+    return true;
+}

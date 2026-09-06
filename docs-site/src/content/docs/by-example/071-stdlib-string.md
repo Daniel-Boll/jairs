@@ -113,7 +113,8 @@ sentinel is outside the domain of valid indices so it cannot be mistaken for one
 
 ## The allocating API
 
-Each of these produces a **new** string and the **caller frees** it with `free_string`:
+Each of these produces a **new** string and the **caller frees** it with `free_string` — except the last
+pair, which mutate in place and allocate nothing at all:
 
 ```jr
 /// Two strings joined into a new one, allocated through context.allocator.
@@ -123,14 +124,27 @@ concat :: (a: string, b: string) -> string
 substring :: (s: string, start: s64, count: s64) -> string
 
 /// A copy of `s` with ASCII lowercase letters raised to uppercase; other bytes unchanged.
-to_upper :: (s: string) -> string
+to_upper_copy :: (s: string) -> string
 
 /// A copy of `s` with ASCII uppercase letters lowered; other bytes unchanged.
-to_lower :: (s: string) -> string
+to_lower_copy :: (s: string) -> string
+
+/// The in-place twin of to_upper_copy — no allocation, mutates s byte by byte.
+to_upper_in_place :: (s: string)
+
+/// The in-place twin of to_lower_copy.
+to_lower_in_place :: (s: string)
 
 /// Releases a string this module allocated. Safe on a "" result.
 free_string :: (s: string)
 ```
+
+`to_upper_copy`/`to_lower_copy` are not called `to_upper`/`to_lower`: `Basic` already has a `to_upper`
+and a `to_lower`, the byte classifiers a lexer wants (`to_upper :: (c: u8) -> u8`), and `#import` is flat
+(ADR-0166 §7), so a file importing both modules unqualified got `E0211` on every use (ADR-0197 §7). Both
+collisions resolved into **Jai's own naming** rather than a compromise invented to dodge the error:
+`to_upper_copy` is what Jai calls exactly this procedure, and the suffix earns its keep independently — it
+says at the call site that the routine allocates, which `to_upper_in_place` beside it does not.
 
 The memory comes from `context.allocator`, and the convention is caller-frees. That was a deliberate
 choice: not temporary storage (a result that silently expires on an unrelated
@@ -183,20 +197,33 @@ main :: () {
     }
     free_string(mid);
 
+    // A copy, since to_upper_in_place mutates in place and a literal's bytes are read-only —
+    // mutating "ell" itself would trap.
+    owned := substring("hello", 1, 3);
+    to_upper_in_place(owned);
+    if equal(owned, "ELL") {
+        n = n + 8;
+    }
+    to_lower_in_place(owned);
+    if equal(owned, "ell") {
+        n = n + 16;
+    }
+    free_string(owned);
+
     // Clamped past the end: "up to 99 bytes from index 2" is "llo".
     clamped := substring("hello", 2, 99);
     if equal(clamped, "llo") && clamped.count == 3 {
-        n = n + 16;
+        n = n + 32;
     }
     free_string(clamped);
 
-    u := to_upper("aB3z");   // "AB3Z" — the digit is left alone
+    u := to_upper_copy("aB3z");   // "AB3Z" — the digit is left alone
     if equal(u, "AB3Z") {
         n = n + 64;
     }
     free_string(u);
 
-    l := to_lower("aB3z");   // "ab3z"
+    l := to_lower_copy("aB3z");   // "ab3z"
     if equal(l, "ab3z") {
         n = n + 128;
     }
@@ -210,7 +237,163 @@ The allocation wrappers exist because a `#foreign` procedure cannot fill a proce
 directly, so `libc_alloc`/`libc_free` wrap `malloc`/`free`. `substring` **clamps** an out-of-range
 request rather than trapping — asking for more than remains gives what remains — for the same reason
 `byte_at` returns `-1`. Every result is freed, so under the differential harness a leak, a double-free,
-or a wrong copy is a different exit status in one engine.
+or a wrong copy is a different exit status in one engine. The exit code is **255**.
 
-Deliberately **absent**: `split`, and anything else that would need a second allocation decision beyond
-what `concat`/`substring`/`to_upper`/`to_lower` already settled.
+## The C string boundary
+
+A Jairs `string` is counted, and a C string is NUL-terminated — the two conventions do not coerce into
+each other, and the boundary is real enough that it has caught two independent bugs while this library
+was written (recorded in AGENTS.md and ADR-0198). **A string literal's bytes are not followed by a NUL.**
+Passing `"PATH".data` straight to a C function like `getenv` reads whatever byte the linker happened to
+place next — no diagnostic, no trap, just a wrong answer, and one both engines agree on, since both are
+reading past the same string. That is worth knowing on its own: it means the differential harness that
+catches every other divergence in this project cannot catch this one.
+
+```jr
+/// Length of a NUL-terminated C string.
+c_style_strlen :: (str: *u8) -> s64
+
+/// Borrows a C string as a string.
+to_string :: (str: *u8) -> string
+
+/// NUL-terminated copy for C; caller frees.
+to_c_string :: (s: string) -> *u8
+```
+
+`to_c_string` and `to_string` are the whole FFI boundary, and they are not symmetric. `to_c_string`
+**allocates and terminates** — it copies `s`'s bytes and appends the NUL a C function will scan for. It
+returns a raw `*u8`, not a `string`, so the caller releases it through `context.allocator_free` (or
+`free`, when the allocator is `malloc`'s) rather than `free_string` — the same obligation `concat` and
+`substring` carry, spelled differently because the result is a C string rather than a Jairs one.
+`to_string` goes the other way and **cannot** allocate: it just `borrow`s the C string's bytes back as a
+counted `string`, because there is nowhere to put a NUL that is not someone else's byte, and a
+*borrowed* string has no NUL to put anywhere.
+
+```jr
+#import "Basic";
+#import "String";
+
+libc_alloc :: (n: s64) -> *u8 {
+    return malloc(n);
+}
+
+libc_free :: (p: *u8) {
+    free(p);
+}
+
+main :: () {
+    context.allocator = libc_alloc;
+    context.allocator_free = libc_free;
+
+    n := 0;
+
+    // to_c_string allocates one byte more than the string and writes the NUL itself.
+    terminated := to_c_string("hi");
+    if c_style_strlen(terminated) == 2 {
+        n = n + 1;
+    }
+
+    // to_string is the mirror: it borrows a C string's bytes back as a counted string, stopping
+    // at whatever NUL it finds rather than at any particular buffer size.
+    borrowed := to_string(terminated);
+    if borrowed.count == 2 && equal(borrowed, "hi") {
+        n = n + 2;
+    }
+    free(terminated);
+
+    // The boundary, built by hand: a buffer with a NUL in the middle and a live byte after it.
+    // c_style_strlen stops at the NUL and never reads the trailing byte — which is exactly what
+    // makes ".data" on a Jairs literal dangerous: a literal's bytes have no NUL to stop at, so a
+    // C function that scans for one reads on into whatever the linker placed next.
+    buf := context.allocator(4);
+    bytes := view(buf, 4);
+    bytes[0] = cast(u8, 97);
+    bytes[1] = cast(u8, 98);
+    bytes[2] = cast(u8, 0);
+    bytes[3] = cast(u8, 99);
+    if c_style_strlen(buf) == 2 {
+        n = n + 4;
+    }
+    context.allocator_free(buf);
+
+    exit(n);
+}
+```
+
+The exit code is **7**. `adopt` and `borrow` are the two names over the same construction that `to_string`
+and every non-allocating slice routine builds on — `adopt` for a caller that owns the bytes it is handing
+over, `borrow` for one that does not — and neither can manufacture a NUL any more than `to_string` can,
+for the identical reason.
+
+## Splitting, joining, trimming, and the rest
+
+The library's algorithm surface grew well past the six routines above (ADR-0197 §7, ADR-0198 §1) —
+`split` and `join` both exist, and are each other's inverse:
+
+```jr
+/// Every piece of `s` between occurrences of `separator`.
+split :: (s: string, separator: string) -> []string
+
+/// `pieces` concatenated with `separator` between them.
+join :: (pieces: []string, separator: string) -> string
+
+/// `s` with leading and trailing whitespace removed. Borrows `s`.
+trim :: (s: string) -> string
+```
+
+```jr
+#import "Basic";
+#import "String";
+
+libc_alloc :: (n: s64) -> *u8 {
+    return malloc(n);
+}
+
+libc_free :: (p: *u8) {
+    free(p);
+}
+
+main :: () {
+    context.allocator = libc_alloc;
+    context.allocator_free = libc_free;
+
+    n := 0;
+
+    // split's pieces borrow the original string; join is its inverse for the same separator.
+    pieces := split("a,b,c", ",");
+    if pieces.count == 3 && equal(pieces[0], "a") && equal(pieces[1], "b") && equal(pieces[2], "c") {
+        n = n + 1;
+    }
+    back := join(pieces, ",");
+    if equal(back, "a,b,c") {
+        n = n + 2;
+    }
+    free_string(back);
+
+    // trim removes whitespace from both ends without allocating — it borrows.
+    trimmed := trim("  hi  ");
+    if equal(trimmed, "hi") {
+        n = n + 4;
+    }
+
+    exit(n);
+}
+```
+
+The exit code is **7**. `trim` sits beside `trim_left`, `trim_right`, and the `_chars` family
+(`trim_chars`, `trim_left_chars`, `trim_right_chars`) that all three borrow, so a caller trimming a
+specific set of bytes rather than whitespace has the same shape available. `find_nocase` and
+`contains_nocase` close the case-insensitive search pair that `equal_nocase`/`compare_nocase` started.
+`string_to_float` is `to_integer`'s sibling, reading a leading float and the remainder the same way.
+`wildcard_match` does glob matching with `*` and `?` (no escape, matching Jai) — what a build script uses
+to select files.
+
+**Path operations still do not live in `String`, and that hasn't changed**: `path_filename`,
+`path_extension`, `path_join` and the rest live in `modules/File_Utilities` instead (as `base_name`,
+`extension`, `path_join`, `directory_name`, `stem`, `is_absolute`, `normalise`), because a path is a
+filesystem concept and adding a second set of path routines here would give a reader two answers to one
+question. `File_Utilities.join` was itself renamed to `path_join` in the same wave that renamed
+`to_upper`, and for the identical reason: `String` gained its own `join` (the one above), and the flat
+import collided.
+
+See also [Book I — The Jairs Language](/language/introduction/).

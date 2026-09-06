@@ -48,14 +48,14 @@ max_width = 100                # breaks a long argument or parameter list. Comme
 
 ## Status, honestly
 
-**Pre-alpha.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0209.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
 compile-time reflection, `#insert`/`#code` metaprogramming, an
 atomics-and-threads memory model, DWARF debug info in both native back ends,
-file-scope mutable state, a 2D graphics stack that draws through OpenGL
-with the same API as Jai's `Simp`, and **build scripts written in the language
+file-scope mutable state, a **Simp-shaped 2D graphics subset** that draws through
+OpenGL, and **build scripts written in the language
 itself**. It **installs with one command** and carries its own standard
 library, so `cargo install` is the whole procedure and `#import "Basic"` needs
 no search path. Every one of those claims has a capability
@@ -84,10 +84,11 @@ main :: () {
 ```
 
 The design came from reading 23 real `build.jai` files, because Jai's own compiler module is unpublished
-— and copying Jai's shape would not have worked. Jai puts the script in a `#run`; a Jairs `#run` can call
-no `#foreign` procedure, so it cannot read a file, shell out, or even allocate. It also turned out that
-Jai's build power is the *standard library* rather than the compiler API, so the script runs as an
-ordinary program. See [ADR-0195](docs/adr/0195-build-script.md) and
+— and copying Jai's shape would not have worked. Jairs now supports two honest forms: a driver-run
+`main` script can execute commands and compile targets immediately, while a Jai-shaped top-level
+`#run` can allocate, read and write files, run commands and record build requests, but cannot start a
+compilation from inside the compiler query that is evaluating it. See
+[ADR-0195](docs/adr/0195-build-script.md), ADR-0196 through ADR-0198, and
 [`examples/10-build-script.jr`](examples/10-build-script.jr).
 
 The language gained five utilities it had owed for several waves: typed constants
@@ -109,17 +110,23 @@ guards that hid the standard library's own types from itself, and an assumption
 that the inliner could not move a global reference across files, made by the
 same decision that guaranteed it could.
 
-The graphics API was not designed here either. Its signatures came from copies
-of Jai's own module source that two open-source projects carry verbatim, read
-and compared against each other rather than taken from documentation. Eight were
-wrong, and two of those were not cosmetic: the coordinate origin was upside
-down, and every call took a state argument the original does not have.
+The graphics API was not designed here either. It follows the no-state,
+immediate-mode shape observed in public vendored copies of Jai's `Simp`, but
+those copies disagree on render targets, batching and text. Jairs therefore
+claims a **Simp-shaped subset**, not one canonical closed-beta signature set.
+The first comparison still found eight local mismatches, two non-cosmetic: the
+coordinate origin was upside down, and every call took a state argument the
+observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1216** workspace tests (1222 under gate 7), all seven gates green.
-- **282** `.jr` corpus files, **206** accepted ADRs, **24** standard library
+- **1226** workspace tests (1235 under gate 7), all seven gates green.
+- **283** `.jr` corpus files, **209** accepted ADRs, **24** standard library
   modules.
+- **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
+  and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative
+  `scripts/check full` still runs ordinary Cargo with doctests; sharding its two exhaustive sweeps
+  reduced the measured warm gate from 222.59 to 122.54 seconds (ADR-0209).
 - **Both platforms are verified green.** macOS arm64 locally, gate by gate, and
   **x86-64 Linux in CI** — all seven jobs passing, which had never happened
   before. Getting there took eight fixes read out of eight consecutive CI runs
@@ -129,6 +136,21 @@ level of a file, which the compiler could parse and could not compile.
   homogeneous-aggregate rule and System V has no such rule at all. The eighth was
   a MIR snapshot that had been wrong on x86-64 since `os()` became a compile-time
   value, because only macOS ever generated it.
+- **Three games, built and run.** [`examples/games/`](examples/games/) holds Pong,
+  Snake, and a sprite-and-widget demo, built by a Jairs build script
+  ([`examples/games/build.jr`](examples/games/build.jr)) and runnable under a frame
+  budget so a checker can drive them. Two of them keep their **rules** in a module
+  that imports no graphics module, so `jr run` plays a whole match with no display
+  attached — which is the one structural lesson worth copying, because a drawing
+  program cannot run in the comptime VM at all. All three build, link and run, and
+  no queued GL error was observed during their checked frames. That does not prove
+  shader results or pixels; nobody has compared the pixels to a reference image.
+- **The documentation site has a fourth book.**
+  [`docs-site/`](docs-site/) gained *Games with Jairs*: an outcome-first path from
+  a headless simulation to a window, drawing, timing, textures, UI and the three
+  examples, followed by a maintained inventory of what a game **cannot** do yet.
+  The other three books were roughly sixty ADRs stale and have been reconciled
+  against the code.
 
 Read **[`docs/capabilities.md`](docs/capabilities.md)** for the full,
 table-by-table inventory of what works, what is absent, and the sharp edges
@@ -177,14 +199,18 @@ pipeline diagram and the full crate-by-crate breakdown.
 
 ```sh
 # Requires Rust stable (pinned via rust-toolchain.toml).
-cargo test --workspace
+scripts/check fast        # broad inner-loop feedback
+scripts/check pre-commit  # all but the two exhaustive corpus-wide sweeps
+scripts/check full        # authoritative cargo test --workspace
 
 # Check formatting and lints before pushing:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-That is two of the project's seven gates. `AGENTS.md`'s "The six gates"
+The first two lanes require `cargo-nextest`; `scripts/check full` does not.
+Fast lanes are feedback, not release evidence: wave completion still requires
+the unchanged `cargo test --workspace` gate. `AGENTS.md`'s "The six gates"
 section has the rest — the corpus format check, the tree-sitter drift check,
 and the LLVM-gated seventh gate — plus the process traps that have bitten
 before: two gates run at once and race a shared binary.
@@ -202,7 +228,10 @@ before: two gates run at once and race a shared binary.
 - **[`docs/jai-parity.md`](docs/jai-parity.md)** — what real Jai code uses that
   this does not, syntax and libraries, each traced to a source and probed where
   a probe was possible.
-- **[`docs/adr/README.md`](docs/adr/README.md)** — all 194 accepted decision
+- **[`docs/jai-game-development-audit.md`](docs/jai-game-development-audit.md)** —
+  the primary-source games audit, language/library gaps, and the conditional
+  `Game` facade plan.
+- **[`docs/adr/README.md`](docs/adr/README.md)** — all 209 accepted decision
   records.
 - **[`docs/spec/`](docs/spec/)** — the language specification chapters.
 - **[`examples/`](examples/)** — runnable programs, each verified.

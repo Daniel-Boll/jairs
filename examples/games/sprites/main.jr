@@ -1,0 +1,310 @@
+// Textures and widgets: `modules/Image`, `modules/Simp`'s textured shader, and `modules/UI`'s buttons.
+//
+// Build and run (SDL2 must be installed):
+//
+//   cargo run -q -p jr-cli -- build examples/games/sprites/main.jr -o /tmp/sprites \
+//       -I modules -L /opt/homebrew/lib
+//   /tmp/sprites
+//
+// Click PAUSE to stop the sprite, RESET to send it back to the middle. Escape quits.
+// `SPRITES_FRAMES=300` stops after 300 frames, which is how this example is verified.
+//
+// # What this shows that the two games do not
+//
+// 1. A **texture**, built in memory rather than loaded from a file — `modules/Image` reads BMP and
+//    nothing else, and a repository that ships a `.bmp` to demonstrate a texture is shipping a binary
+//    blob nobody can read. `Image.create_surface` plus `Image.fill_surface` draws the sprite sheet in
+//    four rectangles, and `Image.texture_from` uploads it.
+// 2. A **sprite sheet**: one texture, four frames, selected by UV sub-rectangle at draw time. That is
+//    why `Simp.immediate_quad_corners` exists — the two-corner `immediate_quad` has fixed UVs of
+//    `(0,0)..(1,1)` and can only draw a whole texture.
+// 3. **`modules/UI`**, whose hit-testing is y-down, which forces `Simp.LEFT_HANDED` on the whole
+//    target. Mixing the two conventions in one render target is not possible, so a program that wants
+//    widgets makes its world y-down too — as this one does.
+
+Window :: #import "Window";
+Input :: #import "Input";
+Simp :: #import "Simp";
+GL :: #import "GL";
+Image :: #import "Image";
+Time :: #import "Time";
+String :: #import "String";
+// `UI` is imported **bare**, not aliased, because its type is called `UI` too: `#import "UI";` brings
+// `UI`, `button`, `begin_frame` and `feed` into this file's scope, and a local `ui: UI` is the state.
+#import "UI";
+#import "Basic";
+
+libc :: #system_library "c";
+exit_now :: (status: s64) #foreign libc "exit";
+getenv :: (name: *u8) -> *u8 #foreign libc "getenv";
+
+WIDTH :: 480;
+HEIGHT :: 320;
+
+// The sprite sheet: four frames side by side, each `FRAME` pixels square.
+FRAME :: 32;
+FRAMES :: 4;
+
+// How big the sprite is drawn, in pixels.
+SPRITE_SIZE :: 64.0;
+
+// Widget ids. Any non-zero `s64` will do — `UI.NONE` is 0 and means "no widget" — and two widgets
+// sharing an id is a bug `modules/UI` cannot detect, so they are named constants rather than literals
+// scattered through the draw code.
+ID_PAUSE :: 1;
+ID_RESET :: 2;
+
+// A packed pixel, in the byte order `Image`'s uploads use.
+//
+// `Image.GL_UPLOAD_FORMAT` is `SDL_PIXELFORMAT_ABGR8888`, **not** `RGBA8888`: on a little-endian host
+// that is the one whose bytes come out R, G, B, A, which is what OpenGL reads. Getting it the other way
+// round swaps red and blue in every texture, silently. So the packed word is `(a << 24) | (b << 16) |
+// (g << 8) | r`.
+rgba :: (r: s64, g: s64, b: s64, a: s64) -> s64 {
+    return (a * 16777216) + (b * 65536) + (g * 256) + r;
+}
+
+libc_alloc :: (n: s64) -> *u8 {
+    return malloc(n);
+}
+
+libc_free :: (p: *u8) {
+    free(p);
+}
+
+main :: () {
+    context.allocator = libc_alloc;
+    context.allocator_free = libc_free;
+
+    frame_budget := number_from_environment("SPRITES_FRAMES");
+
+    if !Window.start() {
+        exit_now(70);
+    }
+    window := Window.create_window(WIDTH, HEIGHT, "Jairs sprites");
+    if !Window.is_open(*window) {
+        Window.stop();
+        exit_now(71);
+    }
+
+    // `LEFT_HANDED` — origin top-left, y downwards — because `modules/UI` hit-tests in that convention
+    // and cannot convert: it has no access to the target's height. `Simp`'s own default is
+    // `RIGHT_HANDED`, so this argument is the whole cost of using the widget module.
+    Simp.set_render_target(*window, Simp.LEFT_HANDED);
+    if !Simp.is_ready() {
+        Window.close(*window);
+        Window.stop();
+        exit_now(72);
+    }
+
+    // The texture must be built *after* `set_render_target`, because uploading one needs a current GL
+    // context and that call is what creates it. `modules/Image` says so and cannot check it: a GL call
+    // with no context does not fail, it is undefined.
+    sheet, uploaded := build_sprite_sheet();
+    if !uploaded {
+        Simp.destroy_render_target();
+        Window.close(*window);
+        Window.stop();
+        exit_now(73);
+    }
+
+    ui: UI;
+    events: Input.Events;
+
+    x := cast(float64, WIDTH) / 2.0;
+    y := cast(float64, HEIGHT) / 2.0;
+    velocity_x := 120.0;
+    velocity_y := 95.0;
+    paused := false;
+
+    previous := Time.monotonic();
+    elapsed := 0.0;
+    frames := 0;
+    quit := false;
+
+    while !quit {
+        // `begin_frame` clears the per-frame edges — pressed, released, hot — and keeps `active`, so a
+        // button being held across frames stays held. Every widget call must come after it.
+        begin_frame(*ui);
+
+        _ = Input.update_window_events(*events, Input.MAX_EVENTS_PER_FRAME);
+        seen := Input.events_this_frame(*events);
+        i := 0;
+        while i < seen.count {
+            event := seen[i];
+            if Input.should_close(*event) {
+                quit = true;
+            }
+            if Input.pressed(*event, Input.KEY_ESCAPE) {
+                quit = true;
+            }
+            // One `feed` per event. `modules/UI` ignores every kind it does not use, so there is no
+            // filtering to do here.
+            feed(*ui, *event);
+            i = i + 1;
+        }
+
+        now := Time.monotonic();
+        dt := cast(float64, now - previous) / cast(float64, Time.NANOSECONDS_PER_SECOND);
+        previous = now;
+        if dt > 1.0 / 30.0 {
+            dt = 1.0 / 30.0;
+        }
+
+        if !paused {
+            elapsed = elapsed + dt;
+            x = x + velocity_x * dt;
+            y = y + velocity_y * dt;
+            half := SPRITE_SIZE / 2.0;
+            if x - half < 0.0 {
+                x = half;
+                velocity_x = -velocity_x;
+            }
+            if x + half > cast(float64, WIDTH) {
+                x = cast(float64, WIDTH) - half;
+                velocity_x = -velocity_x;
+            }
+            if y - half < 0.0 {
+                y = half;
+                velocity_y = -velocity_y;
+            }
+            if y + half > cast(float64, HEIGHT) {
+                y = cast(float64, HEIGHT) - half;
+                velocity_y = -velocity_y;
+            }
+        }
+
+        // --- draw ---------------------------------------------------------------------------
+        Simp.clear_render_target(0.10, 0.11, 0.15, 1.0);
+
+        // The sprite. `set_shader_for_images` binds the texture and enables blending; the batch it
+        // opens must be flushed before anything switches shader, which `set_shader_for_color` below
+        // does for us — it flushes first, precisely so a caller cannot mix two shaders in one batch.
+        frame := cast(s64, elapsed * 8.0) % FRAMES;
+        Simp.set_shader_for_images(*sheet);
+        Simp.immediate_begin();
+        draw_sprite(x, y, SPRITE_SIZE, frame);
+        Simp.immediate_flush();
+
+        // The widgets. `draw_button` draws *and* reports the click, and it owns its own colour batch, so
+        // the caller neither wraps it in another batch nor calls `button` beside it.
+        if draw_button(*ui, ID_PAUSE, 12, 12, 90, 28) {
+            paused = !paused;
+        }
+        if draw_button(*ui, ID_RESET, 112, 12, 90, 28) {
+            x = cast(float64, WIDTH) / 2.0;
+            y = cast(float64, HEIGHT) / 2.0;
+        }
+
+        Simp.swap_buffers(*window);
+
+        // A `Simp` call reports nothing, so a GL failure is silent unless somebody asks. OpenGL keeps
+        // its errors in a queue and one read reports and clears one, so this both checks and drains.
+        if GL.error_code() != GL.NO_ERROR {
+            print("a GL call failed while drawing\n");
+            Image.destroy_texture(*sheet);
+            Simp.destroy_render_target();
+            Window.close(*window);
+            Window.stop();
+            exit_now(74);
+        }
+
+        frames = frames + 1;
+        if frame_budget > 0 && frames >= frame_budget {
+            quit = true;
+        }
+    }
+
+    // Teardown in dependency order: the texture belongs to the GL context, the context belongs to the
+    // window, and SDL destroys a window's renderer with it.
+    Image.destroy_texture(*sheet);
+    Simp.destroy_render_target();
+    Window.close(*window);
+    Window.stop();
+
+    print("frames=% paused=%\n", frames, paused);
+}
+
+// Draws one frame of the sheet, centred on `(cx, cy)`.
+//
+// `immediate_quad_corners` rather than `immediate_quad`, because the UVs are the point: frame `index`
+// occupies the horizontal slice `[index/FRAMES, (index+1)/FRAMES]` of the texture. The corner order is
+// Jai's — `p0` first, then round the quad — and the four UVs match it corner for corner.
+draw_sprite :: (cx: float64, cy: float64, size: float64, index: s64) {
+    half := size / 2.0;
+    u0 := cast(float32, cast(float64, index) / cast(float64, FRAMES));
+    u1 := cast(float32, cast(float64, index + 1) / cast(float64, FRAMES));
+
+    p0 := Simp.vector2(cast(float32, cx - half), cast(float32, cy - half));
+    p1 := Simp.vector2(cast(float32, cx + half), cast(float32, cy - half));
+    p2 := Simp.vector2(cast(float32, cx + half), cast(float32, cy + half));
+    p3 := Simp.vector2(cast(float32, cx - half), cast(float32, cy + half));
+
+    // White, because the fragment shader multiplies the texture by the vertex colour: white shows the
+    // texture unchanged, and any other colour tints it. That is a free tint — a damage flash costs one
+    // argument rather than a second texture.
+    white := Simp.vector4(1.0, 1.0, 1.0, 1.0);
+
+    Simp.immediate_quad_corners(
+        p0,
+        p1,
+        p2,
+        p3,
+        white,
+        Simp.vector2(u0, 0.0),
+        Simp.vector2(u1, 0.0),
+        Simp.vector2(u1, 1.0),
+        Simp.vector2(u0, 1.0),
+    );
+}
+
+// Builds the sprite sheet in memory and uploads it: four frames, each a square with a smaller square
+// walking across it.
+//
+// The surface is freed as soon as the texture exists. A surface is CPU memory and a texture is GPU
+// memory; keeping the surface after the upload keeps a copy nothing reads.
+build_sprite_sheet :: () -> (Simp.Texture, bool) {
+    texture: Simp.Texture;
+
+    surface, made := Image.create_surface(FRAME * FRAMES, FRAME);
+    if !made {
+        return texture, false;
+    }
+
+    // Every frame's background, in one fill. `fill_surface` takes the rectangle by pointer, as SDL's own
+    // API does, which is why `modules/Window`'s `Rect` never has to cross a `#foreign` boundary by value.
+    whole := Window.rect(0, 0, FRAME * FRAMES, FRAME);
+    if !Image.fill_surface(*surface, *whole, rgba(30, 40, 70, 255)) {
+        Image.free_surface(*surface);
+        return texture, false;
+    }
+
+    i := 0;
+    while i < FRAMES {
+        // A block that walks left to right across the four frames, so the animation is visible even
+        // at one frame per glance.
+        step := (FRAME - 12) / (FRAMES - 1);
+        block := Window.rect(i * FRAME + 6 + i * step, 10, 12, 12);
+        if !Image.fill_surface(*surface, *block, rgba(250, 200, 90, 255)) {
+            Image.free_surface(*surface);
+            return texture, false;
+        }
+        i = i + 1;
+    }
+
+    texture, uploaded := Image.texture_from(*surface);
+    Image.free_surface(*surface);
+    return texture, uploaded;
+}
+
+number_from_environment :: (name: string) -> s64 {
+    value := getenv(String.to_c_string(name));
+    if value == null {
+        return 0;
+    }
+    number, ok, rest := String.to_integer(String.to_string(value));
+    if !ok {
+        return 0;
+    }
+    return number;
+}

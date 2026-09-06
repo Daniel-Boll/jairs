@@ -1,20 +1,30 @@
 ---
 title: Array & List
-description: A fixed-capacity inline array and a heap-backed growable list — two containers with genuinely different ownership contracts, plus views over a raw pointer.
+description: A fixed-capacity inline array and a heap-backed growable dynamic array — two containers with genuinely different ownership contracts, plus views over a raw pointer.
 sidebar:
   order: 73
 ---
 
-`Array` and `List` are the standard library's two sequence containers. They have genuinely **different
-ownership contracts**, which is why they are two modules rather than one: an `Array(s64)`'s storage is
-inline, so a caller can forget about it; a `List(s64)` owns heap memory and a caller **must** call
+`Array` and `List` are the standard library's two sequence containers, and they have genuinely
+**different ownership contracts**, which is why they are two modules rather than one: an `Array(s64)`'s
+storage is inline, so a caller can forget about it; `List` owns heap memory, and a caller **must** call
 `free_data`, because there are no destructors in Jairs.
 
-Both types are declared as parameterised structs (`struct($T)`), but the *operations* are provided only
-for the concrete `s64` instance — `push :: (a: *Array(s64), v: s64)` and so on. That is because
-**inference through a parameterised struct is deferred**: a generic `push :: (a: *Array($T), v: T)`
-cannot bring `T` into scope, so every routine names a concrete instance. Callers therefore write
-`Array(s64)` and `List(s64)`.
+`List` is not what it used to be. There is no `List($T)` struct any more: ADR-0136 gave `[..]T` — a
+**compiler-known** dynamic array, three words, `{data: *T, count: s64, capacity: s64}` — native syntax
+with all three fields as places, and ADR-0140 converted every `List` routine to operate on the native
+`*[..]s64` directly, deleting the hand-rolled struct entirely. A caller declares `xs: [..]s64;`
+(zero-initialised: `data` is `null`, `count` and `capacity` are `0`) and grows it through `List`'s
+procedures.
+
+Both `Array` and `List`'s routines are provided only for the concrete `s64` element type —
+`push :: (a: *Array(s64), v: s64)`, `push :: (a: *[..]s64, v: s64)` — and the reason is not that a
+parameterised struct is unusable across a module boundary: it is not (ADR-0117); `Array`'s own struct
+still declares `struct($T)`, and a `struct($T)` genuinely does cross a module boundary today. What stays
+concrete is the *procedures*: an **imported** polymorphic procedure is refused with `E0268`, so a generic
+`push :: (a: *Array($T), v: T)` or `push :: (a: *[..]$T, v: T)` would be uncallable by every importer.
+Callers therefore write `Array(s64)` for one and a plain `[..]s64` for the other, and both become
+`$T`-generic to their callers once cross-file instantiation lands.
 
 ## Array — fixed capacity, no cleanup
 
@@ -118,110 +128,90 @@ caller wanting another size declares their own struct with the same shape.
 
 ## List — heap-backed, genuinely growable
 
-`List` is what `Array` could not be: a growable array on the heap, doubling from a first capacity of 4.
+`List` is what `Array` could not be: a growable array on the heap, doubling from a first capacity of 4 —
+except the growable array itself is the language's own `[..]s64`, and `List` is the library code built
+directly on top of it rather than a wrapper type of its own.
 
 ```jr
-List :: struct($T) {
-    data: *T;      // null until the first push; typed via `typed`, since an allocator returns *u8
-    count: s64;
-    capacity: s64; // zero exactly when data is null
-}
+// A `[..]s64` is three places the compiler lays out for you: {data: *s64, count: s64, capacity: s64}.
+xs: [..]s64;   // zero-initialised: data is null, count and capacity are 0
 
 FIRST_CAPACITY :: 4;
 
-push :: (a: *List(s64), v: s64) -> bool            // false only on out-of-memory
-pop :: (a: *List(s64)) -> (s64, bool)
-get :: (a: *List(s64), index: s64) -> (s64, bool)
-set :: (a: *List(s64), index: s64, v: s64) -> bool
-clear :: (a: *List(s64))                            // forgets elements, keeps the allocation
-free_data :: (a: *List(s64))                        // releases storage — MUST be called
-is_empty :: (a: *List(s64)) -> bool
-elements :: (a: *List(s64)) -> []s64                // a view over the USED prefix
+push :: (a: *[..]s64, v: s64) -> bool   // false only on out-of-memory
+pop :: (a: *[..]s64) -> (s64, bool)
+get :: (a: *[..]s64, index: s64) -> (s64, bool)
+set :: (a: *[..]s64, index: s64, v: s64) -> bool
+clear :: (a: *[..]s64)                   // forgets elements, keeps the allocation
+free_data :: (a: *[..]s64)               // releases storage — MUST be called
+is_empty :: (a: *[..]s64) -> bool
+elements :: (a: *[..]s64) -> []s64       // a view over the USED prefix
 ```
+
+A `[..]s64` cannot be **indexed** directly — `xs[0]` is `E0234`, "only a fixed-size array `[N]T` and a
+view `[]T` can be indexed" — so `get`/`set` exist for single elements and `elements` hands the whole used
+prefix out as a `[]s64` for anything that wants to iterate it, sort it, or search it. `context.allocator`
+is required: `List` calls `malloc` and `free` through it (via `Basic`), and needing them is not the same
+as having them installed.
 
 ```jr
 #import "Basic";
 #import "List";
+#import "Sort";
 
 main :: () {
     n := 0;
 
-    l: List(s64);
-    l.data = null;
-    l.count = 0;
-    l.capacity = 0;
-
-    // A fresh list allocates nothing, so it is free to declare and safe to free.
-    if is_empty(*l) && l.capacity == 0 && l.data == null {
+    // A zero-initialised native dynamic array: no allocation, empty, safe to free.
+    xs: [..]s64;
+    if is_empty(*xs) && xs.count == 0 && xs.capacity == 0 && xs.data == null {
         n = n + 1;
     }
 
-    // Ten pushes through a 4-element first allocation: growth happens twice.
+    // Eight pushes through a 4-element first allocation: growth happens once, and the capacity ends
+    // above the first. Every element must survive the reallocation's copy.
     pushed := true;
     i := 0;
-    while i < 10 {
-        if !push(*l, i * 3) {
+    while i < 8 {
+        if !push(*xs, i * 2) {
             pushed = false;
         }
         i = i + 1;
     }
-    if pushed && l.count == 10 {
+    if pushed && xs.count == 8 && xs.capacity >= 8 && xs.capacity > FIRST_CAPACITY {
         n = n + 2;
     }
-    if l.capacity >= 10 && l.capacity > FIRST_CAPACITY {
-        n = n + 4;
-    }
 
-    // Every element survived both copies — what a broken copy loop would break.
+    // Every element readable after growth — what a broken copy loop would break.
     survived := true;
     j := 0;
-    while j < 10 {
-        v, ok := get(*l, j);
-        if !ok {
-            survived = false;
-        }
-        if v != j * 3 {
+    while j < 8 {
+        v, ok := get(*xs, j);
+        if !ok || v != j * 2 {
             survived = false;
         }
         j = j + 1;
     }
     if survived {
+        n = n + 4;
+    }
+
+    // `pop` shortens the list; `set` refuses an index past `count`.
+    last, last_ok := pop(*xs);
+    if last_ok && last == 14 && xs.count == 7 && set(*xs, 0, 99) && !set(*xs, 7, 1) {
         n = n + 8;
     }
 
-    // `pop` shortens the list and leaves the capacity alone.
-    before := l.capacity;
-    last, last_ok := pop(*l);
-    if last_ok && last == 27 && l.count == 9 && l.capacity == before {
+    // `[..]s64` cannot be indexed directly — `elements` hands its used prefix to Sort as a `[]s64`.
+    sort_ints(elements(*xs));
+    first, _ := get(*xs, 0);
+    top, _ := get(*xs, 6);
+    if first == 2 && top == 99 && ints_sorted(elements(*xs)) {
         n = n + 16;
     }
 
-    // The memory exists between count and capacity; the element does not.
-    _, past := get(*l, 9);
-    if !past && !set(*l, 9, 1) && set(*l, 0, 99) {
-        n = n + 32;
-    }
-    replaced, _ := get(*l, 0);
-    if replaced == 99 {
-        n = n + 64;
-    }
-
-    // `clear` keeps the buffer, `free_data` releases it — deliberately different routines.
-    kept := l.capacity;
-    clear(*l);
-    if is_empty(*l) && l.capacity == kept && push(*l, 1) {
-        free_data(*l);
-        // Safe twice, and safe on a list that never grew.
-        free_data(*l);
-        fresh: List(s64);
-        fresh.data = null;
-        fresh.count = 0;
-        fresh.capacity = 0;
-        free_data(*fresh);
-        if l.data == null && l.capacity == 0 {
-            n = n + 128;
-        }
-    }
+    // The caller owns the storage; nothing else frees it.
+    free_data(*xs);
 
     exit(n);
 }
@@ -233,7 +223,7 @@ not a *program* error and aborting would take away the caller's chance to recove
 `count` for a sharper reason than `Array`'s: the slots between `count` and `capacity` hold whatever the
 allocator returned — genuinely undefined, not merely zeroed. `clear` and `free_data` are deliberately
 different: reusing a buffer a caller has paid for is a real thing to want. `free_data` is safe twice and
-safe on a list that never grew. The exit code is **255**.
+safe on a list that never grew. The exit code is **31**.
 
 ### The divergence writing List caught
 
@@ -298,11 +288,8 @@ main :: () {
     }
     free(untyped(ps));
 
-    // The point of the feature: a growable list's contents, sorted in place by another module.
-    l: List(s64);
-    l.data = null;
-    l.count = 0;
-    l.capacity = 0;
+    // The point of the feature: a growable dynamic array's contents, sorted in place by another module.
+    l: [..]s64;
 
     // A zero-count view over an empty list is well-formed — nothing indexes it.
     if elements(*l).count == 0 {
@@ -336,3 +323,5 @@ allocation size is not tracked anywhere), so `view` is *visible and searchable* 
 view is **invalidated by anything that reallocates** — a `push` that grows moves the storage, and
 `free_data` frees it — which is the ordinary consequence of a window plus explicit memory, stated because
 nothing enforces it. The exit code is **63**.
+
+See also [Book I — The Jairs Language](/language/introduction/).

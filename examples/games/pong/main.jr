@@ -1,0 +1,326 @@
+// Pong, drawn: a window, a keyboard, and `modules/Simp`.
+//
+// Build and run (SDL2 must be installed; `-L` is where it lives on this machine):
+//
+//   cargo run -q -p jr-cli -- build examples/games/pong/main.jr -o /tmp/pong \
+//       -I modules -I examples/games/pong/modules -L /opt/homebrew/lib
+//   /tmp/pong
+//
+// W and S move the left paddle. Escape or the close box quits. The right paddle plays itself.
+//
+// `PONG_FRAMES=300 /tmp/pong` stops after 300 frames and exits with the left player's score — which
+// is how this example is verified without a person watching it. A game that can only be checked by
+// looking at it cannot be checked by a test.
+//
+// This file holds no rule of Pong. Every rule is in `modules/Pong`, which knows nothing about SDL2
+// and runs under `jr run` (see `sim.jr`). What is left here is exactly the part that cannot: a
+// window, an event queue, a renderer and a clock.
+
+Pong :: #import "Pong";
+Window :: #import "Window";
+Input :: #import "Input";
+Simp :: #import "Simp";
+GL :: #import "GL";
+Time :: #import "Time";
+String :: #import "String";
+#import "Basic";
+
+libc :: #system_library "c";
+exit_now :: (status: s64) #foreign libc "exit";
+getenv :: (name: *u8) -> *u8 #foreign libc "getenv";
+
+// The window's size in pixels. The world is `Pong.FIELD_WIDTH` by `Pong.FIELD_HEIGHT`, so this is a
+// whole-number multiple of it — a fractional scale makes a one-pixel gap appear and disappear along
+// the walls as the ball moves, which reads as a rendering bug.
+SCALE :: 4;
+
+// `w`, and `s`. A keycode below 128 is its ASCII value, which is why these are literals: `modules/Input`
+// carries exactly one keycode constant (`KEY_ESCAPE`) and says so — a table of F-keys and arrows is a
+// thing it deliberately does not have. Arrow keys are above 128 (`SDLK_UP` is 0x40000052) and would
+// need that table.
+KEY_W :: 119;
+KEY_S :: 115;
+
+// Held-key state, which this caller-owned event queue does not keep for us.
+//
+// SDL reports *edges* — `KEY_DOWN` when a key goes down, `KEY_UP` when it comes up — and a game needs
+// "is it down **now**". So this struct is the difference between an event queue and an input snapshot.
+// `Input` could own such state now that Jairs has file-scope globals; its current explicit buffer is an API
+// choice that keeps independent consumers possible.
+Keys :: struct {
+    /// Whether `w` is held.
+    up: bool;
+    /// Whether `s` is held.
+    down: bool;
+    /// Whether the player asked to quit — Escape, the close box, or `QUIT`.
+    quit: bool;
+}
+
+// The context allocator, as two wrappers.
+//
+// `String.to_c_string` allocates through `context.allocator`, and an uninstalled one is a null
+// procedure pointer — the program traps with *"call through a null procedure pointer"* at the first
+// call that needs memory. A `#foreign` procedure cannot fill a procedure-pointer field directly,
+// which is why these two wrappers exist rather than `context.allocator = malloc`.
+libc_alloc :: (n: s64) -> *u8 {
+    return malloc(n);
+}
+
+libc_free :: (p: *u8) {
+    free(p);
+}
+
+main :: () {
+    context.allocator = libc_alloc;
+    context.allocator_free = libc_free;
+
+    frame_budget := budget_from_environment();
+
+    if !Window.start() {
+        exit_now(70);
+    }
+    window := Window.create_window(
+        cast(s64, Pong.FIELD_WIDTH) * SCALE,
+        cast(s64, Pong.FIELD_HEIGHT) * SCALE,
+        "Jairs Pong",
+    );
+    if !Window.is_open(*window) {
+        Window.stop();
+        exit_now(71);
+    }
+
+    // `RIGHT_HANDED` — origin bottom-left, y upwards — which is `Simp`'s default and Jai's. The world
+    // in `modules/Pong` is y-up too, so nothing has to be flipped anywhere. A UI drawn over this
+    // would want `Simp.LEFT_HANDED` instead, because `modules/UI` hit-tests y-down; the two cannot be
+    // mixed in one target, which is a real constraint rather than a preference.
+    Simp.set_render_target(*window);
+    if !Simp.is_ready() {
+        Window.close(*window);
+        Window.stop();
+        exit_now(72);
+    }
+
+    state := Pong.make();
+    keys: Keys;
+    events: Input.Events;
+
+    // The clock is monotonic, because a duration taken from the wall clock can be negative when the
+    // system time jumps. `modules/Time` names both and says which is which.
+    previous := Time.monotonic();
+    frames := 0;
+
+    while true {
+        // --- input ------------------------------------------------------------------------
+        // One drain per frame into a caller-owned buffer, then several questions of the same frame.
+        // The other shape, `Input.wants_to_close`, *consumes* what it reads, so it cannot be asked
+        // twice about one frame.
+        _ = Input.update_window_events(*events, Input.MAX_EVENTS_PER_FRAME);
+        fold_events(*keys, *events);
+        if keys.quit {
+            break;
+        }
+
+        // --- time -------------------------------------------------------------------------
+        now := Time.monotonic();
+        dt := cast(float64, now - previous) / cast(float64, Time.NANOSECONDS_PER_SECOND);
+        previous = now;
+        // A long frame is clamped rather than simulated: after a window drag or a breakpoint, `dt`
+        // can be seconds, and one step of seconds teleports the ball through a paddle. Clamping loses
+        // real time on purpose — the alternative is a game whose physics breaks whenever the machine
+        // hiccups.
+        if dt > 1.0 / 30.0 {
+            dt = 1.0 / 30.0;
+        }
+
+        // --- simulate ---------------------------------------------------------------------
+        left := 0;
+        if keys.up {
+            left = 1;
+        }
+        if keys.down {
+            left = -1;
+        }
+        right := Pong.follow(state.right_y, state.ball.y);
+        _ = Pong.update(*state, dt, left, right);
+
+        // --- draw -------------------------------------------------------------------------
+        if !draw(*window, *state) {
+            print("a GL call failed while drawing\n");
+            Simp.destroy_render_target();
+            Window.close(*window);
+            Window.stop();
+            exit_now(74);
+        }
+
+        frames = frames + 1;
+        if frame_budget > 0 && frames >= frame_budget {
+            break;
+        }
+        if Pong.is_over(*state) {
+            break;
+        }
+    }
+
+    // The renderer goes first: SDL destroys a window's renderer with it, so closing in the other
+    // order leaves `Simp` holding a dangling handle. Nothing enforces the order, because the two
+    // modules do not point at each other.
+    Simp.destroy_render_target();
+    Window.close(*window);
+    Window.stop();
+
+    print("frames=% score %-%\n", frames, state.left_score, state.right_score);
+    exit_now(state.left_score);
+}
+
+// Folds one frame's events into held-key state.
+//
+// Every kind this game does not use is ignored, which is what `modules/UI`'s `feed` does too. An
+// event loop that switches exhaustively over SDL's kinds spends its lines on events no game reads.
+fold_events :: (keys: *Keys, events: *Input.Events) {
+    seen := Input.events_this_frame(events);
+    // A view valid until the next drain — stated by `modules/Input` and not enforced, because there
+    // are no lifetimes here. Reading it after the next `update_window_events` reads that frame's
+    // events instead.
+    i := 0;
+    while i < seen.count {
+        event := seen[i];
+        kind := cast(s64, event.kind);
+
+        if Input.should_close(*event) {
+            keys.quit = true;
+        }
+        if kind == Input.KEY_DOWN {
+            code := cast(s64, event.key_sym);
+            if code == Input.KEY_ESCAPE {
+                keys.quit = true;
+            }
+            if code == KEY_W {
+                keys.up = true;
+            }
+            if code == KEY_S {
+                keys.down = true;
+            }
+        }
+        if kind == Input.KEY_UP {
+            code := cast(s64, event.key_sym);
+            if code == KEY_W {
+                keys.up = false;
+            }
+            if code == KEY_S {
+                keys.down = false;
+            }
+        }
+        i = i + 1;
+    }
+}
+
+// Draws one frame: field, paddles, ball, and a row of pips per score.
+//
+// The pips exist because **`modules/Simp` cannot draw text**. Jai's `Simp` has `draw_text` over a
+// `Dynamic_Font`; here a font needs either FreeType or a bitmap glyph table, and neither exists yet.
+// So a score is as many small squares as it is points — which is what Pong's own arcade cabinet did
+// before it had a character generator.
+draw :: (window: *Window.Window, state: *Pong.State) -> bool {
+    Simp.clear_render_target(0.04, 0.05, 0.08, 1.0);
+    Simp.set_shader_for_color(false);
+    Simp.immediate_begin();
+
+    white := Simp.vector4(0.92, 0.94, 0.98, 1.0);
+    dim := Simp.vector4(0.16, 0.18, 0.24, 1.0);
+
+    // The centre line, as a column of dashes. Four thin quads would be a line primitive if the batch
+    // had one; a batch of triangles does not, so a dashed line is a loop of quads.
+    dash := 0.0;
+    while dash < Pong.FIELD_HEIGHT {
+        quad(Pong.FIELD_WIDTH / 2.0 - 0.5, dash, Pong.FIELD_WIDTH / 2.0 + 0.5, dash + 5.0, dim);
+        dash = dash + 10.0;
+    }
+
+    // Paddles. `Pong` stores a centre and exposes the bottom edge, because a renderer wants a corner
+    // and a simulation wants a centre.
+    left_x := Pong.left_paddle_x();
+    right_x := Pong.right_paddle_x();
+    paddle(left_x, state.left_y, white);
+    paddle(right_x, state.right_y, white);
+
+    // The ball.
+    quad(
+        state.ball.x - Pong.BALL_RADIUS,
+        state.ball.y - Pong.BALL_RADIUS,
+        state.ball.x + Pong.BALL_RADIUS,
+        state.ball.y + Pong.BALL_RADIUS,
+        white,
+    );
+
+    pips(state.left_score, Pong.FIELD_WIDTH / 2.0 - 22.0, -1.0, white);
+    pips(state.right_score, Pong.FIELD_WIDTH / 2.0 + 22.0, 1.0, white);
+
+    // One flush per frame, so the whole frame is one draw call — which is what a batch is for. Then
+    // `swap_buffers` presents it; it flushes any open batch itself, so a caller that forgets the
+    // flush still sees its drawing.
+    Simp.immediate_flush();
+    Simp.swap_buffers(window);
+
+    // **Whether the frame drew is a question with an answer**, and it is worth asking in an example:
+    // every `Simp` call returns nothing, so a GL failure is otherwise silent. OpenGL keeps errors in a
+    // queue and one read reports and clears one, so this both checks and drains.
+    return GL.error_code() == GL.NO_ERROR;
+}
+
+// One paddle, from its centre.
+paddle :: (centre_x: float64, centre_y: float64, colour: Simp.Vector4) {
+    quad(
+        centre_x - Pong.PADDLE_WIDTH / 2.0,
+        centre_y - Pong.PADDLE_HEIGHT / 2.0,
+        centre_x + Pong.PADDLE_WIDTH / 2.0,
+        centre_y + Pong.PADDLE_HEIGHT / 2.0,
+        colour,
+    );
+}
+
+// `count` small squares, marching away from the centre line.
+pips :: (count: s64, from_x: float64, direction: float64, colour: Simp.Vector4) {
+    i := 0;
+    while i < count {
+        x := from_x + direction * cast(float64, i) * 6.0;
+        quad(x - 2.0, Pong.FIELD_HEIGHT - 10.0, x + 2.0, Pong.FIELD_HEIGHT - 6.0, colour);
+        i = i + 1;
+    }
+}
+
+// A world-space rectangle, scaled to pixels and handed to `Simp`.
+//
+// **The one place a cast happens.** `modules/Math` and `modules/Pong` are `float64`; `modules/Simp`
+// takes `float32`, because that is what a vertex buffer holds. Converting at the boundary rather than
+// everywhere is what keeps the simulation free of graphics types.
+quad :: (x0: float64, y0: float64, x1: float64, y1: float64, colour: Simp.Vector4) {
+    scale := cast(float64, SCALE);
+    Simp.immediate_quad(
+        cast(float32, x0 * scale),
+        cast(float32, y0 * scale),
+        cast(float32, x1 * scale),
+        cast(float32, y1 * scale),
+        colour,
+    );
+}
+
+// The frame budget from `PONG_FRAMES`, or 0 for "run until the player stops it".
+//
+// `getenv` is declared here because `modules/Basic` does not export a binding for it. A foreign declaration
+// may use an imported library handle — `modules/Time` does exactly that with `Basic.libc` — so locality is
+// not a compiler restriction.
+//
+// **`String.to_c_string` and not `"PONG_FRAMES".data`.** A Jairs string literal's bytes are *not*
+// followed by a NUL, so passing `.data` to `getenv` makes it read whatever the linker put next — a
+// bug that behaves identically in both engines and is therefore invisible to the differential tests.
+budget_from_environment :: () -> s64 {
+    value := getenv(String.to_c_string("PONG_FRAMES"));
+    if value == null {
+        return 0;
+    }
+    frames, ok, rest := String.to_integer(String.to_string(value));
+    if !ok {
+        return 0;
+    }
+    return frames;
+}

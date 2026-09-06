@@ -53,10 +53,13 @@ output either way, and receive hover, goto-definition, and diagnostics in the la
 That is why it exercises so much at once — a struct, a constant, a compile-time computation, a
 call, `if`, `while`, and pointers.
 
-One honest limitation is called out in the file: there is no integer printing here. `print_int`
-cannot be written in the Jairs-0 subset, because turning a digit into a byte needs an `s64`-to-`u8`
-conversion, and `cast` is reserved until the wave labelled W1. The program prints only fixed
-strings, through `print` and `print_line`, both provided by the imported `Basic` module.
+This particular program prints no integers — a limitation from the vertical slice that has
+since been lifted. At the time this program was written, `print_int` could not exist, because
+turning a digit into a byte needs an `s64`-to-`u8` conversion and `cast` did not exist yet.
+`cast` has since shipped (ADR-0037), and `modules/Basic` now has a `print_int`, built on `%`-based
+`print` (ADR-0189). This program is unchanged from the vertical slice, though, so it still prints
+only fixed strings, through `print` and `print_line`, both provided by the imported `Basic`
+module.
 
 ## Importing a module
 

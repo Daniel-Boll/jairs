@@ -4,17 +4,17 @@
 //! Written in Jairs. `jr build --script build.jr` compiles this file's caller, runs it in the
 //! bytecode VM, and then performs the compilations it asked for (ADR-0195).
 //!
-//! # Why a build script is a program and not a `#run`
+//! # A program-shaped script and a `#run` script do different jobs
 //!
-//! Jai puts its build script at compile time, in a `#run`, and reaching for the same shape here does
-//! not work: compile-time code may call no `#foreign` procedure (ADR-0006), so a `#run` cannot read a
-//! file, shell out, print, or even allocate — `Basic.malloc` is itself `#foreign`. A build script
-//! that cannot open a file is not a build script.
+//! Ordinary foreign calls are still refused at compile time (ADR-0006), but this module is a driver
+//! library rather than an ordinary linked library. A `#run` script can allocate, print, read and write
+//! files, run commands, and declare targets through these procedures. It cannot call [`build`] while its
+//! own compilation query is active, so it uses [`request_build`] and receives no immediate success flag.
 //!
-//! And the power in a real `build.jai` is not the compiler API at all. Cloning a C dependency,
-//! stamping a git hash into the binary, building a `.dmg`, formatting a bootable disk image — every
-//! one of those is `Process`, `File` and `String`. So the script runs as an ordinary program, where
-//! this library already works, and this module is the small part that talks to the compiler.
+//! A `main`-shaped script can call [`build`] immediately, branch on the result, and read command-line
+//! arguments. That is why most examples use `main`, not because compile-time code is powerless. In both
+//! shapes the useful surface is ordinary build work — files, commands, generated source and target
+//! options — with this module as the narrow bridge to the driver.
 //!
 //! # Why these procedures are `#foreign compiler`
 //!
@@ -132,7 +132,7 @@ Backend :: enum {
 
 /// Everything one compilation can be told.
 ///
-/// Read with [`options`], mutated, then written back with [`set_options`]. Seven fields against
+/// Read with [`options`], mutated, then written back with [`set_options`]. Eight fields against
 /// Jai's roughly sixty: these are the ones real build scripts set, and an option nobody sets is a
 /// promise to keep working that nothing tests.
 Build_Options :: struct {

@@ -430,25 +430,87 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) 
     // target the appended procedure rather than the template.
     let consts = {
         let base = crate::consts::file_consts(db, file, search_paths).values;
-        // **A folded value keyed by `ExprId` is stale once a body expands** (ADR-0101 §3). `file_consts`
-        // records `folded_calls` against the *unexpanded* tree, and an expansion renumbers every id after
-        // the splice — so in the expanded tree those ids name *different* expressions, and a second folded
-        // `#insert` in one body left a `string` value sitting on an arithmetic operand. The failure was a
-        // verifier panic (`mixed operand types`), not a diagnostic, because the value is well-typed *for the
-        // expression it was computed for*: the "well-typed placeholder" family AGENTS.md names, in its
-        // sharpest form yet — the placeholder is a genuine value from the same program.
+        // **Every expression-keyed record is stale once a body expands** (ADR-0101 §3, widened by
+        // ADR-0207 §5). `file_consts` records against the *unexpanded* tree, and an expansion renumbers
+        // every id after the splice — so in the expanded tree those ids name *different* expressions.
+        // ADR-0101 §3 found it in `folded_calls`, where a second folded `#insert` in one body left a
+        // `string` value sitting on an arithmetic operand: a verifier panic rather than a diagnostic,
+        // because the value is well-typed *for the expression it was computed for*.
         //
-        // Fixed by **clearing and re-recording from the expanded check**, which is the only pass that saw
-        // the ids MIR will use. Clearing matters as much as re-recording: a stale entry the expanded check
-        // does not replace is exactly the wrong value at a live id.
+        // It cleared that one map. The others were left, and two of them broke the same way — a stale
+        // variadic record packed trailing arguments for a call that is not variadic (`edge to block 2
+        // supplies 2 arguments for 1 parameters`), and once that was cleared the missing `any_of`
+        // lowering at the live id gave `expected an aggregate, found a scalar`. Both on an ordinary
+        // program: `#insert noted_insert("task", …)` in a body that also calls `print("%", total)`.
+        // Found by writing the documentation for the metaprogram loop, which is the first thing to run
+        // that shape.
+        //
+        // Fixed by clearing the **whole body scope** and re-recording it through the one function
+        // `file_consts` itself uses, so the two paths cannot disagree about what a call means — the
+        // reason ADR-0196 §6 created that function. Clearing per-key cannot work: the caller does not
+        // know which ids the expanded check will record, only which scope moved.
         let base = match &expanded {
             Some((expanded_hir, _, check, _, _)) => {
                 let mut values = (*base).clone();
-                for (scope, expr) in checked(db, file, search_paths).folded_calls.keys() {
-                    values.clear_run(*scope, *expr);
+
+                // Gathered before the pool is locked: the lock must never be held across a nested query.
+                let base_sigs_for_folds = crate::sema::file_signatures(db, file, search_paths);
+                let imported_sigs = crate::sema::imported_signatures(db, file, search_paths);
+
+                // Every body scope the *unexpanded* check recorded anything for. A `BodyId` survives an
+                // expansion — only the expression ids inside a body move — so this is exactly the set of
+                // scopes whose records are suspect.
+                let unexpanded = checked(db, file, search_paths);
+                let mut stale: Vec<jr_hir::ExprScope> = Vec::new();
+                let mut note = |scope: jr_hir::ExprScope| {
+                    if !stale.contains(&scope) {
+                        stale.push(scope);
+                    }
+                };
+                for (scope, _) in unexpanded.folded_calls.keys() {
+                    note(*scope);
                 }
-                for ((scope, expr), value) in check.folded_calls.iter() {
-                    values.set_run(*scope, *expr, *value);
+                for (scope, _) in unexpanded.type_info_calls.keys() {
+                    note(*scope);
+                }
+                for (scope, _) in unexpanded.any_calls.keys() {
+                    note(*scope);
+                }
+                for (scope, _) in unexpanded.pointer_views.keys() {
+                    note(*scope);
+                }
+                for (scope, _) in unexpanded.atomics.keys() {
+                    note(*scope);
+                }
+                for (scope, _) in unexpanded.variadic_calls.keys() {
+                    note(*scope);
+                }
+                for (scope, _) in unexpanded.soa_fields.keys() {
+                    note(*scope);
+                }
+                for scope in stale {
+                    values.clear_body_scope(scope);
+                }
+
+                {
+                    let mut pool = crate::sema::lock_pool(db);
+                    let interner = db.interner();
+                    let mut all_sigs: Vec<&jr_sema::FileSignatures> =
+                        vec![base_sigs_for_folds.signatures.as_ref()];
+                    all_sigs.extend(imported_sigs.iter().map(|s| s.as_ref()));
+                    // A `Type_Info` this cannot build is dropped rather than reported, as the
+                    // instantiation path below does: sema already refused a type with no layout (E0266),
+                    // and with no recorded value `scan` refuses the body — which is the honest outcome
+                    // and never a placeholder.
+                    let mut ignored = Vec::new();
+                    crate::consts::record_checked_folds(
+                        &mut values,
+                        check,
+                        &all_sigs,
+                        &mut pool,
+                        interner,
+                        &mut ignored,
+                    );
                 }
                 // **A constant's value is keyed by `ItemId`, and an expansion renumbers those too**
                 // (ADR-0188 §1). This is the same staleness the `folded_calls` clearing above fixes,

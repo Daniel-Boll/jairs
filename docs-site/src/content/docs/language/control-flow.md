@@ -46,19 +46,29 @@ while i < 3 {
 
 ## for
 
-`for` iterates over an array, a view, or a numeric range. There are four shapes:
+`for` iterates over an array, a view, or a numeric range. There are six shapes:
 
 ```jr
 for x: buf        { … }   // element by element (x is a copy)
 for x, i: buf     { … }   // element and index
 for i: 0..n       { … }   // a half-open range: i goes 0,1,…,n-1
 for < x: buf      { … }   // in reverse
+for buf           { … }   // nameless: injects `it` (and `it_index` for a sequence)
+for x, i: 5..10   { … }   // a range with an index: x is the value, i is 0-based
 ```
 
 A range `0..n` is half-open, so `0..4` runs four times and `0..0` runs none. The element in
-`for x: buf` is a **copy** — assigning to `x` does not write back to `buf`. Iterating *by
-reference* (`for *x`), treating a range as a first-class value, and iterating a user-defined
-type are all <span class="jairs-status absent">absent</span> for now.
+`for x: buf` is a **copy** — assigning to `x` does not write back to `buf`.
+
+The **nameless** form omits both the variable and the colon, and the body reads the current
+element as `it`. Over a sequence it also injects `it_index` (0-based); over a range only `it`
+is injected, since `for x, i: a..b` is the named spelling for a range that wants both. `it`
+and `it_index` are ordinary injected locals rather than reserved keywords, so `it := 5;`
+inside the body shadows the injection, and a nested nameless `for` rebinds both names for its
+own body without disturbing the outer loop's.
+
+Iterating *by reference* (`for *x`), treating a range as a first-class value, and iterating a
+user-defined type are all <span class="jairs-status absent">absent</span> for now.
 
 ## Labelled break and continue
 

@@ -62,6 +62,10 @@ full workspace builds, and record the bump in `docs/adr/`.
   and will reject unformatted code.
 - Run `cargo clippy --workspace --all-targets -- -D warnings` before every
   push. CI treats all clippy warnings as errors.
+- Use `scripts/check fast` while iterating and `scripts/check pre-commit` for
+  broad local feedback. Both require `cargo-nextest` and deliberately omit
+  expensive exhaustive sweeps. Neither replaces `scripts/check full` (the
+  unchanged `cargo test --workspace` gate) before a wave is committed.
 - `unsafe` blocks require a `// SAFETY:` comment explaining the invariant.
   The workspace lint `unsafe_op_in_unsafe_fn = "deny"` is enforced.
 - Public items require doc comments (`missing_docs = "warn"` workspace-wide).

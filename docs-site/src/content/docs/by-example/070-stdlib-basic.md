@@ -42,65 +42,90 @@ value).
 STDOUT :: 1;
 STDERR :: 2;
 
-print :: (s: string) { … }           // writes a string to stdout
-print_error :: (s: string) { … }     // writes a string to stderr
-print_line :: (s: string) { … }      // writes a string followed by a newline
-print_int :: (n: s64) { … }          // writes a number in decimal
+print :: (fmt: string, args: ..Any) -> s64 { … }        // formats to stdout, returns bytes written
+print_error :: (fmt: string, args: ..Any) -> s64 { … }  // the same, to stderr
+print_line :: (fmt: string, args: ..Any) -> s64 { … }   // the same, with a newline appended
+format :: (buffer: []u8, fmt: string, args: ..Any) -> s64 { … }  // into a caller's buffer
 ```
 
-`print_int` is worth a look because of what the base subset lacks. It has **no buffer to format into** —
-fixed-size arrays arrive in a later wave — so it prints digits by *recursion*: a private `print_digits`
-divides first, prints the high digits, then this digit on the way back out, one stack frame per digit (at
-most 20 for a 64-bit number). When arrays land this becomes a loop over a `[20]u8` and the recursion goes
-away. It is honest about one limit: `print_int` negates a negative to handle the sign, and negating the
-most negative `s64` overflows — which is a trap, not a wrap — so it traps on that value rather than
-printing a wrong one.
+All three take a **format string and a variadic** `..Any` (ADR-0189, over the variadic machinery of
+ADR-0138/0139/0141), so `print_line("x = %", x)` works and a call with no trailing arguments packs an
+empty variadic — which is why every older call site that passed one bare `string` still compiles.
+
+A `%` takes the next argument and renders it by reading its `Type_Info`. A wrong argument count is not a
+compile error and not a trap: too few renders the placeholder as `%!(MISSING)` and too many appends
+`%!(EXTRA a, b)`, both of them Go's spelling. That is what a diagnostic looks like inside a procedure
+which cannot fail — visible in the output, and impossible to miss.
+
+`print_error` is a **second name** rather than `print`'s `to_standard_error := false` parameter, which
+is what Jai's takes. The reason is Jairs' own: a defaulted parameter after a variadic can never be
+reached, because every trailing argument is packed into the variadic (ADR-0139 §1).
 
 ```jr
+// examples/08-print-formatted.jr
 #import "Basic";
 
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
 main :: () {
-    // Zero, which the `n >= 10` recursion base case reaches without recursing at all.
-    print_int(0);
-    print("\n");
+    // `%` takes the next argument and asks it what it is. There is no `%d` or `%s`, because every
+    // argument already carries its own `Type_Info` — a type letter would be information the callee
+    // has and the caller can get wrong.
+    print("int %, float %, bool %, string %\n", 42, 1.5, true, "text");
 
-    print_int(7);
-    print("\n");
-    print_int(42);
-    print("\n");
-    print_int(1234567890);
-    print("\n");
+    // Every integer width, signed and unsigned. Including the two a naive renderer gets wrong:
+    // `S64_MIN` cannot be negated, and `U64_MAX` does not fit in an `s64`.
+    biggest: u64 = 18446744073709551615;
+    print("smallest s64 %\n", -9223372036854775807 - 1);
+    print("largest u64  %\n", biggest);
 
-    // The sign, handled in `print_int` rather than in `print_digits`.
-    print_int(-7);
-    print("\n");
-    print_int(-1234567890);
-    print("\n");
+    // A struct prints one level deep, by field name.
+    p: Point;
+    p.x = 3;
+    p.y = 4;
+    print("point %\n", p);
 
-    // `s64` max: twenty digits, which is `print_digits`' deepest recursion.
-    print_int(9223372036854775807);
-    print("\n");
+    // `%%` is a literal percent.
+    print("100%% covered\n");
 
-    // `print_error` writes to STDERR, which the harness compares separately — so a swapped file
-    // descriptor is caught rather than washing out into stdout.
-    print_error("to stderr\n");
+    // A wrong argument count is not an error. `print` has nowhere to return one to, so it says so in
+    // the output where you are already looking.
+    print("missing %\n");
+    print("spare\n", 9);
 
-    // A checksum of the values above, so a wrong digit changes the exit code as well as the output.
-    // 7 + 42 - 7 = 42.
-    exit(7 + 42 - 7);
+    // The return value is the byte count, so output can be measured.
+    written := print("counted\n");
+    print_line("that line was % bytes", written);
+
+    exit(0);
 }
 ```
 
-This program checks **stdout**, not just the exit code: the differential harness compares output between
-the two engines, and the digits are where a recursion emitting them in the wrong order, an off-by-one in
-the `+ 48` byte arithmetic, or a lost sign would show. `print_error` writes to STDERR, which the harness
-compares *separately*, so a swapped file descriptor is caught rather than washing out into stdout. The
-exit code (42) is a checksum of the printed values, so a wrong digit is caught twice.
+A struct prints one level deep, by field name; an enum member prints by **name** rather than as an
+ordinal, which is what `Type_Info.members` is for. `S64_MIN` and `U64_MAX` are in that program on
+purpose: they are the two values a naive renderer gets wrong, and one of them is what the old
+`print_int` trapped on.
 
-`print_int` was worth a corpus file for a pointed reason: an audit found nothing in the whole tree
-*called* it or `print_error` — they appeared only in their own definitions and in comments — so both
-engines could have broken them with every gate green. A capability with no program that runs it is the
-project's named failure shape.
+What is worth knowing about the implementation, because both facts are caller-visible:
+
+- **Output is buffered** through a file-scope global and reaches `write` once per call rather than once
+  per byte. The old `print_int` cost one syscall *per digit*.
+- **It is therefore not thread-safe.** Two threads printing at once interleave inside one buffer. Jai's
+  `print` uses the context's temporary storage and so is per-thread; matching that needs `#add_context`,
+  which is <span class="jairs-status absent">absent</span>. Until then a threaded program prints from one
+  thread.
+
+A float prints to nine rounded fraction digits rather than shortest-round-trip: a correct `dtoa` (Ryū)
+is <span class="jairs-status absent">absent</span>, and it is the same missing algorithm that stops
+`modules/JSON` serialising.
+
+`print_int :: (n: s64)` still exists, as one line — `print("%", n)` — kept because programs call it.
+The historical version is worth a sentence for the reason it is gone: it printed digits by *recursion*,
+one stack frame per digit, because the base subset had no buffer to format into; and it **trapped** on
+the most negative `s64`, which it negated to handle the sign. That was the first value anybody tested.
 
 ## Temporary storage
 
@@ -130,13 +155,17 @@ at a wrong offset.
 
 ```jr
 Type_Info :: struct {
-    id: s64;                  // canonical identity — an opaque token, not a number to do arithmetic on
-    kind: Type_Info_Kind;     // which shape this type is (an enum, for exhaustive switch)
-    name: string;             // the type's source name, or a builtin's spelling ("s64")
-    size: s64;                // runtime size in bytes
-    alignment: s64;           // runtime alignment in bytes
-    count: s64;               // a struct's field count, or an array's length; 0 otherwise
-    element: s64;             // an array's element or a pointer's pointee, as a type id; 0 otherwise
+    id: s64;                       // canonical identity — an opaque token, not a number to do arithmetic on
+    kind: Type_Info_Kind;          // which shape this type is (an enum, for exhaustive switch)
+    name: string;                  // the type's source name, or a builtin's spelling ("s64")
+    size: s64;                     // runtime size in bytes
+    alignment: s64;                // runtime alignment in bytes
+    count: s64;                    // a struct's field count, or an array's length; 0 otherwise
+    element: s64;                  // an array's element or a pointer's pointee, as a type id; 0 otherwise
+    fields: []Type_Info_Field;     // every field of a struct, union or variant, in declaration order
+    signed: bool;                  // whether an integer type is signed; false for every other kind
+    members: []Type_Info_Member;   // an enum's members, in declaration order
+    element_size: s64;             // one element's size for an array, view or dynamic array; 0 otherwise
 }
 
 Any :: struct {
@@ -145,6 +174,25 @@ Any :: struct {
 }
 ```
 
-`Type_Info` is deliberately **without per-kind detail** — a struct's field list or a procedure's
-signature would each be a variable-length member raising a memory-ownership question of its own. `size`
-and `alignment` are enough to be useful and the shape extends by adding fields.
+`fields` and `members` are **views into a read-only table the compiler emitted** (ADR-0152, ADR-0193),
+so they are valid for the life of the program and must not be written through. Both are empty for a kind
+that has neither, and empty is a real answer rather than a sentinel: a scalar has no fields, and an enum
+is the only shape whose values have names. `members` is what lets `print` show `Colour.BLUE` rather than
+`2` — before that table existed, an ordinal was the most anything could say.
+
+Two fields exist for reasons worth knowing, because each closed a real defect. `signed` is what makes
+printing an integer correct: width comes from `size`, and without a sign flag a caller had to read the
+first byte of `name` and hope it was `s` or `u` — which works only because a builtin cannot be aliased
+at file scope, and would print a large `u64` as negative the day aliasing started working. And
+`element_size` exists because `element` is an opaque **id**, so nothing could compute a *stride*: a
+fixed array escaped that by arithmetic (`size / count`) and a view could not, because a view's `size` is
+its header's.
+
+What remains <span class="jairs-status absent">absent</span> is following an `element` or a field's `ty`
+**back to a `Type_Info`**: both are ids, and ADR-0077 §1 makes an id opaque. The visible consequence is
+that a struct prints **one level deep** — `{i = .., xs = ..}` for a struct holding a struct and an array,
+verified by running it — because the renderer can see that a field exists and not what shape it is.
+A structural type's `name` is *not* affected: `type_info(type_of(xs)).name` is `[3]s64`, a view's is
+`[]s64` and a pointer's is `*s64`, because those spellings are built where the type is interned rather
+than by following an id. Lifting the nesting limit is one change — a `*Type_Info` per type — and it is
+recorded rather than half-built.

@@ -2,7 +2,7 @@
 title: What's absent (and why)
 description: An honest inventory of what Jairs does not do yet, and the reasoning behind the gaps.
 sidebar:
-  order: 20
+  order: 21
 ---
 
 Jairs is pre-alpha, and this book has marked features <span class="jairs-status absent">absent</span>
@@ -12,42 +12,53 @@ each edge.
 
 ## The shape of the project
 
-Jairs is built as a **vertical slice** that was driven end to end — lexer through native binary,
-plus a language server — for a tiny subset, and is being *thickened* one feature "wave" at a
-time. Everything documented as working is implemented across the whole pipeline and asserted
-equal in both engines. The absences below are things later waves add, or things deliberately
-declined.
+Jairs was built as a **vertical slice** driven end to end — lexer through native binary, plus a
+language server — and then thickened across twelve development waves. The twelfth and last of
+them is closed, with one item still open: a register-resident local's location is not yet
+described in DWARF (see below). Everything documented as working is implemented across the whole
+pipeline and asserted equal in both engines — three, when a native release build is asked for. The
+absences below are either things the design has never asked for, or things the compiler actively
+refuses rather than merely lacks.
+
+For the games-facing version of this inventory — what a 2D game specifically wants and does not
+yet have — see [What a game cannot do yet](/games/not-implemented/) in Book IV.
 
 ## Language features not yet present
 
-- **`#must`.** The compile-error-on-ignored-status half of the error model. The multiple-return
-  half exists; `#must` is owed its own decision.
-- **Cross-file polymorphic *instantiation*.** A `$T` procedure or `#expand` macro in another
-  module can't be instantiated from your file (the workaround is a concrete wrapper the module
-  provides — which is why you see `sort_ints` beside the generic `sort`). Polymorphic *structs*
-  do now cross a module boundary.
 - **Two-way unification and explicit type arguments** for `$T`. Inference is a one-layer
   structural match today.
-- **Array literals** (`[1, 2, 3]`), **sub-slicing** (`buf[1..3]`), `==` **on views**, and an
-  **array length that needs evaluation** (`[2 + 2]u8`).
+- **Sub-slicing** (`buf[1..3]`), `==` **on views**, and an **array length that needs evaluation**
+  (`[2 + 2]u8`).
 - **Iterating by reference** (`for *x`), a range as a first-class value, and `for` over a
   user-defined type.
 - **Pointer difference** (`p - q`), `p[n]` index sugar, and pointer ordering.
-- **A recursive `variant`** or `List($T)`.
-- **Float printing** — `print_int` has no floating-point counterpart.
+- **A recursive `variant`.**
 - **Overloading** unary operators, `[]`, `()`, and compound assignment.
-- **Run-time reflection** — a loop reading declarations as values — and `Type_Info`'s
-  variable-length field list. Compile-time reflection and note-driven generation exist; the
-  run-time table they'd need does not.
 
 ## Deliberately declined
 
-Some absences are *decisions*, not gaps:
+Some absences are *decisions*, not gaps — the compiler actively refuses each of these rather than
+simply lacking them:
 
+- **Cross-file polymorphic *instantiation*.** A `$T` procedure or `#expand` macro in another
+  module is <span class="jairs-status refused">refused</span> (E0268) rather than merely missing —
+  the workaround is a concrete wrapper the module provides, which is why you see `sort_ints`
+  beside the generic `sort`. Polymorphic *structs* do now cross a module boundary; only calling a
+  template across one is refused.
+- **Building an `enum_flags` value from a computed integer** — `cast(Perm, 3)` is
+  <span class="jairs-status refused">refused</span>: most integers are valid flag sets, so a wrong
+  one would look right, and members are combined with `|` instead.
+- **A struct literal shorthand**, `Point.{1, 2}`, is
+  <span class="jairs-status refused">refused</span> — it needs field-order decisions that an array
+  literal's element count doesn't supply.
+- **A `Code` value** — a first-class quoted syntax tree — is
+  <span class="jairs-status refused">refused</span> until something can inspect or transform one;
+  a value that can only be spliced is what a `string` already is.
+- **Item-level `#if`** — a declaration that exists on one platform only — is
+  <span class="jairs-status refused">refused</span>; `os()` answers the same question as an
+  ordinary value instead, folded at compile time.
 - **No garbage collector, no RAII, no exceptions.** These are design values, not missing
   features. Cleanup is `defer`; errors are values; memory is explicit.
-- **No `Code` value** — a first-class quoted syntax tree. Declined until something can inspect or
-  transform one; a value that can only be spliced is what a `string` already is.
 - **No VS Code extension.** The language server is editor-agnostic; a packaging target for an
   unused editor would rot.
 - **Bitwise precedence is not C's, and int/float never mix implicitly.** Both are choices in
@@ -55,16 +66,17 @@ Some absences are *decisions*, not gaps:
 
 ## Back-end and platform status
 
-- **The native back end is Cranelift.** An LLVM back end (for optimised release builds) is a
-  later wave; there is no `--release` and essentially one optimisation path, plus the single
-  `--no-bounds-check` build setting.
-- **macOS arm64 is the only verified target.** An x86-64 Linux target is configured in CI, but
-  **no CI run has ever happened** on the repository — so Linux is unverified, and the quality
-  gates are green *locally*.
-- **No debug info.** A native binary has no DWARF yet, so it is not debuggable in a normal
-  debugger. Traps still print a located backtrace, which is the runtime story.
+- **Two native back ends: Cranelift and LLVM.** `--backend llvm` compiles through LLVM as well as
+  the default Cranelift, and `--opt-level 0|1` chooses how hard either one optimises. There is
+  still no `--release` shorthand.
+- **Both macOS arm64 and x86-64 Linux are verified.** macOS locally, gate by gate, and Linux in
+  CI — both fully green.
+- **A native binary carries real DWARF** — line tables, struct layouts, stack-resident locals — in
+  both back ends, so it is debuggable in a normal debugger. One item is still open: a
+  register-resident local's location is not yet described.
 - **Optimisation is real but shallow** — an inliner, store-to-load forwarding, const-propagation
-  and dead-code elimination, run to a bounded fixed point. No SROA, no SIMD, no `#soa`.
+  and dead-code elimination, run to a bounded fixed point, plus `#simd [N]T` and `#soa(N)` for
+  explicit layout control. No SROA.
 
 ## Security, stated honestly
 
@@ -77,8 +89,8 @@ language-server path handling — are unexamined, and a second pass is owed.
 ## The one rule to carry away
 
 Where this book shows a feature without a caveat, it works — end to end, in both engines,
-checked. Where it's marked absent, it genuinely isn't there. That honesty is the point of
-documenting a language this early: you can build on what's shown, and you won't be surprised by
+checked. Where it's marked absent or refused, it genuinely isn't there. That honesty is the point
+of documenting a language this early: you can build on what's shown, and you won't be surprised by
 what isn't.
 
 That's the end of Book I. From here, [Book II — Jairs by Example](/by-example/) is the

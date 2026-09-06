@@ -1,4 +1,4 @@
-//! The Input module: SDL2's event queue, as Jai's `Input` shapes it.
+//! The Input module: SDL2's event queue, shaped after the inspected Jai `Input` family.
 //!
 //! Group D of the Simp-shaped-graphics restructure (ADR-0182). Everything here was in `modules/Window`
 //! and moved unchanged, because the overlay's offsets are checked and correct and rewriting a working
@@ -8,10 +8,11 @@
 //!
 //! # Why a separate module
 //!
-//! Jai splits `Window_Creation`, `Simp` and `Input`, and the split is not cosmetic: **all the per-platform
-//! work lives in window creation**, the renderer is one portable API, and events are a third thing that a
-//! program may want without either. A headless test that pushes a synthetic `QUIT` and reads it back needs
-//! this module and no renderer at all.
+//! The inspected Jai stack splits `Window_Creation`, `Simp` and `Input`, and the split is not cosmetic:
+//! native window/input code and Simp's platform GL-context backend remain separate from drawing calls.
+//! Jairs routes both platform concerns through SDL2. Events are still a third thing a program may want
+//! without rendering: a headless test that pushes a synthetic `QUIT` and reads it back needs this module
+//! and no renderer at all.
 //!
 //! # The overlay, and what is actually guaranteed (ADR-0165 §2)
 //!
@@ -24,25 +25,23 @@
 //! makes `SDL_Event` a fixed 56 bytes, and `EVENT_LAYOUT_IS_SDL2` is the assertion a caller can check.
 //! That is the honest line: one documented invariant, and an ABI this module asserts rather than assumes.
 //!
-//! # Why the frame buffer is caller-owned, and not module state
+//! # Why the frame buffer stays caller-owned
 //!
-//! Jai's `Input` keeps `events_this_frame` in a module-level array. **Jairs has no module-level mutable
-//! state**: a file-scope `var` is E0245, *"a file-level item has no value until jr-vm"* — probed before a
-//! line of this module was written, and confirmed for a scalar and for an array (ADR-0182 §1). So the
-//! buffer lives in an `Events` struct the caller declares and keeps between frames.
+//! Jai's `Input` keeps `events_this_frame` in a module-level array. This module was written before
+//! file-scope mutable globals shipped in ADR-0186, so the original necessity has expired. The buffer remains
+//! in an `Events` struct because explicit ownership lets independent consumers retain independent frame
+//! snapshots and keeps tests from sharing hidden process state.
 //!
 //! That is not a workaround invented here: it is exactly what `modules/UI` already does with its `UI`
 //! struct, and for the reason its docs give — *"a caller declares one, keeps it between frames, and never
-//! allocates"*. Jai's version is global because Jai has globals. This one is explicit because that is what
-//! the language offers, and an explicit `*Events` is the better API anyway: two windows can have two
-//! queues' worth of frame state, which a module global cannot express.
+//! allocates"*. Jai's version is global; this one deliberately remains explicit. A future `Game` facade may
+//! own one of these buffers and expose state queries without changing this lower-level API.
 //!
 //! # Its own library handle
 //!
 //! `sdl :: #system_library "SDL2";` appears again at the bottom of this file rather than being imported
-//! from `Window`, because a `#foreign` declaration resolves its library **in its own file** (ADR-0019 §4).
-//! A name imported from another module would not be that. `Image` already carries a second one for the
-//! same reason.
+//! from `Window`. An imported library handle is legal — `Time` uses `Basic.libc` — but keeping this private
+//! raw binding local avoids making `Window`'s implementation handle part of its public API.
 //!
 //! # This module does not run under `jr run`
 //!
@@ -228,7 +227,7 @@ quit_event :: () -> Event {
 
 /// Drains the queue into `events` and returns how many it took.
 ///
-/// **Jai's `update_window_events`**, and the routine a Simp-shaped program calls once per frame. It is
+/// The observed `update_window_events` shape, and the routine a Simp-shaped program calls once per frame. It is
 /// `wants_to_close`'s drain loop generalised from one predicate to *storage*: the events are kept, so a
 /// caller can ask several questions of one frame's input instead of one.
 ///
@@ -329,8 +328,8 @@ wants_to_close :: (limit: s64) -> bool {
 
 /// The SDL2 shared library.
 ///
-/// Declared again here rather than imported from `Window`, because a `#foreign` declaration resolves its
-/// library in **its own file** (ADR-0019 §4) and a name imported from another module would not be that.
+/// Declared here rather than exported from `Window`: imported library handles are legal, but sharing this
+/// private raw binding would couple the two modules' implementation details.
 sdl :: #system_library "SDL2";
 
 /// `SDL_PollEvent(SDL_Event *)` — 1 when an event was written, 0 when the queue is empty.

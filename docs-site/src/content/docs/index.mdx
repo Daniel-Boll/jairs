@@ -16,17 +16,17 @@ hero:
       link: /by-example/
       icon: open-book
       variant: secondary
-    - text: See real programs
-      link: /in-practice/
+    - text: Write a game
+      link: /games/
       icon: rocket
       variant: minimal
 ---
 
 import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-## Three books, one language
+## Four books, one language
 
-This documentation is organised as three books that build on each other. Read them in
+This documentation is organised as four books that build on each other. Read them in
 order, or jump straight to whichever matches how you learn.
 
 <CardGrid>
@@ -44,6 +44,11 @@ order, or jump straight to whichever matches how you learn.
     title="Book III · Jairs in Practice"
     href="/in-practice/"
     description="Complete programs that do real work — a word counter, a hash-map cache, a vector-math sketch, a serialiser written with the metaprogram loop."
+  />
+  <LinkCard
+    title="Book IV · Games with Jairs"
+    href="/games/"
+    description="The graphics stack — a window, an event loop, a Simp-shaped immediate renderer, textures and widgets — and three complete games, with an honest inventory of what a game cannot do yet."
   />
 </CardGrid>
 
@@ -89,18 +94,21 @@ main :: () {
     Integer overflow always traps — never wraps silently, never differs between debug and
     release. Explicit `+% -% *%` exist for the code that wants modular arithmetic.
   </Card>
-  <Card title="Two engines, held equal" icon="approve-check">
-    A program runs in the bytecode VM (`jr run`) and as a native binary (`jr build`), and a
-    differential test asserts they agree byte for byte — including where a trap happened.
+  <Card title="Three engines, held equal" icon="approve-check">
+    A program runs in the bytecode VM (`jr run`) and as a native binary through two back
+    ends (`jr build --backend cranelift|llvm`), and a differential test asserts all three
+    agree byte for byte — including where a trap happened.
   </Card>
 </CardGrid>
 
 ## A note on honesty
 
 Jairs is **pre-alpha**, and this documentation describes the language *as it exists today*,
-not as it is planned. Where a feature is absent, the text says so and names the wave that
-adds it. The ground truth for every syntax shown here is the compiler's own corpus of
-example programs; if the docs and the compiler ever disagree, the compiler is right.
+not as it is planned. Where a feature is absent the text says so, and it distinguishes
+something not built yet from something the compiler deliberately refuses — calling a
+refusal an absence overstates the gap. The ground truth for every syntax shown here is the
+compiler's own corpus of example programs; if the docs and the compiler ever disagree, the
+compiler is right.
 
 <div class="jairs-callout">
 Everything documented as working is implemented end to end — parsed, formatted,

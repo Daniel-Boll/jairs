@@ -1,0 +1,49 @@
+// Pong's rules, run with no window at all.
+//
+// Verified: `cargo run -q -p jr-cli -- run examples/games/pong/sim.jr -I modules -I examples/games/pong/modules`
+// prints the rally and the final score, and exits 0.
+//
+// This file is here to make one point: the game *rules* live in `modules/Pong`, which imports only
+// `modules/Math`, so they run in the compile-time VM. `main.jr` beside it needs SDL2, a display and a
+// `jr build`. A game that puts its simulation behind that line can test the simulation for free.
+
+Pong :: #import "Pong";
+#import "Basic";
+
+// Runs the game with both paddles played by `Pong.follow`, at a fixed step, and reports what happened.
+//
+// A fixed `dt` rather than a measured one is what makes this deterministic and therefore assertable.
+// `main.jr` measures instead, because a real frame takes as long as it takes.
+main :: () {
+    state := Pong.make();
+    dt := 1.0 / 60.0;
+
+    walls := 0;
+    paddles := 0;
+    points := 0;
+    steps := 0;
+
+    // A bound rather than `while !Pong.is_over(...)`: a bug that stops either paddle would otherwise
+    // hang the compile-time VM until its step budget ran out, and a budget message is a worse
+    // diagnostic than a step count.
+    while steps < 20000 && !Pong.is_over(*state) {
+        left := Pong.follow(state.left_y, state.ball.y);
+        right := Pong.follow(state.right_y, state.ball.y);
+
+        event := Pong.update(*state, dt, left, right);
+        if event == Pong.EVENT_WALL {
+            walls = walls + 1;
+        }
+        if event == Pong.EVENT_PADDLE {
+            paddles = paddles + 1;
+        }
+        if event == Pong.EVENT_SCORE {
+            points = points + 1;
+        }
+        steps = steps + 1;
+    }
+
+    print("steps=% walls=% paddle hits=% points=%\n", steps, walls, paddles, points);
+    print("final score %-%\n", state.left_score, state.right_score);
+    print("ball rested at (%, %)\n", state.ball.x, state.ball.y);
+}

@@ -1,6 +1,6 @@
 ---
 title: Math
-description: Exact closed-form integer and float functions computed in Jairs, libm transcendentals reached by FFI, and vector and matrix types with operator overloads.
+description: Exact closed-form integer and float functions computed in Jairs, libm transcendentals reached by FFI, and vector, matrix and quaternion types with operator overloads.
 sidebar:
   order: 75
 ---
@@ -8,9 +8,8 @@ sidebar:
 `Math` has two halves that reach `float` correctness by different routes, and that split is the
 interesting thing about the module. The exact, closed-form functions are computed **in Jairs**, so both
 engines produce identical bits. The transcendentals — `sqrt`, `sin`, `cos`, `exp`, `ln`, `powf` — are
-**`#foreign` wraps of libm**, not Jairs approximations. It also carries `Vector2/3/4` and `Matrix4`.
-
-There are **no quaternions**.
+**`#foreign` wraps of libm**, not Jairs approximations. It also carries `Vector2/3/4`, `Matrix4` and
+`Quaternion`.
 
 ## The exact half, computed in Jairs
 
@@ -83,13 +82,20 @@ overflowing `pow` **trap** rather than returning a wrong value. The exit code is
 ## The transcendentals, as libm wraps
 
 ```jr
-sqrt :: (x: float64) -> float64 #foreign libc "sqrt";
-sin :: (x: float64) -> float64 #foreign libc "sin";
-cos :: (x: float64) -> float64 #foreign libc "cos";
-exp :: (x: float64) -> float64 #foreign libc "exp";
-ln :: (x: float64) -> float64 #foreign libc "log";     // named ln, not log: it is the natural log
-powf :: (base: float64, exponent: float64) -> float64 #foreign libc "pow";
+sqrt :: (x: float64) -> float64 #foreign libm "sqrt";
+sin :: (x: float64) -> float64 #foreign libm "sin";
+cos :: (x: float64) -> float64 #foreign libm "cos";
+acos :: (x: float64) -> float64 #foreign libm "acos";     // used by quat_slerp, below
+exp :: (x: float64) -> float64 #foreign libm "exp";
+ln :: (x: float64) -> float64 #foreign libm "log";     // named ln, not log: it is the natural log
+powf :: (base: float64, exponent: float64) -> float64 #foreign libm "pow";
 ```
+
+`libm`, not `libc`: every routine here used to be `#foreign libc`, which links `-lc` and happens to work
+on macOS, where the math functions live in `libSystem` and `libm.tbd` is a symlink to it. On glibc `libm`
+is a **separate** library, so `-lc` alone leaves `sin`, `cos`, `sqrt` and `acos` undefined references and
+the link fails — a portability defect this project's macOS-only test machine hid for the module's whole
+life, until Linux CI actually ran it (ADR-0205/0206).
 
 ```jr
 #import "Basic";
@@ -147,11 +153,10 @@ identical in the comptime VM and in native code. That is why the comparisons abo
 than a tolerance — the values checked are ones every correctly-rounded libm returns precisely, and both
 engines share the library. The exit code is **255**.
 
-## Vectors and Matrix4
+## Vectors
 
 `Vector2`, `Vector3` and `Vector4` are plain `float64` structs with `x, y, z, w` components. Arithmetic
-comes through **operator overloads** (`+ - * / ==`) and the rest through named procedures. `Matrix4` is a
-4×4 `float64` matrix. Quaternions do **not** exist.
+comes through **operator overloads** (`+ - * / ==`) and the rest through named procedures.
 
 ```jr
 Vector3 :: struct { x: float64; y: float64; z: float64; }
@@ -252,8 +257,160 @@ operator * (Matrix4, float64) and (float64, Matrix4)
 mat4_perspective / mat4_orthographic / mat4_look_at   // right-handed, OpenGL-style z ∈ [-1, 1]
 ```
 
-Storage is **column-major** (`values[col*4 + row]`), the layout GLSL and OpenGL use, so `values[12..15]`
-is the translation column. The rotations and projection helpers are **right-handed** to match `Math`'s
-cross product — choosing left-handed here would make the sign of `cross` a lie one file over. The `w`
-component of `Vector4` is what makes a translation reachable: applied to a point `(x, y, z, 1)` a
-translation shifts it, and applied to a direction `(x, y, z, 0)` it leaves the direction unchanged.
+```jr
+#import "Basic";
+#import "Math";
+
+main :: () {
+    n := 0;
+
+    // The identity leaves a point unchanged.
+    p := vec4(3.0, 4.0, 5.0, 1.0);
+    if mat4_identity() * p == p {
+        n = n + 1;
+    }
+
+    // A translation shifts a point but leaves a direction (w = 0) unchanged.
+    t := mat4_translation(10.0, 0.0, 0.0);
+    moved := t * p;
+    if moved.x == 13.0 && moved.y == 4.0 && moved.z == 5.0 {
+        n = n + 2;
+    }
+    direction := vec4(1.0, 0.0, 0.0, 0.0);
+    if t * direction == direction {
+        n = n + 4;
+    }
+
+    // Composition: scale then translate, applied as one matrix, matches applying them in sequence.
+    s := mat4_scale_uniform(2.0);
+    combined := t * s;
+    stepwise := t * (s * p);
+    if combined * p == stepwise {
+        n = n + 8;
+    }
+
+    // An orthographic projection centred on the origin sends the origin to the centre of clip space.
+    ortho := mat4_orthographic(-10.0, 10.0, -10.0, 10.0, 1.0, 100.0);
+    origin := vec4(0.0, 0.0, -1.0, 1.0);
+    center := ortho * origin;
+    if cast(s64, center.x) == 0 && cast(s64, center.y) == 0 {
+        n = n + 16;
+    }
+
+    // A view from a point on the z axis toward the origin, with y up, puts the eye at the view
+    // space's own origin — the defining property of a look-at matrix.
+    view := mat4_look_at(vec3(0.0, 0.0, 5.0), vec3(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0));
+    eye_in_view := view * vec4(0.0, 0.0, 5.0, 1.0);
+    if cast(s64, eye_in_view.x) == 0 && cast(s64, eye_in_view.y) == 0 && cast(s64, eye_in_view.z) == 0 {
+        n = n + 32;
+    }
+
+    exit(n);
+}
+```
+
+The exit code is **63**. Storage is **column-major** (`values[col*4 + row]`), the layout GLSL and OpenGL
+use, so `values[12..15]` is the translation column. The rotations and projection helpers are
+**right-handed** to match `Math`'s cross product — choosing left-handed here would make the sign of
+`cross` a lie one file over. The `w` component of `Vector4` is what makes a translation reachable:
+applied to a point `(x, y, z, 1)` a translation shifts it, and applied to a direction `(x, y, z, 0)` it
+leaves the direction unchanged, which the direction check above pins directly.
+
+## Quaternion
+
+`Quaternion` is a 4-tuple encoding a rotation in 3-D: storage is `{x, y, z, w}`, **scalar-last**, matching
+`Vector4`'s layout, with `w` the scalar part. Rotation composition is **right-handed**, to match
+everything else in the module.
+
+```jr
+Quaternion :: struct { x: float64; y: float64; z: float64; w: float64; }
+
+quat :: (x: float64, y: float64, z: float64, w: float64) -> Quaternion
+quat_identity :: () -> Quaternion
+quat_from_axis_angle :: (axis: Vector3, angle_radians: float64) -> Quaternion   // axis is NOT normalised
+operator + - * / == (Quaternion, ...)   // * is the Hamilton product; / and * also take a float64 scalar
+quat_conjugate :: (q: Quaternion) -> Quaternion       // the inverse, for a UNIT quaternion
+quat_length_squared / quat_length :: (q: Quaternion) -> float64
+quat_dot :: (a: Quaternion, b: Quaternion) -> float64
+quat_normalize :: (q: Quaternion) -> Quaternion       // a zero quaternion normalises to IDENTITY
+quat_inverse :: (q: Quaternion) -> Quaternion         // the identity for a zero quaternion
+quat_rotate :: (q: Quaternion, v: Vector3) -> Vector3 // Rodrigues' formula, eight ops not sixteen
+quat_to_matrix4 :: (q: Quaternion) -> Matrix4         // assumes q is unit
+quat_slerp :: (a: Quaternion, b: Quaternion, t: float64) -> Quaternion
+```
+
+`Quaternion` carries **no unit-length invariant**, and multiplication (the Hamilton product, `operator
+*`) deliberately does **not** auto-normalise: it would hide a `sqrt` in every composition, and a caller
+stacking a hundred rotations does not need to pay for it a hundred times. `quat_slerp` interpolates along
+the **shortest** great-circle arc and falls back to normalised *linear* interpolation once the two
+quaternions' dot product exceeds `0.9995` — close enough that the great-circle path and the straight-line
+path are indistinguishable in a `float64`, and the fallback avoids a division that would otherwise blow
+up as the angle between them goes to zero. It answers both endpoints exactly at `t == 0` and `t == 1`.
+
+```jr
+#import "Basic";
+#import "Math";
+
+main :: () {
+    n := 0;
+
+    id := quat_identity();
+    if id.x == 0.0 && id.y == 0.0 && id.z == 0.0 && id.w == 1.0 {
+        n = n + 1;
+    }
+
+    // No PI constant (see below), so libm's own acos gives it: acos(-1.0) is exactly pi.
+    pi := acos(-1.0);
+    half_turn := quat_from_axis_angle(vec3(0.0, 1.0, 0.0), pi);
+
+    // A 180-degree turn about y sends (1, 0, 0) to (-1, 0, 0).
+    rotated := quat_rotate(half_turn, vec3(1.0, 0.0, 0.0));
+    if cast(s64, rotated.x * 1000.0) == -1000 {
+        n = n + 2;
+    }
+
+    // Multiplication does not auto-normalise: scaling a quaternion by 2 quadruples its squared length.
+    doubled := half_turn * 2.0;
+    if cast(s64, quat_length_squared(doubled) * 100.0) == cast(s64, quat_length_squared(half_turn) * 400.0) {
+        n = n + 4;
+    }
+
+    // Slerp at the endpoints answers both quaternions exactly.
+    a := quat_identity();
+    b := quat_from_axis_angle(vec3(0.0, 0.0, 1.0), pi / 2.0);
+    if quat_slerp(a, b, 0.0) == a && quat_slerp(a, b, 1.0) == b {
+        n = n + 8;
+    }
+
+    exit(n);
+}
+```
+
+The exit code is **15**.
+
+## What Math still doesn't have
+
+Every one of the following is <span class="jairs-status absent">absent</span> today, verified by grep
+rather than inferred:
+
+- **No constants.** `Math` declares zero of them — no `PI`, no `TAU`, no `E`, no `EPSILON`. Every angle
+  literal must be hand-written or, as above, recovered from `acos(-1.0)`.
+- **No `float64` `min`, `max`, `clamp` or `sign`.** All four exist for `s64` only; `fabs` is the *only*
+  float counterpart the exact half provides.
+- **No scalar `lerp`.** Only `lerp2`/`lerp3`/`lerp4` on vectors — interpolating a single float (a fade, a
+  cooldown, a camera zoom) needs open code.
+- **No `atan2`, `tan`, `asin`, `atan` or `fmod`.** Only `sin`, `cos` and `acos` are wrapped, so there is no
+  "angle of a vector" primitive and no float modulo to wrap an angle into `[0, 2·pi)`.
+- **No 2D rotation of a `Vector2`.** No `rotate2`, no `angle2`, no `from_angle` — arguably *the* most
+  common 2D operation has no procedure at all; the only route is `mat4_rotation_z` plus a round trip
+  through a `Vector4`.
+- **No `mat4_inverse`** (and no `mat4_determinant`), so there is no screen-to-world unprojection —
+  `mat4_transpose` exists but is an inverse only for a pure rotation.
+- **No `operator !=`** on any of the five types — only `==` is overloaded, so `a != b` does not compile
+  for `Vector2`/`3`/`4`, `Matrix4` or `Quaternion`.
+
+The *Math for games* page in Book IV has the fuller, games-facing version of this list — component-wise
+vector multiply, `Rect`/AABB and collision primitives, easing functions, and the rest of what a 2D game
+reaches for and does not find here. See [Math for games](/games/math-for-games/).
+
+See also [Book I — The Jairs Language](/language/introduction/).

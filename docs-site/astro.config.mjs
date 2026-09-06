@@ -63,6 +63,11 @@ export default defineConfig({
           collapsed: true,
           items: [{ autogenerate: { directory: 'in-practice' } }],
         },
+        {
+          label: 'Book IV · Games with Jairs',
+          collapsed: true,
+          items: [{ autogenerate: { directory: 'games' } }],
+        },
       ],
     }),
   ],

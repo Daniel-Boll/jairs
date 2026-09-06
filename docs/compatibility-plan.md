@@ -1,6 +1,8 @@
 # Remaining Jai-compatibility features — a plan grounded in probes, not in memory
 
-**Status:** **Wave A is BUILT** (ADR-0183, ADR-0184, commit `e622f40`). Waves B, C and D remain proposals.
+**Status:** **Waves A and B are BUILT** (ADR-0183–0187). Waves C and D remain proposals. This
+document preserves the plan that led there; ADR-0208 qualifies its old exact-API claims against a
+broader public-source audit.
 
 > [!IMPORTANT]
 > **Wave A is delivered, and building it corrected §0's own correction.** This document already led with "the
@@ -173,11 +175,13 @@ change — which is the whole point of Wave A having landed.
 
 ---
 
-## 2. Wave B — Simp on OpenGL, which is what Jai's Simp actually is
+## 2. Wave B — Simp on OpenGL
 
-Only reachable after Wave A. Jai's `Simp` has a **GL backend**; this project's has an SDL2 renderer backend,
-which was the right call when a per-OS library name was believed unreachable and is now a choice rather than a
-constraint.
+Delivered by ADR-0185–0187. The public Jai `Simp` copies inspected for ADR-0208 use native
+WGL/GLX/NSOpenGL/EGL context plumbing and OpenGL drawing. Jairs now uses SDL2 for its platform,
+event and GL-context layer, while `modules/Simp` draws through OpenGL. The copies disagree on parts
+of their public surface, so the resulting compatibility promise is **Simp-shaped**, not one exact
+canonical beta API.
 
 - **B1 — `modules/GL`**: the bindings, with the library name generated per OS (A1) and linked per OS (A2).
   Loading is the interesting part: on Windows every function past 1.1 needs `wglGetProcAddress`, so this is not

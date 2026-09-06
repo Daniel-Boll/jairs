@@ -41,7 +41,7 @@ main :: () {
     b: s64;
 
     // Explicitly uninitialised: the compiler will not zero this, and reading
-    // it before assignment is an error caught in wave W3.
+    // it before assignment is a compile-time error, E0227.
     c: s64 = ---;
 
     d: bool = true;
@@ -59,9 +59,9 @@ side:
 - `a: s64 = 7` — explicit type and explicit value.
 - `b: s64` — no initialiser, so the variable takes its type's zero value.
 - `c: s64 = ---` — the `---` token means *explicitly uninitialised*. The compiler will not zero
-  the storage, and reading the variable before it is assigned is a diagnostic (caught in the
-  wave labelled W3). This is the escape hatch for when you know you will write before you read
-  and do not want to pay for a zeroing you don't need.
+  the storage, and reading the variable before it is assigned is E0227, a compile-time
+  diagnostic. This is the escape hatch for when you know you will write before you read and do
+  not want to pay for a zeroing you don't need.
 
 The remaining lines show that the same form works for `bool`, `string`, a pointer type `*s64`
 (here taking the address of `a`), and the byte type `u8`.

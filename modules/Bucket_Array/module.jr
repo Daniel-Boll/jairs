@@ -62,10 +62,10 @@ BUCKET_SIZE :: 16;
 
 /// One bucket: a pointer to its sixteen slots.
 ///
-/// A **named struct** wrapping the pointer rather than a bare `*s64`, because `size_of` and `typed` refuse
-/// a *structural* type argument — `size_of(*s64)` is E0261, ADR-0071 §5's still-deferred structural type
-/// argument. A named type is spellable, so `size_of(Bucket)` and `typed(Bucket, p)` work. It reads better
-/// too: the spine is a list of buckets, not a list of pointers-to-integers.
+/// A **named struct** wrapping the pointer rather than a bare `*s64`. This used to say `size_of` and
+/// `typed` refuse a structural type argument — `size_of(*s64)` is E0261 — and **ADR-0191 made that
+/// false**: `size_of(*s64)` is 8 and `typed(*s64, p)` works, both probed. The name is kept because it
+/// reads better and costs nothing: the spine is a list of buckets, not a list of pointers-to-integers.
 Bucket :: struct {
     /// The bucket's sixteen slots.
     slots: *s64;

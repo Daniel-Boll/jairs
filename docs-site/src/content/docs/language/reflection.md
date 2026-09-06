@@ -25,12 +25,16 @@ The fields are:
 | Field | Meaning |
 | --- | --- |
 | `id` | the type's stable, canonical identity (its pool id) |
-| `kind` | which shape it is — `INTEGER`, `FLOAT`, `STRUCT`, `POINTER`, `ARRAY`, `ENUM`, … |
-| `name` | its source name (or a builtin's spelling, `"s64"`) |
+| `kind` | which shape it is — `INTEGER`, `FLOAT`, `STRUCT`, `POINTER`, `ARRAY`, `ENUM`, `DYNAMIC_ARRAY`, … |
+| `name` | its source name (or a builtin's spelling, `"s64"`); a *structural* type's name is a full recursive spelling — `[3]s64`, `[]s64`, `*Point`, `**Point` |
 | `size` | runtime size in bytes |
 | `alignment` | runtime alignment in bytes |
 | `count` | a struct's field count, or an array's length; 0 otherwise |
 | `element` | an array's element or a pointer's pointee, as a type id; 0 otherwise |
+| `element_size` | the size of one element of a view or array, in bytes |
+| `fields` | a struct's fields — `[]Type_Info_Field`, each a name, a type id, and a byte offset |
+| `signed` | whether an integer kind is signed |
+| `members` | an enum's members — `[]Type_Info_Member`, each a name and a value |
 
 The numbers come from the *same* layout computation every real layout decision uses, so
 reflection cannot disagree with the layout it describes.
@@ -42,10 +46,27 @@ Jairs. It has to be, because a program that reflects must be able to *write* `in
 Type_Info`, and no compiler-internal type is spellable. The compiler validates the struct's
 fields on lookup, so editing it produces a clear diagnostic rather than a silent wrong read.
 
-What is still <span class="jairs-status absent">absent</span> is the **variable-length**
-detail — a struct's full field list, a procedure's signature — because those need a decision
-about who owns the memory the list lives in. The fixed-size facts (`count`, `element`) are
-present; following an `element` id back to a `Type_Info` is not.
+The variable-length detail is here now — `fields` for a struct, `members` for an enum — because
+the compiler already owns a static-data table it can hand out as a `[]T` view, so the memory
+question that used to hold this back is answered by that table's own lifetime rather than a
+per-call allocation. What is still <span class="jairs-status absent">absent</span> is going the
+other way: given an `element` id, there is no function that hands you back the `Type_Info` it
+names — you have that array's or pointer's `Type_Info` already, or you don't have it at all.
+
+### type_of, and a pointer as a type argument
+
+`type_of(x)` gives you a type from a **value** — an expression — rather than from a name, which
+matters when the name has no spelling of its own, such as a polymorphic parameter's type inside
+its own body:
+
+```jr
+x := 42;
+size_of(type_of(x));        // 8 — the size of x's type, s64
+type_info(type_of(x));      // the Type_Info for s64
+```
+
+And `type_info` itself accepts a **pointer** type as its argument, not only a bare name:
+`type_info(*Point)` describes the pointer, whose `element` is `Point`'s id.
 
 ## Any
 

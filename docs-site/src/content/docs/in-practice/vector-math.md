@@ -29,12 +29,10 @@ main :: () {
     light := vec3(0.0, 0.0, 1.0);
     facing := dot3(normal, light);
 
-    // There is no float printing yet, so scale into an integer to show the value.
-    print("normal.z x1000 = ");
-    print_int(cast(s64, normal.z * 1000.0));
-    print("\nfacing   x1000 = ");
-    print_int(cast(s64, facing * 1000.0));
-    print("\n");
+    // A float prints directly, and so does the whole struct: one `%` per argument, and the
+    // renderer reads each one's `Type_Info`.
+    print("normal = %\n", normal);
+    print("facing = %\n", facing);
 
     if facing > 0.0 {
         print("the face points toward the light\n");
@@ -45,8 +43,8 @@ main :: () {
 Output:
 
 ```
-normal.z x1000 = 1000
-facing   x1000 = 1000
+normal = {x = 0, y = 0, z = 1}
+facing = 1
 the face points toward the light
 ```
 
@@ -69,10 +67,12 @@ ordinary procedures from the same module.
 `normalize3` scales it to unit length. The dot product of that unit normal with a unit light
 direction is the cosine of the angle between them — 1.0 when they align, as they do here.
 
-**Working around no float printing.** Jairs has no float-printing routine yet (see
-[What's absent](/language/whats-absent/)), so to *show* a float we multiply by 1000 and
-`cast(s64, …)` — a float-to-int cast that
-[saturates](/language/the-type-system/#cast), giving a clean integer to `print_int`. The
+**Printing a float, and a struct.** `print` takes a format string and a variadic `..Any`, so
+one `%` per argument renders whatever the argument is by reading its `Type_Info` — a float, and
+a `Vector3` one level deep by field name. This program used to multiply by 1000 and
+`cast(s64, …)` to show a float at all, because the library could print a string and one
+non-negative integer; that is history now, and the only remaining caveat is precision, since a
+float renders to nine rounded fraction digits rather than shortest-round-trip. The
 `if facing > 0.0` branch shows a float comparison driving control flow directly.
 
 ## A note on exactness
@@ -89,6 +89,6 @@ differ between the two engines.
 
 - `Math`'s `Vector3` with `-`, `cross`, `dot3`, `normalize3`.
 - Operator overloads resolving across a module import.
-- A saturating float-to-int `cast` as a stand-in for float printing.
+- `print` with `%` over a float and over a struct.
 
 Next: [a generated task runner](/in-practice/note-serialiser/).
