@@ -107,6 +107,33 @@ guard exists to prevent. Verified by reverting the allowlist and watching the po
 **What it does not claim:** this test runs on macOS, where libm and libc are the same object, so it
 cannot prove the Linux link. Only CI can, and reading CI is the other half of this wave.
 
+## 4a. The first fix was necessary and not sufficient, and CI said so
+
+Pushing the `modules/Math` fix and reading the next run is what turned this from a plausible fix into
+a verified one. The Math errors were **gone**. A *different* file failed:
+
+```
+tests/corpus/valid/093-ffi-floats.jr:40: undefined reference to `sqrtf'
+```
+
+That file declares its own `libc :: #system_library "c";` — corpus programs do, because the
+type-checking harness does not load `Basic` — and bound `sqrt`, `sqrtf` and `pow` to it.
+
+**CI showed one file because it stops at the first.** So rather than push again and find out, the whole
+tree was scanned for math symbols bound to a non-libm library: **four sites, two files**. One of the
+four was a false positive worth knowing about — `valid/091-math.jr` *quotes* `#foreign libc "sqrt"` in
+its prose while explaining why `Math` had no transcendentals, so any scanner here must strip comments
+or it flags documentation.
+
+**And that is why the rule is now a test rather than a comment.** `crates/jr-cli/tests/libraries.rs`
+asserts that every math symbol in every `.jr` file is declared against a library named `m`. This would
+have been the seventh hand-maintained claim in this repository that nothing enforced; the difference
+between the six before it and this one is that the invariant is now checked on the machine that runs.
+
+Its second test asserts the scanner reads declarations and **not** prose, with `091-math.jr` as the
+witness — because a scanner that silently matched nothing would let the first test pass by finding no
+violations at all, which is the failure mode a scanner-based check actually has.
+
 ## 5. Three stale claims corrected while here
 
 Found by checking the plan against the code rather than by any failure:
@@ -141,8 +168,9 @@ it means "an item was interned" rather than "the MIR changed".
 
 ### Owed
 
-- **The Linux fix is verified by CI, not locally.** No Linux machine is available here, so the claim
-  in this ADR rests on the next run being read — which is now a habit this wave established rather
-  than a hope.
+- **The Linux fix is verified by CI, not locally.** No Linux machine is available here, so every claim
+  about glibc in this ADR rests on a run being read. Two have been: the first push proved the `Math`
+  half and exposed `093-ffi-floats.jr`; the second covers that. **A third failure in a file nobody has
+  thought of is possible** — the tree scan is what makes it unlikely rather than the fix itself.
 - **`libm` is not declared in `modules/Basic`** beside `libc`, deliberately: only `Math` needs it, and
   a second module declaring a library it does not use is how the wrong-library bug started.

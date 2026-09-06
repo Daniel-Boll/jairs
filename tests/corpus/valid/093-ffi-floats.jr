@@ -33,12 +33,17 @@
 
 // The library is declared **here**, not taken from `Basic`, for the reason `valid/019` does: the sema corpus
 // harness type-checks a file without loading `Basic`, so a `libc` from there would be an unknown library
-// (E0225) under that harness. `#system_library "c"` is the one line every `#foreign`-using corpus file repeats.
-libc :: #system_library "c";
+// (E0225) under that harness.
+//
+// **`libm`, not `libc`** (ADR-0205). These three symbols live in libm on glibc, and this file said `libc`
+// for its whole life — which links on macOS, where `libm.tbd` is a symlink to `libSystem.tbd`, and fails
+// on Linux with `undefined reference to 'sqrtf'`. The x86-64 CI leg reported exactly that and nobody had
+// read it. `crates/jr-cli/tests/libraries.rs` now enforces the rule rather than trusting this comment.
+libm :: #system_library "m";
 
-sqrt :: (x: float64) -> float64 #foreign libc "sqrt";
-sqrtf :: (x: float32) -> float32 #foreign libc "sqrtf";
-pow :: (base: float64, exponent: float64) -> float64 #foreign libc "pow";
+sqrt :: (x: float64) -> float64 #foreign libm "sqrt";
+sqrtf :: (x: float32) -> float32 #foreign libm "sqrtf";
+pow :: (base: float64, exponent: float64) -> float64 #foreign libm "pow";
 
 main :: () {
     n := 0;
