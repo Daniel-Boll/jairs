@@ -1,0 +1,187 @@
+//! The Game module: one owned application loop over `Window`, `Input`, `Simp` and `Time`.
+//!
+//! This is the foundation decided in ADR-0210, not a second renderer or a game engine. It owns the
+//! lifecycle ordinary drawing programs otherwise repeat: start SDL, open a window, create the Simp
+//! target, drain one frame of events, measure elapsed time, present, and tear everything down in the
+//! only safe order.
+//!
+//! # Ownership and the one-App rule
+//!
+//! A caller owns an [`App`] value and passes its address to every operation. Copying an open `App` is
+//! unsupported: Jairs has no move or linear-ownership type with which to prevent it. The fields are
+//! visible for the same language reason, but callers use this interface and the explicit [`window`]
+//! escape hatch rather than closing the embedded window or destroying Simp themselves.
+//!
+//! Simp owns one process-wide GL context and renderer state, so only one `App` may be open at a time.
+//! A private guard enforces that substrate constraint instead of letting a second open corrupt the
+//! first renderer. Open, frame and close the App on one thread: the guard is deliberately non-atomic,
+//! and the underlying GL context is thread-bound.
+//!
+//! # What one frame means
+//!
+//! [`begin_frame`] drains `Input` exactly once, latches a close request, and records elapsed monotonic
+//! time in seconds. The value is never capped or otherwise reshaped into simulation policy; a game
+//! that wants clamping or fixed ticks implements those itself. A failed clock read or any unexpected
+//! backwards reading becomes zero, because a frame duration cannot be negative.
+//!
+//! The render target uses `Simp.LEFT_HANDED`: origin top-left, y increasing downwards. That agrees
+//! with SDL mouse coordinates, `UI`, image tools and the facade's later drawing helpers.
+//!
+//! # What is deliberately absent
+//!
+//! No allocator is installed or replaced. There are no drawing helpers, held-input snapshots,
+//! textures or other resources, and Escape has no special policy. Those are later slices; this one
+//! owns only startup, frame boundaries, close state, timing and cleanup.
+//!
+//! Written in Jairs. ADR-0210.
+
+Window :: #import "Window";
+Input :: #import "Input";
+Simp :: #import "Simp";
+Time :: #import "Time";
+
+/// One open game application.
+///
+/// The value owns `native_window` and `events`. Keep it in one place and pass `*App`; copying an open
+/// value duplicates ownership without duplicating the SDL window or GL context.
+App :: struct {
+    /// The SDL window owned by this application.
+    native_window: Window.Window;
+    /// The events drained by the most recent [`begin_frame`].
+    events: Input.Events;
+    /// Whether this application has latched a close request.
+    closing: bool;
+    /// The previous monotonic reading, in nanoseconds.
+    previous_ns: s64;
+    /// The most recent non-negative, unclamped frame duration, in seconds.
+    delta_seconds: float64;
+    /// Whether startup completed and this value owns the process-wide game lifecycle.
+    open: bool;
+}
+
+/// Opens one game application.
+///
+/// Starts SDL, creates the window, selects top-left/y-down coordinates, verifies the Simp target and
+/// initializes the monotonic clock. At most one `App` may be open. The `bool` is false if another app
+/// owns the process-wide renderer or if any startup step fails. The App's entire lifecycle must stay
+/// on the thread that calls `open`.
+///
+/// Every failure unwinds the steps already completed. In particular, a shader failure can leave a GL
+/// context behind while `Simp.is_ready()` is false, so the render target is destroyed on that path
+/// before the window and SDL.
+open :: (width: s64, height: s64, title: string) -> (App, bool) #must {
+    app: App;
+    if app_is_active {
+        return app, false;
+    }
+    if !Window.start() {
+        return app, false;
+    }
+
+    app.native_window = Window.create_window(width, height, title);
+    if !Window.is_open(*app.native_window) {
+        Window.stop();
+        return app, false;
+    }
+
+    Simp.set_render_target(*app.native_window, Simp.LEFT_HANDED);
+    if !Simp.is_ready() {
+        Simp.destroy_render_target();
+        Window.close(*app.native_window);
+        Window.stop();
+        return app, false;
+    }
+
+    app.previous_ns = Time.monotonic();
+    app.delta_seconds = 0.0;
+    app.closing = false;
+    app.open = true;
+    app_is_active = true;
+    return app, true;
+}
+
+/// Closes `app`.
+///
+/// Idempotent: closing an already-closed or never-opened value is safe. Teardown follows dependency
+/// order — Simp target, window, then SDL — and releases the private one-active-App guard last.
+close :: (app: *App) {
+    if !app.open {
+        return;
+    }
+
+    Simp.destroy_render_target();
+    Window.close(*app.native_window);
+    Window.stop();
+
+    app.open = false;
+    app.closing = true;
+    app.previous_ns = 0;
+    app.delta_seconds = 0.0;
+    app_is_active = false;
+}
+
+/// Starts one frame and reports whether the caller should continue.
+///
+/// Drains the SDL queue exactly once into `app.events`, latches any close request, and computes an
+/// unclamped duration from the monotonic clock. A closed app returns false without touching global
+/// input or renderer state.
+begin_frame :: (app: *App) -> bool {
+    if !app.open {
+        return false;
+    }
+
+    _ = Input.update_window_events(*app.events, Input.MAX_EVENTS_PER_FRAME);
+    if Input.frame_wants_to_close(*app.events) {
+        app.closing = true;
+    }
+
+    now := Time.monotonic();
+    if now == 0 {
+        app.delta_seconds = 0.0;
+        return !app.closing;
+    }
+    elapsed := now - app.previous_ns;
+    if app.previous_ns == 0 || elapsed < 0 {
+        elapsed = 0;
+    }
+    app.previous_ns = now;
+    app.delta_seconds = cast(float64, elapsed) / cast(float64, Time.NANOSECONDS_PER_SECOND);
+
+    return !app.closing;
+}
+
+/// Presents the current frame with vertical synchronization.
+///
+/// Safe on a closed app. Drawing belongs to later slices and happens between [`begin_frame`] and this
+/// call through lower-level Simp operations for now.
+end_frame :: (app: *App) {
+    if !app.open {
+        return;
+    }
+    Simp.swap_buffers(*app.native_window, true);
+}
+
+/// Whether this application has latched a close request.
+should_close :: (app: *App) -> bool {
+    return app.closing;
+}
+
+/// The most recent non-negative, unclamped frame duration, in seconds.
+///
+/// Zero before the first frame and after [`close`].
+delta_time :: (app: *App) -> float64 {
+    return app.delta_seconds;
+}
+
+/// The underlying window.
+///
+/// This is an escape hatch for lower-level APIs. The `App` retains ownership: callers must not close
+/// the returned window or destroy its Simp target.
+window :: (app: *App) -> *Window.Window {
+    return *app.native_window;
+}
+
+#scope_module
+
+/// Whether one fully initialized `App` owns the process-wide SDL/Simp lifecycle.
+app_is_active: bool = false;

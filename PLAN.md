@@ -259,9 +259,16 @@ Status of each slice component, so this is answerable without reading the tree.
 > unions are exactly the old inputs; the change exposes parallel work rather than sampling coverage
 > away. `scripts/check fast` and `pre-commit` are local feedback lanes, while `scripts/check full`
 > remains the ordinary Cargo gate including doctests.
+>
+> **Current Game foundation (ADR-0210).** `modules/Game` now owns one caller-sized `App` lifecycle:
+> SDL/window/Simp startup, one event drain per frame, close latching, non-negative monotonic delta,
+> presentation and dependency-ordered idempotent teardown. Simp remains process-global, so Game
+> enforces one active App and requires its lifecycle to stay on one thread. Held input, drawing
+> helpers, generation-tagged textures, PNG, text and audio remain later slices.
 
 | Component | Status | Notes |
 |---|---|---|
+| `modules/Game` | **Foundation done** | **ADR-0210 decides ADR-0208's six forks and lands the first slice.** A caller owns `App`; `open(width, height, title)` starts SDL, creates the window, selects top-left/y-down Simp coordinates and unwinds every completed step if GL setup fails. `begin_frame` drains once, latches close, and records an unclamped non-negative delta; `end_frame` presents; `close` is idempotent and destroys Simp before the window and SDL. A private guard refuses a second simultaneous App because Simp has one process-global renderer; the lifecycle stays on one thread. Two native integration tests cover a real synthetic-quit/reopen lifecycle and the dummy driver's no-GL unwind. **Not game-ready v1:** held input, primitive helpers, generation-tagged resources, PNG, text and audio are later slices. |
 | `jr-base` | **Done** | `trap_message` takes a `frames: &[&str]` and emits one `  in <name>` line per frame, innermost first (ADR-0066 §2). It stays the **one** place that decides what a trap says, which is what keeps two engines rendering at different *times* — native at compile time, the VM at run time — from drifting in punctuation or order (ADR-0020 §2's argument, now applied to a chain). Spans, `FileId`, `lasso` interning, `newtype_index!`, source map, the one trap-message formatter (ADR-0020 §2) |
 | `jr-diag` | **Done** | Diagnostic model + `annotate-snippets` renderer |
 | `jr-syntax` | **Done** | **`X : u32 : 5` and `T.[a, b, c]`** (ADR-0190 §1, ADR-0194 §1). A typed constant's node kind is not known until the type is read — `X : u32 : 5` and `x : u32 = 5` differ only in a token *after* the annotation — so it is built behind a checkpoint and wrapped as `CONST_DECL` or `VAR_DECL` once the answer is in. An array literal is one token of lookahead past a `.`, since a field name can never be a `[`. **A qualified type name** — `Window.Event` — is two `IDENT`s in the *same* `NAME_TYPE` node (ADR-0179 §5), so no consumer meets a new node kind and `NameType::name_token` answers the **last** identifier; the type grammar rejected the spelling outright before (E0100, probed). **`VECTOR_TYPE`** is `#simd [N]T` — *one* node rather than an attribute node wrapping an `ARRAY_TYPE`, because unlike `#align`/`#place` the attribute and the array are inseparable: neither means anything without the other (ADR-0148 §1). Taken in **type** position rather than the declaration attribute loop, so it survives a parameter list and a return type. `DIRECTIVE` joined `TYPE_START`, the fourth recorded instance of that token-set trap — without it `v: #simd [4]s32` reported "expected a type after `:`" at the `#`. E0133 is a `#simd` with no array type, and the first parser code added in three waves. **`@note`** is `NOTE`, taken in the same attribute loop as the directives but its own kind, since a note is *data for a metaprogram* while a directive is an *instruction to the compiler* (ADR-0098 §1); `parse_note()` takes `@name` or `@name "payload"`, and `looks_like_proc_signature` took `AT` — the token-set trap for the **seventh** time. **`#modify { … }`** is `MODIFY_ATTR`, the one procedure attribute that carries a **block** (ADR-0093 §1); `looks_like_proc_signature` took it too — the token-set trap for the *sixth* time. **`looks_like_proc_signature` takes `#expand`** (ADR-0091 §4) — the token-set trap for the fifth time: a *void* macro `f :: (x: s64) #expand { … }` reaches neither `ARROW` nor `L_BRACE`, so it was read as a parenthesised-expression constant and produced fourteen cascading errors. **`#expand`** joins the procedure attribute loop as `EXPAND_ATTR` (ADR-0090 §1), so the three attributes take any order — its own kind beside `C_CALL_ATTR`/`NO_ABC_ATTR` so a consumer that forgets it is a missing arm, not a silent fall-through. **`$N: s64` — a comptime-value parameter** (ADR-0087 §1): `parse_param` accepts an optional leading `$` before the name (a `DOLLAR` child of `PARAM`, distinct from a `$T` `POLY_TYPE` in *type* position), the param-list continuation gate widens for it (the recurring token-set trap), and `Param::is_comptime` reads it. **`struct($T) { … }` and `Box(s64)`** (ADR-0085 §3): `STRUCT_TYPE_PARAMS` (a `($T)` list before the brace, `parse_struct_type_params`) and `TYPE_ARGUMENTS` (a `(s64)` list after a name in type position, `parse_type_arguments`), both optional so an ordinary struct and a bare name are unchanged; the `(` binds to the name in `parse_type_inner`, and a proc-pointer type's `(` is a different arm, so no ambiguity. AST accessors `StructType::params`, `NameType::arguments`, `TypeArguments::args`, `StructTypeParams::vars`. `$` lexes as `DOLLAR` and `$T` parses as a `POLY_TYPE` in type position, with `DOLLAR` in `TYPE_START` (ADR-0081). `CODE_STMT` and `parse_code_stmt` for `#code { … }` (ADR-0080 §1), checked **before** the `EXPR_START` arm because a `{` is neither a string nor an operand expression; braces required, E0131 reported at the directive rather than the token after it. `parse_stmts` parses a bare **statement list** rooted in a `BLOCK`, for `#insert` (ADR-0072 §1). `parse` cannot serve: it parses a *source file*, where `n := 1;` is a file-level `VAR_DECL` rather than a `DECL_STMT`. Wrapping the text in synthesized braces to reuse `parse` was rejected because every offset would shift by one, and §3 reports a fault's position *as an offset into the inserted text* — an offset one past the truth is worse than none, because the reader trusts it. Raises the parser's existing **E0114** for a token where a statement belongs, reused rather than duplicated because the fault is identical and only the indexed text differs; `jr-hir` re-words it as E0263 before a reader sees it. **No grammar, lexer or `SyntaxKind` change** — the lexer is already permissive about `#anything`, so `#insert "…"` was already a `DIRECTIVE_EXPR` with a `string_arg`. `switch e { case v; … else; … }` is a `SWITCH_STMT` of `SWITCH_ARM`s (ADR-0067 §1). An arm's body is "statements until the next `case`, `else` or `}`", which reuses the statement-list parsing every block has — so no new body shape enters the grammar, and braces per arm would be noise on the common one-statement arm. The `else` arm is the *same node with no value*: an absent value is the catch-all, so nothing needs a second kind — but `is_else` reads the **keyword**, because a malformed `case ;` also has no value and treating it as a catch-all would make a syntax error silently exhaustive. `push_context { … }` is a `PUSH_CONTEXT_STMT` wrapping a braced `BLOCK` (ADR-0063): the body must have braces — a braceless context swap that lasts one statement reads as a mistake — so unlike `defer` it takes a `Block`, not the two-shape `ControlBody`. `push_context` is a keyword from this wave, placed after `NULL_KW` like `context` and `operator` so it stays outside `is_reserved_keyword`'s range (it was never reserved). The `-> T` of a procedure-pointer type is **optional** (ADR-0062 §1), so `(*u8)` is a void-returning proc pointer — which was *unspellable* before: `-> void` is E0212 because `void` has no type name (ADR-0015 §3), `(*u8)` alone demanded an arrow, and `-> ` with nothing after it is a parse error. That blocked an allocator's `free` half. A present arrow with nothing usable after it is still an error, so `(s64) ->` and `(s64)` are not two spellings of one type. `null` is the **last reserved keyword to become real** (ADR-0060 §1): its refusal arm, which still read "arrives in wave W1", is gone and it parses as a `LITERAL_EXPR` beside `true`. `NULL_KW` joined the literal filter in `LiteralExpr::token` *and* `EXPR_START` — the token-set trap for the fifth keyword-shaped feature: without the first it lowered to `Bool(false)` ("found bool"), without the second `q := null` reported a parser error before sema's E0257. `is_reserved_keyword`'s range now holds no unimplemented keyword; kept as the mechanism for the next one. `PROC_TYPE`/`PROC_TYPE_PARAMS` for `(T, T) -> T` (ADR-0059 §3), with `L_PAREN` added to `TYPE_START` — the token-set trap for the fifth time, without which `fn: (s64) -> s64` reported "expected a type" at the `(`. In *return* position a proc-pointer type and a results list both begin `(`; `arrow_follows_matching_paren` scans to the matching `)` and checks for `->`, the same by-hand look-ahead `looks_like_proc_signature` uses, because only that token tells them apart (ADR-0059 §3). `NO_ABC_ATTR` for `#no_abc` (ADR-0058 §3), and the attribute position became a **loop** rather than one `if` per directive — two `if`s in a fixed order would have made `#no_abc #c_call` parse and `#c_call #no_abc` not, an ordering rule no reader could guess. The token gate that decides what a construct *is* needed the new directive too, the fourth time that list has had to widen (ADR-0045's `TYPE_START`, then `EXPR_START`, then `#c_call`). Also **restored `MEMBER`'s doc comment**, which ADR-0057's insertion of `C_CALL_ATTR` had stranded onto the new variant — harmless to the compiler and exactly the kind of thing that makes a registry stop being readable. `CONTEXT_KW` and `CONTEXT_EXPR` for the implicit context, and `C_CALL_ATTR` for the opt-out — `context` is its **own expression kind** rather than a `NAME_EXPR`, because a consumer reading names must not find it or `context.allocator` would look like a field access on a variable somebody declared. `CONTEXT_KW` sits outside `is_reserved_keyword`'s range, so nothing had to be removed from that refusal — the same position `enum_flags` and `operator` were in. The **token gate that decides what a construct is** needed `#c_call` beside `#foreign`: without it `raw :: () #c_call { }` was read as a parenthesised-expression constant and collapsed into four cascading errors starting at `()` — the `TYPE_START` shape of ADR-0045 for the third time (ADR-0057). Lexer, error-recovering parser, rowan CST, typed AST. `SCOPE_DECL` for `#scope_module`/`#scope_export` — a bare directive with no argument and no `;`, because it marks a *position* rather than declaring anything. `#scope_file` is deliberately absent: a Jairs module is one file (ADR-0014 §1), so it would be indistinguishable (ADR-0054 §1). `using` as a **prefix on a binding** in three positions — a field, a parameter and a *typed* local — with `USING_KW` out of the reserved-keyword refusal, the seventh and last keyword to make that trip. Only the typed local form takes it, because promotion needs the type's field list and `using q := f()` cannot mean anything (E0128). Three hand-written token gates had to widen — the struct field list, the union field list and the parameter list all tested `IDENT` alone — and `parse_field`'s unconditional `bump` became a **compiler crash on truncated input** until it was guarded, caught by the every-prefix robustness test (ADR-0050). `FOR_STMT`, `DEFER_STMT`, `LOOP_LABEL` and `RANGE_EXPR`, with `FOR_KW` and `DEFER_KW` **out** of the reserved-keyword refusal — the fifth and sixth keywords to make that trip. A range is reachable *only* as a `for`'s iterable, which is what keeps `0..n` from colliding with `[..]T`; `break`/`continue` take an optional label, and E0127 covers a malformed `for`. `parse_labelled_loop` builds a `NAME` node rather than bumping the token, because `LoopLabel::name()` looks for one and bumping left nothing to find — every labelled `break` then reported "outside a loop" (ADR-0049). `OPERATOR_KW` and `OPERATOR_DECL` for `operator + :: (…)`, with its own `parse_item` arm because that dispatch is on `IDENT`; E0126 covers a malformed declaration, and *which* operators may be overloaded is deliberately sema's question (ADR-0048). `AUTOCAST_EXPR` and `MEMBER_EXPR` for `xx expr` and `.RED`, with `XX_KW` and `DOT` added to `EXPR_START` — the token-set predicate trap, now checked in advance (ADR-0046). `UNION_TYPE` sharing `FIELD_LIST` with `STRUCT_TYPE`, and `union` **out** of the reserved-keyword refusal — the third keyword to make that trip after `cast` and `enum`. `TYPE_START` gained `UNION_KW`, `ENUM_KW` and `FLAGS_KW`, which were all missing (ADR-0045). `VIEW_TYPE` and `SLICE_EXPR` for `[]T` and `buf[]`, each a *separate kind* rather than a bracket form with an absent child, so a view cannot be confused with a malformed array; **E0124 keeps only its `[..]T` clause** (ADR-0044). `FLAGS_KW` — the first keyword added since the slice, and deliberately *outside* `is_reserved_keyword`'s range (ADR-0043). Bitwise operators with **non-C precedence** — bitwise above comparison, shifts between `+` and `*` — plus `~` and five compound assignments, and **E0122 is retired** (ADR-0042). `ENUM_TYPE`/`MEMBER_LIST`/`MEMBER` for `enum { … }` (ADR-0041); a float literal parses rather than being refused, and **E0120 is retired** (ADR-0040). `ARRAY_TYPE` and `INDEX_EXPR` for `[N]T` and `a[i]`, with `[]T` and `[..]T` refused by name (ADR-0039); `CAST_EXPR` is a real node, not a reserved-keyword refusal (ADR-0037 §3). `///` and `//!` are distinct trivia kinds (ADR-0027) |
@@ -291,7 +298,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the 166 editor checks — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua`, 166 checks, needs an editor CI does not have. Seven are new, and they exist because the *installed parser* is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The checks assert the `context_expr` count, that no `name_expr` has the text `context`, and that `#c_call` gets a colour at all — a literal token the general `(directive)` rule cannot reach. Eleven others: `for_stmt`/`loop_label`/`defer_stmt`/`range_expr` node kinds, `for` and `defer` colouring as keywords rather than reserved, and — the one that matters — that an ordinary `n: s64` declaration is **not** parsed as a loop label. Both begin `identifier ":"`, and resolving that with the `prec(1)` tree-sitter itself suggests made the label rule win everywhere and silently broke every declaration in the corpus; a declared GLR conflict is the fix (ADR-0049). Twenty-nine of them assert tree-sitter's *node kinds* — and, for bitwise, its *nesting* — because ADR-0010's drift gate counts errors and cannot see a wrong tree. The view checks assert that `[]T` and `[N]T` produce *different* kinds, which a shared rule would have hidden |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and any LSP client can use it; the repository packages for Neovim only. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–**0209**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
+Accepted ADRs: 0001–**0210**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
 counts here are why the ADR index row and this line move in the same commit.
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
@@ -592,6 +599,42 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
+> **ADR-0210 starts `modules/Game` with the lifecycle seam, not a second renderer.** One explicit,
+> caller-owned `Game.App` now hides SDL/window/Simp startup and failure unwind, drains events once per
+> frame, latches close, reports unclamped monotonic delta time, presents, and tears down in dependency
+> order. A private guard refuses a second simultaneous App because Simp owns one process-global GL
+> context and batch. The App stays on the thread that opened it.
+>
+> **Both sides of the lifecycle are native integration tests.** The real-driver test opens, frames,
+> receives a synthetic SDL quit, closes twice and reopens; the dummy-driver test reaches the
+> no-GL-context failure and then proves a fresh raw Window lifecycle still works. Both are in
+> nextest's serial graphics group.
+>
+> **The facade is deliberately incomplete.** ADR-0210 also fixes the later public direction:
+> generation-tagged texture handles, top-left/y-down coordinates, Jairs `snake_case`, caller-owned
+> simulation policy, and incremental slices whose beginner-facing v1 waits for PNG and text. No
+> allocator, drawing helper, held-input table, resource registry, text or audio was smuggled into the
+> foundation.
+
+**1228 workspace tests (1237 under gate 7), 283 corpus files, 210 ADRs, 25 modules, all seven gates
+green.** ADR-0210 adds two native integration tests and no corpus file. **E0296** remains the first
+free diagnostic code.
+
+### Next wave: `Game` input state
+
+Write a new ADR and use a new `feat/game-input` branch. The already-decided boundary is:
+
+1. caller-owned held/pressed/released keyboard and mouse snapshots inside `App`;
+2. a complete named key table rather than magic SDL scancodes;
+3. one update per `begin_frame`, derived from the event batch already drained there;
+4. no Escape-to-close policy in the module — callers choose it;
+5. native integration coverage for held state, one-frame edges and release.
+
+Do not add primitives or resources in the input wave; each remains its own ADR and branch.
+
+### Previous handoff: ADR-0209
+
+> [!IMPORTANT]
 > **ADR-0209 made routine feedback seconds-scale without weakening gate 3.** A controlled warm
 > before/after measured the authoritative default Cargo test gate at **222.59 → 122.54 seconds**, including
 > doctests. The differential target fell **140.74 → 62.99 seconds** and parser robustness
@@ -609,9 +652,8 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 > `sccache`, another profile and a faster linker are deferred; `target/` was already 30 GiB and the
 > measured cost was execution.
 
-**1226 workspace tests (1235 under gate 7), 283 corpus files, 209 ADRs, all seven gates green.**
-ADR-0209 replaces two default tests with twelve and one LLVM-only test with four; it moves no corpus
-file. **E0296** remains the first free diagnostic code.
+**At ADR-0209:** 1226 workspace tests (1235 under gate 7), 283 corpus files and 209 ADRs.
+It replaced two default tests with twelve and one LLVM-only test with four; it moved no corpus file.
 
 ### Previous handoff: ADR-0208
 
@@ -631,15 +673,15 @@ file. **E0296** remains the first free diagnostic code.
 > handles work, a clean `GL.error_code()` sample proves only that no error was queued, and current
 > driver-backed `#run` code can allocate, read/write files and execute commands.
 >
-> **A smaller Jairs-native game facade is justified, but no API is authorised yet.** Public Jai source
+> **A smaller Jairs-native game facade was justified here; ADR-0210 later authorised its API.** Public Jai source
 > exposes low-level `Window_Creation` + `Input` + `Simp`; `jai-simpler` exists specifically to wrap
 > that stack, and independent raylib bindings target the same ergonomic gap. The proposal is a thin
 > `modules/Game` written in Jairs over `Window`, `Input`, `Simp`, `Image`, `Time`, `Math` and `Basic`,
 > not a second renderer or an engine.
 
-### The next decision: `Game`'s six forks
+### Decision that followed ADR-0208: `Game`'s six forks
 
-Put these to the decider before writing the module:
+ADR-0210 accepted the recommended answer to all six before writing the module:
 
 1. **State:** explicit `App` value (**recommended**) versus a raylib-like singleton.
 2. **Resources:** generation-tagged texture handles (**recommended**) versus raw `Simp.Texture`.
@@ -650,7 +692,7 @@ Put these to the decider before writing the module:
    fixtures, but reserve “v1/game-ready” and the beginner tutorial for PNG and text (**recommended**);
    the alternatives are a documented BMP-only v1 or blocking every facade slice on both substrates.
 
-If those decisions are accepted, implement one ADR and branch per slice:
+The accepted sequence is one ADR and branch per slice:
 
 1. `Game.App`, startup/cleanup, close handling and frame timing;
 2. held/pressed/released keyboard and mouse state with a complete key table;
@@ -672,9 +714,8 @@ If those decisions are accepted, implement one ADR and branch per slice:
 - **Verification still owed:** bind `glReadPixels` and compare pixels; successful builds, runs and
   clean error samples do not establish visual correctness.
 
-**1216 workspace tests (1222 under gate 7), 283 corpus files, 208 ADRs, all seven gates green.**
-ADR-0208 is a research/documentation wave, so neither test nor corpus count moves. **E0296** remains
-the first free diagnostic code.
+**At ADR-0208:** 1216 workspace tests (1222 under gate 7), 283 corpus files and 208 ADRs.
+It was a research/documentation wave, so neither test nor corpus count moved.
 
 ### Previous handoff: ADR-0207
 

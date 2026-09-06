@@ -119,7 +119,7 @@ silently skips. **Run gate 7 in any wave that touches MIR, `jr-pool`'s layout, `
 either back end** — those are exactly the places where a third engine has something to say.
 
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
-visible. **It is 1226 today (1235 under gate 7), with 283 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
+visible. **It is 1228 today (1237 under gate 7), with 283 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
 only the corpus one, which is the pattern every wave whose deliverable a `.jr` program can observe
 follows, and the reason the two counts are tracked apart. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
 → 969 (W5 sub-waves 1–4) → 974 (W5 sub-wave 5, polymorphic structs) → 976 (W5 sub-wave 6a, `$N` surface)
@@ -1808,6 +1808,33 @@ compile. Every one was proved by reading a module or by running the compiler. Th
 remembering next to the 47 this wave set out to fix: **fresh documentation written from real sources still
 arrives with roughly the same defect density as documentation that has rotted for sixty waves**, so the audit
 is not optional cleanup — it is the step that makes the writing worth anything.
+
+**ADR-0210 reaches 1228** (1237 under gate 7), holds at **283** corpus files, and adds the
+**twenty-fifth module** — `modules/Game`. It is the first slice of ADR-0208's facade, and its depth is
+lifecycle rather than drawing: `open` starts SDL, opens a window, creates and verifies Simp, while
+`close` destroys those three in the only safe reverse order. `begin_frame` owns the one event drain,
+close latch and monotonic delta; `end_frame` presents. No allocator, input table, primitive or texture
+registry is hidden in the word “foundation”.
+
+**An explicit App does not imply the substrate can host two.** Simp still has one process-global GL
+context and batch, so a private guard refuses a second simultaneous `Game.App`. The value nevertheless
+earns its place: ownership and cleanup are visible, tests do not call a module-global public singleton,
+and the interface can survive a future multi-context renderer. Jairs cannot forbid copying an open App
+or make selected fields private, so both restrictions are stated as contracts rather than dressed up
+as type-system guarantees. The entire lifecycle stays on the opening thread; the guard is non-atomic
+and the GL context is thread-bound.
+
+**The failure test is as important as the real-window test.** SDL's dummy driver can create the plain
+fallback window and cannot create the GL context. That makes it a deterministic probe of the middle
+failure path: `Game.open` must destroy any partial Simp state, close the window and stop SDL, after
+which a fresh raw Window lifecycle succeeds. The real-driver twin refuses a second App without
+disturbing the first, receives a synthetic quit on the next frame, closes twice and reopens. Both are
+in nextest's serial graphics group because process-global state is exactly what they test.
+
+**One central review fix prevented a rare timing spike.** A failed `Time.monotonic()` returns zero.
+Leaving `previous_ns` unchanged is correct; storing zero would make the next successful frame measure
+from the epoch and report an enormous delta. A backwards reading is also clamped to zero, while ordinary
+long frames remain unclamped because the caller, not Game, owns simulation policy.
 
 ## House style
 

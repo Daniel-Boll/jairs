@@ -1541,6 +1541,160 @@ fn run_build_with_paths(path: PathBuf, output: PathBuf, library_paths: &[PathBuf
     .unwrap_or(1)
 }
 
+/// `Game.App` owns one complete real-driver lifecycle (ADR-0210).
+///
+/// This deliberately tests the process-global edge, not only the happy path: a second simultaneous
+/// `open` must be refused without disturbing the first app, while closing the first must release the
+/// guard so another app can open. A synthetic `QUIT` goes through SDL's real queue and must be observed
+/// by the next `begin_frame`.
+///
+/// Like the other graphics tests, this skips only when SDL2 itself is absent. A machine with SDL2 but no
+/// usable display is an environment where the real-driver contract is not satisfied, so that is a failure
+/// rather than a silent skip.
+#[test]
+fn game_foundation_owns_one_real_driver_lifecycle() {
+    let candidates = [
+        "/opt/homebrew/lib",
+        "/usr/local/lib",
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib",
+    ];
+    let library_dir = candidates.iter().map(PathBuf::from).find(|dir| {
+        dir.join("libSDL2.dylib").exists()
+            || dir.join("libSDL2.so").exists()
+            || dir.join("libSDL2-2.0.so.0").exists()
+    });
+    let Some(library_dir) = library_dir else {
+        return;
+    };
+
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("game_lifecycle.jr");
+    fs::write(
+        &source,
+        r#"Game :: #import "Game";
+Input :: #import "Input";
+
+libc :: #system_library "c";
+exit_now :: (status: s64) #foreign libc "exit";
+
+main :: () {
+    app, ok := Game.open(240, 160, "Game lifecycle");
+    if !ok { exit_now(90); }
+
+    // Simp owns one process-wide context. Refusing another App must not tear down the first one's context.
+    second, second_ok := Game.open(160, 120, "Second app");
+    if second_ok { exit_now(91); }
+    Game.close(*second);
+
+    if Game.should_close(*app) { exit_now(92); }
+    if !Game.begin_frame(*app) { exit_now(93); }
+    if Game.delta_time(*app) < 0.0 { exit_now(94); }
+    Game.end_frame(*app);
+
+    q := Input.quit_event();
+    if !Input.push(*q) { exit_now(95); }
+    if Game.begin_frame(*app) { exit_now(96); }
+    if !Game.should_close(*app) { exit_now(97); }
+
+    // Cleanup is idempotent, and releasing the process-global guard permits a later App.
+    Game.close(*app);
+    Game.close(*app);
+
+    reopened, reopened_ok := Game.open(180, 120, "Reopened app");
+    if !reopened_ok { exit_now(98); }
+    if !Game.begin_frame(*reopened) { exit_now(99); }
+    Game.end_frame(*reopened);
+    Game.close(*reopened);
+    exit_now(0);
+}
+"#,
+    )
+    .unwrap();
+
+    let binary = dir.path().join("game_lifecycle");
+    let code = run_build_with_paths(source, binary.clone(), &[library_dir]);
+    assert_eq!(code, 0, "the Game lifecycle program must build and link");
+
+    let ran = std::process::Command::new(&binary)
+        .status()
+        .expect("the linked Game lifecycle binary should run");
+    assert_eq!(
+        ran.code(),
+        Some(0),
+        "Game must own one App lifecycle; 90-99 identify the failed contract"
+    );
+}
+
+/// A failed `Game.open` under SDL's dummy driver unwinds every completed lifecycle step (ADR-0210).
+///
+/// The dummy driver can create the plain fallback window but cannot create a GL context. `Game.open` must
+/// therefore return failure, `close` must remain safe, and a subsequent direct Window lifecycle must still
+/// work. The last assertion proves the failed App did not leave SDL or its window ownership poisoned.
+#[test]
+fn game_foundation_unwinds_when_dummy_driver_has_no_gl_context() {
+    let candidates = [
+        "/opt/homebrew/lib",
+        "/usr/local/lib",
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib",
+    ];
+    let library_dir = candidates.iter().map(PathBuf::from).find(|dir| {
+        dir.join("libSDL2.dylib").exists()
+            || dir.join("libSDL2.so").exists()
+            || dir.join("libSDL2-2.0.so.0").exists()
+    });
+    let Some(library_dir) = library_dir else {
+        return;
+    };
+
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("game_dummy_failure.jr");
+    fs::write(
+        &source,
+        r#"Game :: #import "Game";
+Window :: #import "Window";
+
+libc :: #system_library "c";
+exit_now :: (status: s64) #foreign libc "exit";
+
+main :: () {
+    app, ok := Game.open(160, 120, "No GL");
+    if ok { exit_now(90); }
+    Game.close(*app);
+    Game.close(*app);
+
+    // A fresh raw Window lifecycle proves Game unwound its window and SDL startup after GL setup failed.
+    if !Window.start() { exit_now(91); }
+    w := Window.create_window(120, 80, "After failed Game");
+    if !Window.is_open(*w) { exit_now(92); }
+    Window.close(*w);
+    Window.close(*w);
+    Window.stop();
+    exit_now(0);
+}
+"#,
+    )
+    .unwrap();
+
+    let binary = dir.path().join("game_dummy_failure");
+    let code = run_build_with_paths(source, binary.clone(), &[library_dir]);
+    assert_eq!(
+        code, 0,
+        "the Game dummy-driver cleanup program must build and link"
+    );
+
+    let ran = std::process::Command::new(&binary)
+        .env("SDL_VIDEODRIVER", "dummy")
+        .status()
+        .expect("the linked Game dummy-driver binary should run");
+    assert_eq!(
+        ran.code(),
+        Some(0),
+        "Game must unwind a missing GL context; 90-92 identify the failed contract"
+    );
+}
+
 /// `modules/Window` opens a window and draws through OpenGL, in a compiled binary (ADR-0187).
 ///
 /// # Why this is not a corpus program

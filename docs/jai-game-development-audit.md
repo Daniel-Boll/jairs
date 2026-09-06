@@ -1,8 +1,7 @@
 # Jai game-development audit
 
-**Status:** primary-source research and an implementation proposal, not a scheduled wave.
-`PLAN.md` §7 remains the work queue. The proposed `Game` module in §6 must not be implemented
-until the design forks in §7 are decided.
+**Status:** primary-source research plus the staged `Game` plan. ADR-0210 decided the six forks and
+implemented the lifecycle foundation; `PLAN.md` §7 remains the work queue for later slices.
 
 This audit answers three questions raised while reviewing the games book:
 
@@ -207,7 +206,7 @@ These are higher-value for games than most syntax work because each removes appl
 The game facade should hide repetitive composition, but it must not pretend these substrate gaps
 are solved. In particular, a `draw_text` facade cannot exist until a real font path exists beneath it.
 
-## 6. Conditional verdict: add a small `Game` facade
+## 6. Verdict: add a small `Game` facade
 
 The condition for planning a separate facade is met:
 
@@ -217,8 +216,8 @@ The condition for planning a separate facade is met:
 - raylib bindings are popular enough to maintain broad example ports;
 - no built-in Jai module with raylib's init/input/draw/resource loop was found.
 
-This is a source-bounded verdict, not proof about unpublished future Jai builds. Before implementation,
-recheck the current Jai beta or a newer vendored module.
+This is a source-bounded verdict, not proof about unpublished future Jai builds. ADR-0210 accepted it
+for Jairs and implemented the first slice.
 
 ### Recommended boundary
 
@@ -241,15 +240,15 @@ purpose-built `[..]Texture_Entry` with generation-tagged integer handles. When c
 containers become usable for arbitrary element types, it can migrate to the standard containers
 without changing the public handle.
 
-### Proposed first useful loop
+### First useful loop
 
-Names are illustrative until §7 is decided:
+The foundation implemented by ADR-0210 is:
 
 ```jr
 Game :: #import "Game";
 
 main :: () {
-    app, opened := Game.open("Pong", 960, 540);
+    app, opened := Game.open(960, 540, "Pong");
     if !opened {
         return;
     }
@@ -259,8 +258,8 @@ main :: () {
         dt := Game.delta_time(*app);
         update(dt);
 
-        Game.clear(*app, Game.DARK);
-        Game.draw_rect(*app, 40, 40, 120, 24, Game.WHITE);
+        // Drawing still uses Simp until the primitive slice lands.
+        draw_with_simp();
         Game.end_frame(*app);
     }
 }
@@ -273,16 +272,17 @@ The v1 surface should be intentionally small:
 - drawing: `clear`, rectangle, line, circle, texture and source-rectangle sprite;
 - resources: `load_texture`, `unload_texture`, automatic cleanup at `close`;
 - coordinates: top-left, y-down, because it matches window input, UI and raylib;
-- escape hatch: expose the underlying `Window.Window` and `Simp.Texture` only through explicit
-  accessor procedures, not public mutable fields.
+- escape hatch: expose the underlying window through an accessor. Jairs cannot make selected fields
+  private, so `App`'s visible fields are an ownership convention rather than a false opacity promise.
 
 Do **not** put game modes, entity storage, collision systems, hot reload, an asset watcher, fixed-tick
 policy or global callbacks in v1. Those are framework decisions, while this module's job is to make
 the first playable loop short.
 
-### Implementation waves after the forks are decided
+### Implementation waves
 
-1. **Foundation:** `App`, startup/cleanup order, frame timing, close handling and allocator setup.
+1. **Foundation — implemented by ADR-0210:** caller-owned `App`, startup/cleanup order, frame timing
+   and close handling. It installs no allocator because this slice allocates nothing.
 2. **Input state:** key/mouse snapshots and edge transitions, plus a complete named key table.
 3. **Primitive drawing:** colour, rectangle, line and circle helpers over Simp batches.
 4. **Resources and sprites:** generation-tagged texture handles, BMP load/unload, source rectangles,
@@ -295,44 +295,44 @@ the first playable loop short.
 
 Each wave needs its own ADR and branch under the repository's normal process.
 
-## 7. Design forks for the decider
+## 7. Design forks decided by ADR-0210
 
-These choices are expensive enough that implementation must wait for an answer.
+These choices are now part of the module's contract.
 
 ### A. State ownership
 
-- **Explicit `App` value — recommended.** Multiple games/tests can coexist, cleanup is visible, and
-  hidden module globals do not become a permanent ABI.
+- **Chosen: explicit `App` value.** Cleanup is visible and a hidden module singleton does not become
+  the public API. Simp still permits only one active App, which Game enforces privately.
 - Module-global singleton. Shorter calls and closer to raylib, but it makes tests, multiple windows
   and ownership harder.
 
 ### B. Resource identity
 
-- **Generation-tagged integer `Texture` handle — recommended.** The registry owns GPU objects,
+- **Chosen for the resource slice: generation-tagged integer `Texture` handle.** The registry owns GPU objects,
   stale handles can be rejected, and internal storage can change later.
 - Return raw `Simp.Texture`. Thinnest wrapper, but it does not solve ownership or stale copies.
 
 ### C. Coordinate system
 
-- **Top-left, y-down — recommended.** Input coordinates, `UI`, image editors and raylib all agree.
+- **Chosen: top-left, y-down.** Input coordinates, `UI`, image editors and raylib all agree.
 - Preserve Simp's right-handed default. Better for mathematics and existing Pong/Snake world code,
   but every UI/mouse caller converts.
 
 ### D. Naming fidelity
 
-- **Jairs snake_case concepts — recommended:** `open`, `begin_frame`, `draw_texture`.
+- **Chosen: Jairs snake_case concepts:** `open`, `begin_frame`, `draw_texture`.
 - Raylib-compatible PascalCase names. Easier to translate raylib tutorials, but imports a C API style
   and promises parity the module will not have.
 
 ### E. Loop policy
 
-- **Expose `delta_time`; teach a fixed-step accumulator separately — recommended.** The facade does
+- **Chosen: expose `delta_time`; teach a fixed-step accumulator separately.** The facade does
   not choose simulation semantics.
 - Own fixed ticks inside `Game`. Less boilerplate, but immediately turns the facade into a framework.
 
 ### F. First asset formats
 
-- **Stage the implementation with BMP, but reserve “v1/game-ready” for PNG and text — recommended.**
+- **Chosen: stage the implementation with BMP, but reserve “v1/game-ready” for PNG and text.**
   Foundation, input, primitives and resource ownership can be reviewed independently; the first
   public teaching surface still handles the two assets almost every beginner expects.
 - Ship and document a BMP-only v1. Fastest route to a short loop, but it advertises an API whose first
@@ -357,5 +357,6 @@ The rewrite should:
 7. keep headless Pong and Snake as the testing lesson;
 8. present the current boilerplate as motivation for `Game`, not as ceremony the reader should admire.
 
-Once `Game` exists, the book should begin with it and teach raw Simp later. Until then, a concise
-Simp tutorial is still valuable as long as it is candid about the missing layer.
+Once `Game` reaches the PNG-and-text threshold, the book should begin with it and teach raw Simp
+later. The foundation alone is intentionally not that cutover point, so the current concise Simp
+tutorial remains candid and useful.

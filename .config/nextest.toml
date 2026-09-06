@@ -37,5 +37,7 @@ or test(/an_immediate_mode_button_fires_on_release_inside/)
 or test(/a_bmp_round_trips_into_a_texture/)
 or test(/the_simp_stack_draws_a_frame_end_to_end/)
 or test(/a_rotated_textured_quad_draws_through_render_geometry/)
+or test(/game_foundation_owns_one_real_driver_lifecycle/)
+or test(/game_foundation_unwinds_when_dummy_driver_has_no_gl_context/)
 """
 test-group = "graphics"

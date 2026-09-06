@@ -48,7 +48,7 @@ max_width = 100                # breaks a long argument or parameter list. Comme
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0209.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0210.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -120,8 +120,8 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1226** workspace tests (1235 under gate 7), all seven gates green.
-- **283** `.jr` corpus files, **209** accepted ADRs, **24** standard library
+- **1228** workspace tests (1237 under gate 7), all seven gates green.
+- **283** `.jr` corpus files, **210** accepted ADRs, **25** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative
@@ -145,6 +145,11 @@ level of a file, which the compiler could parse and could not compile.
   program cannot run in the comptime VM at all. All three build, link and run, and
   no queued GL error was observed during their checked frames. That does not prove
   shader results or pixels; nobody has compared the pixels to a reference image.
+- **The first `Game` facade slice exists.** One caller-owned `Game.App` now owns SDL,
+  window and Simp startup, one event drain per frame, close latching, monotonic delta
+  time, presentation and idempotent cleanup. It is deliberately only the lifecycle
+  foundation: held input, drawing helpers, resources, PNG, text and audio remain later
+  slices, and the beginner tutorial stays on the lower-level stack until PNG and text exist.
 - **The documentation site has a fourth book.**
   [`docs-site/`](docs-site/) gained *Games with Jairs*: an outcome-first path from
   a headless simulation to a window, drawing, timing, textures, UI and the three
@@ -229,9 +234,9 @@ before: two gates run at once and race a shared binary.
   this does not, syntax and libraries, each traced to a source and probed where
   a probe was possible.
 - **[`docs/jai-game-development-audit.md`](docs/jai-game-development-audit.md)** —
-  the primary-source games audit, language/library gaps, and the conditional
-  `Game` facade plan.
-- **[`docs/adr/README.md`](docs/adr/README.md)** — all 209 accepted decision
+  the primary-source games audit, language/library gaps, and the staged `Game`
+  facade plan whose foundation is now implemented.
+- **[`docs/adr/README.md`](docs/adr/README.md)** — all 210 accepted decision
   records.
 - **[`docs/spec/`](docs/spec/)** — the language specification chapters.
 - **[`examples/`](examples/)** — runnable programs, each verified.
