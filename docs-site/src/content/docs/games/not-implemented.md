@@ -15,7 +15,7 @@ game-facing layer is missing. `absent` means there is no reusable implementation
 
 | Area | Status | What works now | What is still missing |
 | --- | --- | --- | --- |
-| Window and rendering | partial | SDL2 creates windows, carries events, creates the GL context, and swaps buffers; OpenGL renders through `Simp` | Jairs exposes a Simp-shaped subset, not Jai's complete Simp surface; there is no single raylib-style game facade |
+| Window and rendering | partial | `Game.App` owns startup, close handling, one event drain, delta time, presentation and teardown; OpenGL renders through `Simp` | The facade does not yet own held input, drawing helpers or resources, and Jairs exposes a Simp-shaped subset rather than Jai's complete Simp surface |
 | Shapes | partial | Coloured triangles and quads, textured quads, blending, and y-up or y-down projection | Lines, circles, scissoring, render textures, and broader 2D/3D drawing helpers |
 | Text and fonts | absent | Scores can be represented with simple shapes | Font loading, glyph preparation, text measurement, and string drawing |
 | Images | partial | BMP load/save, in-memory surfaces, fills, GL upload, sprite-sheet UV selection | PNG and other common formats, public pixel editing, and pre-upload cropping |

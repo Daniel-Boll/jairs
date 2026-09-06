@@ -1,6 +1,6 @@
 ---
 title: The standard library
-description: The 24 in-Jairs modules — output and memory, containers, maths, files and processes, threads, JSON, and the 2D graphics stack.
+description: The 25 in-Jairs modules — output and memory, containers, maths, files and processes, threads, JSON, and the game/graphics stack.
 sidebar:
   order: 18
 ---
@@ -8,7 +8,7 @@ sidebar:
 Jairs' standard library is written **in Jairs**, not inside the compiler. That is a design
 commitment, not an accident: it forces the language to be expressive enough to write its own
 library, and it means the library is something you can read to learn what the language means.
-Every module here is a `.jr` file under `modules/`, and there are 24 of them.
+Every module here is a `.jr` file under `modules/`, and there are 25 of them.
 
 `Array` and `Map` genuinely are parameterised structs — `Array :: struct($T)`,
 `Map :: struct($K, $V)` — a parameterised struct crosses a module boundary now. What stays
@@ -354,12 +354,21 @@ actually set. A script that shells out uses `command` / `run` / `output` rather 
 `modules/Process`, because the **driver** spawns the process with ordinary strings, sidestepping
 the pointer-marshalling limit that makes `Process` native-only.
 
-## The graphics stack
+## The game and graphics stack
 
-Six modules put a window, input, and 2D drawing on OpenGL. Their separation and immediate-mode
+Six low-level modules put a window, input, and 2D drawing on OpenGL. `Game` has begun wrapping their
+lifecycle into a smaller Jairs-native interface. The low-level separation and immediate-mode
 vocabulary are Simp-shaped, but the API is a Jairs subset rather than an exact port of one
 unspecified Jai beta. [Book IV — Games with Jairs](/games/) is the full walkthrough; here is the
 two-line map.
+
+### Game
+
+`Game.App` owns window startup, one per-frame event drain, close handling, monotonic delta time,
+presentation, and teardown order. The foundation deliberately stops there: held/pressed/released
+input, shape helpers, generation-tagged textures, PNG, text, and audio remain later slices. The
+current games book therefore still teaches the lower-level modules directly until the facade reaches
+its documented game-ready threshold (ADR-0210).
 
 ### Simp
 

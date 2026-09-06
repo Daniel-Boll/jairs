@@ -1,6 +1,6 @@
 ---
 title: Games with Jairs
-description: The graphics stack — Window, Input, Simp, GL, Image and UI — and how a game is built, run and shipped from it.
+description: The Game foundation and the lower-level Window, Input, Simp, GL, Image and UI stack.
 sidebar:
   order: 0
   label: Overview
@@ -38,12 +38,18 @@ Jairs offers a **Simp-shaped subset**, not an exact copy of Jai's graphics API:
 
 |Module|Job|
 |---|---|
+|`Game`|Own one app's window lifecycle, close handling, event drain, frame timing and presentation.|
 |`Window`|Create and close a window.|
 |`Input`|Poll keyboard, mouse and window events.|
 |`GL`|Expose the OpenGL calls used by the renderer.|
 |`Simp`|Batch and draw coloured or textured 2D geometry.|
 |`Image`|Load BMP pixels and upload them as textures.|
 |`UI`|Build immediate-mode widgets over `Input` and `Simp`.|
+
+`Game` is a foundation, not yet the teaching surface for this book. It does not yet own held input,
+primitive helpers, textures, PNG, text or audio, so the complete examples below continue to show the
+lower-level modules they actually need. ADR-0210 reserves the beginner-facing cutover for the point
+where PNG and text exist beneath the facade.
 
 The implementation detail that explains the build setup is this: **Jairs uses SDL2 for windows,
 events and OpenGL-context plumbing, then OpenGL for rendering. Jai's Simp uses native OpenGL
@@ -59,7 +65,7 @@ the handful of calls that make a game.
 cannot load the SDL2 and OpenGL libraries required by a graphical driver. Use:
 
 - `jr run` for headless rules and simulations;
-- `jr build` for programs importing `Window`, `Input`, `Simp`, `Image` or `UI`.
+- `jr build` for programs importing `Game`, `Window`, `Input`, `Simp`, `Image` or `UI`.
 
 That restriction becomes an advantage once the rules are separated from the driver: a collision
 bug can fail a deterministic run instead of waiting for somebody to notice a bad frame.
