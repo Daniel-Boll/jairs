@@ -279,6 +279,42 @@ into a place to put a known problem — the CI answer existed for waves and the 
 though it did not. **A claim that something is unverified needs an expiry, or it becomes the reason
 nobody checks.**
 
+## 7. Where the Linux leg actually stands, and what is left
+
+Six pushes, each reading the run rather than assuming. The progression is the point:
+
+| push | Linux result |
+|---|---|
+| 1 | `undefined reference to 'sin'` — `modules/Math` on libc |
+| 2 | Math clear; `093-ffi-floats.jr` had the same bug |
+| 3 | both clear; `cannot find -lGL` — a package CI did not install |
+| 4 | link clear; VM: `sqrt` not found in this process on 6 programs |
+| 5 | VM crashes (`exit -1`) — my own dropped library handle |
+| 6 | **differential green**; 2 integration tests fail |
+
+**The differential harness now agrees across both engines on all 138 corpus programs on Linux**, which
+is the claim this ADR set out to make possible.
+
+Two failures remain, and **neither is this ADR's subject**. Both were masked for waves by the link
+failure ahead of them:
+
+**`aggregates_cross_a_foreign_boundary_as_a_c_compiler_expects` — got 15, expected 31.** One aggregate
+shape disagrees with a C compiler on x86-64, and **ADR-0160 predicted exactly this**. That ADR refused
+to implement System V's classification rules and said why: they are "a second ABI's worth of rules
+verified against a target this project has never run, and PLAN §1.5's owed Linux CI run comes first."
+**That prerequisite is now satisfied** — the run exists, it has been read, and it says the
+classification is wrong for one shape. Implementing System V's rules is the wave ADR-0160 described,
+and it now has the evidence it was waiting for.
+
+**`a_script_generates_source_and_provides_a_module` — the script exits 2 instead of 0.** A build script
+that generates source and provides a module fails on Linux. Uninvestigated: it is a distinct defect from
+everything above and deserves its own diagnosis rather than a guess appended here.
+
+**What this wave changes about the project's honesty**, more than any individual fix: the README said
+"unverified" for waves. It now says what a run reported, and PLAN §7 names two specific defects instead
+of one unread result. **A red leg with two named defects is a better state than a green claim nobody
+checked.**
+
 ## Consequences
 
 `modules/Math` links `-lm`, so the four undefined references are resolved on glibc. `#import "Basic"`

@@ -614,9 +614,16 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
    register for 4 to 40 bytes, never a whole function, so a single `DW_OP_regN` would print confident
    garbage outside that range — correctness needs a location list, the first section beyond
    `.debug_line`/`.debug_info` this compiler would emit.
-3. **x86-64 Linux is still unverified.** The CI matrix has been triggered; nobody has read the result.
-   That claim has been in this handoff for several waves and is the only *platform* claim in the README
-   with no observation behind it.
+3. **x86-64 Linux has been read, six times, and two defects remain** (ADR-0205 §7). The differential
+   harness now agrees across both engines on all 138 corpus programs there — six distinct defects were
+   fixed to get that far, each verified by reading the next run. What is left:
+   - **`aggregates_cross_a_foreign_boundary_as_a_c_compiler_expects` — got 15, expected 31.** One
+     aggregate shape disagrees with a C compiler on x86-64. **ADR-0160 predicted this and named the
+     prerequisite**: implementing System V's classification needed "the owed Linux CI run" first. That
+     run now exists and says the classification is wrong for one shape, so the wave ADR-0160 described
+     has the evidence it was waiting for. This is the next real piece of work.
+   - **`a_script_generates_source_and_provides_a_module` — the script exits 2 instead of 0.**
+     Uninvestigated, and distinct from everything above.
 4. **A boolean chain is still not wrapped** (ADR-0204 §2), and a struct or array literal is not either
    — neither exceeded the width anywhere in this corpus, so there was nothing to measure. All three are
    candidates only when something overflows.
