@@ -49,6 +49,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+      # The differential harness *links* every program in `tests/corpus/valid/`, so this leg needs
+      # every system library the corpus reaches. macOS ships them all; Linux does not.
+      #
+      # **Only OpenGL, and only because one program needs it.** `tests/corpus/valid/137` imports
+      # `modules/GL` to call `gl_library_for`, a compile-time text function — it never calls an
+      # OpenGL routine, but importing a module that declares a library links that library, so
+      # `-lGL` is on the line either way. Without the package: `cannot find -lGL` (ADR-0205 §4b).
+      #
+      # **SDL2 is deliberately not installed.** Nothing in `valid/` reaches `Window`, `Simp`,
+      # `Input`, `Image` or `UI` — verified, not assumed — and installing a library nothing needs is
+      # the same mistake as naming one nothing contains. The day a corpus program imports one of
+      # those, this step needs `libsdl2-dev` and the failure will say so.
+      - name: system libraries the corpus links
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev
       - run: cargo test --workspace
 
   # ---------------------------------------------------------------------------
