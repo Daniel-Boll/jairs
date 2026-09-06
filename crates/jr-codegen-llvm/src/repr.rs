@@ -388,7 +388,7 @@ fn class_pieces<'ctx>(
     ty: PoolId,
     describe: &dyn Fn(&str) -> CodegenError,
 ) -> Result<Vec<BasicTypeEnum<'ctx>>, CodegenError> {
-    match jr_pool::classify(pool, target, ty) {
+    match jr_pool::classify(pool, target, jr_pool::CAbi::host(), ty) {
         Ok(Some(jr_pool::Class::Integer { words })) => {
             let word = pointer_int(context, target);
             Ok((0..words).map(|_| word.into()).collect())
@@ -401,7 +401,17 @@ fn class_pieces<'ctx>(
             };
             Ok((0..count).map(|_| member).collect())
         }
-        Ok(Some(jr_pool::Class::Memory)) | Ok(None) => Err(describe(
+        // **`Stack` is owed in this back end** (ADR-0206 §6). System V's `MEMORY` class is `byval` for a
+        // parameter and `sret` for a return in LLVM's vocabulary, and both are attribute work rather than a
+        // type change — so it is a real gap and not a hard one. It is refused rather than written blind for
+        // two reasons: `classify` never answers `Stack` on AAPCS64, so gate 7 on arm64 cannot exercise a line
+        // of it, and CI compiles no LLVM at all on x86-64, so nothing anywhere would run it. Unverifiable
+        // code at an ABI boundary is exactly the shape that produced the miscompile this ADR exists to fix.
+        Ok(Some(jr_pool::Class::Stack { .. })) => Err(describe(
+            "passing a large aggregate to a `#foreign` procedure is not implemented by the LLVM back \
+             end on this target — the Cranelift back end, which is the default, does implement it",
+        )),
+        Ok(Some(jr_pool::Class::Refused) | None) => Err(describe(
             "an aggregate at a `#foreign` boundary needs a register class this back end does not \
              implement — at most two words, or up to four floats of one width",
         )),

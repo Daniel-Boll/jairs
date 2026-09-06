@@ -117,8 +117,8 @@ down, and every call took a state argument the original does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1209** workspace tests, all seven gates green.
-- **282** `.jr` corpus files, **205** accepted ADRs, **24** standard library
+- **1215** workspace tests, all seven gates green.
+- **282** `.jr` corpus files, **206** accepted ADRs, **24** standard library
   modules.
 - macOS arm64 is verified locally, gate by gate. **Linux x86-64 has now been
   read — six times — and it was failing**: the CI leg had been triggered for
@@ -126,10 +126,13 @@ level of a file, which the compiler could parse and could not compile.
   `modules/Math` binding `sqrt`, `sin`, `cos` and `acos` to **libc**, which
   resolves on macOS because `libm.tbd` is a symlink to `libSystem.tbd` and does
   not on glibc, where libm is a separate library. The differential harness now
-  agrees across both engines on all 138 corpus programs there. **One failure
-  remains**, and it is a named wave rather than a loose end: a 32-byte
-  four-`float64` struct at a `#foreign` boundary, which AAPCS64 passes in four
-  registers and x86-64 System V requires on the stack (ADR-0205 §7, ADR-0160).
+  agrees across both engines on all 138 corpus programs there. The last
+  failure was a **silent miscompile** rather than a loose end: a 32-byte
+  four-`float64` struct — a `CGRect` — was passed in four SSE registers where
+  System V requires it on the stack, because `jr-pool` had AAPCS64's
+  homogeneous-aggregate rule and System V has no such rule at all. Fixed in
+  ADR-0206, which splits ADR-0160's refusal exactly as that ADR said the Linux
+  run would let it.
 
 Read **[`docs/capabilities.md`](docs/capabilities.md)** for the full,
 table-by-table inventory of what works, what is absent, and the sharp edges

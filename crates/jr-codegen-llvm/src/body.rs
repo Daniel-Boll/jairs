@@ -1428,7 +1428,12 @@ impl<'ctx> Translator<'ctx, '_> {
         // though `returns_via_sret` — which describes Jairs's own convention — says an aggregate does.
         let c_return_in_registers = crosses_c
             && matches!(
-                jr_pool::classify(self.shared.pool, self.shared.target, ret_ty),
+                jr_pool::classify(
+                    self.shared.pool,
+                    self.shared.target,
+                    jr_pool::CAbi::host(),
+                    ret_ty
+                ),
                 Ok(Some(
                     jr_pool::Class::Integer { .. } | jr_pool::Class::Float { .. }
                 ))
@@ -1559,7 +1564,12 @@ impl<'ctx> Translator<'ctx, '_> {
             self.context.ptr_type(AddressSpace::default()),
             "agg",
         ))?;
-        match jr_pool::classify(self.shared.pool, self.shared.target, ty) {
+        match jr_pool::classify(
+            self.shared.pool,
+            self.shared.target,
+            jr_pool::CAbi::host(),
+            ty,
+        ) {
             Ok(Some(jr_pool::Class::Integer { words })) => {
                 let word = repr::pointer_int(self.context, self.shared.target);
                 for index in 0..words {
@@ -1626,7 +1636,12 @@ impl<'ctx> Translator<'ctx, '_> {
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         let layout = layout_of(self.shared.pool, self.shared.target, ty)
             .map_err(|reason| CodegenError::NoLayout { ty, reason })?;
-        let class = match jr_pool::classify(self.shared.pool, self.shared.target, ty) {
+        let class = match jr_pool::classify(
+            self.shared.pool,
+            self.shared.target,
+            jr_pool::CAbi::host(),
+            ty,
+        ) {
             Ok(Some(class)) => class,
             _ => {
                 return Err(CodegenError::Internal(String::from(
@@ -1637,7 +1652,7 @@ impl<'ctx> Translator<'ctx, '_> {
         let (count, stride) = match class {
             jr_pool::Class::Integer { words } => (words, 8_u64),
             jr_pool::Class::Float { kind, count } => (count, u64::from(kind.bits / 8)),
-            jr_pool::Class::Memory => {
+            jr_pool::Class::Stack { .. } | jr_pool::Class::Refused => {
                 return Err(CodegenError::Internal(String::from(
                     "an aggregate returned from a `#foreign` call with no register class",
                 )));

@@ -1339,9 +1339,24 @@ impl Ctx<'_> {
     /// A layout error refuses too: a type whose size is unknown has no classification, and guessing is what
     /// this whole mechanism exists to prevent.
     fn aggregate_refusal(&self, ty: PoolId, refusal: &'static str) -> Option<&'static str> {
-        match jr_pool::classify(self.pool, jr_pool::TargetLayout::LP64, ty) {
-            Ok(Some(jr_pool::Class::Integer { .. } | jr_pool::Class::Float { .. })) => None,
-            _ => Some(refusal),
+        // **Exhaustive, and it was not.** This arm used to end in `_ => Some(refusal)`, so when ADR-0206
+        // split `Class::Memory` into `Stack` and `Refused` the new variant was *silently* refused here — the
+        // wildcard swallowed it, and only the arity change made the compiler speak up. That is the same hole
+        // `AGENTS.md` records for a `let-else` on an enum, in its other form: a `_` arm is an opt-out from
+        // the guarantee this project trusts most, and a refusal gate is the worst place to take it, because
+        // the symptom is a diagnostic on a program that should have built.
+        match jr_pool::classify(
+            self.pool,
+            jr_pool::TargetLayout::LP64,
+            jr_pool::CAbi::host(),
+            ty,
+        ) {
+            Ok(Some(
+                jr_pool::Class::Integer { .. }
+                | jr_pool::Class::Float { .. }
+                | jr_pool::Class::Stack { .. },
+            )) => None,
+            Ok(Some(jr_pool::Class::Refused) | None) | Err(_) => Some(refusal),
         }
     }
 

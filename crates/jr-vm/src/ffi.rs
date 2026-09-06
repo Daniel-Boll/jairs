@@ -521,10 +521,15 @@ fn dispatch(vm: &mut Vm<'_>, foreign: &ForeignProc, args: &[Marshalled]) -> Resu
     // `size_of::<R>()` is at least a word, and a returned struct is stored from registers — so the buffer has
     // to be aligned for the widest member. A bare `[u8; 32]` is one-aligned and would be undefined behaviour
     // on a target that requires alignment for the store.
-    if let Some(class) = jr_pool::classify(pool, jr_pool::TargetLayout::host(), foreign.ret)
-        .map_err(|error| VmError::unsupported(format!("{error}")))?
+    if let Some(class) = jr_pool::classify(
+        pool,
+        jr_pool::TargetLayout::host(),
+        jr_pool::CAbi::host(),
+        foreign.ret,
+    )
+    .map_err(|error| VmError::unsupported(format!("{error}")))?
     {
-        if class == jr_pool::Class::Memory {
+        if class == jr_pool::Class::Refused {
             return Err(VmError::unsupported(String::from(
                 "returning this aggregate from a `#foreign` procedure needs a register class this \
                  compiler does not implement",
@@ -532,13 +537,26 @@ fn dispatch(vm: &mut Vm<'_>, foreign: &ForeignProc, args: &[Marshalled]) -> Resu
         }
         let layout = jr_pool::layout_of(pool, jr_pool::TargetLayout::host(), foreign.ret)
             .map_err(|error| VmError::unsupported(format!("{error}")))?;
+        // **The buffer's bound is checked rather than inferred** (ADR-0206 §4). It used to rest on
+        // `classify` having answered a register class, which capped a return at four eight-byte members —
+        // true until `Class::Stack` let an aggregate of any size cross. libffi writes `layout.size` bytes
+        // here, so an unchecked `Stack` return past thirty-two would overflow this buffer, and the `min(32)`
+        // below truncates only the *read*. A refusal is the honest bound: the comptime engine declines a
+        // return shape it cannot hold, which is visible, where the alternative is silent stack corruption.
+        if layout.size > 32 {
+            return Err(VmError::unsupported(format!(
+                "returning a {} byte aggregate from a `#foreign` procedure is past what comptime \
+                 execution can hold — at most thirty-two bytes",
+                layout.size
+            )));
+        }
         #[repr(C, align(16))]
         #[derive(Clone, Copy)]
         struct ReturnBuffer([u8; 32]);
         // SAFETY: as the paths above — the declaration is the only description of the callee that exists, and
         // ADR-0006 accepts that a wrong `#foreign` declaration is undefined behaviour. The CIF's return type
-        // is the faithful struct description from `return_type`, whose size is at most thirty-two bytes
-        // because `classify` answered a register class; every bit pattern is a valid `[u8; 32]`.
+        // is the faithful struct description from `return_type`, and the check directly above bounds its size
+        // at thirty-two bytes; every bit pattern is a valid `[u8; 32]`.
         let returned = unsafe { signature.call::<ReturnBuffer>(code, &cell) };
         let size = usize::try_from(layout.size).unwrap_or(0).min(32);
         return Ok(Value::Aggregate(returned.0[..size].to_vec()));

@@ -334,11 +334,18 @@ pub fn signature(
             jr_pool::Class::Float { kind, count } => {
                 Some(vec![AbiParam::new(float_type(kind)); count as usize])
             }
-            jr_pool::Class::Memory => {
+            // **`Stack` returns through the struct-return pointer this back end already emits.** System V
+            // returns a `MEMORY` aggregate by having the caller pass a hidden pointer and the callee write
+            // through it, which is exactly the convention `returns_via_sret` describes for Jairs's own
+            // aggregate returns (ADR-0051 §1). So the answer is `None` — "not in registers" — and the block
+            // below pushes the `StructReturn` parameter without this arm doing anything else. One convention,
+            // reached by two routes, rather than a second implementation of the same idea.
+            jr_pool::Class::Stack { .. } => None,
+            jr_pool::Class::Refused => {
                 return Err(describe(
                     "returning this aggregate from a `#foreign` procedure needs a register class \
                      this back end does not implement — at most two words, or up to four floats of \
-                     one width",
+                     one width on arm64, or one float per eightbyte on x86-64",
                 ));
             }
         }
@@ -378,11 +385,27 @@ pub fn signature(
                         sig.params.push(AbiParam::new(float_type(kind)));
                     }
                 }
-                jr_pool::Class::Memory => {
+                // **`StructArgument` is Cranelift's own name for System V's `MEMORY` class**: the caller
+                // hands over the aggregate's address and the ABI implementation copies the bytes into the
+                // argument area. Marked special rather than passed as a plain pointer, because a plain
+                // pointer would put the *address* where C reads the *contents*.
+                //
+                // Only x86-64 ever reaches this: `classify` never answers `Stack` for AAPCS64, and
+                // Cranelift's arm64 back end rejects `StructArgument` outright with "not supported on
+                // arm64" — so a classification that leaked one onto that target would be a panic inside a
+                // dependency rather than a wrong answer. The two facts line up, and that is not a
+                // coincidence: arm64 has no convention this models.
+                jr_pool::Class::Stack { size } => {
+                    sig.params.push(AbiParam::special(
+                        pointer_type(target),
+                        ArgumentPurpose::StructArgument(size),
+                    ));
+                }
+                jr_pool::Class::Refused => {
                     return Err(describe(
                         "an aggregate parameter on a `#foreign` procedure needs a register class this \
                          back end does not implement — at most two words, or up to four floats of one \
-                         width",
+                         width on arm64, or one float per eightbyte on x86-64",
                     ));
                 }
             }
@@ -428,7 +451,7 @@ pub fn returns_via_sret(
 /// The C ABI class of an aggregate crossing a `#foreign` boundary.
 ///
 /// A thin wrapper turning [`jr_pool::classify`]'s `Option` and layout error into this crate's error type, so
-/// the two call sites above read as one line each. It answers [`jr_pool::Class::Memory`] for a scalar too,
+/// the two call sites above read as one line each. It answers [`jr_pool::Class::Refused`] for a scalar too,
 /// which cannot happen — the callers check `is_aggregate` first — and answering rather than panicking keeps a
 /// future caller's mistake a diagnostic.
 fn foreign_class(
@@ -437,9 +460,9 @@ fn foreign_class(
     ty: PoolId,
     describe: &dyn Fn(&str) -> CodegenError,
 ) -> Result<jr_pool::Class, CodegenError> {
-    match jr_pool::classify(pool, target, ty) {
+    match jr_pool::classify(pool, target, jr_pool::CAbi::host(), ty) {
         Ok(Some(class)) => Ok(class),
-        Ok(None) => Ok(jr_pool::Class::Memory),
+        Ok(None) => Ok(jr_pool::Class::Refused),
         Err(_) => Err(describe(
             "an aggregate at a `#foreign` boundary whose layout cannot be computed",
         )),

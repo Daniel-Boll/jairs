@@ -1283,7 +1283,12 @@ impl Translator<'_, '_> {
         // parameter count, which is the property ADR-0051 §1 made `returns_via_sret` the single answer for.
         let c_return_in_registers = crosses_c
             && matches!(
-                jr_pool::classify(self.ctx.pool, self.ctx.target, ret_ty),
+                jr_pool::classify(
+                    self.ctx.pool,
+                    self.ctx.target,
+                    jr_pool::CAbi::host(),
+                    ret_ty
+                ),
                 Ok(Some(
                     jr_pool::Class::Integer { .. } | jr_pool::Class::Float { .. }
                 ))
@@ -1406,7 +1411,7 @@ impl Translator<'_, '_> {
         values: &mut Vec<ClifValue>,
     ) -> Result<(), CodegenError> {
         let pointer = pointer_type(self.ctx.target);
-        match jr_pool::classify(self.ctx.pool, self.ctx.target, ty) {
+        match jr_pool::classify(self.ctx.pool, self.ctx.target, jr_pool::CAbi::host(), ty) {
             Ok(Some(jr_pool::Class::Integer { words })) => {
                 for index in 0..words {
                     let offset = i32::try_from(index * 8).unwrap_or(0);
@@ -1435,12 +1440,24 @@ impl Translator<'_, '_> {
                 }
                 Ok(())
             }
-            // Unreachable: the signature builder refused `Memory` before a body was lowered, and E0286
+            // **A `StructArgument` takes the address, not the contents** (ADR-0206 §3). The signature
+            // declared this parameter as a pointer with `ArgumentPurpose::StructArgument`, and Cranelift's
+            // x64 lowering copies `size` bytes from that address into the outgoing argument area itself. So
+            // this arm loads *nothing*: pushing the pointer is the whole of it, and pushing loaded words
+            // instead would hand C a register file where it reads a stack slot.
+            //
+            // The one place in this function where a `Class` does not become one value per register, which
+            // is why it is an arm rather than a branch inside the two above.
+            Ok(Some(jr_pool::Class::Stack { .. })) => {
+                values.push(address);
+                Ok(())
+            }
+            // Unreachable: the signature builder refused `Refused` before a body was lowered, and E0286
             // refused it before that. Answered rather than panicked, for the reason every other
             // belt-and-braces arm here is.
-            _ => Err(CodegenError::Internal(String::from(
-                "an aggregate reached a `#foreign` call site with no register class",
-            ))),
+            Ok(Some(jr_pool::Class::Refused) | None) | Err(_) => Err(CodegenError::Internal(
+                String::from("an aggregate reached a `#foreign` call site with no register class"),
+            )),
         }
     }
 
@@ -1469,7 +1486,7 @@ impl Translator<'_, '_> {
         let handle = self.builder.create_sized_stack_slot(data);
         let pointer = pointer_type(self.ctx.target);
         let address = self.builder.ins().stack_addr(pointer, handle, 0);
-        match jr_pool::classify(self.ctx.pool, self.ctx.target, ty) {
+        match jr_pool::classify(self.ctx.pool, self.ctx.target, jr_pool::CAbi::host(), ty) {
             Ok(Some(jr_pool::Class::Integer { .. })) => {
                 for (index, piece) in results.iter().enumerate() {
                     let offset = i32::try_from(index * 8).unwrap_or(0);
@@ -1487,7 +1504,12 @@ impl Translator<'_, '_> {
                         .store(MemFlagsData::trusted(), *piece, address, offset);
                 }
             }
-            _ => {
+            // **`Stack` never arrives here**, and that is a property of the caller rather than of this
+            // function: `c_return_in_registers` is false for it, so the call took the `sret` path and the
+            // callee wrote the aggregate through a pointer — there are no register pieces to store. Named
+            // explicitly instead of falling into a wildcard, because a `_` arm here is how the split that
+            // introduced `Stack` slipped silently past `jr-sema`'s refusal gate (ADR-0206 §5).
+            Ok(Some(jr_pool::Class::Stack { .. } | jr_pool::Class::Refused) | None) | Err(_) => {
                 return Err(CodegenError::Internal(String::from(
                     "an aggregate returned from a `#foreign` call with no register class",
                 )));
