@@ -200,6 +200,33 @@ Two decisions inside it worth stating:
   was written on, so a typo'd soname would have been invisible until CI — which is how this ADR spent
   four pushes. Whichever platform runs the suite checks its own name.
 
+## 4d. A fifth failure — this one entirely mine, and its symptom was silence
+
+The fourth push made the VM load libm. CI came back with the VM at `exit -1`, empty output, on five
+programs. Not a refusal, not a diagnostic: **a crash**.
+
+The cause was a two-line mistake in the previous section's fix. `LibraryHandle::new` returns a handle
+whose `Drop` calls `dlclose`, and the handle fell out of scope at the end of the loop body — **while
+the address it had just produced was being returned**. The library was unmapped under the pointer, so
+the first compile-time math call jumped into nothing.
+
+Three things about it are worth keeping:
+
+- **The symptom was silence.** `exit -1` with empty stdout and stderr is what a signal looks like
+  through the differential harness. A refusal would have named the symbol; a crash names nothing, which
+  is a good reason for the harness to report the exit status rather than only the output.
+- **macOS cannot reproduce it.** The fallback is never taken there, so the bug existed only on the
+  platform with no local machine — the same asymmetry as the original libc/libm defect, one level up
+  again.
+- **The library is now leaked deliberately.** A cache was considered and rejected: it adds a mutex to a
+  path whose purpose is to run once per distinct symbol, and a system library loaded for the remainder
+  of the process's life is what `dlopen` is *for*.
+
+`libm_resolves_and_an_arbitrary_library_does_not` **would** have caught this on Linux — it calls `sqrt`
+through the whole VM and asserts the value is `2.0`, and calling a dangling pointer does not return an
+`Err`. That it passes on macOS without exercising the path is now stated in its own doc comment, so the
+next reader does not mistake a green run here for coverage of that path.
+
 ## 5. Three stale claims corrected while here
 
 Found by checking the plan against the code rather than by any failure:

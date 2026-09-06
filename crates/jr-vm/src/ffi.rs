@@ -666,14 +666,26 @@ fn symbol(foreign: &ForeignProc) -> Result<CodePtr, VmError> {
     // answers cannot change behaviour.
     for candidate in library_filenames(foreign.library.as_deref()) {
         // SAFETY: `Library::new` runs the library's initialisers, which is what loading a system
-        // library means; the name comes from the allowlist above and never from user text. `get` is
-        // unsafe for the same reason as in the process case.
+        // library means; the name comes from the fixed table below and never from user text. `get`
+        // is unsafe for the same reason as in the process case.
         let found = unsafe {
             LibraryHandle::new(candidate).ok().and_then(|library| {
-                library
+                let address = library
                     .get::<*const ()>(foreign.symbol.as_bytes())
                     .ok()
-                    .map(|symbol| *symbol)
+                    .map(|symbol| *symbol);
+                // **The handle must outlive the address, and dropping it `dlclose`s the library.**
+                // The first version of this let the handle fall out of scope here, which unmapped
+                // the code the returned pointer names — so every compile-time math call crashed the
+                // VM with no message and no output, reported as `exit -1` by the differential
+                // harness on Linux and reproducible nowhere else, because macOS never takes this
+                // path (ADR-0205 §4d).
+                //
+                // Leaked deliberately rather than cached: a system library loaded for the rest of
+                // the process's life is what `dlopen` is *for*, and a cache would add a mutex to a
+                // path whose whole purpose is to run once per distinct symbol.
+                std::mem::forget(library);
+                address
             })
         };
         if let Some(address) = found

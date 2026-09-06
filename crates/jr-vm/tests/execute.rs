@@ -868,6 +868,14 @@ fn a_globals_initialiser_cannot_read_another_global() {
 /// `libm.tbd` is a symlink to `libSystem.tbd`. On glibc they are separate, and the native link failed
 /// with `undefined reference to 'sin'` (ADR-0205). The positive half of this test is what the fix
 /// needed; the negative half is what stops the fix from becoming "allow every library".
+///
+/// **On glibc this test also covers the loaded-library fallback, and on macOS it cannot.** There the
+/// process image answers first (`libSystem` holds every one of these symbols), so the `dlopen` path is
+/// never taken and this passes without exercising it. On Linux it is the only path — which is why the
+/// first version of that fallback, which dropped the handle and so `dlclose`d the library under the
+/// address it had just returned, crashed the VM in CI and could not be reproduced here (ADR-0205 §4d).
+/// The assertion on the *value* rather than on the absence of an error is what makes it catch that:
+/// calling a dangling pointer does not return an `Err`.
 #[test]
 fn libm_resolves_and_an_arbitrary_library_does_not() {
     let source = "libm :: #system_library \"m\";\n\
