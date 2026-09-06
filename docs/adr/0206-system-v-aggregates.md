@@ -165,6 +165,49 @@ aarch64 — turns every local check into an x86-64 classification check:
 That probe replaced a five-minute CI round trip per iteration with a five-second one, and it is the reason
 the eightbyte-ownership bug was found before pushing rather than after.
 
+## 8. The snapshot that had been wrong on Linux since ADR-0180, and nobody could see it
+
+Fixing the ABI made the Linux leg report one more failure, and it is **not** this ADR's subject — it is an
+eighth pre-existing defect, in the same family as ADR-0205's six:
+
+```
+snapshot assertion for 'valid_corpus_mir' failed
+-    v31: string = call extern proc33(v0, 0_enum)
++    v31: string = call extern proc33(v0, 1_enum)
+-    v35: s64 = call extern proc14(v0, 0_enum)
+-    v36: bool = 65535_s64 == v35
+```
+
+`0_enum`/`1_enum` is `Operating_System.MACOS` against `LINUX`; `65535`/`1` is `SOL_SOCKET`. **`os()` is a
+compile-time value** (ADR-0180 §2), folded in sema — so a corpus program that reads it has the host's answer
+as a *literal* in its MIR, and a single checked-in snapshot cannot be right on two platforms.
+
+**The first hunk belongs to `137-per-os-library-text.jr`, added in ADR-0180's own wave.** So this snapshot
+has been wrong on x86-64 since the feature landed, and only macOS ever generated it. ADR-0180 introduced a
+compile-time value and did not notice it had made a cross-platform artifact host-specific.
+
+Two shapes, and they need opposite treatments:
+
+- **`137` and `149` compare the mapping's answers for *named* operating systems** and ended with one line
+  tying the mapping to the host — `gl_library_for(os())`, `SOL_SOCKET`. That line is the only host-dependent
+  thing in them, and it is **moved** into `crates/jr-cli/tests/integration.rs`, where `cfg!(target_os = ...)`
+  states each platform's expectation — the thing a `.jr` program cannot do — and no snapshot sees the MIR.
+  Both directions are asserted, so a mapping returning one value for every OS fails instead of passing by
+  coincidence. Verified to have teeth by swapping the expectation and watching it fail.
+- **`134-target-os.jr` and `135-per-os-clock.jr` exist to read `os()`.** The dependence is their subject, so
+  they are **excluded from the artifact** and keep their coverage from the differential and exit-code
+  harnesses, which run per platform.
+
+**The exclusion is a hand-maintained list, which this project distrusts on principle, and the justification
+is the direction it fails.** `file_consts`' feature list and `TrapKind::ALL`'s length both failed *open* — a
+missing entry meant a check silently did nothing. This one fails **closed**: an unlisted `os()`-folding
+program passes on the host that generated the snapshot and **fails the other platform's CI job**, naming the
+file. A list whose rot announces itself on every push is a different object from one whose rot is invisible.
+
+**Verified the same way as §7, by forcing the answer.** `TargetOs::host()` forced to Linux, snapshot
+regenerated, probe reverted, snapshot re-checked on real macOS: identical. That is a local proof of
+OS-independence, and it found that the first fix was incomplete — 137 and 149 were not the only two files.
+
 ## Consequences
 
 - Two classes where there was one, and the compiler names every site that must choose between them —

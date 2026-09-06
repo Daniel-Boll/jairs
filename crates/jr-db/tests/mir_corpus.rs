@@ -99,6 +99,9 @@ fn valid_corpus_lowers_to_stable_mir() {
     let mut out = String::new();
 
     for (name, text) in sorted_files(&corpus("corpus/valid")) {
+        if HOST_DEPENDENT_MIR.contains(&name.as_str()) {
+            continue;
+        }
         let file = add_file(&mut db, &name, &text);
         db.load_modules_transitively(file);
         out.push_str("========================================\n");
@@ -110,6 +113,31 @@ fn valid_corpus_lowers_to_stable_mir() {
 
     insta::assert_snapshot!("valid_corpus_mir", out);
 }
+
+/// Corpus programs whose MIR **legitimately** differs by host operating system, and so cannot appear in a
+/// single checked-in snapshot (ADR-0206 §8).
+///
+/// `os()` is a compile-time value (ADR-0180 §2) folded in sema, so a program that reads it has the host's
+/// answer as a *literal* in its MIR — `0_enum` on macOS, `1_enum` on Linux. Both files below exist
+/// specifically to exercise that, so the dependence is the point rather than an accident: it cannot be
+/// written out of them the way it was written out of `137` and `149`, whose subject was the per-OS *mapping*
+/// rather than the host's own answer.
+///
+/// **This is a hand-maintained list, which this project distrusts on principle — so here is why it is
+/// tolerable.** The rot announces itself: a new `os()`-folding program that is *not* listed makes this
+/// snapshot pass on the host that generated it and **fail on the other platform's CI job**, with a diff
+/// naming the file. That is the opposite of the silent staleness `AGENTS.md` records for `file_consts`'
+/// feature list and `TrapKind::ALL`'s length — both of which failed *open*. This one fails closed, on a
+/// platform that always runs.
+///
+/// The excluded programs keep their real coverage: the differential harness runs them in both engines and
+/// the corpus exit-code assertions still check them, on each platform separately. What they lose is the
+/// cross-platform *artifact*, which could never have described them.
+///
+/// **Read this before "fixing" a Linux-only snapshot failure.** From the wave that added `134` until the
+/// Linux leg was read, this snapshot was wrong on x86-64 and nothing said so, because only macOS ever
+/// generated it. A diff of `N_enum` values between platforms is this, not a lowering bug.
+const HOST_DEPENDENT_MIR: &[&str] = &["134-target-os.jr", "135-per-os-clock.jr"];
 
 // ---------------------------------------------------------------------------
 // Totality

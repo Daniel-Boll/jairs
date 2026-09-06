@@ -49,11 +49,10 @@ main :: () {
         n = n + 16;
     }
 
-    // And the host's own `SOL_SOCKET` is whichever of the two this platform is — the bit that ties the
-    // parameterised functions to the value the module actually compiled with.
-    if Sock.SOL_SOCKET == Sock.sol_socket_for(os()) {
-        n = n + 32;
-    }
+    // **The host's own `SOL_SOCKET` is asserted in Rust, not here** — same reason as `137`, and found the
+    // same way. `Sock.SOL_SOCKET` is `#run sol_socket_for(os())`, so it folds to `65535` on macOS and `1`
+    // on Linux, and `os()` folds beside it; both land in this body's MIR and the snapshot is one file. See
+    // `crates/jr-cli/tests/integration.rs` and ADR-0206 §8.
 
     // **The size assertion this program wanted is not writable.** `size_of(Sock.Sockaddr_In)` is
     // E0261, "`size_of` needs a type": a **qualified** name is accepted in a type *annotation*

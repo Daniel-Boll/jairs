@@ -5086,3 +5086,66 @@ fn set_working_directory_moves_where_a_build_writes() {
         "the artefact must be the compiled program"
     );
 }
+
+/// The host's own per-OS choice agrees with the parameterised mapping — for `modules/GL` and
+/// `modules/Socket` both (ADR-0206 §8).
+///
+/// **This assertion used to live in two corpus programs and could not stay there.** `os()` is a
+/// compile-time value (ADR-0180), so `gl_library_for(os())` and `#run sol_socket_for(os())` fold into the
+/// calling body's MIR — `0_enum` and `65535` on macOS, `1_enum` and `1` on Linux. The checked-in MIR
+/// snapshot is a single artifact, so it cannot be correct on both platforms, and it was silently wrong on
+/// x86-64 from the wave that added `137-per-os-library-text.jr` until the Linux CI leg was read.
+///
+/// Here the expectation is `cfg!`-selected, which is the thing a `.jr` program cannot do, and the generated
+/// program is never snapshotted. Both directions are asserted: the host's constant equals the mapping's
+/// answer *for this platform*, and differs from the other platform's — so a mapping that returned one value
+/// for every OS would fail rather than pass by coincidence.
+#[test]
+fn the_hosts_per_os_choices_agree_with_the_mapping() {
+    let dir = TempDir::new().expect("tempdir");
+    let file = dir.path().join("host.jr");
+    // `this` and `other` are the two platforms' expected values, chosen in Rust. The program asserts the
+    // host's own constants match `this` and not `other`, so both halves have to hold.
+    let (this_os, other_os) = if cfg!(target_os = "macos") {
+        ("Operating_System.MACOS", "Operating_System.LINUX")
+    } else {
+        ("Operating_System.LINUX", "Operating_System.MACOS")
+    };
+    fs::write(
+        &file,
+        format!(
+            "#import \"Basic\";\n\
+             GL :: #import \"GL\";\n\
+             Sock :: #import \"Socket\";\n\
+             Str :: #import \"String\";\n\
+             main :: () {{\n\
+             \x20   // The library declaration this host actually compiled with.\n\
+             \x20   if !Str.equal(GL.gl_library(), GL.gl_library_for({this})) {{ exit(1); }}\n\
+             \x20   if Str.equal(GL.gl_library(), GL.gl_library_for({other})) {{ exit(2); }}\n\
+             \x20   // The socket option value this host actually compiled with.\n\
+             \x20   if Sock.SOL_SOCKET != Sock.sol_socket_for({this}) {{ exit(3); }}\n\
+             \x20   if Sock.SOL_SOCKET == Sock.sol_socket_for({other}) {{ exit(4); }}\n\
+             \x20   exit(0);\n\
+             }}\n",
+            this = this_os,
+            other = other_os,
+        ),
+    )
+    .expect("the program should be written");
+
+    let artefact = Artefact::named("jr-test-host-per-os");
+    assert_eq!(
+        run_build(file, Some(artefact.path().to_path_buf())),
+        0,
+        "the host program should build"
+    );
+    let output = std::process::Command::new(std::path::Path::new(".").join(artefact.path()))
+        .status()
+        .expect("the host program should run");
+    assert_eq!(
+        output.code(),
+        Some(0),
+        "1 = GL disagrees with this host, 2 = GL is the same for every OS, \
+         3 = SOL_SOCKET disagrees with this host, 4 = SOL_SOCKET is the same for every OS"
+    );
+}

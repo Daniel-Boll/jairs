@@ -1649,6 +1649,57 @@ familiar" — and the allowlist is now a named list so the reason governs every 
 change. This file already says never to print a `FileId` into a snapshot for that exact reason; the
 pool id has the same property and is printed there.
 
+**ADR-0206 reaches 1216** and holds at **282** corpus files — the last x86-64 Linux failure, and it was a
+**silent miscompile** rather than a missing feature. `cabi.rs` claimed a four-`float64` `CGRect` travels in
+four floating-point registers on *both* AAPCS64 and System V. **System V has no homogeneous-aggregate rule at
+all**: it classifies per eightbyte and sends anything over sixteen bytes to the stack. So for eleven waves a
+32-byte struct crossed a `#foreign` boundary in four SSE registers where C reads memory — no diagnostic,
+wrong data, invisible on the arm64 machine this project is developed on.
+
+**Seventh hand-maintained claim with nothing enforcing it, and the most expensive of the seven.** The other
+six produced a diagnostic — a refusal, an ICE, a link error — and a diagnostic sends someone to the line.
+This one produced a plausible number. What caught it was the test that links against a `cc`-compiled shim so
+a wrong answer cannot be self-consistent; what delayed it eleven waves was that nobody ran that test on the
+target the claim was about.
+
+**ADR-0160's `Class::Memory` split exactly as that ADR predicted it would**, once the Linux run existed:
+`Stack` is System V's `MEMORY`, implemented through Cranelift's `StructArgument`, and `Refused` is what
+genuinely has two right answers. A `Stack` *return* needed no new code — System V's hidden pointer is the
+`sret` convention `returns_via_sret` already describes.
+
+**Three findings worth more than the fix.**
+
+**A `// SAFETY:` comment can be a memory-safety dependency on another module.** `jr-vm`'s foreign-return path
+reads into a fixed `[u8; 32]`, justified as "at most thirty-two bytes **because `classify` answered a
+register class**". `Class::Stack` is exactly what stops that holding, and libffi writes `layout.size` bytes —
+a buffer overflow, in a wave that never touched `jr-vm`'s buffer. The bound is checked now. **When a SAFETY
+comment appeals to another module's behaviour, changing that module is a memory-safety change**, and nothing
+in the type system connects the two files.
+
+**A `_` arm is the exhaustive-match rule's other hole, and the commoner one.** `jr-sema`'s E0286 gate ended
+`_ => Some(refusal)`, so the new variant was *silently refused* — every program using a large aggregate would
+have been rejected before reaching the back end that now implements it, and only the arity change named the
+file. This file already records the `let-else` form (ADR-0186's `participating_slot`). **A refusal gate is
+the worst place to keep a wildcard**, because the symptom is a diagnostic on a program that should have
+built, which reads as the checker doing its job.
+
+**Forcing a `cfg!`-derived answer turns a CI round trip into a local one, and it found two bugs.** `CAbi::host()`
+forced to `SysV` on this arm64 host proved the whole path end to end — the aggregate test failed *inside*
+Cranelift with "StructArgument parameters are not supported on arm64", which is the x64 back end's
+`abi.rs:157` counterpart — and caught the eightbyte-ownership bug before pushing: my first guard accepted
+`{ float, float }` because the members fill the layout, but both share one SSE eightbyte, so C reads them
+from `xmm0` while two `Class::Float` members emit `xmm0` and `xmm1`.
+
+**And §8 is an eighth pre-existing Linux defect, found by fixing the seventh.** The `valid_corpus_mir`
+snapshot had been wrong on x86-64 **since ADR-0180's own wave**: `os()` is a compile-time value folded in
+sema, so a corpus program reading it carries the host's answer as a literal, and one checked-in artifact
+cannot describe two platforms. ADR-0180 introduced a compile-time value and did not notice it had made a
+cross-platform artifact host-specific. Fixed two ways — the host-tie assertion **moved** out of `137`/`149`
+into a `cfg!`-selected Rust test, and `134`/`135`, whose whole subject is `os()`, **excluded** from the
+artifact. The exclusion list is hand-maintained and tolerable for one reason worth carrying: **it fails
+closed.** An unlisted `os()`-folding program fails the other platform's CI job by name, where
+`file_consts`' feature list and `TrapKind::ALL`'s length both failed open.
+
 ## House style
 
 Enforced by the first four gates, so it is not a matter of taste:

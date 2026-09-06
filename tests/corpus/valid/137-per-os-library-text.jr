@@ -59,16 +59,26 @@ main :: () {
         n = n + 4;
     }
 
-    // The three must be pairwise distinct, and the host's own choice must be one of them — the bit that ties
-    // the mapping to what the module really compiled against.
+    // The three must be pairwise distinct.
     mac := GL.gl_library_for(Operating_System.MACOS);
     linux := GL.gl_library_for(Operating_System.LINUX);
     windows := GL.gl_library_for(Operating_System.WINDOWS);
     distinct := !Str.equal(mac, linux) && !Str.equal(linux, windows) && !Str.equal(mac, windows);
 
-    if distinct && Str.equal(GL.gl_library(), GL.gl_library_for(os())) {
+    if distinct {
         n = n + 8;
     }
+
+    // **The host's own choice is asserted elsewhere, and this is the interesting part of the file.**
+    // `Str.equal(GL.gl_library(), GL.gl_library_for(os()))` used to be here, tying the mapping to what the
+    // module really compiled against. It cannot live in a corpus program: `os()` is a *compile-time* value,
+    // so it folds into this body's MIR as `0_enum` on macOS and `1_enum` on Linux — and the checked-in MIR
+    // snapshot is one artifact, so it cannot be right on both. That made the snapshot silently wrong on
+    // x86-64 from the wave this file was added in until the Linux leg was finally read (ADR-0206 §8).
+    //
+    // The assertion still exists, in `crates/jr-cli/tests/integration.rs`, where `cfg!(target_os = ...)`
+    // can state each platform's expectation and no snapshot sees the MIR. Moved rather than deleted: it is
+    // the one assertion here that connects the mapping to reality.
 
     exit(n);
 }
