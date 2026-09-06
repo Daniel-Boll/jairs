@@ -18,6 +18,7 @@ jr-diag.workspace = true
 # than a second opinion about layout.
 jr-fmt.workspace = true
 jr-manifest.workspace = true
+jr-project.workspace = true
 jr-hir.workspace = true
 jr-pool.workspace = true
 jr-sema.workspace = true

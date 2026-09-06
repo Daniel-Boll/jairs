@@ -100,7 +100,7 @@ struct ModuleFrontend {
 use crate::{
     Db, SourceFile,
     mir::imported_procs,
-    module_loader::{ModuleSearchPaths, file_hir, frontend_diagnostics, resolved},
+    module_loader::{ModuleCatalog, file_hir, frontend_diagnostics, resolved},
     sema::checked,
 };
 
@@ -510,10 +510,10 @@ fn aliased_type(
 /// Returns the bytes rather than printing them, so a caller that captures output — a test, or a driver
 /// building several targets — decides where they go.
 #[must_use]
-pub fn comptime_output(db: &dyn Db, root: SourceFile, search_paths: ModuleSearchPaths) -> Vec<u8> {
+pub fn comptime_output(db: &dyn Db, root: SourceFile, catalog: ModuleCatalog) -> Vec<u8> {
     let mut out = Vec::new();
-    for file in crate::run::reachable_files(db, root, search_paths) {
-        out.extend_from_slice(&file_consts(db, file, search_paths).output);
+    for file in crate::run::reachable_files(db, root, catalog) {
+        out.extend_from_slice(&file_consts(db, file, catalog).output);
     }
     out
 }
@@ -525,8 +525,8 @@ pub fn comptime_output(db: &dyn Db, root: SourceFile, search_paths: ModuleSearch
 ///
 /// Uses `no_eq` to match the rest of this crate's queries.
 #[salsa::tracked(returns(clone), no_eq)]
-pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) -> ConstResult {
-    if frontend_diagnostics(db, file, search_paths).has_errors() {
+pub fn file_consts(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> ConstResult {
+    if frontend_diagnostics(db, file, catalog).has_errors() {
         return ConstResult {
             values: Arc::new(ConstValues::new()),
             diagnostics: Arc::new(Diagnostics::new()),
@@ -536,9 +536,9 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     }
 
     let hir = file_hir(db, file);
-    let resolve = resolved(db, file, search_paths).map;
-    let signatures = crate::sema::file_signatures(db, file, search_paths);
-    let checked_file = checked(db, file, search_paths);
+    let resolve = resolved(db, file, catalog).map;
+    let signatures = crate::sema::file_signatures(db, file, catalog);
+    let checked_file = checked(db, file, catalog);
     // **Signatures first**, because `wanted` asks them whether a `::` initialiser names a type
     // (ADR-0071 §2). It also asks the checker's `comptime_calls` (ADR-0088 §2), which is why the
     // `checked` fetch above was moved ahead of this line.
@@ -579,7 +579,7 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     }
 
     let types = checked_file.types.clone();
-    let imports = imported_procs(db, file, search_paths);
+    let imports = imported_procs(db, file, catalog);
     let file_id = crate::queries::resolve_file_id(db, file);
     let interner = db.interner();
 
@@ -597,24 +597,24 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
     // Gathered before the pool is locked, because the lock must never be held across a nested query
     // call — the same rule `build` and `run_main` follow.
     let mut modules = Vec::new();
-    for other in crate::run::reachable_files(db, file, search_paths) {
+    for other in crate::run::reachable_files(db, file, catalog) {
         if other == file {
             continue;
         }
-        if frontend_diagnostics(db, other, search_paths).has_errors() {
+        if frontend_diagnostics(db, other, catalog).has_errors() {
             continue;
         }
         // One `checked` call for all three of its outputs, rather than three: it is the same query and
         // the same memo, and taking `types` from it while inventing empty maps beside it is what hid
         // the defect above for as long as it did.
-        let checked_other = checked(db, other, search_paths);
+        let checked_other = checked(db, other, catalog);
         modules.push(ModuleFrontend {
             id: crate::queries::resolve_file_id(db, other),
             hir: file_hir(db, other),
-            resolve: resolved(db, other, search_paths).map,
+            resolve: resolved(db, other, catalog).map,
             types: checked_other.types.clone(),
-            signatures: crate::sema::file_signatures(db, other, search_paths).signatures,
-            imports: imported_procs(db, other, search_paths),
+            signatures: crate::sema::file_signatures(db, other, catalog).signatures,
+            imports: imported_procs(db, other, catalog),
             operators: checked_other.operator_calls.clone(),
             filled: checked_other.filled_args.clone(),
             checked: checked_other,
@@ -691,7 +691,7 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
             // asking for it "would make const-eval depend on the check phase, which is the cycle
             // ADR-0018 §3 exists to prevent".
             //
-            // This function's **first statement** is `let checked_file = checked(db, file, search_paths)`.
+            // This function's **first statement** is `let checked_file = checked(db, file, catalog)`.
             // The dependency has been there since `type_info` needed sema's fold maps, so reading two
             // more fields of a result already in hand adds no edge and cannot introduce a cycle. The
             // comment was true when it was written and became false without anyone re-reading it, which
@@ -838,12 +838,12 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPath
 pub fn insert_operands(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
 ) -> Arc<jr_hir::InsertOperands> {
-    let consts = file_consts(db, file, search_paths);
+    let consts = file_consts(db, file, catalog);
     let hir = file_hir(db, file);
-    let signatures = crate::sema::file_signatures(db, file, search_paths);
-    let checked_file = checked(db, file, search_paths);
+    let signatures = crate::sema::file_signatures(db, file, catalog);
+    let checked_file = checked(db, file, catalog);
     let mut operands = jr_hir::InsertOperands::new();
 
     // Re-walk the same targets `file_consts` evaluated, keeping only the insert operands — each carries

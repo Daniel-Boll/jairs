@@ -27,7 +27,7 @@
 //! A hint is never emitted for a type that renders `<unknown>`: it would be noise that
 //! looks like a compiler bug, and no hint already means "nothing useful is known".
 
-use jr_db::{Db, ModuleSearchPaths, SourceFile};
+use jr_db::{Db, ModuleCatalog, SourceFile};
 use jr_hir::{Expr, ExprId, ExprScope, FileHir, ItemKind};
 use lsp_types::{
     InlayHint, InlayHintKind, InlayHintLabel, ParameterInformation, ParameterLabel, SignatureHelp,
@@ -112,7 +112,7 @@ fn arg_span(exprs: &[Expr], id: ExprId) -> Option<jr_base::Span> {
 pub fn signature_help(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     encoding: Encoding,
     position: lsp_types::Position,
 ) -> Option<SignatureHelp> {
@@ -125,7 +125,7 @@ pub fn signature_help(
     let found = enclosing_call(hir.as_ref(), offset)?;
 
     let (callee, arity) = callee_of(hir.as_ref(), found)?;
-    let resolve = jr_db::resolved(db, file, search_paths).map;
+    let resolve = jr_db::resolved(db, file, catalog).map;
     let res = resolve.get(found.scope, callee)?;
 
     // Every query before the pool lock: a query locks the pool itself and the mutex is not
@@ -133,7 +133,7 @@ pub fn signature_help(
     let (target, item) = match res {
         jr_hir::Res::Item(item) => (file, item),
         jr_hir::Res::Imported(import, name) => {
-            let module = imported_module(db, hir.as_ref(), search_paths, import)?;
+            let module = imported_module(db, hir.as_ref(), catalog, import)?;
             let other = jr_db::file_hir(db, module);
             (module, other.scope.get(name)?)
         }
@@ -148,7 +148,7 @@ pub fn signature_help(
     };
 
     let hir = jr_db::file_hir(db, target);
-    let sigs = jr_db::file_signatures(db, target, search_paths).signatures;
+    let sigs = jr_db::file_signatures(db, target, catalog).signatures;
     let docs = jr_db::file_docs(db, target);
     let container = container_of(target.path(db).as_ref());
     let proc = proc_of(hir.as_ref(), item)?;
@@ -234,13 +234,13 @@ fn proc_of(hir: &FileHir, item: jr_hir::ItemId) -> Option<jr_hir::ProcId> {
 fn imported_module(
     db: &dyn Db,
     hir: &FileHir,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     import: jr_hir::ItemId,
 ) -> Option<SourceFile> {
     let ItemKind::Import { path, .. } = &hir.items.get(import.index())?.kind else {
         return None;
     };
-    let lookup = jr_db::module_file(db, search_paths, std::sync::Arc::from(path.as_str()));
+    let lookup = jr_db::module_file(db, catalog, std::sync::Arc::from(path.as_str()));
     let found = lookup.found?;
     db.source_file_for_path(found.to_string_lossy().as_ref())
 }
@@ -253,7 +253,7 @@ fn imported_module(
 pub fn inlay_hints(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     encoding: Encoding,
     range: lsp_types::Range,
 ) -> Vec<InlayHint> {
@@ -270,9 +270,9 @@ pub fn inlay_hints(
     };
 
     // Every query before the pool lock (see `signature_help`).
-    let types = jr_db::checked(db, file, search_paths).types;
-    let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
-    let consts = jr_db::file_consts(db, file, search_paths).values;
+    let types = jr_db::checked(db, file, catalog).types;
+    let sigs = jr_db::file_signatures(db, file, catalog).signatures;
+    let consts = jr_db::file_consts(db, file, catalog).values;
     let docs = jr_db::file_docs(db, file);
     let container = container_of(file.path(db).as_ref());
 

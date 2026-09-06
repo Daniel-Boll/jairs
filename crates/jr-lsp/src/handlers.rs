@@ -27,7 +27,7 @@
 
 use std::sync::Arc;
 
-use jr_db::{Db, ModuleSearchPaths, SourceFile};
+use jr_db::{Db, ModuleCatalog, SourceFile};
 use jr_hir::{ExprScope, FileHir, ItemKind, Res};
 use lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Hover, HoverContents, Location,
@@ -115,7 +115,7 @@ pub fn formatting(db: &dyn Db, file: SourceFile) -> Option<Vec<lsp_types::TextEd
 pub fn diagnostics(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     encoding: Encoding,
 ) -> Vec<Diagnostic> {
     let text = file.text(db);
@@ -124,7 +124,7 @@ pub fn diagnostics(
     let map = db.source_map();
     let this = map.file_id(file.path(db).as_ref());
 
-    jr_db::file_diagnostics(db, file, search_paths)
+    jr_db::file_diagnostics(db, file, catalog)
         .iter()
         .map(|diag| Diagnostic {
             range: positions.range(diag.primary.span),
@@ -230,7 +230,7 @@ fn severity(severity: jr_diag::Severity) -> DiagnosticSeverity {
 pub fn hover(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     encoding: Encoding,
     position: lsp_types::Position,
 ) -> Option<Hover> {
@@ -245,8 +245,8 @@ pub fn hover(
     // answer; a declaration's own name token is not an expression at all and is checked
     // only when that fails. ADR-0028 §4.
     if let Some(found) = locate(hir.as_ref(), offset) {
-        let card = declaration_card(db, file, search_paths, hir.as_ref(), &found)
-            .or_else(|| type_card(db, file, search_paths, hir.as_ref(), &found))?;
+        let card = declaration_card(db, file, catalog, hir.as_ref(), &found)
+            .or_else(|| type_card(db, file, catalog, hir.as_ref(), &found))?;
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
@@ -259,7 +259,7 @@ pub fn hover(
     // A **type** name, which is neither an expression nor a declaration in this file (ADR-0200 §3).
     // Checked after both, so a value of the same name still wins where one exists — and before
     // answering `None`, which is what a type annotation used to get at every column.
-    if let Some((card, span)) = type_name_card(db, file, search_paths, offset) {
+    if let Some((card, span)) = type_name_card(db, file, catalog, offset) {
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
@@ -270,7 +270,7 @@ pub fn hover(
     }
 
     let site = locate_declaration(hir.as_ref(), offset)?;
-    let (card, span) = declaration_site_card(db, file, search_paths, hir.as_ref(), site)?;
+    let (card, span) = declaration_site_card(db, file, catalog, hir.as_ref(), site)?;
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
@@ -287,17 +287,17 @@ pub fn hover(
 fn declaration_site_card(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     hir: &FileHir,
     site: DeclSite,
 ) -> Option<(Card, jr_base::Span)> {
-    let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
+    let sigs = jr_db::file_signatures(db, file, catalog).signatures;
     let container = container_of(file.path(db).as_ref());
 
     match site {
         DeclSite::Item(item) => {
             let docs = jr_db::file_docs(db, file);
-            let consts = jr_db::file_consts(db, file, search_paths).values;
+            let consts = jr_db::file_consts(db, file, catalog).values;
             let span = item_name_span(hir, item)?;
             let pool = db.read_pool();
             let card = Decl {
@@ -321,7 +321,7 @@ fn declaration_site_card(
                 return None;
             };
             let span = hir.items.get(item.index())?.span;
-            let found = jr_db::module_file(db, search_paths, Arc::from(path.as_str())).found;
+            let found = jr_db::module_file(db, catalog, Arc::from(path.as_str())).found;
             // The module's own `//!`, when the file is loaded. A discovered-but-unloaded
             // module yields no docs rather than loading it here: a hover must not be the
             // thing that pulls a file into the database.
@@ -350,7 +350,7 @@ fn declaration_site_card(
             ))
         }
         DeclSite::Local { body, local } => {
-            let types = jr_db::checked(db, file, search_paths).types;
+            let types = jr_db::checked(db, file, catalog).types;
             let span = local_name_span(hir.bodies.get(body.index())?, local)?;
             let name = hir
                 .bodies
@@ -377,19 +377,19 @@ fn declaration_site_card(
 fn declaration_card(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     hir: &FileHir,
     found: &Located,
 ) -> Option<Card> {
-    let res = jr_db::resolved(db, file, search_paths)
+    let res = jr_db::resolved(db, file, catalog)
         .map
         .get(found.scope, found.expr)?;
 
     match res {
         Res::Item(item) => {
-            let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
+            let sigs = jr_db::file_signatures(db, file, catalog).signatures;
             let docs = jr_db::file_docs(db, file);
-            let consts = jr_db::file_consts(db, file, search_paths).values;
+            let consts = jr_db::file_consts(db, file, catalog).values;
             let container = container_of(file.path(db).as_ref());
             let pool = db.read_pool();
             Decl {
@@ -403,7 +403,7 @@ fn declaration_card(
             }
             .card(item)
         }
-        Res::Imported(import, name) => imported_card(db, hir, search_paths, import, name),
+        Res::Imported(import, name) => imported_card(db, hir, catalog, import, name),
         // A parameter or a local has no documentation and no container of its own, so
         // its card is its declared type. Better than the type alone: the name confirms
         // which binding the cursor found, which matters where one shadows another.
@@ -412,9 +412,9 @@ fn declaration_card(
         // *name under the cursor*, and `expr_type` already answers that for a promoted name
         // because sema typed it through its base.
         Res::Param(_) | Res::Local(_) | Res::Promoted { .. } => {
-            let types = jr_db::checked(db, file, search_paths).types;
+            let types = jr_db::checked(db, file, catalog).types;
             let ty = types.expr_type(found.scope, found.expr)?;
-            let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
+            let sigs = jr_db::file_signatures(db, file, catalog).signatures;
             let name = name_at(hir, found)?;
             let container = container_of(file.path(db).as_ref());
             let pool = db.read_pool();
@@ -435,20 +435,20 @@ fn declaration_card(
 fn imported_card(
     db: &dyn Db,
     hir: &FileHir,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     import: jr_hir::ItemId,
     name: jr_base::Symbol,
 ) -> Option<Card> {
     let ItemKind::Import { path, .. } = &hir.items.get(import.index())?.kind else {
         return None;
     };
-    let lookup = jr_db::module_file(db, search_paths, Arc::from(path.as_str()));
+    let lookup = jr_db::module_file(db, catalog, Arc::from(path.as_str()));
     let found = lookup.found?;
     let module = db.source_file_for_path(found.to_string_lossy().as_ref())?;
 
     let other = jr_db::file_hir(db, module);
     let item = other.scope.get(name)?;
-    let sigs = jr_db::file_signatures(db, module, search_paths).signatures;
+    let sigs = jr_db::file_signatures(db, module, catalog).signatures;
     let docs = jr_db::file_docs(db, module);
     let container = container_of(found.to_string_lossy().as_ref());
     let pool = db.read_pool();
@@ -474,13 +474,13 @@ fn imported_card(
 fn type_card(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     _hir: &FileHir,
     found: &Located,
 ) -> Option<Card> {
-    let types = jr_db::checked(db, file, search_paths).types;
+    let types = jr_db::checked(db, file, catalog).types;
     let ty = types.expr_type(found.scope, found.expr)?;
-    let signatures = jr_db::file_signatures(db, file, search_paths).signatures;
+    let signatures = jr_db::file_signatures(db, file, catalog).signatures;
     let container = container_of(file.path(db).as_ref());
     let pool = db.read_pool();
 
@@ -520,7 +520,7 @@ fn name_at(hir: &FileHir, found: &Located) -> Option<jr_base::Symbol> {
 pub fn goto_definition(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     encoding: Encoding,
     position: lsp_types::Position,
 ) -> Option<Location> {
@@ -536,7 +536,7 @@ pub fn goto_definition(
     // ADR-0035 this handler consulted only `locate`, so goto-definition on the one
     // declaration in the language that names another *file* answered nothing at every
     // column, including on the module name itself.
-    if let Some(target) = import_target(db, hir.as_ref(), search_paths, encoding, offset) {
+    if let Some(target) = import_target(db, hir.as_ref(), catalog, encoding, offset) {
         return Some(target);
     }
 
@@ -544,12 +544,12 @@ pub fn goto_definition(
     // expression, so no resolution for it reaches `ResolveMap` and `locate` cannot see it at all
     // (ADR-0200 §3). Before this, goto-definition on `w: Window` answered nothing at every column —
     // which reads as "this name means nothing" rather than "this feature does not reach here".
-    if let Some(target) = type_target(db, file, search_paths, encoding, &positions, offset) {
+    if let Some(target) = type_target(db, file, catalog, encoding, &positions, offset) {
         return Some(target);
     }
 
     let found = locate(hir.as_ref(), offset)?;
-    let resolve = jr_db::resolved(db, file, search_paths).map;
+    let resolve = jr_db::resolved(db, file, catalog).map;
     let res = resolve.get(found.scope, found.expr)?;
 
     match res {
@@ -575,9 +575,7 @@ pub fn goto_definition(
             let span = item_name_span(hir.as_ref(), item)?;
             Some(here(db, file, &positions, span))
         }
-        Res::Imported(import, name) => {
-            imported(db, hir.as_ref(), search_paths, encoding, import, name)
-        }
+        Res::Imported(import, name) => imported(db, hir.as_ref(), catalog, encoding, import, name),
         // Highlighting a promoted name highlights the binding it reaches through, matching where
         // goto-definition sends the reader — the two must agree or the editor contradicts itself.
         Res::Promoted { .. } => {
@@ -620,7 +618,7 @@ pub fn goto_definition(
 fn import_target(
     db: &dyn Db,
     hir: &FileHir,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     encoding: Encoding,
     offset: jr_base::TextSize,
 ) -> Option<Location> {
@@ -630,7 +628,7 @@ fn import_target(
     let ItemKind::Import { path, .. } = &hir.items.get(item.index())?.kind else {
         return None;
     };
-    let found = jr_db::module_file(db, search_paths, Arc::from(path.as_str())).found?;
+    let found = jr_db::module_file(db, catalog, Arc::from(path.as_str())).found?;
     // The encoding is irrelevant to a zero range, but taken as a parameter anyway so that
     // this cannot silently become the one place that ignores the negotiated encoding if it
     // ever points somewhere other than the start of the file.
@@ -648,7 +646,7 @@ fn import_target(
 fn type_target(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     encoding: Encoding,
     positions: &Positions<'_>,
     offset: jr_base::TextSize,
@@ -657,7 +655,7 @@ fn type_target(
     let file_id = map.file_id(file.path(db).as_ref())?;
     let parse = jr_db::parse_file(db, file);
     let found = crate::locate::type_name_at(&parse, file_id, offset)?;
-    let (declaring, item) = resolve_type_name(db, file, search_paths, &found)?;
+    let (declaring, item) = resolve_type_name(db, file, catalog, &found)?;
 
     let declaration_span = jr_db::file_hir(db, declaring)
         .items
@@ -684,17 +682,17 @@ fn type_target(
 fn type_name_card(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     offset: jr_base::TextSize,
 ) -> Option<(crate::render::Card, jr_base::Span)> {
     let map = db.source_map();
     let file_id = map.file_id(file.path(db).as_ref())?;
     let parse = jr_db::parse_file(db, file);
     let found = crate::locate::type_name_at(&parse, file_id, offset)?;
-    let (declaring, item) = resolve_type_name(db, file, search_paths, &found)?;
+    let (declaring, item) = resolve_type_name(db, file, catalog, &found)?;
 
     let hir = jr_db::file_hir(db, declaring);
-    let sigs = jr_db::file_signatures(db, declaring, search_paths).signatures;
+    let sigs = jr_db::file_signatures(db, declaring, catalog).signatures;
     let docs = jr_db::file_docs(db, declaring);
     let container = crate::render::container_of(declaring.path(db).as_ref());
     let pool = db.read_pool();
@@ -728,7 +726,7 @@ fn type_name_card(
 fn resolve_type_name(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     found: &crate::locate::TypeNameRef,
 ) -> Option<(SourceFile, jr_hir::ItemId)> {
     // On the alias of a qualified type there is no type to resolve — the alias names a module.
@@ -741,11 +739,11 @@ fn resolve_type_name(
 
     if found.member.is_some() {
         let path = alias_module(db, hir.as_ref(), &found.name)?;
-        return exported_declaration(db, search_paths, &path, symbol);
+        return exported_declaration(db, catalog, &path, symbol);
     }
 
     // This file's own declarations first: the nearer answer, and the one a reader means.
-    let sigs = jr_db::file_signatures(db, file, search_paths).signatures;
+    let sigs = jr_db::file_signatures(db, file, catalog).signatures;
     if let Some(entry) = sigs.lookup(symbol)
         && is_type_kind(entry.kind)
     {
@@ -761,7 +759,7 @@ fn resolve_type_name(
         else {
             continue;
         };
-        if let Some(target) = exported_declaration(db, search_paths, path, symbol) {
+        if let Some(target) = exported_declaration(db, catalog, path, symbol) {
             return Some(target);
         }
     }
@@ -775,11 +773,11 @@ fn resolve_type_name(
 /// program cannot ask (ADR-0054 §3).
 fn exported_declaration(
     db: &dyn Db,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     module: &str,
     symbol: jr_base::Symbol,
 ) -> Option<(SourceFile, jr_hir::ItemId)> {
-    let found = jr_db::module_file(db, search_paths, Arc::from(module)).found?;
+    let found = jr_db::module_file(db, catalog, Arc::from(module)).found?;
     let source = db.source_file_for_path(found.to_string_lossy().as_ref())?;
     let item = jr_db::file_exports(db, source).get(symbol)?;
     Some((source, item))
@@ -844,7 +842,7 @@ fn here(db: &dyn Db, file: SourceFile, positions: &Positions<'_>, span: jr_base:
 fn imported(
     db: &dyn Db,
     hir: &FileHir,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     encoding: Encoding,
     import: jr_hir::ItemId,
     name: jr_base::Symbol,
@@ -852,7 +850,7 @@ fn imported(
     let ItemKind::Import { path, .. } = &hir.items.get(import.index())?.kind else {
         return None;
     };
-    let lookup = jr_db::module_file(db, search_paths, Arc::from(path.as_str()));
+    let lookup = jr_db::module_file(db, catalog, Arc::from(path.as_str()));
     let found = lookup.found?;
     let module = db.source_file_for_path(found.to_string_lossy().as_ref())?;
 

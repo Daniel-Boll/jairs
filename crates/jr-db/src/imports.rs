@@ -51,7 +51,7 @@ use rustc_hash::FxHashSet;
 
 use crate::{
     Db, SourceFile,
-    module_loader::{ModuleSearchPaths, file_hir, resolved},
+    module_loader::{ModuleCatalog, file_hir, resolved},
 };
 
 /// The diagnostic code for an import nothing in the file uses.
@@ -136,13 +136,9 @@ impl UnusedImports {
 /// and an import that failed to resolve provides nothing by definition — calling it unused
 /// would be a second complaint about one problem, and the wrong one to act on.
 #[salsa::tracked(returns(clone))]
-pub fn unused_imports(
-    db: &dyn Db,
-    file: SourceFile,
-    search_paths: ModuleSearchPaths,
-) -> Arc<UnusedImports> {
+pub fn unused_imports(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> Arc<UnusedImports> {
     let hir = file_hir(db, file);
-    let resolve = resolved(db, file, search_paths).map;
+    let resolve = resolved(db, file, catalog).map;
 
     // Expression positions: every `Res::Imported` names the `#import` item it came through,
     // which is more direct than matching on the module name.
@@ -157,11 +153,11 @@ pub fn unused_imports(
     // `checked` rather than `file_signatures` because a *local*'s annotation is resolved by
     // the check phase, and a local is exactly the case that motivated this (`r: Rect;`).
     let mut used_modules: FxHashSet<String> = FxHashSet::default();
-    let signatures = crate::sema::file_signatures(db, file, search_paths);
+    let signatures = crate::sema::file_signatures(db, file, catalog);
     for module in signatures.signatures.modules_used_in_type_position() {
         used_modules.insert(module.to_owned());
     }
-    let checked = crate::sema::checked(db, file, search_paths);
+    let checked = crate::sema::checked(db, file, catalog);
     for module in checked.type_name_imports.iter() {
         used_modules.insert(module.clone());
     }
@@ -185,7 +181,7 @@ pub fn unused_imports(
         let duplicate = !seen.insert((path.as_str(), *alias));
 
         // A module that does not resolve is E0210's business, not this query's.
-        let lookup = crate::module_loader::module_file(db, search_paths, Arc::from(path.as_str()));
+        let lookup = crate::module_loader::module_file(db, catalog, Arc::from(path.as_str()));
         let Some(found) = lookup.found else { continue };
         // A self-import provides nothing and is already skipped everywhere else
         // (ADR-0014 §6); reporting it as unused would be technically true and useless.

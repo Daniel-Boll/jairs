@@ -57,9 +57,8 @@ pub fn run(args: RunArgs, global: &GlobalArgs) -> Result<i32> {
     // The entry point and the search paths both come from `crate::project`, so that the
     // command line, the manifest and the bundled library are ranked in one place rather than
     // once per subcommand (see that module's docs).
-    let path = crate::project::entry(args.path)?;
-    let search =
-        db.set_module_search_paths(crate::project::module_search_paths(&args.module_paths)?);
+    let (path, project) = crate::project::entry_and_context(args.path, &args.module_paths)?;
+    let search = db.install_module_catalog(project.catalog());
     // The build setting, before any MIR query runs. ADR-0058 §2 makes it a salsa input so that
     // setting it late would still invalidate correctly — but setting it here means no query ever
     // runs under a value the user did not ask for, which is one fewer thing to reason about.

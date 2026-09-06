@@ -32,7 +32,7 @@ pub fn run(args: LspArgs, global: &GlobalArgs) -> Result<i32> {
     // here" instead of erroring. Found by running the real server from a relative
     // `--module-path`, which is what a person types first.
     let cwd = std::env::current_dir().context("the working directory must be readable")?;
-    let mut module_search_paths: Vec<std::path::PathBuf> = args
+    let operator_module_roots: Vec<std::path::PathBuf> = args
         .module_path
         .into_iter()
         .map(|path| {
@@ -43,26 +43,12 @@ pub fn run(args: LspArgs, global: &GlobalArgs) -> Result<i32> {
             }
         })
         .collect();
-    // **The manifest's module paths, then the bundled ones** — exactly as `check`, `run` and
-    // `build` do, through the one resolver that ranks them (ADR-0202 §2).
-    //
-    // This server was the one subcommand of six that pushed no bundled directory at all
-    // (ADR-0199 §1), and the omission was not cosmetic: `module_file` probes *only* the search
-    // paths, so with none the server could resolve no `#import`, and the auto-import quick fix
-    // silently offered nothing. It then had the *same* shape of bug once a `jairs.toml` could
-    // declare paths of its own: a project with `[build] module_paths` resolved under `jr check`
-    // and reported E0210 in the editor, which reads as the code being wrong rather than the
-    // tool. A setting with two surfaces is half-wired until both read it.
-    //
-    // Resolved from the working directory, which is where an editor launches its server — the
-    // same assumption `jr fmt --stdin` documents, and for the same reason: stdio carries no path
-    // to resolve from at the moment the search paths must be set.
-    module_search_paths.extend(
-        crate::project::module_search_paths(&[])
-            .context("reading the project manifest for the language server")?,
-    );
+    // Only operator roots are decided before protocol initialization. The client's workspace
+    // folders arrive *during* initialize, and they—not the process working directory—decide which
+    // manifests, implicit `src` modules, exact dependencies, and bundled catalog each file uses
+    // (ADR-0213 §6).
     let options = jr_lsp::ServerOptions {
-        module_search_paths,
+        operator_module_roots,
     };
     jr_lsp::run_stdio(&options)
         .map_err(|e| anyhow::anyhow!("{e}"))

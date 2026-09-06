@@ -28,7 +28,7 @@ use jr_vm::{Mode, Program, Value, Vm, VmError};
 use crate::{
     BuildConfig, Db, SourceFile,
     mir::optimized_file_mir,
-    module_loader::{ModuleSearchPaths, file_hir, imports_of, module_file},
+    module_loader::{ModuleCatalog, file_hir, imports_of, module_file},
 };
 
 /// How a program ended.
@@ -62,10 +62,10 @@ pub enum RunOutcome {
 pub fn run_main(
     db: &dyn Db,
     root: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     config: BuildConfig,
 ) -> Result<RunOutcome, String> {
-    run_main_impl(db, root, search_paths, config, None)
+    run_main_impl(db, root, catalog, config, None)
 }
 
 /// Assembles every reachable file and calls `main`, with a build script's `#foreign compiler "…"`
@@ -81,17 +81,17 @@ pub fn run_main(
 pub fn run_main_with_host(
     db: &dyn Db,
     root: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     config: BuildConfig,
     host: &mut dyn jr_vm::Host,
 ) -> Result<RunOutcome, String> {
-    run_main_impl(db, root, search_paths, config, Some(host))
+    run_main_impl(db, root, catalog, config, Some(host))
 }
 
 fn run_main_impl(
     db: &dyn Db,
     root: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     config: BuildConfig,
     host: Option<&mut dyn jr_vm::Host>,
 ) -> Result<RunOutcome, String> {
@@ -108,7 +108,7 @@ fn run_main_impl(
     // only a problem if it is *reached*, and deciding that statically is the call graph this
     // query deliberately does not build.
     {
-        let mir = optimized_file_mir(db, root, search_paths, config);
+        let mir = optimized_file_mir(db, root, catalog, config);
         if let Some(Err(reason)) = mir
             .mir
             .iter()
@@ -122,13 +122,13 @@ fn run_main_impl(
         }
     }
 
-    let files = reachable_files(db, root, search_paths);
+    let files = reachable_files(db, root, catalog);
 
     // Gather every query result before locking the pool: the lock must never be held
     // across a nested query call, which is the rule the rest of this crate follows.
     let mut inputs = Vec::with_capacity(files.len());
     for file in files {
-        let mir = optimized_file_mir(db, file, search_paths, config);
+        let mir = optimized_file_mir(db, file, catalog, config);
         if mir.gated {
             continue;
         }
@@ -259,17 +259,13 @@ pub fn main_of(db: &dyn Db, file: SourceFile) -> Option<ProcRef> {
 ///
 /// The root is first, and the rest follow in discovery order. Distinct by construction — the seen-set is what
 /// makes a legal import cycle (ADR-0014 §4) terminate rather than an assumption.
-pub fn reachable_files(
-    db: &dyn Db,
-    root: SourceFile,
-    search_paths: ModuleSearchPaths,
-) -> Vec<SourceFile> {
+pub fn reachable_files(db: &dyn Db, root: SourceFile, catalog: ModuleCatalog) -> Vec<SourceFile> {
     let mut seen = vec![root];
     let mut queue = vec![root];
     while let Some(file) = queue.pop() {
         let own_path = file.path(db);
         for name in imports_of(db, file).iter() {
-            let lookup = module_file(db, search_paths, Arc::clone(name));
+            let lookup = module_file(db, catalog, Arc::clone(name));
             let Some(path) = lookup.found else { continue };
             let path = path.to_string_lossy();
             // A self-import is a no-op (ADR-0014 §6), and a cycle is legal (§4), so the

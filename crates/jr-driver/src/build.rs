@@ -11,7 +11,8 @@ use jr_link::{LinkRequest, link};
 ///
 /// `Build`, because Jai calls the same thing "build constants" and a script generating them is doing what
 /// `add_build_string` is for. Short, capitalised like every other module, and unlikely to collide — a
-/// project with its own `Build` module can pass its directory later in the search order and win.
+/// A project module of the same name is rejected when the generated module is derived, because two
+/// exact declarations of one module identity are an error (ADR-0213 §4, §7).
 pub const GENERATED_MODULE: &str = "Build";
 
 /// Everything one compilation needs, with no argument parser in the way.
@@ -24,12 +25,12 @@ pub const GENERATED_MODULE: &str = "Build";
 pub struct BuildRequest {
     /// The root source file to compile.
     pub path: PathBuf,
-    /// Directories to search for an `#import`, in order, used **exactly as given**.
+    /// The discovered project and its immutable import catalog.
     ///
-    /// The bundled module directory is *not* appended here: where the compiler's own modules live is
-    /// an installation question, and a crate that cannot see a command line has no business
-    /// answering it. `jr-cli` appends it, and a build script inherits the list the operator gave.
-    pub module_paths: Vec<PathBuf>,
+    /// Passed in rather than rediscovered here: the CLI, an editor, and a build script may have
+    /// different anchors and operator overrides, while the driver should compile exactly the
+    /// project its caller selected.
+    pub project: jr_project::ProjectContext,
     /// Directories to search for a `#system_library`, in order.
     pub library_paths: Vec<PathBuf>,
     /// The optimisation level, or `None` to let a declared `BUILD_OPT_LEVEL` decide and fall back
@@ -86,11 +87,11 @@ pub struct BuildRequest {
     /// have scopes. What it costs is one line in the target, and what it buys is that a generated name
     /// cannot silently shadow or collide with one the program wrote — which in Jai it can.
     pub build_strings: Vec<String>,
-    /// Extra module lookups, from module name to directory (ADR-0197 §5).
+    /// Extra exact module lookups, from module name to directory (ADR-0197 §5).
     ///
     /// Jai's `provide_import`, in the form that needs no message loop: a mapping supplied *before* the
-    /// compilation rather than in answer to a `FAILED_IMPORT`. Appended to `module_paths`, so a name
-    /// resolves the ordinary way and nothing new has to understand it.
+    /// compilation rather than in answer to a `FAILED_IMPORT`. ADR-0213 makes each result an exact
+    /// catalog addition, so providing `Foo` cannot expose unrelated siblings beside it.
     pub provided_imports: Vec<(String, PathBuf)>,
 }
 
@@ -135,7 +136,8 @@ pub enum BuildOutcome {
 pub fn build(request: &BuildRequest) -> Result<BuildOutcome, String> {
     let mut db = JairsDatabase::default();
 
-    let mut module_paths = request.module_paths.clone();
+    let mut project = request.project.clone();
+    let mut additions = jr_project::ModuleAdditions::default();
 
     // **A generated `Build` module, when the script supplied any text** (ADR-0197 §3). Written to a
     // temporary directory rather than beside the source, because it is a product of *this* build: leaving
@@ -157,7 +159,7 @@ pub fn build(request: &BuildRequest) -> Result<BuildOutcome, String> {
         let text = request.build_strings.join("\n\n");
         std::fs::write(module_dir.join("module.jr"), text)
             .map_err(|e| format!("cannot write the generated module: {e}"))?;
-        module_paths.push(dir.path().to_path_buf());
+        additions = additions.generated(GENERATED_MODULE, module_dir.join("module.jr"));
         Some(dir)
     };
     // Named so the guard is not dropped early; the directory must outlive every query below.
@@ -179,10 +181,18 @@ pub fn build(request: &BuildRequest) -> Result<BuildOutcome, String> {
                 file_form.display()
             )));
         }
-        module_paths.push(dir.clone());
+        let source = if directory_form.is_file() {
+            directory_form
+        } else {
+            file_form
+        };
+        additions = additions.provided(name.clone(), source);
     }
 
-    let search = db.set_module_search_paths(module_paths);
+    project = project
+        .derive(additions)
+        .map_err(|error| format!("cannot prepare build modules: {error}"))?;
+    let search = db.install_module_catalog(project.catalog());
 
     // **A bootstrap configuration first**, then the real one (ADR-0154 §1). A build script may
     // declare `BUILD_OPT_LEVEL`, and reading a declared constant means *compiling* — so an option

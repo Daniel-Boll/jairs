@@ -40,7 +40,7 @@
 
 use std::path::{Path, PathBuf};
 
-use jr_db::{JairsDatabase, ModuleSearchPaths, SourceFile, dump_mir, file_mir};
+use jr_db::{JairsDatabase, ModuleCatalog, SourceFile, dump_mir, file_mir};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -81,7 +81,7 @@ fn sorted_files(dir: &Path) -> Vec<(String, String)> {
     files
 }
 
-fn database() -> (JairsDatabase, ModuleSearchPaths) {
+fn database() -> (JairsDatabase, ModuleCatalog) {
     let mut db = JairsDatabase::default();
     // The real `modules/` directory, so `#import "Basic"` resolves exactly as it
     // does for `jr check`.

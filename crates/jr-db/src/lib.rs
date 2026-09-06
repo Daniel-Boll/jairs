@@ -29,10 +29,11 @@
 //!
 //! # Module resolution
 //!
-//! Module search paths are configured via [`JairsDatabase::set_module_search_paths`].
-//! Module files are pre-loaded via [`JairsDatabase::load_module`] before
-//! running resolution queries. The queries in [`module_loader`] implement
-//! ADR-0014.
+//! A discovered project catalog is installed via
+//! [`JairsDatabase::install_module_catalog`]. Its sources are registered before
+//! running resolution queries, so tracked lookup is pure in-memory work. The
+//! temporary [`JairsDatabase::set_module_search_paths`] adapter preserves the
+//! old path-based caller surface during the staged ADR-0213 migration.
 //!
 //! # Semantic analysis
 //!
@@ -88,14 +89,14 @@ mod input {
     /// Build settings that change the code a back end receives (ADR-0058 §2).
     ///
     /// **Why a salsa input?** For the reason
-    /// [`ModuleSearchPaths`](crate::ModuleSearchPaths) is one, stated in its own docs:
+    /// [`ModuleCatalog`](crate::ModuleCatalog) is one, stated in its own docs:
     /// configuration that comes from outside the source files must be an input, or
     /// salsa serves a memo computed under the old value. Toggling
     /// `--no-bounds-check` has to invalidate every query that reads MIR, and an
     /// input is what makes that automatic rather than remembered.
     ///
-    /// **Why not a field on `ModuleSearchPaths`?** It would be one fewer thing to
-    /// thread and wrong in both directions: changing a module path would invalidate
+    /// **Why not a field on `ModuleCatalog`?** It would be one fewer thing to
+    /// thread and wrong in both directions: changing project module availability would invalidate
     /// MIR optimisation, and changing this would invalidate module lookup. Neither
     /// is visible until somebody measures (ADR-0058 §2).
     ///
@@ -163,9 +164,9 @@ pub use queries::{
 };
 
 pub use module_loader::{
-    InMemoryModules, IndexedModule, ModuleIndex, ModuleLookupResult, ModuleName, ModuleSearchPaths,
-    ResolveResult, file_diagnostics, file_exports, file_hir, frontend_diagnostics, imports_of,
-    module_file, module_index, module_name_of, resolved,
+    InMemoryModules, IndexedModule, ModuleCatalog, ModuleCatalogEntry, ModuleIndex,
+    ModuleLookupResult, ModuleName, ResolveResult, file_diagnostics, file_exports, file_hir,
+    frontend_diagnostics, imports_of, module_file, module_index, module_name_of, resolved,
 };
 
 pub use build::{
@@ -222,23 +223,19 @@ pub trait Db: salsa::Database {
     /// should clone the returned value.
     fn source_map(&self) -> SourceMap;
 
-    /// Reads the contents of a module file from the filesystem (or an
-    /// in-memory substitute for tests).
+    /// Reads the contents of a module file from the filesystem (or an in-memory substitute).
     ///
     /// Returns `Some(contents)` if the file exists and is readable, `None`
     /// otherwise. Implementations must not panic on filesystem errors.
     ///
-    /// This is the seam that lets tests supply an in-memory filesystem
-    /// instead of requiring real temporary directories. It is called by
-    /// [`module_file`] to probe whether a candidate path exists.
+    /// This is retained for compatibility adapters and [`JairsDatabase::load_module`]. Tracked
+    /// queries do not call it: project discovery and catalog installation happen before salsa.
     fn read_module_file(&self, path: &Path) -> Option<String>;
 
     /// Returns the [`SourceFile`] salsa input for a given path, if it has
     /// already been loaded into the database.
     ///
-    /// This is used by [`resolved`] to look up already-loaded module files.
-    /// Module files must be pre-loaded (via [`JairsDatabase::load_module`] or
-    /// [`JairsDatabase::set_file_text`]) before running resolution queries.
+    /// This is used by compatibility code to look up already-loaded files.
     fn source_file_for_path(&self, path: &str) -> Option<SourceFile>;
 
     /// Returns the shared type and value pool.
@@ -297,11 +294,11 @@ pub struct JairsDatabase {
     /// When `Some`, `read_module_file` reads from this map instead of the
     /// real filesystem. When `None`, the real filesystem is used.
     in_memory_modules: Option<Arc<InMemoryModules>>,
-    /// The current module search paths salsa input, if set.
-    module_search_paths: Arc<Mutex<Option<ModuleSearchPaths>>>,
+    /// The current immutable module catalog salsa input, if set.
+    module_catalog: Arc<Mutex<Option<ModuleCatalog>>>,
     /// The current workspace file list salsa input, if set (ADR-0029 §2).
     ///
-    /// Held here for the same reason as `module_search_paths`: an input has to be created
+    /// Held here for the same reason as `module_catalog`: an input has to be created
     /// once and then updated, or every refresh would make a new input and orphan the
     /// dependencies of the old one.
     workspace_files: Arc<Mutex<Option<workspace::WorkspaceFiles>>>,
@@ -329,7 +326,7 @@ impl Default for JairsDatabase {
             source_map: Arc::new(Mutex::new(SourceMap::new())),
             file_inputs: Arc::new(Mutex::new(rustc_hash::FxHashMap::default())),
             in_memory_modules: None,
-            module_search_paths: Arc::new(Mutex::new(None)),
+            module_catalog: Arc::new(Mutex::new(None)),
             workspace_files: Arc::new(Mutex::new(None)),
             build_config: Arc::new(Mutex::new(None)),
             pool: Arc::new(RwLock::new(Pool::new())),
@@ -360,7 +357,7 @@ impl JairsDatabase {
             source_map: Arc::clone(&self.source_map),
             file_inputs: Arc::clone(&self.file_inputs),
             in_memory_modules: self.in_memory_modules.clone(),
-            module_search_paths: Arc::clone(&self.module_search_paths),
+            module_catalog: Arc::clone(&self.module_catalog),
             workspace_files: Arc::clone(&self.workspace_files),
             // Shared, not reset. A snapshot that made a fresh `None` here would silently
             // read checks-on while the database it came from had them off — and the LSP is
@@ -383,7 +380,7 @@ impl JairsDatabase {
             source_map: Arc::new(Mutex::new(SourceMap::new())),
             file_inputs: Arc::new(Mutex::new(rustc_hash::FxHashMap::default())),
             in_memory_modules: None,
-            module_search_paths: Arc::new(Mutex::new(None)),
+            module_catalog: Arc::new(Mutex::new(None)),
             workspace_files: Arc::new(Mutex::new(None)),
             build_config: Arc::new(Mutex::new(None)),
             pool: Arc::new(RwLock::new(Pool::new())),
@@ -402,7 +399,7 @@ impl JairsDatabase {
             source_map: Arc::new(Mutex::new(SourceMap::new())),
             file_inputs: Arc::new(Mutex::new(rustc_hash::FxHashMap::default())),
             in_memory_modules: Some(Arc::new(modules)),
-            module_search_paths: Arc::new(Mutex::new(None)),
+            module_catalog: Arc::new(Mutex::new(None)),
             workspace_files: Arc::new(Mutex::new(None)),
             build_config: Arc::new(Mutex::new(None)),
             pool: Arc::new(RwLock::new(Pool::new())),
@@ -423,7 +420,7 @@ impl JairsDatabase {
             source_map: Arc::new(Mutex::new(SourceMap::new())),
             file_inputs: Arc::new(Mutex::new(rustc_hash::FxHashMap::default())),
             in_memory_modules: Some(Arc::new(modules)),
-            module_search_paths: Arc::new(Mutex::new(None)),
+            module_catalog: Arc::new(Mutex::new(None)),
             workspace_files: Arc::new(Mutex::new(None)),
             build_config: Arc::new(Mutex::new(None)),
             pool: Arc::new(RwLock::new(Pool::new())),
@@ -483,34 +480,203 @@ impl JairsDatabase {
         sm.file_id(path)
     }
 
-    /// Sets the module search paths and returns the salsa input.
+    /// Installs an already-discovered project catalog as a salsa input.
     ///
-    /// Call this before running any module-resolution queries. The paths are
-    /// tried in order; the first match wins (ADR-0014 §1).
+    /// Every source is registered before the input is updated. If a path is already loaded, its
+    /// existing [`SourceFile`] and current text are preserved; this is what lets an unsaved editor
+    /// buffer override the discovery snapshot rather than being silently replaced by disk text.
     ///
-    /// Changing the search paths starts a new salsa revision and invalidates
-    /// all `module_file` queries and their dependents.
-    pub fn set_module_search_paths(&mut self, paths: Vec<PathBuf>) -> ModuleSearchPaths {
-        let paths: Arc<[PathBuf]> = paths.into();
+    /// Updating the catalog invalidates lookup and its dependents. Discovery and source reads have
+    /// already happened in `jr-project`, outside tracked queries.
+    pub fn install_module_catalog(
+        &mut self,
+        project_catalog: &jr_project::ModuleCatalog,
+    ) -> ModuleCatalog {
+        let (entries, probe_roots) = self.prepare_module_catalog(project_catalog);
         let existing = {
             let guard = self
-                .module_search_paths
+                .module_catalog
                 .lock()
-                .expect("module_search_paths lock poisoned");
+                .expect("module_catalog lock poisoned");
             *guard
         };
         if let Some(existing) = existing {
-            existing.set_paths(self).to(paths);
+            existing.set_entries(self).to(entries);
+            existing.set_probe_roots(self).to(probe_roots);
             existing
         } else {
-            let sp = ModuleSearchPaths::new(self, paths);
+            let input = ModuleCatalog::new(self, entries, probe_roots);
             let mut guard = self
-                .module_search_paths
+                .module_catalog
                 .lock()
-                .expect("module_search_paths lock poisoned");
-            *guard = Some(sp);
-            sp
+                .expect("module_catalog lock poisoned");
+            *guard = Some(input);
+            input
         }
+    }
+
+    /// Creates an independent catalog input without replacing the batch/default catalog.
+    ///
+    /// The language server uses one of these per governing project. Two workspaces may both have a
+    /// module named `Geometry`, and sharing one mutable input would make whichever project refreshed
+    /// last redefine imports in the other.
+    pub fn create_module_catalog(
+        &mut self,
+        project_catalog: &jr_project::ModuleCatalog,
+    ) -> ModuleCatalog {
+        let (entries, probe_roots) = self.prepare_module_catalog(project_catalog);
+        ModuleCatalog::new(self, entries, probe_roots)
+    }
+
+    /// Refreshes one independently owned catalog input in place.
+    ///
+    /// Keeping the salsa identity stable is what invalidates requests that read the old project
+    /// snapshot. Creating a replacement input would orphan those dependencies.
+    pub fn refresh_module_catalog(
+        &mut self,
+        input: ModuleCatalog,
+        project_catalog: &jr_project::ModuleCatalog,
+    ) {
+        let (entries, probe_roots) = self.prepare_module_catalog(project_catalog);
+        input.set_entries(self).to(entries);
+        input.set_probe_roots(self).to(probe_roots);
+    }
+
+    fn prepare_module_catalog(
+        &mut self,
+        project_catalog: &jr_project::ModuleCatalog,
+    ) -> (Arc<[ModuleCatalogEntry]>, Arc<[PathBuf]>) {
+        let mut entries = Vec::with_capacity(project_catalog.entries().len());
+        for entry in project_catalog.entries() {
+            let path: Arc<str> = entry.path().to_string_lossy().into_owned().into();
+            let file = if let Some(existing) = self.source_file(path.as_ref()) {
+                existing
+            } else {
+                self.set_file_text(Arc::clone(&path), Arc::<str>::from(entry.text()));
+                self.source_file(path.as_ref())
+                    .expect("set_file_text must register its SourceFile")
+            };
+            entries.push(ModuleCatalogEntry {
+                name: Arc::from(entry.name()),
+                path: entry.path().to_path_buf(),
+                file,
+                origin: entry.origin(),
+            });
+        }
+
+        let entries: Arc<[ModuleCatalogEntry]> = entries.into();
+        let probe_roots: Arc<[PathBuf]> = project_catalog.probe_roots().to_vec().into();
+        (entries, probe_roots)
+    }
+
+    /// Compatibility adapter for callers that still provide ordered module roots.
+    ///
+    /// This method performs every directory read and source read before installing a salsa input.
+    /// It enumerates immediate directory-form and single-file modules in path order; the first
+    /// module with a given flat name wins, preserving ADR-0014's historical behavior.
+    pub fn set_module_search_paths(&mut self, paths: Vec<PathBuf>) -> ModuleCatalog {
+        let mut winners = std::collections::BTreeMap::new();
+        for root in &paths {
+            for (name, path, source, origin) in self.compatibility_modules(root) {
+                if winners.contains_key(&name) {
+                    continue;
+                }
+                let Ok(entry) =
+                    jr_project::ModuleEntry::from_text(name.clone(), path, source, origin)
+                else {
+                    continue;
+                };
+                winners.insert(name, entry);
+            }
+        }
+        let project_catalog =
+            jr_project::ModuleCatalog::from_entries(winners.into_values(), paths.clone())
+                .expect("compatibility discovery resolves duplicate names before installation");
+        self.install_module_catalog(&project_catalog)
+    }
+
+    /// Enumerates one legacy root without entering a tracked query.
+    fn compatibility_modules(
+        &self,
+        root: &Path,
+    ) -> Vec<(String, PathBuf, String, jr_project::ModuleOrigin)> {
+        if root == jr_stdlib::root() {
+            return jr_stdlib::names()
+                .filter_map(|name| {
+                    let path = root.join(name).join("module.jr");
+                    jr_stdlib::source(&path).map(|source| {
+                        (
+                            name.to_owned(),
+                            path,
+                            source.to_owned(),
+                            jr_project::ModuleOrigin::Bundled,
+                        )
+                    })
+                })
+                .collect();
+        }
+
+        let mut directory_form = Vec::new();
+        let mut file_form = Vec::new();
+        if let Some(modules) = &self.in_memory_modules {
+            for (path, source) in modules.iter() {
+                if path.file_name().is_some_and(|file| file == "module.jr")
+                    && path.parent().and_then(Path::parent) == Some(root)
+                    && let Some(name) = path
+                        .parent()
+                        .and_then(Path::file_name)
+                        .and_then(|name| name.to_str())
+                {
+                    directory_form.push((
+                        name.to_owned(),
+                        path.to_path_buf(),
+                        source.to_owned(),
+                        jr_project::ModuleOrigin::OperatorPath,
+                    ));
+                } else if path.parent() == Some(root)
+                    && path.extension().is_some_and(|extension| extension == "jr")
+                    && let Some(name) = path.file_stem().and_then(|name| name.to_str())
+                {
+                    file_form.push((
+                        name.to_owned(),
+                        path.to_path_buf(),
+                        source.to_owned(),
+                        jr_project::ModuleOrigin::OperatorPath,
+                    ));
+                }
+            }
+        } else if let Ok(read_dir) = std::fs::read_dir(root) {
+            for entry in read_dir.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let module = path.join("module.jr");
+                    if let Some(source) = <Self as Db>::read_module_file(self, &module)
+                        && let Some(name) = path.file_name().and_then(|name| name.to_str())
+                    {
+                        directory_form.push((
+                            name.to_owned(),
+                            module,
+                            source,
+                            jr_project::ModuleOrigin::OperatorPath,
+                        ));
+                    }
+                } else if path.extension().is_some_and(|extension| extension == "jr")
+                    && let Some(source) = <Self as Db>::read_module_file(self, &path)
+                    && let Some(name) = path.file_stem().and_then(|name| name.to_str())
+                {
+                    file_form.push((
+                        name.to_owned(),
+                        path,
+                        source,
+                        jr_project::ModuleOrigin::OperatorPath,
+                    ));
+                }
+            }
+        }
+        directory_form.sort_by(|left, right| left.0.cmp(&right.0));
+        file_form.sort_by(|left, right| left.0.cmp(&right.0));
+        directory_form.extend(file_form);
+        directory_form
     }
 
     /// Sets the build settings and returns the salsa input.
@@ -653,12 +819,12 @@ impl JairsDatabase {
             .expect("workspace_files lock poisoned")
     }
 
-    /// Returns the current [`ModuleSearchPaths`] salsa input, if set.
-    pub fn module_search_paths_input(&self) -> Option<ModuleSearchPaths> {
+    /// Returns the current [`ModuleCatalog`] salsa input, if set.
+    pub fn module_catalog_input(&self) -> Option<ModuleCatalog> {
         let guard = self
-            .module_search_paths
+            .module_catalog
             .lock()
-            .expect("module_search_paths lock poisoned");
+            .expect("module_catalog lock poisoned");
         *guard
     }
 
@@ -710,17 +876,16 @@ impl JairsDatabase {
     /// Loads all modules transitively imported by a file, recursively.
     ///
     /// This is a convenience method for the batch driver: call it after
-    /// setting up search paths and loading the root file(s) to ensure all
-    /// transitively imported modules are in the database before running
-    /// resolution queries.
+    /// installing a catalog and loading the root file(s). Catalog entries are
+    /// already loaded, so this walks existing [`SourceFile`] inputs only.
     ///
     /// Cycles are handled correctly: a module that has already been loaded
     /// (or is currently being loaded) is not loaded again.
     ///
-    /// Returns the set of all module paths that were loaded.
+    /// Returns the set of all module source paths that were loaded.
     pub fn load_modules_transitively(&mut self, root: SourceFile) -> Vec<PathBuf> {
-        let search_paths = match self.module_search_paths_input() {
-            Some(sp) => sp,
+        let catalog = match self.module_catalog_input() {
+            Some(catalog) => catalog,
             None => return Vec::new(),
         };
 
@@ -735,9 +900,9 @@ impl JairsDatabase {
                     continue; // Already processed this module name.
                 }
 
-                let lookup = module_file(self, search_paths, name.clone());
+                let lookup = module_file(self, catalog, name.clone());
                 if let Some(found_path) = lookup.found
-                    && let Some(module_sf) = self.load_module(&found_path)
+                    && let Some(module_sf) = self.source_file(found_path.to_string_lossy().as_ref())
                 {
                     loaded.push(found_path);
                     queue.push(module_sf);
@@ -766,10 +931,8 @@ impl Db for JairsDatabase {
         // **The bundled standard library is checked first, and that is not a precedence
         // decision.** It answers only for paths under its own synthetic root, `<bundled>`,
         // which no filesystem can produce — so there is no path both this and the two branches
-        // below could answer for, and asking it first merely avoids a pointless `stat`.
-        // Precedence between the bundled library and a real directory is decided where it
-        // belongs, in the *order of the search paths*: an explicit `-I` is searched first and
-        // `<bundled>` is appended last (ADR-0014 §1).
+        // below could answer for. Catalog discovery already decided which module name maps to
+        // which source; this compatibility reader only retrieves the chosen source text.
         if let Some(source) = jr_stdlib::source(path) {
             return Some(source.to_owned());
         }

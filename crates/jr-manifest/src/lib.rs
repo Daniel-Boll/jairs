@@ -31,7 +31,10 @@
 //! scope rather than implying a guarantee: two constructs are broken, comments are never
 //! reflowed, and a formatted file may still hold a longer line.
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use serde::Deserialize;
 
@@ -51,6 +54,19 @@ pub struct Manifest {
     pub fmt: Fmt,
     /// How this project is built.
     pub build: Build,
+    /// Exact named module dependencies.
+    pub dependencies: BTreeMap<String, Dependency>,
+}
+
+/// One entry in the top-level `[dependencies]` table.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Dependency {
+    /// A module file or directory.
+    ///
+    /// Relative paths are resolved against the manifest's directory by
+    /// [`Located::exact_dependencies`].
+    pub path: PathBuf,
 }
 
 /// The `[project]` table.
@@ -121,11 +137,11 @@ impl From<IndentStyle> for jr_fmt::IndentStyle {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Build {
-    /// Extra directories to search for `#import`ed modules.
+    /// Legacy compatibility directories for `#import`ed modules.
     ///
-    /// Relative entries resolve against the manifest's directory. Searched before the bundled
-    /// standard library and after any `-I` on the command line, so the three tiers read in the
-    /// order of how specific they are.
+    /// Relative entries resolve against the manifest's directory. New projects should prefer
+    /// implicit direct `src` modules or exact `[dependencies]`; these roots remain after those
+    /// project declarations and before the bundled standard library (ADR-0213 §4).
     #[serde(default)]
     pub module_paths: Vec<PathBuf>,
 }
@@ -155,7 +171,7 @@ impl Located {
         )
     }
 
-    /// The module search paths the manifest declares, resolved against its directory.
+    /// The legacy module roots the manifest declares, resolved against its directory.
     #[must_use]
     pub fn module_paths(&self) -> Vec<PathBuf> {
         self.manifest
@@ -163,6 +179,18 @@ impl Located {
             .module_paths
             .iter()
             .map(|path| self.root.join(path))
+            .collect()
+    }
+
+    /// Exact named dependencies, with paths resolved against the manifest's directory.
+    ///
+    /// Entries are returned in deterministic module-name order.
+    #[must_use]
+    pub fn exact_dependencies(&self) -> Vec<(&str, PathBuf)> {
+        self.manifest
+            .dependencies
+            .iter()
+            .map(|(name, dependency)| (name.as_str(), self.root.join(&dependency.path)))
             .collect()
     }
 
@@ -298,6 +326,51 @@ mod tests {
         assert_eq!(l.fmt_config().indent_style, jr_fmt::IndentStyle::Space);
         assert_eq!(l.fmt_config().max_width, 100);
         assert!(l.module_paths().is_empty());
+        assert!(l.exact_dependencies().is_empty());
+    }
+
+    #[test]
+    fn exact_dependencies_parse_file_and_directory_paths() {
+        let l = located(
+            "[dependencies]\n\
+             Geometry = { path = \"../geometry\" }\n\
+             Math = { path = \"vendor/math.jr\" }\n",
+        );
+
+        assert_eq!(
+            l.manifest.dependencies["Geometry"].path,
+            Path::new("../geometry")
+        );
+        assert_eq!(
+            l.manifest.dependencies["Math"].path,
+            Path::new("vendor/math.jr")
+        );
+    }
+
+    #[test]
+    fn exact_dependencies_are_resolved_relative_to_the_manifest_root() {
+        let l = located(
+            "[dependencies]\n\
+             Zed = { path = \"/opt/zed/module.jr\" }\n\
+             Alpha = { path = \"../alpha\" }\n",
+        );
+
+        assert_eq!(
+            l.exact_dependencies(),
+            vec![
+                ("Alpha", Path::new("/proj/../alpha").to_path_buf()),
+                ("Zed", Path::new("/opt/zed/module.jr").to_path_buf()),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unknown_exact_dependency_key_is_refused() {
+        let err = toml::from_str::<Manifest>(
+            "[dependencies]\nGeometry = { path = \"../geometry\", version = \"1\" }\n",
+        )
+        .expect_err("an unknown dependency key must be refused");
+        assert!(err.to_string().contains("version"), "got: {err}");
     }
 
     #[test]

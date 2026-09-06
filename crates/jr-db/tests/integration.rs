@@ -20,9 +20,12 @@ use std::{
 };
 
 use jr_db::{
-    Db as _, InMemoryModules, JairsDatabase, ModuleSearchPaths, SourceFile, checked,
-    file_diagnostics, file_exports, file_hir, file_signatures, imports_of, module_file,
-    parse_diagnostics, parse_file, resolved,
+    Db as _, InMemoryModules, JairsDatabase, ModuleCatalog, SourceFile, checked, file_diagnostics,
+    file_exports, file_hir, file_signatures, imports_of, module_file, parse_diagnostics,
+    parse_file, resolved,
+};
+use jr_project::{
+    ModuleCatalog as ProjectModuleCatalog, ModuleEntry as ProjectModuleEntry, ModuleOrigin,
 };
 
 // ---------------------------------------------------------------------------
@@ -527,7 +530,7 @@ fn adding_a_file_does_not_invalidate_existing_ones() {
 /// The search path is a single virtual directory `/modules`. Module files are
 /// stored as `/modules/<Name>/module.jr` (directory form) or
 /// `/modules/<Name>.jr` (single-file form).
-fn make_module_db_with_corpus() -> (JairsDatabase, ModuleSearchPaths) {
+fn make_module_db_with_corpus() -> (JairsDatabase, ModuleCatalog) {
     let mut modules = InMemoryModules::new();
 
     // Shapes — directory form
@@ -669,75 +672,140 @@ fn module_file_not_found_lists_searched_paths() {
     );
 }
 
+#[test]
+fn module_file_needs_no_io_after_catalog_installation() {
+    let temp = tempfile::tempdir().expect("temporary module root");
+    let module_path = temp.path().join("Offline.jr");
+    std::fs::write(&module_path, "OFFLINE :: 1;\n").expect("write module");
+
+    let mut db = JairsDatabase::default();
+    let catalog = db.set_module_search_paths(vec![temp.path().to_path_buf()]);
+    std::fs::remove_file(&module_path).expect("remove source after installation");
+
+    let result = module_file(&db, catalog, Arc::from("Offline"));
+    assert_eq!(
+        result.found.as_deref(),
+        Some(module_path.as_path()),
+        "lookup must use the installed snapshot after the source disappears"
+    );
+}
+
+fn project_catalog(
+    entries: impl IntoIterator<Item = (&'static str, &'static str, &'static str)>,
+) -> ProjectModuleCatalog {
+    ProjectModuleCatalog::from_entries(
+        entries.into_iter().map(|(name, path, text)| {
+            ProjectModuleEntry::from_text(name, path, text, ModuleOrigin::ExactDependency)
+                .expect("test module name is flat")
+        }),
+        [PathBuf::from("/modules")],
+    )
+    .expect("test catalog has unique names")
+}
+
+#[test]
+fn installing_a_new_catalog_invalidates_lookup() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&counter);
+    let mut db = JairsDatabase::with_event_callback(move |event| {
+        if let salsa::EventKind::WillExecute { database_key } = event.kind
+            && format!("{database_key:?}").contains("module_file")
+        {
+            observed.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+
+    let first = project_catalog([("First", "/modules/First.jr", "FIRST :: 1;\n")]);
+    let catalog = db.install_module_catalog(&first);
+    assert!(
+        module_file(&db, catalog, Arc::from("First"))
+            .found
+            .is_some()
+    );
+    let baseline = counter.load(Ordering::SeqCst);
+
+    let second = project_catalog([("Second", "/modules/Second.jr", "SECOND :: 2;\n")]);
+    let same_input = db.install_module_catalog(&second);
+    assert!(
+        catalog == same_input,
+        "installation must update the existing input"
+    );
+    assert!(
+        module_file(&db, same_input, Arc::from("First"))
+            .found
+            .is_none()
+    );
+    assert!(
+        counter.load(Ordering::SeqCst) > baseline,
+        "changing the catalog must re-run a cached lookup"
+    );
+}
+
+#[test]
+fn catalog_installation_preserves_existing_source_text() {
+    let mut db = JairsDatabase::default();
+    db.set_file_text("/modules/Edited.jr", "UNSAVED :: 2;\n");
+    let existing = db
+        .source_file("/modules/Edited.jr")
+        .expect("open buffer is loaded");
+
+    let discovered = project_catalog([("Edited", "/modules/Edited.jr", "DISK_SNAPSHOT :: 1;\n")]);
+    let catalog = db.install_module_catalog(&discovered);
+    let entry = &catalog.entries(&db)[0];
+
+    assert!(
+        entry.file == existing,
+        "SourceFile identity must be preserved"
+    );
+    assert_eq!(
+        entry.file.text(&db).as_ref(),
+        "UNSAVED :: 2;\n",
+        "discovery must not overwrite an unsaved buffer"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 10b. module_index — the index behind unimported completion
 // ---------------------------------------------------------------------------
 
-/// The corpus modules, loaded, with `files` as the discovered workspace.
-///
-/// `set_workspace_files` rather than `set_workspace_roots`, so the list is stated instead of walked:
-/// the property under test is which candidate wins for a name, and a real directory tree would make
-/// that depend on a filesystem.
-fn index_over(files: &[&str]) -> (JairsDatabase, Arc<jr_db::ModuleIndex>) {
-    let (mut db, sp) = make_module_db_with_corpus();
-    // Loading is what turns a discovered path into a `SourceFile`; without it the index skips every
-    // candidate for a reason that has nothing to do with this test.
-    load_with_modules(
-        &mut db,
-        "/main.jr",
-        "#import \"Shapes\";\n#import \"Colors\";\n",
-    );
-    let workspace = db.set_workspace_files(Arc::new(jr_db::WorkspaceFileList {
-        files: files.iter().map(PathBuf::from).collect::<Vec<_>>().into(),
-        truncated: false,
-    }));
-    let index = jr_db::module_index(&db, sp, workspace);
+fn catalog_index() -> (JairsDatabase, Arc<jr_db::ModuleIndex>) {
+    let (db, catalog) = make_module_db_with_corpus();
+    let index = jr_db::module_index(&db, catalog);
     (db, index)
 }
 
 #[test]
-fn module_index_finds_the_modules_a_workspace_holds() {
-    let (_db, index) = index_over(&[
-        "/main.jr",
-        "/modules/Colors.jr",
-        "/modules/Shapes/module.jr",
-    ]);
-    let mut names: Vec<&str> = index.modules.iter().map(|m| m.name.as_ref()).collect();
-    names.sort_unstable();
-    assert_eq!(names, vec!["Colors", "Shapes"], "both forms are indexed");
-}
-
-/// A copy of the tree inside the tree must not hide the modules it copies.
-///
-/// Zed clones a dev extension's grammar repository into the extension directory, so this repository
-/// gains a second copy of itself at `editors/zed/grammars/jairs/` — whose `modules/…` paths sort
-/// **before** the real ones. `module_index` used to mark a name seen before checking that the name
-/// resolved back to that very file, so each copy claimed a name, failed the check, and took the real
-/// module down with it: the index was empty and completion offered no unimported name at all.
-#[test]
-fn a_copy_of_the_tree_does_not_hide_the_real_module() {
-    let (db, index) = index_over(&[
-        // Sorts first, exactly as the real clone does.
-        "/editors/zed/grammars/jairs/modules/Colors.jr",
-        "/editors/zed/grammars/jairs/modules/Shapes/module.jr",
-        "/main.jr",
-        "/modules/Colors.jr",
-        "/modules/Shapes/module.jr",
-    ]);
+fn module_index_enumerates_every_catalog_module() {
+    let (_db, index) = catalog_index();
     let mut names: Vec<&str> = index.modules.iter().map(|m| m.name.as_ref()).collect();
     names.sort_unstable();
     assert_eq!(
         names,
-        vec!["Colors", "Shapes"],
-        "the shadowed copies must be skipped and the real modules kept"
+        vec!["Colors", "Cycle_A", "Cycle_B", "Palette", "Shapes"],
+        "every catalog entry is indexed"
     );
-    for module in &index.modules {
-        let path = module.file.path(&db);
-        assert!(
-            !path.contains("grammars"),
-            "a module must be the one on the search path, got {path}"
-        );
-    }
+    assert!(!index.truncated, "an exact catalog is never truncated");
+}
+
+#[test]
+fn module_index_does_not_depend_on_workspace_ownership() {
+    let (mut db, catalog) = make_module_db_with_corpus();
+    let before = jr_db::module_index(&db, catalog);
+    db.set_workspace_files(Arc::new(jr_db::WorkspaceFileList {
+        files: [PathBuf::from("/some/unrelated/file.jr")].into(),
+        truncated: true,
+    }));
+    let after = jr_db::module_index(&db, catalog);
+
+    assert_eq!(
+        before.modules.len(),
+        after.modules.len(),
+        "workspace ownership must not affect import availability"
+    );
+    assert!(
+        !after.truncated,
+        "workspace truncation is unrelated to the catalog"
+    );
 }
 
 // ---------------------------------------------------------------------------

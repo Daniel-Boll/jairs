@@ -9,20 +9,6 @@ use crate::cli::{CheckArgs, GlobalArgs};
 use crate::files::expand_paths;
 use crate::report::{emit_diagnostics, make_renderer, print_check_summary};
 
-/// The search path the standard library shipped with the compiler answers for.
-///
-/// Appended after any `--module-path` given on the command line, so an explicit path still
-/// wins (ADR-0014 §1).
-///
-/// This used to be the *build machine's* `<repo>/modules`, baked in through
-/// `env!("CARGO_MANIFEST_DIR")` — correct only while the compiler ran from the tree it was
-/// built in, which is exactly the condition installing `jr` breaks. The modules are now in the
-/// binary, and this is the synthetic root they answer for; see the `jr-stdlib` crate docs for
-/// why embedding beat both an executable-relative search and a separate install step.
-pub fn bundled_module_dir() -> std::path::PathBuf {
-    jr_stdlib::root().to_path_buf()
-}
-
 /// Run `jr check`.
 ///
 /// Runs the front end as far as it currently goes: parse, lower to HIR, load
@@ -37,10 +23,12 @@ pub fn run(args: CheckArgs, global: &GlobalArgs) -> Result<i32> {
 
     // With no path, check what the project says it is. `expand_paths` still does the
     // directory expansion, so `jr check` and `jr check src` differ only in what they start from.
-    let requested = if args.paths.is_empty() {
-        vec![crate::project::entry(None)?]
+    let (requested, project) = if args.paths.is_empty() {
+        let (entry, project) = crate::project::entry_and_context(None, &args.module_paths)?;
+        (vec![entry], project)
     } else {
-        args.paths.clone()
+        let project = crate::project::context_for(&args.paths[0], &args.module_paths)?;
+        (args.paths.clone(), project)
     };
     let files = expand_paths(&requested)?;
 
@@ -60,8 +48,7 @@ pub fn run(args: CheckArgs, global: &GlobalArgs) -> Result<i32> {
         }
     }
 
-    let search_paths_input =
-        db.set_module_search_paths(crate::project::module_search_paths(&args.module_paths)?);
+    let search_paths_input = db.install_module_catalog(project.catalog());
 
     // Register every file the user asked about, then pull in the modules they
     // import transitively.

@@ -25,7 +25,7 @@ use jr_pool::TargetLayout;
 use rustc_hash::FxHashMap;
 
 use crate::{
-    BuildConfig, Db, SourceFile, mir::optimized_file_mir, module_loader::ModuleSearchPaths,
+    BuildConfig, Db, SourceFile, mir::optimized_file_mir, module_loader::ModuleCatalog,
     run::main_of,
 };
 
@@ -91,7 +91,7 @@ pub enum EntryPolicy {
 pub fn build_object(
     db: &dyn Db,
     root: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     config: BuildConfig,
     choice: BackendChoice,
     policy: EntryPolicy,
@@ -112,13 +112,13 @@ pub fn build_object(
         EntryPolicy::None => None,
     };
 
-    let files = crate::run::reachable_files(db, root, search_paths);
+    let files = crate::run::reachable_files(db, root, catalog);
 
     // Every query result is gathered before the pool is locked, because the lock must
     // never be held across a nested query call.
     let mut inputs = Vec::with_capacity(files.len());
     for file in files {
-        let mir = optimized_file_mir(db, file, search_paths, config);
+        let mir = optimized_file_mir(db, file, catalog, config);
         if mir.gated {
             continue;
         }
@@ -363,7 +363,7 @@ impl jr_codegen::SourceInfo for BodyLocations<'_> {
 pub fn declared_build_output(
     db: &dyn Db,
     root: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
 ) -> Option<String> {
     let hir = crate::file_hir(db, root);
     let name = db.interner().intern(BUILD_OUTPUT);
@@ -371,7 +371,7 @@ pub fn declared_build_output(
         (item.name == Some(name) && matches!(item.kind, jr_hir::ItemKind::Const { .. }))
             .then_some(jr_hir::ItemId::from_usize(index))
     })?;
-    let consts = crate::consts::file_consts(db, root, search_paths);
+    let consts = crate::consts::file_consts(db, root, catalog);
     let value = consts.values.item(item)?;
     let pool = crate::sema::read_pool(db);
     match pool.item(value) {
@@ -403,7 +403,7 @@ pub fn declared_build_output(
 pub fn declared_opt_level(
     db: &dyn Db,
     root: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
 ) -> Option<crate::OptLevel> {
     let hir = crate::file_hir(db, root);
     let name = db.interner().intern(BUILD_OPT_LEVEL);
@@ -411,7 +411,7 @@ pub fn declared_opt_level(
         (item.name == Some(name) && matches!(item.kind, jr_hir::ItemKind::Const { .. }))
             .then_some(jr_hir::ItemId::from_usize(index))
     })?;
-    let consts = crate::consts::file_consts(db, root, search_paths);
+    let consts = crate::consts::file_consts(db, root, catalog);
     let value = consts.values.item(item)?;
     let pool = crate::sema::read_pool(db);
     let jr_pool::Item::IntValue { bits, .. } = pool.item(value) else {

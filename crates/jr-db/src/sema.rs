@@ -52,7 +52,7 @@ use jr_sema::{FileSignatures, ImportedFile, TypeMap};
 
 use crate::{
     Db, SourceFile,
-    module_loader::{ModuleSearchPaths, file_hir, imports_of, module_file, resolved},
+    module_loader::{ModuleCatalog, file_hir, imports_of, module_file, resolved},
 };
 
 // ---------------------------------------------------------------------------
@@ -211,12 +211,12 @@ pub struct CheckResult {
 fn imported_module_files(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
 ) -> Vec<(Arc<str>, SourceFile)> {
     let own_path = file.path(db);
     let mut found = Vec::new();
     for name in imports_of(db, file).iter() {
-        let lookup = module_file(db, search_paths, name.clone());
+        let lookup = module_file(db, catalog, name.clone());
         let Some(path) = lookup.found else { continue };
         let path = path.to_string_lossy();
         if path.as_ref() == own_path.as_ref() {
@@ -255,24 +255,20 @@ struct ImportedInputs {
 ///
 /// Uses `no_eq` because [`Diagnostics`] is not `Eq`.
 #[salsa::tracked(returns(clone), no_eq)]
-pub fn file_signatures(
-    db: &dyn Db,
-    file: SourceFile,
-    search_paths: ModuleSearchPaths,
-) -> SignatureResult {
+pub fn file_signatures(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> SignatureResult {
     let hir = file_hir(db, file);
     let file_id = crate::queries::resolve_file_id(db, file);
-    let own_resolve = resolved(db, file, search_paths).map;
+    let own_resolve = resolved(db, file, catalog).map;
     let interner = db.interner();
 
     // Gather everything from other queries *before* locking the pool.
-    let imported: Vec<ImportedInputs> = imported_module_files(db, file, search_paths)
+    let imported: Vec<ImportedInputs> = imported_module_files(db, file, catalog)
         .into_iter()
         .map(|(name, module)| ImportedInputs {
             name,
             file: crate::queries::resolve_file_id(db, module),
             hir: file_hir(db, module),
-            resolve: resolved(db, module, search_paths).map,
+            resolve: resolved(db, module, catalog).map,
         })
         .collect();
     let imports: Vec<ImportedFile<'_>> = imported
@@ -311,17 +307,17 @@ pub fn file_signatures(
 ///
 /// Uses `no_eq` because [`Diagnostics`] is not `Eq`.
 #[salsa::tracked(returns(clone), no_eq)]
-pub fn checked(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) -> CheckResult {
+pub fn checked(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> CheckResult {
     let hir = file_hir(db, file);
     let file_id = crate::queries::resolve_file_id(db, file);
-    let own_resolve = resolved(db, file, search_paths).map;
-    let own = file_signatures(db, file, search_paths);
+    let own_resolve = resolved(db, file, catalog).map;
+    let own = file_signatures(db, file, catalog);
     let interner = db.interner();
 
-    let modules = imported_module_files(db, file, search_paths);
+    let modules = imported_module_files(db, file, catalog);
     let imported: Vec<(Arc<str>, SignatureResult)> = modules
         .into_iter()
-        .map(|(name, module)| (name, file_signatures(db, module, search_paths)))
+        .map(|(name, module)| (name, file_signatures(db, module, catalog)))
         .collect();
     let imports: Vec<(&str, &FileSignatures)> = imported
         .iter()
@@ -333,7 +329,7 @@ pub fn checked(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) -
     // declaring file's arena. `file_signatures` has always taken these through `ImportedFile`; this is the same
     // values, for the same reason, one phase later.
     let imported_module_hirs: Vec<(jr_base::FileId, Arc<jr_hir::FileHir>)> =
-        imported_module_files(db, file, search_paths)
+        imported_module_files(db, file, catalog)
             .into_iter()
             .map(|(_, module)| {
                 (
@@ -384,7 +380,7 @@ pub fn checked(db: &dyn Db, file: SourceFile, search_paths: ModuleSearchPaths) -
 pub(crate) fn checked_expanded(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     expanded: &jr_hir::FileHir,
 ) -> (
     Arc<jr_hir::ResolveMap>,
@@ -396,7 +392,7 @@ pub(crate) fn checked_expanded(
     let interner = db.interner();
 
     // The same import scopes `resolved` gathers, over the expanded tree.
-    let modules = imported_module_files(db, file, search_paths);
+    let modules = imported_module_files(db, file, catalog);
     let export_scopes: Vec<(Arc<str>, Arc<jr_hir::ItemScope>)> = modules
         .iter()
         .map(|(name, module)| {
@@ -412,7 +408,7 @@ pub(crate) fn checked_expanded(
 
     let imported: Vec<(Arc<str>, SignatureResult)> = modules
         .into_iter()
-        .map(|(name, module)| (name, file_signatures(db, module, search_paths)))
+        .map(|(name, module)| (name, file_signatures(db, module, catalog)))
         .collect();
     let imports: Vec<(&str, &FileSignatures)> = imported
         .iter()
@@ -424,7 +420,7 @@ pub(crate) fn checked_expanded(
     // declaring file's arena. `file_signatures` has always taken these through `ImportedFile`; this is the same
     // values, for the same reason, one phase later.
     let imported_module_hirs: Vec<(jr_base::FileId, Arc<jr_hir::FileHir>)> =
-        imported_module_files(db, file, search_paths)
+        imported_module_files(db, file, catalog)
             .into_iter()
             .map(|(_, module)| {
                 (
@@ -448,13 +444,13 @@ pub(crate) fn checked_expanded(
     // Recomputed unconditionally rather than only when items were added, because "did this expansion add
     // an item" is a question the caller would have to answer and keep answering correctly; recomputing is
     // one line and cannot be wrong. The cost falls only on files that actually have a computed insert.
-    let sig_inputs: Vec<ImportedInputs> = imported_module_files(db, file, search_paths)
+    let sig_inputs: Vec<ImportedInputs> = imported_module_files(db, file, catalog)
         .into_iter()
         .map(|(name, module)| ImportedInputs {
             name,
             file: crate::queries::resolve_file_id(db, module),
             hir: file_hir(db, module),
-            resolve: resolved(db, module, search_paths).map,
+            resolve: resolved(db, module, catalog).map,
         })
         .collect();
     let sig_imports: Vec<ImportedFile<'_>> = sig_inputs
@@ -551,14 +547,14 @@ pub(crate) struct Instantiated {
 pub(crate) fn instantiated(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
 ) -> Option<Instantiated> {
-    let base_check = checked(db, file, search_paths);
-    let values = crate::consts::file_consts(db, file, search_paths).values;
+    let base_check = checked(db, file, catalog);
+    let values = crate::consts::file_consts(db, file, catalog).values;
     instantiated_from(
         db,
         file,
-        search_paths,
+        catalog,
         file_hir(db, file),
         &base_check,
         Some(values),
@@ -757,7 +753,7 @@ fn binding_type_text(sigs: &SignatureResult, pool: &jr_pool::Pool, ty: &jr_pool:
 pub(crate) fn instantiated_from(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     start_hir: Arc<jr_hir::FileHir>,
     start_check: &CheckResult,
     comptime_values: Option<Arc<jr_mir::ConstValues>>,
@@ -805,7 +801,7 @@ pub(crate) fn instantiated_from(
         let built = expand_round(
             db,
             file,
-            search_paths,
+            catalog,
             &start_hir,
             &keys,
             &comptime_keys,
@@ -817,7 +813,7 @@ pub(crate) fn instantiated_from(
     }
 
     let expansion = expansion?;
-    let base_sigs = file_signatures(db, file, search_paths);
+    let base_sigs = file_signatures(db, file, catalog);
 
     // **Redirects from the final check**, which is the fix: every call site in the tree MIR will lower,
     // clone bodies included, mapped to the procedure its key was appended as.
@@ -886,7 +882,7 @@ pub(crate) fn instantiated_from(
 fn expand_round(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
     start_hir: &jr_hir::FileHir,
     keys: &[CallKey],
     comptime_keys: &[CallKey],
@@ -895,7 +891,7 @@ fn expand_round(
 ) -> Expansion {
     let file_id = crate::queries::resolve_file_id(db, file);
     let interner = db.interner();
-    let base_sigs_for_vars = file_signatures(db, file, search_paths);
+    let base_sigs_for_vars = file_signatures(db, file, catalog);
 
     // Append one procedure per distinct key. Each key's bound types are paired with the template's type
     // variables — both in `poly_vars` order (ADR-0083 §1, §2), so the i-th bound type is the i-th
@@ -987,7 +983,7 @@ fn expand_round(
     let hir = Arc::new(hir);
 
     // Recompute resolve and signatures over the expanded tree.
-    let modules = imported_module_files(db, file, search_paths);
+    let modules = imported_module_files(db, file, catalog);
     let export_scopes: Vec<(Arc<str>, Arc<jr_hir::ItemScope>)> = modules
         .iter()
         .map(|(name, module)| {
@@ -1003,13 +999,13 @@ fn expand_round(
     let (resolve_map, resolve_diags) = jr_hir::resolve(hir.as_ref(), &scope_refs, interner);
     let resolve_map = Arc::new(resolve_map);
 
-    let sig_inputs: Vec<ImportedInputs> = imported_module_files(db, file, search_paths)
+    let sig_inputs: Vec<ImportedInputs> = imported_module_files(db, file, catalog)
         .into_iter()
         .map(|(name, module)| ImportedInputs {
             name,
             file: crate::queries::resolve_file_id(db, module),
             hir: file_hir(db, module),
-            resolve: resolved(db, module, search_paths).map,
+            resolve: resolved(db, module, catalog).map,
         })
         .collect();
     let sig_imports: Vec<ImportedFile<'_>> = sig_inputs
@@ -1036,7 +1032,7 @@ fn expand_round(
     // Check the expanded tree against the recomputed signatures.
     let check_imported: Vec<(Arc<str>, SignatureResult)> = modules
         .into_iter()
-        .map(|(name, module)| (name, file_signatures(db, module, search_paths)))
+        .map(|(name, module)| (name, file_signatures(db, module, catalog)))
         .collect();
     let check_imports: Vec<(&str, &FileSignatures)> = check_imported
         .iter()
@@ -1046,7 +1042,7 @@ fn expand_round(
     // *expanded* tree resolves an imported parameterised struct exactly as the unexpanded one does — a
     // difference between the two would be a construct that worked until something in the file expanded.
     let check_imported_hirs_owned: Vec<(jr_base::FileId, Arc<jr_hir::FileHir>)> =
-        imported_module_files(db, file, search_paths)
+        imported_module_files(db, file, catalog)
             .into_iter()
             .map(|(_, module)| {
                 (
@@ -1096,11 +1092,11 @@ fn expand_round(
 pub(crate) fn imported_signatures(
     db: &dyn Db,
     file: SourceFile,
-    search_paths: ModuleSearchPaths,
+    catalog: ModuleCatalog,
 ) -> Vec<Arc<FileSignatures>> {
-    imported_module_files(db, file, search_paths)
+    imported_module_files(db, file, catalog)
         .into_iter()
-        .map(|(_, module)| file_signatures(db, module, search_paths).signatures)
+        .map(|(_, module)| file_signatures(db, module, catalog).signatures)
         .collect()
 }
 

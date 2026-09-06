@@ -24,6 +24,7 @@ jr-diag = { path = "crates/jr-diag" }
 jr-syntax = { path = "crates/jr-syntax" }
 jr-stdlib = { path = "crates/jr-stdlib" }
 jr-manifest = { path = "crates/jr-manifest" }
+jr-project = { path = "crates/jr-project" }
 jr-fmt = { path = "crates/jr-fmt" }
 jr-hir = { path = "crates/jr-hir" }
 jr-pool = { path = "crates/jr-pool" }
