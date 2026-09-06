@@ -1612,7 +1612,7 @@ startup** — which any replacement binary also pays. The ceiling for *any* fast
 costs essentially nothing over `ld` directly (72.2 ms), so ADR-0019 §2's choice of the C driver —
 made for convenience — turns out to be free.
 
-**ADR-0205 reaches 1209** (1215 under gate 7) and **holds at 281** corpus files. Not a wave: the
+**ADR-0205 reaches 1209** (gate 7 measured below) and adds one corpus file = **282**. Not a wave: the
 x86-64 Linux CI leg was **failing**, and `PLAN.md` §7 had said for several waves only that nobody had
 read it.
 

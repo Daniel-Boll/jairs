@@ -227,6 +227,43 @@ through the whole VM and asserts the value is `2.0`, and calling a dangling poin
 `Err`. That it passes on macOS without exercising the path is now stated in its own doc comment, so the
 next reader does not mistake a green run here for coverage of that path.
 
+## 6. A sixth failure, and it was never libm: `modules/Socket`'s platform commitment
+
+With the math programs agreeing, the differential went from **6 disagreements to 1**. The last one was
+`129-sockets.jr`, and it had nothing to do with this ADR's subject: the *native* build crashed on Linux
+while the VM was fine. The link failure had been masking it for waves.
+
+`modules/Socket`'s own docs named the cause, in the same shape as `Math`'s:
+
+> **The layout below is macOS's** … BSD has `{ uint8_t sin_len; sa_family_t sin_family; }` where Linux
+> has `{ uint16_t sin_family; }`. So a Linux build needs `family` widened to 16 bits and `length`
+> removed — **two lines, and wrong silently until then**.
+
+Plus `SOL_SOCKET`, which the same paragraph records as `0xffff` on macOS and `1` on Linux.
+
+**Eighth instance of the pattern, and the second in this one ADR.** A documented platform difference,
+never implemented, invisible on the only machine that runs.
+
+**It is a value difference, not a layout one** — which is the finding that made it small. Both
+structures are 16 bytes; only the first two bytes' *meaning* differs. So no per-OS struct is generated:
+
+| | byte 0 | byte 1 |
+|---|---|---|
+| BSD | `sin_len` = 16 | `sin_family` = 2 |
+| Linux | `sin_family` low = 2 | high = 0 |
+
+Both routines take the OS as a **parameter**, `modules/GL`'s convention (ADR-0184) and for its stated
+reason: a function reading `os()` internally has one executable path per machine, so the Linux branch
+would be text no test here could look at. `tests/corpus/valid/149-per-os-socket-values.jr` asserts both
+branches on any host, asserts they **differ** — the mistake a reader would really make is editing one
+and leaving the other aliased — and ties the parameterised functions to the value the module compiled
+with.
+
+**And writing that test found a gap.** `size_of(Sock.Sockaddr_In)` is E0261, "`size_of` needs a type":
+a qualified name is accepted in a type *annotation* (ADR-0179 §5) but not as an intrinsic's type
+argument. The assertion was dropped rather than worked around with an unqualified import, because an
+import style chosen to dodge a compiler gap hides the gap. **Owed.**
+
 ## 5. Three stale claims corrected while here
 
 Found by checking the plan against the code rather than by any failure:
@@ -268,6 +305,9 @@ it means "an item was interned" rather than "the MIR changed".
 - **`jr-link` links a library whose symbols are never referenced** (§4b). `137` imports `GL` for a
   compile-time text function and links `-lGL` for it. Omitting an unused library is the right
   behaviour and a wave of its own, because its failure mode is a silently missing library.
+- **`size_of` rejects a qualified type name** (§6). `size_of(Sock.Sockaddr_In)` is E0261 while
+  `x: Sock.Sockaddr_In` is fine, so an intrinsic's type argument does not accept what a type annotation
+  does. One arm, by the shape of ADR-0191 and ADR-0192, but not this ADR's subject.
 - **SDL2 is not installed on the Linux runner**, because nothing in `valid/` reaches it today. The day
   a corpus program imports `Window`, that step needs `libsdl2-dev` — and the failure will say so.
 - **`libm` is not declared in `modules/Basic`** beside `libc`, deliberately: only `Math` needs it, and

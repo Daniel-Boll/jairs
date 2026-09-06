@@ -84,7 +84,7 @@ AF_INET :: 2;
 SOCK_STREAM :: 1;
 
 /// `SOL_SOCKET`, for `set_reuse_address`. **0xffff on macOS**, 1 on Linux.
-SOL_SOCKET :: 65535;
+SOL_SOCKET :: #run sol_socket_for(os());
 
 /// `SO_REUSEADDR`. 4 on macOS and Linux.
 SO_REUSEADDR :: 4;
@@ -187,13 +187,50 @@ make :: () -> (Socket, bool) #must {
 /// zero words in particular are invisible until `connect` fails.
 address_for :: (address: u32, port: s64) -> Sockaddr_In {
     a: Sockaddr_In;
-    a.length = cast(u8, SOCKADDR_IN_SIZE);
-    a.family = cast(u8, AF_INET);
+    leading_bytes_for(*a, os());
     a.port = to_network_port(port);
     a.address = address;
     a.zero_a = cast(u32, 0);
     a.zero_b = cast(u32, 0);
     return a;
+}
+
+/// Fills the two leading bytes, whose **meaning** differs by platform (ADR-0205 §6).
+///
+/// This is the "two lines, and wrong silently until then" the module docs have named since ADR-0158.
+/// BSD lays the structure out as `{ uint8_t sin_len; sa_family_t sin_family; }` and Linux as
+/// `{ uint16_t sin_family; }`, so the *size* is the same and only these two bytes disagree — which is
+/// why no per-OS struct is generated. A value difference needs no `#insert`.
+///
+/// `AF_INET` is 2 on both, and every target here is little-endian, so Linux's `uint16_t` is `{2, 0}`
+/// while BSD's pair is `{16, 2}`. A big-endian target would need the two Linux bytes swapped, and this
+/// comment is the only place that would say so.
+///
+/// **Takes the OS rather than reading `os()` itself**, so that both branches are reachable on any
+/// host — `modules/GL`'s convention and for its reason: a generator that reads `os()` internally has
+/// exactly one executable path per machine, and a branch no test can look at is not a portability
+/// claim.
+leading_bytes_for :: (a: *Sockaddr_In, target: Operating_System) {
+    if target == Operating_System.MACOS {
+        a.*.length = cast(u8, SOCKADDR_IN_SIZE);
+        a.*.family = cast(u8, AF_INET);
+        return;
+    }
+    // Linux and Windows: one `uint16_t sin_family`, little-endian, so the low byte lands first and
+    // the byte BSD uses for `sin_len` does not exist.
+    a.*.length = cast(u8, AF_INET);
+    a.*.family = cast(u8, 0);
+}
+
+/// `SOL_SOCKET` for `target` — **0xffff on macOS and 1 on Linux**.
+///
+/// The other per-OS constant the module docs named. Parameterised for the same reason as
+/// [`leading_bytes_for`], so the Linux value is not text no test can reach.
+sol_socket_for :: (target: Operating_System) -> s64 {
+    if target == Operating_System.MACOS {
+        return 65535;
+    }
+    return 1;
 }
 
 /// A port in network (big-endian) byte order.

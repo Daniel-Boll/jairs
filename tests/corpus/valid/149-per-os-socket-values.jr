@@ -1,0 +1,66 @@
+// **The per-OS socket values, asserted on any host** (ADR-0205 §6).
+//
+// `modules/Socket`'s docs have named two platform differences since ADR-0158 and neither was
+// implemented: BSD lays `sockaddr_in` out as `{ uint8_t sin_len; sa_family_t sin_family; }` where
+// Linux has `{ uint16_t sin_family; }`, and `SOL_SOCKET` is `0xffff` on macOS against `1` on Linux.
+// The comment even said what it would cost — "two lines, and wrong silently until then" — and macOS
+// made the difference invisible for the module's whole life.
+//
+// **Why this program exists rather than a unit test.** Both routines take the operating system as a
+// *parameter*, which is `modules/GL`'s convention (ADR-0184) and for its reason: a function that reads
+// `os()` internally has exactly one executable path per machine, so the Linux branch would be code no
+// test on this developer's machine could ever look at. Parameterised, every branch is reachable here.
+//
+// The size is *not* asserted, though the reason no per-OS struct is generated is that the two layouts
+// are the same size: `size_of` does not accept a qualified type name. See the note beside the exit.
+#import "Basic";
+Sock :: #import "Socket";
+
+main :: () {
+    n := 0;
+
+    // macOS: `sin_len` is the structure's size and `sin_family` is one byte after it.
+    mac: Sock.Sockaddr_In;
+    Sock.leading_bytes_for(*mac, Operating_System.MACOS);
+    if mac.length == cast(u8, 16) && mac.family == cast(u8, 2) {
+        n = n + 1;
+    }
+
+    // Linux: one little-endian `uint16_t sin_family`, so `AF_INET`'s low byte lands in the first byte
+    // and the second is zero. The byte BSD uses for `sin_len` does not exist there.
+    lin: Sock.Sockaddr_In;
+    Sock.leading_bytes_for(*lin, Operating_System.LINUX);
+    if lin.length == cast(u8, 2) && lin.family == cast(u8, 0) {
+        n = n + 2;
+    }
+
+    // The two must actually differ, which is what catches the mistake a reader would really make:
+    // editing one branch and leaving the other aliased to it.
+    if mac.length != lin.length {
+        n = n + 4;
+    }
+
+    // `SOL_SOCKET` differs, and both values are named rather than one being the host's and the other
+    // unreachable text.
+    if Sock.sol_socket_for(Operating_System.MACOS) == 65535 {
+        n = n + 8;
+    }
+    if Sock.sol_socket_for(Operating_System.LINUX) == 1 {
+        n = n + 16;
+    }
+
+    // And the host's own `SOL_SOCKET` is whichever of the two this platform is — the bit that ties the
+    // parameterised functions to the value the module actually compiled with.
+    if Sock.SOL_SOCKET == Sock.sol_socket_for(os()) {
+        n = n + 32;
+    }
+
+    // **The size assertion this program wanted is not writable.** `size_of(Sock.Sockaddr_In)` is
+    // E0261, "`size_of` needs a type": a **qualified** name is accepted in a type *annotation*
+    // (ADR-0179 §5) and not as an intrinsic's type argument. Found by writing this test, recorded in
+    // ADR-0205 §6 as owed, and left out rather than worked around with an unqualified import — the
+    // point of this file is the two branches above, and an import style chosen to dodge a compiler
+    // gap would hide the gap.
+
+    exit(n);
+}
