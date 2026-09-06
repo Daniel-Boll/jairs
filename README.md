@@ -121,12 +121,15 @@ level of a file, which the compiler could parse and could not compile.
 - **282** `.jr` corpus files, **205** accepted ADRs, **24** standard library
   modules.
 - macOS arm64 is verified locally, gate by gate. **Linux x86-64 has now been
-  read, and it was failing** — the CI leg had been triggered for waves while
-  nobody looked at it. `modules/Math` bound `sqrt`, `sin`, `cos` and `acos` to
-  **libc**, which resolves on macOS because `libm.tbd` is a symlink to
-  `libSystem.tbd` and does not on glibc, where libm is a separate library. Fixed
-  in ADR-0205; 66 of 67 test targets already passed there, so the failure was
-  narrow rather than a broken port.
+  read — six times — and it was failing**: the CI leg had been triggered for
+  waves while nobody looked at it. Six defects came out, the first being
+  `modules/Math` binding `sqrt`, `sin`, `cos` and `acos` to **libc**, which
+  resolves on macOS because `libm.tbd` is a symlink to `libSystem.tbd` and does
+  not on glibc, where libm is a separate library. The differential harness now
+  agrees across both engines on all 138 corpus programs there. **One failure
+  remains**, and it is a named wave rather than a loose end: a 32-byte
+  four-`float64` struct at a `#foreign` boundary, which AAPCS64 passes in four
+  registers and x86-64 System V requires on the stack (ADR-0205 §7, ADR-0160).
 
 Read **[`docs/capabilities.md`](docs/capabilities.md)** for the full,
 table-by-table inventory of what works, what is absent, and the sharp edges

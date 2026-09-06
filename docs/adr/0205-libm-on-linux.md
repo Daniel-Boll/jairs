@@ -299,13 +299,38 @@ is the claim this ADR set out to make possible.
 Two failures remain, and **neither is this ADR's subject**. Both were masked for waves by the link
 failure ahead of them:
 
-**`aggregates_cross_a_foreign_boundary_as_a_c_compiler_expects` — got 15, expected 31.** One aggregate
-shape disagrees with a C compiler on x86-64, and **ADR-0160 predicted exactly this**. That ADR refused
-to implement System V's classification rules and said why: they are "a second ABI's worth of rules
-verified against a target this project has never run, and PLAN §1.5's owed Linux CI run comes first."
-**That prerequisite is now satisfied** — the run exists, it has been read, and it says the
-classification is wrong for one shape. Implementing System V's rules is the wave ADR-0160 described,
-and it now has the evidence it was waiting for.
+**`aggregates_cross_a_foreign_boundary_as_a_c_compiler_expects` — got 15, expected 31, and the missing
+bit names the shape.** Four of five aggregate shapes agree with a C compiler on x86-64. The fifth is
+`rect_total(Rect)`, where `Rect :: struct { origin: Point; size: Point; }` — **32 bytes, four
+`float64`s**, the `CGRect` shape.
+
+**That is the exact case AGENTS.md records ADR-0160 as having reasoned about, and the two ABIs disagree
+about it in kind rather than in detail:**
+
+- **AAPCS64** has *no size limit* for a homogeneous floating aggregate. Four `double`s is a four-register
+  HFA, and arm64 macOS passes it that way — which is why this test has always passed there.
+- **x86-64 System V** classifies by eightbyte and sends **anything over sixteen bytes to `MEMORY`**,
+  passed on the stack by address. A 32-byte struct is never in registers, HFA or not.
+
+So the classification is not slightly wrong on x86-64: `Class::Memory` is what this shape *needs*, and
+**ADR-0160 made `Class::Memory` a refusal rather than an indirect pass** — deliberately, because the
+case covers both a large composite (where indirect is right) and a small mixed one (where the two ABIs
+disagree about which register file each field uses). One case with two correct answers got refused
+until it was split.
+
+**The Linux run is what splits it.** ADR-0160 said implementing System V's rules needed "a second ABI's
+worth of rules verified against a target this project has never run, and PLAN §1.5's owed Linux CI run
+comes first." **That prerequisite is now satisfied** — the run exists, it has been read six times, and
+it names one shape. The wave ADR-0160 described has the evidence it was waiting for, and it is a wave:
+System V's per-eightbyte classification plus stack passing, landed atomically across all three engines,
+because a `jr build` that disagrees with `jr run` breaks the premise the differential harness rests on
+(ADR-0160's own argument for doing all three at once).
+
+**This ADR stops here rather than starting that**, per the house rule that a wave puts its design forks
+to the decider before writing code. The fork is real and has two defensible answers: implement System V
+properly (a second ABI in `jr-pool` plus three engine changes), or refuse a >16-byte aggregate at a
+`#foreign` boundary on x86-64 with a diagnostic (small, honest, and closes the platform claim at the
+cost of `CGRect`, which W10's graphics work wants).
 
 **`a_script_generates_source_and_provides_a_module` — fixed, and it was the test's own fault.** The
 script exited 2 (`BUILD_EXIT`, a *target* failure) and the reason was in the log the test did not

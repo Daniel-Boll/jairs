@@ -617,11 +617,18 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 3. **x86-64 Linux has been read, six times, and two defects remain** (ADR-0205 §7). The differential
    harness now agrees across both engines on all 138 corpus programs there — six distinct defects were
    fixed to get that far, each verified by reading the next run. What is left:
-   - **`aggregates_cross_a_foreign_boundary_as_a_c_compiler_expects` — got 15, expected 31.** One
-     aggregate shape disagrees with a C compiler on x86-64. **ADR-0160 predicted this and named the
-     prerequisite**: implementing System V's classification needed "the owed Linux CI run" first. That
-     run now exists and says the classification is wrong for one shape, so the wave ADR-0160 described
-     has the evidence it was waiting for. This is the next real piece of work.
+   - **`aggregates_cross_a_foreign_boundary_as_a_c_compiler_expects` — got 15, expected 31, and the
+     missing bit names the shape** (ADR-0205 §7). Four of five aggregates agree with a C compiler on
+     x86-64; the fifth is `Rect` — **32 bytes, four `float64`s**, the `CGRect` shape. The two ABIs
+     disagree *in kind*: AAPCS64 has no size limit for an HFA so arm64 passes it in four registers,
+     while **x86-64 System V sends anything over sixteen bytes to `MEMORY`**, on the stack by address.
+     `Class::Memory` is exactly what this needs and **ADR-0160 made it a refusal** rather than an
+     indirect pass. That ADR named the prerequisite for splitting it — "the owed Linux CI run comes
+     first" — and **the run now exists and has been read**. This is the next wave, and it has a fork
+     for the decider: implement System V's per-eightbyte classification plus stack passing (atomically
+     across all three engines, per ADR-0160's own argument), or refuse a >16-byte aggregate at a
+     `#foreign` boundary on x86-64 with a diagnostic — small and honest, at the cost of `CGRect`, which
+     W10's graphics work wants.
    - ~~`a_script_generates_source_and_provides_a_module`~~ **fixed**: the test passed `-Wl,-dead_strip`,
      which is `ld64`'s flag, to prove a script's linker argument reaches the linker. GNU ld rejects it.
      Now `--gc-sections` on Linux — a *test* portability defect rather than a compiler one, but the same
