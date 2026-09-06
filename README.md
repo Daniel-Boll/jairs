@@ -117,15 +117,16 @@ down, and every call took a state argument the original does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1204** workspace tests, all seven gates green.
-- **281** `.jr` corpus files, **204** accepted ADRs, **24** standard library
+- **1205** workspace tests, all seven gates green.
+- **281** `.jr` corpus files, **205** accepted ADRs, **24** standard library
   modules.
-- macOS arm64 is verified locally, gate by gate. Linux x86-64 has never been
-  verified by a human reading a result: `main` was pushed for the first time on
-  2026-09-03, so the CI matrix has now been triggered, and **nobody has yet
-  confirmed what it reported**. Treat every Linux claim in
-  [`docs/capabilities.md`](docs/capabilities.md) as unverified until someone
-  reads that run.
+- macOS arm64 is verified locally, gate by gate. **Linux x86-64 has now been
+  read, and it was failing** — the CI leg had been triggered for waves while
+  nobody looked at it. `modules/Math` bound `sqrt`, `sin`, `cos` and `acos` to
+  **libc**, which resolves on macOS because `libm.tbd` is a symlink to
+  `libSystem.tbd` and does not on glibc, where libm is a separate library. Fixed
+  in ADR-0205; 66 of 67 test targets already passed there, so the failure was
+  narrow rather than a broken port.
 
 Read **[`docs/capabilities.md`](docs/capabilities.md)** for the full,
 table-by-table inventory of what works, what is absent, and the sharp edges

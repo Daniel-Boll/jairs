@@ -24,37 +24,52 @@
 //! so `sqrt(2.0)` is bit-identical in the VM and native code. A library named the language feature it needed and
 //! the language delivered it — the same shape as typed allocation unblocking `List`.
 
-#import "Basic";
+/// The math library, named separately from `Basic`'s `libc` — and the reason is a portability defect
+/// this module carried for its whole life.
+///
+/// Every routine below was `#foreign libc`, which links `-lc`. On macOS that works, because the math
+/// functions live in `libSystem` and `libm.tbd` is a symlink to it. **On glibc they do not**: `libm`
+/// is a separate library, so `-lc` alone leaves `sin`, `cos`, `sqrt` and `acos` as undefined
+/// references and the link fails. The docs above have said "wraps of **libm**" since ADR-0114 while
+/// the declarations said `libc`, and every native build on this project's only test machine hid the
+/// difference.
+///
+/// **One name, not a per-OS selector.** `modules/GL` picks its library per operating system
+/// (ADR-0184) and the same machinery was reached for here first — then probed, and it is not needed:
+/// `-lm` links on macOS (verified, `libm.tbd -> libSystem.tbd`), is the real library on Linux, and
+/// MinGW ships a stub `libm.a` for exactly this portability idiom. A three-branch generator whose
+/// branches all produce the same text would be machinery pretending to make a decision.
+libm :: #system_library "m";
 
 /// The square root of `x`. NaN for a negative `x`, as IEEE-754 defines.
-sqrt :: (x: float64) -> float64 #foreign libc "sqrt";
+sqrt :: (x: float64) -> float64 #foreign libm "sqrt";
 
 /// The sine of `x` radians.
-sin :: (x: float64) -> float64 #foreign libc "sin";
+sin :: (x: float64) -> float64 #foreign libm "sin";
 
 /// The cosine of `x` radians.
-cos :: (x: float64) -> float64 #foreign libc "cos";
+cos :: (x: float64) -> float64 #foreign libm "cos";
 
 /// The arc-cosine. Named `acos` (not `arccos`) because it is the C name and
 /// the mathematical symbol; a reader who does not recognise it can type the
 /// three letters into `man 3 acos`. Used by [`quat_slerp`].
-acos :: (x: float64) -> float64 #foreign libc "acos";
+acos :: (x: float64) -> float64 #foreign libm "acos";
 
 /// `e` raised to `x`.
-exp :: (x: float64) -> float64 #foreign libc "exp";
+exp :: (x: float64) -> float64 #foreign libm "exp";
 
 /// The natural logarithm of `x`. NaN or -inf for `x <= 0`, as IEEE-754 defines.
 ///
 /// Named `ln`, not `log`: C's `log` *is* the natural logarithm, but the name misleads a reader expecting base
 /// 10. `ln` says which base without a comment, and a `log10` wrap is separate when a caller wants it.
-ln :: (x: float64) -> float64 #foreign libc "log";
+ln :: (x: float64) -> float64 #foreign libm "log";
 
 /// `base` raised to a real `exponent` — the floating-point counterpart of the integer `pow` below.
 ///
 /// A different name from the integer `pow`, because they take different types and there is no overload
 /// resolution that would pick between them (the reason `Sort` takes a comparison, ADR-0104 §3). `powf(2.0, 0.5)`
 /// is a square root, which the integer `pow` cannot express.
-powf :: (base: float64, exponent: float64) -> float64 #foreign libc "pow";
+powf :: (base: float64, exponent: float64) -> float64 #foreign libm "pow";
 
 /// The absolute value of an `s64`.
 ///
@@ -208,7 +223,7 @@ round :: (x: float64) -> float64 {
 // # Why the element type is `float64`
 //
 // Jai's `Vector3` is `float32`, for SIMD packing and GPU interchange. Neither exists here yet — SIMD is
-// W8 and graphics W10 — while `sqrt` is `#foreign libc "sqrt"`, which is a **double**. `length` therefore
+// W8 and graphics W10 — while `sqrt` is `#foreign libm "sqrt"`, which is a **double**. `length` therefore
 // needs a `float64` at the boundary, so a `float32` vector would cast on the way in and back on the way
 // out at every call. The element type follows the module it lives in rather than the language it is
 // modelled on. A packed `float32` vector belongs with the wave that has a reason for it.

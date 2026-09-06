@@ -1612,6 +1612,43 @@ startup** — which any replacement binary also pays. The ceiling for *any* fast
 costs essentially nothing over `ld` directly (72.2 ms), so ADR-0019 §2's choice of the C driver —
 made for convenience — turns out to be free.
 
+**ADR-0205 reaches 1205** (1211 under gate 7) and **holds at 281** corpus files. Not a wave: the
+x86-64 Linux CI leg was **failing**, and `PLAN.md` §7 had said for several waves only that nobody had
+read it.
+
+**Read your CI.** `modules/Math` declared `sqrt`/`sin`/`cos`/`acos` as `#foreign libc` while the
+module's own docs said **libm**. On macOS that is invisible — `libm.tbd` is a symlink to
+`libSystem.tbd` — and on glibc they are separate libraries, so the native link failed with `undefined
+reference to 'sin'`. **66 of 67 targets already passed there**, so Linux was narrowly broken rather
+than unported, which is a distinction the "unverified" label had been hiding.
+
+**Seventh instance of one shape:** a hand-maintained claim nothing enforced, invisible on the only
+machine that runs — after the E0290 collision, `file_consts`' feature list, `checked_expanded`'s
+"`#insert` adds no items", `callee_sig`'s "this crate does not hold them", `TrapKind::ALL`'s length
+assertion, and ADR-0184's `ItemId` re-keying. **Here the comment was right and the code was wrong**,
+which is the variant to watch for: the usual instinct is to trust the code.
+
+**An "unverified" label needs an expiry.** It is honest for an unknown and decays into a place to put
+a known problem: the CI answer existed for waves while the label kept reading as though it did not.
+
+**The per-OS machinery was reached for and refused after probing.** `modules/GL` selects a library per
+operating system (ADR-0184) and this started as the same shape — then `cc m.c -lm` was run: `-lm`
+links on macOS, is the real library on Linux, and MinGW ships a stub for the idiom. A three-branch
+generator whose branches all produce the same text is **machinery pretending to make a decision**. The
+Windows question that looked like a fork dissolved with it. Note the direction: probing usually shows a
+plan *underestimated* the work; here it showed this ADR's own first plan overestimated it.
+
+**A guard's stated reason can argue for widening it.** `jr-vm` refused every library but `"c"` because
+answering from the process image when the program asked elsewhere would be "a wrong answer dressed as
+a working one". That admits `"m"`: Rust links libm on every Unix, so the answer is *right* rather than
+lucky. The rule is "is this process guaranteed to contain that library's symbols", not "is the name
+familiar" — and the allowlist is now a named list so the reason governs every entry.
+
+**`Type_Info.id` in a snapshot is as fragile as a `FileId`.** One new interned item shifted every later
+`PoolId` by one and churned **24 lines** of `mir_corpus__valid_corpus_mir.snap` with no structural
+change. This file already says never to print a `FileId` into a snapshot for that exact reason; the
+pool id has the same property and is printed there.
+
 ## House style
 
 Enforced by the first four gates, so it is not a matter of taste:
