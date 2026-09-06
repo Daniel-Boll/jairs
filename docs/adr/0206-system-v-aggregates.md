@@ -219,3 +219,7 @@ OS-independence, and it found that the first fix was incomplete — 137 and 149 
   buffer overflow waiting for the classification to widen.
 - `cabi.rs`'s module docs now state both ABIs' rules and record the false claim, because the next reader's
   instinct will be the same as the one that wrote it.
+- **x86-64 Linux CI is green — all seven jobs — for the first time in this project's history**, verified by
+  reading run `34010283168` rather than by inference. 1216 workspace tests, 1222 under gate 7.
+- Two things are owed on that target and neither blocks anything: LLVM refuses `Class::Stack` (§6), and
+  `{ float, float }` is refused rather than packed into one SSE register.

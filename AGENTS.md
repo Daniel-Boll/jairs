@@ -1649,7 +1649,7 @@ familiar" — and the allowlist is now a named list so the reason governs every 
 change. This file already says never to print a `FileId` into a snapshot for that exact reason; the
 pool id has the same property and is printed there.
 
-**ADR-0206 reaches 1216** and holds at **282** corpus files — the last x86-64 Linux failure, and it was a
+**ADR-0206 reaches 1216** (1222 under gate 7) and holds at **282** corpus files — the last x86-64 Linux failure, and it was a
 **silent miscompile** rather than a missing feature. `cabi.rs` claimed a four-`float64` `CGRect` travels in
 four floating-point registers on *both* AAPCS64 and System V. **System V has no homogeneous-aggregate rule at
 all**: it classifies per eightbyte and sends anything over sixteen bytes to the stack. So for eleven waves a

@@ -117,22 +117,18 @@ down, and every call took a state argument the original does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1216** workspace tests, all seven gates green.
+- **1216** workspace tests (1222 under gate 7), all seven gates green.
 - **282** `.jr` corpus files, **206** accepted ADRs, **24** standard library
   modules.
-- macOS arm64 is verified locally, gate by gate. **Linux x86-64 has now been
-  read — six times — and it was failing**: the CI leg had been triggered for
-  waves while nobody looked at it. Six defects came out, the first being
-  `modules/Math` binding `sqrt`, `sin`, `cos` and `acos` to **libc**, which
-  resolves on macOS because `libm.tbd` is a symlink to `libSystem.tbd` and does
-  not on glibc, where libm is a separate library. The differential harness now
-  agrees across both engines on all 138 corpus programs there. The last
-  failure was a **silent miscompile** rather than a loose end: a 32-byte
+- **Both platforms are verified green.** macOS arm64 locally, gate by gate, and
+  **x86-64 Linux in CI** — all seven jobs passing, which had never happened
+  before. Getting there took eight fixes read out of eight consecutive CI runs
+  (ADR-0205, ADR-0206). The last one was a **silent miscompile**: a 32-byte
   four-`float64` struct — a `CGRect` — was passed in four SSE registers where
-  System V requires it on the stack, because `jr-pool` had AAPCS64's
-  homogeneous-aggregate rule and System V has no such rule at all. Fixed in
-  ADR-0206, which splits ADR-0160's refusal exactly as that ADR said the Linux
-  run would let it.
+  System V requires it on the stack, because the classification had AAPCS64's
+  homogeneous-aggregate rule and System V has no such rule at all. The eighth was
+  a MIR snapshot that had been wrong on x86-64 since `os()` became a compile-time
+  value, because only macOS ever generated it.
 
 Read **[`docs/capabilities.md`](docs/capabilities.md)** for the full,
 table-by-table inventory of what works, what is absent, and the sharp edges

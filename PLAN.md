@@ -614,20 +614,17 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
    register for 4 to 40 bytes, never a whole function, so a single `DW_OP_regN` would print confident
    garbage outside that range — correctness needs a location list, the first section beyond
    `.debug_line`/`.debug_info` this compiler would emit.
-3. **x86-64 Linux has been read, six times, and two defects remain** (ADR-0205 §7). The differential
-   harness now agrees across both engines on all 138 corpus programs there — six distinct defects were
-   fixed to get that far, each verified by reading the next run. What is left:
-   - ~~`aggregates_cross_a_foreign_boundary_as_a_c_compiler_expects`~~ **fixed, and it was a silent
-     miscompile** (ADR-0206). `jr-pool` applied AAPCS64's homogeneous-aggregate rule on every target, and
-     **System V has no such rule** — so a 32-byte four-`float64` `CGRect` went in four SSE registers where C
-     reads the stack. Classification is now per-ABI, ADR-0160's `Class::Memory` is split into an implemented
-     `Stack` and a still-refused `Refused`, and arm64 is byte-identical. Two things found on the way: a
-     `// SAFETY:` bound in `jr-vm` that was inferred from the classification and would have become a buffer
-     overflow, and a `_` arm in `jr-sema`'s refusal gate that silently swallowed the new variant.
-   - ~~`a_script_generates_source_and_provides_a_module`~~ **fixed**: the test passed `-Wl,-dead_strip`,
-     which is `ld64`'s flag, to prove a script's linker argument reaches the linker. GNU ld rejects it.
-     Now `--gc-sections` on Linux — a *test* portability defect rather than a compiler one, but the same
-     shape as the other six.
+3. ~~x86-64 Linux is unverified~~ **verified green in CI, and it took eight fixes** (ADR-0205, ADR-0206).
+   All seven jobs pass, which had never happened before. The differential harness agrees across both engines
+   on all 138 corpus programs there. Read those two ADRs before trusting any platform claim in this
+   repository: the leg had been triggered for waves while nobody looked, and what it was hiding included a
+   **silent miscompile** (a `CGRect` in four SSE registers where System V requires the stack) and a MIR
+   snapshot that had been wrong on x86-64 since `os()` became a compile-time value.
+
+   **Still owed there**, and neither blocks anything today: LLVM refuses `Class::Stack` rather than emitting
+   `byval`/`sret` — a real gap, deliberately not written blind because nothing anywhere could run it
+   (ADR-0206 §6) — and `{ float, float }` at a `#foreign` boundary is refused on x86-64 rather than packed
+   into one SSE register, which needs a vector type in `Class`.
 4. **A boolean chain is still not wrapped** (ADR-0204 §2), and a struct or array literal is not either
    — neither exceeded the width anywhere in this corpus, so there was nothing to measure. All three are
    candidates only when something overflows.
