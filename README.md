@@ -48,7 +48,7 @@ max_width = 100                # breaks a long argument or parameter list. Comme
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0211.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0212.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -120,8 +120,8 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1228** workspace tests (1237 under gate 7), all seven gates green.
-- **283** `.jr` corpus files, **211** accepted ADRs, **25** standard library
+- **1229** workspace tests (1238 under gate 7), all seven gates green.
+- **283** `.jr` corpus files, **212** accepted ADRs, **25** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative
@@ -236,7 +236,7 @@ before: two gates run at once and race a shared binary.
 - **[`docs/jai-game-development-audit.md`](docs/jai-game-development-audit.md)** —
   the primary-source games audit, language/library gaps, and the staged `Game`
   facade plan whose foundation is now implemented.
-- **[`docs/adr/README.md`](docs/adr/README.md)** — all 211 accepted decision
+- **[`docs/adr/README.md`](docs/adr/README.md)** — all 212 accepted decision
   records.
 - **[`docs/spec/`](docs/spec/)** — the language specification chapters.
 - **[`examples/`](examples/)** — runnable programs, each verified.

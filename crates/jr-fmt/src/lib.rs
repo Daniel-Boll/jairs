@@ -671,6 +671,12 @@ impl Formatter {
                 // diagnostic — ADR-0157 §2 measured that as a file created with permissions `---------x`.
                 // Caught by a round-trip check on this wave's own corpus file, which is what gate 5 is for.
                 C_VARIADIC_ATTR => self.emit(" #c_variadic"),
+                // `#program_export` (ADR-0197 §1). Dropping it is an ABI break disguised as
+                // formatting: the procedure keeps compiling, but codegen mangles its symbol and a
+                // C caller can no longer link it. Unlike a new expression kind, this node already
+                // sits inside a known procedure, so the raw-text fallbacks below cannot save it —
+                // this attribute loop is the only place that can emit it.
+                PROGRAM_EXPORT_ATTR => self.emit(" #program_export"),
                 // `#expand` (ADR-0090 §1). The trap again, and this one is the *unsound* direction like
                 // `#c_call`: dropping it turns a macro into an ordinary procedure, so a body meant to be
                 // spliced into the caller's scope — reading the caller's locals — becomes a call that
@@ -2767,6 +2773,29 @@ mod tests {
         assert!(
             out.contains("context.allocator = 1;"),
             "`context.field` must survive: {out}"
+        );
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    /// `#program_export` survives in source order beside the calling convention (ADR-0212).
+    ///
+    /// Losing this attribute does not make the formatted file fail to parse or type-check. It changes
+    /// the emitted symbol from the source name to the compiler's private mangling, so a library's C
+    /// consumer fails at link time. That makes a parse-only round-trip test insufficient: the spelling
+    /// itself is asserted in both legal orders.
+    #[test]
+    fn program_export_survives_and_keeps_its_position() {
+        let src = "a :: () #c_call #program_export {\n}\n\n\
+                   b :: () #program_export #c_call {\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("a :: () #c_call #program_export {"),
+            "the export marker must survive after `#c_call`: {out}"
+        );
+        assert!(
+            out.contains("b :: () #program_export #c_call {"),
+            "the export marker must keep its written position: {out}"
         );
         assert_idempotent(src);
         assert_parses(&out);

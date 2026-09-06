@@ -9,10 +9,10 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1228** workspace tests (1237 under gate 7), all seven gates green.
+- **1229** workspace tests (1238 under gate 7), all seven gates green.
 - **283** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
   (**294** counting those).
-- **211** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **212** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **25** standard library modules under `modules/`.
 - Diagnostic codes run **E0001–E0295**; **E0296** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership
@@ -131,7 +131,7 @@ missing feature.
 | Stage | Status | Honest note |
 |---|---|---|
 | Lexer, parser, CST, typed AST | **Works** | Hand-written, error-recovering, trivia-preserving. Doc comments are trivia, so they cannot change what parses (ADR-0027) |
-| Formatter | **Works** | Pure function over the CST |
+| Formatter | **Works, safety redesign pending** | Pure function over the CST. ADR-0212 fixes `jr fmt` deleting `#program_export` and therefore changing a library's exported ABI. The optimisation audit found the recurring cause—duplicated raw-kind allowlists and wildcard fallbacks—and keeps the typed exhaustiveness redesign explicit rather than claiming the added arm closes it |
 | HIR, name resolution, module loader | **Works** | Flat import merge (ADR-0014); an aliased import merges nothing (ADR-0179) |
 | InternPool (types, comptime values, layout, arithmetic) | **Works** | One layout computation and one integer evaluator, shared (ADR-0018 §2, ADR-0022 §2) |
 | Sema (signatures, checking, inference) | **Works** | A union's diagnostics are a struct's unchanged, deliberately; no const-eval here — ADR-0018 §3 puts it in the VM, which is why an array length must be a literal. Float literals are context-typed with **no** fit check, because IEEE-754 saturates (ADR-0040 §5) |

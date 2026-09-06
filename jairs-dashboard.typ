@@ -296,7 +296,7 @@
 
 #let stages = (
   ("Lexer, parser, CST, typed AST", "works", "Hand-written, error-recovering, trivia-preserving"),
-  ("Formatter", "works", "Pure function over the CST; has lost a construct in most waves that added a node kind — #simd made it 9"),
+  ("Formatter", "works, safety redesign pending", "ADR-0212 fixes #program_export being deleted — an ABI change disguised as formatting. Typed exhaustive dispatch remains the structural follow-up"),
   ("HIR, name resolution, modules", "works", "Flat import merge; cycles legal; export filtering"),
   ("InternPool: types, values, layout", "works", "One layout computation and one integer evaluator, shared. Behind an RwLock: reads share, interning excludes"),
   ("Sema: signatures, checking", "works", "131 codes, E0296 next free, ownership enforced by a cross-crate test; folds size_of, os() and type_of; no const-eval here, by design"),
