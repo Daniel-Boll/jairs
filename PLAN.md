@@ -284,6 +284,12 @@ Status of each slice component, so this is answerable without reading the tree.
 > the existing `StringData` and `StringCount` projections for named, nameless, reverse, pointer and
 > temporary-result loops; `jr-lsp` completes the directive; and `jr-fmt` preserves it. The corpus
 > executes the same source through the VM, Cranelift and LLVM.
+>
+> **Current Jai control-flow surface (ADR-0215).** A single braceless `if` body may preserve an
+> optional `then`, and exact `if #complete value == { case ... }` syntax reuses the existing switch
+> CST, HIR and execution path. Duplicate integer cases and enum aliases are judged by runtime
+> value, uncovered aliases are reported once by their first declaration, and E0134 refuses any
+> source arm after `else` instead of letting lowering reorder it.
 
 | Component | Status | Notes |
 |---|---|---|
@@ -318,7 +324,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the real-editor verifier — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua` needs an editor CI does not have. The installed parser is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The verifier asserts tree-sitter node kinds and nesting that ADR-0010's error-count gate cannot see, plus live LSP requests against the real server. |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and another LSP client may launch it; the repository packages integrations for Neovim and Zed. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–**0214**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
+Accepted ADRs: 0001–**0215**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
 counts here are why the ADR index row and this line move in the same commit.
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
@@ -619,38 +625,46 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0214 closes byte-oriented string scanning.** A `for` over a `string` yields copied `u8`
-> values and `s64` byte offsets in named and nameless forms, including reverse loops, pointers and
-> temporary results. MIR reads the existing string data/count projections; no implicit `[]u8`
-> conversion or backend operation was added.
+> **ADR-0215 closes the requested Jai control-flow spellings.** `then` is optional punctuation for
+> one braceless `if` statement and is preserved exactly when written. `if #complete value == {
+> case ... }` is parsed into the same switch shape as `switch value { ... }`, so there is one
+> exhaustiveness checker and one MIR branch construction.
 >
-> **`#char` is the comparison value that byte loop needs.** Its string operand is decoded first and
-> must contain exactly one ASCII character. It then lowers to the ordinary untyped integer literal,
-> becoming `u8` from context when compared with a loop byte. Empty, multi-character and non-ASCII
-> operands are E0296; malformed escapes keep their existing diagnostic without a duplicate.
+> **The spelling audit repaired the semantics it would have inherited.** Equal integer literals
+> are duplicate cases regardless of radix; enum aliases with one runtime value form one coverage
+> class; and any arm after `else` is E0134 rather than being silently moved. Arbitrary computed
+> cases remain legal but are not used as compile-time proof of duplication or coverage.
 >
-> **The two features share one semantic choice: encoded bytes, not Unicode scalars.** Unicode-aware
-> iteration remains an explicit library operation with a visible decoding policy.
+> **No HIR, MIR, pool or backend representation changed.** The new executable corpus program lowers
+> entirely through the existing branch path; the aggregate MIR snapshot records that fact.
 
-**1260 workspace tests (1269 under gate 7), 285 corpus files, 214 ADRs, 25 modules, all seven gates
-green.** ADR-0214 adds four default-suite tests and two corpus files; the existing differential and
-snapshot harnesses consume the new executable input. **E0297** is the first free diagnostic code.
+**1273 workspace tests (1282 under gate 7), 289 corpus files, 215 ADRs, 25 modules, all six required
+gates green.** ADR-0215 adds thirteen default-suite tests and four corpus files; the executable file
+also enters the existing differential and aggregate MIR harnesses. Gate 7 was not required because
+the wave touched no MIR, pool layout, code generator or back end. **E0297** is the first free global
+diagnostic code; **E0135** is the first free parser code.
 
-### Next wave: Jai control-flow spellings
+### Next wave: a usable default allocator and the `File` whole-file API
 
-The decider approved both narrow source-compatible spellings:
+The decider approved both parts:
 
-1. `then` is an optional reserved keyword between an `if` condition and its **single braceless
-   statement**. The formatter preserves it; a braced body needs no second spelling.
-2. `if #complete value == { case ... }` is exact syntax sugar for the existing exhaustive `switch`.
-   It lowers to the same HIR rather than creating a second exhaustiveness engine.
+1. An ordinary Jairs context starts with a working allocator/free pair, while `push_context` and
+   direct field assignment continue to support custom allocators. The implementation must cover
+   every context-construction path in the VM, Cranelift and LLVM, and existing null-allocator tests
+   must clear the fields explicitly when they intend to test that trap.
+2. `read_entire_file`, `write_entire_file` and `append_entire_file` move from
+   `File_Utilities` into `File`, which is where the source probe and Jai-shaped callers look for
+   them. A successful empty read still returns owned, safely freeable storage; allocation and
+   release use the active context allocator rather than mixing it with raw libc ownership.
 
-The wave also repairs the existing switch invariants the spelling audit exposed: duplicate integer
-cases are E0259, enum aliases with the same runtime value cannot masquerade as distinct coverage, and
-`else` must be the final arm rather than being silently reordered. Start on
-`feat/jai-control-flow` after this wave's commit. The approved default allocator and `File`
-whole-file API follow; `String_Builder` remains a separate library design decision informed by the
-public Jai implementations rather than a dependency on them.
+Record the decisions in ADR-0216 and implement on `feat/default-file-api`. This wave touches context
+construction in all engines, so gate 7 is mandatory. The concrete
+`/Users/dboll/dev/p/ora_to_atlas_test/src/main.jr` probe should then have only its intentionally
+missing `State.TAG` exhaustiveness error.
+
+`String_Builder` follows as a separate library decision. Public Jai copies are useful evidence but
+disagree on the exact API, so keep a pinned research citation rather than making the secondary
+reference repository a build submodule.
 
 ### Optimisation queue after diagnostic freshness
 

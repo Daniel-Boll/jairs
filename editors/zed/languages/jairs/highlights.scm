@@ -44,6 +44,7 @@
 [
   "struct"
   "if"
+  "then"
   "else"
   "while"
   "return"
@@ -162,6 +163,10 @@
 ; literal token inside its own node, so nothing else colours it. The lane count and the element type
 ; are an ordinary expression and an ordinary type, and are left to their own rules.
 (vector_type "#simd" @keyword)
+
+; `#complete` is a literal token inside the switch-shaped sugar rather than a generic `(directive)`
+; node, so it needs the same explicit capture as the attribute directives above.
+(switch_stmt "#complete" @keyword)
 
 ; A visibility marker (ADR-0054 §1). Captured as `@keyword` like every other directive,
 ; because that is what it is — the scope rule is semantic and nothing about it is visible in colour.

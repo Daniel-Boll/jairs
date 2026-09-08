@@ -291,3 +291,46 @@ fn a_braceless_body_scopes_its_declaration_like_a_braced_one() {
         "the braceless body must be wrapped in a one-statement block"
     );
 }
+
+/// The two Jai-compatible spellings are CST-only choices: `then` remains an ordinary HIR `If`,
+/// while `if #complete` becomes the same HIR `Switch` the older spelling uses.
+#[test]
+fn jai_control_flow_spellings_reuse_existing_hir() {
+    let source = r#"
+f :: (n: s64) -> s64 {
+    result := 0;
+    if n > 0 then result = 1;
+    if #complete n == {
+        case 0;
+            result = result + 2;
+        else;
+            result = result + 3;
+    }
+    return result;
+}
+"#;
+    let (hir, diags, _interner) = lower(source);
+    assert!(
+        diags.is_empty(),
+        "the spellings should lower cleanly: {diags:?}"
+    );
+
+    let has_if = hir
+        .bodies
+        .iter()
+        .flat_map(|body| body.stmts.iter())
+        .any(|stmt| matches!(stmt, Stmt::If { .. }));
+    let has_switch = hir
+        .bodies
+        .iter()
+        .flat_map(|body| body.stmts.iter())
+        .any(|stmt| matches!(stmt, Stmt::Switch { .. }));
+    assert!(
+        has_if,
+        "`then` must keep the existing HIR if representation"
+    );
+    assert!(
+        has_switch,
+        "`if #complete` must reuse the existing HIR switch representation"
+    );
+}

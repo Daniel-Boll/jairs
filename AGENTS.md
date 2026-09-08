@@ -119,7 +119,7 @@ silently skips. **Run gate 7 in any wave that touches MIR, `jr-pool`'s layout, `
 either back end** — those are exactly the places where a third engine has something to say.
 
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
-visible. **It is 1260 today (1269 under gate 7), with 285 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
+visible. **It is 1273 today (1282 under gate 7), with 289 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
 only the corpus one, which is the pattern every wave whose deliverable a `.jr` program can observe
 follows, and the reason the two counts are tracked apart. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
 → 969 (W5 sub-waves 1–4) → 974 (W5 sub-wave 5, polymorphic structs) → 976 (W5 sub-wave 6a, `$N` surface)
@@ -1967,7 +1967,10 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0297 is the first free code**; E0134 is the first free *parser* code. **E0296** refuses a
+**E0297 is the first free code**; E0135 is the first free *parser* code. **E0134** refuses a
+`case` after an `else` in `switch` or `if #complete` (ADR-0215) — **owned by `jr-syntax`**,
+because preserving arm order is a source-grammar obligation and lowering must never silently move
+the catch-all. **E0296** refuses a
 `#char` operand whose decoded contents are not exactly one ASCII character (ADR-0214) — **owned by
 `jr-hir`**, because the directive becomes an ordinary integer literal during lowering. An invalid
 string escape keeps its existing E0205/E0206 instead of receiving a second cardinality error.

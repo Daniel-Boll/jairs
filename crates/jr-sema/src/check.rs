@@ -2802,9 +2802,12 @@ impl Ctx<'_> {
             _ => None,
         };
 
-        // Members named so far, and their arms' spans, so a duplicate is reported against the *later*
-        // arm — the earlier one is the one that works.
-        let mut seen_members: Vec<Symbol> = Vec::new();
+        // Values handled so far, so a duplicate is reported against the *later* arm — the earlier one
+        // is the one that works. Enums are tracked by their runtime integer rather than by member name:
+        // two aliases with one value are one branch at runtime, so they are one coverage class here too.
+        // Variants have no comparable aggregate value, so their cases remain name-based.
+        let mut seen_values: Vec<(i128, Option<Symbol>)> = Vec::new();
+        let mut seen_variant_cases: Vec<Symbol> = Vec::new();
         let mut seen_else: Option<Span> = None;
 
         for arm in arms {
@@ -2833,13 +2836,52 @@ impl Ctx<'_> {
                     // and `None` was the one input that routed around it.
                     let want = Some(scrutinee);
                     self.check_expr(scope, case, want);
-                    // For an enum, remember *which* member so exhaustiveness and duplicate detection
-                    // have something to compare. A case whose member cannot be named — a computed
-                    // value, or an error — contributes nothing rather than a wrong entry.
-                    if (enum_decl.is_some() || variant_cases.is_some())
+                    if let Some((decl, _)) = enum_decl
+                        && let Some((name, value)) = self.enum_case_value(body, case, decl)
+                    {
+                        if let Some((_, earlier_name)) = seen_values
+                            .iter()
+                            .find(|(seen, _)| *seen == i128::from(value))
+                        {
+                            let text = self.interner.resolve(name).to_owned();
+                            let mut diag = if *earlier_name == Some(name) {
+                                Diagnostic::error(
+                                    arm.span,
+                                    format!("`{text}` is already handled by an earlier `case`"),
+                                )
+                                .with_code(E0259)
+                                .with_note("a duplicate case can never run")
+                            } else {
+                                Diagnostic::error(
+                                    arm.span,
+                                    format!(
+                                        "`{text}` has the same value as an earlier `case` and can never run"
+                                    ),
+                                )
+                                .with_code(E0259)
+                            };
+                            match *earlier_name {
+                                Some(earlier_name) if earlier_name != name => {
+                                    let earlier = self.interner.resolve(earlier_name);
+                                    diag = diag.with_note(format!(
+                                        "`{text}` and `{earlier}` both have the runtime value `{value}`"
+                                    ));
+                                }
+                                None => {
+                                    diag = diag.with_note(format!(
+                                        "an earlier case already handles the runtime value `{value}`"
+                                    ));
+                                }
+                                Some(_) => {}
+                            }
+                            self.diags.push(diag);
+                        } else {
+                            seen_values.push((i128::from(value), Some(name)));
+                        }
+                    } else if variant_cases.is_some()
                         && let Some(name) = self.case_member_name(body, case)
                     {
-                        if seen_members.contains(&name) {
+                        if seen_variant_cases.contains(&name) {
                             let text = self.interner.resolve(name).to_owned();
                             self.diags.push(
                                 Diagnostic::error(
@@ -2850,7 +2892,24 @@ impl Ctx<'_> {
                                 .with_note("a duplicate case can never run"),
                             );
                         } else {
-                            seen_members.push(name);
+                            seen_variant_cases.push(name);
+                        }
+                    } else if self.int_info(scrutinee).is_some()
+                        && let Some(value) = self.switch_integer_case_value(scope, case)
+                    {
+                        if seen_values.iter().any(|(seen, _)| *seen == value) {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    arm.span,
+                                    format!(
+                                        "the value `{value}` is already handled by an earlier `case`"
+                                    ),
+                                )
+                                .with_code(E0259)
+                                .with_note("a duplicate case can never run"),
+                            );
+                        } else {
+                            seen_values.push((value, None));
                         }
                     }
                 }
@@ -2864,7 +2923,7 @@ impl Ctx<'_> {
         if let Some(cases) = &variant_cases {
             let missing: Vec<String> = cases
                 .iter()
-                .filter(|name| !seen_members.contains(name))
+                .filter(|name| !seen_variant_cases.contains(name))
                 .map(|name| self.interner.resolve(*name).to_owned())
                 .collect();
             let text = self.describe(scrutinee);
@@ -2898,14 +2957,22 @@ impl Ctx<'_> {
         // The set judgement. Only for an enum: §3 restricts exhaustiveness to the type whose member set
         // is finite and known, which is what makes the diagnostic true rather than approximate.
         if let Some((decl, flags)) = enum_decl {
-            let missing: Vec<String> = self
-                .pool
-                .enum_members(decl)
-                .unwrap_or(&[])
-                .iter()
-                .filter(|member| !seen_members.contains(&member.name))
-                .map(|member| self.interner.resolve(member.name).to_owned())
-                .collect();
+            // One representative name per uncovered runtime value. Listing every alias would claim a
+            // case for `.OK` failed to cover `.ALSO_OK`, even though both compare equal and reach the
+            // same arm. Declaration order chooses the representative, so the diagnostic stays stable.
+            let mut missing_values = Vec::new();
+            let mut missing = Vec::new();
+            for member in self.pool.enum_members(decl).unwrap_or(&[]) {
+                if seen_values
+                    .iter()
+                    .any(|(seen, _)| *seen == i128::from(member.value))
+                    || missing_values.contains(&member.value)
+                {
+                    continue;
+                }
+                missing_values.push(member.value);
+                missing.push(self.interner.resolve(member.name).to_owned());
+            }
             let ty = self.pool.enum_type(decl, flags);
             let text = self.describe(ty);
 
@@ -2958,6 +3025,44 @@ impl Ctx<'_> {
             // `case Colour.RED` — qualified. The receiver is the enum, which the arm's type check
             // already agreed with, so the field name is the member.
             Expr::Field { name, .. } => Some(*name),
+            _ => None,
+        }
+    }
+
+    /// The runtime value of an enum case that names a member directly.
+    ///
+    /// The name is retained for the duplicate diagnostic, but the value is the identity: aliases with
+    /// different names and one integer compare equal in MIR and therefore cannot be separate cases.
+    fn enum_case_value(
+        &self,
+        body: BodyId,
+        case: ExprId,
+        decl: jr_pool::DeclId,
+    ) -> Option<(Symbol, i64)> {
+        let name = self.case_member_name(body, case)?;
+        self.pool
+            .enum_members(decl)?
+            .iter()
+            .find(|member| member.name == name)
+            .map(|member| (name, member.value))
+    }
+
+    /// A statically readable integer case's runtime value.
+    ///
+    /// Cases are ordinary expressions, so an arbitrary call or variable cannot be proven duplicate
+    /// during sema. Literals are already decoded to their numeric value by lowering — including
+    /// different spellings such as `1` and `0x1` — and unary minus preserves that value relationship.
+    fn switch_integer_case_value(&self, scope: ExprScope, case: ExprId) -> Option<i128> {
+        match self.expr_of(scope, case) {
+            Expr::Literal(Literal::Int { value, .. }, _) => Some(value),
+            Expr::Unary {
+                op: UnOp::Neg,
+                operand,
+                ..
+            } => self
+                .switch_integer_case_value(scope, operand)
+                .and_then(i128::checked_neg),
+            Expr::Run(inner, _) => self.switch_integer_case_value(scope, inner),
             _ => None,
         }
     }

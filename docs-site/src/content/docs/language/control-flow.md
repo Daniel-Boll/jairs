@@ -11,7 +11,7 @@ less familiar: `switch` with exhaustiveness checking, and `defer`.
 
 ## if / else
 
-Braces are required around the body, but parentheses around the condition are **not**:
+Parentheses around the condition are **not** required:
 
 ```jr
 if sum > 5 {
@@ -23,11 +23,16 @@ if sum > 5 {
 }
 ```
 
-A single statement may be written without braces:
+A single statement may be written without braces. The Jai-shaped `then` is optional on exactly
+that form:
 
 ```jr
-if sum > 5  print("big\n");
+if sum > 5 print("big\n");
+if sum > 5 then print("big\n");
 ```
+
+`then` is not written before a braced block and is not a `while` spelling. The formatter preserves
+it when present rather than inserting or deleting it.
 
 The condition must be a `bool`. There is no "truthy" integer — `if n` where `n` is an `s64`
 is a type error, by the same no-silent-conversion rule from [Values and
@@ -129,6 +134,8 @@ describe :: (c: Colour) -> s64 {
 Over an `enum`, `switch` is **exhaustiveness-checked**: if you omit a member and provide no
 `else`, that is a compile error — and adding an `else` that could never run is also refused.
 This is one reason enums are worth having (see [Enums and flags](/language/enums-and-flags/)).
+Aliases with the same integer value are one case: handling either alias covers that value, and
+writing both is a duplicate.
 
 Over an integer there is no finite member set to be exhaustive about, so an `else` arm is
 what makes the match total:
@@ -140,6 +147,21 @@ switch n {
     else;     r = 30;
 }
 ```
+
+`else` must be the final arm. The equivalent Jai spelling is available when source compatibility
+calls for it:
+
+```jr
+if #complete c == {
+    case .RED;   return 1;
+    case .GREEN; return 2;
+    case .BLUE;  return 4;
+}
+```
+
+This is exact syntax sugar for `switch c { … }`, not a second pattern language or a boolean
+expression form. It therefore shares the same enum exhaustiveness, integer behavior, variant
+destructuring, and no-fallthrough lowering.
 
 Cases can be written with a bare member (`.RED`) or a qualified one (`Colour.RED`) — they
 name the same thing. The scrutinee is **evaluated once**, before any comparison, so

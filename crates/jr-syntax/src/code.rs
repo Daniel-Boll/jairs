@@ -223,6 +223,12 @@ pub(crate) const E0132: &str = "E0132";
 /// real failure modes.
 pub(crate) const E0133: &str = "E0133";
 
+/// A `switch` or `if #complete` whose `else` arm is followed by another arm.
+///
+/// The catch-all must be final because source order is execution order. Accepting a later arm and
+/// moving `else` behind it would make the syntax tree disagree with the program the author wrote.
+pub(crate) const E0134: &str = "E0134";
+
 /// Input nested more deeply than the parser's depth limit.
 ///
 /// Deliberately at the top of the parser's range rather than in sequence: it is a
@@ -272,6 +278,7 @@ mod tests {
         ("E0131", "`#code` without a braced body"),
         ("E0132", "a field layout attribute with no value"),
         ("E0133", "a `#simd` with no array type"),
+        ("E0134", "an `else` arm that is not final"),
         ("E0199", "nesting depth limit"),
     ];
 

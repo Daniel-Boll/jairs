@@ -103,6 +103,12 @@ pub enum SyntaxKind {
     CAST_KW,
     /// `xx` (autocast) — real syntax as of ADR-0046, not reserved.
     XX_KW,
+    /// `then` — an optional marker before a single braceless `if` body.
+    ///
+    /// Kept in the historical reserved-keyword block because the word is reserved everywhere
+    /// except that one parser position: code cannot declare a variable named `then` and later have
+    /// its meaning change when the marker is added to another control form.
+    THEN_KW,
     /// `null` — real syntax as of ADR-0060, a context-typed pointer literal.
     ///
     /// It stays in this block, like `cast` and `enum` before it, rather than moving out beside
@@ -802,6 +808,7 @@ impl SyntaxKind {
             "using" => Self::USING_KW,
             "cast" => Self::CAST_KW,
             "xx" => Self::XX_KW,
+            "then" => Self::THEN_KW,
             "null" => Self::NULL_KW,
             _ => return None,
         })
@@ -837,6 +844,7 @@ impl SyntaxKind {
             Self::USING_KW => "using",
             Self::CAST_KW => "cast",
             Self::XX_KW => "xx",
+            Self::THEN_KW => "then",
             Self::NULL_KW => "null",
             Self::L_PAREN => "(",
             Self::R_PAREN => ")",
@@ -1003,7 +1011,7 @@ mod tests {
         // `static_text`, which would make diagnostics print `FOO_KW`.
         for text in [
             "struct", "if", "else", "while", "return", "break", "continue", "true", "false",
-            "enum", "union", "for", "defer", "using", "cast", "xx", "null",
+            "enum", "union", "for", "defer", "using", "cast", "xx", "then", "null",
         ] {
             let kind = SyntaxKind::from_keyword(text)
                 .unwrap_or_else(|| panic!("`{text}` is not recognised as a keyword"));

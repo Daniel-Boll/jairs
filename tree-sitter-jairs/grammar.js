@@ -555,12 +555,18 @@ module.exports = grammar({
     decl_stmt: ($) => $._decl,
 
     // if cond Body (else (if_stmt | Body))?
+    //
+    // `then` is accepted only on the braceless branch. Keeping it inside that choice makes
+    // `if cond then { … }` an ERROR node instead of a second spelling for an ordinary block.
     if_stmt: ($) =>
       prec.right(
         seq(
           "if",
           field("condition", $._expr),
-          field("body", $._body),
+          choice(
+            field("body", $.block),
+            seq(optional("then"), field("body", $._single_stmt)),
+          ),
           optional(
             seq(
               "else",
@@ -626,27 +632,45 @@ module.exports = grammar({
     // `defer stmt;` or `defer { }` (ADR-0049 §3).
     defer_stmt: ($) => seq("defer", field("body", $._single_stmt)),
 
-    // switch e { case v; … else; … } (ADR-0067). An arm's body is a run of statements ending at the
-    // next `case`, the next `else`, or the closing brace — the same statement-list shape a block has,
-    // so no new body kind enters the grammar.
+    // `switch e { … }` and Jai's exact `if #complete e == { … }` spelling share one editor node,
+    // matching the compiler CST and HIR. The high precedence on the complete-if form makes its `==`
+    // the delimiter rather than part of the scrutinee's top-level binary expression; a comparison
+    // remains usable when parenthesised.
+    //
+    // Cases repeat first and the optional `else` is separate and final. This makes an arm after
+    // `else` an ERROR node rather than accepting it and leaving a later phase to reorder it.
     switch_stmt: ($) =>
+      choice(
+        seq(
+          "switch",
+          field("value", $._expr),
+          $._switch_arms,
+        ),
+        prec(
+          10,
+          seq(
+            "if",
+            "#complete",
+            field("value", $._expr),
+            "==",
+            $._switch_arms,
+          ),
+        ),
+      ),
+
+    _switch_arms: ($) =>
       seq(
-        "switch",
-        field("value", $._expr),
         "{",
-        repeat($.switch_arm),
+        repeat(alias($._switch_case_arm, $.switch_arm)),
+        optional(alias($._switch_else_arm, $.switch_arm)),
         "}",
       ),
 
-    switch_arm: ($) =>
-      seq(
-        choice(
-          seq("case", field("value", $._expr)),
-          "else",
-        ),
-        ";",
-        repeat($._stmt),
-      ),
+    _switch_case_arm: ($) =>
+      seq("case", field("value", $._expr), ";", repeat($._stmt)),
+
+    _switch_else_arm: ($) =>
+      seq("else", ";", repeat($._stmt)),
 
     // push_context { … } (ADR-0063) — a block with its own copy of the context. The body is a
     // braced block only, never a braceless single statement: the parser requires the braces so a
