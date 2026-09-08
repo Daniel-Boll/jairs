@@ -49,6 +49,8 @@ const E0207: &str = "E0207";
 const E0208: &str = "E0208";
 /// A directive used where it is not valid.
 const E0209: &str = "E0209";
+/// `#char` with anything other than one decoded ASCII character.
+const E0296: &str = "E0296";
 /// `#insert` with an operand that is not a string literal (ADR-0072 §5).
 const E0262: &str = "E0262";
 /// The text of an `#insert` does not parse (ADR-0072 §3).
@@ -108,9 +110,10 @@ const E0276: &str = "E0276";
 /// level, so 16 levels of literal nesting is already ~32 KB of source and 40 would be ~10¹² bytes.
 const MAX_INSERT_DEPTH: u32 = 16;
 
-/// Directives that are legal in expression position.
+/// Directives that remain directive expressions after lowering.
 ///
-/// Everything else is rejected. The parser is deliberately permissive -- it
+/// `#char` is handled separately and becomes an integer literal. Everything
+/// else is rejected. The parser is deliberately permissive -- it
 /// lexes `#anything` as one token and parses `#name "arg"` as a generic
 /// directive expression, so that adding a directive never requires a lexer or
 /// grammar change (see `jr_syntax::lexer`). That permissiveness has to be paid
@@ -1212,6 +1215,9 @@ impl<'a> LowerCtx<'a> {
                 self.alloc_top_expr(Expr::Run(inner, span), span)
             }
             AstExpr::Directive(d) => {
+                if let Some(literal) = lower_char_directive_impl(d, span, &mut self.diags) {
+                    return self.alloc_top_expr(Expr::Literal(literal, span), span);
+                }
                 let name = d
                     .directive_token()
                     .map(|t| self.intern(t.text().trim_start_matches('#')))
@@ -3475,6 +3481,9 @@ impl<'a> BodyLowerCtx<'a> {
                 self.alloc_expr(Expr::Run(inner, span), span)
             }
             AstExpr::Directive(d) => {
+                if let Some(literal) = lower_char_directive_impl(d, span, &mut self.diags) {
+                    return self.alloc_expr(Expr::Literal(literal, span), span);
+                }
                 let name = d
                     .directive_token()
                     .map(|t| self.intern(t.text().trim_start_matches('#')))
@@ -3500,6 +3509,58 @@ fn strip_quotes(s: &str) -> String {
     } else {
         s.to_owned()
     }
+}
+
+/// Lowers `#char "x"` directly to the integer literal used everywhere else.
+///
+/// `None` means this is not `#char`; an invalid `#char` still returns a poisoned
+/// zero literal after emitting its diagnostic so lowering remains total.
+fn lower_char_directive_impl(
+    directive: &jr_syntax::ast::DirectiveExpr,
+    span: Span,
+    diags: &mut Diagnostics,
+) -> Option<Literal> {
+    let token = directive.directive_token()?;
+    if token.text().trim_start_matches('#') != "char" {
+        return None;
+    }
+
+    let invalid = || Literal::Int {
+        value: 0,
+        radix: 10,
+        overflowed: false,
+    };
+    let Some(arg) = directive.string_arg() else {
+        diags.push(char_directive_diagnostic(span));
+        return Some(invalid());
+    };
+
+    let diagnostic_watermark = diags.len();
+    let decoded = decode_string_impl(arg.text(), span, diags);
+    if diags.len() != diagnostic_watermark {
+        // The escape diagnostic is the actionable error. Adding E0296 for the
+        // replacement text would report one written mistake twice.
+        return Some(invalid());
+    }
+
+    let mut characters = decoded.chars();
+    match (characters.next(), characters.next()) {
+        (Some(character), None) if character.is_ascii() => Some(Literal::Int {
+            value: i128::from(character as u8),
+            radix: 10,
+            overflowed: false,
+        }),
+        _ => {
+            diags.push(char_directive_diagnostic(span));
+            Some(invalid())
+        }
+    }
+}
+
+fn char_directive_diagnostic(span: Span) -> Diagnostic {
+    Diagnostic::error(span, "`#char` requires exactly one ASCII character")
+        .with_code(E0296)
+        .with_note("the string operand is decoded before its character and ASCII width are checked")
 }
 
 /// The [`BinOp`] a token spells, or `None` for one that is not a binary operator.

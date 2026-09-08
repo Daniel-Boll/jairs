@@ -2517,6 +2517,15 @@ mod tests {
     }
 
     #[test]
+    fn char_directive_and_escape_survive() {
+        let src = "main :: () {\nvalue:u8=#char \"\\\\\";\n}\n";
+        let out = fmt(src);
+        assert_eq!(out, "main :: () {\n    value: u8 = #char \"\\\\\";\n}\n");
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    #[test]
     fn bool_constant() {
         let src = "DEBUG :: false;\n";
         let out = fmt(src);

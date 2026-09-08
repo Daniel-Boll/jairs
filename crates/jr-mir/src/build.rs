@@ -2209,15 +2209,26 @@ impl Lower<'_> {
                 }
 
                 let zero = Operand::Constant(self.pool.int_value(PoolId::S64, 0));
-                // The length: an array's is a constant from its type, a view's is a *load* of its
-                // `.count` — the same two shapes `index_place` distinguishes, so a `for` over
-                // either needs nothing new (ADR-0039 §1, ADR-0044 §4).
+                // The length: an array's is a constant from its type; a view's and a string's are
+                // loads of their `.count`. Strings use their own projections rather than an
+                // implicit conversion to `[]u8`.
                 if let Some(len) = self.array_len(ty) {
                     let end = Operand::Constant(self.pool.int_value(PoolId::S64, len));
                     Some(ForBounds {
                         start: zero,
                         end,
                         element: Some(place),
+                    })
+                } else if ty == PoolId::STRING {
+                    let count = self.define(
+                        PoolId::S64,
+                        Rvalue::Load(place.clone().project(Projection::StringCount)),
+                        span,
+                    );
+                    Some(ForBounds {
+                        start: zero,
+                        end: count,
+                        element: Some(place.project(Projection::StringData)),
                     })
                 } else {
                     self.view_elem(ty)?;

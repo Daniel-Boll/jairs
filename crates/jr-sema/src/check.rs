@@ -738,10 +738,11 @@ impl Ctx<'_> {
 
     /// Types a `for` loop and records its variables' types (ADR-0049 §1).
     ///
-    /// Three iterable shapes and no more: an array, a view, or a range. The *element* type is what
-    /// the value variable gets; the index variable is always `s64`, because that is the type
-    /// `.count` has (ADR-0004) and an index that disagreed with the length would need a conversion
-    /// to compare with it.
+    /// Four iterable shapes and no more: an array, a view, a string, or a range. Strings yield
+    /// `u8` bytes directly rather than converting to a view. The *element* type is what the value
+    /// variable gets; the index variable is always `s64`, because that is the type `.count` has
+    /// (ADR-0004) and an index that disagreed with the length would need a conversion to compare
+    /// with it.
     fn check_for(
         &mut self,
         body: BodyId,
@@ -763,6 +764,7 @@ impl Ctx<'_> {
                 }
                 match self.pool.item(seq) {
                     Item::ArrayType { elem, .. } | Item::ViewType { elem } => *elem,
+                    Item::StringType => PoolId::U8,
                     _ => {
                         if seq != PoolId::ERROR {
                             let text = self.describe(seq);
@@ -773,7 +775,7 @@ impl Ctx<'_> {
                                 )
                                 .with_code(E0247)
                                 .with_note(
-                                    "a `for` iterates a fixed-size array `[N]T`, a view `[]T`, or a range `a..b`",
+                                    "a `for` iterates a fixed-size array `[N]T`, a view `[]T`, a `string`'s bytes, or a range `a..b`",
                                 )
                                 .with_help(
                                     // **Not "wave W5's macros unlock it".** W5 is complete and

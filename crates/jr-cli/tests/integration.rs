@@ -382,6 +382,9 @@ fn imports_invalid_corpus_fails() {
         // expression arena is walked flat (ADR-0180 §4) and reached `s64` before the literal that makes it
         // a type — masking this refusal behind a complaint about a perfectly well known name.
         "imports/invalid/022-file-scope-array-literal.jr",
+        // `#char` is lowered before type checking: empty, multi-character and non-ASCII operands
+        // are E0296 rather than a type error, so this belongs in the lowering-stage corpus.
+        "imports/invalid/023-char-requires-one-ascii-byte.jr",
     ] {
         let code = check_with_modules(vec![corpus_path(file)], Some("modules"));
         assert_eq!(code, 1, "{file} must report an error");
