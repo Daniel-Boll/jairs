@@ -31,20 +31,8 @@ String :: #import "String";
 // `/usr/lib/x86_64-linux-gnu`, an Intel Mac `/usr/local/lib`.
 SDL2_DIRECTORY :: "/opt/homebrew/lib";
 
-libc_alloc :: (n: s64) -> *u8 {
-    return malloc(n);
-}
-
-libc_free :: (p: *u8) {
-    free(p);
-}
-
 main :: () {
-    // `Compiler.arguments()` allocates, so a script that reads its command line installs an allocator
-    // first.
-    context.allocator = libc_alloc;
-    context.allocator_free = libc_free;
-
+    // `Compiler.arguments()` uses the default context allocator.
     args := Compiler.arguments();
     is_release := args.count > 0 && String.equal(args[0], "release");
 

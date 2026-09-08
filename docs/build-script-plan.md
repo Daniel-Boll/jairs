@@ -117,8 +117,9 @@ $ jr run probe.jr -I modules
 write true read true bytes 18 join src/main.jr
 ```
 
-Writing a file, reading it back, joining a path — all work, once the program installs an allocator
-(`context.allocator = libc_alloc`, the idiom `examples/07-file-read.jr` already documents).
+Writing a file, reading it back, joining a path — all work. ADR-0216 later installed a default
+allocator, so `examples/07-file-read.jr` no longer needs setup; replacing the pair remains available
+for custom policies.
 
 **One thing does not, and it fails silently.** `Process.run` under the VM:
 

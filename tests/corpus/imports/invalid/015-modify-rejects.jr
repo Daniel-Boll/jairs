@@ -5,9 +5,10 @@
 // that call**. So a template can say "only for an `s64`" in code rather than in a comment, and the compiler
 // enforces it.
 //
-// Here the predicate compares the bound type's identity against `s64`'s — the sound comparison ADR-0077's
-// stable `id` established and ADR-0092 made reachable inside a `$T` body. `caller` instantiates at `u8`, the
-// predicate answers `false`, and the instantiation is refused.
+// Here the predicate first allocates through the fresh compile-time context (ADR-0216), then compares the
+// bound type's identity against `s64`'s — the sound comparison ADR-0077's stable `id` established and
+// ADR-0092 made reachable inside a `$T` body. `caller` instantiates at `u8`, the predicate answers `false`,
+// and the instantiation is refused.
 //
 // **A predicate that fails to *run* is deliberately not a rejection** (ADR-0095 §1): "the guard could not be
 // evaluated" and "the guard said no" are different findings, and only the second is what the author asked
@@ -22,6 +23,17 @@
 
 /// A template guarded by a predicate: this one is meant for `s64` only.
 only_s64 :: (x: $T) -> s64 #modify {
+    p := context.allocator(1);
+    if p == null {
+        // A missing default must not accidentally produce the expected rejection.
+        return true;
+    }
+    p.* = 7;
+    allocator_works := p.* == 7;
+    context.allocator_free(p);
+    if !allocator_works {
+        return true;
+    }
     return type_info(T).id == type_info(s64).id;
 } {
     return 1;

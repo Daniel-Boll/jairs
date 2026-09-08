@@ -304,13 +304,19 @@ pub enum Instr {
 // A compiled body
 // ---------------------------------------------------------------------------
 
-/// A stack slot's size and alignment, resolved at lowering time.
+/// A stack slot's size, alignment, and required runtime initialisation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlotPlan {
     /// Size in bytes.
     pub size: u64,
     /// Required alignment in bytes.
     pub align: u32,
+    /// Whether this slot holds the compiler-defined `Context` aggregate.
+    ///
+    /// File-scope `#run` thunks have no caller to pass a context, so MIR gives
+    /// them a context-typed slot. The interpreter must recognise that slot and
+    /// install the same default allocator handles as [`crate::Vm::new_context`].
+    pub is_context: bool,
 }
 
 /// One procedure's bytecode.

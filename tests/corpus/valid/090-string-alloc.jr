@@ -8,10 +8,10 @@
 // because the context exists to carry exactly this (ADR-0001) — a caller who wants arena behaviour installs an
 // arena and gets it for every routine at once, with no second API.
 //
-// **A caller must install an allocator first**, and forgetting is not silent: `context.allocator` is null until
-// installed (ADR-0057 §5), and calling a null one **traps** (ADR-0110) — which is why the null-call trap shipped
-// the sub-wave before this one, found while probing exactly this convention. A failed allocation returns `""`,
-// because ADR-0058 §4's line is that a trap is for a *program* error and running out of memory is not one.
+// ADR-0216 now installs a default allocator in every fresh context. This file still replaces it with libc
+// wrappers to prove the custom-allocator protocol remains live rather than becoming a second, unused path.
+// A failed allocation returns `""`, because ADR-0058 §4's line is that a trap is for a *program* error and
+// running out of memory is not one.
 //
 // This file installs libc `malloc`/`free` through the wrapper shape `valid/050` established (a `#foreign`
 // procedure cannot fill a procedure-pointer field, E0256), and frees every result — so under the differential

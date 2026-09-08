@@ -119,7 +119,7 @@ silently skips. **Run gate 7 in any wave that touches MIR, `jr-pool`'s layout, `
 either back end** — those are exactly the places where a third engine has something to say.
 
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
-visible. **It is 1273 today (1282 under gate 7), with 289 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
+visible. **It is 1280 today (1291 under gate 7), with 290 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
 only the corpus one, which is the pattern every wave whose deliverable a `.jr` program can observe
 follows, and the reason the two counts are tracked apart. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
 → 969 (W5 sub-waves 1–4) → 974 (W5 sub-wave 5, polymorphic structs) → 976 (W5 sub-wave 6a, `$N` surface)
@@ -1835,6 +1835,24 @@ in nextest's serial graphics group because process-global state is exactly what 
 Leaving `previous_ns` unchanged is correct; storing zero would make the next successful frame measure
 from the epoch and report an enormous delta. A backwards reading is also clamped to zero, while ordinary
 long frames remain unclamped because the caller, not Game, owns simulation policy.
+
+**ADR-0216 reaches 1280 tests (1291 under gate 7) and adds one corpus file = 290.** Fresh contexts now
+carry a working allocator/free pair in all three engines. The tempting native implementation — store
+raw `malloc` and `free` addresses — is ABI-wrong because a Jairs procedure receives a hidden Context;
+Cranelift and LLVM therefore emit local Jairs-ABI wrappers and derive the field addresses from
+`field_offset` rather than repeating layout constants.
+
+**The VM had two context-construction paths, and both matter.** `new_context` covers ordinary calls,
+while context-typed slots cover generated thunks such as `#run` and `#modify`; `SlotPlan::is_context`
+records the second instead of relying on a caller to remember it. Reserved procedure handles dispatch
+to linear-memory allocation and free, while an explicitly cleared handle still exercises the null-call
+trap.
+
+**An empty successful file read is still an ownership event.** Returning `(null, 0)` made success
+indistinguishable from the failure sentinel and gave `String.free_string` no allocation to release.
+`File.read_entire_file` now allocates one NUL byte even for empty input, and the whole-file trio moved
+exclusively from `File_Utilities` into `File`; duplicate wrappers would collide in the flat import
+namespace. The original Jai-shaped probe now reports only its intentionally absent `State.TAG` case.
 
 ## House style
 

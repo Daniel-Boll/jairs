@@ -5,11 +5,11 @@ sidebar:
   order: 41
 ---
 
-An allocator in Jairs is not a magic built-in — it is data a program installs in the context: two
-procedure pointers (`allocator`, `allocator_free`) and a state word (`allocator_data`). Any callee
-can allocate by reading `context.allocator` and calling through it, without ever knowing what was
-installed. This page installs two different allocators and proves the switch is honoured on every
-call.
+An allocator in Jairs is context data: two procedure pointers (`allocator`, `allocator_free`) and a
+state word (`allocator_data`). A fresh context supplies a libc-like default (ADR-0216), and a program
+may replace it. Any callee can allocate by reading `context.allocator` and calling through it,
+without ever knowing what policy is active. This page installs two different replacements and proves
+the switch is honoured on every call.
 
 ```jr
 #import "Basic";
@@ -44,7 +44,7 @@ free_through_context :: (p: *u8) {
 main :: () {
     n := 0;
 
-    // Nothing installed yet: the context is zeroed, so the allocator is null.
+    // The policy pair has defaults; the allocator's program-owned state starts at zero.
     if context.allocator_data == 0 {
         n = n + 1;
     }

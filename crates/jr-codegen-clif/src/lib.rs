@@ -50,8 +50,22 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use jr_codegen::{Backend, CodegenError, ProcDecl, ProcKind, SourceInfo};
 use jr_mir::{GlobalData, GlobalRef, MirBody, ProcRef};
-use jr_pool::{Item, Layout, Pool, PoolId, StrId, TargetLayout, layout_of, static_image};
+use jr_pool::{
+    Item, Layout, Pool, PoolId, StrId, TargetLayout, field_offset, layout_of, static_image,
+};
 use rustc_hash::FxHashMap;
+
+/// Everything the entry shim needs after the pool is no longer available.
+///
+/// The two offsets are computed through [`field_offset`] while declaring `main`; keeping
+/// them beside the layout lets finalisation install the allocator without duplicating
+/// `Context`'s layout in the back end.
+#[derive(Clone, Copy)]
+struct EntryContext {
+    layout: Layout,
+    allocator_offset: i32,
+    allocator_free_offset: i32,
+}
 
 /// One defined function's subprogram, before its `FuncId` becomes an object symbol.
 ///
@@ -139,7 +153,13 @@ pub struct ClifBackend {
     /// The context struct's layout and the target, remembered when the entry is declared so the
     /// entry shim (built in `finalise`, which has no pool) can size the slot it allocates for
     /// `main`'s context (ADR-0057 §5). `None` when `main` takes none.
-    entry_context: Option<(Layout, TargetLayout)>,
+    entry_context: Option<EntryContext>,
+    /// Compiler-owned Jairs-ABI wrappers around libc `malloc` and `free`.
+    ///
+    /// Their addresses are installed in a fresh entry context. They use the same
+    /// `CallConv::Fast` and hidden-context parameter as an ordinary Jairs procedure,
+    /// then cross the C boundary themselves.
+    default_allocator: Option<(FuncId, FuncId)>,
     /// The shadow call stack a trap reports (ADR-0066 §1): `SHADOW_CAPACITY` name pointers.
     ///
     /// **The first mutable data object this back end emits** — every other one is a read-only string
@@ -210,7 +230,6 @@ impl ClifBackend {
         let trap_helper = module
             .declare_function(TRAP_HELPER, Linkage::Local, &trap_signature(&module))
             .map_err(|e| CodegenError::Internal(format!("cannot declare {TRAP_HELPER}: {e}")))?;
-
         // The shadow call stack and its depth (ADR-0066 §1), both **writable** — the only mutable data
         // this back end emits. Zero-initialised, so a program that never calls anything has a depth of
         // 0 and the helper walks nothing.
@@ -243,6 +262,7 @@ impl ClifBackend {
             libraries: Vec::new(),
             entry: None,
             entry_context: None,
+            default_allocator: None,
             shadow_stack,
             shadow_depth,
             names: FxHashMap::default(),
@@ -259,6 +279,64 @@ impl ClifBackend {
         backend.emit_strings(pool)?;
         backend.define_trap_helper()?;
         Ok(backend)
+    }
+
+    /// Declares and defines the Jairs-ABI allocator wrappers when an entry needs them.
+    fn ensure_default_allocator_helpers(&mut self) -> Result<(FuncId, FuncId), CodegenError> {
+        if let Some(helpers) = self.default_allocator {
+            return Ok(helpers);
+        }
+        let (default_alloc, default_free, malloc, free) =
+            declare_default_allocator_helpers(&mut self.module)?;
+
+        let mut alloc = Function::with_name_signature(
+            UserFuncName::default(),
+            default_alloc_signature(&self.module),
+        );
+        let mut alloc_builder_context = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut alloc, &mut alloc_builder_context);
+        let block = builder.create_block();
+        builder.append_block_params_for_function_params(block);
+        builder.switch_to_block(block);
+        let size = builder.block_params(block)[1];
+        let malloc_ref = self.module.declare_func_in_func(malloc, builder.func);
+        let call = builder.ins().call(malloc_ref, &[size]);
+        let allocated = builder.inst_results(call)[0];
+        builder.ins().return_(&[allocated]);
+        builder.seal_all_blocks();
+        builder.finalize(self.module.target_config());
+        let mut context = Context::for_function(alloc);
+        self.module
+            .define_function(default_alloc, &mut context)
+            .map_err(|e| {
+                CodegenError::Internal(format!("cannot define the default allocator: {e}"))
+            })?;
+
+        let mut release = Function::with_name_signature(
+            UserFuncName::default(),
+            default_free_signature(&self.module),
+        );
+        let mut free_builder_context = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut release, &mut free_builder_context);
+        let block = builder.create_block();
+        builder.append_block_params_for_function_params(block);
+        builder.switch_to_block(block);
+        let allocation = builder.block_params(block)[1];
+        let free_ref = self.module.declare_func_in_func(free, builder.func);
+        builder.ins().call(free_ref, &[allocation]);
+        builder.ins().return_(&[]);
+        builder.seal_all_blocks();
+        builder.finalize(self.module.target_config());
+        let mut context = Context::for_function(release);
+        self.module
+            .define_function(default_free, &mut context)
+            .map_err(|e| {
+                CodegenError::Internal(format!("cannot define the default allocator release: {e}"))
+            })?;
+
+        let helpers = (default_alloc, default_free);
+        self.default_allocator = Some(helpers);
+        Ok(helpers)
     }
 
     /// The two literals a backtrace line is built from, as `(prefix, prefix_len, newline, 1)`.
@@ -474,38 +552,64 @@ impl ClifBackend {
         builder.switch_to_block(block);
 
         let callee_ref = self.module.declare_func_in_func(callee, builder.func);
-        // **`main`'s context is a zeroed stack slot in the shim** (ADR-0057 §5): `main` has no Jairs
-        // caller, so the shim is where the first one is born. Zeroed, so `context.allocator` reads 0
-        // in a program that never sets it — the same defined-not-garbage rule ADR-0039 §4a used.
+        // **`main`'s context is a stack slot in the shim** (ADR-0057 §5): `main` has no Jairs
+        // caller, so the shim is where the first one is born. It is zeroed first, then receives the
+        // compiler-owned allocator pair; every other field keeps the defined-zero rule ADR-0039 §4a used.
         //
         // Only when `main` takes one: a `#c_call main` gets no argument, and passing one anyway is
         // the shift ADR-0053 §1 records.
         let mut call_args = Vec::new();
         if entry_context {
-            let (layout, target) = self.entry_context.ok_or_else(|| {
+            let context = self.entry_context.ok_or_else(|| {
                 CodegenError::Internal(
                     "entry takes a context but its layout was never recorded".to_owned(),
                 )
             })?;
-            let size = u32::try_from(layout.size.max(1)).map_err(|_| {
+            let size = u32::try_from(context.layout.size.max(1)).map_err(|_| {
                 CodegenError::Internal("the context is larger than a u32".to_owned())
             })?;
             let slot = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
                 size,
-                layout.align.trailing_zeros().try_into().unwrap_or(0),
+                context
+                    .layout
+                    .align
+                    .trailing_zeros()
+                    .try_into()
+                    .unwrap_or(0),
             ));
-            let pointer = crate::repr::pointer_type(target);
+            let pointer = crate::repr::pointer_type(self.target);
             let address = builder.ins().stack_addr(pointer, slot, 0);
-            // Zero the field(s), so `context.allocator` reads 0 — `emit_small_memset` is what
-            // `Statement::Zero` already uses (ADR-0057 §5).
             builder.emit_small_memset(
                 self.module.target_config(),
                 address,
                 0,
-                layout.size,
-                layout.align.try_into().unwrap_or(1),
+                context.layout.size,
+                context.layout.align.try_into().unwrap_or(1),
                 MemFlagsData::new(),
+            );
+            let (default_alloc, default_free) = self.default_allocator.ok_or_else(|| {
+                CodegenError::Internal(
+                    "entry takes a context but its default allocator was never emitted".to_owned(),
+                )
+            })?;
+            let alloc_ref = self
+                .module
+                .declare_func_in_func(default_alloc, builder.func);
+            let free_ref = self.module.declare_func_in_func(default_free, builder.func);
+            let alloc = builder.ins().func_addr(pointer, alloc_ref);
+            let free = builder.ins().func_addr(pointer, free_ref);
+            builder.ins().store(
+                MemFlagsData::new(),
+                alloc,
+                address,
+                context.allocator_offset,
+            );
+            builder.ins().store(
+                MemFlagsData::new(),
+                free,
+                address,
+                context.allocator_free_offset,
             );
             call_args.push(address);
         }
@@ -763,11 +867,50 @@ impl Backend for ClifBackend {
         if matches!(decl.kind, ProcKind::Local { entry: true, .. }) {
             self.entry = Some((decl.proc, decl.ret, decl.receives_context));
             if decl.receives_context {
+                self.ensure_default_allocator_helpers()?;
                 // Declaring the entry means checking ran, which interned the context; falling back
                 // to `ERROR` is defensive rather than panicking in codegen.
                 let ctx = pool.context_type_id().unwrap_or(PoolId::ERROR);
                 if let Ok(context_layout) = layout_of(pool, layout, ctx) {
-                    self.entry_context = Some((context_layout, layout));
+                    let allocator = Pool::context_field("allocator").ok_or_else(|| {
+                        CodegenError::Internal(
+                            "Context has no canonical allocator field".to_owned(),
+                        )
+                    })?;
+                    let allocator_free =
+                        Pool::context_field("allocator_free").ok_or_else(|| {
+                            CodegenError::Internal(
+                                "Context has no canonical allocator_free field".to_owned(),
+                            )
+                        })?;
+                    let allocator_offset = field_offset(pool, layout, ctx, allocator)
+                        .map_err(|e| {
+                            CodegenError::Internal(format!("cannot lay out context.allocator: {e}"))
+                        })?
+                        .0;
+                    let allocator_free_offset = field_offset(pool, layout, ctx, allocator_free)
+                        .map_err(|e| {
+                            CodegenError::Internal(format!(
+                                "cannot lay out context.allocator_free: {e}"
+                            ))
+                        })?
+                        .0;
+                    self.entry_context = Some(EntryContext {
+                        layout: context_layout,
+                        allocator_offset: i32::try_from(allocator_offset).map_err(|_| {
+                            CodegenError::Internal(
+                                "context.allocator offset does not fit Cranelift".to_owned(),
+                            )
+                        })?,
+                        allocator_free_offset: i32::try_from(allocator_free_offset).map_err(
+                            |_| {
+                                CodegenError::Internal(
+                                    "context.allocator_free offset does not fit Cranelift"
+                                        .to_owned(),
+                                )
+                            },
+                        )?,
+                    });
                 }
             }
         }
@@ -1141,6 +1284,70 @@ fn trap_signature(module: &ObjectModule) -> cranelift_codegen::ir::Signature {
     signature
 }
 
+/// Declares the compiler-owned wrappers and the libc functions they call.
+fn declare_default_allocator_helpers(
+    module: &mut ObjectModule,
+) -> Result<(FuncId, FuncId, FuncId, FuncId), CodegenError> {
+    let pointer = module.target_config().pointer_type();
+
+    let mut malloc_signature = module.make_signature();
+    malloc_signature.call_conv = CallConv::SystemV;
+    malloc_signature.params.push(AbiParam::new(pointer));
+    malloc_signature.returns.push(AbiParam::new(pointer));
+    let malloc = module
+        .declare_function("malloc", Linkage::Import, &malloc_signature)
+        .map_err(|e| CodegenError::Internal(format!("cannot declare malloc: {e}")))?;
+
+    let mut free_signature = module.make_signature();
+    free_signature.call_conv = CallConv::SystemV;
+    free_signature.params.push(AbiParam::new(pointer));
+    let free = module
+        .declare_function("free", Linkage::Import, &free_signature)
+        .map_err(|e| CodegenError::Internal(format!("cannot declare free: {e}")))?;
+
+    let default_alloc = module
+        .declare_function(
+            "jr$default$alloc",
+            Linkage::Local,
+            &default_alloc_signature(module),
+        )
+        .map_err(|e| {
+            CodegenError::Internal(format!("cannot declare the default allocator: {e}"))
+        })?;
+    let default_free = module
+        .declare_function(
+            "jr$default$free",
+            Linkage::Local,
+            &default_free_signature(module),
+        )
+        .map_err(|e| {
+            CodegenError::Internal(format!("cannot declare the default allocator release: {e}"))
+        })?;
+
+    Ok((default_alloc, default_free, malloc, free))
+}
+
+/// `(context, size) -> allocation`, using the ordinary Jairs calling convention.
+fn default_alloc_signature(module: &ObjectModule) -> cranelift_codegen::ir::Signature {
+    let pointer = module.target_config().pointer_type();
+    let mut signature = module.make_signature();
+    signature.call_conv = CallConv::Fast;
+    signature.params.push(AbiParam::new(pointer));
+    signature.params.push(AbiParam::new(pointer));
+    signature.returns.push(AbiParam::new(pointer));
+    signature
+}
+
+/// `(context, allocation) -> void`, using the ordinary Jairs calling convention.
+fn default_free_signature(module: &ObjectModule) -> cranelift_codegen::ir::Signature {
+    let pointer = module.target_config().pointer_type();
+    let mut signature = module.make_signature();
+    signature.call_conv = CallConv::Fast;
+    signature.params.push(AbiParam::new(pointer));
+    signature.params.push(AbiParam::new(pointer));
+    signature
+}
+
 /// The libcall naming Cranelift uses for its own helpers.
 ///
 /// **Delegated to `cranelift-module`'s own namer rather than derived from `Display`.** The
@@ -1159,6 +1366,73 @@ mod tests {
     use super::*;
     use jr_hir::{ItemId, ProcId};
     use jr_mir::{MirSpan, Operand, Place, ProcRef, Rvalue, Statement, Terminator};
+    use object::{Object as _, ObjectSymbol as _};
+
+    fn entry_symbols(receives_context: bool) -> Vec<String> {
+        let mut pool = Pool::new();
+        let _ = pool.context_type();
+        let file = jr_base::FileId::from_usize(0);
+        let proc = ProcRef::new(file, ProcId::from_usize(0));
+        let decl = ProcDecl {
+            proc,
+            params: Vec::new(),
+            ret: PoolId::VOID,
+            receives_context,
+            kind: ProcKind::Local {
+                symbol: "jr$0$0".to_owned(),
+                exported: false,
+                entry: true,
+            },
+            name: Some("main".to_owned()),
+            param_names: Vec::new(),
+        };
+        let mut mir = MirBody::new(proc, PoolId::VOID);
+        mir.set_terminator(mir.entry(), Terminator::Return(None));
+
+        let mut backend = ClifBackend::new(&pool, TargetLayout::LP64, "entry_test").unwrap();
+        backend.declare(&decl, &pool, TargetLayout::LP64).unwrap();
+        backend
+            .define(
+                proc,
+                &mir,
+                &pool,
+                TargetLayout::LP64,
+                &jr_codegen::NoLocations,
+            )
+            .unwrap();
+        let bytes = Box::new(backend).finalise().unwrap();
+        let object = object::File::parse(bytes.as_slice()).unwrap();
+        object
+            .symbols()
+            .filter_map(|symbol| symbol.name().ok().map(str::to_owned))
+            .collect()
+    }
+
+    #[test]
+    fn a_jairs_entry_emits_compiler_owned_allocator_helpers() {
+        let symbols = entry_symbols(true);
+        assert!(
+            symbols
+                .iter()
+                .any(|name| name.ends_with("jr$default$alloc")),
+            "missing allocator helper in {symbols:?}"
+        );
+        assert!(
+            symbols.iter().any(|name| name.ends_with("jr$default$free")),
+            "missing release helper in {symbols:?}"
+        );
+    }
+
+    #[test]
+    fn a_c_call_entry_still_emits_no_allocator_helpers() {
+        let symbols = entry_symbols(false);
+        assert!(
+            !symbols
+                .iter()
+                .any(|name| name.ends_with("jr$default$alloc"))
+        );
+        assert!(!symbols.iter().any(|name| name.ends_with("jr$default$free")));
+    }
 
     /// A global round-trips through a write and a read, and the emitted function verifies
     /// (ADR-0186 §4).

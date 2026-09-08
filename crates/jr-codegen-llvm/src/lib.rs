@@ -56,6 +56,18 @@ use rustc_hash::FxHashMap;
 
 use crate::repr::pointer_int;
 
+/// Everything the entry shim needs after the pool is no longer available.
+///
+/// The two offsets are computed through [`field_offset`] while declaring `main`; keeping
+/// them beside the layout lets finalisation install the allocator without duplicating
+/// `Context`'s layout in the back end.
+#[derive(Clone, Copy)]
+struct EntryContext {
+    layout: Layout,
+    allocator_offset: u64,
+    allocator_free_offset: u64,
+}
+
 /// How many frames the shadow call stack holds (ADR-0066 §1).
 ///
 /// The VM's `MAX_DEPTH` is 256 and the Cranelift back end matches it, so a program that
@@ -126,7 +138,12 @@ pub struct LlvmBackend<'ctx> {
     entry: Option<(ProcRef, PoolId, bool)>,
     /// The context struct's layout, remembered when the entry is declared so the shim can
     /// size the slot it allocates for `main`'s context (ADR-0057 §5).
-    entry_context: Option<Layout>,
+    entry_context: Option<EntryContext>,
+    /// Compiler-owned Jairs-ABI wrappers around libc `malloc` and `free`.
+    ///
+    /// Their signatures include the hidden context argument used by ordinary Jairs
+    /// procedures; the wrappers themselves call the external libc symbols with C ABI.
+    default_allocator: Option<(FunctionValue<'ctx>, FunctionValue<'ctx>)>,
     /// The shadow call stack a trap reports (ADR-0066 §1), and its live depth.
     shadow: (GlobalValue<'ctx>, GlobalValue<'ctx>),
     /// The read-only global holding each procedure's source name, and its length.
@@ -193,6 +210,7 @@ impl<'ctx> LlvmBackend<'ctx> {
             libraries: Vec::new(),
             entry: None,
             entry_context: None,
+            default_allocator: None,
             shadow: (stack, depth),
             names: FxHashMap::default(),
             messages: FxHashMap::default(),
@@ -205,6 +223,79 @@ impl<'ctx> LlvmBackend<'ctx> {
         backend.emit_strings(pool)?;
         backend.define_trap_helper()?;
         Ok(backend)
+    }
+
+    /// Emits local Jairs-ABI wrappers around libc's C-ABI allocator functions.
+    fn ensure_default_allocator_helpers(
+        &mut self,
+    ) -> Result<(FunctionValue<'ctx>, FunctionValue<'ctx>), CodegenError> {
+        if let Some(helpers) = self.default_allocator {
+            return Ok(helpers);
+        }
+        let word = pointer_int(self.context, self.target);
+        let malloc_type = word.fn_type(&[word.into()], false);
+        let malloc = self.module.get_function("malloc").unwrap_or_else(|| {
+            self.module
+                .add_function("malloc", malloc_type, Some(Linkage::External))
+        });
+        let free_type = self.context.void_type().fn_type(&[word.into()], false);
+        let free = self.module.get_function("free").unwrap_or_else(|| {
+            self.module
+                .add_function("free", free_type, Some(Linkage::External))
+        });
+
+        let alloc_type = word.fn_type(&[word.into(), word.into()], false);
+        let alloc =
+            self.module
+                .add_function("jr$default$alloc", alloc_type, Some(Linkage::Internal));
+        let block = self.context.append_basic_block(alloc, "entry");
+        let builder = self.context.create_builder();
+        builder.position_at_end(block);
+        let size = alloc
+            .get_nth_param(1)
+            .ok_or_else(|| {
+                CodegenError::Internal(
+                    "the default allocator is missing its size parameter".to_owned(),
+                )
+            })?
+            .into_int_value();
+        let allocation = builder
+            .build_call(malloc, &[size.into()], "allocation")
+            .map_err(|e| CodegenError::Internal(format!("llvm builder: {e}")))?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::Internal("malloc unexpectedly returned no value".to_owned())
+            })?;
+        builder
+            .build_return(Some(&allocation))
+            .map_err(|e| CodegenError::Internal(format!("llvm builder: {e}")))?;
+
+        let release_type = self
+            .context
+            .void_type()
+            .fn_type(&[word.into(), word.into()], false);
+        let release =
+            self.module
+                .add_function("jr$default$free", release_type, Some(Linkage::Internal));
+        let block = self.context.append_basic_block(release, "entry");
+        let builder = self.context.create_builder();
+        builder.position_at_end(block);
+        let allocation = release.get_nth_param(1).ok_or_else(|| {
+            CodegenError::Internal(
+                "the default allocator release is missing its pointer parameter".to_owned(),
+            )
+        })?;
+        builder
+            .build_call(free, &[allocation.into()], "")
+            .map_err(|e| CodegenError::Internal(format!("llvm builder: {e}")))?;
+        builder
+            .build_return(None)
+            .map_err(|e| CodegenError::Internal(format!("llvm builder: {e}")))?;
+
+        let helpers = (alloc, release);
+        self.default_allocator = Some(helpers);
+        Ok(helpers)
     }
 
     /// The `DIType` for `ty`, building it and its members if this is the first ask (ADR-0171).
@@ -782,16 +873,16 @@ impl<'ctx> LlvmBackend<'ctx> {
 
         let word = pointer_int(self.context, self.target);
         let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = Vec::new();
-        // **`main`'s context is a zeroed stack slot in the shim** (ADR-0057 §5): `main` has no
-        // Jairs caller, so the shim is where the first one is born. Zeroed, so
-        // `context.allocator` reads 0 in a program that never sets it.
+        // **`main`'s context is a stack slot in the shim** (ADR-0057 §5): `main` has no
+        // Jairs caller, so the shim is where the first one is born. It is zeroed first, then
+        // receives the compiler-owned allocator pair; every other field remains zero.
         if receives_context {
-            let layout = self.entry_context.ok_or_else(|| {
+            let context = self.entry_context.ok_or_else(|| {
                 CodegenError::Internal(
                     "entry takes a context but its layout was never recorded".to_owned(),
                 )
             })?;
-            let size = u32::try_from(layout.size.max(1)).map_err(|_| {
+            let size = u32::try_from(context.layout.size.max(1)).map_err(|_| {
                 CodegenError::Internal("the context is larger than a u32".to_owned())
             })?;
             let slot = builder
@@ -800,11 +891,38 @@ impl<'ctx> LlvmBackend<'ctx> {
             builder
                 .build_memset(
                     slot,
-                    layout.align.max(1),
+                    context.layout.align.max(1),
                     self.context.i8_type().const_zero(),
-                    word.const_int(layout.size.max(1), false),
+                    word.const_int(context.layout.size.max(1), false),
                 )
                 .map_err(internal)?;
+            let (default_alloc, default_free) = self.default_allocator.ok_or_else(|| {
+                CodegenError::Internal(
+                    "entry takes a context but its default allocator was never emitted".to_owned(),
+                )
+            })?;
+            for (helper, offset, name) in [
+                (default_alloc, context.allocator_offset, "allocator"),
+                (
+                    default_free,
+                    context.allocator_free_offset,
+                    "allocator_free",
+                ),
+            ] {
+                let field = unsafe {
+                    builder.build_in_bounds_gep(
+                        self.context.i8_type(),
+                        slot,
+                        &[word.const_int(offset, false)],
+                        name,
+                    )
+                }
+                .map_err(internal)?;
+                let address = builder
+                    .build_ptr_to_int(helper.as_global_value().as_pointer_value(), word, name)
+                    .map_err(internal)?;
+                builder.build_store(field, address).map_err(internal)?;
+            }
             let address = builder
                 .build_ptr_to_int(slot, word, "ctx")
                 .map_err(internal)?;
@@ -948,9 +1066,37 @@ impl<'ctx> Backend for LlvmBackend<'ctx> {
         if matches!(decl.kind, ProcKind::Local { entry: true, .. }) {
             self.entry = Some((decl.proc, decl.ret, decl.receives_context));
             if decl.receives_context {
+                self.ensure_default_allocator_helpers()?;
                 let ctx = pool.context_type_id().unwrap_or(PoolId::ERROR);
                 if let Ok(context_layout) = layout_of(pool, layout, ctx) {
-                    self.entry_context = Some(context_layout);
+                    let allocator = Pool::context_field("allocator").ok_or_else(|| {
+                        CodegenError::Internal(
+                            "Context has no canonical allocator field".to_owned(),
+                        )
+                    })?;
+                    let allocator_free =
+                        Pool::context_field("allocator_free").ok_or_else(|| {
+                            CodegenError::Internal(
+                                "Context has no canonical allocator_free field".to_owned(),
+                            )
+                        })?;
+                    let allocator_offset = field_offset(pool, layout, ctx, allocator)
+                        .map_err(|e| {
+                            CodegenError::Internal(format!("cannot lay out context.allocator: {e}"))
+                        })?
+                        .0;
+                    let allocator_free_offset = field_offset(pool, layout, ctx, allocator_free)
+                        .map_err(|e| {
+                            CodegenError::Internal(format!(
+                                "cannot lay out context.allocator_free: {e}"
+                            ))
+                        })?
+                        .0;
+                    self.entry_context = Some(EntryContext {
+                        layout: context_layout,
+                        allocator_offset,
+                        allocator_free_offset,
+                    });
                 }
             }
         }
@@ -1331,6 +1477,85 @@ mod tests {
     use super::*;
     use jr_hir::{ItemId, ProcId};
     use jr_mir::{MirSpan, Operand, Place, Rvalue, Statement, Terminator};
+
+    fn entry_ir(receives_context: bool) -> String {
+        let mut pool = Pool::new();
+        let _ = pool.context_type();
+        let file = jr_base::FileId::from_usize(0);
+        let proc = ProcRef::new(file, ProcId::from_usize(0));
+        let decl = ProcDecl {
+            proc,
+            params: Vec::new(),
+            ret: PoolId::VOID,
+            receives_context,
+            kind: ProcKind::Local {
+                symbol: "jr$0$0".to_owned(),
+                exported: false,
+                entry: true,
+            },
+            name: Some("main".to_owned()),
+            param_names: Vec::new(),
+        };
+        let mut mir = MirBody::new(proc, PoolId::VOID);
+        mir.set_terminator(mir.entry(), Terminator::Return(None));
+
+        let context = Context::create();
+        let mut backend =
+            LlvmBackend::new(&context, &pool, TargetLayout::LP64, "entry_test").unwrap();
+        backend.declare(&decl, &pool, TargetLayout::LP64).unwrap();
+        backend
+            .define(
+                proc,
+                &mir,
+                &pool,
+                TargetLayout::LP64,
+                &jr_codegen::NoLocations,
+            )
+            .unwrap();
+        backend.define_entry_shim().unwrap();
+        backend.module.verify().unwrap();
+        backend.print_ir()
+    }
+
+    #[test]
+    fn a_jairs_entry_installs_compiler_owned_allocator_helpers() {
+        let ir = entry_ir(true);
+        assert!(ir.contains("jr$default$alloc"), "missing allocator:\n{ir}");
+        assert!(
+            ir.contains("jr$default$free"),
+            "missing release helper:\n{ir}"
+        );
+        assert!(
+            ir.contains("call i64 @malloc"),
+            "allocator bypasses libc:\n{ir}"
+        );
+        assert!(
+            ir.contains("call void @free"),
+            "release bypasses libc:\n{ir}"
+        );
+        assert!(
+            ir.contains("ptrtoint (ptr @\"jr$default$alloc\" to i64)")
+                && ir.contains("ptrtoint (ptr @\"jr$default$free\" to i64)"),
+            "entry context does not receive both helper addresses:\n{ir}"
+        );
+    }
+
+    #[test]
+    fn a_c_call_entry_still_has_no_context_or_allocator_helpers() {
+        let ir = entry_ir(false);
+        assert!(
+            !ir.contains("jr$default$alloc"),
+            "unexpected allocator:\n{ir}"
+        );
+        assert!(
+            !ir.contains("jr$default$free"),
+            "unexpected release helper:\n{ir}"
+        );
+        assert!(
+            !ir.contains("%context = alloca"),
+            "unexpected context:\n{ir}"
+        );
+    }
 
     /// A global round-trips: its declared initial value reads back, a write through it is
     /// visible to a later read, and the module the two produce passes LLVM's verifier

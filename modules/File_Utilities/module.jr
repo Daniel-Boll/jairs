@@ -1,8 +1,7 @@
-//! The File_Utilities module: paths as text, and whole-file reads and writes.
+//! The File_Utilities module: paths as text.
 //!
-//! Written in Jairs. PLAN §8.3 item 5's second half, on top of `File`. The split is by *what a routine knows
-//! about*: `File` knows about descriptors and syscalls, this knows about **paths** and about the two
-//! whole-file operations every program wants and nobody should write twice.
+//! Written in Jairs. PLAN §8.3 item 5's second half. The split is by *what a routine knows about*: `File`
+//! knows about descriptors, syscalls and whole-file I/O; this module knows about **path text**.
 //!
 //! # Why paths are strings, not a `Path` type
 //!
@@ -34,7 +33,6 @@
 //! operation from the textual `normalise` below, which is deliberately *pure*. Two operations, one of them
 //! available; the available one says it is textual.
 
-#import "File";
 #import "String";
 
 /// The path separator.
@@ -240,81 +238,6 @@ normalise :: (path: string) -> string {
         return copy_of(".");
     }
     return out;
-}
-
-/// Reads the whole file at `path`.
-///
-/// Returns the contents and whether it worked. `#must`, because a caller who ignores the flag processes an
-/// empty string as though the file were empty — the exact failure `#must` exists for (ADR-0151).
-///
-/// The contents are allocated through `context.allocator`; `String.free_string` releases them.
-///
-/// **The size is read once and the read is looped**, which is the only correct shape: a file can grow between
-/// the size query and the read, and a single `read` of `size` bytes can come up short on any file. A short
-/// result is not an error — the string is exactly what was read.
-read_entire_file :: (path: string) -> (string, bool) #must {
-    f, ok := open_read(path);
-    if !ok {
-        return "", false;
-    }
-    n, n_ok := size(*f);
-    if !n_ok {
-        _ = close(*f);
-        return "", false;
-    }
-    if n == 0 {
-        _ = close(*f);
-        return "", true;
-    }
-    data := context.allocator(n + 1);
-    if data == null {
-        _ = close(*f);
-        return "", false;
-    }
-    got, read_ok := read_all(*f, view(data, n));
-    _ = close(*f);
-    if !read_ok {
-        context.allocator_free(data);
-        return "", false;
-    }
-    // NUL-terminated for the benefit of a caller who passes it to C, even though a Jairs `string` carries its
-    // count. One byte, and it removes a whole class of caller-side copying.
-    bytes := view(data, n + 1);
-    bytes[got] = cast(u8, 0);
-    return adopt(data, got), true;
-}
-
-/// Writes `contents` to `path`, replacing whatever was there.
-///
-/// `#must`: a caller who ignores this has silently not saved the user's work.
-write_entire_file :: (path: string, contents: string) -> bool #must {
-    f, ok := open_write(path);
-    if !ok {
-        return false;
-    }
-    wrote := write_string(*f, contents);
-    status := close(*f);
-    if !wrote {
-        return false;
-    }
-    // The close status *is* checked here, unlike `File.close`'s own contract — because this routine's promise
-    // is "the file now holds these bytes", and a failed close is the one way that promise breaks after a
-    // successful write.
-    return status == 0;
-}
-
-/// Appends `contents` to `path`, creating it if it does not exist.
-append_entire_file :: (path: string, contents: string) -> bool #must {
-    f, ok := open_append(path);
-    if !ok {
-        return false;
-    }
-    wrote := write_string(*f, contents);
-    status := close(*f);
-    if !wrote {
-        return false;
-    }
-    return status == 0;
 }
 
 #scope_module

@@ -1,0 +1,53 @@
+// ADR-0216: every fresh Context carries a default allocator/free pair.
+//
+// This one program reaches three construction paths:
+//
+//   * `FOLDED` runs in the VM's file-scope `#run` thunk;
+//   * `main` runs in the ordinary VM, Cranelift, and LLVM entry context;
+//   * `push_context` proves a copied context inherits the pair.
+//
+// Each allocation is written, read, and freed. A non-null placeholder would therefore not pass.
+
+probe_default :: () -> s64 {
+    p := context.allocator(1);
+    if p == null {
+        return 0;
+    }
+    p.* = 41;
+    answer := cast(s64, p.*);
+    context.allocator_free(p);
+    return answer;
+}
+
+FOLDED :: #run probe_default();
+
+main :: () -> s64 {
+    if FOLDED != 41 {
+        return 1;
+    }
+
+    p := context.allocator(1);
+    if p == null {
+        return 2;
+    }
+    p.* = 42;
+    if p.* != 42 {
+        return 3;
+    }
+    context.allocator_free(p);
+
+    inherited := false;
+    push_context {
+        q := context.allocator(1);
+        if q != null {
+            q.* = 43;
+            inherited = q.* == 43;
+            context.allocator_free(q);
+        }
+    }
+    if !inherited {
+        return 4;
+    }
+
+    return 0;
+}

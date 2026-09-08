@@ -49,6 +49,18 @@ use crate::lower::shape_of;
 use crate::memory::Memory;
 use crate::value::{Address, IntKind, Value};
 
+/// The largest handle a procedure value can encode.
+///
+/// A real handle is `((file << 32) | declaration) + 1`. `FileId` reserves
+/// `u32::MAX` for its non-zero representation, so its largest source index is
+/// `u32::MAX - 1`; `DeclId::index` itself may use all 32 bits. The two values
+/// above this bound are therefore permanently disjoint from every biased real
+/// procedure handle, rather than merely absent from the current program.
+const MAX_REAL_PROC_HANDLE: u64 = ((FileId::MAX as u64) << 32 | u32::MAX as u64) + 1;
+const DEFAULT_ALLOC_HANDLE: u64 = u64::MAX - 1;
+const DEFAULT_FREE_HANDLE: u64 = u64::MAX;
+const _: () = assert!(MAX_REAL_PROC_HANDLE < DEFAULT_ALLOC_HANDLE);
+
 /// How deep Jairs calls may nest before the VM gives up.
 ///
 /// 256 frames. Deliberately far below what the host stack could take, because the
@@ -191,6 +203,13 @@ impl Program {
 struct Frame {
     regs: Vec<Value>,
     slots: Vec<Address>,
+}
+
+/// An indirect-call target after interpreting the VM's scalar handle.
+enum ResolvedCallee {
+    Procedure(ProcRef),
+    DefaultAllocate,
+    DefaultFree,
 }
 
 // ---------------------------------------------------------------------------
@@ -505,22 +524,37 @@ impl<'a> Vm<'a> {
         Ok(self.memory.read(address, count)?.to_vec())
     }
 
-    /// Allocates a zeroed context and returns a pointer to it (ADR-0057 §5).
+    /// Allocates a context with the VM's default allocator and returns a pointer to it.
     ///
-    /// `main` has no Jairs caller, so something must create the first context. **Zeroed rather than
-    /// uninitialised**, so `context.allocator` reads 0 in a program that never sets it — a defined
-    /// value rather than garbage, matching what ADR-0039 §4a decided for a default-initialised
-    /// aggregate.
+    /// `main` has no Jairs caller, so something must create the first context. The allocator
+    /// fields receive VM-owned Jairs-ABI handles; the remaining fields stay zero. A program may
+    /// overwrite either handle exactly as before.
     ///
     /// # Errors
     /// [`VmError`] if the allocation fails.
     pub fn new_context(&mut self, size: u64, align: u32) -> Result<Value, VmError> {
         let address = self.memory.allocate(size.max(1), align)?;
+        self.initialize_context(address, size)?;
+        Ok(Value::Scalar(address))
+    }
+
+    /// Zeroes one context aggregate and installs the VM-owned allocator handles.
+    fn initialize_context(&mut self, address: Address, size: u64) -> Result<(), VmError> {
         let zeros = vec![0u8; usize::try_from(size).unwrap_or(0)];
         if !zeros.is_empty() {
             self.memory.write(address, &zeros)?;
         }
-        Ok(Value::Scalar(address))
+        let context = Pool::find_context(self.pool).ok_or_else(|| {
+            VmError::internal("a context was allocated before its type was interned")
+        })?;
+        for (index, handle) in [(0, DEFAULT_ALLOC_HANDLE), (1, DEFAULT_FREE_HANDLE)] {
+            let (offset, layout) =
+                jr_pool::field_offset(self.pool, self.program.target, context, index)
+                    .map_err(|e| VmError::internal(format!("context field {index}: {e}")))?;
+            self.memory
+                .write_scalar(address + offset, layout.size, handle)?;
+        }
+        Ok(())
     }
 
     /// Calls a procedure with `args` and returns its result.
@@ -582,7 +616,15 @@ impl<'a> Vm<'a> {
         };
         for plan in &code.slots {
             match self.memory.allocate(plan.size, plan.align) {
-                Ok(address) => frame.slots.push(address),
+                Ok(address) => {
+                    if plan.is_context
+                        && let Err(e) = self.initialize_context(address, plan.size)
+                    {
+                        self.memory.release(mark);
+                        return Err(e);
+                    }
+                    frame.slots.push(address);
+                }
                 Err(e) => {
                     self.memory.release(mark);
                     return Err(e);
@@ -649,7 +691,11 @@ impl<'a> Vm<'a> {
                     for arg in args {
                         values.push(self.operand(frame, *arg)?);
                     }
-                    let result = self.call(target, values)?;
+                    let result = match target {
+                        ResolvedCallee::Procedure(target) => self.call(target, values)?,
+                        ResolvedCallee::DefaultAllocate => self.default_allocate(&values)?,
+                        ResolvedCallee::DefaultFree => self.default_free(&values)?,
+                    };
                     if let Some(dest) = dest {
                         frame.regs[dest.index()] = result;
                     }
@@ -1348,9 +1394,13 @@ impl<'a> Vm<'a> {
     // Calls
     // -------------------------------------------------------------------
 
-    fn resolve_callee(&mut self, frame: &Frame, callee: &Callee) -> Result<ProcRef, VmError> {
+    fn resolve_callee(
+        &mut self,
+        frame: &Frame,
+        callee: &Callee,
+    ) -> Result<ResolvedCallee, VmError> {
         match callee {
-            Callee::Direct(target) => Ok(*target),
+            Callee::Direct(target) => Ok(ResolvedCallee::Procedure(*target)),
             // A procedure pointer is a scalar handle encoding its `ProcRef` (ADR-0059 §4):
             // `((file << 32) | proc) + 1`, the exact inverse of `constant`'s biased pack for an
             // `Item::ProcValue`. The two must agree bit-for-bit, so they are written to be read
@@ -1365,15 +1415,50 @@ impl<'a> Vm<'a> {
                 if handle == 0 {
                     return Err(VmError::Trap(crate::error::Trap::NullCall));
                 }
+                if handle == DEFAULT_ALLOC_HANDLE {
+                    return Ok(ResolvedCallee::DefaultAllocate);
+                }
+                if handle == DEFAULT_FREE_HANDLE {
+                    return Ok(ResolvedCallee::DefaultFree);
+                }
                 // The inverse of `constant`'s biased pack: subtract the bias before unpacking. The two must
                 // agree bit-for-bit, so they are written to be read together — a mismatch is a call to the wrong
                 // procedure rather than a diagnosable failure.
                 let handle = handle - 1;
                 let file = FileId::from_usize((handle >> 32) as usize);
                 let proc = ProcId::from_u32((handle & 0xFFFF_FFFF) as u32);
-                Ok(ProcRef::new(file, proc))
+                Ok(ResolvedCallee::Procedure(ProcRef::new(file, proc)))
             }
         }
+    }
+
+    /// Implements the default `(s64) -> *u8` context allocator.
+    fn default_allocate(&mut self, args: &[Value]) -> Result<Value, VmError> {
+        let [context, size] = args else {
+            return Err(VmError::internal(format!(
+                "default allocator takes 2 ABI arguments, got {}",
+                args.len()
+            )));
+        };
+        context.scalar()?;
+        let address = self.memory.allocate_heap(size.scalar()?, 16)?;
+        Ok(Value::Scalar(address))
+    }
+
+    /// Implements the default `(*u8)` context free.
+    ///
+    /// VM heap allocation is a bounded downward bump, so individual frees cannot
+    /// reclaim storage. This deliberately matches the existing VM `free` service.
+    fn default_free(&mut self, args: &[Value]) -> Result<Value, VmError> {
+        let [context, pointer] = args else {
+            return Err(VmError::internal(format!(
+                "default free takes 2 ABI arguments, got {}",
+                args.len()
+            )));
+        };
+        context.scalar()?;
+        pointer.scalar()?;
+        Ok(Value::Void)
     }
 
     fn foreign(&mut self, foreign: &ForeignProc, args: Vec<Value>) -> Result<Value, VmError> {

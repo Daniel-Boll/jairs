@@ -235,10 +235,9 @@ s64) -> bool` shares a name with `Basic`'s public `is_digit :: (c: u8) -> bool`,
 here (public) as well as in `String` (private) — a program importing `JSON`, `Basic` and `String`
 unqualified will meet E0211 on at least one of these before it meets a games-specific collision.
 
-A caller must install `context.allocator` before calling `parse`: parsed strings come from it and are
-released by `String.free_string`, while the node store itself is `malloc`ed to match `List` and `Map`.
-Forgetting the allocator is not silent — a call through a null one traps with a source location — but the
-split between the two allocation routes is a seam this module's own docs name as unresolved rather than
-designed: installing a custom allocator changes the *strings* JSON parses but never its node store.
+Parsed strings come from `context.allocator` and are released by `String.free_string`, while the node
+store itself is `malloc`ed to match `List` and `Map`. A fresh context supplies the string allocator;
+installing a custom one changes the *strings* JSON parses but never its node store. That split between
+the two routes is a seam this module's own docs name as unresolved rather than designed.
 
 See also [Book I — The Jairs Language](/language/introduction/).
