@@ -1,0 +1,34 @@
+// EXPECT: E0259 — enum aliases with the same runtime value are duplicate `case` values
+//
+// `OK` and `ALSO_OK` are distinct names for the same integer. The first procedure proves one alias
+// covers that whole value class for exhaustiveness: it omits `ALSO_OK` and must not also report E0258.
+// The second names both aliases, so its later arm can never run and is E0259.
+Status :: enum {
+    OK :: 200;
+    ALSO_OK :: 200;
+    MISSING :: 404;
+}
+
+exhaustive_by_value :: (status: Status) -> s64 {
+    result := 0;
+    switch status {
+        case .OK;
+            result = 1;
+        case .MISSING;
+            result = 2;
+    }
+    return result;
+}
+
+duplicate_alias :: (status: Status) -> s64 {
+    result := 0;
+    switch status {
+        case .OK;
+            result = 1;
+        case .ALSO_OK;
+            result = 2;
+        case .MISSING;
+            result = 3;
+    }
+    return result;
+}

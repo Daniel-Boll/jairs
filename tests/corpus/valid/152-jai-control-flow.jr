@@ -1,0 +1,36 @@
+// Jai-compatible control-flow spellings:
+//
+//   * `then` is optional before exactly one braceless `if` statement;
+//   * `if #complete value == { ... }` lowers through the existing exhaustive switch;
+//   * enum matching uses unique runtime values, while an integer match exercises the final `else`.
+
+Kind :: enum {
+    FIRST :: 1;
+    SECOND :: 2;
+    THIRD :: 3;
+}
+
+main :: () -> s64 {
+    score := 0;
+    if score == 0 then score = 1;
+
+    kind := Kind.SECOND;
+    if #complete kind == {
+        case .FIRST;
+            score = 100;
+        case .SECOND;
+            score = score + 2;
+        case .THIRD;
+            score = 100;
+    }
+
+    if #complete score + 0 == {
+        case 3;
+            score = score + 4;
+        else;
+            score = 100;
+    }
+
+    if score != 7 return 1;
+    return 0;
+}

@@ -80,6 +80,65 @@ fn a_literal_compared_with_a_typed_value_adopts_its_type() {
     analysis.assert_silent();
 }
 
+#[test]
+fn switch_integer_cases_compare_decoded_values() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "main :: () {\n    n := 1;\n    switch n {\n        case 1;\n        case 0x1;\n        else;\n    }\n}\n",
+    );
+    assert_eq!(analysis.codes(), vec!["E0259"]);
+}
+
+#[test]
+fn one_enum_alias_covers_its_runtime_value_class() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "Status :: enum {\n    OK :: 200;\n    ALSO_OK :: 200;\n    MISSING :: 404;\n}\n\npick :: (s: Status) {\n    switch s {\n        case .OK;\n        case .MISSING;\n    }\n}\n",
+    );
+    analysis.assert_silent();
+}
+
+#[test]
+fn two_enum_alias_cases_are_e0259() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "Status :: enum {\n    OK :: 200;\n    ALSO_OK :: 200;\n}\n\npick :: (s: Status) {\n    switch s {\n        case .OK;\n        case .ALSO_OK;\n    }\n}\n",
+    );
+    assert_eq!(analysis.codes(), vec!["E0259"]);
+}
+
+#[test]
+fn enum_alias_missing_note_names_only_uncovered_value_classes() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "Status :: enum {\n    OK :: 200;\n    ALSO_OK :: 200;\n    MISSING :: 404;\n}\n\npick :: (s: Status) {\n    switch s {\n        case .ALSO_OK;\n    }\n}\n",
+    );
+    assert_eq!(analysis.codes(), vec!["E0258"]);
+    let diagnostic = analysis
+        .sema_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == Some("E0258"))
+        .expect("the missing-value diagnostic");
+    let notes: Vec<&str> = diagnostic
+        .notes
+        .iter()
+        .map(|(_, note)| note.as_str())
+        .collect();
+    assert!(
+        notes.contains(&"missing: `MISSING`"),
+        "expected only the uncovered value class, got {notes:?}"
+    );
+}
+
+#[test]
+fn a_second_switch_else_remains_e0259() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "main :: () {\n    n := 1;\n    switch n {\n        else;\n        else;\n    }\n}\n",
+    );
+    assert_eq!(analysis.codes(), vec!["E0259"]);
+}
+
 // ---------------------------------------------------------------------------
 // ADR-0016 §2 — binding nothing
 // ---------------------------------------------------------------------------

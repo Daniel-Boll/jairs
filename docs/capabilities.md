@@ -9,10 +9,11 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1260** workspace tests (1269 under gate 7), all seven gates green.
-- **285** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
-  (**296** counting those).
-- **214** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **1273** workspace tests (1282 under gate 7), all six required gates green; gate 7 was unchanged
+  by ADR-0215.
+- **289** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
+  (**300** counting those).
+- **215** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **25** standard library modules under `modules/`.
 - Diagnostic codes run **E0001–E0296**; **E0297** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership
@@ -76,8 +77,8 @@ The authoritative version of this list is
 | a procedure as a **value**: `f := add`, a `(s64, s64) -> s64` parameter or **struct field**, `f(...)` calls through it; `(T)` with no arrow for a void return | a cross-file or `#foreign` procedure value; comparing or printing one; a `#c_call` proc-pointer type |
 | named arguments `f(b = 2, a = 1)` and literal defaults `(b: s64 = 10)` | a non-literal default; a named argument on a cross-file call, or in a `#run` |
 | `::` constant, `:=` inferred, `: T = v` typed, `---` uninit | |
-| `if` / `else if` / `else`, `while`, `return` | |
-| `switch e { case v; … else; … }` over an enum or an integer, **exhaustiveness-checked** for an enum, no fallthrough (ADR-0067) | patterns, ranges, guards; a multi-value `case`; `switch` as an expression |
+| `if` / `else if` / `else`, `while`, `return`; a single braceless `if` statement may optionally use Jai's `then` (ADR-0215) | `then` before a block or on `while` |
+| `switch e { case v; … else; … }` or Jai's equivalent `if #complete e == { case v; … }` over an enum or an integer, **exhaustiveness-checked by distinct runtime value** for an enum, no fallthrough, `else` final (ADR-0067, ADR-0215) | patterns, ranges, guards; a multi-value `case`; `switch` as an expression |
 | `for x: buf`, `for x, i: buf`, `for i: 0..n`, `for < x: buf`; over arrays, views, **string bytes**, and ranges. The nameless `for buf` injects `it` and `it_index`; a string element is `u8` and its index is an `s64` byte offset (ADR-0214) | iterate-by-reference `for *x`, Unicode-scalar iteration, a range as a value, `for` over a user type |
 | `break` / `continue`, labelled (`break outer`) or not; `defer` at every scope exit | |
 | `using p: Point` promotes a struct's fields; `using base: Point;` embeds them, transitively | `using` on an enum, a module, or an **imported** struct |
@@ -113,7 +114,7 @@ The authoritative version of this list is
 | **`$N` comptime-value parameter and instantiation** (ADR-0087, ADR-0088) | `[N]T` where `N` is a `$N` parameter; a non-constant argument (E0271); a mixed `$T`+`$N` template |
 | a **type as a compile-time value**: `T :: Point;` (ADR-0071) | a chain (`B :: A`); a `Type` parameter; `Type` as an annotation |
 | using a type where a **runtime** value is expected is refused (E0261) | — |
-| `#import`, `#foreign`, `#system_library`; `#expand` macros; `#modify` predicates; `#bake_arguments` specialisations | — |
+| `#import`, `#foreign`, `#system_library`; `#complete` switch spelling; `#expand` macros; `#modify` predicates; `#bake_arguments` specialisations | — |
 | `@note` metadata on a declaration, read by `has_note` / `note_value`, queried by `noted_count` / `noted_name`, and used to generate code by `noted_insert` (ADR-0098–0101) | run-time **inspection** — a loop reading declarations as values |
 | overflow traps with a source location, and a **call chain** of the frames that were live (ADR-0002, ADR-0020, ADR-0066) | a per-frame line number; inlined frames, which have no runtime existence |
 | `context` — a hidden parameter passed by pointer; `#c_call` opts out and gets none | — |

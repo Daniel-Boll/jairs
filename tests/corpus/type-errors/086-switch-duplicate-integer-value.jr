@@ -1,0 +1,17 @@
+// EXPECT: E0259 — integer `case` values that evaluate to the same runtime value are duplicates
+//
+// The spellings differ deliberately. Comparing expression identity would treat `1` and `0x1` as
+// separate cases, but lowering has already decoded both literals to the integer value one and the
+// second branch can never run.
+classify :: (n: s64) -> s64 {
+    result := 0;
+    switch n {
+        case 1;
+            result = 1;
+        case 0x1;
+            result = 2;
+        else;
+            result = 3;
+    }
+    return result;
+}

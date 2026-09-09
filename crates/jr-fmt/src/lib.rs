@@ -1463,13 +1463,25 @@ impl Formatter {
             }
             SWITCH_STMT => {
                 self.emit_indent();
-                self.emit("switch ");
+                let is_complete_if = node
+                    .children_with_tokens()
+                    .filter_map(|element| element.into_token())
+                    .any(|token| token.kind() == DIRECTIVE && token.text() == "#complete");
+                if is_complete_if {
+                    self.emit("if #complete ");
+                } else {
+                    self.emit("switch ");
+                }
                 // The scrutinee is the switch's *own* expression child; an arm's case value lives under
                 // a `SWITCH_ARM`, so `children()` here sees only this one (ADR-0067 §1).
                 if let Some(value) = node.children().find(|n| is_expr_kind(n.kind())) {
                     self.format_expr(&value);
                 }
-                self.emit(" {");
+                if is_complete_if {
+                    self.emit(" == {");
+                } else {
+                    self.emit(" {");
+                }
                 self.newline();
                 self.indent += 1;
                 for arm in node.children().filter(|n| n.kind() == SWITCH_ARM) {
@@ -1622,15 +1634,29 @@ impl Formatter {
         if let Some(cond) = node.children().find(|n| is_expr_kind(n.kind())) {
             self.format_expr(&cond);
         }
+        let has_then = node
+            .children_with_tokens()
+            .filter_map(|element| element.into_token())
+            .any(|token| token.kind() == THEN_KW);
         if let Some(body) = node.children().find(|n| n.kind() == BLOCK) {
-            self.emit(" ");
+            if has_then {
+                // Preserve the marker even on an invalid braced form. The parser reports the error;
+                // the formatter must not "repair" source by silently deleting a keyword.
+                self.emit(" then ");
+            } else {
+                self.emit(" ");
+            }
             self.format_block(&body);
         } else {
             // Single statement without braces.
             let stmts: Vec<SyntaxNode> =
                 node.children().filter(|n| is_stmt_kind(n.kind())).collect();
             if let Some(stmt) = stmts.first() {
-                self.emit(" ");
+                if has_then {
+                    self.emit(" then ");
+                } else {
+                    self.emit(" ");
+                }
                 self.format_single_stmt_inline(stmt);
             }
         }
@@ -2663,6 +2689,27 @@ mod tests {
         let src = "f :: () {\n    if a {\n        return 1;\n    } else if b {\n        return 2;\n    } else {\n        return 3;\n    }\n}\n";
         let out = fmt(src);
         assert!(out.contains("} else if b {"), "got: {out}");
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn then_is_preserved_and_canonicalised() {
+        let src = "f :: (ok: bool) {\nif ok   then   return;\n}\n";
+        let out = fmt(src);
+        assert!(out.contains("if ok then return;"), "got: {out}");
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn complete_if_is_preserved_and_canonicalised() {
+        let src = "f :: (n:s64) {\nif   #complete n=={\ncase 0;return;\nelse;return;\n}\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("if #complete n == {\n        case 0;\n            return;\n        else;\n            return;\n    }"),
+            "got: {out}"
+        );
         assert_idempotent(src);
         assert_parses(&out);
     }

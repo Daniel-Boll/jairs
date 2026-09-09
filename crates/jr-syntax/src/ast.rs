@@ -1130,6 +1130,15 @@ impl CodeStmt {
     }
 }
 impl SwitchStmt {
+    /// Whether this switch was written with Jai's `if #complete value == { … }` spelling.
+    ///
+    /// Both spellings share this AST wrapper and lower to the same HIR statement. Reading the
+    /// directive token keeps the source spelling available to formatters and editor tooling without
+    /// giving semantics a second representation.
+    pub fn is_complete_if(&self) -> bool {
+        child_token(&self.0, DIRECTIVE).is_some_and(|directive| directive.text() == "#complete")
+    }
+
     /// The value being matched (ADR-0067 §1).
     ///
     /// The *first* expression child, because an arm's `case` value is also an expression child of the
@@ -1442,6 +1451,11 @@ impl IfStmt {
     /// The condition expression.
     pub fn condition(&self) -> Option<Expr> {
         child_node(&self.0)
+    }
+
+    /// Whether the optional `then` marker was written before the braceless body.
+    pub fn has_then(&self) -> bool {
+        child_token(&self.0, THEN_KW).is_some()
     }
 
     /// The then-body: a braced block, or a single unbraced statement.
@@ -1772,6 +1786,47 @@ mod tests {
         };
         let tok = id.path().expect("path token");
         assert_eq!(tok.text(), r#""Basic""#);
+    }
+
+    #[test]
+    fn then_marker_is_visible_on_an_if() {
+        let p = parse("f :: (ok: bool) { if ok then return; }", file());
+        let sf = SourceFile::cast(p.syntax()).unwrap();
+        let Item::Const(decl) = sf.items().next().unwrap() else {
+            panic!("expected procedure declaration")
+        };
+        let stmt = decl
+            .proc()
+            .and_then(|proc| proc.body())
+            .and_then(|body| body.stmts().next())
+            .expect("if statement");
+        let Stmt::If(if_stmt) = stmt else {
+            panic!("expected if statement")
+        };
+        assert!(if_stmt.has_then());
+        assert!(matches!(if_stmt.then_body(), Some(ControlBody::Stmt(_))));
+    }
+
+    #[test]
+    fn complete_if_is_exposed_as_a_switch() {
+        let p = parse(
+            "f :: (n: s64) { if #complete n == { case 0; return; else; return; } }",
+            file(),
+        );
+        let sf = SourceFile::cast(p.syntax()).unwrap();
+        let Item::Const(decl) = sf.items().next().unwrap() else {
+            panic!("expected procedure declaration")
+        };
+        let stmt = decl
+            .proc()
+            .and_then(|proc| proc.body())
+            .and_then(|body| body.stmts().next())
+            .expect("complete-if statement");
+        let Stmt::Switch(switch) = stmt else {
+            panic!("complete-if must reuse the switch AST")
+        };
+        assert!(switch.is_complete_if());
+        assert_eq!(switch.arms().count(), 2);
     }
 
     #[test]

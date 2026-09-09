@@ -665,6 +665,7 @@ mod tests {
             ("union", UNION_KW),
             ("cast", CAST_KW),
             ("xx", XX_KW),
+            ("then", THEN_KW),
             ("null", NULL_KW),
         ] {
             assert_eq!(kinds(text), [kind], "{text}");

@@ -29,7 +29,7 @@ use rowan::{Checkpoint, GreenNode, GreenNodeBuilder};
 use crate::code::{
     E0100, E0101, E0102, E0103, E0104, E0105, E0106, E0107, E0108, E0109, E0110, E0111, E0112,
     E0113, E0114, E0115, E0116, E0117, E0118, E0119, E0121, E0123, E0124, E0125, E0126, E0127,
-    E0128, E0129, E0130, E0131, E0132, E0133, E0199,
+    E0128, E0129, E0130, E0131, E0132, E0133, E0134, E0199,
 };
 use crate::kind::{SyntaxKind, SyntaxKind::*, SyntaxNode};
 use crate::lexer::{Token, lex};
@@ -347,6 +347,9 @@ impl ProcAttr {
 const SOA_DIRECTIVE: &str = "#soa";
 /// The directive token that makes an array type a vector (ADR-0148 §1).
 const SIMD_DIRECTIVE: &str = "#simd";
+
+/// The exact Jai spelling that selects exhaustive value matching in statement position.
+const COMPLETE_DIRECTIVE: &str = "#complete";
 
 /// A layout attribute on a struct field (ADR-0144 §1).
 ///
@@ -2108,10 +2111,34 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_if_stmt(&mut self) {
-        self.start_node(IF_STMT);
+        // The complete-if spelling starts with the same token as an ordinary if, but it lowers through
+        // the existing switch path. Emit `if` first, then wrap from this checkpoint once the following
+        // directive tells us which CST node this is.
+        let cp = self.checkpoint();
         self.bump(); // `if`
+        if self.at(DIRECTIVE) && self.current_directive_text() == COMPLETE_DIRECTIVE {
+            self.start_node_at(cp, SWITCH_STMT);
+            self.parse_complete_if_after_if();
+            self.finish_node();
+            return;
+        }
+
+        self.start_node_at(cp, IF_STMT);
         self.parse_expr();
-        self.parse_body();
+        let has_then = self.eat(THEN_KW);
+        if has_then && self.at(L_BRACE) {
+            let span = self.current_span();
+            self.error(
+                span,
+                "`then` must be followed by one statement without braces",
+                E0116,
+            );
+            // Consume the block anyway so one local mistake does not strand its contents as
+            // unrelated statements in the enclosing scope.
+            self.parse_block();
+        } else {
+            self.parse_body();
+        }
         // Optional else
         if self.at(ELSE_KW) {
             self.start_node(ELSE_BRANCH);
@@ -2124,6 +2151,25 @@ impl<'src> Parser<'src> {
             self.finish_node();
         }
         self.finish_node();
+    }
+
+    /// Parses the remainder of `if #complete value == { case … }` after the opening `if`.
+    ///
+    /// The enclosing node is deliberately [`SWITCH_STMT`]: the spelling is syntax sugar, so the AST
+    /// and HIR continue through the one switch representation and no second exhaustiveness engine can
+    /// emerge downstream.
+    fn parse_complete_if_after_if(&mut self) {
+        debug_assert_eq!(self.current_directive_text(), COMPLETE_DIRECTIVE);
+        self.bump(); // `#complete`
+
+        if self.at_set(EXPR_START) {
+            self.parse_expr_above_comparison();
+        } else {
+            let span = self.current_span();
+            self.error(span, "expected a value after `if #complete`", E0118);
+        }
+        self.expect(EQ_EQ);
+        self.parse_switch_arms_block("an `if #complete` value");
     }
 
     /// Parses `label: for …` or `label: while …` (ADR-0049 §2).
@@ -2250,13 +2296,26 @@ impl<'src> Parser<'src> {
         self.start_node(SWITCH_STMT);
         self.bump(); // `switch`
         self.parse_expr();
+        self.parse_switch_arms_block("a `switch` value");
+        self.finish_node();
+    }
+
+    /// Parses the shared `{ case … else … }` body of `switch` and `if #complete`.
+    fn parse_switch_arms_block(&mut self, after: &str) {
         if self.at(L_BRACE) {
             self.bump(); // `{`
             // Arms until the closing brace. A token that begins neither an arm nor `}` is reported
             // once and skipped, so one stray token does not turn the rest of the switch into garbage.
+            let mut saw_else = false;
             while !self.at(R_BRACE) && !self.at(EOF) {
                 if self.at(CASE_KW) || self.at(ELSE_KW) {
+                    let is_else = self.at(ELSE_KW);
+                    if saw_else {
+                        let span = self.current_span();
+                        self.error(span, "`else` must be the final arm", E0134);
+                    }
                     self.parse_switch_arm();
+                    saw_else |= is_else;
                 } else {
                     let span = self.current_span();
                     self.error(span, "expected `case`, `else` or `}` in a `switch`", E0116);
@@ -2266,9 +2325,8 @@ impl<'src> Parser<'src> {
             self.expect(R_BRACE);
         } else {
             let span = self.current_span();
-            self.error(span, "expected `{` after a `switch`'s value", E0116);
+            self.error(span, format!("expected `{{` after {after}"), E0116);
         }
-        self.finish_node();
     }
 
     /// Parses one `switch` arm: `case v;` or `else;`, then its statements (ADR-0067 §1).
@@ -2395,6 +2453,20 @@ impl<'src> Parser<'src> {
             return;
         }
         self.parse_expr_bp(0);
+        self.leave();
+    }
+
+    /// Parses the complete-if scrutinee, stopping before its delimiter `==`.
+    ///
+    /// Equality/comparison operators have left binding power 5, so a minimum of 6 admits every
+    /// tighter operator while leaving the first unparenthesised `==` for
+    /// `if #complete <value> == { … }`. A comparison can still be the scrutinee when parenthesised,
+    /// because the parenthesised expression starts its own ordinary precedence parse.
+    fn parse_expr_above_comparison(&mut self) {
+        if !self.enter() {
+            return;
+        }
+        self.parse_expr_bp(6);
         self.leave();
     }
 
@@ -3210,6 +3282,73 @@ mod tests {
         check_no_errors(
             "f :: () { if a { return 1; } else if b { return 2; } else { return 3; } }",
         );
+    }
+
+    #[test]
+    fn then_marks_only_a_braceless_if_body() {
+        let source = "f :: (ok: bool) { if ok then return; }";
+        check_no_errors(source);
+        check_round_trip(source);
+
+        let braced = parse("f :: (ok: bool) { if ok then { return; } }", file());
+        assert!(
+            braced.has_errors(),
+            "`then` before a braced body must be rejected"
+        );
+        assert!(
+            braced
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == Some("E0116")),
+            "expected the focused braceless-body diagnostic, got {:?}",
+            braced
+                .diagnostics()
+                .iter()
+                .map(|diagnostic| diagnostic.code)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn complete_if_reuses_the_switch_cst() {
+        let source = "f :: (n: s64) { if #complete n == { case 0; return; else; return; } }";
+        let parsed = parse(source, file());
+        assert!(
+            !parsed.has_errors(),
+            "complete-if should parse: {:?}",
+            parsed.diagnostics()
+        );
+        let tree = dump_tree(&parsed.syntax());
+        assert!(tree.contains("SWITCH_STMT"), "tree was:\n{tree}");
+        assert!(!tree.contains("IF_STMT"), "tree was:\n{tree}");
+        check_round_trip(source);
+    }
+
+    #[test]
+    fn else_must_be_the_final_value_match_arm() {
+        for source in [
+            "f :: (n: s64) { switch n { else; return; case 0; return; } }",
+            "f :: (n: s64) { if #complete n == { else; return; case 0; return; } }",
+        ] {
+            let parsed = parse(source, file());
+            assert!(
+                parsed
+                    .diagnostics()
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == Some("E0134")),
+                "expected E0134 for {source:?}, got {:?}",
+                parsed
+                    .diagnostics()
+                    .iter()
+                    .map(|diagnostic| diagnostic.code)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                parsed.syntax().text().to_string(),
+                source,
+                "recovery must preserve arm order"
+            );
+        }
     }
 
     #[test]
