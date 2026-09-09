@@ -1398,7 +1398,7 @@ impl<'src> Parser<'src> {
         self.tokens.get(i).is_some_and(|t| t.kind == ARROW)
     }
 
-    /// Parses `(T, U, …)` after `->` (ADR-0052 §1).
+    /// Parses `(T, name: U, …)` after `->` (ADR-0052 §1, ADR-0227).
     ///
     /// A one-element list parses fine and *interns* to the element itself, so `-> (T)` and `-> T`
     /// are the same type — normalised in `jr-pool` rather than refused here, because the tree stays
@@ -1407,13 +1407,22 @@ impl<'src> Parser<'src> {
         self.start_node(RESULT_LIST);
         self.bump(); // `(`
         while !self.at(R_PAREN) && !self.at(EOF) {
+            self.start_node(RESULT_PARAM);
+            // A label is declaration metadata, not a type name. The following `:` is the complete
+            // disambiguation: without one an identifier begins an ordinary named type.
+            if self.at(IDENT) && self.nth(1) == COLON {
+                self.bump();
+                self.bump(); // `:`
+            }
             if self.at_set(TYPE_START) {
                 self.parse_type();
             } else {
                 let span = self.current_span();
                 self.error(span, "expected a result type", E0129);
+                self.finish_node();
                 break;
             }
+            self.finish_node();
             if !self.eat(COMMA) {
                 break;
             }

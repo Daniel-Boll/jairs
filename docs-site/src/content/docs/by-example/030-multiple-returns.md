@@ -36,6 +36,22 @@ The return type is a parenthesised list, `-> (s64, bool)`. Internally this inter
 *structural results aggregate* whose memory layout is exactly a struct's, so the same
 caller-allocated calling convention that carries a returned struct carries a multi-value return.
 
+Result positions may also carry documentation labels:
+
+```jr
+divide :: (a: s64, b: s64) -> (quotient: s64, ok: bool) {
+    if b == 0 {
+        return 0, false;
+    }
+    return a / b, true;
+}
+```
+
+These labels are metadata, not hidden locals. They appear in formatter and editor signatures, but
+the body still returns values explicitly and callers still destructure by position. Renaming a
+label does not change the procedure type, and a local may reuse the same spelling. Duplicate labels
+in one declaration are E0298 (ADR-0227).
+
 ## Destructuring at the call site
 
 A call is destructured into a list of targets:

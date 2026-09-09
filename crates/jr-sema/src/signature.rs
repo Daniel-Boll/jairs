@@ -8,7 +8,7 @@ use jr_hir::{
 use jr_pool::{ContextKind, Item, Pool, PoolId};
 
 use crate::check::bin_op_text;
-use crate::code::{E0204, E0214, E0226, E0246, E0252, E0255};
+use crate::code::{E0204, E0214, E0226, E0246, E0252, E0255, E0298};
 use crate::ctx::{Ctx, Mode};
 use crate::map::TypeMap;
 use crate::sigs::{FileSignatures, ProcSig, SigEntry, SigKind};
@@ -823,6 +823,29 @@ impl Ctx<'_> {
             // so that a procedure type's return field is total.
             None => PoolId::VOID,
         };
+        let mut seen_result_names = Vec::new();
+        let result_names: Vec<Option<jr_base::Symbol>> = declaration
+            .result_labels
+            .iter()
+            .map(|label| {
+                let Some(label) = label else { return None };
+                if seen_result_names.contains(&label.name) {
+                    let text = self.interner.resolve(label.name);
+                    self.diags.push(
+                        Diagnostic::error(
+                            label.span,
+                            format!("result label `{text}` is used more than once"),
+                        )
+                        .with_code(E0298)
+                        .with_note("result labels describe distinct positional results")
+                        .with_help("give each labelled result a distinct name"),
+                    );
+                } else {
+                    seen_result_names.push(label.name);
+                }
+                Some(label.name)
+            })
+            .collect();
 
         // Every `#foreign` procedure is implicitly `#c_call` (ADR-0001), and the context kind is
         // part of the type's identity — a function pointer of one kind must never satisfy the other.
@@ -887,6 +910,7 @@ impl Ctx<'_> {
             names,
             defaults,
             ret,
+            result_names,
             poly_vars,
             comptime_params,
             variadic_params,

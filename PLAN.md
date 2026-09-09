@@ -325,13 +325,20 @@ Status of each slice component, so this is answerable without reading the tree.
 > arms, preserves project indentation and line endings, and verifies the client diagnostic against
 > the current compiler result before editing. It deliberately offers no `else` shortcut.
 >
-> **Current executable compatibility baseline (ADR-0219).** One strict manifest covers all 35
-> example-bearing top-level groups in the pinned `The_Way_to_Jai` guide. `jr-cli` turns each row
+> **Current executable compatibility baseline (ADR-0219, ADR-0227).** One strict manifest covers all 35
+> example-bearing top-level groups in the pinned `The_Way_to_Jai` guide with 36 owned probes.
+> `jr-cli` turns each row
 > into a named test, copies the repository-owned probe and fixtures into an isolated directory, and
 > exercises the real check/run/build boundary. Six representatives are source-compatible at the
 > pinned revision; every other row is a runnable port, an exact blocker, or an intentional
 > divergence. Ordinary tests never read the submodule, and the representative baseline makes no
 > percentage claim.
+
+> **Current named-result-label surface (ADR-0227).** `-> (exists: bool)` and mixed lists such as
+> `-> (value: s64, bool)` parse as explicit result-position nodes. HIR and signatures carry the
+> optional names beside, never inside, the interned return type; E0298 rejects duplicates. The
+> formatter, Tree-sitter and LSP preserve the labels, while body scope, call ABI, destructuring and
+> return checking remain positional and unchanged.
 
 > **Current correction to the cumulative component notes.** ADR-0117 superseded the older
 > `jr-sema` sentence that associated E0269 with cross-file parameterised structs. Generic struct
@@ -672,74 +679,59 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0226 completes static descriptions for unfinished paths.** Existing `todo;` stays valid,
-> while `todo()` is its call-shaped no-message twin and `todo("Not implemented")` carries one
-> escape-decoded literal through HIR and MIR. The grammar deliberately refuses computed values,
-> several arguments and non-string literals rather than admitting a dynamic trap ABI.
->
-> `Unreachable::Todo(Option<String>)` forced every MIR, VM and native-backend consumer to preserve
-> or inspect the payload. One `jr_base::todo_reason` owns the punctuation, so the VM, Cranelift and
-> LLVM report byte-identical reasons and E0230 preserves the same description at compile time.
-> The formatter's block and braceless paths share one emitter; Tree-sitter's generated parser is
-> committed; and LSP semantic tokens classify both the keyword and optional string.
+> **ADR-0227 adds declaration-only result labels without a second return model.**
+> `-> (exists: bool)` and mixed named/unnamed lists preserve their labels in source tooling, while
+> procedure type identity, calls, destructuring, body scope and MIR remain exactly positional.
+> A one-result list keeps its label even though its type normalises to the scalar; E0298 rejects
+> duplicate labels. The executable Way-to-Jai baseline now has 36 probes across 35 groups and names
+> the remaining unparenthesized/defaulted/implicit-return gap.
 
-**1362 workspace tests (1375 under gate 7), 294 corpus files, 226 ADRs and 25 modules.** ADR-0226
-adds three tests and changes no corpus-file count: the existing todo corpus program now exercises
-all three spellings. All six ordinary gates and gate 7 are green. **E0298** is the first free
-global diagnostic code; **E0135** is the first free parser code.
+**1369 workspace tests (1382 under gate 7), 296 corpus files, 227 ADRs and 25 modules.** ADR-0227
+adds six direct Rust tests plus one generated compatibility case, one valid program, one type-error
+fixture and one compatibility probe. All six
+ordinary gates are green; gate 7 is unchanged and green because this wave does not touch MIR,
+layout or a back end. **E0299** is the first free global diagnostic code; **E0135** is the first
+free parser code.
 
-### Next wave: close the compatibility audit's executable blind spots
+### Next wave: representation-safe recursive nominal structs
 
-Keep this bounded to evidence and contracts; do not smuggle feature implementation into the audit wave:
+This is the substrate for the requested `Node`:
 
-1. Chapter 02: CLI/project tests for discovery, help, command contracts and deliberate flag differences.
-2. Chapter 32: process tests for arguments, environment, working directory, capture, stdin,
-   timeout/termination and the VM-versus-native boundary.
-3. Chapters 36/37: pin plugins as an explicit divergence and pin the exact current testing blockers
-   (`#assert`, test declarations/discovery, runner and source-located failures).
-4. Split the broadest one-probe chapters — 8, 12, 17, 18, 22, 23, 26, 30 and 31 — into family probes.
+```text
+Node :: struct {
+  name: string;
+  children: [..]*Node;
+  properties: Table(string, string);
+}
+```
 
-The exit criterion is stronger evidence, not a higher compatibility score. Update the matrix and manifest
-from the same owned probes and keep the submodule out of CI.
+The decider accepted the recommended boundary:
 
-### Queued implementation wave: general procedure overloading (roadmap P1)
+1. Predeclare nominal struct identities before resolving their fields, so a field may name its own
+   struct or a mutually recursive peer.
+2. Permit cycles only when a representation-indirect constructor breaks layout recursion: pointers,
+   views and dynamic arrays. `next: *Node` and `children: [..]*Node` are legal; `next: Node` and
+   `[1]Node` remain finite-layout errors.
+3. Diagnose the shortest known inline cycle at the field that closes it. Do not turn an unresolved
+   layout into zero size or an internal error.
+4. Cover direct self-reference, mutual pointer recursion, dynamic arrays of pointers and illegal
+   direct/fixed-array cycles. Run gate 7 because `jr-pool` layout is in scope.
 
-ADR-0219's chapter 17 probe now pins E0200 on two same-name procedures. General procedure
-overloading is the highest-leverage P1 item: it restores guide-shaped `append`, constructor, string,
-math and container call sites across several chapters. Put these forks to the decider before
-writing the ADR or code:
+### Following waves required by the requested container surface
 
-1. **Set formation — aggregate visible procedures, recommended.** A same-name procedure joins the
-   visible overload set; a nearer non-procedure declaration keeps today's ordinary shadowing rule.
-   The alternative is nearest-scope-only procedure lookup, which is simpler but makes adding one
-   local overload hide every imported sibling.
-2. **Overload identity — declared parameter types plus calling convention, recommended.** Parameter
-   names, defaults and result types do not distinguish declarations. Including results makes a
-   call's meaning depend on its destination; including names/defaults admits pairs that an
-   ordinary positional call cannot distinguish.
-3. **Ranking — exact concrete match, then contextual untyped-literal fit, then one viable
-   polymorphic instantiation, recommended.** Do not add general numeric widening in this wave.
-   First-declaration-wins is cheaper but silently changes meaning when declarations are reordered;
-   broad conversion ranking creates a language-wide coercion policy inside an overload feature.
-4. **Procedure values — expected type selects, otherwise ambiguity, recommended.** `f: (s64) -> s64
-   = convert` may choose one member; `f := convert` must refuse an unresolved set. A first-class
-   overload-set value would require a new type and reaches MIR and three engines without helping
-   the common call syntax.
-5. **Special declarations — ordinary body-bearing procedures first, recommended.** Decide whether
-   `#foreign`, `#c_call`, `#expand`, `#modify` and `#program_export` may participate before admitting
-   them. Exported and foreign names have symbol/ABI collision rules, and macros are expanded before
-   the ordinary call path; silently treating them as routine overload members would make a partial
-   implementation look complete.
-6. **Concrete versus polymorphic candidates — concrete wins only when viable, recommended.** A
-   template remains a fallback rather than making every concrete/template pair ambiguous. Two
-   successful templates with no stricter relation remain ambiguous; declaration order is not a
-   specificity rule.
+1. **`New(T)`.** A compiler-recognised type argument allocates one zero-initialised `T` through the
+   active context allocator, returns `*T`, returns `null` on failure, and leaves cleanup explicit.
+   It must accept `New(Node)` and `New(Table(string, string))`; gate 7 is mandatory.
+2. **Generic procedure substrate.** Close cross-file polymorphic instantiation and infer `$K/$V`
+   through parameterised nominal types so imported container operations can be genuinely generic.
+3. **Dynamic-array operations.** Generalise `modules/List` to `$T`, including `[..]*Node`, so a
+   caller can maintain a stack of node pointers without a concrete per-type module.
+4. **`Hash_Table`.** Ship `Table(K, V)` with add/update, find, remove, contains, reserve, clear,
+   pointer lookup/mutation, explicit iteration and cleanup; string and integer hash/equality helpers;
+   captured allocator ownership; unspecified iteration order. Keep `Map` compatible. Exact
+   `for table` expansion remains a separate metaprogramming feature rather than a fake special case.
 
-The exit probe should promote chapter 17 from `blocked` to at least `ported`, add overloaded
-`Basic.String_Builder` byte/string append spellings without deleting the explicit APIs, and cover
-same-file, imported, procedure-value, literal-ranking, ambiguity and concrete-versus-template cases.
-Inferred aggregate literals remain the next smaller P1 alternative if the decider rejects this
-scope.
+Commit each substrate wave before starting the next; merge remains a separate decider action.
 
 ### Optimisation queue after diagnostic freshness
 
@@ -838,7 +830,7 @@ The accepted sequence is one ADR and branch per slice:
   pointer iteration (`for *item`).
 - **P1:** `ifx`, inferred `.{…}` / `.[…]` literals, general procedure overloading, item/block `#if`
   and `#load`.
-- **P2/P3:** `#module_parameters`, `Code` values with for-expansion, named returns, inline procedures,
+- **P2/P3:** `#module_parameters`, `Code` values with for-expansion, defaulted/implicit named-result semantics, inline procedures,
   `#add_context`, and richer compiler workspace/import remapping.
 - **Library:** held input queries, text/fonts, PNG/JPEG, audio, float/2D math, `mat4_inverse`,
   primitive/sprite helpers, resource ownership and shader/program diagnostics.

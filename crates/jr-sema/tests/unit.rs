@@ -22,6 +22,32 @@ fn todo_requires_no_expression_type_even_in_a_valued_procedure() {
 }
 
 #[test]
+fn named_result_labels_do_not_change_type_identity_or_create_bindings() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "labeled :: (n: s64) -> (value: s64) {\n\
+             value := n + 1;\n\
+             return value;\n\
+         }\n\
+         apply :: (f: (s64) -> s64, n: s64) -> s64 {\n\
+             return f(n);\n\
+         }\n\
+         main :: () -> s64 {\n\
+             return apply(labeled, 41);\n\
+         }\n",
+    );
+    analysis.assert_silent();
+}
+
+#[test]
+fn duplicate_named_result_labels_are_e0298() {
+    let mut program = Program::new();
+    let analysis =
+        program.analyse("duplicate :: () -> (value: s64, value: bool) {\n    todo;\n}\n");
+    assert_eq!(analysis.codes(), vec!["E0298"]);
+}
+
+#[test]
 fn an_integer_literal_takes_its_type_from_its_context() {
     // The rule that makes `valid/005-decl-typed.jr` legal in a subset with no
     // `cast`. If this regresses, that corpus file stops checking.

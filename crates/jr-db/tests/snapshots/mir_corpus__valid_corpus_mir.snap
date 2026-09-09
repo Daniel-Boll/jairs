@@ -19627,3 +19627,93 @@ proc main -> void {
     discard call extern proc1(157_s64)
     return
 }
+
+========================================
+158-named-results.jr
+========================================
+proc expect_char -> bool {
+  params: v0: *Context, v1: *string, v2: u8
+  bb0(v0: *Context, v1: *string, v2: u8):
+    v3: s64 = load (v1).*.count
+    v4: bool = v3 == 0_s64
+    branch v4 ? bb1() : bb2()
+  bb1():
+    return false
+  bb2():
+    goto bb3()
+  bb3():
+    v5: *u8 = load (v1).*.data
+    v6: u8 = load (v5).*
+    v7: bool = v6 == v2
+    return v7
+}
+proc increment -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: s64 = v1 + 1_s64
+    return v2
+}
+proc classify -> (s64, bool) {
+  params: v0: *Context, v1: s64
+  slots:
+    s0: (s64, bool)  // temporary
+  bb0(v0: *Context, v1: s64):
+    store s0.0 <- v1
+    v2: bool = v1 >= 0_s64
+    store s0.1 <- v2
+    v3: (s64, bool) = load s0
+    return v3
+}
+proc apply -> s64 {
+  params: v0: *Context, v1: (s64) -> s64, v2: s64
+  slots:
+    s0: (s64) -> s64  // temporary
+  bb0(v0: *Context, v1: (s64) -> s64, v2: s64):
+    store s0 <- v1
+    v3: s64 = call (v1)(v0, v2)
+    return v3
+}
+proc main -> s64 {
+  params: v0: *Context
+  slots:
+    s0: string  // local 0
+    s1: (s64, bool)  // temporary
+  bb0(v0: *Context):
+    store s0 <- "Jairs"
+    v1: *string = addr s0
+    v2: bool = call proc0(v0, v1, 74_u8)
+    v3: bool = !v2
+    branch v3 ? bb1() : bb2()
+  bb1():
+    return 1_s64
+  bb2():
+    goto bb3()
+  bb3():
+    v4: s64 = call proc3(v0, proc1, 41_s64)
+    v5: bool = v4 != 42_s64
+    branch v5 ? bb4() : bb5()
+  bb4():
+    return 2_s64
+  bb5():
+    goto bb6()
+  bb6():
+    v6: (s64, bool) = call proc2(v0, 7_s64)
+    store s1 <- v6
+    v7: s64 = load s1.0
+    v8: bool = load s1.1
+    v9: bool = v7 != 7_s64
+    branch v9 ? bb8() : bb7()
+  bb8():
+    goto bb9(true)
+  bb7():
+    v11: bool = !v8
+    goto bb9(v11)
+  bb9(v10: bool):
+    branch v10 ? bb10() : bb11()
+  bb10():
+    return 3_s64
+  bb11():
+    goto bb12()
+  bb12():
+    return 0_s64
+}

@@ -20,6 +20,46 @@ fn lower(source: &str) -> (jr_hir::FileHir, jr_diag::Diagnostics, Interner) {
 }
 
 #[test]
+fn named_result_labels_reach_hir_without_becoming_types() {
+    let source = concat!(
+        "expect_char :: (s: *string, c: u8) -> (exists: bool) {\n",
+        "  todo;\n",
+        "}\n",
+        "mixed :: () -> (value: s64, bool) {\n",
+        "  todo;\n",
+        "}\n",
+        "plain :: () -> bool {\n",
+        "  return true;\n",
+        "}\n",
+    );
+    let (hir, diags, interner) = lower(source);
+    assert!(diags.is_empty(), "{diags:?}");
+    assert_eq!(hir.procs.len(), 3);
+
+    let expect_labels = &hir.procs[0].result_labels;
+    assert_eq!(expect_labels.len(), 1);
+    let exists = expect_labels[0].expect("the single result is labelled");
+    assert_eq!(interner.resolve(exists.name), "exists");
+    let expected_start = source.find("exists: bool").expect("label is present");
+    assert_eq!(u32::from(exists.span.start()) as usize, expected_start);
+    assert_eq!(
+        u32::from(exists.span.end()) as usize,
+        expected_start + "exists".len()
+    );
+
+    let mixed: Vec<_> = hir.procs[1]
+        .result_labels
+        .iter()
+        .map(|label| label.map(|label| interner.resolve(label.name).to_owned()))
+        .collect();
+    assert_eq!(mixed, [Some("value".to_owned()), None]);
+    assert!(
+        hir.procs[2].result_labels.is_empty(),
+        "a bare `-> T` has no written result-list metadata"
+    );
+}
+
+#[test]
 fn todo_survives_lowering_with_its_decoded_message_and_exact_statement_span() {
     let source = "main :: () {\n  todo(\"Not\\nimplemented\");\n}\n";
     let (hir, diags, interner) = lower(source);

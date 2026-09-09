@@ -57,7 +57,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0226.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0227.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -95,6 +95,12 @@ source-located check. A failed assertion reports one byte-identical reason, call
 backtrace in the VM, Cranelift and LLVM, while a true assertion is inert. The intrinsic may be
 shadowed by an ordinary declaration; a reached compile-time failure reports E0230.
 
+Procedure result positions may now carry declaration-only labels:
+`-> (value: s64, found: bool)`. Labels are preserved by formatting, Tree-sitter and LSP signatures,
+but remain positional metadata: they create no body locals, do not change procedure type identity,
+and do not alter call or return semantics. Duplicate labels are E0298. Jai's broader
+unparenthesized/defaulted named-return forms remain explicit compatibility gaps.
+
 Every fresh Jairs context now has a working allocator/free pair in the VM, Cranelift and LLVM;
 assigning a custom pair and copying one through `push_context` remain unchanged. Whole-file
 read/write/append operations live in `File`, and every successful read — including an empty file —
@@ -113,8 +119,8 @@ parsers. `parse_int(*string)` consumes the parsed prefix. Exact byte/string over
 wait for general procedure overloading rather than being approximated with more ad-hoc names.
 
 Compatibility claims now have an executable baseline rather than only a prose matrix. One strict
-manifest covers all **35 example-bearing guide groups**, and each entry runs a repository-owned
-probe in an isolated directory. Six selected examples are source-compatible at the pinned guide
+manifest covers all **35 example-bearing guide groups** with **36** repository-owned probes,
+including a second chapter 17 probe for result labels. Six selected examples are source-compatible at the pinned guide
 revision; the others pin a working port, an exact blocker, or an intentional divergence. Ordinary
 tests never read the submodule. The guide has 42 numbered groups and 315 examples, so the baseline
 deliberately makes no percentage claim; the full assessment and dependency-ordered plan live in
@@ -184,9 +190,9 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1362** workspace tests (**1375** under gate 7), with all six ordinary gates and gate 7 green
-  for ADR-0226.
-- **294** `.jr` corpus files, **226** accepted ADRs, **25** standard library
+- **1369** workspace tests (**1382** under gate 7), with all six ordinary gates and gate 7 green
+  for ADR-0227.
+- **296** `.jr` corpus files, **227** accepted ADRs, **25** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative

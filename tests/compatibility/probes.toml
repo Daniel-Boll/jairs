@@ -245,6 +245,22 @@ stdout = ""
 codes = ["E0200"]
 
 [[probe]]
+id = "17-named-result-labels"
+chapter = "17"
+upstream_path = "examples/17/17.5_multiple_return.jai"
+jairs_path = "probes/17/named-result-labels.jr"
+status = "ported"
+classification = "syntactic"
+reason = "Jairs preserves parenthesized declaration-only result labels; Jai's unparenthesized spelling, defaults, and implicit result bindings remain broader."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = ""
+stderr = ""
+
+[[probe]]
 id = "18-pointer-iteration"
 chapter = "18"
 upstream_path = "examples/18/18.5_array_for.jai"

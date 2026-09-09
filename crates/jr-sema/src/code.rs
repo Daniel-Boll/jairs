@@ -552,3 +552,12 @@ pub(crate) const E0295: &str = "E0295";
 /// Distinct from E0214 because the objection is not the expression's type. A computed expression may
 /// itself have type `string` and is still outside the literal-only assertion form.
 pub(crate) const E0297: &str = "E0297";
+
+/// Two positional results in one procedure carry the same declaration-only label (ADR-0227 §1).
+///
+/// A result label creates no binding, so this is not ordinary duplicate-name resolution. It is
+/// refused because the label's sole purpose is to distinguish and document positions; repeating it
+/// communicates that two distinct results have the same role.
+///
+/// Owned by `jr-sema`, continuing this crate's block. E0299 is the first free code.
+pub(crate) const E0298: &str = "E0298";

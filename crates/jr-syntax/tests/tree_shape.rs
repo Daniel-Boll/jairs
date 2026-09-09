@@ -11,7 +11,7 @@
 //! them ever asked a `FIELD_EXPR` for its receiver. These tests do.
 
 use jr_base::FileId;
-use jr_syntax::ast::{AstNode, Expr, SourceFile};
+use jr_syntax::ast::{AstNode, Expr, Proc, SourceFile};
 use jr_syntax::parse;
 
 /// Parses `X :: <expr>;` and returns the expression.
@@ -36,6 +36,60 @@ fn expr_of(source_expr: &str) -> Expr {
                 .and_then(|d: jr_syntax::ast::ConstDecl| d.value_expr())
         })
         .unwrap_or_else(|| panic!("no value expression parsed for {source_expr:?}"))
+}
+
+#[test]
+fn named_results_keep_labels_separate_from_their_types() {
+    let source = concat!(
+        "expect_char :: (s: *string, c: u8) -> (exists: bool) {\n",
+        "    todo;\n",
+        "}\n",
+        "find :: () -> (value: s64, bool) {\n",
+        "    todo;\n",
+        "}\n",
+    );
+    let parsed = parse(source, FileId::from_usize(0));
+    assert!(
+        !parsed.has_errors(),
+        "named result declarations must parse cleanly: {:?}",
+        parsed.diagnostics()
+    );
+
+    let procs: Vec<Proc> = parsed
+        .syntax()
+        .descendants()
+        .filter_map(Proc::cast)
+        .collect();
+    assert_eq!(procs.len(), 2);
+
+    let expect_results: Vec<_> = procs[0]
+        .ret_type()
+        .and_then(|ret| ret.result_list())
+        .expect("the parenthesised result list")
+        .results()
+        .collect();
+    assert_eq!(expect_results.len(), 1);
+    assert_eq!(
+        expect_results[0]
+            .name_token()
+            .map(|token| token.text().to_owned()),
+        Some("exists".to_owned())
+    );
+    assert_eq!(
+        expect_results[0]
+            .ty()
+            .map(|ty| ty.syntax().text().to_string()),
+        Some("bool".to_owned())
+    );
+
+    let mixed_labels: Vec<_> = procs[1]
+        .ret_type()
+        .and_then(|ret| ret.result_list())
+        .expect("the mixed result list")
+        .results()
+        .map(|result| result.name_token().map(|token| token.text().to_owned()))
+        .collect();
+    assert_eq!(mixed_labels, [Some("value".to_owned()), None]);
 }
 
 // ---------------------------------------------------------------------------

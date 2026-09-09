@@ -310,6 +310,9 @@ fn classify_ident(token: &SyntaxToken, hir: &FileHir) -> Option<(Kind, u32)> {
         // a `NAME_TYPE`, so a direct `IDENT` child of `PARAM` can only be the name — which is what makes this
         // arm safe without a positional test.
         SyntaxKind::PARAM => Some((Kind::Parameter, DECLARATION)),
+        // A result label is likewise a declaration in the public signature, but ADR-0227 deliberately
+        // gives it no body binding or reference sites.
+        SyntaxKind::RESULT_PARAM => Some((Kind::Parameter, DECLARATION)),
         // A field's own name, for the same reason and with the same guarantee.
         SyntaxKind::FIELD => Some((Kind::Property, DECLARATION)),
         // `p.x` — the field half. The receiver is a `NAME_EXPR` child of the same node, so only the token

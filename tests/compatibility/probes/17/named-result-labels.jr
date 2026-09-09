@@ -1,0 +1,19 @@
+single :: (n: s64) -> (value: s64) {
+  value := n + 1;
+  return value;
+}
+
+pair :: (n: s64) -> (value: s64, ok: bool) {
+  return n, n >= 0;
+}
+
+main :: () -> s64 {
+  if single(41) != 42 {
+    return 1;
+  }
+  value, ok := pair(7);
+  if value != 7 || !ok {
+    return 2;
+  }
+  return 0;
+}

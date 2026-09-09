@@ -125,6 +125,8 @@ ast_node!(Proc, PROC);
 ast_node!(ParamList, PARAM_LIST);
 ast_node!(Param, PARAM);
 ast_node!(RetType, RET_TYPE);
+ast_node!(ResultList, RESULT_LIST);
+ast_node!(ResultParam, RESULT_PARAM);
 ast_node!(ForeignAttr, FOREIGN_ATTR);
 ast_node!(NameType, NAME_TYPE);
 ast_node!(PolyType, POLY_TYPE);
@@ -847,6 +849,30 @@ impl NamedArg {
 
 impl RetType {
     /// The return type expression.
+    pub fn ty(&self) -> Option<TypeExpr> {
+        child_node(&self.0)
+    }
+
+    /// The parenthesised result list, if this return uses one.
+    pub fn result_list(&self) -> Option<ResultList> {
+        child_node(&self.0)
+    }
+}
+
+impl ResultList {
+    /// The result positions in source order.
+    pub fn results(&self) -> impl Iterator<Item = ResultParam> + '_ {
+        child_nodes(&self.0)
+    }
+}
+
+impl ResultParam {
+    /// The optional declaration-only label.
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        child_token(&self.0, IDENT)
+    }
+
+    /// The positional result type.
     pub fn ty(&self) -> Option<TypeExpr> {
         child_node(&self.0)
     }

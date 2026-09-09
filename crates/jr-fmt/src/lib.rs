@@ -1851,18 +1851,31 @@ impl Formatter {
         self.newline();
     }
 
-    /// Formats `(s64, bool)` after `->` (ADR-0052 §1).
+    /// Formats `(s64, found: bool)` after `->` (ADR-0052 §1, ADR-0227).
     ///
     /// One space after each comma and none inside the brackets, matching every other comma-separated
     /// list this formatter emits — a parameter list and an argument list both look like this.
     fn format_result_list(&mut self, node: &SyntaxNode) {
         self.emit("(");
-        let tys: Vec<SyntaxNode> = node.children().filter(|n| is_type_kind(n.kind())).collect();
-        for (index, ty) in tys.iter().enumerate() {
+        let results: Vec<SyntaxNode> = node
+            .children()
+            .filter(|n| n.kind() == RESULT_PARAM)
+            .collect();
+        for (index, result) in results.iter().enumerate() {
             if index > 0 {
                 self.emit(", ");
             }
-            self.format_type(ty);
+            if let Some(name) = result
+                .children_with_tokens()
+                .filter_map(|element| element.into_token())
+                .find(|token| token.kind() == IDENT)
+            {
+                self.emit(name.text());
+                self.emit(": ");
+            }
+            if let Some(ty) = result.children().find(|n| is_type_kind(n.kind())) {
+                self.format_type(&ty);
+            }
         }
         self.emit(")");
     }
@@ -3059,6 +3072,29 @@ mod tests {
         );
         assert!(!out.contains("->"), "and must not grow one: {out}");
         assert_idempotent(void_ret);
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn named_result_labels_survive_and_canonicalise() {
+        let src = concat!(
+            "expect_char :: (s:*string,c:u8)->(exists:bool) {\n",
+            "todo;\n",
+            "}\n",
+            "find :: () -> (value:s64,bool) {\n",
+            "todo;\n",
+            "}\n",
+        );
+        let out = fmt(src);
+        assert!(
+            out.contains("expect_char :: (s: *string, c: u8) -> (exists: bool)"),
+            "the single named result must survive and canonicalise: {out}"
+        );
+        assert!(
+            out.contains("find :: () -> (value: s64, bool)"),
+            "mixed named and unnamed results must survive: {out}"
+        );
+        assert_idempotent(src);
         assert_parses(&out);
     }
 

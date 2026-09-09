@@ -179,6 +179,10 @@
 ; it in the current scope.
 (named_arg name: (identifier) @variable.parameter)
 
+; A named result is signature metadata rather than a body binding (ADR-0227), but it names a
+; parameter-shaped position for a reader and therefore shares the parameter capture.
+(result name: (identifier) @variable.parameter)
+
 ; A destructuring target (ADR-0052 §2). Captured as a variable, because that is what each one is —
 ; and a `_` discard is captured too, deliberately: it is an ordinary identifier to the grammar, and
 ; special-casing it here would need a text predicate for no visual gain.
