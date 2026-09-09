@@ -164,6 +164,12 @@ pub enum SyntaxKind {
     /// a variant carries a tag, costs a check per read and is bigger — and ADR-0045 §1 instructed
     /// exactly this, "the way `enum_flags` is different from `enum`".
     VARIANT_KW,
+    /// `todo` — terminal, intentionally unfinished control flow (ADR-0223).
+    ///
+    /// Placed after the historical reserved block, like every keyword introduced after `null`.
+    /// [`SyntaxKind::is_reserved_keyword`] must keep ending at `NULL_KW`; [`SyntaxKind::is_keyword`]
+    /// covers the complete contiguous keyword range through this variant.
+    TODO_KW,
 
     // ---- delimiters ------------------------------------------------------
     /// `(`
@@ -625,6 +631,8 @@ pub enum SyntaxKind {
     BREAK_STMT,
     /// `continue;`
     CONTINUE_STMT,
+    /// `todo;` (ADR-0223).
+    TODO_STMT,
 
     // ---- expressions -----------------------------------------------------
     /// An integer, string, or boolean literal.
@@ -769,7 +777,7 @@ impl SyntaxKind {
     /// Returns `true` if this kind is any keyword, reserved or not.
     #[must_use]
     pub const fn is_keyword(self) -> bool {
-        (self as u16) >= (Self::STRUCT_KW as u16) && (self as u16) <= (Self::NULL_KW as u16)
+        (self as u16) >= (Self::STRUCT_KW as u16) && (self as u16) <= (Self::TODO_KW as u16)
     }
 
     /// Returns `true` for keywords the parser does not yet accept.
@@ -810,6 +818,7 @@ impl SyntaxKind {
             "xx" => Self::XX_KW,
             "then" => Self::THEN_KW,
             "null" => Self::NULL_KW,
+            "todo" => Self::TODO_KW,
             _ => return None,
         })
     }
@@ -846,6 +855,7 @@ impl SyntaxKind {
             Self::XX_KW => "xx",
             Self::THEN_KW => "then",
             Self::NULL_KW => "null",
+            Self::TODO_KW => "todo",
             Self::L_PAREN => "(",
             Self::R_PAREN => ")",
             Self::L_BRACE => "{",
@@ -1002,6 +1012,10 @@ mod tests {
         assert!(!SyntaxKind::STRUCT_KW.is_reserved_keyword());
         assert!(SyntaxKind::FOR_KW.is_keyword());
         assert!(SyntaxKind::FOR_KW.is_reserved_keyword());
+        assert!(SyntaxKind::VARIANT_KW.is_keyword());
+        assert!(!SyntaxKind::VARIANT_KW.is_reserved_keyword());
+        assert!(SyntaxKind::TODO_KW.is_keyword());
+        assert!(!SyntaxKind::TODO_KW.is_reserved_keyword());
         assert!(!SyntaxKind::IDENT.is_keyword());
     }
 
@@ -1010,8 +1024,32 @@ mod tests {
         // Guards against a keyword added to `from_keyword` but forgotten in
         // `static_text`, which would make diagnostics print `FOO_KW`.
         for text in [
-            "struct", "if", "else", "while", "return", "break", "continue", "true", "false",
-            "enum", "union", "for", "defer", "using", "cast", "xx", "then", "null",
+            "struct",
+            "if",
+            "else",
+            "while",
+            "return",
+            "break",
+            "continue",
+            "true",
+            "false",
+            "enum",
+            "union",
+            "for",
+            "defer",
+            "using",
+            "cast",
+            "xx",
+            "then",
+            "null",
+            "enum_flags",
+            "operator",
+            "context",
+            "push_context",
+            "switch",
+            "case",
+            "variant",
+            "todo",
         ] {
             let kind = SyntaxKind::from_keyword(text)
                 .unwrap_or_else(|| panic!("`{text}` is not recognised as a keyword"));

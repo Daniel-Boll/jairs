@@ -312,6 +312,15 @@ fn addition_traps_on_overflow_rather_than_wrapping() {
 }
 
 #[test]
+fn reaching_todo_traps_in_comptime_mode() {
+    let fixture = Fixture::build("unfinished :: () -> s64 { todo; }");
+    assert_eq!(
+        fixture.call("unfinished", Vec::new(), Mode::Comptime),
+        Err(VmError::Trap(Trap::Todo))
+    );
+}
+
+#[test]
 fn subtraction_and_multiplication_trap_too() {
     let fixture = Fixture::build(
         "sub :: (a: s64, b: s64) -> s64 { return a - b; }\n\

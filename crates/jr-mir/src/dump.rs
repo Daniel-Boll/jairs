@@ -400,9 +400,10 @@ impl Dumper<'_> {
                 Some(operand) => format!("return {}", self.operand(*operand)),
                 None => String::from("return"),
             },
-            Terminator::Unreachable(why) => {
-                let why = match why {
+            Terminator::Unreachable { reason, span: _ } => {
+                let why = match reason {
                     Unreachable::Trap => "trap",
+                    Unreachable::Todo => "todo",
                     Unreachable::StrayJump => "stray jump",
                     Unreachable::FellOffEnd => "fell off the end",
                     Unreachable::Refused => "refused",
@@ -928,7 +929,13 @@ proc <0> -> s64 {
         );
         mir.set_terminator(mir.entry(), Terminator::Return(None));
         let orphan = mir.push_block();
-        mir.set_terminator(orphan, Terminator::Unreachable(Unreachable::Trap));
+        mir.set_terminator(
+            orphan,
+            Terminator::Unreachable {
+                reason: Unreachable::Trap,
+                span: MirSpan::Synthetic,
+            },
+        );
         let text = dump_body(&mir, &pool, &signatures());
         assert!(text.contains("bb1():  // unreachable"), "got:\n{text}");
         assert!(text.contains("unreachable // trap"));

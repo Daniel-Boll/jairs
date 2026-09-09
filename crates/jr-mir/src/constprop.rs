@@ -503,7 +503,7 @@ fn substitute_value(body: &mut MirBody, value: ValueId, with: Operand) {
                     subst(operand);
                 }
             }
-            Terminator::Unreachable(_) => {}
+            Terminator::Unreachable { .. } => {}
         }
     }
 }
@@ -592,6 +592,6 @@ fn edge_targets_mut(term: &mut Terminator) -> Vec<&mut Target> {
             then_,
             else_,
         } => vec![then_, else_],
-        Terminator::Return(_) | Terminator::Unreachable(_) => Vec::new(),
+        Terminator::Return(_) | Terminator::Unreachable { .. } => Vec::new(),
     }
 }

@@ -1624,6 +1624,13 @@ impl Formatter {
                 self.emit(";");
                 self.newline();
             }
+            TODO_STMT => {
+                self.emit_indent();
+                self.emit("todo");
+                self.emit_trailing_comment(node);
+                self.emit(";");
+                self.newline();
+            }
             BLOCK => {
                 self.emit_indent();
                 self.format_block(node);
@@ -1757,6 +1764,9 @@ impl Formatter {
                 self.emit("continue");
                 self.emit_jump_label(node);
                 self.emit(";");
+            }
+            TODO_STMT => {
+                self.emit("todo;");
             }
             // A `defer` can be the single braceless statement of an `if` — `if bad  defer f();`
             // parses — so this arm exists for the same reason the others do: the fallback emits
@@ -2292,6 +2302,7 @@ fn is_stmt_kind(kind: SyntaxKind) -> bool {
             | RETURN_STMT
             | BREAK_STMT
             | CONTINUE_STMT
+            | TODO_STMT
             | BLOCK
     )
 }
@@ -3313,6 +3324,21 @@ mod tests {
         let out = fmt(src);
         assert!(out.contains("break;"), "got: {out}");
         assert!(out.contains("continue;"), "got: {out}");
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn todo_stmt_is_preserved_and_canonicalised() {
+        let src = "f :: () {\ntodo ;\nif true then todo ;\ndefer todo ;\n}\n";
+        let out = fmt(src);
+        assert_eq!(
+            out.matches("todo;").count(),
+            3,
+            "formatter dropped or duplicated `todo`: {out}"
+        );
+        assert!(out.contains("if true then todo;"), "got: {out}");
+        assert!(out.contains("defer todo;"), "got: {out}");
         assert_idempotent(src);
         assert_parses(&out);
     }

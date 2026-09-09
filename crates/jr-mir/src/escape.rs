@@ -352,7 +352,7 @@ fn addr_taken(body: &Body) -> (FxHashSet<LocalId>, FxHashSet<jr_hir::ParamId>) {
                     stmt_worklist.push(arm.body);
                 }
             }
-            Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
+            Stmt::Todo(_) | Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
         }
     }
 

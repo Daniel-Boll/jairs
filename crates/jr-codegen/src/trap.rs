@@ -54,8 +54,10 @@ pub enum TrapKind {
     /// compare-and-trap emitted before the shift — the masking would otherwise turn `x << 8`
     /// on an `s8` silently into `x << 0`.
     ShiftOutOfRange,
-    /// `Terminator::Unreachable(Unreachable::Trap)` was reached.
+    /// `Terminator::Unreachable { reason: Unreachable::Trap, .. }` was reached.
     Deliberate,
+    /// A source `todo;` statement was reached (ADR-0223).
+    Todo,
     /// The stub a **refused** body gets ([`jr_mir::MirBody::refused`]) was reached.
     ///
     /// Its own kind rather than [`Self::Deliberate`], because the two mean opposite things:
@@ -112,7 +114,7 @@ impl TrapKind {
     /// its whole purpose is that no two kinds share a sentence — because the corpus differential
     /// compares *rendered messages*, so two kinds with one wording would make a genuine
     /// disagreement between the engines invisible. Four kinds were never checked for it.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::OverflowAdd,
         Self::OverflowSub,
         Self::OverflowMul,
@@ -125,6 +127,7 @@ impl TrapKind {
         Self::NullCall,
         Self::WrongVariantCase,
         Self::Deliberate,
+        Self::Todo,
         Self::Refused,
         Self::StrayJump,
         Self::FellOffEnd,
@@ -162,6 +165,7 @@ impl TrapKind {
             Self::NullCall => "call through a null procedure pointer",
             Self::WrongVariantCase => "read the wrong variant case",
             Self::Deliberate => "reached a deliberate trap",
+            Self::Todo => "reached todo",
             Self::Refused => {
                 "this procedure could not be compiled; the compiler reported a gap in it"
             }
@@ -207,6 +211,7 @@ mod tests {
             TrapKind::NullCall,
             TrapKind::WrongVariantCase,
             TrapKind::Deliberate,
+            TrapKind::Todo,
             TrapKind::StrayJump,
             TrapKind::FellOffEnd,
             TrapKind::UninitialisedRead,
@@ -227,6 +232,7 @@ mod tests {
                 | TrapKind::NullCall
                 | TrapKind::WrongVariantCase
                 | TrapKind::Deliberate
+                | TrapKind::Todo
                 | TrapKind::StrayJump
                 | TrapKind::FellOffEnd
                 | TrapKind::UninitialisedRead

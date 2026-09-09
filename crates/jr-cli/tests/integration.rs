@@ -574,6 +574,44 @@ fn a_long_but_terminating_compile_time_loop_still_folds() {
     );
 }
 
+/// A reached `todo;` in a `#run` is a compile-time failure, while an untaken one is inert
+/// (ADR-0223 §4).
+///
+/// This lives here rather than in `type-errors/`: the source is semantically valid and E0230 belongs
+/// to `jr-db`'s evaluator, after sema and MIR have accepted the terminal path.
+#[test]
+fn compile_time_todo_fails_only_when_reached() {
+    let dir = TempDir::new().unwrap();
+
+    let reached = dir.path().join("reached-todo.jr");
+    fs::write(
+        &reached,
+        "unfinished :: () -> s64 { todo; }\n\
+         VALUE :: #run unfinished();\n\
+         main :: () { }\n",
+    )
+    .unwrap();
+    assert_eq!(
+        check_with_modules(vec![reached], None),
+        1,
+        "a reached compile-time `todo;` must report E0230"
+    );
+
+    let untaken = dir.path().join("untaken-todo.jr");
+    fs::write(
+        &untaken,
+        "finished :: () -> s64 { if false { todo; } return 42; }\n\
+         VALUE :: #run finished();\n\
+         main :: () { }\n",
+    )
+    .unwrap();
+    assert_eq!(
+        check_with_modules(vec![untaken], None),
+        0,
+        "an untaken compile-time `todo;` must not poison evaluation"
+    );
+}
+
 /// A **view** in a compile-time aggregate must be refused, for the same reason a pointer is.
 ///
 /// A view is `{data, count}`, and its `data` word is a pointer into the evaluator's memory. Before the
@@ -3027,7 +3065,7 @@ fn the_llvm_back_end_emits_a_line_table_too() {
 
     // The same three statements the Cranelift test names. Two unrelated emitters, reading one span source, must
     // agree about which lines exist — that agreement is the whole reason this test is worth having.
-    for expected in [21u64, 35, 40] {
+    for expected in [20u64, 35, 40] {
         assert!(
             lines.contains(&expected),
             "line {expected} is a statement in the program and must appear in LLVM's table; got {lines:?}"

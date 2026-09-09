@@ -2770,6 +2770,7 @@ impl<'a> BodyLowerCtx<'a> {
                     .map(|t| self.intern(t.as_str()));
                 self.alloc_stmt(Stmt::Continue(label, span))
             }
+            AstStmt::Todo(_) => self.alloc_stmt(Stmt::Todo(span)),
         }
     }
 

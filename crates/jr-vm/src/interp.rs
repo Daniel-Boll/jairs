@@ -841,6 +841,7 @@ impl<'a> Vm<'a> {
                 Instr::Trap(reason) => {
                     return Err(VmError::Trap(match reason {
                         Unreachable::Trap => Trap::Deliberate,
+                        Unreachable::Todo => Trap::Todo,
                         Unreachable::StrayJump => Trap::StrayJump,
                         Unreachable::FellOffEnd => Trap::FellOffEnd,
                         // Unreachable in practice: the stub is built by the *native* driver

@@ -2326,12 +2326,13 @@ impl<'ctx> Translator<'ctx, '_> {
                 }
                 Ok(())
             }
-            Terminator::Unreachable(reason) => {
+            Terminator::Unreachable { reason, span: _ } => {
                 // Only `Trap` is a program the compiler believes well-formed; the other two
                 // are statically reported (E0228, E0229) and reaching one means the program
                 // was run without being checked.
                 let kind = match reason {
                     Unreachable::Trap => TrapKind::Deliberate,
+                    Unreachable::Todo => TrapKind::Todo,
                     Unreachable::StrayJump => TrapKind::StrayJump,
                     Unreachable::FellOffEnd => TrapKind::FellOffEnd,
                     // The stub a refused body gets (`jr_mir::MirBody::refused`), so that the
@@ -2510,17 +2511,15 @@ impl<'ctx> Translator<'ctx, '_> {
 
     /// The span a terminator's instructions belong to.
     ///
-    /// A [`Terminator`] carries no span, but its operand is a value and every value does — so
-    /// a branch reports the condition tested and a return reports the expression that
-    /// produced the result. Mirrors the other two engines, because all three must attribute a
-    /// trap to the same construct or their messages differ.
+    /// A branch reports the condition tested and a return reports the expression that
+    /// produced the result. An unreachable terminator owns its span directly so all
+    /// three engines attribute a source `todo;` identically (ADR-0223).
     fn terminator_span(&self, term: &Terminator) -> MirSpan {
         match term {
             Terminator::Branch { cond, .. } => self.span_of(*cond),
             Terminator::Return(Some(operand)) => self.span_of(*operand),
-            Terminator::Goto(_) | Terminator::Return(None) | Terminator::Unreachable(_) => {
-                MirSpan::Synthetic
-            }
+            Terminator::Unreachable { span, .. } => *span,
+            Terminator::Goto(_) | Terminator::Return(None) => MirSpan::Synthetic,
         }
     }
 

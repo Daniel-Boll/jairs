@@ -459,7 +459,7 @@ impl Reach {
                         expr_work.push(*value);
                     }
                 }
-                Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
+                Stmt::Todo(_) | Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
             }
         }
 
@@ -621,6 +621,7 @@ fn scan(
             | Stmt::If { .. }
             | Stmt::While { .. }
             | Stmt::Return(_, _)
+            | Stmt::Todo(_)
             | Stmt::Break(_, _)
             | Stmt::Continue(_, _)
             | Stmt::For { .. }
@@ -1195,7 +1196,10 @@ impl Lower<'_> {
             } else {
                 // Whether this is *reachable* is the missing-`return` diagnostic,
                 // which needs this CFG and which the next wave owns.
-                Terminator::Unreachable(Unreachable::FellOffEnd)
+                Terminator::Unreachable {
+                    reason: Unreachable::FellOffEnd,
+                    span: MirSpan::Synthetic,
+                }
             };
             self.mir.set_terminator(block, term);
         }
@@ -1327,6 +1331,21 @@ impl Lower<'_> {
             Stmt::Defer(inner, _) => self.defers.push(inner),
             Stmt::Return(value, _) => self.return_stmt(value),
             Stmt::ReturnTuple(exprs, _) => self.return_tuple(&exprs),
+            // `todo;` abandons this path rather than leaving its lexical scope, so it deliberately
+            // does not run registered defers (ADR-0223 §2). The terminator owns the statement span;
+            // no engine has to infer a location from a non-existent operand.
+            Stmt::Todo(_) => {
+                if let Some(block) = self.current {
+                    self.mir.set_terminator(
+                        block,
+                        Terminator::Unreachable {
+                            reason: Unreachable::Todo,
+                            span: MirSpan::Stmt(self.body_id, id),
+                        },
+                    );
+                }
+                self.current = None;
+            }
             Stmt::LocalTuple { targets, call, .. } => self.local_tuple(&targets, call),
             Stmt::AssignTuple { targets, call, .. } => self.assign_tuple(&targets, call),
             Stmt::Break(label, _) => self.jump(true, label, id),
@@ -1704,8 +1723,13 @@ impl Lower<'_> {
             // reaching here means an upstream invariant broke; a trap is louder
             // than silently dropping the assignment.
             if let Some(block) = self.current {
-                self.mir
-                    .set_terminator(block, Terminator::Unreachable(Unreachable::Trap));
+                self.mir.set_terminator(
+                    block,
+                    Terminator::Unreachable {
+                        reason: Unreachable::Trap,
+                        span: MirSpan::Synthetic,
+                    },
+                );
                 self.current = None;
             }
             return;
@@ -1779,7 +1803,10 @@ impl Lower<'_> {
         } else {
             match operand {
                 Some(operand) => Terminator::Return(Some(operand)),
-                None => Terminator::Unreachable(Unreachable::FellOffEnd),
+                None => Terminator::Unreachable {
+                    reason: Unreachable::FellOffEnd,
+                    span: MirSpan::Synthetic,
+                },
             }
         };
         self.mir.set_terminator(block, term);
@@ -1811,8 +1838,13 @@ impl Lower<'_> {
             // *message* distinguishes them (ADR-0049 §2).
             self.stray.push(MirSpan::Stmt(self.body_id, at));
             if let Some(block) = self.current {
-                self.mir
-                    .set_terminator(block, Terminator::Unreachable(Unreachable::StrayJump));
+                self.mir.set_terminator(
+                    block,
+                    Terminator::Unreachable {
+                        reason: Unreachable::StrayJump,
+                        span: MirSpan::Stmt(self.body_id, at),
+                    },
+                );
             }
             self.current = None;
             return;
@@ -3747,8 +3779,13 @@ impl Lower<'_> {
         self.ssa.seal_block(&mut self.mir, trap_bb);
 
         // The mismatch edge traps, exactly as a wrong-variant read does (ADR-0068 §4).
-        self.mir
-            .set_terminator(trap_bb, Terminator::Unreachable(Unreachable::Trap));
+        self.mir.set_terminator(
+            trap_bb,
+            Terminator::Unreachable {
+                reason: Unreachable::Trap,
+                span,
+            },
+        );
 
         // The matching edge reads `a.data` as `*T` and loads the value.
         self.current = Some(ok_bb);

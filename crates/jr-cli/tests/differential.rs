@@ -1266,6 +1266,39 @@ fn a_trap_names_its_source_location_identically_in_both_engines() {
 }
 
 #[test]
+fn todo_is_a_located_trap_and_does_not_run_defers() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("todo.jr");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   defer print(\"defer ran\\n\");\n\
+                  \x20   todo;\n\
+                  }\n";
+    std::fs::write(&path, source).expect("a writable temporary directory");
+
+    let vm = run_in_vm(&path);
+    let native = run_natively(&path, dir.path());
+
+    let expected = format!(
+        "error: reached todo\n  --> {}:5:5\n  in main\n",
+        path.display()
+    );
+    assert_eq!(vm.stdout, "", "`todo;` must not run the pending defer");
+    assert_eq!(native.stdout, "", "`todo;` must not run the pending defer");
+    assert_eq!(
+        vm.stderr, expected,
+        "the VM lost the `todo;` statement span"
+    );
+    assert_eq!(
+        native.stderr, expected,
+        "native code disagrees about the `todo;` statement span"
+    );
+    assert_eq!(vm.status, 4);
+    assert_eq!(native.status, 4);
+}
+
+#[test]
 fn a_division_by_zero_names_its_own_line() {
     // A second operation and a second line, so that the location is demonstrably
     // computed rather than a constant that happens to match one case.
@@ -2625,6 +2658,57 @@ fn a_trap_reads_identically_in_all_three_engines() {
     assert_eq!(
         vm, llvm,
         "the VM and the LLVM back end disagree about a trap"
+    );
+}
+
+/// LLVM must carry the dedicated `todo` reason and the statement span too (ADR-0223 §2–3).
+///
+/// The default-build test above compares VM and Cranelift; this closes the third-engine edge that
+/// the ordinary successful corpus cannot exercise.
+#[cfg(feature = "llvm")]
+#[test]
+fn todo_reads_identically_in_all_three_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("todo-llvm.jr");
+    std::fs::write(&path, "main :: () {\n    todo;\n}\n").expect("the source must be writable");
+
+    let vm = run_in_vm(&path);
+    let cranelift = run_natively(&path, dir.path());
+    let llvm = {
+        let binary = dir.path().join("todo-llvm");
+        let built = Command::new(jr())
+            .arg("build")
+            .arg(&path)
+            .arg("-o")
+            .arg(&binary)
+            .arg("--backend")
+            .arg("llvm")
+            .arg("-I")
+            .arg(workspace_root().join("modules"))
+            .output()
+            .expect("jr build should be executable");
+        assert!(
+            built.status.success(),
+            "`jr build --backend llvm` failed:\n{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let output = Command::new(&binary)
+            .output()
+            .unwrap_or_else(|e| panic!("cannot run {}: {e}", binary.display()));
+        Behaviour {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            status: output.status.code().unwrap_or(-1),
+        }
+    };
+
+    assert_eq!(vm, cranelift, "VM and Cranelift disagree about `todo;`");
+    assert_eq!(vm, llvm, "VM and LLVM disagree about `todo;`");
+    assert_eq!(vm.status, 4);
+    assert!(
+        vm.stderr.contains(":2:5") && vm.stderr.contains("reached todo"),
+        "the trap must retain the statement line and dedicated reason: {}",
+        vm.stderr
     );
 }
 

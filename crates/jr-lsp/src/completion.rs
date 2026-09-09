@@ -45,7 +45,7 @@ use crate::render::{Decl, container_of, type_name};
 /// are lexed but refused with a "arrives in wave Wn" diagnostic, so completing them
 /// would be offering the user an error.
 const KEYWORDS: &[&str] = &[
-    "struct", "if", "else", "while", "return", "break", "continue", "true", "false",
+    "struct", "if", "else", "while", "return", "break", "continue", "todo", "true", "false",
 ];
 
 /// The builtin type names that are not integers.
@@ -873,5 +873,10 @@ mod tests {
             "add(${1:a}, ${2:b})$0"
         );
         assert_eq!(call_snippet("f", &[], &interner), "f()$0");
+    }
+
+    #[test]
+    fn todo_is_offered_as_a_keyword() {
+        assert!(KEYWORDS.contains(&"todo"));
     }
 }

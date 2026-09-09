@@ -195,7 +195,7 @@ fn used_values(body: &MirBody) -> FxHashSet<ValueId> {
                     note_operand(operand, &mut used);
                 }
             }
-            Terminator::Unreachable(_) => {}
+            Terminator::Unreachable { .. } => {}
         }
     }
     used

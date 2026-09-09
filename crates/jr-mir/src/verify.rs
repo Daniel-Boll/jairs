@@ -443,7 +443,7 @@ impl Verifier<'_> {
                     self.check_operand_ids(at, *operand);
                 }
             }
-            Terminator::Unreachable(_) => {}
+            Terminator::Unreachable { .. } => {}
         }
     }
 
@@ -522,7 +522,7 @@ impl Verifier<'_> {
                         mark_operand(*operand, &mut used);
                     }
                 }
-                Terminator::Unreachable(_) => {}
+                Terminator::Unreachable { .. } => {}
             }
         }
 
@@ -1051,7 +1051,7 @@ impl Verifier<'_> {
                     }
                 }
             },
-            Terminator::Goto(_) | Terminator::Unreachable(_) => {}
+            Terminator::Goto(_) | Terminator::Unreachable { .. } => {}
         }
     }
 }

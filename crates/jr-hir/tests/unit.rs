@@ -19,6 +19,32 @@ fn lower(source: &str) -> (jr_hir::FileHir, jr_diag::Diagnostics, Interner) {
     (hir, diags, interner)
 }
 
+#[test]
+fn todo_survives_lowering_with_its_exact_statement_span() {
+    let source = "main :: () {\n  todo;\n}\n";
+    let (hir, diags, interner) = lower(source);
+    assert!(diags.is_empty(), "{diags:?}");
+
+    let body = sole_body(&hir);
+    let Stmt::Block(stmts, _) = body.stmt(body.root) else {
+        panic!("a body's root is always a block");
+    };
+    assert_eq!(stmts.len(), 1, "the body contains only `todo;`");
+    let Stmt::Todo(span) = body.stmt(stmts[0]) else {
+        panic!("`todo;` must lower to its dedicated HIR statement");
+    };
+
+    let start = source
+        .find("todo;")
+        .expect("the statement is in the source");
+    assert_eq!(u32::from(span.start()) as usize, start);
+    assert_eq!(u32::from(span.end()) as usize, start + "todo;".len());
+    assert!(
+        dump_hir(&hir, &interner).contains("Todo"),
+        "the HIR dump must retain the dedicated statement"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Literal decoding
 // ---------------------------------------------------------------------------

@@ -656,3 +656,31 @@ libc :: #system_library "c";
     value: (run_expr
       directive: (directive)
       expr: (literal_expr (string_literal)))))
+
+================================================================================
+Todo statement
+================================================================================
+
+f :: (ok: bool) {
+    todo;
+    if ok then todo;
+    defer todo;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list
+        (param
+          (identifier)
+          type: (name_type (identifier))))
+      body: (block
+        (todo_stmt)
+        (if_stmt
+          condition: (name_expr (identifier))
+          body: (todo_stmt))
+        (defer_stmt
+          body: (todo_stmt))))))

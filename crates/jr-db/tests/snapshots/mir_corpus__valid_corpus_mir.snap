@@ -19214,3 +19214,54 @@ proc main -> s64 {
     store (v0).*.2 <- v67
     return 0_s64
 }
+
+========================================
+155-todo.jr
+========================================
+proc unfinished -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    unreachable // todo
+}
+proc pick -> s64 {
+  params: v0: *Context, v1: bool
+  bb0(v0: *Context, v1: bool):
+    branch v1 ? bb1() : bb2()
+  bb1():
+    unreachable // todo
+  bb2():
+    goto bb3()
+  bb3():
+    return 42_s64
+}
+proc comptime_pick -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    branch false ? bb1() : bb2()
+  bb1():
+    unreachable // todo
+  bb2():
+    goto bb3()
+  bb3():
+    return 7_s64
+}
+proc main -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: bool = 7_s64 != 7_s64
+    branch v1 ? bb1() : bb2()
+  bb1():
+    return 1_s64
+  bb2():
+    goto bb3()
+  bb3():
+    v2: s64 = call proc1(v0, false)
+    v3: bool = v2 != 42_s64
+    branch v3 ? bb4() : bb5()
+  bb4():
+    return 2_s64
+  bb5():
+    goto bb6()
+  bb6():
+    return 0_s64
+}

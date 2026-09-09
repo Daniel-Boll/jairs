@@ -1424,7 +1424,7 @@ impl<'a> ResolveCtx<'a> {
                     self.resolve_body_stmt(body_id, arm.body);
                 }
             }
-            Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
+            Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Todo(_) | Stmt::Error(_) => {}
         }
     }
 

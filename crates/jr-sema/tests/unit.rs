@@ -15,6 +15,13 @@ use jr_pool::PoolId;
 // ---------------------------------------------------------------------------
 
 #[test]
+fn todo_requires_no_expression_type_even_in_a_valued_procedure() {
+    let mut program = Program::new();
+    let analysis = program.analyse("unfinished :: () -> s64 {\n    todo;\n}\n");
+    analysis.assert_silent();
+}
+
+#[test]
 fn an_integer_literal_takes_its_type_from_its_context() {
     // The rule that makes `valid/005-decl-typed.jr` legal in a subset with no
     // `cast`. If this regresses, that corpus file stops checking.

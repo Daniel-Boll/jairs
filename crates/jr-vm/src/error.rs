@@ -107,8 +107,10 @@ pub enum Trap {
     DivideByZero,
     /// A shift count was negative or `>=` the type's width (ADR-0042 §3).
     ShiftOutOfRange,
-    /// `Terminator::Unreachable(Unreachable::Trap)` was reached.
+    /// `Terminator::Unreachable { reason: Unreachable::Trap, .. }` was reached.
     Deliberate,
+    /// A source `todo;` statement was reached (ADR-0223).
+    Todo,
     /// The stub a **refused** body gets (`jr_mir::MirBody::refused`) was reached.
     ///
     /// Its own kind rather than [`Self::Deliberate`], because the two mean opposite things:
@@ -181,6 +183,7 @@ impl fmt::Display for Trap {
             Self::DivideByZero => write!(f, "division by zero"),
             Self::ShiftOutOfRange => write!(f, "shift count out of range"),
             Self::Deliberate => write!(f, "reached a deliberate trap"),
+            Self::Todo => write!(f, "reached todo"),
             Self::Refused => write!(
                 f,
                 "this procedure could not be compiled; the compiler reported a gap in it"

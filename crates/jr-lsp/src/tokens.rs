@@ -227,20 +227,7 @@ fn collect(node: &SyntaxNode, hir: &FileHir, out: &mut Vec<Classified>) {
 /// `,` as an operator would fight the editor's own theme for no information gained.
 fn classify(token: &SyntaxToken, hir: &FileHir) -> Option<Classified> {
     let kind = token.kind();
-    let simple = match kind {
-        SyntaxKind::LINE_COMMENT
-        | SyntaxKind::BLOCK_COMMENT
-        | SyntaxKind::DOC_COMMENT
-        | SyntaxKind::MODULE_DOC_COMMENT => Some(Kind::Comment),
-        SyntaxKind::STRING_LITERAL => Some(Kind::String),
-        SyntaxKind::INT_LITERAL | SyntaxKind::FLOAT_LITERAL => Some(Kind::Number),
-        SyntaxKind::DIRECTIVE => Some(Kind::Macro),
-        // `true`, `false` and `null` are keywords in the grammar and *values* to a reader. Reported as
-        // keywords, because that is what an editor's theme expects of them and what every other language
-        // server does — the alternative would make `true` a different colour from `if`, which surprises.
-        _ if kind.is_keyword() => Some(Kind::Keyword),
-        _ => None,
-    };
+    let simple = simple_kind(kind);
     if let Some(kind) = simple {
         return Some(Classified {
             start: token.text_range().start(),
@@ -259,6 +246,24 @@ fn classify(token: &SyntaxToken, hir: &FileHir) -> Option<Classified> {
         kind,
         modifiers,
     })
+}
+
+/// Classification that depends only on a token's lexical kind.
+fn simple_kind(kind: SyntaxKind) -> Option<Kind> {
+    match kind {
+        SyntaxKind::LINE_COMMENT
+        | SyntaxKind::BLOCK_COMMENT
+        | SyntaxKind::DOC_COMMENT
+        | SyntaxKind::MODULE_DOC_COMMENT => Some(Kind::Comment),
+        SyntaxKind::STRING_LITERAL => Some(Kind::String),
+        SyntaxKind::INT_LITERAL | SyntaxKind::FLOAT_LITERAL => Some(Kind::Number),
+        SyntaxKind::DIRECTIVE => Some(Kind::Macro),
+        // `true`, `false` and `null` are keywords in the grammar and *values* to a reader. Reported as
+        // keywords, because that is what an editor's theme expects of them and what every other language
+        // server does — the alternative would make `true` a different colour from `if`, which surprises.
+        _ if kind.is_keyword() => Some(Kind::Keyword),
+        _ => None,
+    }
 }
 
 /// An identifier's kind and modifiers, from its syntactic context first.
@@ -488,4 +493,14 @@ fn encode(tokens: &[Classified], positions: &Positions<'_>) -> Vec<SemanticToken
         previous_start = start.character;
     }
     data
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn todo_is_a_semantic_keyword() {
+        assert_eq!(simple_kind(SyntaxKind::TODO_KW), Some(Kind::Keyword));
+    }
 }

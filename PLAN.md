@@ -277,6 +277,13 @@ Status of each slice component, so this is answerable without reading the tree.
 > value, uncovered aliases are reported once by their first declaration, and E0134 refuses any
 > source arm after `else` instead of letting lowering reorder it.
 >
+> **Current unfinished-path surface (ADR-0223).** `todo;` is a reserved statement, not an
+> expression or intrinsic. It terminates its path, satisfies valued-procedure return analysis,
+> skips pending defers, and traps as `reached todo` only when reached. Every MIR unreachable
+> terminator now carries its own span; the VM, Cranelift and LLVM render the `todo;` line and live
+> backtrace identically, while a reached compile-time path becomes E0230. Parser, formatter,
+> Tree-sitter, both editor query sets and LSP keyword tooling all retain the construct.
+>
 > **Current default allocator and whole-file surface (ADR-0216).** Every fresh Jairs context has
 > a working allocator/free pair: reserved VM handles dispatch to linear-memory allocation, while
 > Cranelift and LLVM install local Jairs-ABI wrappers around libc. Context-typed slots and
@@ -344,7 +351,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the real-editor verifier — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua` needs an editor CI does not have. The installed parser is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The verifier asserts tree-sitter node kinds and nesting that ADR-0010's error-count gate cannot see, plus live LSP requests against the real server. |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and another LSP client may launch it; the repository packages integrations for Neovim and Zed. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–**0222**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
+Accepted ADRs: 0001–**0223**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
 counts here are why the ADR index row and this line move in the same commit.
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
@@ -660,12 +667,31 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 > its stale skeleton guards to the same drift/query gate contributors run locally, and active owned
 > code now teaches `print`. `print_line` and `print_int` remain source-compatibility wrappers.
 
-**1333 workspace tests (1344 under gate 7), 291 corpus files, 222 ADRs and 25 modules.** ADR-0222
-adds no test or corpus file. All six ordinary gates are green; gate 7 is not required because no MIR,
-layout or back-end behavior changed. **E0297** is the first free global diagnostic code;
+**1345 workspace tests (1357 under gate 7), 292 corpus files, 223 ADRs and 25 modules.** ADR-0223
+adds twelve default tests, thirteen under gate 7, and one corpus program. All six ordinary gates and
+gate 7 are green. Gate 7 also exposed ADR-0222's stale LLVM DWARF expectation: that wave moved the
+hello program's return from line 21 to 20 and updated only the Cranelift twin. **E0297** is the first free global diagnostic code;
 **E0135** is the first free parser code.
 
-### Next wave: close the compatibility audit's executable blind spots
+### Next wave: Jai-style runtime `assert`
+
+The decider has already chosen the shape, so do not reopen it without new evidence:
+
+1. `assert(condition)` is compiler-recognised and source-located rather than a library procedure
+   whose call frame and message can drift between engines.
+2. `assert(condition, "static message")` is the only message form in this wave. The message must be
+   a compile-time string; variadic formatting and `#assert` remain separate decisions.
+3. A true assertion has no runtime effect. A false one traps identically in the VM, Cranelift and
+   LLVM, does not run defers, and reports the assertion's own source line and ordinary backtrace.
+4. A reached compile-time assertion is E0230; an assertion in an untaken compile-time path is inert.
+5. Record the decision in ADR-0224 before implementation, cover formatter and editor tooling, and
+   run all six gates plus gate 7.
+
+The recommended lowering seam is a dedicated MIR assertion/check statement rather than translating
+to `todo` or a branch in HIR: it must preserve the optional static message and keep optimisers from
+discarding the failure effect.
+
+### Queued audit wave: close the compatibility audit's executable blind spots
 
 Keep this bounded to evidence and contracts; do not smuggle feature implementation into the audit wave:
 
@@ -679,7 +705,7 @@ Keep this bounded to evidence and contracts; do not smuggle feature implementati
 The exit criterion is stronger evidence, not a higher compatibility score. Update the matrix and manifest
 from the same owned probes and keep the submodule out of CI.
 
-### Next implementation wave: general procedure overloading (roadmap P1)
+### Queued implementation wave: general procedure overloading (roadmap P1)
 
 ADR-0219's chapter 17 probe now pins E0200 on two same-name procedures. General procedure
 overloading is the highest-leverage P1 item: it restores guide-shaped `append`, constructor, string,
