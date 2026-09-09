@@ -90,7 +90,7 @@ because nothing then distinguishes a key that does nothing from one that has not
   error, or a huge workspace)
 - document symbols
 - workspace symbols
-- code actions
+- code actions, including `add all missing cases` for a non-exhaustive enum or tagged-variant match
 - signature help
 - inlay hints
 - semantic tokens (classified by CST context first — sixteen token types and two modifiers)

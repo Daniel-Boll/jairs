@@ -12,15 +12,21 @@
 //! The one action with no diagnostic is `//` → `///`, which is why it is a `refactor`
 //! rather than a `quickfix`: nothing is wrong with an ordinary comment.
 //!
-//! # Why no action reformats
+//! # Why no action reprints existing source
 //!
-//! Every edit here replaces a span the compiler produced, or inserts a whole line. None
-//! re-indents, reflows, or re-parses. `jr-fmt` owns that, and an action that formatted
-//! would be a second formatter — the shape of mistake ADR-0028 §1 exists to prevent one
-//! layer up.
+//! Every edit here replaces a span the compiler produced, or inserts source beside a
+//! compiler span found in the cached syntax tree. Insertions may follow the project's
+//! indentation setting, but none reflows or reprints existing source. `jr-fmt` owns
+//! canonical formatting, and an action that formatted would be a second formatter — the
+//! shape of mistake ADR-0028 §1 exists to prevent one layer up.
 
+use jr_base::TextSize;
 use jr_db::{Db, ModuleCatalog, SourceFile};
 use jr_hir::ItemKind;
+use jr_syntax::{
+    SyntaxKind::R_BRACE,
+    ast::{AstNode, SwitchStmt},
+};
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, NumberOrString, TextEdit,
     WorkspaceEdit,
@@ -68,6 +74,9 @@ pub fn code_actions(
             // at with the name it named.
             "E0218" | "E0212" => out.extend(did_you_mean(&uri, diagnostic)),
             "E0203" => out.extend(give_a_body(db, file, &positions, &uri, diagnostic)),
+            "E0258" => out.extend(add_all_missing_cases(
+                db, file, catalog, &positions, &uri, &text, diagnostic,
+            )),
             _ => {}
         }
     }
@@ -424,6 +433,210 @@ fn give_a_body(
 }
 
 // ---------------------------------------------------------------------------
+// Exhaustive switches
+// ---------------------------------------------------------------------------
+
+/// Add one empty arm for every alternative E0258 says is missing.
+///
+/// The missing set comes from sema rather than being reconstructed here: enum aliases are coverage
+/// classes by runtime value, and a source-level subtraction would get that rule wrong. The current
+/// diagnostic must still agree with the client's copy before an edit is offered, because the client
+/// may be displaying a diagnostic from an older buffer revision.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a code action needs the current query inputs, position map, destination URI, source text, and triggering diagnostic"
+)]
+fn add_all_missing_cases(
+    db: &dyn Db,
+    file: SourceFile,
+    catalog: ModuleCatalog,
+    positions: &Positions<'_>,
+    uri: &lsp_types::Uri,
+    text: &str,
+    diagnostic: &Diagnostic,
+) -> Vec<CodeActionOrCommand> {
+    let Some(client_missing) = missing_cases_from_message(&diagnostic.message) else {
+        return Vec::new();
+    };
+
+    // Recheck the diagnostic against the current salsa snapshot. A same-shaped switch may have had
+    // one member changed to another without moving its range, so range equality alone is not enough.
+    let current = jr_db::file_diagnostics(db, file, catalog);
+    let Some((current_diagnostic, current_missing)) = current.iter().find_map(|candidate| {
+        if candidate.code != Some("E0258")
+            || positions.range(candidate.primary.span) != diagnostic.range
+        {
+            return None;
+        }
+        let missing = missing_cases_from_diagnostic(candidate)?;
+        Some((candidate, missing))
+    }) else {
+        return Vec::new();
+    };
+    if current_missing != client_missing {
+        return Vec::new();
+    }
+
+    // Find the exact current switch in the lossless CST. `if #complete` has the same node by design,
+    // and a direct-child `R_BRACE` cannot be confused with one in an arm's expression or comment.
+    let span = current_diagnostic.primary.span;
+    let root = jr_db::parse_file(db, file).syntax();
+    let Some(switch) = root
+        .descendants()
+        .filter_map(SwitchStmt::cast)
+        .find(|switch| {
+            let range = switch.syntax().text_range();
+            range.start() == span.start() && range.end() == span.end()
+        })
+    else {
+        return Vec::new();
+    };
+    let Some(close) = switch
+        .syntax()
+        .children_with_tokens()
+        .filter_map(|element| element.into_token())
+        .find(|token| token.kind() == R_BRACE)
+    else {
+        return Vec::new();
+    };
+
+    let close_offset = usize::from(close.text_range().start());
+    let switch_offset = usize::from(switch.syntax().text_range().start());
+    let line_start = text[..close_offset]
+        .rfind('\n')
+        .map_or(0, |offset| offset + 1);
+    let before_close = &text[line_start..close_offset];
+    let close_on_own_line = before_close
+        .bytes()
+        .all(|byte| matches!(byte, b' ' | b'\t'));
+    let close_indent = if close_on_own_line {
+        before_close.to_owned()
+    } else {
+        line_indent_at(text, switch_offset).unwrap_or_default()
+    };
+
+    // Existing layout is stronger evidence than configuration. An inline first arm has code before
+    // it on the same line and therefore yields no line indent; that falls back to one configured unit.
+    let arm_indent = switch
+        .arms()
+        .next()
+        .and_then(|arm| line_indent_at(text, usize::from(arm.syntax().text_range().start())))
+        .unwrap_or_else(|| {
+            let config = crate::handlers::formatting_config(Path::new(file.path(db).as_ref()));
+            let unit = match config.indent_style {
+                jr_fmt::IndentStyle::Space => " ".repeat(config.indent_width),
+                jr_fmt::IndentStyle::Tab => String::from("\t"),
+            };
+            format!("{close_indent}{unit}")
+        });
+
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut arms = String::new();
+    for name in &current_missing {
+        arms.push_str(&arm_indent);
+        arms.push_str("case .");
+        arms.push_str(name);
+        arms.push(';');
+        arms.push_str(newline);
+    }
+
+    let (start, end, new_text) = if close_on_own_line {
+        // Insert at the line start, before the closer's indentation, so that indentation is not
+        // duplicated by an insertion immediately before the `}` token.
+        (line_start, line_start, arms)
+    } else {
+        // A one-line switch becomes a small multiline one. Replace only whitespace immediately before
+        // the closer, leaving every token and any earlier spacing untouched.
+        let trailing = before_close
+            .bytes()
+            .rev()
+            .take_while(|byte| matches!(byte, b' ' | b'\t'))
+            .count();
+        let start = close_offset - trailing;
+        (
+            start,
+            close_offset,
+            format!("{newline}{arms}{close_indent}"),
+        )
+    };
+    let Some(start) = text_size(start) else {
+        return Vec::new();
+    };
+    let Some(end) = text_size(end) else {
+        return Vec::new();
+    };
+
+    vec![quickfix(
+        String::from("add all missing cases"),
+        uri,
+        diagnostic,
+        vec![TextEdit {
+            range: lsp_types::Range {
+                start: positions.position(start),
+                end: positions.position(end),
+            },
+            new_text,
+        }],
+        true,
+    )]
+}
+
+/// The declaration-ordered names from the flattened LSP diagnostic.
+fn missing_cases_from_message(message: &str) -> Option<Vec<String>> {
+    let mut lists = message.lines().filter_map(|line| {
+        line.trim_start()
+            .strip_prefix("note: missing: ")
+            .and_then(parse_backticked_list)
+    });
+    let missing = lists.next()?;
+    lists.next().is_none().then_some(missing)
+}
+
+/// The declaration-ordered names from the compiler diagnostic before protocol flattening.
+fn missing_cases_from_diagnostic(diagnostic: &jr_diag::Diagnostic) -> Option<Vec<String>> {
+    let mut lists = diagnostic.notes.iter().filter_map(|(_, note)| {
+        note.strip_prefix("missing: ")
+            .and_then(parse_backticked_list)
+    });
+    let missing = lists.next()?;
+    lists.next().is_none().then_some(missing)
+}
+
+/// Parses the strict E0258 list spelling: `` `ONE`, `TWO` ``.
+fn parse_backticked_list(mut text: &str) -> Option<Vec<String>> {
+    let mut names = Vec::new();
+    loop {
+        text = text.strip_prefix('`')?;
+        let end = text.find('`')?;
+        let name = text.get(..end)?;
+        if name.is_empty() {
+            return None;
+        }
+        names.push(name.to_owned());
+        text = text.get(end + 1..)?;
+        if text.is_empty() {
+            break;
+        }
+        text = text.strip_prefix(", ")?;
+    }
+    Some(names)
+}
+
+/// Leading spaces or tabs when `offset` names the first token on its line.
+fn line_indent_at(text: &str, offset: usize) -> Option<String> {
+    let line_start = text[..offset].rfind('\n').map_or(0, |index| index + 1);
+    let prefix = text.get(line_start..offset)?;
+    prefix
+        .bytes()
+        .all(|byte| matches!(byte, b' ' | b'\t'))
+        .then(|| prefix.to_owned())
+}
+
+fn text_size(offset: usize) -> Option<TextSize> {
+    Some(TextSize::from(u32::try_from(offset).ok()?))
+}
+
+// ---------------------------------------------------------------------------
 // `//` to `///`
 // ---------------------------------------------------------------------------
 
@@ -533,6 +746,29 @@ mod tests {
         let message = "unknown type name `int`\nnote: the builtin types are `s64`, `u8`, \
                        `bool` and `string`";
         assert_eq!(suggested_name(message), None);
+    }
+
+    #[test]
+    fn missing_cases_are_read_only_from_the_missing_note() {
+        let message = "this `switch` does not handle every member of `Colour`\n\
+                       note: missing: `GREEN`, `BLUE`\n\
+                       help: add a `case` for each, or an `else` arm";
+        assert_eq!(
+            missing_cases_from_message(message),
+            Some(vec![String::from("GREEN"), String::from("BLUE")])
+        );
+    }
+
+    #[test]
+    fn a_malformed_missing_list_is_not_an_edit() {
+        assert_eq!(
+            missing_cases_from_message("E0258\nnote: missing: GREEN, BLUE"),
+            None
+        );
+        assert_eq!(
+            missing_cases_from_message("E0258\nnote: missing: `GREEN`\nnote: missing: `BLUE`"),
+            None
+        );
     }
 
     #[test]

@@ -9,10 +9,10 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1280** workspace tests (**1291** under gate 7), all six required gates and gate 7 green.
+- **1290** workspace tests (**1301** under gate 7), all six required gates and gate 7 green.
 - **291** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
   (**302** counting those).
-- **217** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **218** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **25** standard library modules under `modules/`.
 - Diagnostic codes run **E0001–E0296**; **E0297** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership
@@ -144,7 +144,7 @@ missing feature.
 | salsa incremental database | **Works** | Built *and* optimized MIR staged (ADR-0021 §1); invalidation is at file grain |
 | Differential harness | **Works** | Compares stdout, stderr and exit status of the engines as subprocesses; each corpus program against **itself** at both optimisation levels (ADR-0142 §3), and under gate 7, **three-way**: VM ≡ Cranelift ≡ LLVM (ADR-0143 §8) |
 | LLVM back end | **Works** | `jr build --backend llvm` (ADR-0143), behind a default-off `llvm` cargo feature and gate 7. MIR → LLVM IR directly: block parameters become `phi`s, every offset is a byte GEP, and overflow/shift/division/float→int all go through checks or saturating intrinsics. No LLVM optimisation passes |
-| Language server | **Works** | `jr lsp`: compiler diagnostics; hover and definition including type positions; completion + resolve and auto-import; references and document highlights; document/workspace symbols; prepare-rename + workspace rename; code actions; signature help; inlay hints; full-document semantic tokens; whole-document formatting. Correctness and depth gaps remain—see ADR-0211 rather than reading this inventory as “finished” |
+| Language server | **Works** | `jr lsp`: compiler diagnostics; hover and definition including type positions; completion + resolve and auto-import; references and document highlights; document/workspace symbols; prepare-rename + workspace rename; code actions including E0258's explicit `add all missing cases`; signature help; inlay hints; full-document semantic tokens; whole-document formatting. Correctness and depth gaps remain—see ADR-0211 and ADR-0218 rather than reading this inventory as “finished” |
 | Neovim integration | **Works** | `editors/nvim/` (ADR-0025), verified against the real editor by `editors/nvim/verify.lua` — **not** by CI, which has no Neovim |
 | Zed integration | **Works** | `editors/zed/` (ADR-0199), verified by a **19**-check script that replicates Zed's own grammar build. The one manual step is `install dev extension`. ADR-0036 §3 had declined a second editor; that is reversed |
 | VS Code integration | **Will not be built** | ADR-0036 §1–2: the maintainer does not use it, and a packaging target for an unused editor rots. `jr lsp` is editor-agnostic, so any LSP client works |

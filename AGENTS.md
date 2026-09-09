@@ -119,7 +119,7 @@ silently skips. **Run gate 7 in any wave that touches MIR, `jr-pool`'s layout, `
 either back end** — those are exactly the places where a third engine has something to say.
 
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
-visible. **It is 1280 today (1291 under gate 7), with 291 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
+visible. **It is 1290 today (1301 under gate 7), with 291 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
 only the corpus one, which is the pattern every wave whose deliverable a `.jr` program can observe
 follows, and the reason the two counts are tracked apart. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
 → 969 (W5 sub-waves 1–4) → 974 (W5 sub-wave 5, polymorphic structs) → 976 (W5 sub-wave 6a, `$N` surface)
@@ -1886,6 +1886,27 @@ Nothing under `references/` enters module discovery, the test corpus, Cargo pack
 artefacts. A secondary closed-beta guide can order probes and expose spellings; it cannot settle an
 ABI or ownership contract, which is why destination allocators and `extra_bytes_to_prepend` remain
 unimplemented.
+
+**ADR-0218 reaches 1290 tests (1301 under gate 7) and holds at 291 corpus files.** The missing
+coverage is editor behaviour, so ten Rust tests move while no `.jr` program does: E0258 now offers
+one preferred `add all missing cases` action for an enum or tagged variant, under both `switch` and
+`if #complete`. It inserts explicit empty `case .NAME;` arms and deliberately offers no `else`,
+because a catch-all would hide the next member added to the type.
+
+**The missing set stays the compiler's answer.** The action reads E0258's declaration-ordered list,
+so enum aliases remain one runtime-value class and variants reuse the semantic rule ADR-0068 already
+shares. It does not re-resolve a scrutinee or enumerate declarations in `jr-lsp`. The client may hold
+an old diagnostic, so the current range and missing list must still agree before an edit is offered;
+a same-length change from `case .RED` to `case .BLUE` is the regression that proves range equality
+alone is insufficient.
+
+**The brace is a token, not a character search.** The edit targets the matching `SwitchStmt`'s direct
+`R_BRACE` in the lossless CST, which makes an inline match, `if #complete`, comments and strings one
+shape. Byte offsets pass through the negotiated UTF-8/UTF-16 converter, existing arm indentation wins
+when available, an empty match reads the shared project formatter configuration, and CRLF remains
+CRLF. Gate 3's first sandboxed run failed six unrelated real-window tests at macOS LaunchServices;
+the one-test feedback loop passed immediately with host WindowServer access, and the full
+unsandboxed gate then passed without a code change.
 
 ## House style
 
