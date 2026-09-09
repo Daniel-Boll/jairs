@@ -56,7 +56,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0217.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0218.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -78,7 +78,9 @@ context-typed ASCII byte for comparisons. Unicode decoding remains explicit.
 Jai-shaped control flow can now be written without a parallel implementation: `then` optionally
 marks one braceless `if` statement, and `if #complete value == { case ... }` uses the same
 exhaustiveness and execution path as `switch`. Enum aliases are covered by runtime value, duplicate
-integer branches are rejected, and `else` must be final.
+integer branches are rejected, and `else` must be final. When E0258 finds missing enum or tagged-
+variant alternatives, the language server's preferred `add all missing cases` action inserts the
+explicit empty arms in declaration order; it never hides future additions behind an `else`.
 
 Every fresh Jairs context now has a working allocator/free pair in the VM, Cranelift and LLVM;
 assigning a custom pair and copying one through `push_context` remain unchanged. Whole-file
@@ -149,8 +151,8 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1280** workspace tests (**1291** under gate 7), all six required gates and gate 7 green.
-- **291** `.jr` corpus files, **217** accepted ADRs, **25** standard library
+- **1290** workspace tests (**1301** under gate 7), all six required gates and gate 7 green.
+- **291** `.jr` corpus files, **218** accepted ADRs, **25** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative
@@ -265,7 +267,7 @@ before: two gates run at once and race a shared binary.
 - **[`docs/jai-game-development-audit.md`](docs/jai-game-development-audit.md)** —
   the primary-source games audit, language/library gaps, and the staged `Game`
   facade plan whose foundation is now implemented.
-- **[`docs/adr/README.md`](docs/adr/README.md)** — all 213 accepted decision
+- **[`docs/adr/README.md`](docs/adr/README.md)** — all 218 accepted decision
   records.
 - **[`docs/spec/`](docs/spec/)** — the language specification chapters.
 - **[`examples/`](examples/)** — runnable programs, each verified.

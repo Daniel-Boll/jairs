@@ -1497,16 +1497,33 @@ fn actions_at(
     source: &str,
     needle: &str,
 ) -> Vec<lsp_types::CodeAction> {
-    let position = at(source, needle);
+    actions_at_encoding(db, search, file, source, needle, Encoding::Utf8)
+}
+
+fn actions_at_encoding(
+    db: &JairsDatabase,
+    search: ModuleCatalog,
+    file: SourceFile,
+    source: &str,
+    needle: &str,
+    encoding: Encoding,
+) -> Vec<lsp_types::CodeAction> {
+    let mut position = at(source, needle);
+    if encoding == Encoding::Utf16 {
+        let offset = source.find(needle).expect("the needle must appear");
+        let line_start = source[..offset].rfind('\n').map_or(0, |index| index + 1);
+        position.character = u32::try_from(source[line_start..offset].encode_utf16().count())
+            .expect("test source is small");
+    }
     let range = lsp_types::Range {
         start: position,
         end: position,
     };
-    let diags: Vec<lsp_types::Diagnostic> = diagnostics(db, file, search, Encoding::Utf8)
+    let diags: Vec<lsp_types::Diagnostic> = diagnostics(db, file, search, encoding)
         .into_iter()
         .filter(|d| d.range.start.line == position.line)
         .collect();
-    jr_lsp::code_actions(db, file, search, Encoding::Utf8, range, &diags)
+    jr_lsp::code_actions(db, file, search, encoding, range, &diags)
         .into_iter()
         .filter_map(|action| match action {
             lsp_types::CodeActionOrCommand::CodeAction(action) => Some(action),
@@ -1690,6 +1707,209 @@ fn one_unused_import_offers_no_organise_action() {
         "{:?}",
         titles(&actions)
     );
+}
+
+#[test]
+fn a_non_exhaustive_enum_offers_all_missing_cases() {
+    let source = "Colour :: enum {\n    RED;\n    GREEN;\n    BLUE;\n}\n\npick :: (c: Colour) {\n    switch c {\n        case .RED;\n    }\n}\n";
+    let (db, search, file) = program(source);
+
+    let actions = actions_at(&db, search, file, source, "switch c");
+    let action = actions
+        .iter()
+        .find(|action| action.title == "add all missing cases")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected the exhaustiveness action, got {:?}",
+                titles(&actions)
+            )
+        });
+    assert_eq!(
+        apply(source, action),
+        "Colour :: enum {\n    RED;\n    GREEN;\n    BLUE;\n}\n\npick :: (c: Colour) {\n    switch c {\n        case .RED;\n        case .GREEN;\n        case .BLUE;\n    }\n}\n"
+    );
+
+    // The action must repair the diagnostic, not merely produce plausible-looking source.
+    let applied = apply(source, action);
+    let (fixed_db, fixed_search, fixed_file) = program(&applied);
+    assert!(
+        diagnostics(&fixed_db, fixed_file, fixed_search, Encoding::Utf8)
+            .iter()
+            .all(|diagnostic| diagnostic.code
+                != Some(lsp_types::NumberOrString::String(String::from("E0258")))),
+        "E0258 survived the action"
+    );
+}
+
+#[test]
+fn the_action_handles_jais_complete_if_spelling() {
+    let source = "Kind :: enum {\n    FIRST;\n    SECOND;\n}\n\npick :: (kind: Kind) {\n    if #complete kind == {\n        case .FIRST;\n    }\n}\n";
+    let (db, search, file) = program(source);
+
+    let actions = actions_at(&db, search, file, source, "if #complete");
+    let action = actions
+        .iter()
+        .find(|action| action.title == "add all missing cases")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected the exhaustiveness action, got {:?}",
+                titles(&actions)
+            )
+        });
+    assert!(
+        apply(source, action).contains("        case .SECOND;\n    }"),
+        "got {:?}",
+        apply(source, action)
+    );
+}
+
+#[test]
+fn enum_aliases_insert_one_representative_per_missing_value() {
+    let source = "Status :: enum {\n    OK :: 200;\n    ALSO_OK :: 200;\n    MISSING :: 404;\n}\n\npick :: (status: Status) {\n    switch status {\n        case .ALSO_OK;\n    }\n}\n";
+    let (db, search, file) = program(source);
+
+    let actions = actions_at(&db, search, file, source, "switch status");
+    let action = actions
+        .iter()
+        .find(|action| action.title == "add all missing cases")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected the exhaustiveness action, got {:?}",
+                titles(&actions)
+            )
+        });
+    let applied = apply(source, action);
+    assert!(applied.contains("        case .MISSING;\n"));
+    assert!(!applied.contains("case .OK;"), "{applied}");
+}
+
+#[test]
+fn tagged_variants_share_the_missing_cases_action() {
+    let source = "Value :: variant {\n    integer: s64;\n    flag: bool;\n}\n\npick :: (value: Value) {\n    switch value {\n        case .integer;\n    }\n}\n";
+    let (db, search, file) = program(source);
+
+    let actions = actions_at(&db, search, file, source, "switch value");
+    let action = actions
+        .iter()
+        .find(|action| action.title == "add all missing cases")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected the exhaustiveness action, got {:?}",
+                titles(&actions)
+            )
+        });
+    assert!(
+        apply(source, action).contains("        case .flag;\n    }"),
+        "got {:?}",
+        apply(source, action)
+    );
+}
+
+#[test]
+fn a_one_line_switch_gets_a_multiline_utf16_safe_edit() {
+    let source = "Colour :: enum { RED; GREEN; }\npick :: (c: Colour) { label := \"😀\"; switch c { case .RED; } }\n";
+    let (db, search, file) = program(source);
+
+    let actions = actions_at_encoding(&db, search, file, source, "switch c", Encoding::Utf16);
+    let action = actions
+        .iter()
+        .find(|action| action.title == "add all missing cases")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected the exhaustiveness action, got {:?}",
+                titles(&actions)
+            )
+        });
+    let edit = only_edit(action);
+    let closer = source
+        .find("} }")
+        .expect("the switch closer is followed by the procedure closer");
+    let line_start = source[..closer].rfind('\n').map_or(0, |index| index + 1);
+    let expected_utf16 = source[line_start..closer].encode_utf16().count();
+    assert_eq!(
+        edit.range.end.character,
+        u32::try_from(expected_utf16).expect("small"),
+        "the edit must count the astral character as two UTF-16 units"
+    );
+    assert_eq!(edit.new_text, "\n    case .GREEN;\n");
+}
+
+#[test]
+fn a_stale_e0258_does_not_edit_a_changed_switch() {
+    let source = "Colour :: enum {\n    RED;\n    BLUE;\n}\n\npick :: (c: Colour) {\n    switch c {\n        case .RED;\n    }\n}\n";
+    let (mut db, search, file) = program(source);
+    let stale: Vec<_> = diagnostics(&db, file, search, Encoding::Utf8)
+        .into_iter()
+        .filter(|diagnostic| {
+            diagnostic.code == Some(lsp_types::NumberOrString::String(String::from("E0258")))
+        })
+        .collect();
+    assert_eq!(stale.len(), 1);
+
+    // Same byte length and same switch range, but the missing member changed from BLUE to RED.
+    let changed = source.replace("case .RED;", "case .BLUE;");
+    db.set_file_text("/jairs-lsp-test/main.jr", changed.as_str());
+    let range = stale[0].range;
+    let actions = jr_lsp::code_actions(&db, file, search, Encoding::Utf8, range, &stale);
+    assert!(
+        actions.is_empty(),
+        "a stale missing-name list must not edit the current buffer: {actions:?}"
+    );
+}
+
+#[test]
+fn an_empty_switch_uses_the_projects_tab_indentation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("jairs.toml"),
+        "[fmt]\nindent_style = \"tab\"\n",
+    )
+    .expect("write the manifest");
+    let source =
+        "Colour :: enum {\n\tRED;\n\tGREEN;\n}\n\npick :: (c: Colour) {\n\tswitch c {\n\t}\n}\n";
+    let path = dir.path().join("main.jr");
+    std::fs::write(&path, source).expect("write source");
+
+    let mut db = JairsDatabase::default();
+    let search = db.set_module_search_paths(vec![modules()]);
+    let key = path.to_string_lossy().into_owned();
+    db.set_file_text(key.as_str(), source);
+    let file = db
+        .source_file(key.as_str())
+        .expect("the file was just added");
+
+    let actions = actions_at(&db, search, file, source, "switch c");
+    let action = actions
+        .iter()
+        .find(|action| action.title == "add all missing cases")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected the exhaustiveness action, got {:?}",
+                titles(&actions)
+            )
+        });
+    assert_eq!(
+        only_edit(action).new_text,
+        "\t\tcase .RED;\n\t\tcase .GREEN;\n"
+    );
+}
+
+#[test]
+fn missing_case_lines_preserve_crlf() {
+    let source = "Colour :: enum {\r\n    RED;\r\n    GREEN;\r\n}\r\n\r\npick :: (c: Colour) {\r\n    switch c {\r\n        case .RED;\r\n    }\r\n}\r\n";
+    let (db, search, file) = program(source);
+
+    let actions = actions_at(&db, search, file, source, "switch c");
+    let action = actions
+        .iter()
+        .find(|action| action.title == "add all missing cases")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected the exhaustiveness action, got {:?}",
+                titles(&actions)
+            )
+        });
+    assert_eq!(only_edit(action).new_text, "        case .GREEN;\r\n");
 }
 
 #[test]

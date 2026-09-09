@@ -25,7 +25,7 @@
 //!
 //! If a capability ever needs a fact no query produces, the fix belongs in `jr-db`.
 
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use jr_db::{Db, ModuleCatalog, SourceFile};
 use jr_hir::{ExprScope, FileHir, ItemKind, Res};
@@ -78,11 +78,7 @@ pub fn formatting(db: &dyn Db, file: SourceFile) -> Option<Vec<lsp_types::TextEd
     // effect on the next save without restarting the server. A broken manifest falls back to the
     // defaults here rather than refusing — a server that stops formatting is indistinguishable
     // from one that has crashed, and `jr fmt` is the surface that reports that error properly.
-    let config = jr_manifest::find(std::path::Path::new(file.path(db).as_ref()))
-        .ok()
-        .flatten()
-        .map(|located| located.fmt_config())
-        .unwrap_or_default();
+    let config = formatting_config(Path::new(file.path(db).as_ref()));
     let formatted = jr_fmt::format(text.as_ref(), id, &config).ok()?;
     if formatted == text.as_ref() {
         // Already formatted. An empty list rather than one no-op edit, so a client does not mark the
@@ -103,6 +99,18 @@ pub fn formatting(db: &dyn Db, file: SourceFile) -> Option<Vec<lsp_types::TextEd
         },
         new_text: formatted,
     }])
+}
+
+/// The formatter settings that govern a source path.
+///
+/// Shared with code actions that insert whole source lines. Resolving this in two modules would let
+/// format-on-save use tabs while a quick fix inserted spaces into the same file.
+pub(crate) fn formatting_config(path: &Path) -> jr_fmt::Config {
+    jr_manifest::find(path)
+        .ok()
+        .flatten()
+        .map(|located| located.fmt_config())
+        .unwrap_or_default()
 }
 
 /// Every diagnostic for one file, as the protocol wants them.
