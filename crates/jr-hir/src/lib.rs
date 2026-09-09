@@ -52,6 +52,7 @@
 //! | E0209 | directive used where it is not valid |
 //! | E0210 | module not found (owned by `jr-db`, not this crate) |
 //! | E0211 | ambiguous name provided by multiple imported modules |
+//! | E0296 | `#char` operand is not exactly one decoded ASCII character |
 
 pub mod dump;
 pub mod hir;

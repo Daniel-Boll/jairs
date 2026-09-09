@@ -70,7 +70,7 @@ fn builtin_type_names() -> impl Iterator<Item = &'static str> {
 }
 
 /// The directives the parser interprets.
-const DIRECTIVES: &[&str] = &["#import", "#run", "#foreign", "#system_library"];
+const DIRECTIVES: &[&str] = &["#char", "#import", "#run", "#foreign", "#system_library"];
 
 /// What the text before the cursor says the user is asking for.
 #[derive(Debug, Clone, PartialEq, Eq)]

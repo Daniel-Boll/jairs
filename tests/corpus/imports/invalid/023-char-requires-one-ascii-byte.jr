@@ -1,0 +1,5 @@
+EMPTY :: #char "";
+MANY :: #char "ab";
+NON_ASCII :: #char "é";
+ESCAPED_NON_ASCII :: #char "\u00e9";
+MISSING :: #char;

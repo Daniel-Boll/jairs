@@ -835,7 +835,7 @@ fn a_hash_offers_directives() {
     offered.sort();
     assert_eq!(
         offered,
-        vec!["#foreign", "#import", "#run", "#system_library"]
+        vec!["#char", "#foreign", "#import", "#run", "#system_library"]
     );
 }
 

@@ -278,6 +278,12 @@ Status of each slice component, so this is answerable without reading the tree.
 > salsa. CLI, `jr-driver`, `jr-db`, and `jr-lsp` consume the same immutable catalog. Import
 > availability is now independent from `WorkspaceFiles` ownership, generated/provided build modules
 > are exact additions, and a malformed editor manifest is published as a configuration diagnostic.
+>
+> **Current byte-scanning surface (ADR-0214).** `jr-hir` lowers `#char` to the existing untyped
+> integer literal and owns E0296; `jr-sema` types a string loop's element as `u8`; `jr-mir` reads
+> the existing `StringData` and `StringCount` projections for named, nameless, reverse, pointer and
+> temporary-result loops; `jr-lsp` completes the directive; and `jr-fmt` preserves it. The corpus
+> executes the same source through the VM, Cranelift and LLVM.
 
 | Component | Status | Notes |
 |---|---|---|
@@ -312,7 +318,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the real-editor verifier — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua` needs an editor CI does not have. The installed parser is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The verifier asserts tree-sitter node kinds and nesting that ADR-0010's error-count gate cannot see, plus live LSP requests against the real server. |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and another LSP client may launch it; the repository packages integrations for Neovim and Zed. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–**0213**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
+Accepted ADRs: 0001–**0214**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
 counts here are why the ADR index row and this line move in the same commit.
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
@@ -613,41 +619,38 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0213 closes the project module catalog decision.** A manifest-backed project now imports
-> direct `src/Foo.jr` or `src/Foo/module.jr` without `-I`, and `[dependencies]` maps a flat name to
-> one exact file or directory `module.jr`. `-I`, legacy `[build].module_paths`, bundled modules,
-> generated `Build`, and `provide_import` all terminate at one immutable catalog boundary.
+> **ADR-0214 closes byte-oriented string scanning.** A `for` over a `string` yields copied `u8`
+> values and `s64` byte offsets in named and nameless forms, including reverse loops, pointers and
+> temporary results. MIR reads the existing string data/count projections; no implicit `[]u8`
+> conversion or backend operation was added.
 >
-> **Discovery is outside salsa; availability and ownership are separate.** `jr-project` reads
-> configuration and sources, then `jr-db` installs stable `SourceFile` and `ModuleCatalog` inputs.
-> Completion and code actions enumerate the catalog directly instead of using `WorkspaceFiles` as a
-> proxy for importability. Build targets derive exact additions, so generated/provided modules expose
-> no unrelated siblings.
+> **`#char` is the comparison value that byte loop needs.** Its string operand is decoded first and
+> must contain exactly one ASCII character. It then lowers to the ordinary untyped integer literal,
+> becoming `u8` from context when compared with a loop byte. Empty, multi-character and non-ASCII
+> operands are E0296; malformed escapes keep their existing diagnostic without a duplicate.
 >
-> **The editor owns independent project contexts.** Discovery begins only after LSP initialization,
-> chooses the longest governing root for nested projects, refreshes catalogs for manifest and `.jr`
-> create/delete events while preserving unsaved text, and publishes malformed manifests as
-> configuration diagnostics rather than falling back silently.
+> **The two features share one semantic choice: encoded bytes, not Unicode scalars.** Unicode-aware
+> iteration remains an explicit library operation with a visible decoding policy.
 
-**1256 workspace tests (1265 under gate 7), 283 corpus files, 213 ADRs, 25 modules, all seven gates
-green.** ADR-0213 adds 27 default-suite tests and no corpus file or module.
-**E0296** remains the first free diagnostic code.
+**1260 workspace tests (1269 under gate 7), 285 corpus files, 214 ADRs, 25 modules, all seven gates
+green.** ADR-0214 adds four default-suite tests and two corpus files; the existing differential and
+snapshot harnesses consume the new executable input. **E0297** is the first free diagnostic code.
 
-### Next decision: fresh, navigable LSP diagnostics
+### Next wave: Jai control-flow spellings
 
-The next wave begins by deciding how an edit re-diagnoses dependants:
+The decider approved both narrow source-compatible spellings:
 
-1. **All-open batching:** recheck every open document after a write; smallest implementation, but
-   closed importers remain stale and cost grows with unrelated tabs.
-2. **Dependency-closure scan:** walk imports from the changed file per edit; no persistent index,
-   but answering the reverse question repeatedly means rescanning the workspace.
-3. **Reverse import graph (recommended):** maintain importer edges when a file's imports change and
-   recheck the transitive reverse closure. More state, but it gives both freshness and a bounded,
-   explainable invalidation set.
+1. `then` is an optional reserved keyword between an `if` condition and its **single braceless
+   statement**. The formatter preserves it; a braced body needs no second spelling.
+2. `if #complete value == { case ... }` is exact syntax sugar for the existing exhaustive `switch`.
+   It lowers to the same HIR rather than creating a second exhaustiveness engine.
 
-The same wave should preserve secondary labels and instantiation frames as LSP related information,
-and publish one batch only after every affected file is current. The branch begins after the decider
-chooses the invalidation model.
+The wave also repairs the existing switch invariants the spelling audit exposed: duplicate integer
+cases are E0259, enum aliases with the same runtime value cannot masquerade as distinct coverage, and
+`else` must be the final arm rather than being silently reordered. Start on
+`feat/jai-control-flow` after this wave's commit. The approved default allocator and `File`
+whole-file API follow; `String_Builder` remains a separate library design decision informed by the
+public Jai implementations rather than a dependency on them.
 
 ### Optimisation queue after diagnostic freshness
 

@@ -540,5 +540,5 @@ pub(crate) const E0293: &str = "E0293";
 /// be resolved: that one means "I do not know what this holds" and this one means "it holds nothing", and
 /// a reader chasing the first would look for a misspelled type name.
 ///
-/// Owned by `jr-sema`, continuing this crate's block. E0296 is the first free code.
+/// Owned by `jr-sema`, continuing this crate's block. E0297 is the first free code.
 pub(crate) const E0295: &str = "E0295";

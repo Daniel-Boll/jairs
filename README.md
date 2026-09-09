@@ -56,7 +56,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0213.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0214.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -70,6 +70,10 @@ no search path. Manifest projects also discover direct modules under `src` and e
 dependencies through one catalog shared with the editor and build driver. Every one of those claims has a capability
 table behind it, kept honest at the end of every wave — if a table and the code
 disagree, the code is right and the table has a bug.
+
+Byte-oriented source scanning now has the Jai-shaped pieces it needs: a `for` can walk a
+`string` directly as `u8` bytes with `s64` byte offsets, and `#char "A"` supplies a
+context-typed ASCII byte for comparisons. Unicode decoding remains explicit.
 
 **A project can be built by a Jairs program.** `jr build build.jr` compiles the script, runs it, and
 performs the compilations it asked for — no flag, because importing `modules/Compiler` is what makes a
@@ -129,8 +133,8 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1256** workspace tests (1265 under gate 7), all seven gates green.
-- **283** `.jr` corpus files, **213** accepted ADRs, **25** standard library
+- **1260** workspace tests (1269 under gate 7), all seven gates green.
+- **285** `.jr` corpus files, **214** accepted ADRs, **25** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative

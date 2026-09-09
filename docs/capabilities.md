@@ -9,12 +9,12 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1256** workspace tests (1265 under gate 7), all seven gates green.
-- **283** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
-  (**294** counting those).
-- **213** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **1260** workspace tests (1269 under gate 7), all seven gates green.
+- **285** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
+  (**296** counting those).
+- **214** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **25** standard library modules under `modules/`.
-- Diagnostic codes run **E0001–E0295**; **E0296** is the first free one
+- Diagnostic codes run **E0001–E0296**; **E0297** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership
   table, and `crates/jr-cli/tests/codes.rs` is what makes the "first free"
   claim fail a test when it rots).
@@ -78,7 +78,7 @@ The authoritative version of this list is
 | `::` constant, `:=` inferred, `: T = v` typed, `---` uninit | |
 | `if` / `else if` / `else`, `while`, `return` | |
 | `switch e { case v; … else; … }` over an enum or an integer, **exhaustiveness-checked** for an enum, no fallthrough (ADR-0067) | patterns, ranges, guards; a multi-value `case`; `switch` as an expression |
-| `for x: buf`, `for x, i: buf`, `for i: 0..n`, `for < x: buf`; over arrays, views and ranges | iterate-by-reference `for *x`, a range as a value, `for` over a user type |
+| `for x: buf`, `for x, i: buf`, `for i: 0..n`, `for < x: buf`; over arrays, views, **string bytes**, and ranges. The nameless `for buf` injects `it` and `it_index`; a string element is `u8` and its index is an `s64` byte offset (ADR-0214) | iterate-by-reference `for *x`, Unicode-scalar iteration, a range as a value, `for` over a user type |
 | `break` / `continue`, labelled (`break outer`) or not; `defer` at every scope exit | |
 | `using p: Point` promotes a struct's fields; `using base: Point;` embeds them, transitively | `using` on an enum, a module, or an **imported** struct |
 | blocks and block scope, shadowing | |
@@ -96,7 +96,7 @@ The authoritative version of this list is
 | `[N]T` fixed arrays: `a[i]`, `.count`, zeroed by default, bounds-checked — and `#no_abc` or `--no-bounds-check` to stop checking. `N` may be a literal or a **named constant** (ADR-0070) | a length needing evaluation — arithmetic, `#run`, a chain, or another file's constant; array literals `[1, 2, 3]`; a per-*index* `#no_abc` |
 | `[..]T` dynamic arrays — surface and layout (ADR-0136); `modules/List` operates on them natively | growth operations beyond what `List` provides |
 | calls, nested; a discarded call is a statement | |
-| integer literals (dec/hex/bin/oct, `_`), string literals + escapes | |
+| integer literals (dec/hex/bin/oct, `_`), string literals + escapes, and `#char "A"` / `#char "\n"` as one decoded ASCII byte represented by a context-typed integer (ADR-0214) | a character type; non-ASCII `#char`; Unicode-scalar literals |
 | float literals: `1.5`, `1e9`, `1.5e-3`, `1_000.5`; float **printing** via `print("%", x)` (ADR-0189); a **typed** float constant `X : float32 : 1.5` (ADR-0190) | a chosen precision or field width — `%` renders shortest-ish and takes no modifiers |
 | nesting block comments; `///` and `//!` doc comments, shown on hover | doc generation (`jr doc`) — nothing consumes docs but the language server |
 | `#run` at file scope or in a body, calling local or **imported** procedures, with loops and nested calls; bounded by a **step budget** (ADR-0121), so a non-terminating one reports E0230 rather than hanging the compiler | a `#run` reading **another file's constant**; a `#foreign` call (ADR-0006); an operator overload, a default or a named argument |

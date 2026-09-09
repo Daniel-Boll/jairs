@@ -314,6 +314,74 @@ fn invalid_unicode_escape_emits_diagnostic() {
     assert!(diags.iter().any(|d| d.code == Some("E0206")));
 }
 
+#[test]
+fn char_directive_lowers_ascii_and_supported_escapes_to_integer_literals() {
+    let (hir, diags, _) = lower(
+        r#"
+PLAIN :: #char "A";
+NEWLINE :: #char "\n";
+NUL :: #char "\0";
+QUOTE :: #char "\"";
+SLASH :: #char "\\";
+UNICODE_ESCAPE :: #char "\u0041";
+"#,
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+    let values: Vec<i128> = hir
+        .items
+        .iter()
+        .map(|item| {
+            let ItemKind::Const {
+                value: ConstValue::Expr { expr, .. },
+            } = &item.kind
+            else {
+                panic!("expected a constant expression");
+            };
+            let Expr::Literal(Literal::Int { value, .. }, _) = &hir.exprs[expr.index()] else {
+                panic!("expected #char to lower directly to an integer literal");
+            };
+            *value
+        })
+        .collect();
+
+    assert_eq!(values, [65, 10, 0, 34, 92, 65]);
+}
+
+#[test]
+fn char_directive_requires_exactly_one_decoded_ascii_character() {
+    let (_, diags, _) = lower(
+        r#"
+EMPTY :: #char "";
+MANY :: #char "ab";
+NON_ASCII :: #char "é";
+ESCAPED_NON_ASCII :: #char "\u00e9";
+MISSING :: #char;
+"#,
+    );
+    let char_errors: Vec<_> = diags
+        .iter()
+        .filter(|diag| diag.code == Some("E0296"))
+        .collect();
+    assert_eq!(
+        char_errors.len(),
+        5,
+        "each invalid #char must produce E0296 exactly once: {diags:?}"
+    );
+}
+
+#[test]
+fn char_directive_does_not_duplicate_escape_diagnostics() {
+    let (_, diags, _) = lower(
+        r#"
+UNKNOWN :: #char "\qX";
+SHORT_UNICODE :: #char "\u00";
+"#,
+    );
+    let codes: Vec<_> = diags.iter().filter_map(|diag| diag.code).collect();
+    assert_eq!(codes, ["E0205", "E0206"]);
+}
+
 // ---------------------------------------------------------------------------
 // Operators
 // ---------------------------------------------------------------------------
