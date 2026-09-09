@@ -109,8 +109,11 @@ pub enum Trap {
     ShiftOutOfRange,
     /// `Terminator::Unreachable { reason: Unreachable::Trap, .. }` was reached.
     Deliberate,
-    /// A source `todo;` statement was reached (ADR-0223).
-    Todo,
+    /// A source `todo` statement was reached (ADR-0223, ADR-0226).
+    Todo {
+        /// The optional decoded static description from the statement.
+        message: Option<String>,
+    },
     /// A compiler-recognised source assertion evaluated to false (ADR-0224).
     Assertion {
         /// The optional decoded static message from the call site.
@@ -188,7 +191,9 @@ impl fmt::Display for Trap {
             Self::DivideByZero => write!(f, "division by zero"),
             Self::ShiftOutOfRange => write!(f, "shift count out of range"),
             Self::Deliberate => write!(f, "reached a deliberate trap"),
-            Self::Todo => write!(f, "reached todo"),
+            Self::Todo { message } => {
+                write!(f, "{}", jr_base::todo_reason(message.as_deref()))
+            }
             Self::Assertion { message } => {
                 write!(f, "{}", jr_base::assertion_reason(message.as_deref()))
             }

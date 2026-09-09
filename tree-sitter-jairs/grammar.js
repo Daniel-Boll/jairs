@@ -698,7 +698,12 @@ module.exports = grammar({
 
     continue_stmt: ($) => seq("continue", optional(field("label", $.identifier)), ";"),
 
-    todo_stmt: (_$) => seq("todo", ";"),
+    todo_stmt: ($) =>
+      seq(
+        "todo",
+        optional(seq("(", optional(field("message", $.string_literal)), ")")),
+        ";",
+      ),
 
     // `q, ok := f();` and `q, ok = f();` (ADR-0052 §2). A `_` is an ordinary identifier in Jairs, so
     // a discard needs no separate rule — lowering recognises the text.

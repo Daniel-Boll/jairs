@@ -2121,14 +2121,16 @@ impl Translator<'_, '_> {
                 // only one this back end *itself* is handed deliberately: the driver builds a
                 // stub for a body lowering refused, so that the `Export` symbol phase 1 promised
                 // exists (`jr_mir::MirBody::refused`).
-                let kind = match reason {
-                    Unreachable::Trap => TrapKind::Deliberate,
-                    Unreachable::Todo => TrapKind::Todo,
-                    Unreachable::StrayJump => TrapKind::StrayJump,
-                    Unreachable::FellOffEnd => TrapKind::FellOffEnd,
-                    Unreachable::Refused => TrapKind::Refused,
-                };
-                self.report(kind)?;
+                match reason {
+                    Unreachable::Todo(message) => {
+                        let reason = jr_base::todo_reason(message.as_deref());
+                        self.report_reason(&reason)?;
+                    }
+                    Unreachable::Trap => self.report(TrapKind::Deliberate)?,
+                    Unreachable::StrayJump => self.report(TrapKind::StrayJump)?,
+                    Unreachable::FellOffEnd => self.report(TrapKind::FellOffEnd)?,
+                    Unreachable::Refused => self.report(TrapKind::Refused)?,
+                }
                 self.builder.ins().trap(TrapCode::user(1).unwrap());
                 Ok(())
             }

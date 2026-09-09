@@ -729,7 +729,7 @@ impl Splice {
             // the call site for the same reason every inlined statement's does
             // (ADR-0021 §3, ADR-0223).
             Terminator::Unreachable { reason, span: _ } => Terminator::Unreachable {
-                reason: *reason,
+                reason: reason.clone(),
                 span: self.span(),
             },
         }

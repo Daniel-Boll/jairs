@@ -490,7 +490,7 @@ impl Compiler<'_> {
                 self.emit(Instr::Return(*value));
             }
             Terminator::Unreachable { reason, span: _ } => {
-                self.emit(Instr::Trap(*reason));
+                self.emit(Instr::Trap(reason.clone()));
             }
         }
         Ok(())

@@ -1266,14 +1266,14 @@ fn a_trap_names_its_source_location_identically_in_both_engines() {
 }
 
 #[test]
-fn todo_is_a_located_trap_and_does_not_run_defers() {
+fn described_todo_is_a_located_trap_and_does_not_run_defers() {
     let dir = TempDir::new().expect("a temporary directory");
     let path = dir.path().join("todo.jr");
     let source = "#import \"Basic\";\n\
                   \n\
                   main :: () {\n\
                   \x20   defer print(\"defer ran\\n\");\n\
-                  \x20   todo;\n\
+                  \x20   todo(\"Not implemented\");\n\
                   }\n";
     std::fs::write(&path, source).expect("a writable temporary directory");
 
@@ -1281,18 +1281,24 @@ fn todo_is_a_located_trap_and_does_not_run_defers() {
     let native = run_natively(&path, dir.path());
 
     let expected = format!(
-        "error: reached todo\n  --> {}:5:5\n  in main\n",
+        "error: reached todo: Not implemented\n  --> {}:5:5\n  in main\n",
         path.display()
     );
-    assert_eq!(vm.stdout, "", "`todo;` must not run the pending defer");
-    assert_eq!(native.stdout, "", "`todo;` must not run the pending defer");
+    assert_eq!(
+        vm.stdout, "",
+        "`todo(\"…\")` must not run the pending defer"
+    );
+    assert_eq!(
+        native.stdout, "",
+        "`todo(\"…\")` must not run the pending defer"
+    );
     assert_eq!(
         vm.stderr, expected,
-        "the VM lost the `todo;` statement span"
+        "the VM lost the described todo or its statement span"
     );
     assert_eq!(
         native.stderr, expected,
-        "native code disagrees about the `todo;` statement span"
+        "native code disagrees about the described todo or its statement span"
     );
     assert_eq!(vm.status, 4);
     assert_eq!(native.status, 4);
@@ -2743,7 +2749,8 @@ fn a_trap_reads_identically_in_all_three_engines() {
     );
 }
 
-/// LLVM must carry the dedicated `todo` reason and the statement span too (ADR-0223 §2–3).
+/// LLVM must carry the dedicated `todo` reason, static description and statement span too
+/// (ADR-0223 §2–3, ADR-0226 §3).
 ///
 /// The default-build test above compares VM and Cranelift; this closes the third-engine edge that
 /// the ordinary successful corpus cannot exercise.
@@ -2752,7 +2759,8 @@ fn a_trap_reads_identically_in_all_three_engines() {
 fn todo_reads_identically_in_all_three_engines() {
     let dir = TempDir::new().expect("a temporary directory");
     let path = dir.path().join("todo-llvm.jr");
-    std::fs::write(&path, "main :: () {\n    todo;\n}\n").expect("the source must be writable");
+    std::fs::write(&path, "main :: () {\n    todo(\"three engines\");\n}\n")
+        .expect("the source must be writable");
 
     let vm = run_in_vm(&path);
     let cranelift = run_natively(&path, dir.path());
@@ -2784,12 +2792,15 @@ fn todo_reads_identically_in_all_three_engines() {
         }
     };
 
-    assert_eq!(vm, cranelift, "VM and Cranelift disagree about `todo;`");
-    assert_eq!(vm, llvm, "VM and LLVM disagree about `todo;`");
+    assert_eq!(
+        vm, cranelift,
+        "VM and Cranelift disagree about described `todo`"
+    );
+    assert_eq!(vm, llvm, "VM and LLVM disagree about described `todo`");
     assert_eq!(vm.status, 4);
     assert!(
-        vm.stderr.contains(":2:5") && vm.stderr.contains("reached todo"),
-        "the trap must retain the statement line and dedicated reason: {}",
+        vm.stderr.contains(":2:5") && vm.stderr.contains("reached todo: three engines"),
+        "the trap must retain the statement line and described reason: {}",
         vm.stderr
     );
 }

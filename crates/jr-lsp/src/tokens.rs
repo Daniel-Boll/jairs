@@ -500,7 +500,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn todo_is_a_semantic_keyword() {
-        assert_eq!(simple_kind(SyntaxKind::TODO_KW), Some(Kind::Keyword));
+    fn call_shaped_todos_are_parsed_and_classified() {
+        let source = "main :: () {\n  todo();\n  todo(\"Not implemented\");\n}\n";
+        let parsed = jr_syntax::parse(source, jr_base::FileId::from_usize(0));
+        assert!(
+            parsed.diagnostics().is_empty(),
+            "the LSP parser rejected call-shaped todo statements: {:?}",
+            parsed.diagnostics()
+        );
+
+        let mut kinds = Vec::new();
+        fn collect_simple(node: &SyntaxNode, out: &mut Vec<Kind>) {
+            for element in node.children_with_tokens() {
+                match element {
+                    jr_syntax::kind::SyntaxElement::Token(token) => {
+                        if let Some(kind) = simple_kind(token.kind()) {
+                            out.push(kind);
+                        }
+                    }
+                    jr_syntax::kind::SyntaxElement::Node(child) => collect_simple(&child, out),
+                }
+            }
+        }
+        collect_simple(&parsed.syntax(), &mut kinds);
+
+        assert_eq!(
+            kinds.iter().filter(|kind| **kind == Kind::Keyword).count(),
+            2,
+            "both `todo` tokens must remain semantic keywords"
+        );
+        assert_eq!(
+            kinds.iter().filter(|kind| **kind == Kind::String).count(),
+            1,
+            "the static description must be a semantic string"
+        );
     }
 }

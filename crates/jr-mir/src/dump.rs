@@ -418,11 +418,12 @@ impl Dumper<'_> {
             },
             Terminator::Unreachable { reason, span: _ } => {
                 let why = match reason {
-                    Unreachable::Trap => "trap",
-                    Unreachable::Todo => "todo",
-                    Unreachable::StrayJump => "stray jump",
-                    Unreachable::FellOffEnd => "fell off the end",
-                    Unreachable::Refused => "refused",
+                    Unreachable::Trap => "trap".to_owned(),
+                    Unreachable::Todo(Some(message)) => format!("todo: {message:?}"),
+                    Unreachable::Todo(None) => "todo".to_owned(),
+                    Unreachable::StrayJump => "stray jump".to_owned(),
+                    Unreachable::FellOffEnd => "fell off the end".to_owned(),
+                    Unreachable::Refused => "refused".to_owned(),
                 };
                 format!("unreachable // {why}")
             }

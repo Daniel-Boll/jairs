@@ -1,12 +1,12 @@
-// ADR-0223: `todo;` is terminal on its path, including in a valued procedure and in comptime code.
+// ADR-0223/0226: every `todo` spelling is terminal on its path, including in valued procedures and comptime code.
 
 unfinished :: () -> s64 {
-  todo;
+  todo("Not implemented");
 }
 
 pick :: (take_unfinished: bool) -> s64 {
   if take_unfinished {
-    todo;
+    todo();
   }
   return 42;
 }

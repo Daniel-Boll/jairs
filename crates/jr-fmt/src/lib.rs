@@ -1626,7 +1626,7 @@ impl Formatter {
             }
             TODO_STMT => {
                 self.emit_indent();
-                self.emit("todo");
+                self.format_todo_stmt(node);
                 self.emit_trailing_comment(node);
                 self.emit(";");
                 self.newline();
@@ -1641,6 +1641,24 @@ impl Formatter {
                 self.emit(&node.text().to_string());
                 self.newline();
             }
+        }
+    }
+
+    /// Formats the spelling before `todo`'s semicolon.
+    ///
+    /// This is shared by block and braceless statement formatting so neither path
+    /// can silently discard the optional static description (ADR-0226 §4).
+    fn format_todo_stmt(&mut self, node: &SyntaxNode) {
+        self.emit("todo");
+        if node
+            .children_with_tokens()
+            .any(|element| element.kind() == L_PAREN)
+        {
+            self.emit("(");
+            if let Some(message) = node.children().find(|child| child.kind() == LITERAL_EXPR) {
+                self.format_expr(&message);
+            }
+            self.emit(")");
         }
     }
 
@@ -1766,7 +1784,8 @@ impl Formatter {
                 self.emit(";");
             }
             TODO_STMT => {
-                self.emit("todo;");
+                self.format_todo_stmt(node);
+                self.emit(";");
             }
             // A `defer` can be the single braceless statement of an `if` — `if bad  defer f();`
             // parses — so this arm exists for the same reason the others do: the fallback emits
@@ -3342,15 +3361,21 @@ mod tests {
 
     #[test]
     fn todo_stmt_is_preserved_and_canonicalised() {
-        let src = "f :: () {\ntodo ;\nif true then todo ;\ndefer todo ;\n}\n";
+        let src = "f :: () {\ntodo ;\ntodo ( ) ;\ntodo ( \"Not implemented\" ) ;\nif true then todo ( \"later\" ) ;\ndefer todo ( ) ;\n}\n";
         let out = fmt(src);
         assert_eq!(
             out.matches("todo;").count(),
-            3,
+            1,
             "formatter dropped or duplicated `todo`: {out}"
         );
-        assert!(out.contains("if true then todo;"), "got: {out}");
-        assert!(out.contains("defer todo;"), "got: {out}");
+        assert_eq!(
+            out.matches("todo();").count(),
+            2,
+            "formatter dropped or duplicated empty call-shaped todos: {out}"
+        );
+        assert!(out.contains("todo(\"Not implemented\");"), "got: {out}");
+        assert!(out.contains("if true then todo(\"later\");"), "got: {out}");
+        assert!(out.contains("defer todo();"), "got: {out}");
         assert_idempotent(src);
         assert_parses(&out);
     }

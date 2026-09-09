@@ -2343,17 +2343,19 @@ impl<'ctx> Translator<'ctx, '_> {
                 // Only `Trap` is a program the compiler believes well-formed; the other two
                 // are statically reported (E0228, E0229) and reaching one means the program
                 // was run without being checked.
-                let kind = match reason {
-                    Unreachable::Trap => TrapKind::Deliberate,
-                    Unreachable::Todo => TrapKind::Todo,
-                    Unreachable::StrayJump => TrapKind::StrayJump,
-                    Unreachable::FellOffEnd => TrapKind::FellOffEnd,
+                match reason {
+                    Unreachable::Todo(message) => {
+                        let reason = jr_base::todo_reason(message.as_deref());
+                        self.report_reason(&reason)?;
+                    }
+                    Unreachable::Trap => self.report(TrapKind::Deliberate)?,
+                    Unreachable::StrayJump => self.report(TrapKind::StrayJump)?,
+                    Unreachable::FellOffEnd => self.report(TrapKind::FellOffEnd)?,
                     // The stub a refused body gets (`jr_mir::MirBody::refused`), so that the
                     // `Export` symbol the declare phase promised exists. Both back ends need this
                     // arm for the same reason, which is why it is not a Cranelift detail.
-                    Unreachable::Refused => TrapKind::Refused,
-                };
-                self.report(kind)?;
+                    Unreachable::Refused => self.report(TrapKind::Refused)?,
+                }
                 built(self.builder.build_unreachable())?;
                 Ok(())
             }

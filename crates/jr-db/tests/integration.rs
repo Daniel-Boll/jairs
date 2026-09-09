@@ -1640,6 +1640,32 @@ fn checking_records_assertions_for_mir() {
     );
 }
 
+#[test]
+fn compile_time_todo_diagnostic_preserves_its_static_description() {
+    let (mut db, sp) = make_module_db_with_corpus();
+    let file = add_file(
+        &mut db,
+        "todo.jr",
+        "unfinished :: () -> s64 { todo(\"compile-time unfinished\"); }\n\
+         VALUE :: #run unfinished();\n\
+         main :: () { }\n",
+    );
+    let diagnostics = file_diagnostics(&db, file, sp);
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == Some("E0230")
+                && diagnostic
+                    .message
+                    .contains("reached todo: compile-time unfinished")
+        }),
+        "E0230 lost the static todo description: {:?}",
+        diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.code, diagnostic.message.clone()))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// **A diagnostic inside an instantiation names the call that demanded it** (ADR-0128).
 ///
 /// Before this, `bool` reaching `a + b` reported "operator `+` is not supported for `bool`" against the

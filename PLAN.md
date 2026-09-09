@@ -277,12 +277,15 @@ Status of each slice component, so this is answerable without reading the tree.
 > value, uncovered aliases are reported once by their first declaration, and E0134 refuses any
 > source arm after `else` instead of letting lowering reorder it.
 >
-> **Current unfinished-path surface (ADR-0223).** `todo;` is a reserved statement, not an
-> expression or intrinsic. It terminates its path, satisfies valued-procedure return analysis,
-> skips pending defers, and traps as `reached todo` only when reached. Every MIR unreachable
-> terminator now carries its own span; the VM, Cranelift and LLVM render the `todo;` line and live
-> backtrace identically, while a reached compile-time path becomes E0230. Parser, formatter,
-> Tree-sitter, both editor query sets and LSP keyword tooling all retain the construct.
+> **Current unfinished-path surface (ADR-0223, ADR-0226).** `todo;`, `todo()` and
+> `todo("static description")` are three spellings of one reserved statement, not an expression
+> or intrinsic. Parentheses accept no argument or exactly one literal string; computed and
+> non-string descriptions are syntax errors. The statement terminates its path, satisfies
+> valued-procedure return analysis, skips pending defers, and traps only when reached. Its decoded
+> optional description travels on `Unreachable::Todo`, and `jr_base::todo_reason` keeps the VM,
+> Cranelift and LLVM byte-identical (`reached todo[: description]`) at run time and under E0230.
+> Parser, formatter, Tree-sitter's committed generated parser and LSP semantic tokens retain all
+> three forms.
 >
 > **Current assertion surface (ADR-0224).** `assert(condition)` and
 > `assert(condition, "static message")` are shadowable unresolved-name intrinsics. Sema requires a
@@ -368,7 +371,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the real-editor verifier — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua` needs an editor CI does not have. The installed parser is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The verifier asserts tree-sitter node kinds and nesting that ADR-0010's error-count gate cannot see, plus live LSP requests against the real server. |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and another LSP client may launch it; the repository packages integrations for Neovim and Zed. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–**0225**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
+Accepted ADRs: 0001–**0226**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
 counts here are why the ADR index row and this line move in the same commit.
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
@@ -669,29 +672,21 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0222 completes the formatter-default change and records the Way-to-Jai audit.** Generated
-> projects, direct `jr_fmt::Config::default()` callers, empty manifests, manifest-free CLI/LSP
-> files, examples, modules and the canonical corpus all use two spaces. An explicit
-> `[fmt] indent_width` still wins, and tabs remain independent of the width.
+> **ADR-0226 completes static descriptions for unfinished paths.** Existing `todo;` stays valid,
+> while `todo()` is its call-shaped no-message twin and `todo("Not implemented")` carries one
+> escape-decoded literal through HIR and MIR. The grammar deliberately refuses computed values,
+> several arguments and non-string literals rather than admitting a dynamic trap ABI.
 >
-> The pinned guide has 42 numbered groups, 60 Markdown chapters, one ASCII PDF and 315 examples.
-> The prose matrix has 59 feature-family rows: 2 present, 42 partial, 8 absent and 7 intentionally
-> divergent. ADR-0219's executable layer is narrower by design: 35 representative example-bearing
-> groups, currently 6 source-compatible, 18 ported, 9 blocked and 2 divergent. It is evidence, not
-> a compatibility percentage.
->
-> Current-facing docs and module headers were reconciled, the CI tree-sitter job was graduated from
-> its stale skeleton guards to the same drift/query gate contributors run locally, and active owned
-> code now teaches `print`. `print_line` and `print_int` remain source-compatibility wrappers.
+> `Unreachable::Todo(Option<String>)` forced every MIR, VM and native-backend consumer to preserve
+> or inspect the payload. One `jr_base::todo_reason` owns the punctuation, so the VM, Cranelift and
+> LLVM report byte-identical reasons and E0230 preserves the same description at compile time.
+> The formatter's block and braceless paths share one emitter; Tree-sitter's generated parser is
+> committed; and LSP semantic tokens classify both the keyword and optional string.
 
-**1359 workspace tests (1372 under gate 7), 294 corpus files, 225 ADRs and 25 modules.** ADR-0225
-adds one differential test and one corpus program. All six ordinary gates are green; gate 7 was not
-required because the wave changes only a library module, docs and tests, while its feature count was
-enumerated to keep the handoff exact. The guide-evidenced non-overload `String` layer is complete:
-strict borrowed `slice`, owned `copy_string`, delegating compatibility aliases, two-result conversion
-spellings, consuming `parse_int`, corrected ownership docs and VM/native agreement on every invalid
-slice extent. **E0298** is the first free global diagnostic code; **E0135** is the first free parser
-code.
+**1362 workspace tests (1375 under gate 7), 294 corpus files, 226 ADRs and 25 modules.** ADR-0226
+adds three tests and changes no corpus-file count: the existing todo corpus program now exercises
+all three spellings. All six ordinary gates and gate 7 are green. **E0298** is the first free
+global diagnostic code; **E0135** is the first free parser code.
 
 ### Next wave: close the compatibility audit's executable blind spots
 

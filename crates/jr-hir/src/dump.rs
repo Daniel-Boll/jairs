@@ -455,7 +455,10 @@ impl<'a> Dumper<'a> {
                 Some(name) => self.line(&format!("Continue {}", self.sym(*name))),
                 None => self.line("Continue"),
             },
-            Stmt::Todo(_) => self.line("Todo"),
+            Stmt::Todo { message, .. } => match message {
+                Some(message) => self.line(&format!("Todo {message:?}")),
+                None => self.line("Todo"),
+            },
             Stmt::Error(_) => self.line("Error"),
         }
     }

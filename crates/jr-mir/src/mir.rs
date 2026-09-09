@@ -1001,15 +1001,15 @@ impl Target {
 /// of a MIR dump and, later, to codegen. [`Unreachable::Trap`] and
 /// [`Unreachable::Todo`] are source programs doing what they requested; the
 /// remaining variants record compiler diagnostics or refusal paths.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Unreachable {
     /// A deliberate runtime trap.
     Trap,
-    /// A source `todo;` statement was reached (ADR-0223).
+    /// A source `todo` statement was reached (ADR-0223, ADR-0226).
     ///
     /// Distinct from [`Self::Trap`] because a reader asked for `todo`, not a generic
     /// compiler-created trap path, and the VM/native differential compares the reason.
-    Todo,
+    Todo(Option<String>),
     /// A `break` or `continue` that was not inside a loop.
     ///
     /// Nothing rejects this today: `jr-hir` lowers both unconditionally without

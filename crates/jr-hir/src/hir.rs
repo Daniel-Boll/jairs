@@ -823,12 +823,18 @@ pub enum Stmt {
     Break(Option<Symbol>, Span),
     /// `continue;` or `continue label;` (ADR-0049 §2).
     Continue(Option<Symbol>, Span),
-    /// `todo;` — a source-level terminal path (ADR-0223).
+    /// `todo;`, `todo();` or `todo("description");` — a source-level terminal path
+    /// (ADR-0223, ADR-0226).
     ///
     /// The statement carries its own span because it has no operand whose span a
     /// downstream trap could borrow. Resolution and typing have nothing to do;
     /// MIR gives the terminal path its runtime meaning.
-    Todo(Span),
+    Todo {
+        /// The decoded static description, when one was supplied.
+        message: Option<String>,
+        /// Span of the whole statement.
+        span: Span,
+    },
     /// `for x: iterable { … }` (ADR-0049 §1).
     For {
         /// The element variable — a real local, so it obeys the ordinary promotion rules.

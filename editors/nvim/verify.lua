@@ -54,7 +54,7 @@ vim.cmd.edit(vim.fn.fnameescape(sample))
 local buf = vim.api.nvim_get_current_buf()
 check("a .jr file gets filetype=jairs", vim.bo[buf].filetype == "jairs", vim.bo[buf].filetype)
 check("the comment string is set", vim.bo[buf].commentstring == "// %s", vim.bo[buf].commentstring)
-check("indentation matches jr fmt", vim.bo[buf].shiftwidth == 4, vim.bo[buf].shiftwidth)
+check("indentation matches jr fmt", vim.bo[buf].shiftwidth == 2, vim.bo[buf].shiftwidth)
 
 -- ---------------------------------------------------------------------------
 -- Tree-sitter
@@ -1156,6 +1156,42 @@ if has_parser then
       buf = vim.api.nvim_get_current_buf()
     end
 
+    -- `todo` has three legal statement spellings (ADR-0226). A grammar that only knew the
+    -- original bare spelling would leave `todo()` and `todo("…")` as ERROR nodes, while a
+    -- grammar that parsed the description as an ordinary expression would lose the named
+    -- `message` field that editor consumers use.
+    local todo_file = root .. "/tests/corpus/valid/155-todo.jr"
+    if vim.uv.fs_stat(todo_file) then
+      vim.cmd.edit(vim.fn.fnameescape(todo_file))
+      local todo_buf = vim.api.nvim_get_current_buf()
+      local todo_ok, todo_parser = pcall(vim.treesitter.get_parser, todo_buf, "jairs")
+      if todo_ok and todo_parser then
+        local todo_tree = todo_parser:parse()[1]
+        check("all three todo spellings parse with no ERROR node", not todo_tree:root():has_error())
+        local todo_count, described_count = 0, 0
+        local function walk_todos(node)
+          if node:type() == "todo_stmt" then
+            todo_count = todo_count + 1
+            if node:field("message")[1] ~= nil then
+              described_count = described_count + 1
+            end
+          end
+          for child in node:iter_children() do
+            walk_todos(child)
+          end
+        end
+        walk_todos(todo_tree:root())
+        check("tree-sitter produces one todo_stmt for each spelling", todo_count == 3, todo_count)
+        check(
+          "the described todo exposes its static message field",
+          described_count == 1,
+          described_count
+        )
+      end
+      vim.cmd.edit(vim.fn.fnameescape(sample))
+      buf = vim.api.nvim_get_current_buf()
+    end
+
     -- Documentation highlighting, checked on the corpus file that has some. The capture
     -- is predicated on `#lua-match?`, which is Neovim's own predicate: `tree-sitter
     -- query` validates node names but knows nothing about it, so this is the only place
@@ -1248,8 +1284,8 @@ if config then
     -- Asserting the *text* of each hover, not merely that one arrived: a server that
     -- answered every hover with an empty string would pass the weaker check.
     --
-    -- Line 28 (0-based) is `    sum := add(p.x, p.y);`. Column 15 is the `p` of `p.x`,
-    -- column 11 the callee `add`, and column 4 the `sum` being declared. That last one
+    -- Line 27 (0-based) is `  sum := add(p.x, p.y);`. Column 13 is the `p` of `p.x`,
+    -- column 9 the callee `add`, and column 2 the `sum` being declared. That last one
     -- used to be excluded here with a comment saying the correct answer was no hover —
     -- which was wrong, and ADR-0028 §4 is the correction: a declaration's name is not an
     -- expression, so it needs `locate_declaration`, not exclusion from the test.
@@ -1267,19 +1303,19 @@ if config then
       return text
     end
 
-    local struct_hover = hover_at(28, 15)
+    local struct_hover = hover_at(27, 13)
     check(
       "hover on a local names it and its type",
       struct_hover == "```jr\n024-hello\np: Point\n```",
       struct_hover
     )
-    local proc_hover = hover_at(28, 11)
+    local proc_hover = hover_at(27, 9)
     check(
       "hover on a call renders the declaration, with parameter names",
       proc_hover == "```jr\n024-hello\nadd :: (a: s64, b: s64) -> s64\n```",
       proc_hover
     )
-    local decl_hover = hover_at(28, 4)
+    local decl_hover = hover_at(27, 2)
     check(
       "hover on a declaration is no longer empty",
       decl_hover == "```jr\n024-hello\nsum: s64\n```",
@@ -1287,14 +1323,14 @@ if config then
     )
 
     -- The card that prompted the whole wave: container, signature, rule, prose — from
-    -- another file. Line 30 is `        print(MESSAGE);`.
+    -- another file. Line 29 (0-based) is `    print(MESSAGE);`.
     --
     -- **Asserted by parts rather than by whole-string equality.** It used to compare the entire card,
     -- including `print`'s complete doc comment, so ADR-0189 broke it by *documenting* the procedure
     -- better — a check that fails when prose improves is measuring the wrong thing. These four parts are
     -- what the check's own name claims: the module, the signature, the rule that separates them, and
     -- some documentation after it.
-    local imported_hover = hover_at(30, 8)
+    local imported_hover = hover_at(29, 4)
     check(
       "hover on an imported procedure shows its module and its documentation",
       imported_hover:sub(1, 12) == "```jr\nBasic\n"
@@ -1324,7 +1360,7 @@ if config then
       return items or {}
     end
 
-    local offered = complete_at(28, 14)
+    local offered = complete_at(27, 12)
     local by_label = {}
     for _, item in ipairs(offered) do
       by_label[item.label] = item
@@ -1360,7 +1396,7 @@ if config then
     end
 
     -- Field completion after `.`, which is what the `.` trigger character is for.
-    local fields = complete_at(28, 18)
+    local fields = complete_at(27, 15)
     local field_labels = {}
     for _, item in ipairs(fields) do
       field_labels[item.label] = true
@@ -1396,11 +1432,12 @@ if config then
     end
 
     -- Goto-definition across the `#import`, which is the one that shows the module
-    -- system resolved rather than merely type-checked. Line 30 is `print(MESSAGE);`.
+    -- system resolved rather than merely type-checked. Line 29 (0-based) is
+    -- `    print(MESSAGE);`.
     local target
     vim.lsp.buf_request(buf, "textDocument/definition", {
       textDocument = vim.lsp.util.make_text_document_params(buf),
-      position = { line = 30, character = 8 },
+      position = { line = 29, character = 4 },
     }, function(_, result)
       if result then
         local first = result.uri and result or result[1]
@@ -1460,7 +1497,7 @@ if config then
     end
     local doc = vim.lsp.util.make_text_document_params(buf)
 
-    -- Line 19 (0-based) is `add :: (a: s64, b: s64) -> s64 {`. Worth stating: the first
+    -- Line 18 (0-based) is `add :: (a: s64, b: s64) -> s64 {`. Worth stating: the first
     -- draft of these checks used line 20, which is `return a + b;`, and read as two server
     -- bugs rather than as an off-by-one in the test.
     local symbols = request("textDocument/documentSymbol", { textDocument = doc })
@@ -1491,7 +1528,7 @@ if config then
 
     local found = request("textDocument/references", {
       textDocument = doc,
-      position = { line = 19, character = 0 },
+      position = { line = 18, character = 0 },
       context = { includeDeclaration = true },
     })
     check(
@@ -1502,7 +1539,7 @@ if config then
 
     local highlights = request("textDocument/documentHighlight", {
       textDocument = doc,
-      position = { line = 28, character = 11 },
+      position = { line = 27, character = 9 },
     })
     check(
       "documentHighlight answers for the cursor's word",
@@ -1512,7 +1549,7 @@ if config then
 
     local prepared = request("textDocument/prepareRename", {
       textDocument = doc,
-      position = { line = 19, character = 0 },
+      position = { line = 18, character = 0 },
     })
     check(
       "prepareRename offers the current name",
@@ -1575,12 +1612,12 @@ if config then
       vim.inspect(client.server_capabilities.codeActionProvider)
     )
 
-    -- Line 28 (0-based) is `    sum := add(p.x, p.y);`. Character 20 is inside the second
+    -- Line 27 (0-based) is `  sum := add(p.x, p.y);`. Character 20 is inside the second
     -- argument. Stated because the last wave's two "server bugs" in these checks were both
     -- an off-by-one here rather than anything in the server.
     local help = request("textDocument/signatureHelp", {
       textDocument = doc,
-      position = { line = 28, character = 20 },
+      position = { line = 27, character = 20 },
     })
     check(
       "signatureHelp names the procedure being called",

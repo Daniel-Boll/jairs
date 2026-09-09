@@ -663,8 +663,10 @@ Todo statement
 
 f :: (ok: bool) {
     todo;
-    if ok then todo;
-    defer todo;
+    todo();
+    todo("Not implemented");
+    if ok then todo("later");
+    defer todo();
 }
 
 --------------------------------------------------------------------------------
@@ -679,8 +681,12 @@ f :: (ok: bool) {
           type: (name_type (identifier))))
       body: (block
         (todo_stmt)
+        (todo_stmt)
+        (todo_stmt
+          message: (string_literal))
         (if_stmt
           condition: (name_expr (identifier))
-          body: (todo_stmt))
+          body: (todo_stmt
+            message: (string_literal)))
         (defer_stmt
           body: (todo_stmt))))))

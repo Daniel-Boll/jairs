@@ -20,8 +20,8 @@ fn lower(source: &str) -> (jr_hir::FileHir, jr_diag::Diagnostics, Interner) {
 }
 
 #[test]
-fn todo_survives_lowering_with_its_exact_statement_span() {
-    let source = "main :: () {\n  todo;\n}\n";
+fn todo_survives_lowering_with_its_decoded_message_and_exact_statement_span() {
+    let source = "main :: () {\n  todo(\"Not\\nimplemented\");\n}\n";
     let (hir, diags, interner) = lower(source);
     assert!(diags.is_empty(), "{diags:?}");
 
@@ -29,16 +29,20 @@ fn todo_survives_lowering_with_its_exact_statement_span() {
     let Stmt::Block(stmts, _) = body.stmt(body.root) else {
         panic!("a body's root is always a block");
     };
-    assert_eq!(stmts.len(), 1, "the body contains only `todo;`");
-    let Stmt::Todo(span) = body.stmt(stmts[0]) else {
-        panic!("`todo;` must lower to its dedicated HIR statement");
+    assert_eq!(stmts.len(), 1, "the body contains only `todo(\"…\");`");
+    let Stmt::Todo { message, span } = body.stmt(stmts[0]) else {
+        panic!("`todo(\"…\");` must lower to its dedicated HIR statement");
     };
+    assert_eq!(message.as_deref(), Some("Not\nimplemented"));
 
     let start = source
-        .find("todo;")
+        .find("todo(")
         .expect("the statement is in the source");
     assert_eq!(u32::from(span.start()) as usize, start);
-    assert_eq!(u32::from(span.end()) as usize, start + "todo;".len());
+    assert_eq!(
+        u32::from(span.end()) as usize,
+        start + "todo(\"Not\\nimplemented\");".len()
+    );
     assert!(
         dump_hir(&hir, &interner).contains("Todo"),
         "the HIR dump must retain the dedicated statement"

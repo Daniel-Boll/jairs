@@ -2770,7 +2770,17 @@ impl<'a> BodyLowerCtx<'a> {
                     .map(|t| self.intern(t.as_str()));
                 self.alloc_stmt(Stmt::Continue(label, span))
             }
-            AstStmt::Todo(_) => self.alloc_stmt(Stmt::Todo(span)),
+            AstStmt::Todo(todo) => {
+                let message = todo.message().and_then(|literal| {
+                    let token = literal.token()?;
+                    Some(decode_string_impl(
+                        token.text(),
+                        self.span_of_token(&token),
+                        &mut self.diags,
+                    ))
+                });
+                self.alloc_stmt(Stmt::Todo { message, span })
+            }
         }
     }
 

@@ -9,8 +9,8 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1359** workspace tests (**1372** under gate 7), with all six ordinary gates green for ADR-0225.
-  Gate 7 was not required for this module-only wave.
+- **1362** workspace tests (**1375** under gate 7), with all six ordinary gates and gate 7 green
+  for ADR-0226.
 - **294** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
   (**305** counting those).
 - **225** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
@@ -120,6 +120,7 @@ The authoritative version of this list is
 | using a type where a **runtime** value is expected is refused (E0261) | — |
 | `#import`, `#foreign`, `#system_library`; `#complete` switch spelling; `#expand` macros; `#modify` predicates; `#bake_arguments` specialisations | — |
 | `@note` metadata on a declaration, read by `has_note` / `note_value`, queried by `noted_count` / `noted_name`, and used to generate code by `noted_insert` (ADR-0098–0101) | run-time **inspection** — a loop reading declarations as values |
+| `todo;`, `todo()` and `todo("static description")` — terminal, source-located unfinished paths with one byte-identical optional reason in the VM, Cranelift and LLVM (ADR-0223, ADR-0226) | computed or formatted descriptions; using `todo` as an expression |
 | `assert(condition)` and `assert(condition, "static message")` — a shadowable compiler intrinsic whose failure is source-located and byte-identical in the VM, Cranelift and LLVM (ADR-0224) | computed or formatted messages; a test declaration/discovery model |
 | overflow traps with a source location, and a **call chain** of the frames that were live (ADR-0002, ADR-0020, ADR-0066) | a per-frame line number; inlined frames, which have no runtime existence |
 | `context` — a hidden parameter passed by pointer; `#c_call` opts out and gets none | — |

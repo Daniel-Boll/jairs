@@ -459,7 +459,7 @@ impl Reach {
                         expr_work.push(*value);
                     }
                 }
-                Stmt::Todo(_) | Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
+                Stmt::Todo { .. } | Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
             }
         }
 
@@ -624,7 +624,7 @@ fn scan(
             | Stmt::If { .. }
             | Stmt::While { .. }
             | Stmt::Return(_, _)
-            | Stmt::Todo(_)
+            | Stmt::Todo { .. }
             | Stmt::Break(_, _)
             | Stmt::Continue(_, _)
             | Stmt::For { .. }
@@ -1337,12 +1337,12 @@ impl Lower<'_> {
             // `todo;` abandons this path rather than leaving its lexical scope, so it deliberately
             // does not run registered defers (ADR-0223 §2). The terminator owns the statement span;
             // no engine has to infer a location from a non-existent operand.
-            Stmt::Todo(_) => {
+            Stmt::Todo { message, .. } => {
                 if let Some(block) = self.current {
                     self.mir.set_terminator(
                         block,
                         Terminator::Unreachable {
-                            reason: Unreachable::Todo,
+                            reason: Unreachable::Todo(message),
                             span: MirSpan::Stmt(self.body_id, id),
                         },
                     );

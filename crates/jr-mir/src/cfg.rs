@@ -126,7 +126,7 @@ fn missing_return(hir: &FileHir, proc: ProcId, mir: &MirBody) -> Diagnostics {
     let mut out = Diagnostics::new();
     let reachable = mir.reverse_postorder();
     let fell_off =
-        reachable.iter().any(|block| match mir.block(*block).term {
+        reachable.iter().any(|block| match &mir.block(*block).term {
             Terminator::Unreachable {
                 reason: Unreachable::FellOffEnd,
                 ..
@@ -138,7 +138,7 @@ fn missing_return(hir: &FileHir, proc: ProcId, mir: &MirBody) -> Diagnostics {
             Terminator::Unreachable {
                 reason:
                     Unreachable::Trap
-                    | Unreachable::Todo
+                    | Unreachable::Todo(_)
                     | Unreachable::StrayJump
                     | Unreachable::Refused,
                 ..

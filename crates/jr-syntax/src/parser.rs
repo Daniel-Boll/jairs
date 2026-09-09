@@ -2431,6 +2431,14 @@ impl<'src> Parser<'src> {
     fn parse_todo_stmt(&mut self) {
         self.start_node(TODO_STMT);
         self.bump(); // `todo`
+        if self.eat(L_PAREN) {
+            if !self.at(R_PAREN) {
+                self.start_node(LITERAL_EXPR);
+                self.expect(STRING_LITERAL);
+                self.finish_node();
+            }
+            self.expect(R_PAREN);
+        }
         self.expect(SEMICOLON);
         self.finish_node();
     }
@@ -3387,9 +3395,11 @@ mod tests {
     fn todo_stmt_is_legal_in_blocks_and_braceless_bodies() {
         for source in [
             "f :: () { todo; }",
+            "f :: () { todo(); }",
+            "f :: () { todo(\"Not implemented\"); }",
             "f :: (ok: bool) { if ok then todo; }",
-            "f :: (ok: bool) { while ok todo; }",
-            "f :: () { defer todo; }",
+            "f :: (ok: bool) { while ok todo(); }",
+            "f :: () { defer todo(\"later\"); }",
         ] {
             check_no_errors(source);
             check_round_trip(source);
@@ -3421,6 +3431,20 @@ mod tests {
     fn todo_is_not_an_expression() {
         let parsed = parse("f :: () { x := todo; }", file());
         assert!(parsed.has_errors(), "`todo` must remain statement-only");
+    }
+
+    #[test]
+    fn todo_parentheses_accept_only_zero_or_one_string_literal() {
+        for source in [
+            "f :: () { todo(1); }",
+            "f :: () { todo(message); }",
+            "f :: () { todo(\"one\", \"two\"); }",
+        ] {
+            assert!(
+                parse(source, file()).has_errors(),
+                "`todo` accepted an unsupported argument shape: {source}"
+            );
+        }
     }
 
     #[test]

@@ -7,12 +7,12 @@
 vim.bo.commentstring = "// %s"
 vim.bo.comments = "s1:/*,mb:*,ex:*/,://"
 
--- Four spaces, no tabs — matching what `jr fmt` produces, so that hand-typed and
+-- Two spaces, no tabs — matching what `jr fmt` produces, so that hand-typed and
 -- formatted code do not disagree.
 vim.bo.expandtab = true
-vim.bo.shiftwidth = 4
-vim.bo.softtabstop = 4
-vim.bo.tabstop = 4
+vim.bo.shiftwidth = 2
+vim.bo.softtabstop = 2
+vim.bo.tabstop = 2
 
 -- Tree-sitter highlighting, if the parser is built. `pcall` because a missing parser is
 -- an ordinary state — `editors/nvim/build.sh` has not been run — and it should not throw

@@ -84,8 +84,8 @@ fn stmt_span(stmt: &jr_hir::Stmt) -> Span {
         | Stmt::Expr(_, span)
         | Stmt::Discard { span, .. }
         | Stmt::Return(_, span)
-        | Stmt::Todo(span)
         | Stmt::Error(span) => *span,
+        Stmt::Todo { span, .. } => *span,
         Stmt::Break(_, span) | Stmt::Continue(_, span) | Stmt::Defer(_, span) => *span,
         Stmt::PushContext(_, span) => *span,
         Stmt::Switch { span, .. } => *span,

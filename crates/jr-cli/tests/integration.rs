@@ -574,8 +574,8 @@ fn a_long_but_terminating_compile_time_loop_still_folds() {
     );
 }
 
-/// A reached `todo;` in a `#run` is a compile-time failure, while an untaken one is inert
-/// (ADR-0223 §4).
+/// A reached described `todo` in a `#run` is a compile-time failure, while an untaken
+/// call-shaped one is inert (ADR-0223 §4, ADR-0226 §3).
 ///
 /// This lives here rather than in `type-errors/`: the source is semantically valid and E0230 belongs
 /// to `jr-db`'s evaluator, after sema and MIR have accepted the terminal path.
@@ -586,7 +586,7 @@ fn compile_time_todo_fails_only_when_reached() {
     let reached = dir.path().join("reached-todo.jr");
     fs::write(
         &reached,
-        "unfinished :: () -> s64 { todo; }\n\
+        "unfinished :: () -> s64 { todo(\"compile-time unfinished\"); }\n\
          VALUE :: #run unfinished();\n\
          main :: () { }\n",
     )
@@ -594,13 +594,13 @@ fn compile_time_todo_fails_only_when_reached() {
     assert_eq!(
         check_with_modules(vec![reached], None),
         1,
-        "a reached compile-time `todo;` must report E0230"
+        "a reached compile-time described `todo` must report E0230"
     );
 
     let untaken = dir.path().join("untaken-todo.jr");
     fs::write(
         &untaken,
-        "finished :: () -> s64 { if false { todo; } return 42; }\n\
+        "finished :: () -> s64 { if false { todo(); } return 42; }\n\
          VALUE :: #run finished();\n\
          main :: () { }\n",
     )
@@ -608,7 +608,7 @@ fn compile_time_todo_fails_only_when_reached() {
     assert_eq!(
         check_with_modules(vec![untaken], None),
         0,
-        "an untaken compile-time `todo;` must not poison evaluation"
+        "an untaken compile-time `todo()` must not poison evaluation"
     );
 }
 

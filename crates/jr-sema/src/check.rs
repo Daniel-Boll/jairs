@@ -740,7 +740,7 @@ impl Ctx<'_> {
             // A label names a *loop*, not a value, so there is nothing to type. Whether the label
             // exists is `jr-mir`'s question, because its loop stack is the only place a loop's
             // identity lives (ADR-0049 §2).
-            Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Todo(_) | Stmt::Error(_) => {}
+            Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Todo { .. } | Stmt::Error(_) => {}
         }
     }
 

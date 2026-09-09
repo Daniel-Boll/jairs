@@ -1522,6 +1522,18 @@ impl ContinueStmt {
     }
 }
 
+impl TodoStmt {
+    /// The optional static description inside `todo("…");`.
+    pub fn message(&self) -> Option<LiteralExpr> {
+        child_node(&self.0)
+    }
+
+    /// Whether the call-shaped spelling (`todo()` or `todo("…")`) was written.
+    pub fn has_parentheses(&self) -> bool {
+        child_token(&self.0, L_PAREN).is_some()
+    }
+}
+
 impl ReturnStmt {
     /// The return value, if present.
     pub fn expr(&self) -> Option<Expr> {
@@ -1836,8 +1848,8 @@ mod tests {
     }
 
     #[test]
-    fn todo_has_a_typed_statement_variant() {
-        let p = parse("f :: () { todo; }", file());
+    fn todo_has_a_typed_statement_variant_and_static_message() {
+        let p = parse("f :: () { todo(\"Not implemented\"); }", file());
         let sf = SourceFile::cast(p.syntax()).unwrap();
         let Item::Const(decl) = sf.items().next().unwrap() else {
             panic!("expected procedure declaration")
@@ -1847,7 +1859,16 @@ mod tests {
             .and_then(|proc| proc.body())
             .and_then(|body| body.stmts().next())
             .expect("todo statement");
-        assert!(matches!(stmt, Stmt::Todo(_)));
+        let Stmt::Todo(todo) = stmt else {
+            panic!("expected typed todo statement")
+        };
+        assert!(todo.has_parentheses());
+        assert_eq!(
+            todo.message()
+                .and_then(|message| message.token())
+                .map(|token| token.text().to_owned()),
+            Some("\"Not implemented\"".to_owned())
+        );
     }
 
     #[test]
