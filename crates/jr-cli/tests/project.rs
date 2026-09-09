@@ -240,6 +240,30 @@ fn the_manifest_sets_the_indent_width() {
 }
 
 #[test]
+fn the_manifest_puts_a_cases_sole_block_on_the_same_line() {
+    let (_guard, root) = scaffolded();
+    std::fs::write(
+        root.join("jairs.toml"),
+        "[fmt]\nindent_width = 2\ncase_block_style = \"same_line\"\n",
+    )
+    .expect("write");
+    let src = root.join("src").join("main.jr");
+    std::fs::write(
+        &src,
+        "State :: enum { TEXT; TAG; }\nmain :: () {\nstate := State.TEXT;\nswitch state {\ncase .TEXT; { state = .TAG; }\ncase .TAG; {}\n}\n}\n",
+    )
+    .expect("write");
+
+    let (code, _, stderr) = run_in(&root, &["fmt"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let formatted = std::fs::read_to_string(&src).expect("read");
+    assert!(
+        formatted.contains("    case .TEXT; {\n      state = .TAG;\n    }\n    case .TAG; {}"),
+        "expected same-line case blocks with two-space indentation, got: {formatted:?}"
+    );
+}
+
+#[test]
 fn the_manifest_selects_tabs() {
     // Tabs were impossible before this wave: the formatter hard-coded `" ".repeat(..)`.
     let (_guard, root) = scaffolded();

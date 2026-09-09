@@ -41,7 +41,8 @@ name = "hello"
 
 [fmt]
 indent_style = "space"         # "space" or "tab"
-indent_width = 4               # spaces per level; not read when indent_style = "tab"
+indent_width = 2               # new projects use two spaces; not read for tabs
+case_block_style = "next_line" # or "same_line" for `case .TEXT; {`
 max_width = 100                # breaks a long argument or parameter list. Comments are
                                # never reflowed, so a longer line can still survive.
 
@@ -56,7 +57,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0219.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0220.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -98,6 +99,11 @@ manifest covers all **35 example-bearing guide chapters**, and each entry runs a
 probe in an isolated directory. Six selected examples are source-compatible at the pinned guide
 revision; the others pin a working port, an exact blocker, or an intentional divergence. Ordinary
 tests never read the submodule, and the baseline deliberately makes no percentage claim.
+
+Formatter projects can now choose `case_block_style = "same_line"` to render an arm whose sole
+statement is a block as `case .TEXT; {`, with comment-free empty blocks rendered as
+`case .TAG; {}`. The default remains `"next_line"`. Newly scaffolded manifests explicitly choose
+two-space indentation; manifest-free formatting remains four spaces for compatibility (ADR-0220).
 
 **A project can be built by a Jairs program.** `jr build build.jr` compiles the script, runs it, and
 performs the compilations it asked for — no flag, because importing `modules/Compiler` is what makes a
@@ -157,8 +163,8 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1326** workspace tests (**1337** under gate 7), all six required gates and gate 7 green.
-- **291** `.jr` corpus files, **219** accepted ADRs, **25** standard library
+- **1333** workspace tests (**1344** under gate 7), all six required gates and gate 7 green.
+- **291** `.jr` corpus files, **220** accepted ADRs, **25** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative
@@ -273,7 +279,7 @@ before: two gates run at once and race a shared binary.
 - **[`docs/jai-game-development-audit.md`](docs/jai-game-development-audit.md)** —
   the primary-source games audit, language/library gaps, and the staged `Game`
   facade plan whose foundation is now implemented.
-- **[`docs/adr/README.md`](docs/adr/README.md)** — all 219 accepted decision
+- **[`docs/adr/README.md`](docs/adr/README.md)** — all 220 accepted decision
   records.
 - **[`docs/spec/`](docs/spec/)** — the language specification chapters.
 - **[`examples/`](examples/)** — runnable programs, each verified.

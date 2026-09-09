@@ -2653,11 +2653,11 @@ fn formatting_honours_the_projects_manifest() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(
         dir.path().join("jairs.toml"),
-        "[fmt]\nindent_style = \"tab\"\n",
+        "[fmt]\nindent_style = \"tab\"\ncase_block_style = \"same_line\"\n",
     )
     .expect("write the manifest");
 
-    let source = "main :: () {\n    a := 1;\n}\n";
+    let source = "State :: enum { TEXT; TAG; }\nmain :: () {\n    state := State.TEXT;\n    switch state {\n        case .TEXT;\n            { state = .TAG; }\n        case .TAG;\n            {}\n    }\n}\n";
     let path = dir.path().join("main.jr");
     std::fs::write(&path, source).expect("write the source");
 
@@ -2674,8 +2674,9 @@ fn formatting_honours_the_projects_manifest() {
         .first()
         .expect("re-indenting with tabs is a change, so there must be an edit");
     assert!(
-        edit.new_text.contains("\n\ta := 1;"),
-        "expected a tab from the manifest, got {:?}",
+        edit.new_text
+            .contains("\n\t\tcase .TEXT; {\n\t\t\tstate = .TAG;\n\t\t}\n\t\tcase .TAG; {}"),
+        "expected tabs and same-line case blocks from the manifest, got {:?}",
         edit.new_text
     );
 }

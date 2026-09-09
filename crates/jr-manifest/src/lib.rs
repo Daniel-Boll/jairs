@@ -97,6 +97,8 @@ pub struct Fmt {
     /// it looks. Documented here and in the scaffolded manifest, so the interaction is stated
     /// rather than discovered.
     pub indent_width: Option<usize>,
+    /// Whether a switch arm's sole braced block begins on the next line or the arm's line.
+    pub case_block_style: Option<CaseBlockStyle>,
     /// The column a line should not exceed.
     ///
     /// **Read the scope before setting it.** It breaks a call's argument list and a procedure's
@@ -129,6 +131,29 @@ impl From<IndentStyle> for jr_fmt::IndentStyle {
         match style {
             IndentStyle::Space => Self::Space,
             IndentStyle::Tab => Self::Tab,
+        }
+    }
+}
+
+/// The placement of a switch arm's sole braced block, as spelled in the manifest.
+///
+/// Kept separate from [`jr_fmt::CaseBlockStyle`] for the same compatibility reason as
+/// [`IndentStyle`]: these exact strings are part of the manifest file format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum CaseBlockStyle {
+    /// Put the block below the arm header.
+    #[serde(rename = "next_line")]
+    NextLine,
+    /// Put the opening brace on the arm header's line.
+    #[serde(rename = "same_line")]
+    SameLine,
+}
+
+impl From<CaseBlockStyle> for jr_fmt::CaseBlockStyle {
+    fn from(style: CaseBlockStyle) -> Self {
+        match style {
+            CaseBlockStyle::NextLine => Self::NextLine,
+            CaseBlockStyle::SameLine => Self::SameLine,
         }
     }
 }
@@ -204,6 +229,9 @@ impl Located {
         }
         if let Some(width) = self.manifest.fmt.indent_width {
             config.indent_width = width;
+        }
+        if let Some(style) = self.manifest.fmt.case_block_style {
+            config.case_block_style = style.into();
         }
         if let Some(width) = self.manifest.fmt.max_width {
             config.max_width = width;
@@ -309,7 +337,7 @@ pub fn find(from: &Path) -> Result<Option<Located>, Error> {
 mod tests {
     use std::path::Path;
 
-    use super::{Error, FILE_NAME, IndentStyle, Located, Manifest, find};
+    use super::{CaseBlockStyle, Error, FILE_NAME, IndentStyle, Located, Manifest, find};
 
     fn located(text: &str) -> Located {
         Located {
@@ -324,6 +352,10 @@ mod tests {
         assert_eq!(l.entry(), Path::new("/proj/src/main.jr"));
         assert_eq!(l.fmt_config().indent_width, 4);
         assert_eq!(l.fmt_config().indent_style, jr_fmt::IndentStyle::Space);
+        assert_eq!(
+            l.fmt_config().case_block_style,
+            jr_fmt::CaseBlockStyle::NextLine
+        );
         assert_eq!(l.fmt_config().max_width, 100);
         assert!(l.module_paths().is_empty());
         assert!(l.exact_dependencies().is_empty());
@@ -396,6 +428,16 @@ mod tests {
     }
 
     #[test]
+    fn case_block_style_is_read() {
+        let l = located("[fmt]\ncase_block_style = \"same_line\"\n");
+        assert_eq!(
+            l.fmt_config().case_block_style,
+            jr_fmt::CaseBlockStyle::SameLine
+        );
+        assert_eq!(l.fmt_config().indent_width, 4);
+    }
+
+    #[test]
     fn an_entry_is_relative_to_the_manifest_not_the_cwd() {
         // The whole reason `Located` carries a root: resolving against the working directory
         // would make one command mean two things depending on where it was run.
@@ -442,6 +484,13 @@ mod tests {
     }
 
     #[test]
+    fn a_bad_case_block_style_is_refused() {
+        let err = toml::from_str::<Manifest>("[fmt]\ncase_block_style = \"same-line\"\n")
+            .expect_err("only `next_line` and `same_line` are spellings");
+        assert!(err.to_string().contains("same-line"), "got: {err}");
+    }
+
+    #[test]
     fn the_style_spellings_are_exactly_two() {
         assert_eq!(
             toml::from_str::<super::Fmt>("indent_style = \"space\"")
@@ -454,6 +503,22 @@ mod tests {
                 .expect("tab")
                 .indent_style,
             Some(IndentStyle::Tab)
+        );
+    }
+
+    #[test]
+    fn the_case_block_style_spellings_are_exactly_two() {
+        assert_eq!(
+            toml::from_str::<super::Fmt>("case_block_style = \"next_line\"")
+                .expect("next line")
+                .case_block_style,
+            Some(CaseBlockStyle::NextLine)
+        );
+        assert_eq!(
+            toml::from_str::<super::Fmt>("case_block_style = \"same_line\"")
+                .expect("same line")
+                .case_block_style,
+            Some(CaseBlockStyle::SameLine)
         );
     }
 

@@ -62,11 +62,16 @@ an explicit flag still outranks it: a flag is an instruction, the file is a defa
 ```toml
 [fmt]
 indent_style = "space"   # "space" or "tab"
-indent_width = 4         # spaces per level; not read when indent_style = "tab"
+indent_width = 2         # new projects use two spaces; not read for tabs
+case_block_style = "next_line" # or "same_line" for `case .TEXT; {`
 max_width = 100          # breaks a long argument or parameter list; comments are never reflowed
 ```
 
 `indent_style` and `indent_width` mirror EditorConfig's own vocabulary rather than inventing one.
+`case_block_style = "same_line"` moves the opening brace of an arm whose sole statement is a block
+onto the arm header and prints a comment-free empty block as `{}`. The default is `"next_line"`.
+New project manifests explicitly choose two spaces, while formatting with no manifest keeps the
+four-space compatibility default.
 `max_width`'s scope is narrow by measurement, not by taste: across the whole tree, 99% of the
 lines that exceed it are comments, which this formatter never reflows, and a boolean chain or a
 string literal that would cross it is left alone too — only a call's argument list or a

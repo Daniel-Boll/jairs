@@ -217,7 +217,8 @@ name = \"{name}\"
 
 [fmt]
 indent_style = \"space\"         # \"space\" or \"tab\"
-indent_width = 4               # spaces per level; not read when indent_style = \"tab\"
+indent_width = 2               # spaces per level; not read when indent_style = \"tab\"
+case_block_style = \"next_line\" # \"next_line\" or \"same_line\" for a case's sole {{ ... }} block
 max_width = 100                # breaks a long argument or parameter list. Comments are never
 #                              # reflowed, so a longer line can still survive here.
 
@@ -277,7 +278,7 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn the_scaffolded_manifest_parses_and_matches_the_defaults() {
+    fn the_scaffolded_manifest_parses_and_uses_project_defaults() {
         // The scaffold must not be a file the tool would itself refuse — and since unknown keys
         // are an error, a stale comment that gets uncommented must still be accepted.
         let text = manifest_text("demo");
@@ -290,11 +291,12 @@ mod tests {
         };
         let config = located.fmt_config();
         let default = jr_fmt::Config::default();
-        // The scaffold writes the defaults explicitly, so a reader editing them sees what they
-        // are changing from. If a default ever moves, this fails rather than the scaffold quietly
-        // pinning the old value.
-        assert_eq!(config.indent_width, default.indent_width);
+        // New projects deliberately start at two spaces. The no-manifest formatter default remains
+        // four for compatibility with existing scratch files and repositories.
+        assert_eq!(config.indent_width, 2);
+        assert_eq!(default.indent_width, 4);
         assert_eq!(config.indent_style, default.indent_style);
+        assert_eq!(config.case_block_style, default.case_block_style);
         assert_eq!(config.max_width, default.max_width);
     }
 
